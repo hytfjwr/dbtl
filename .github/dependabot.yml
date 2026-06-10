@@ -8,6 +8,10 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "Asia/Tokyo"
+    # Wait 5 days after a release before proposing it (supply-chain cooldown:
+    # lets compromised releases get yanked before they ever reach a PR).
+    cooldown:
+      default-days: 5
     open-pull-requests-limit: 10
     groups:
       cargo-minor-patch:
@@ -23,6 +27,10 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "Asia/Tokyo"
+    # Wait 5 days after a release before proposing it (supply-chain cooldown:
+    # lets compromised releases get yanked before they ever reach a PR).
+    cooldown:
+      default-days: 5
     open-pull-requests-limit: 10
     groups:
       github-actions:
