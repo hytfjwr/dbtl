@@ -165,11 +165,9 @@ pub fn scrollbar_thumb(
     let thumb_len = ((viewport * th) / total).max(1).min(th);
     let max_off = total - viewport; // > 0 here (total > viewport)
     let max_thumb_top = th - thumb_len; // travel room (>= 0)
-    let thumb_top = if max_off == 0 {
-        0
-    } else {
-        (offset.min(max_off) * max_thumb_top) / max_off
-    };
+    let thumb_top = (offset.min(max_off) * max_thumb_top)
+        .checked_div(max_off)
+        .unwrap_or(0);
     Some((track_y0 + thumb_top as u16, thumb_len as u16))
 }
 

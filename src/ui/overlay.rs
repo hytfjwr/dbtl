@@ -445,11 +445,9 @@ fn stats_display_lines(sv: &StatsView) -> Vec<Line<'static>> {
         "Test coverage (models / seeds / snapshots):",
         header_style(),
     ));
-    let pct = if sv.testable_total == 0 {
-        0
-    } else {
-        sv.testable_tested * 100 / sv.testable_total
-    };
+    let pct = (sv.testable_tested * 100)
+        .checked_div(sv.testable_total)
+        .unwrap_or(0);
     let mut cov_spans = vec![Span::raw("  ")];
     cov_spans.extend(coverage_gauge(pct, 20));
     cov_spans.push(Span::raw(format!(
