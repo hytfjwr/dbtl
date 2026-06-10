@@ -1,0 +1,3 @@
+# Keep LF in working trees everywhere (Windows runners default to autocrlf=true;
+# fixtures and goldens must be byte-identical across the CI matrix).
+* text=auto eol=lf
