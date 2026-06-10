@@ -43,6 +43,16 @@ That's it. If `target/manifest.json` exists it is used; otherwise the project so
 
 ## Install
 
+**Homebrew (macOS / Linux):**
+
+```console
+$ brew install hytfjwr/tap/dbtl
+```
+
+**Prebuilt binaries:** grab a tarball for your platform from the
+[releases page](https://github.com/hytfjwr/dbtl/releases) (`checksums.txt`
+included).
+
 **From source (requires Rust 1.92+):**
 
 ```console
