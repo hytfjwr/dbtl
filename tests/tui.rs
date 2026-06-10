@@ -1114,7 +1114,7 @@ fn status_bar_keeps_protected_core_and_appends_segments() {
     // Cycle to the coverage lens (Off → Coverage) so the cov segment populates.
     apply_action(&mut app, Action::CycleLens);
     let (tested, total) = app.coverage_summary();
-    let pct = if total == 0 { 0 } else { tested * 100 / total };
+    let pct = (tested * 100).checked_div(total).unwrap_or(0);
     let cov = format!("cov {pct}% ({tested}/{total})");
     let pos = format!(
         "{}/{}",
