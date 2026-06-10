@@ -227,11 +227,53 @@ pub(crate) fn draw_detail(
 
 /// Common SQL keywords, uppercased for case-insensitive recognition.
 const SQL_KEYWORDS: &[&str] = &[
-    "SELECT", "FROM", "WHERE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "FULL", "CROSS", "ON",
-    "USING", "GROUP", "ORDER", "BY", "HAVING", "LIMIT", "OFFSET", "WITH", "AS", "AND", "OR", "NOT",
-    "IN", "CASE", "WHEN", "THEN", "ELSE", "END", "UNION", "ALL", "DISTINCT", "INSERT", "INTO",
-    "UPDATE", "DELETE", "CREATE", "TABLE", "VIEW", "NULL", "IS", "BETWEEN", "LIKE", "EXISTS",
-    "OVER", "PARTITION", "QUALIFY",
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "JOIN",
+    "LEFT",
+    "RIGHT",
+    "INNER",
+    "OUTER",
+    "FULL",
+    "CROSS",
+    "ON",
+    "USING",
+    "GROUP",
+    "ORDER",
+    "BY",
+    "HAVING",
+    "LIMIT",
+    "OFFSET",
+    "WITH",
+    "AS",
+    "AND",
+    "OR",
+    "NOT",
+    "IN",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "UNION",
+    "ALL",
+    "DISTINCT",
+    "INSERT",
+    "INTO",
+    "UPDATE",
+    "DELETE",
+    "CREATE",
+    "TABLE",
+    "VIEW",
+    "NULL",
+    "IS",
+    "BETWEEN",
+    "LIKE",
+    "EXISTS",
+    "OVER",
+    "PARTITION",
+    "QUALIFY",
 ];
 
 /// Recolour SQL keywords (case-insensitive) cyan, leaving every other byte
@@ -369,7 +411,12 @@ fn stats_display_lines(sv: &StatsView) -> Vec<Line<'static>> {
 
     out.push(Line::from(""));
     out.push(Line::styled("Resource counts:", header_style()));
-    let rt_max = sv.by_resource_type.iter().map(|(_, c)| *c).max().unwrap_or(0);
+    let rt_max = sv
+        .by_resource_type
+        .iter()
+        .map(|(_, c)| *c)
+        .max()
+        .unwrap_or(0);
     for (rt, count) in &sv.by_resource_type {
         out.push(Line::from(vec![
             Span::raw(format!("  {rt:<12} {count:<4} ")),
@@ -422,8 +469,16 @@ fn stats_display_lines(sv: &StatsView) -> Vec<Line<'static>> {
     }
 
     out.push(Line::from(""));
-    out.push(Line::styled("Hubs (transitive downstream):", header_style()));
-    let tr_max = sv.transitive_hubs.iter().map(|(_, c)| *c).max().unwrap_or(0);
+    out.push(Line::styled(
+        "Hubs (transitive downstream):",
+        header_style(),
+    ));
+    let tr_max = sv
+        .transitive_hubs
+        .iter()
+        .map(|(_, c)| *c)
+        .max()
+        .unwrap_or(0);
     for (name, count) in &sv.transitive_hubs {
         out.push(Line::from(vec![
             Span::raw(format!("  {name:<28} {count:<4} ")),
@@ -563,17 +618,19 @@ pub(crate) fn draw_palette(
 
     // The query line (row 0 of the interior), with the caret after the text.
     let query_line = Line::from(vec![
-        Span::styled("> ", Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "> ",
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(
             state.query.clone(),
             Style::default().add_modifier(Modifier::BOLD),
         ),
         Span::styled(chrome.caret.to_string(), Style::default().fg(theme::ACCENT)),
     ]);
-    let query_rect = Rect {
-        height: 1,
-        ..inner
-    };
+    let query_rect = Rect { height: 1, ..inner };
     frame.render_widget(Paragraph::new(query_line), query_rect);
 
     // The candidate list fills the rows below the query line.

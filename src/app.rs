@@ -831,8 +831,10 @@ impl App {
         // project to (name, count) AFTER sorting (the tie-break key is the uid).
         transitive.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
         transitive.truncate(5);
-        let transitive_hubs: Vec<(String, usize)> =
-            transitive.into_iter().map(|(_, name, c)| (name, c)).collect();
+        let transitive_hubs: Vec<(String, usize)> = transitive
+            .into_iter()
+            .map(|(_, name, c)| (name, c))
+            .collect();
         orphans.sort();
         // Reuse the single layer-violation predicate; map uids → names, sort.
         let mut layer_violations: Vec<(String, String)> = layer_violation_edges(&self.dag)
@@ -1003,9 +1005,10 @@ impl App {
         let full = join(&entries);
         // Lenient: the strict fit can drop to empty, but a producer never returns
         // an empty trail — fall back to ".. > root" (the title block clips it).
-        Some(fit_breadcrumb(&full, max_width).unwrap_or_else(|| {
-            format!(".. > {}", entries[entries.len() - 1])
-        }))
+        Some(
+            fit_breadcrumb(&full, max_width)
+                .unwrap_or_else(|| format!(".. > {}", entries[entries.len() - 1])),
+        )
     }
 
     /// `(tested, total)` over the project's testable resources (the
@@ -1136,7 +1139,6 @@ impl App {
             }
         }
     }
-
 
     /// Re-read the manifest from disk and rebuild, preserving the current
     /// selection by `unique_id` when possible. On a load error the app is left
@@ -1912,7 +1914,10 @@ fn longest_chain(dag: &Dag) -> Vec<String> {
     let mut path = Vec::new();
     let mut cur = Some(start);
     while let Some(uid) = cur {
-        path.push(dag.get(uid).map_or_else(|| uid.to_string(), |n| n.name.clone()));
+        path.push(
+            dag.get(uid)
+                .map_or_else(|| uid.to_string(), |n| n.name.clone()),
+        );
         cur = memo[uid].1;
     }
     path
@@ -2134,7 +2139,11 @@ mod tests {
         // when even ".. > root" cannot fit — the draw seam needs that to drop the
         // crumb to empty rather than overrun the title suffixes.
         let full = "alpha > beta > gamma";
-        assert_eq!(fit_breadcrumb(full, 100).as_deref(), Some(full), "fits whole");
+        assert_eq!(
+            fit_breadcrumb(full, 100).as_deref(),
+            Some(full),
+            "fits whole"
+        );
         // Width holds ".. > beta > gamma" (17) but not the full 20.
         assert_eq!(
             fit_breadcrumb(full, 17).as_deref(),
@@ -2144,7 +2153,11 @@ mod tests {
         // Width holds only ".. > gamma" (10).
         assert_eq!(fit_breadcrumb(full, 10).as_deref(), Some(".. > gamma"));
         // Too narrow even for ".. > gamma": strict None (never an ellipsis char).
-        assert_eq!(fit_breadcrumb(full, 5), None, "strict: None when nothing fits");
+        assert_eq!(
+            fit_breadcrumb(full, 5),
+            None,
+            "strict: None when nothing fits"
+        );
     }
 
     #[test]
@@ -2402,14 +2415,21 @@ mod tests {
         apply_action(&mut a, Action::DetailScrollPage(Direction::Up));
         assert_eq!(scroll(&a.mode), 1, "page up = -10 saturating");
         apply_action(&mut a, Action::DetailScrollEnd);
-        assert_eq!(scroll(&a.mode), usize::MAX, "End records MAX for the loop clamp");
+        assert_eq!(
+            scroll(&a.mode),
+            usize::MAX,
+            "End records MAX for the loop clamp"
+        );
         apply_action(&mut a, Action::DetailScrollHome);
         assert_eq!(scroll(&a.mode), 0, "Home rewinds to the top");
         // The same arms drive the help overlay.
         apply_action(&mut a, Action::DetailClose);
         apply_action(&mut a, Action::HelpToggle);
         apply_action(&mut a, Action::DetailScrollPage(Direction::Down));
-        assert!(matches!(a.mode, Mode::Help { scroll: 10 }), "help pages too");
+        assert!(
+            matches!(a.mode, Mode::Help { scroll: 10 }),
+            "help pages too"
+        );
     }
 
     #[test]
@@ -2425,7 +2445,10 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/sample_manifest.json"
         );
-        let mut a = App::new(load_dag(sample).expect("sample loads"), PathBuf::from(sample));
+        let mut a = App::new(
+            load_dag(sample).expect("sample loads"),
+            PathBuf::from(sample),
+        );
         let gaps: Vec<usize> = a
             .model_list
             .models
@@ -2455,9 +2478,17 @@ mod tests {
         }
         a.ui_state.set_selected(0);
         apply_action(&mut a, Action::BookmarkCycleBack);
-        assert_eq!(a.ui_state.selected(), 7, "backward wraps to the last bookmark");
+        assert_eq!(
+            a.ui_state.selected(),
+            7,
+            "backward wraps to the last bookmark"
+        );
         apply_action(&mut a, Action::BookmarkCycleBack);
-        assert_eq!(a.ui_state.selected(), 3, "backward again hits the earlier one");
+        assert_eq!(
+            a.ui_state.selected(),
+            3,
+            "backward again hits the earlier one"
+        );
         apply_action(&mut a, Action::BookmarkCycle);
         assert_eq!(a.ui_state.selected(), 7, "forward cycles onward");
     }
@@ -2483,7 +2514,10 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/sample_manifest.json"
         );
-        let mut a = App::new(load_dag(sample).expect("sample loads"), PathBuf::from(sample));
+        let mut a = App::new(
+            load_dag(sample).expect("sample loads"),
+            PathBuf::from(sample),
+        );
         let full = a.model_list.len();
         apply_action(&mut a, Action::ToggleUntestedFilter);
         assert_eq!(a.list_filter, ListFilter::Untested);
@@ -3248,8 +3282,14 @@ mod tests {
         };
         // Coverage base == coverage_summary's (model|seed|snapshot): 45+7+1 = 53,
         // and the sole gap in the fixture is the untested snapshot.
-        assert_eq!(sv.testable_total, 53, "fixture: 45 models + 7 seeds + 1 snapshot");
-        assert_eq!(sv.untested_testable, 1, "fixture: only the snapshot is untested");
+        assert_eq!(
+            sv.testable_total, 53,
+            "fixture: 45 models + 7 seeds + 1 snapshot"
+        );
+        assert_eq!(
+            sv.untested_testable, 1,
+            "fixture: only the snapshot is untested"
+        );
         assert_eq!(
             (sv.testable_tested, sv.testable_total),
             a.coverage_summary(),
@@ -3306,7 +3346,11 @@ mod tests {
         // --- orphans + violations: the committed fixture is clean on both (no
         // disconnected model, no backward layer edge). The cap/listing render is
         // exercised with hand-built StatsView literals in the overlay tests.
-        assert_eq!(sv.orphan_models, Vec::<String>::new(), "fixture has no orphans");
+        assert_eq!(
+            sv.orphan_models,
+            Vec::<String>::new(),
+            "fixture has no orphans"
+        );
         assert_eq!(
             sv.layer_violations,
             Vec::<(String, String)>::new(),
@@ -3363,7 +3407,10 @@ mod tests {
         ] {
             let out = apply_action(&mut a, action);
             assert!(!out.quit && out.effects.is_empty(), "{action:?} is a no-op");
-            assert!(matches!(a.mode, Mode::Selection), "{action:?} keeps Selection");
+            assert!(
+                matches!(a.mode, Mode::Selection),
+                "{action:?} keeps Selection"
+            );
         }
         assert_eq!(a.ui_state.selected(), before, "no toggle moved selection");
     }
@@ -3404,7 +3451,10 @@ mod tests {
         let a = app();
         // A tested model is NOT a gap; the snapshot with zero tests IS.
         let txn = a.dag.get("model.jaffle_finance.pos_txn").unwrap();
-        assert!(txn.test_count > 0 && !coverage_gap(txn), "tested model: no gap");
+        assert!(
+            txn.test_count > 0 && !coverage_gap(txn),
+            "tested model: no gap"
+        );
         let snap = a.dag.get(GAP_SNAPSHOT).unwrap();
         assert!(
             snap.test_count == 0 && coverage_gap(snap),
@@ -3593,10 +3643,22 @@ mod tests {
         assert_eq!(a.dag.downstream(mid).len(), 5, "fixture mid blast radius");
         assert_eq!(a.dag.downstream(FCT).len(), 2, "fixture FCT blast radius");
         assert_eq!(a.dag.downstream(leaf).len(), 0, "fixture leaf");
-        assert_eq!(tint_of(&mut a, LineageLens::DegreeHeat, hub), LensTint::HeatHigh);
-        assert_eq!(tint_of(&mut a, LineageLens::DegreeHeat, mid), LensTint::HeatMid);
-        assert_eq!(tint_of(&mut a, LineageLens::DegreeHeat, FCT), LensTint::HeatLow);
-        assert_eq!(tint_of(&mut a, LineageLens::DegreeHeat, leaf), LensTint::None);
+        assert_eq!(
+            tint_of(&mut a, LineageLens::DegreeHeat, hub),
+            LensTint::HeatHigh
+        );
+        assert_eq!(
+            tint_of(&mut a, LineageLens::DegreeHeat, mid),
+            LensTint::HeatMid
+        );
+        assert_eq!(
+            tint_of(&mut a, LineageLens::DegreeHeat, FCT),
+            LensTint::HeatLow
+        );
+        assert_eq!(
+            tint_of(&mut a, LineageLens::DegreeHeat, leaf),
+            LensTint::None
+        );
     }
 
     #[test]
@@ -3706,7 +3768,10 @@ mod tests {
         // Root on the marts model so the whole synthetic graph is laid out; under
         // the violation lens the two incident nodes (mt, st) are Violation-tinted,
         // the clean downstream `it` is not.
-        let mut a = App::new(violation_dag(), PathBuf::from("/tmp/x/target/manifest.json"));
+        let mut a = App::new(
+            violation_dag(),
+            PathBuf::from("/tmp/x/target/manifest.json"),
+        );
         a.select_by_unique_id("model.p.mt");
         a.ui_state.cycle_lens(); // Coverage
         a.ui_state.cycle_lens(); // DegreeHeat
@@ -3816,9 +3881,16 @@ mod tests {
         let before = a.ui_state.selected();
         assert_eq!(a.ui_state.lens(), LineageLens::Off, "lens starts Off");
         let out = apply_action(&mut a, Action::CycleLens);
-        assert!(!out.quit && out.effects.is_empty(), "cycle is a no-op action");
+        assert!(
+            !out.quit && out.effects.is_empty(),
+            "cycle is a no-op action"
+        );
         assert!(matches!(a.mode, Mode::Selection), "stays in Selection");
-        assert_eq!(a.ui_state.lens(), LineageLens::Coverage, "advanced to Coverage");
+        assert_eq!(
+            a.ui_state.lens(),
+            LineageLens::Coverage,
+            "advanced to Coverage"
+        );
         // Cycle through the rest and back to Off.
         for expected in [
             LineageLens::DegreeHeat,
@@ -3837,9 +3909,15 @@ mod tests {
         let mut a = app();
         a.select_by_unique_id(FCT);
         let before = a.ui_state.selected();
-        assert!(!a.ui_state.minimap_visible(), "minimap starts off (default)");
+        assert!(
+            !a.ui_state.minimap_visible(),
+            "minimap starts off (default)"
+        );
         let out = apply_action(&mut a, Action::ToggleMinimap);
-        assert!(!out.quit && out.effects.is_empty(), "toggle is a no-op action");
+        assert!(
+            !out.quit && out.effects.is_empty(),
+            "toggle is a no-op action"
+        );
         assert!(matches!(a.mode, Mode::Selection), "stays in Selection");
         assert!(a.ui_state.minimap_visible(), "the flag flipped on");
         apply_action(&mut a, Action::ToggleMinimap);
@@ -3873,7 +3951,10 @@ mod tests {
         a.refilter();
         assert!(a.selected_node().is_none(), "filter matched nothing");
         apply_action(&mut a, Action::BookmarkToggle);
-        assert!(a.bookmarks.is_empty(), "toggle with no selection is a no-op");
+        assert!(
+            a.bookmarks.is_empty(),
+            "toggle with no selection is a no-op"
+        );
     }
 
     #[test]
@@ -3921,7 +4002,8 @@ mod tests {
         let mut a = app();
         // One real id (survives reload) and one stale id (pruned).
         a.bookmarks.insert(FCT.to_string());
-        a.bookmarks.insert("model.jaffle_finance.gone_forever".to_string());
+        a.bookmarks
+            .insert("model.jaffle_finance.gone_forever".to_string());
         a.reload().expect("reload ok");
         assert!(a.bookmarks.contains(FCT), "surviving id kept");
         assert!(
@@ -4037,7 +4119,11 @@ mod tests {
         );
         let out = apply_action(&mut a, Action::SearchConfirm);
         assert!(out.quit, "confirming the quit command quits");
-        assert_eq!(a.mode, Mode::Selection, "mode set to Selection before apply");
+        assert_eq!(
+            a.mode,
+            Mode::Selection,
+            "mode set to Selection before apply"
+        );
     }
 
     #[test]
@@ -4114,7 +4200,10 @@ mod tests {
         let mut a = open_palette_and_type("lens");
         if let Mode::Palette(p) = &mut a.mode {
             p.selected = palette_candidates(&p.query).len() - 1;
-            assert!(p.selected > 0, "fixture has >1 'lens' candidate to move off 0");
+            assert!(
+                p.selected > 0,
+                "fixture has >1 'lens' candidate to move off 0"
+            );
         }
         apply_action(&mut a, Action::SearchBackspace); // "len"
         if let Mode::Palette(p) = &a.mode {

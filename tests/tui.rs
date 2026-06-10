@@ -83,7 +83,10 @@ fn group_first_and_last_names_are_frozen() {
     };
     assert_eq!(
         ends("staging"),
-        ("stg_finance__budgets".into(), "stg_payment__warehouses".into())
+        (
+            "stg_finance__budgets".into(),
+            "stg_payment__warehouses".into()
+        )
     );
     assert_eq!(
         ends("intermediate"),
@@ -398,7 +401,10 @@ fn detail_modal_impact_line_targets_the_cursored_node_not_the_root() {
     );
     apply_action(&mut app, Action::DetailOpen);
     // A source is non-selectable, so DetailOpen opens its modal (never re-roots).
-    assert!(matches!(app.mode, Mode::Detail(_)), "source opens its modal");
+    assert!(
+        matches!(app.mode, Mode::Detail(_)),
+        "source opens its modal"
+    );
 
     let backend = TestBackend::new(100, 40);
     let mut terminal = Terminal::new(backend).expect("terminal");
@@ -488,7 +494,10 @@ fn stats_modal_gauge_has_graded_fill_over_dark_track() {
             }
         }
     }
-    assert!(saw_fill, "coverage gauge fill (OK grade @ 90%) on the coverage row");
+    assert!(
+        saw_fill,
+        "coverage gauge fill (OK grade @ 90%) on the coverage row"
+    );
     assert!(
         saw_track,
         "coverage gauge dark track (SURFACE_HI) on the coverage row"
@@ -513,7 +522,10 @@ fn stats_modal_shows_new_sections_and_more_cap() {
     // Tall buffer so the whole (unscrolled) dashboard fits the modal interior.
     let buffer = render_stats_modal(stats_view_with(12, 11), 100, 80);
     let text = buffer_to_string(&buffer);
-    assert!(text.contains("Orphans (12)"), "orphans header with full count");
+    assert!(
+        text.contains("Orphans (12)"),
+        "orphans header with full count"
+    );
     assert!(
         text.contains("Layer violations (11)"),
         "violations header with full count"
@@ -522,7 +534,10 @@ fn stats_modal_shows_new_sections_and_more_cap() {
         text.contains("Hubs (transitive"),
         "transitive-hubs section present"
     );
-    assert!(text.contains("+2 more"), "orphans overflow rolls into +K more");
+    assert!(
+        text.contains("+2 more"),
+        "orphans overflow rolls into +K more"
+    );
     assert!(
         text.contains("+1 more"),
         "violations overflow rolls into +K more"
@@ -972,8 +987,14 @@ fn bookmark_badge_renders_on_a_bookmarked_row() {
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
     }
     let ascii = buffer_to_string(&terminal.backend().buffer().clone());
-    assert!(ascii.contains('*'), "ASCII bookmark badge is '*': {ascii:?}");
-    assert!(!ascii.contains('★'), "no ambiguous-width glyph in ASCII mode");
+    assert!(
+        ascii.contains('*'),
+        "ASCII bookmark badge is '*': {ascii:?}"
+    );
+    assert!(
+        !ascii.contains('★'),
+        "no ambiguous-width glyph in ASCII mode"
+    );
 }
 
 #[test]
@@ -1095,7 +1116,11 @@ fn status_bar_keeps_protected_core_and_appends_segments() {
     let (tested, total) = app.coverage_summary();
     let pct = if total == 0 { 0 } else { tested * 100 / total };
     let cov = format!("cov {pct}% ({tested}/{total})");
-    let pos = format!("{}/{}", app.ui_state.selected() + 1, app.active_list().len());
+    let pos = format!(
+        "{}/{}",
+        app.ui_state.selected() + 1,
+        app.active_list().len()
+    );
 
     // A wide line (160) so every segment fits after the long uid-bearing core.
     let backend = TestBackend::new(160, 30);
@@ -1272,7 +1297,10 @@ fn status_impact_segment_renders_and_survives_narrowest_droppable_line() {
     }
     let narrow = buffer_to_string(&terminal.backend().buffer().clone());
     assert!(narrow.contains("[j/k]"), "core survives the narrow line");
-    assert!(narrow.contains(&impact), "impact survives as top-priority segment");
+    assert!(
+        narrow.contains(&impact),
+        "impact survives as top-priority segment"
+    );
     assert!(
         !narrow.contains("[3/45]"),
         "lower-priority position drops on the narrow line"
@@ -1305,8 +1333,14 @@ fn status_impact_segment_uses_ascii_badges_in_ascii_mode() {
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
     }
     let text = buffer_to_string(&terminal.backend().buffer().clone());
-    assert!(text.contains("impact v1 ^2"), "ascii impact segment renders");
-    assert!(!text.contains('↓') && !text.contains('↑'), "no unicode arrows");
+    assert!(
+        text.contains("impact v1 ^2"),
+        "ascii impact segment renders"
+    );
+    assert!(
+        !text.contains('↓') && !text.contains('↑'),
+        "no unicode arrows"
+    );
 }
 
 #[test]
@@ -1409,7 +1443,10 @@ fn lineage_title_shows_lens_suffix_per_lens_and_nothing_when_off() {
     // Cycling once more returns to Off → suffix gone again.
     apply_action(&mut app, Action::CycleLens);
     let back_off = buffer_to_string(&render_app(&app, 120, 24));
-    assert!(!back_off.contains("[lens:"), "cycle back to Off drops the suffix");
+    assert!(
+        !back_off.contains("[lens:"),
+        "cycle back to Off drops the suffix"
+    );
 }
 
 /// Render an `App`'s lineage title row (row 0) for a chosen width, feeding the
@@ -1481,7 +1518,10 @@ fn lineage_title_omits_body_when_breadcrumb_present_but_keeps_view_and_lens() {
     // The non-default view suffix survives too (label derived from the app, not
     // hardcoded — it is a glyph-mode-dependent arrow).
     let vlabel = format!("[{}]", app.lineage_view_label());
-    assert!(title.contains(&vlabel), "view label {vlabel:?} kept, got {title:?}");
+    assert!(
+        title.contains(&vlabel),
+        "view label {vlabel:?} kept, got {title:?}"
+    );
 }
 
 #[test]
@@ -1541,7 +1581,10 @@ fn lineage_title_no_breadcrumb_is_byte_identical_to_the_default() {
     apply_action(&mut app, Action::ToggleUpstream); // non-default view label
     apply_action(&mut app, Action::CycleLens); // [lens:coverage]
     apply_action(&mut app, Action::ToggleListPane);
-    assert!(app.breadcrumb(usize::MAX).is_none(), "no re-root → no breadcrumb");
+    assert!(
+        app.breadcrumb(usize::MAX).is_none(),
+        "no re-root → no breadcrumb"
+    );
 
     // The exact pre-breadcrumb default shape: ` Lineage: {name} [{v}]{lens} `, where
     // {v} is the (glyph-mode-dependent) view label and {lens} carries its own
@@ -1658,8 +1701,14 @@ fn minimap_on_draws_node_and_viewport_glyphs_in_the_inset() {
             }
         }
     }
-    assert!(has_node, "minimap ON: a '#' node-occupancy glyph appears in the inset");
-    assert!(has_view, "minimap ON: a '+' viewport glyph appears in the inset");
+    assert!(
+        has_node,
+        "minimap ON: a '#' node-occupancy glyph appears in the inset"
+    );
+    assert!(
+        has_view,
+        "minimap ON: a '+' viewport glyph appears in the inset"
+    );
 }
 
 /// Maximal contiguous horizontal runs of REVERSED-styled cells WITHIN `interior`,
@@ -1715,12 +1764,29 @@ fn toast_renders_top_right_with_its_text() {
     let buffer = terminal.backend().buffer().clone();
 
     // Geometry: text 16 wide -> box 20 wide; x = 100 - 20 - 2 = 78, y = 1..4.
-    assert_eq!(buffer.cell((78, 1)).unwrap().symbol(), "╭", "toast top-left");
-    assert_eq!(buffer.cell((97, 1)).unwrap().symbol(), "╮", "toast top-right");
-    assert_eq!(buffer.cell((78, 3)).unwrap().symbol(), "╰", "toast bottom-left");
+    assert_eq!(
+        buffer.cell((78, 1)).unwrap().symbol(),
+        "╭",
+        "toast top-left"
+    );
+    assert_eq!(
+        buffer.cell((97, 1)).unwrap().symbol(),
+        "╮",
+        "toast top-right"
+    );
+    assert_eq!(
+        buffer.cell((78, 3)).unwrap().symbol(),
+        "╰",
+        "toast bottom-left"
+    );
     let row = row_text(&buffer, 2);
-    let pos = row.find("Copied unique_id").expect("toast text on middle row");
-    assert!(pos >= 70, "toast text sits in the top-RIGHT corner, got col {pos}");
+    let pos = row
+        .find("Copied unique_id")
+        .expect("toast text on middle row");
+    assert!(
+        pos >= 70,
+        "toast text sits in the top-RIGHT corner, got col {pos}"
+    );
 
     // Without a toast the text never appears anywhere.
     let plain = render(100, 30);

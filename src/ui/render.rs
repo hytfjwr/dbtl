@@ -13,8 +13,8 @@ use crate::model_list::{DisplayRow, ModelList};
 
 use super::geom::pane_rects;
 use super::{
-    focus_border, selected_style, theme, title_style, Focus, LineageLens, UiState,
-    SELECTED_MARKER, UNSELECTED_MARKER,
+    focus_border, selected_style, theme, title_style, Focus, LineageLens, UiState, SELECTED_MARKER,
+    UNSELECTED_MARKER,
 };
 
 /// The optional, colored, droppable segments appended to the status bar AFTER its
@@ -296,8 +296,7 @@ fn draw_list(
                 // testable node with zero tests gets a warning name. The lens wins
                 // over the orphan red (the user opted into it), and selection still
                 // wins over both.
-                let gap =
-                    state.lens() == LineageLens::Coverage && node.is_some_and(coverage_gap);
+                let gap = state.lens() == LineageLens::Coverage && node.is_some_and(coverage_gap);
                 let name_style = if selected {
                     selected_style()
                 } else if gap {
@@ -331,11 +330,10 @@ fn draw_list(
                     }
                     _ => vec![Span::styled(name.to_string(), name_style)],
                 };
-                let bookmarked = bookmarks.is_some_and(|b| {
-                    node.is_some_and(|n| b.contains(&n.unique_id))
-                });
+                let bookmarked =
+                    bookmarks.is_some_and(|b| node.is_some_and(|n| b.contains(&n.unique_id)));
                 let mut spans = vec![
-                    Span::raw("  "),                       // indent under header
+                    Span::raw("  "),                              // indent under header
                     Span::styled(marker.to_string(), name_style), // selection marker
                 ];
                 spans.extend(name_spans);

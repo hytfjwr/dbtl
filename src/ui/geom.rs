@@ -37,10 +37,7 @@ pub fn pane_rects(area: Rect, list_visible: bool) -> PaneRects {
 
     if !list_visible {
         return PaneRects {
-            list: Rect {
-                width: 0,
-                ..body
-            },
+            list: Rect { width: 0, ..body },
             lineage: body,
             status,
         };

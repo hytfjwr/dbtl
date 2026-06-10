@@ -975,7 +975,10 @@ mod tests {
         // Esc cancels (closes the palette); Enter runs; Backspace edits.
         assert_eq!(dispatch(&m, press(Esc)), Some(Action::SearchCancel));
         assert_eq!(dispatch(&m, press(Enter)), Some(Action::SearchConfirm));
-        assert_eq!(dispatch(&m, press(Backspace)), Some(Action::SearchBackspace));
+        assert_eq!(
+            dispatch(&m, press(Backspace)),
+            Some(Action::SearchBackspace)
+        );
         // Ctrl-c still quits even in the palette (never a printable char).
         assert_eq!(dispatch(&m, ctrl('c')), Some(Action::Quit));
         // A Super-modified char is a command chord, not query text.
@@ -990,7 +993,11 @@ mod tests {
             .iter()
             .filter(|b| b.mode == ModeKind::Selection && b.action != Action::PaletteOpen)
             .count();
-        assert_eq!(all.len(), expected, "empty query lists every Selection command");
+        assert_eq!(
+            all.len(),
+            expected,
+            "empty query lists every Selection command"
+        );
         assert!(
             all.iter().all(|b| b.mode == ModeKind::Selection),
             "only Selection-mode bindings are candidates"
@@ -1010,8 +1017,9 @@ mod tests {
             "'lens' finds the cycle-lens command"
         );
         assert!(
-            hits.iter().all(|b| crate::model_list::name_matches_query(b.help, "lens")
-                || crate::model_list::name_matches_query(&b.key_label(), "lens")),
+            hits.iter()
+                .all(|b| crate::model_list::name_matches_query(b.help, "lens")
+                    || crate::model_list::name_matches_query(&b.key_label(), "lens")),
             "every hit matches the query"
         );
         // A query no command satisfies yields nothing (no panic).

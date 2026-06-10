@@ -326,7 +326,8 @@ fn toast_overlay_is_all_ascii() {
     let buffer = render_with_toast(&app, 80, 24, Some("Copied unique_id"));
     assert_all_ascii(&buffer, "toast 80x24");
     // A toast wider than the screen budget exercises the truncation path.
-    let long = "Removed bookmark: some_extremely_long_model_name_that_cannot_possibly_fit_in_the_box";
+    let long =
+        "Removed bookmark: some_extremely_long_model_name_that_cannot_possibly_fit_in_the_box";
     assert_all_ascii(
         &render_with_toast(&app, 40, 24, Some(long)),
         "truncated toast 40x24",
