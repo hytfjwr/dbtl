@@ -518,7 +518,7 @@ fn event_loop(
         // lenses recolour the lineage but quote no coverage number).
         let coverage_s = if app.ui_state.lens() == LineageLens::Coverage {
             let (tested, total) = app.coverage_summary();
-            let pct = if total == 0 { 0 } else { tested * 100 / total };
+            let pct = (tested * 100).checked_div(total).unwrap_or(0);
             Some(format!("cov {pct}% ({tested}/{total})"))
         } else {
             None

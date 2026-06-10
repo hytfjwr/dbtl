@@ -46,13 +46,7 @@ pub(crate) fn draw_lineage_pane(
     // helper). It is empty when the lens is Off, so default titles are unchanged.
     let lens = lens_title_suffix(state.lens());
     let title = compose_lineage_title(
-        sel_name,
-        search,
-        view_label,
-        breadcrumb,
-        lens,
-        caret,
-        area.width,
+        sel_name, search, view_label, breadcrumb, lens, caret, area.width,
     );
     let block = Block::default()
         .borders(Borders::ALL)
@@ -137,11 +131,7 @@ pub(crate) fn draw_lineage_pane(
     // inset without smothering the content. Drawn AFTER the blit + markers — it
     // overwrites a corner of the interior, which is acceptable for an opt-in
     // overview. Writes ONLY to the frame buffer (never CharGrid).
-    if minimap
-        && edges.any()
-        && inner.width >= MM_W + 2
-        && inner.height >= MM_H + 2
-    {
+    if minimap && edges.any() && inner.width >= MM_W + 2 && inner.height >= MM_H + 2 {
         draw_minimap(
             frame,
             inner,
@@ -205,9 +195,10 @@ fn draw_minimap(
             let gx1 = gx0 + sx; // exclusive
             let gy0 = my as usize * sy;
             let gy1 = gy0 + sy; // exclusive
-            let occupied = lay.rects.values().any(|r| {
-                r.x < gx1 && gx0 < r.x + r.width && r.y < gy1 && gy0 < r.y + r.height
-            });
+            let occupied = lay
+                .rects
+                .values()
+                .any(|r| r.x < gx1 && gx0 < r.x + r.width && r.y < gy1 && gy0 < r.y + r.height);
             let sym = if occupied {
                 chrome.mm_node
             } else {
@@ -469,7 +460,11 @@ mod tests {
             on_path: true,
             ..Default::default()
         });
-        assert_eq!(both.fg, Some(theme::DANGER), "fg unchanged by the path band");
+        assert_eq!(
+            both.fg,
+            Some(theme::DANGER),
+            "fg unchanged by the path band"
+        );
         assert_eq!(
             both.bg,
             Some(theme::SURFACE_HI),
@@ -477,7 +472,10 @@ mod tests {
         );
 
         // No per-cell modifier on lineage cells (border-glyph doubling guard).
-        assert!(both.add_modifier.is_empty(), "lineage cells carry no modifier");
+        assert!(
+            both.add_modifier.is_empty(),
+            "lineage cells carry no modifier"
+        );
     }
 
     #[test]
@@ -501,7 +499,11 @@ mod tests {
             lens: LensTint::HeatMid,            // HEAT_MID
             ..Default::default()
         });
-        assert_eq!(tint_over_class.fg, Some(theme::HEAT_MID), "tint beats class");
+        assert_eq!(
+            tint_over_class.fg,
+            Some(theme::HEAT_MID),
+            "tint beats class"
+        );
 
         // The heat ramp distinct colours.
         assert_eq!(lens_color(LensTint::HeatLow), Some(theme::HEAT_LOW));
@@ -621,8 +623,16 @@ mod tests {
             ),
             selected_style(),
         );
-        assert_ne!(plain.style, selected_style(), "non-emph cell is not selected");
-        assert_eq!(plain.style.fg, Some(theme::LINEAGE_DIM), "dim fg via attr_style");
+        assert_ne!(
+            plain.style,
+            selected_style(),
+            "non-emph cell is not selected"
+        );
+        assert_eq!(
+            plain.style.fg,
+            Some(theme::LINEAGE_DIM),
+            "dim fg via attr_style"
+        );
     }
 
     #[test]

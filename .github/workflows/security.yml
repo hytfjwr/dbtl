@@ -1,0 +1,80 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # zizmor-action uploads SARIF results to the Security tab.
+      security-events: write
+      # Required by codeql-action/upload-sarif inside zizmor-action.
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@5f14fd08f7cf1cb1609c1e344975f152c7ee938d # v0.5.6
+        with:
+          version: "1.25.2"
+          # Fork PRs get a read-only token (no security-events: write), so the
+          # SARIF upload would always fail there; fall back to plain output.
+          advanced-security: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      # Built from source so the Go module checksum database verifies the
+      # binary's provenance (no curl|bash, no unpinned third-party action).
+      - name: Install actionlint
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Run actionlint
+        run: actionlint -color
+
+  pinact:
+    name: pinact
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install pinact
+        run: |
+          go install github.com/suzuki-shunsuke/pinact/v4/cmd/pinact@v4.1.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # --verify also checks each pinned SHA matches its trailing version
+      # comment (catches a lying `# vX.Y.Z` next to a malicious SHA).
+      - name: Verify all actions are SHA-pinned
+        run: pinact run --check --verify
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

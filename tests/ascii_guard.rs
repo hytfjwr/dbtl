@@ -64,7 +64,7 @@ fn render_with_toast(app: &App, width: u16, height: u16, toast: Option<&str>) ->
     );
     let cov_s = if app.ui_state.lens() == dbtl::ui::LineageLens::Coverage {
         let (tested, total) = app.coverage_summary();
-        let pct = if total == 0 { 0 } else { tested * 100 / total };
+        let pct = (tested * 100).checked_div(total).unwrap_or(0);
         Some(format!("cov {pct}% ({tested}/{total})"))
     } else {
         None
@@ -326,7 +326,8 @@ fn toast_overlay_is_all_ascii() {
     let buffer = render_with_toast(&app, 80, 24, Some("Copied unique_id"));
     assert_all_ascii(&buffer, "toast 80x24");
     // A toast wider than the screen budget exercises the truncation path.
-    let long = "Removed bookmark: some_extremely_long_model_name_that_cannot_possibly_fit_in_the_box";
+    let long =
+        "Removed bookmark: some_extremely_long_model_name_that_cannot_possibly_fit_in_the_box";
     assert_all_ascii(
         &render_with_toast(&app, 40, 24, Some(long)),
         "truncated toast 40x24",
