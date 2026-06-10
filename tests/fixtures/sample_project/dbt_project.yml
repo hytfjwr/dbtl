@@ -1,0 +1,18 @@
+name: sample
+version: "1.0.0"
+config-version: 2
+profile: sample
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+snapshot-paths: ["snapshots"]
+
+# Directory-hierarchical configs: dbt resolves `+materialized` by path, with
+# more specific directories winning. The source loader must honour this tree
+# (precedence: in-file config() > schema.yml config > this tree > default view).
+models:
+  sample:
+    marts:
+      +materialized: table
+    legacy:
+      +enabled: false

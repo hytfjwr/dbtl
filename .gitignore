@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+.claude/
+
+# dbt artifacts under the committed sample_project fixture (make regen-sample-manifest)
+tests/fixtures/sample_project/target/
+tests/fixtures/sample_project/logs/
+tests/fixtures/sample_project/.user.yml

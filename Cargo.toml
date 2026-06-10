@@ -1,0 +1,33 @@
+[package]
+name = "dbtl"
+version = "0.1.0"
+edition = "2021"
+description = "A terminal UI for exploring dbt model lineage as ASCII art"
+license = "MIT"
+repository = "https://github.com/hytfjwr/dbtl"
+keywords = ["dbt", "tui", "lineage", "terminal", "data"]
+categories = ["command-line-utilities", "visualization"]
+
+[lib]
+name = "dbtl"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dbtl"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+ratatui = "0.30.0"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+# preserve_order keeps column definition order from the manifest (its `Map`
+# becomes an `IndexMap`), so the structure view shows columns as authored.
+serde_json = { version = "1", features = ["preserve_order"] }
+# Parses dbt_project.yml + schema.yml for the source loader (no compiled manifest).
+serde_yaml = "0.9"
+# Status-bar segment width measurement (src/ui/render.rs) AND the ascii_guard test
+# (data cells that are unambiguously WIDE render fine everywhere; only
+# ambiguous-width chrome is banned). A normal dependency so `src/` can use it.
+unicode-width = "0.2"

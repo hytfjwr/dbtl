@@ -1,0 +1,14 @@
+version: 2
+
+models:
+  - name: fct_orders
+    description: "Order facts"
+    columns:
+      - name: id
+        data_tests:
+          - not_null
+  - name: dim_customers
+    description: "Customer dimension"
+    config:
+      # The in-file config (incremental) must win over this schema value.
+      materialized: table
