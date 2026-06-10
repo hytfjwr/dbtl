@@ -39,6 +39,7 @@ use ratatui::DefaultTerminal;
 #[derive(Parser, Debug)]
 #[command(
     name = "dbtl",
+    version,
     about = "Browse dbt model lineage from a manifest or project source"
 )]
 struct Cli {
