@@ -118,6 +118,17 @@ fn run(cli: &Cli) -> Result<()> {
         prev_hook(info);
     }));
 
+    // Source mode infers lineage from regex-parsed SQL (no Jinja rendering), so
+    // macro-generated refs and the like are invisible — recommend the compiled
+    // manifest up front. One-shot: the toast shows on the first frames only.
+    if app.is_source_mode() {
+        app.set_notice(if find_dbt().is_some() {
+            "Source mode: lineage is inferred - press P to run dbt parse"
+        } else {
+            "Source mode: lineage is inferred (a compiled manifest is exact)"
+        });
+    }
+
     // The --watch poller: baseline the on-disk stamp before the loop starts so
     // only LATER edits trigger a reload.
     let mut watch = cli.watch.then(|| {
@@ -603,10 +614,20 @@ fn event_loop(
                                 | Action::ResetView
                                 | Action::Reload
                                 | Action::ToggleListPane
+                                | Action::DbtParse
                         );
                         let outcome = apply_action(app, action);
                         for effect in outcome.effects {
                             run_effect(terminal, app, effect)?;
+                        }
+                        // An effect can swap the data source (dbt parse adopts
+                        // the manifest); re-baseline the watch poller so it
+                        // follows the NEW origin instead of the stale one.
+                        if let Some(w) = watch.as_mut() {
+                            let (root, recursive) = app.watch_root();
+                            if w.root != root || w.recursive != recursive {
+                                *w = Watch::new(root.to_path_buf(), recursive);
+                            }
                         }
                         if outcome.quit {
                             return Ok(());
@@ -717,8 +738,141 @@ fn run_effect(terminal: &mut DefaultTerminal, app: &mut App, effect: Effect) -> 
                 app.set_notice(format!("Export failed: {path}"));
             }
         }
+        Effect::DbtParse => run_dbt_parse(terminal, app)?,
     }
     Ok(())
+}
+
+/// Run `dbt parse` in the project root and adopt the regenerated
+/// `target/manifest.json` as the data source. Every failure (no dbt on PATH, no
+/// project file, non-zero exit, missing/corrupt manifest) keeps the TUI running
+/// on the current data and reports via the notice toast.
+///
+/// The TUI is suspended around the subprocess (same dance as `$EDITOR`) so
+/// dbt's own progress/error output is visible while it runs.
+fn run_dbt_parse(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
+    let Some(dbt) = find_dbt() else {
+        app.set_notice("dbt not found in PATH");
+        return Ok(());
+    };
+    let root = app.project_root().to_path_buf();
+    if !root.join("dbt_project.yml").is_file() {
+        app.set_notice(format!("No dbt_project.yml in {}", root.display()));
+        return Ok(());
+    }
+
+    // Leave the TUI exactly like the editor suspend; always re-init even if
+    // the subprocess failed, or the terminal stays corrupted.
+    set_keyboard_enhancement(false);
+    set_mouse_capture(false);
+    ratatui::restore();
+    println!("dbtl: running `dbt parse` in {} ...", root.display());
+    let status = dbt_command(&dbt).arg("parse").current_dir(&root).status();
+    *terminal = ratatui::try_init().context("failed to re-init terminal after dbt parse")?;
+    set_keyboard_enhancement(true);
+    set_mouse_capture(true);
+    let _ = terminal.clear();
+
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(_) => {
+            app.set_notice("dbt parse failed (kept current data)");
+            return Ok(());
+        }
+        Err(_) => {
+            app.set_notice("Failed to launch dbt (kept current data)");
+            return Ok(());
+        }
+    }
+    let manifest = root.join("target").join("manifest.json");
+    if !manifest.is_file() {
+        app.set_notice("dbt parse wrote no target/manifest.json");
+        return Ok(());
+    }
+    // On a load error `adopt_manifest` restores the previous source, so the
+    // app keeps running on the pre-parse data.
+    let note = match app.adopt_manifest(manifest) {
+        Ok(()) => "dbt parse OK: now reading target/manifest.json",
+        Err(_) => "dbt parse OK but the manifest failed to load (kept current data)",
+    };
+    app.set_notice(note);
+    Ok(())
+}
+
+/// Locate the `dbt` executable on `PATH`, cross-platform. Returns the full
+/// path so the caller can run it without re-resolving (and so Windows `.bat`/
+/// `.cmd` launchers can be routed through `cmd /C`).
+fn find_dbt() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    find_in_path_dirs("dbt", std::env::split_paths(&path))
+}
+
+/// PATH-lookup core, parameterized over the directory list so tests never
+/// mutate the process-global `PATH` (env mutation races parallel tests).
+fn find_in_path_dirs(name: &str, dirs: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    for dir in dirs {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        for cand in candidate_names(name) {
+            let p = dir.join(&cand);
+            if is_executable(&p) {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// The filenames that count as "the `name` command" on this platform: the bare
+/// name on Unix; on Windows, `name` + each `PATHEXT` extension (`dbt.exe`,
+/// `dbt.cmd`, …) the way `where` resolves commands.
+#[cfg(not(windows))]
+fn candidate_names(name: &str) -> Vec<String> {
+    vec![name.to_string()]
+}
+
+#[cfg(windows)]
+fn candidate_names(name: &str) -> Vec<String> {
+    let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    exts.split(';')
+        .filter(|e| !e.is_empty())
+        .map(|e| format!("{name}{}", e.to_ascii_lowercase()))
+        .collect()
+}
+
+/// Whether `path` is an executable file. Unix checks the execute bits (a
+/// plain data file named `dbt` on PATH is not a command); Windows has no
+/// execute bit — the `PATHEXT` extension (already applied by
+/// [`candidate_names`]) is what marks executability there.
+#[cfg(unix)]
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(windows)]
+fn is_executable(path: &std::path::Path) -> bool {
+    path.is_file()
+}
+
+/// Build the `Command` for a resolved dbt executable. On Windows, `.bat`/`.cmd`
+/// launchers (common for pip-installed tools) cannot be spawned directly by
+/// `CreateProcess` — route them through `cmd /C`.
+fn dbt_command(exe: &std::path::Path) -> Command {
+    #[cfg(windows)]
+    {
+        let ext = exe
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase());
+        if matches!(ext.as_deref(), Some("bat" | "cmd")) {
+            let mut c = Command::new("cmd");
+            c.arg("/C").arg(exe);
+            return c;
+        }
+    }
+    Command::new(exe)
 }
 
 /// Suspend the TUI, open `path` in `$VISUAL`/`$EDITOR` (default `vi`), then
@@ -799,6 +953,31 @@ mod tests {
     fn restore_is_idempotent_and_tty_free() {
         ratatui::restore();
         ratatui::restore();
+    }
+
+    #[test]
+    fn find_in_path_dirs_resolves_executables_only() {
+        let dir = std::env::temp_dir().join(format!("dbtl_path_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join(if cfg!(windows) { "dbt.exe" } else { "dbt" });
+        std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+
+        #[cfg(unix)]
+        {
+            // Without the execute bit, a file named `dbt` is data, not a command.
+            assert_eq!(find_in_path_dirs("dbt", [dir.clone()]), None);
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert_eq!(find_in_path_dirs("dbt", [dir.clone()]), Some(exe));
+        // A dir without the command (and empty path entries) yields None.
+        assert_eq!(
+            find_in_path_dirs("dbt", [PathBuf::new(), dir.join("missing")]),
+            None
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

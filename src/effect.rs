@@ -15,4 +15,9 @@ pub enum Effect {
     /// Write `contents` to `path` (relative to the cwd). Used by the lineage
     /// export; overwrites an existing file like a shell redirect would.
     WriteFile { path: String, contents: String },
+    /// Suspend the TUI and run `dbt parse` in the project root, then adopt the
+    /// regenerated `target/manifest.json` as the data source (full-fidelity
+    /// lineage). The loop resolves the `dbt` executable from `PATH` and
+    /// surfaces every failure on the notice channel.
+    DbtParse,
 }
