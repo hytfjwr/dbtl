@@ -1,0 +1,92 @@
+name: Open release PR
+
+# One-click release, step 1: bump the version on a release/vX.Y.Z branch and
+# open a PR. Merging that PR triggers release.yml, which tags, builds, and
+# publishes. Uses RELEASE_GITHUB_TOKEN (a fine-grained PAT) instead of
+# GITHUB_TOKEN because PRs created by GITHUB_TOKEN never trigger CI, so the
+# required status checks would never report and the PR could not be merged.
+on:
+  workflow_dispatch:
+    inputs:
+      level:
+        description: "Version bump level"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      version:
+        description: "Explicit version (overrides level, e.g. 0.2.0)"
+        required: false
+
+permissions: {}
+
+jobs:
+  bump:
+    name: Bump version and open PR
+    runs-on: ubuntu-latest
+    permissions: {}
+    env:
+      RELEASE_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+    steps:
+      - name: Check token
+        run: |
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "::error::RELEASE_GITHUB_TOKEN is not set. Create a fine-grained PAT (Contents + Pull requests read/write on this repo, Contents read/write on hytfjwr/homebrew-tap) and add it as a repository secret. See RELEASING.md."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+
+      - name: Bump version
+        id: bump
+        env:
+          INPUT_LEVEL: ${{ inputs.level }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          current=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          if [ -n "$INPUT_VERSION" ]; then
+            new="$INPUT_VERSION"
+          else
+            IFS=. read -r major minor patch <<< "$current"
+            case "$INPUT_LEVEL" in
+              major) new="$((major + 1)).0.0" ;;
+              minor) new="${major}.$((minor + 1)).0" ;;
+              *)     new="${major}.${minor}.$((patch + 1))" ;;
+            esac
+          fi
+          if ! printf '%s' "$new" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Invalid version: $new"
+            exit 1
+          fi
+          sed -i "0,/^version = \"${current}\"\$/s//version = \"${new}\"/" Cargo.toml
+          cargo update --workspace
+          echo "Bumped ${current} -> ${new}"
+          echo "version=$new" >> "$GITHUB_OUTPUT"
+
+      - name: Push branch and open PR
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+          GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+        run: |
+          branch="release/v${VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore: bump version to ${VERSION}"
+          git push "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${branch}"
+          gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base main \
+            --head "$branch" \
+            --title "release: v${VERSION}" \
+            --body "Bumps the version to ${VERSION}.
+
+          Merging this PR automatically tags \`v${VERSION}\`, builds the release binaries, publishes the GitHub release, and updates the Homebrew tap (see \`.github/workflows/release.yml\`)."
