@@ -16,7 +16,7 @@ A terminal UI for dbt model lineage — no compile, no browser.
 
 ```
 ╭Seed────────────────────╮   ╭View───────────────────╮   ╭View────────────────────╮
-│ source_datetime_policy │──▶│ stg_payment__shoppers │──▶│ int_shoppers__enriched │
+│ source_datetime_policy │──▶│ stg_payment__shoppers │──▶│ int_shoppers__combined │
 ╰────────────────tests:4─╯  │╰───────────────tests:5─╯   ╰────────────────────────╯
                             │
 ╭Source────╮                │

@@ -91,15 +91,15 @@ fn group_first_and_last_names_are_frozen() {
     assert_eq!(
         ends("intermediate"),
         (
-            "int_delivery_classifications__enriched".into(),
-            "int_suppliers__enriched".into()
+            "int_delivery_lanes__combined".into(),
+            "int_suppliers__combined".into()
         )
     );
     assert_eq!(
         ends("marts"),
         (
-            "dim_delivery_classifications".into(),
-            "wt_delivery_shopper_monthly_visits".into()
+            "dim_delivery_lanes".into(),
+            "rpt_delivery_shopper_monthly_visits".into()
         )
     );
     assert_eq!(ends("utilities"), ("pos_cat".into(), "pos_txn".into()));
@@ -387,7 +387,7 @@ fn detail_modal_impact_line_targets_the_cursored_node_not_the_root() {
 
     let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
     // Root a model whose upstream INCLUDES the shoppers source.
-    app.select_by_unique_id("model.jaffle_finance.int_shoppers__enriched");
+    app.select_by_unique_id("model.jaffle_finance.int_shoppers__combined");
     app.ui_state.set_focus(Focus::RightPane);
     // Put the lineage cursor onto the shoppers source (the deterministic path the
     // event loop uses for a click on a non-selectable node — it moves the cursor
@@ -1489,7 +1489,7 @@ fn lineage_title_omits_body_when_breadcrumb_present_but_keeps_view_and_lens() {
 
     let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
     app.select_by_unique_id("model.jaffle_finance.fct_subscription_process");
-    app.jump_to("model.jaffle_finance.wt_delivery_base_metrics");
+    app.jump_to("model.jaffle_finance.rpt_delivery_base_metrics");
     apply_action(&mut app, Action::ToggleUpstream); // non-default view label
     apply_action(&mut app, Action::CycleLens); // Off → Coverage
     assert_eq!(app.ui_state.lens(), LineageLens::Coverage);
@@ -1506,9 +1506,9 @@ fn lineage_title_omits_body_when_breadcrumb_present_but_keeps_view_and_lens() {
     let bc = title
         .find("fct_subscription_process")
         .expect("previous root in breadcrumb");
-    // The current root (wt_delivery_base_metrics) appears exactly ONCE in the row.
+    // The current root (rpt_delivery_base_metrics) appears exactly ONCE in the row.
     assert_eq!(
-        title.matches("wt_delivery_base_metrics").count(),
+        title.matches("rpt_delivery_base_metrics").count(),
         1,
         "the current root appears exactly once in the title row, got {title:?}"
     );
@@ -1540,7 +1540,7 @@ fn lineage_title_keeps_violation_lens_suffix_for_long_chain_at_80_cols() {
     app.select_by_unique_id("model.jaffle_finance.fct_subscription_process");
     // A multi-hop chain ending on the long-named snapshot, so the full trail is
     // far wider than 80 cols.
-    app.jump_to("model.jaffle_finance.wt_delivery_base_metrics");
+    app.jump_to("model.jaffle_finance.rpt_delivery_base_metrics");
     app.jump_to("model.jaffle_finance.fct_delivery_monthly_snapshot");
     // Off -> Coverage -> DegreeHeat -> Layer -> LayerViolation (the longest suffix).
     for _ in 0..4 {

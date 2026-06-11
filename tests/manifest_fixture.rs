@@ -77,7 +77,7 @@ fn closure_downstream_only_shoppers_source_multihop() {
     let start = "source.jaffle_finance.dev_lake_jaffle_payment.shoppers";
     let expected_down = set(&[
         "model.jaffle_finance.stg_payment__shoppers",
-        "model.jaffle_finance.int_shoppers__enriched",
+        "model.jaffle_finance.int_shoppers__combined",
     ]);
     assert!(
         dag.upstream(start).is_empty(),
@@ -98,7 +98,7 @@ fn closure_both_stg_payment_shoppers() {
         "seed.jaffle_finance.source_datetime_policy",
         "source.jaffle_finance.dev_lake_jaffle_payment.shoppers",
     ]);
-    let expected_down = set(&["model.jaffle_finance.int_shoppers__enriched"]);
+    let expected_down = set(&["model.jaffle_finance.int_shoppers__combined"]);
     assert_eq!(
         dag.upstream(start),
         expected_up,
@@ -119,12 +119,12 @@ fn closure_deep_multihop_fct_subscription_process() {
         "model.jaffle_finance.dim_fiscal_years",
         "model.jaffle_finance.dim_supplier_departments",
         "model.jaffle_finance.dim_suppliers",
-        "model.jaffle_finance.dim_delivery_classifications",
-        "model.jaffle_finance.int_fiscal_years__enriched",
-        "model.jaffle_finance.int_supplier_departments__enriched",
-        "model.jaffle_finance.int_suppliers__enriched",
-        "model.jaffle_finance.int_delivery_classifications__enriched",
-        "model.jaffle_finance.int_subscriptions__enriched",
+        "model.jaffle_finance.dim_delivery_lanes",
+        "model.jaffle_finance.int_fiscal_years__combined",
+        "model.jaffle_finance.int_supplier_departments__combined",
+        "model.jaffle_finance.int_suppliers__combined",
+        "model.jaffle_finance.int_delivery_lanes__combined",
+        "model.jaffle_finance.int_subscriptions__combined",
         "model.jaffle_finance.stg_finance__fiscal_years",
         "model.jaffle_finance.stg_masterdata__companies",
         "model.jaffle_finance.stg_masterdata__deliveries",
@@ -134,7 +134,7 @@ fn closure_deep_multihop_fct_subscription_process() {
         "model.jaffle_finance.stg_payment__subscriptions",
         "model.jaffle_finance.stg_payment__warehouses",
         "seed.jaffle_finance.source_datetime_policy",
-        "snapshot.jaffle_finance.delivery_classifications_snapshot",
+        "snapshot.jaffle_finance.delivery_lanes_snapshot",
         "source.jaffle_finance.dev_lake_jaffle_finance.fiscal_years",
         "source.jaffle_finance.dev_lake_jaffle_masterdata.companies",
         "source.jaffle_finance.dev_lake_jaffle_masterdata.deliveries",
@@ -146,7 +146,7 @@ fn closure_deep_multihop_fct_subscription_process() {
     ]);
     let expected_down = set(&[
         "model.jaffle_finance.fct_delivery_monthly_snapshot",
-        "model.jaffle_finance.wt_delivery_base_metrics",
+        "model.jaffle_finance.rpt_delivery_base_metrics",
     ]);
     assert_eq!(dag.upstream(start).len(), 27, "fct upstream count");
     assert_eq!(dag.upstream(start), expected_up, "fct upstream set");

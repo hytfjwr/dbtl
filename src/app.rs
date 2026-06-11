@@ -2103,12 +2103,12 @@ mod tests {
         // Drive the public API: each jump_to pushes the prior root onto `back`.
         let mut a = app();
         a.select_by_unique_id("model.jaffle_finance.fct_subscription_process");
-        // fct → wt_delivery_base_metrics → fct_delivery_monthly_snapshot
-        a.jump_to("model.jaffle_finance.wt_delivery_base_metrics");
+        // fct → rpt_delivery_base_metrics → fct_delivery_monthly_snapshot
+        a.jump_to("model.jaffle_finance.rpt_delivery_base_metrics");
         a.jump_to("model.jaffle_finance.fct_delivery_monthly_snapshot");
         assert_eq!(
             a.breadcrumb(200).as_deref(),
-            Some("fct_subscription_process > wt_delivery_base_metrics > fct_delivery_monthly_snapshot"),
+            Some("fct_subscription_process > rpt_delivery_base_metrics > fct_delivery_monthly_snapshot"),
             "breadcrumb = back history names then the current root"
         );
     }
@@ -2122,13 +2122,13 @@ mod tests {
             "model.jaffle_finance.pos_txn".into(),
             "model.jaffle_finance.pos_pay".into(),
             "model.jaffle_finance.stg_payment__shoppers".into(),
-            "model.jaffle_finance.int_shoppers__enriched".into(),
+            "model.jaffle_finance.int_shoppers__combined".into(),
         ];
         a.select_by_unique_id("model.jaffle_finance.fct_subscription_process");
         // 3 newest history (pos_pay, stg…, int…) + root; pos_txn is dropped.
         assert_eq!(
             a.breadcrumb(200).as_deref(),
-            Some("pos_pay > stg_payment__shoppers > int_shoppers__enriched > fct_subscription_process"),
+            Some("pos_pay > stg_payment__shoppers > int_shoppers__combined > fct_subscription_process"),
         );
     }
 
@@ -2250,7 +2250,7 @@ mod tests {
             "selected node tagged + marked"
         );
         assert!(
-            text.contains("\"int_shoppers__enriched (view)\""),
+            text.contains("\"int_shoppers__combined (view)\""),
             "downstream node present"
         );
         assert!(
@@ -2259,7 +2259,7 @@ mod tests {
         );
         // An edge line uses sanitized ids.
         assert!(
-            text.contains("model_jaffle_finance_stg_payment__shoppers --> model_jaffle_finance_int_shoppers__enriched"),
+            text.contains("model_jaffle_finance_stg_payment__shoppers --> model_jaffle_finance_int_shoppers__combined"),
             "downstream edge present:\n{text}"
         );
     }
@@ -2350,7 +2350,7 @@ mod tests {
         assert!(text.contains("## Downstream (blast radius) (1)\n"));
         assert!(text.contains("## Upstream (2)\n"));
         assert!(
-            text.contains("- int_shoppers__enriched\n"),
+            text.contains("- int_shoppers__combined\n"),
             "downstream member listed: {text}"
         );
         // Deterministic: a second yank is byte-identical.
@@ -2638,10 +2638,10 @@ mod tests {
         let mut a = app();
         a.select_by_unique_id("model.jaffle_finance.stg_payment__shoppers");
         let start = a.selected_unique_id().unwrap();
-        a.jump_to("model.jaffle_finance.int_shoppers__enriched");
+        a.jump_to("model.jaffle_finance.int_shoppers__combined");
         assert_eq!(
             a.selected_unique_id().as_deref(),
-            Some("model.jaffle_finance.int_shoppers__enriched")
+            Some("model.jaffle_finance.int_shoppers__combined")
         );
         a.history_back();
         assert_eq!(
@@ -2652,7 +2652,7 @@ mod tests {
         a.history_forward();
         assert_eq!(
             a.selected_unique_id().as_deref(),
-            Some("model.jaffle_finance.int_shoppers__enriched"),
+            Some("model.jaffle_finance.int_shoppers__combined"),
             "forward re-applies the jump"
         );
         // A new jump clears the forward stack.
@@ -3442,9 +3442,9 @@ mod tests {
     // ---- Step B: test-coverage lens ('t') + automatic root↔cursor path ----
 
     /// The one fixture node that is a coverage gap (testable, zero tests): the
-    /// delivery-classifications snapshot. All 45 models and all 7 seeds carry
+    /// delivery-lanes snapshot. All 45 models and all 7 seeds carry
     /// tests, so the snapshot is the sole gap (verified against the fixture).
-    const GAP_SNAPSHOT: &str = "snapshot.jaffle_finance.delivery_classifications_snapshot";
+    const GAP_SNAPSHOT: &str = "snapshot.jaffle_finance.delivery_lanes_snapshot";
 
     #[test]
     fn coverage_gap_predicate_over_resource_type_and_tests() {
@@ -3538,7 +3538,7 @@ mod tests {
         // The cursor can sit DOWNSTREAM of the root (not just upstream): the
         // undirected BFS must still connect them. Root a node and place the
         // cursor on a known downstream model.
-        let root = "model.jaffle_finance.int_delivery_classifications__enriched";
+        let root = "model.jaffle_finance.int_delivery_lanes__combined";
         let down_model = "model.jaffle_finance.fct_delivery_monthly_snapshot";
         let mut a = app();
         a.select_by_unique_id(root);
@@ -3634,11 +3634,11 @@ mod tests {
         // Fixture-anchored buckets (computed, not guessed): pos_files__assignment
         // has 16 transitive downstream (HeatHigh), stg_payment__suppliers has 5
         // (HeatMid), fct_subscription_process has 2 (HeatLow), and the leaf
-        // int_shoppers__enriched has 0 (None).
+        // int_shoppers__combined has 0 (None).
         let mut a = app();
         let hub = "model.jaffle_finance.pos_files__assignment";
         let mid = "model.jaffle_finance.stg_payment__suppliers";
-        let leaf = "model.jaffle_finance.int_shoppers__enriched";
+        let leaf = "model.jaffle_finance.int_shoppers__combined";
         assert_eq!(a.dag.downstream(hub).len(), 16, "fixture hub blast radius");
         assert_eq!(a.dag.downstream(mid).len(), 5, "fixture mid blast radius");
         assert_eq!(a.dag.downstream(FCT).len(), 2, "fixture FCT blast radius");
@@ -3666,7 +3666,7 @@ mod tests {
         // Each layer maps to its own tint; a source keeps its class colour (None).
         let mut a = app();
         let staging = "model.jaffle_finance.stg_payment__shoppers";
-        let inter = "model.jaffle_finance.int_shoppers__enriched";
+        let inter = "model.jaffle_finance.int_shoppers__combined";
         let marts = FCT; // fct_subscription_process is a marts model
         assert_eq!(
             tint_of(&mut a, LineageLens::Layer, staging),
