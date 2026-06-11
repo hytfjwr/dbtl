@@ -1,14 +1,79 @@
 name: Release
 
+# Three entry points, one pipeline:
+#   - a merged release/vX.Y.Z PR (opened by bump.yml): the normal flow. Reads
+#     the version from Cargo.toml on the merge commit, creates the tag, then
+#     builds and releases.
+#   - workflow_dispatch ("Run workflow" button): same, from the chosen ref.
+#     Also the retry path — if the tag exists but no release was published
+#     (an earlier run died mid-way), it resumes instead of refusing.
+#   - tag push (v*): escape hatch. Fails fast if the tag does not match
+#     Cargo.toml's version, so a tag cut without a version bump can never
+#     ship a binary that reports the wrong --version.
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
 
 permissions: {}
 
 jobs:
+  prepare:
+    name: Resolve release tag
+    # For pull_request events, only merged release/* PRs start a release.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.merged == true &&
+       startsWith(github.event.pull_request.head.ref, 'release/'))
+    runs-on: ubuntu-latest
+    permissions:
+      # Create the release tag.
+      contents: write
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # On a merged PR, read Cargo.toml from the merge commit on main.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha || github.ref }}
+          persist-credentials: false
+
+      - name: Resolve tag from Cargo.toml
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          tag="v${version}"
+          sha="${MERGE_SHA:-$GITHUB_SHA}"
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            if [ "$GITHUB_REF_NAME" != "$tag" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $version. Bump Cargo.toml (and Cargo.lock) first, then re-tag."
+              exit 1
+            fi
+          elif gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+            # Tag exists. Refuse only if its release is already published;
+            # otherwise an earlier run died mid-way — resume it.
+            if [ "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
+              echo "::error::Tag $tag already exists and its release is published. Bump the version (run the 'Open release PR' workflow) before releasing."
+              exit 1
+            fi
+            echo "Tag $tag exists without a published release — resuming."
+          else
+            gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${tag}" -f sha="$sha"
+            echo "Created tag $tag at $sha"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build (${{ matrix.target }})
+    needs: prepare
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -28,6 +93,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
+          ref: ${{ needs.prepare.outputs.tag }}
           persist-credentials: false
 
       - name: Install Rust toolchain
@@ -44,8 +110,9 @@ jobs:
       - name: Package
         env:
           TARGET: ${{ matrix.target }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          staging="dbtl-${GITHUB_REF_NAME}-${TARGET}"
+          staging="dbtl-${TAG}-${TARGET}"
           mkdir "$staging"
           cp "target/${TARGET}/release/dbtl" LICENSE README.md "$staging/"
           tar -czf "${staging}.tar.gz" "$staging"
@@ -59,7 +126,7 @@ jobs:
 
   release:
     name: Create release
-    needs: build
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     permissions:
       # gh release create / upload.
@@ -77,12 +144,100 @@ jobs:
           sha256sum dbtl-*.tar.gz > checksums.txt
           cat checksums.txt
 
-      - name: Create GitHub release
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          # Idempotent: a release may already exist (e.g. drafted from the UI,
+          # which also pushes the tag) — then just attach the assets to it.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+              dist/dbtl-*.tar.gz dist/checksums.txt
+          else
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" \
+              --generate-notes \
+              dist/dbtl-*.tar.gz dist/checksums.txt
+          fi
+
+  homebrew:
+    name: Update Homebrew tap
+    needs: [prepare, release]
+    runs-on: ubuntu-latest
+    permissions:
+      # gh release download (the tap push uses TAP_GITHUB_TOKEN instead).
+      contents: read
+    env:
+      TAP_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+      TAP_REPO: hytfjwr/homebrew-tap
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - name: Download checksums
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            dist/dbtl-*.tar.gz dist/checksums.txt
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::notice::RELEASE_GITHUB_TOKEN is not set — skipping the Homebrew tap update. Add a fine-grained PAT with contents:write on ${TAP_REPO} to enable it (see RELEASING.md)."
+            exit 0
+          fi
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern checksums.txt
+
+      - name: Update formula
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            exit 0
+          fi
+          sha_for() {
+            awk -v f="dbtl-${TAG}-$1.tar.gz" '$2 == f { print $1 }' checksums.txt
+          }
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          cat > dbtl.rb <<EOF
+          class Dbtl < Formula
+            desc "Terminal UI for exploring dbt model lineage as ASCII art"
+            homepage "https://github.com/${GITHUB_REPOSITORY}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "${base}/dbtl-${TAG}-aarch64-apple-darwin.tar.gz"
+                sha256 "$(sha_for aarch64-apple-darwin)"
+              end
+              on_intel do
+                url "${base}/dbtl-${TAG}-x86_64-apple-darwin.tar.gz"
+                sha256 "$(sha_for x86_64-apple-darwin)"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "${base}/dbtl-${TAG}-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "$(sha_for aarch64-unknown-linux-gnu)"
+              end
+              on_intel do
+                url "${base}/dbtl-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "$(sha_for x86_64-unknown-linux-gnu)"
+              end
+            end
+
+            def install
+              bin.install "dbtl"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/dbtl --version")
+            end
+          end
+          EOF
+          # Every sha256 line must have a value; an empty one means a missing asset.
+          if grep -q 'sha256 ""' dbtl.rb; then
+            echo "::error::Missing checksum for one of the targets"
+            exit 1
+          fi
+          GH_TOKEN="$TAP_TOKEN" gh api "repos/${TAP_REPO}/contents/Formula/dbtl.rb" --jq .sha > old_sha 2>/dev/null || true
+          args=(-f message="dbtl ${TAG}" -f content="$(base64 -w0 dbtl.rb)")
+          if [ -s old_sha ]; then
+            args+=(-f sha="$(cat old_sha)")
+          fi
+          GH_TOKEN="$TAP_TOKEN" gh api -X PUT "repos/${TAP_REPO}/contents/Formula/dbtl.rb" "${args[@]}"
