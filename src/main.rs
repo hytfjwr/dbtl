@@ -18,7 +18,7 @@ use clap::Parser;
 use dbtl::action::{dispatch, Action};
 use dbtl::app::{apply_action, App, LineageView};
 use dbtl::effect::Effect;
-use dbtl::layout::{layout_mode, GlyphMode, Layout};
+use dbtl::layout::{GlyphMode, Layout};
 use dbtl::ui::{
     draw, hit_test, lineage_content_rect, pane_interior, pane_rects, Focus, LineageLens, RenderCtx,
     StatusSegments,
@@ -413,28 +413,17 @@ fn event_loop(
         app.ui_state
             .ensure_visible(list_height, reveal_row, model_row, row_count);
 
-        // Recompute the lineage layout for the current selection (cheap), then
-        // size the lineage viewport exactly as `draw` will, so anchor/clamp
-        // matches the drawn window (the 2D display-row guarantee). The DISPLAY
+        // The lineage layout for the current selection — memoized in App, so an
+        // idle tick or a non-lineage keypress reuses the previous frame's
+        // subgraph + layout + styles instead of recomputing them. The DISPLAY
         // subgraph carries the lineage cursor as its `selected`, so the
-        // emphasis highlight and `selected_rect` below both track the cursor.
-        let mut lineage = {
-            let sg = app.lineage_display_subgraph();
-            if sg.nodes.is_empty() {
-                None
-            } else {
-                Some(layout_mode(&sg, app.glyph_mode))
-            }
-        };
-        // Stamp materialization colours onto the grid (a pure post-pass;
-        // layout() itself stays style-free and deterministic).
-        if let Some(lay) = lineage.as_mut() {
-            let styles = app.lineage_styles(lay);
-            lay.apply_node_styles(&styles);
-        }
+        // emphasis highlight and `selected_rect` below both track the cursor;
+        // the viewport is then sized exactly as `draw` will size it, so
+        // anchor/clamp matches the drawn window (the 2D display-row guarantee).
+        let lineage = app.styled_lineage_layout();
         let (view_w, view_h) = lineage_viewport(terminal, app.ui_state.list_visible())?;
         let cursor = app.lineage_cursor_uid();
-        if let Some(lay) = &lineage {
+        if let Some(lay) = lineage.as_deref() {
             // A lineage node-jump search anchors the viewport on the cycled match
             // (size-aware), overriding the usual selection-based anchor/clamp.
             // `current_lineage_match` is `None` for an empty query, so opening
@@ -550,7 +539,7 @@ fn event_loop(
         // string source is single and unit-testable.
         let impact_s = app.impact_status();
         {
-            let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, lineage.as_ref());
+            let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, lineage.as_deref());
             ctx.mode = &app.mode;
             ctx.status = status_note.as_deref();
             ctx.stats = Some(&app.stats);
@@ -637,7 +626,7 @@ fn event_loop(
                         }
                     }
                 }
-                Event::Mouse(me) => handle_mouse(app, me, lineage.as_ref(), area),
+                Event::Mouse(me) => handle_mouse(app, me, lineage.as_deref(), area),
                 _ => {}
             }
         }
