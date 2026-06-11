@@ -29,7 +29,8 @@ Key features:
 - **No `dbt compile` required.** Builds lineage straight from `dbt_project.yml` + model `.sql` (`ref()`/`source()`) + `schema.yml`. Uses `target/manifest.json` automatically when present.
 - **Single static binary, works over SSH.** Everything happens inside the terminal — no `dbt docs serve`, no browser.
 - **Navigate the graph, not just the list.** Move a cursor between lineage nodes, re-root on any model, filter by direction and depth, and walk your re-root history.
-- **Built for test-coverage and impact chores.** Coverage/blast-radius/layer lenses, a stats dashboard, untested-model cycling, and one-key export to Mermaid / Graphviz / Markdown impact reports.
+- **Built for test-coverage and impact chores.** Coverage/blast-radius/layer lenses (the layer lens also labels each column's layer along the pane border), a stats dashboard, untested-model cycling, and one-key export to Mermaid / Graphviz / Markdown impact reports.
+- **Trace a path, see a path.** Move the lineage cursor and the root↔cursor path lights up — nodes AND the connectors between them — while everything off-path dims. A compact mode (`v`) collapses boxes to one-row nodes for big graphs.
 
 ## Quick Start
 
@@ -95,7 +96,8 @@ Press `?` inside the app for the full list. Highlights:
 | `u` `d` `[` `]` `0` | Filter the lineage view (direction / depth / reset) |
 | `b` `f` | Back / forward in re-root history |
 | `t` | Cycle lineage lens (test coverage → blast-radius heat → layer → layer violation) |
-| `s` / `S` | SQL preview / project stats dashboard |
+| `v` | Toggle compact lineage (1-row nodes — fits ~2x more graph on screen) |
+| `s` / `S` | SQL preview (syntax-highlighted) / project stats dashboard |
 | `o` | Open the model's SQL in `$EDITOR` |
 | `m` `x` `c` | Copy lineage as Mermaid / Graphviz DOT / ASCII art |
 | `i` / `e` | Copy a Markdown impact report / write the diagram to a file |

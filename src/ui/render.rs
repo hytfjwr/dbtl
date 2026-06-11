@@ -95,6 +95,11 @@ pub struct RenderCtx<'a> {
     /// title adds its own `[..]`), appended to the list title. `None` (the
     /// default) leaves every title byte-identical.
     pub filter_label: Option<&'a str>,
+    /// Per-column layer annotations for the lineage pane's bottom border,
+    /// present exactly while the Layer lens is active (the loop computes them
+    /// via `App::layer_bands`). `None` (the default) draws nothing, so every
+    /// non-Layer render is untouched. Dag-free: plain precomputed data.
+    pub layer_bands: Option<&'a [super::LayerBand]>,
     /// The transient toast text (copy/bookmark/export/reload feedback), drawn
     /// as a small floating box at the TOP-RIGHT, above every pane and modal.
     /// The event loop owns its ~2.5s lifetime ([`App::take_notice`]
@@ -130,6 +135,7 @@ impl<'a> RenderCtx<'a> {
             segments: StatusSegments::default(),
             minimap: false,
             filter_label: None,
+            layer_bands: None,
             toast: None,
         }
     }
@@ -185,6 +191,7 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         ctx.breadcrumb,
         ctx.glyphs,
         ctx.minimap,
+        ctx.layer_bands,
     );
     draw_status(
         frame,

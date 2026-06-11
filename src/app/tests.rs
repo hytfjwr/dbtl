@@ -1529,6 +1529,180 @@ fn feature_toggle_stubs_are_safe_noops() {
 }
 
 #[test]
+fn path_edges_follow_cursor_and_edge_styles_dim_off_path() {
+    // Cursor home: no path edges, and the styled layout leaves every connector
+    // cell default (the frozen lens-off render). Cursor off-root: the path's
+    // edges are canonical (parent, child) keys present in the layout's
+    // edge_cells; their cells get the on_path band and every other edge dims.
+    let mut a = app();
+    a.select_by_unique_id(FCT);
+    assert!(
+        a.lineage_path_edges().is_empty(),
+        "cursor home: no path edges"
+    );
+    let lay = a.styled_lineage_layout().expect("non-empty lineage");
+    let plain_cell = lay.edge_cells.values().flatten().next().copied();
+    if let Some((x, y)) = plain_cell {
+        assert_eq!(
+            lay.grid.attr_at(x, y),
+            crate::CellAttr::default(),
+            "cursor home: connectors stay Plain"
+        );
+    }
+
+    a.ui_state.set_focus(Focus::RightPane);
+    apply_action(&mut a, Action::MoveLeft);
+    let path_edges = a.lineage_path_edges();
+    assert!(
+        !path_edges.is_empty(),
+        "off-root cursor produces path edges"
+    );
+    let lay = a.styled_lineage_layout().expect("non-empty lineage");
+    for key in &path_edges {
+        let cells = lay
+            .edge_cells
+            .get(key)
+            .unwrap_or_else(|| panic!("path edge {key:?} exists in edge_cells"));
+        for &(x, y) in cells {
+            let attr = lay.grid.attr_at(x, y);
+            assert!(attr.on_path, "path edge cell ({x},{y}) carries the band");
+            assert!(!attr.dimmed, "path edge cell is not dimmed");
+        }
+    }
+    // Some off-path edge exists in the FCT subgraph and dims. Skip cells shared
+    // with a path edge (siblings into one child share its arrowhead cell, and
+    // the path attr deliberately wins those).
+    let path_set: std::collections::HashSet<_> = path_edges.iter().collect();
+    let path_cells: std::collections::HashSet<(usize, usize)> = path_edges
+        .iter()
+        .filter_map(|k| lay.edge_cells.get(k))
+        .flatten()
+        .copied()
+        .collect();
+    let (x, y) = lay
+        .edge_cells
+        .iter()
+        .filter(|(k, _)| !path_set.contains(k))
+        .flat_map(|(_, cells)| cells)
+        .find(|c| !path_cells.contains(c))
+        .copied()
+        .expect("an off-path connector cell exists");
+    assert!(lay.grid.attr_at(x, y).dimmed, "off-path connector dims");
+}
+
+#[test]
+fn toggle_density_reshapes_the_cached_layout_and_the_yank() {
+    // `v` flips the density: the cached styled layout rebuilds 1-row boxes
+    // (density is part of the cache key) and the ASCII yank IS the pane's
+    // diagram, so it follows. Toggling back restores the 3-row geometry.
+    let mut a = app();
+    a.select_by_unique_id(FCT);
+    let tall = a.styled_lineage_layout().expect("lineage");
+    assert_eq!(tall.rects[FCT].height, 3, "default: comfortable boxes");
+    let tall_yank = a.lineage_ascii().expect("yank");
+
+    let out = apply_action(&mut a, Action::ToggleDensity);
+    assert!(!out.quit && out.effects.is_empty());
+    assert_eq!(a.ui_state.density(), crate::Density::Compact);
+    let flat = a.styled_lineage_layout().expect("lineage");
+    assert_eq!(flat.rects[FCT].height, 1, "compact: 1-row boxes");
+    assert!(
+        flat.grid.height() < tall.grid.height(),
+        "compact grid is shorter"
+    );
+    let flat_yank = a.lineage_ascii().expect("yank");
+    assert_ne!(flat_yank, tall_yank, "the yank follows the density");
+    assert_eq!(flat_yank, flat.grid.to_text(), "yank IS the pane's diagram");
+
+    apply_action(&mut a, Action::ToggleDensity);
+    assert_eq!(a.ui_state.density(), crate::Density::Comfortable);
+    assert_eq!(
+        a.styled_lineage_layout().expect("lineage").rects[FCT].height,
+        3,
+        "toggling back restores comfortable geometry"
+    );
+}
+
+#[test]
+fn compact_density_keeps_cursor_movement_and_path_highlight_working() {
+    // The spatial cursor and the path/edge highlight read the CACHED layout's
+    // geometry, which reshapes under compact density (1-row rects, attach row
+    // = the node's own row): h must still step one column upstream, and the
+    // path edges must still resolve to drawn connector cells carrying the band.
+    let mut a = app();
+    a.select_by_unique_id(FCT);
+    apply_action(&mut a, Action::ToggleDensity);
+    a.ui_state.set_focus(Focus::RightPane);
+
+    let lay = a.styled_lineage_layout().expect("lineage");
+    let root_col = lay.columns[FCT];
+    assert!(root_col > 0, "fct has upstream columns");
+    apply_action(&mut a, Action::MoveLeft);
+    let cur = a.lineage_cursor_uid().expect("cursor");
+    let lay = a.styled_lineage_layout().expect("lineage");
+    assert_eq!(
+        lay.columns[&cur],
+        root_col - 1,
+        "h steps one column upstream in compact too"
+    );
+    assert_eq!(lay.rects[&cur].height, 1, "compact rects stay 1-row");
+    let path_edges = a.lineage_path_edges();
+    assert!(!path_edges.is_empty(), "the path exists in compact mode");
+    for key in &path_edges {
+        let cells = &lay.edge_cells[key];
+        assert!(!cells.is_empty(), "compact connectors recorded for {key:?}");
+        for &(x, y) in cells {
+            assert!(lay.grid.attr_at(x, y).on_path, "band on compact connector");
+        }
+    }
+}
+
+#[test]
+fn layer_bands_label_unanimous_model_columns_only() {
+    // Every band's tint must agree with the Layer lens's per-node tint for the
+    // models in that column (the shared layer_tint mapping), bands are sorted
+    // by x (BTreeMap by column), and a band never appears for a column whose
+    // models disagree — or that holds no models at all.
+    let mut a = app();
+    a.select_by_unique_id(FCT);
+    let lay = a.styled_lineage_layout().expect("lineage");
+    let bands = a.layer_bands(&lay);
+    assert!(
+        !bands.is_empty(),
+        "the fct subgraph has unanimous model columns"
+    );
+    let xs: Vec<usize> = bands.iter().map(|b| b.x).collect();
+    let mut sorted = xs.clone();
+    sorted.sort_unstable();
+    assert_eq!(xs, sorted, "bands come in column order");
+    for band in &bands {
+        // Find the column's models and check unanimity against the band label.
+        let col_uids: Vec<&String> = lay
+            .rects
+            .iter()
+            .filter(|(_, r)| r.x == band.x)
+            .map(|(uid, _)| uid)
+            .collect();
+        let model_layers: Vec<&str> = col_uids
+            .iter()
+            .filter_map(|uid| a.dag.get(uid))
+            .filter(|n| n.resource_type == "model")
+            .map(|n| crate::model_list::first_dir(n).unwrap_or("other"))
+            .collect();
+        assert!(
+            !model_layers.is_empty(),
+            "a band implies models in the column"
+        );
+        assert!(
+            model_layers.iter().all(|l| *l == band.label),
+            "band {band:?} must be unanimous over {model_layers:?}"
+        );
+    }
+    // Determinism: two computations are identical.
+    assert_eq!(bands, a.layer_bands(&lay));
+}
+
+#[test]
 fn overlay_scroll_acts_only_inside_an_overlay() {
     let mut a = app();
     // In Selection mode, an overlay-scroll action is a no-op (no panic).

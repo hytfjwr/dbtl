@@ -93,6 +93,8 @@ pub enum Action {
     SortCycle,
     /// Toggle the lineage minimap.
     ToggleMinimap,
+    /// Toggle the lineage density (Comfortable 3-row boxes <-> Compact 1-row).
+    ToggleDensity,
     /// Copy the current lineage diagram to the clipboard as plain text (the
     /// same glyphs the pane draws).
     YankAscii,
@@ -415,6 +417,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('\''))], action: A::BookmarkCycle, help: "cycle bookmarks" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('.'))], action: A::SortCycle, help: "cycle list sort" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('M'))], action: A::ToggleMinimap, help: "toggle minimap" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('v'))], action: A::ToggleDensity, help: "toggle compact lineage" },
     KeyBinding { mode: M::Selection, triggers: &[Ctrl('p'), Super('p')], action: A::PaletteOpen, help: "command palette" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('c'))], action: A::YankAscii, help: "copy lineage as text diagram" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('C'))], action: A::YankSql, help: "copy raw SQL" },
@@ -832,6 +835,7 @@ mod tests {
             | Action::BookmarkCycle
             | Action::SortCycle
             | Action::ToggleMinimap
+            | Action::ToggleDensity
             | Action::YankAscii
             | Action::YankSql
             | Action::YankImpact
@@ -935,6 +939,7 @@ mod tests {
             Action::BookmarkCycle,
             Action::SortCycle,
             Action::ToggleMinimap,
+            Action::ToggleDensity,
             Action::YankAscii,
             Action::YankSql,
             Action::YankImpact,

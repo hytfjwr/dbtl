@@ -85,7 +85,11 @@ impl App {
         if sg.nodes.is_empty() {
             return None;
         }
-        Some(crate::layout_mode(&sg, self.glyph_mode).grid.to_text())
+        Some(
+            crate::layout_density(&sg, self.glyph_mode, self.ui_state.density())
+                .grid
+                .to_text(),
+        )
     }
 
     /// The selected node's raw (uncompiled) SQL, cloned from the `Dag::sql`

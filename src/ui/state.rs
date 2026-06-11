@@ -118,6 +118,11 @@ pub struct UiState {
     /// never through `reduce_selection`. Defaulting OFF keeps every existing
     /// lineage render test (whose goldens never toggle it) untouched.
     minimap_visible: bool,
+    /// The lineage box density (a pure view-pref like `lens`): Comfortable
+    /// 3-row boxes (the default — every existing render/golden is untouched)
+    /// or Compact 1-row `|name|` nodes for big-graph overviews. Toggled by
+    /// `Action::ToggleDensity` directly in `apply_action`.
+    density: crate::Density,
 }
 
 impl UiState {
@@ -134,6 +139,7 @@ impl UiState {
             lineage_scroll_y: 0,
             lens: LineageLens::default(),
             minimap_visible: false,
+            density: crate::Density::default(),
         }
     }
 
@@ -189,6 +195,21 @@ impl UiState {
     /// [`minimap_visible`](UiState::minimap_visible) next frame.
     pub fn toggle_minimap(&mut self) {
         self.minimap_visible = !self.minimap_visible;
+    }
+
+    /// The lineage box density.
+    pub fn density(&self) -> crate::Density {
+        self.density
+    }
+
+    /// Flip the lineage density (Comfortable <-> Compact). A pure view-pref
+    /// toggle like the minimap; the cached layout rebuilds next frame (density
+    /// is part of its key) and the loop force-anchors the reshaped diagram.
+    pub fn toggle_density(&mut self) {
+        self.density = match self.density {
+            crate::Density::Comfortable => crate::Density::Compact,
+            crate::Density::Compact => crate::Density::Comfortable,
+        };
     }
 
     /// Toggle the focused pane — a no-op while the list pane is hidden (the

@@ -345,7 +345,6 @@ fn scroll_markers_match_clipped_edges_on_the_border() {
     // The top `^` is nudged to the title-free right end of the top border; the
     // others keep their edge midpoints (mirrors `stamp_scroll_markers`).
     let rect = pane_rects(Rect::new(0, 0, w, h), true).lineage;
-    let mid_x = rect.x + rect.width / 2;
     let mid_y = rect.y + rect.height / 2;
     let right = rect.x + rect.width - 1;
     let bottom = rect.y + rect.height - 1;
@@ -372,9 +371,9 @@ fn scroll_markers_match_clipped_edges_on_the_border() {
         "top marker iff top-clipped"
     );
     assert_eq!(
-        sym(mid_x, bottom) == "▼",
+        sym(right - 1, bottom) == "▼",
         edges.bottom,
-        "bottom marker iff bottom-clipped"
+        "bottom marker iff bottom-clipped (right end, clear of the layer bands)"
     );
 }
 
@@ -448,4 +447,58 @@ fn selection_change_reanchors_to_new_node() {
     let r2 = emphasis_regions_in(&buf_txn, int_txn);
     assert_eq!(r2.len(), 1, "pos_txn: one emphasis region");
     assert_eq!(r2[0], "pos_txn", "re-anchored to the newly selected node");
+}
+
+#[test]
+fn layer_bands_stamp_column_labels_on_the_bottom_border() {
+    // With the Layer lens active and bands passed (as the loop does), the
+    // lineage pane's BOTTOM border carries each unanimous column's layer name
+    // at that column's x-range; without bands the border row stays chrome-only.
+    use dbtl::app::App;
+    use dbtl::{apply_action, Action};
+
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    app.select_by_unique_id(FCT);
+    apply_action(&mut app, Action::CycleLens); // Off -> Coverage
+    apply_action(&mut app, Action::CycleLens); // -> DegreeHeat
+    apply_action(&mut app, Action::CycleLens); // -> Layer
+    assert_eq!(app.ui_state.lens(), dbtl::ui::LineageLens::Layer);
+
+    let lay = app.styled_lineage_layout().expect("lineage");
+    let bands = app.layer_bands(&lay);
+    assert!(!bands.is_empty(), "precondition: bands exist for fct");
+
+    let (w, h) = (120u16, 30u16);
+    let backend = TestBackend::new(w, h);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    {
+        let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, Some(&lay));
+        ctx.layer_bands = Some(&bands);
+        terminal
+            .draw(|frame| draw(frame, &ctx))
+            .expect("draw must not panic");
+    }
+    let buffer = terminal.backend().buffer().clone();
+    // The lineage pane's bottom border row (status bar is the last row, the
+    // pane's bottom border sits right above it).
+    let lineage_rect = pane_rects(Rect::new(0, 0, w, h), true).lineage;
+    let bottom_y = lineage_rect.y + lineage_rect.height - 1;
+    let row: String = (lineage_rect.x..lineage_rect.x + lineage_rect.width)
+        .map(|x| {
+            buffer
+                .cell((x, bottom_y))
+                .map(|c| c.symbol().chars().next().unwrap_or(' '))
+                .unwrap_or(' ')
+        })
+        .collect();
+    // A band's label renders CLIPPED to its column's visible slice (and a
+    // scroll marker may claim one border cell), so assert that a meaningful
+    // prefix (>= 4 chars) of some band's label appears.
+    let labelled = bands
+        .iter()
+        .any(|b| b.label.len() >= 4 && row.contains(&b.label[..4]));
+    assert!(
+        labelled,
+        "a band-label prefix must appear on the bottom border, got {row:?}"
+    );
 }

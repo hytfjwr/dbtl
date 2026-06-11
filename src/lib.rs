@@ -27,8 +27,8 @@ pub use dag::{
 };
 pub use effect::Effect;
 pub use layout::{
-    anchor_offset, blit, clamp_offset, layout, layout_mode, CellAttr, CharGrid, GlyphMode, Layout,
-    LensTint, MaterializationClass, NodeRect,
+    anchor_offset, blit, clamp_offset, layout, layout_density, layout_mode, CellAttr, CharGrid,
+    Density, GlyphMode, Layout, LensTint, MaterializationClass, NodeRect,
 };
 pub use manifest::{
     load_manifest, RawConfig, RawDependsOn, RawManifest, RawNode, RawSource, RawTestMetadata,

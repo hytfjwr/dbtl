@@ -23,6 +23,25 @@ use super::{focus_border, selected_style, theme, title_style, Focus, LineageLens
 /// (Argument count: this is a private transcription helper fed straight from
 /// `RenderCtx`'s fields — the public bundling already happened there, so a
 /// second bundle struct would just mirror `RenderCtx`.)
+/// One column's layer annotation for the lineage pane's bottom-border band:
+/// the column's grid `x`/`width`, the human label (the dbt layer dir, e.g.
+/// `staging`), and the SEMANTIC tint (the same `LensTint::Layer*` the Layer
+/// lens paints nodes with, so the band and the boxes always agree on colour).
+/// Produced Dag-side by `App::layer_bands` ONLY for columns whose models
+/// unanimously share one layer — a mixed column shows no band rather than a
+/// lie. Travels through `RenderCtx` (Dag-free: plain data).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayerBand {
+    /// The column's left edge in grid coordinates.
+    pub x: usize,
+    /// The column's width (its widest box).
+    pub width: usize,
+    /// The layer label drawn into the border (clipped to the column width).
+    pub label: String,
+    /// The layer's lens tint (mapped to a colour by the render layer).
+    pub tint: LensTint,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_lineage_pane(
     frame: &mut Frame,
@@ -35,6 +54,7 @@ pub(crate) fn draw_lineage_pane(
     breadcrumb: Option<&str>,
     glyphs: crate::GlyphMode,
     minimap: bool,
+    layer_bands: Option<&[LayerBand]>,
 ) {
     let chrome = super::chrome(glyphs);
     let sel_name = list
@@ -115,6 +135,21 @@ pub(crate) fn draw_lineage_pane(
     // each clipped border edge so partially-drawn boxes read as "scroll this way"
     // (h/l, ↑/↓) rather than a corrupt render. Computed from the SAME content-rect
     // size that was blitted, so a marker appears exactly when cells are unshown.
+    // Layer bands (Layer lens only — the loop passes `Some` exactly then):
+    // each unanimous column's layer name, stamped into the BOTTOM border at
+    // the column's x-range, scroll-following the content window. Drawn before
+    // the scroll markers so a clipped-bottom marker wins its one cell.
+    if let Some(bands) = layer_bands {
+        stamp_layer_bands(
+            frame,
+            area,
+            target,
+            state.lineage_scroll_x(),
+            content_w,
+            bands,
+        );
+    }
+
     let edges = super::clip_edges(
         lay.grid.width(),
         lay.grid.height(),
@@ -233,6 +268,47 @@ fn draw_minimap(
     }
 }
 
+/// Stamp the layer-band labels onto the lineage pane's BOTTOM border: for each
+/// band, the visible part of its column's `[x, x+width)` grid range is mapped
+/// through the SAME scroll/content mapping the blit used, and the label is
+/// written there in the band's layer colour (clipped to the visible segment).
+/// Border-row chrome like the scroll markers — pure frame-buffer writes, never
+/// CharGrid, so the layout goldens are untouched. Labels are dbt dir names
+/// (user data), so ascii_guard treats them like any other data text.
+fn stamp_layer_bands(
+    frame: &mut Frame,
+    area: Rect,
+    target: Rect,
+    scroll_x: usize,
+    content_w: usize,
+    bands: &[LayerBand],
+) {
+    if area.height < 2 {
+        return;
+    }
+    let bottom = area.y + area.height - 1;
+    let buf = frame.buffer_mut();
+    for band in bands {
+        // Visible slice of the column in grid coords.
+        let seg0 = band.x.max(scroll_x);
+        let seg1 = (band.x + band.width).min(scroll_x + content_w);
+        if seg0 >= seg1 {
+            continue; // column fully scrolled out
+        }
+        let style = Style::default().fg(lens_color(band.tint).unwrap_or(theme::TEXT_DIM));
+        let avail = seg1 - seg0;
+        for (i, ch) in band.label.chars().take(avail).enumerate() {
+            let x = target.x + (seg0 - scroll_x + i) as u16;
+            if x >= target.x + target.width {
+                break;
+            }
+            if let Some(cell) = buf.cell_mut((x, bottom)) {
+                cell.set_symbol(&ch.to_string()).set_style(style);
+            }
+        }
+    }
+}
+
 /// Stamp scroll-affordance markers (the chrome's left/right/up/down glyphs) onto
 /// the lineage pane's border (the bordered `area`, not the interior), one per
 /// clipped edge at that edge's midpoint. Drawn after the content so they sit on
@@ -242,9 +318,11 @@ fn draw_minimap(
 /// The top edge is special: it carries the (left-aligned) pane title, so a
 /// centred up-marker would stab a glyph into the title text — itself reading as
 /// breakage. It is therefore nudged to the title-free right end of the top
-/// border; the other three edges keep their natural midpoints (the bottom border
-/// is title-free). `draw_lineage_pane` returns early when the interior is 0-wide,
-/// so `right - 1 >= area.x + 1` here (never the left border).
+/// border. The bottom edge mirrors it: the Layer lens's layer-band labels live
+/// at column positions along the bottom border, and a centred down-marker would
+/// stab whichever label crosses the midpoint. The left/right edges keep their
+/// natural midpoints. `draw_lineage_pane` returns early when the interior is
+/// 0-wide, so `right - 1 >= area.x + 1` here (never the left border).
 fn stamp_scroll_markers(
     frame: &mut Frame,
     area: Rect,
@@ -259,7 +337,6 @@ fn stamp_scroll_markers(
         .add_modifier(Modifier::BOLD);
     let right = area.x + area.width - 1;
     let bottom = area.y + area.height - 1;
-    let mid_x = area.x + area.width / 2;
     let mid_y = area.y + area.height / 2;
     let buf = frame.buffer_mut();
     let mut mark = |x: u16, y: u16, sym: &str| {
@@ -277,7 +354,7 @@ fn stamp_scroll_markers(
         mark(right.saturating_sub(1), area.y, chrome.up);
     }
     if edges.bottom {
-        mark(mid_x, bottom, chrome.down);
+        mark(right.saturating_sub(1), bottom, chrome.down);
     }
 }
 

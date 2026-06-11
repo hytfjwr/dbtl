@@ -23,7 +23,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::{layout_mode, GlyphMode, Layout, LineageLens, Subgraph};
+use crate::{layout_density, Density, GlyphMode, Layout, LineageLens, Subgraph};
 
 use super::{App, LineageView};
 
@@ -45,6 +45,7 @@ struct LayoutKey {
     view: LineageView,
     lens: LineageLens,
     glyphs: GlyphMode,
+    density: Density,
     generation: u64,
 }
 
@@ -117,6 +118,7 @@ impl App {
             view: self.lineage_view.clone(),
             lens: self.ui_state.lens(),
             glyphs: self.glyph_mode,
+            density: self.ui_state.density(),
             generation: self.generation,
         };
         if let Some((k, lay)) = self.caches.layout.borrow().as_ref() {
@@ -128,7 +130,8 @@ impl App {
         if sg.nodes.is_empty() {
             return None;
         }
-        let mut lay = layout_mode(&sg, self.glyph_mode);
+        let mut lay = layout_density(&sg, self.glyph_mode, self.ui_state.density());
+        lay.apply_edge_styles(&self.lineage_edge_styles(&lay));
         let styles = self.lineage_styles(&lay);
         lay.apply_node_styles(&styles);
         let lay = Rc::new(lay);
