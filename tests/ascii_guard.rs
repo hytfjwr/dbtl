@@ -11,7 +11,7 @@
 //! in without failing here.
 
 use dbtl::app::{apply_action, App};
-use dbtl::layout::{layout_mode, GlyphMode};
+use dbtl::layout::GlyphMode;
 use dbtl::ui::{draw, Focus, RenderCtx, StatusSegments};
 use dbtl::{load_dag, Action};
 
@@ -39,14 +39,9 @@ fn render(app: &App, width: u16, height: u16) -> Buffer {
 /// [`render`] plus an optional floating toast (the transient copy/bookmark
 /// acknowledgement), mirroring the event loop's `ctx.toast` wiring.
 fn render_with_toast(app: &App, width: u16, height: u16, toast: Option<&str>) -> Buffer {
-    let sg = app.lineage_subgraph();
-    let lineage = if sg.nodes.is_empty() {
-        None
-    } else {
-        let mut lay = layout_mode(&sg, app.glyph_mode);
-        lay.apply_node_styles(&app.lineage_styles(&lay));
-        Some(lay)
-    };
+    // The SAME memoized producer the event loop draws from, so the guard
+    // scans exactly what production renders.
+    let lineage = app.styled_lineage_layout();
     let status = app.selected_status_note();
     let label = app.lineage_view_label();
 
@@ -86,7 +81,7 @@ fn render_with_toast(app: &App, width: u16, height: u16, toast: Option<&str>) ->
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
     {
-        let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, lineage.as_ref());
+        let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, lineage.as_deref());
         ctx.mode = &app.mode;
         ctx.status = status.as_deref();
         ctx.stats = Some(&app.stats);
