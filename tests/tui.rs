@@ -1392,19 +1392,13 @@ fn layer_header_renders_accented_and_capitalized() {
 /// a `width x height` buffer, mirroring the event loop's lineage setup. The
 /// minimap is read straight from `app.ui_state.minimap_visible()`.
 fn render_app(app: &dbtl::app::App, width: u16, height: u16) -> Buffer {
-    use dbtl::layout::layout_mode;
-    let sg = app.lineage_subgraph();
-    let lineage = if sg.nodes.is_empty() {
-        None
-    } else {
-        let mut lay = layout_mode(&sg, app.glyph_mode);
-        lay.apply_node_styles(&app.lineage_styles(&lay));
-        Some(lay)
-    };
+    // The SAME memoized producer the event loop draws from, so the test
+    // exercises the production pipeline (cache key -> styles -> layout).
+    let lineage = app.styled_lineage_layout();
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
     {
-        let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, lineage.as_ref());
+        let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, lineage.as_deref());
         ctx.mode = &app.mode;
         ctx.glyphs = app.glyph_mode;
         ctx.minimap = app.ui_state.minimap_visible();
@@ -1453,15 +1447,13 @@ fn lineage_title_shows_lens_suffix_per_lens_and_nothing_when_off() {
 /// breadcrumb + view label exactly as the event loop does. Returns the title-row
 /// text only (the status bar echoes the name, so a whole-buffer scan over-counts).
 fn lineage_title_row(app: &dbtl::app::App, width: u16, height: u16) -> String {
-    use dbtl::layout::layout_mode;
     use dbtl::ui::{RenderCtx, StatusSegments};
 
     let view_label = app.lineage_view_label();
     // The loop hands the FULL trail; the draw seam is the single width authority.
     let breadcrumb = app.breadcrumb(usize::MAX);
-    let sg = app.lineage_subgraph();
-    let mut lay = layout_mode(&sg, app.glyph_mode);
-    lay.apply_node_styles(&app.lineage_styles(&lay));
+    // The production producer (memoized), exactly as the event loop draws.
+    let lay = app.styled_lineage_layout().expect("non-empty lineage");
 
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
@@ -1615,9 +1607,7 @@ fn minimap_default_off_keeps_lineage_invariants_intact() {
     // Anchor exactly as the loop does so the selected box centers/shows.
     let interior = pane_interior(pane_rects(Rect::new(0, 0, 80, 24), true).lineage);
     {
-        use dbtl::layout::layout_mode;
-        let sg = app.lineage_subgraph();
-        let lay = layout_mode(&sg, app.glyph_mode);
+        let lay = app.styled_lineage_layout().expect("non-empty lineage");
         app.ui_state.anchor_lineage(
             lay.selected_rect,
             &lay.grid,
@@ -1660,9 +1650,7 @@ fn minimap_on_draws_node_and_viewport_glyphs_in_the_inset() {
 
     let interior = pane_interior(pane_rects(Rect::new(0, 0, 80, 24), true).lineage);
     {
-        use dbtl::layout::layout_mode;
-        let sg = app.lineage_subgraph();
-        let lay = layout_mode(&sg, app.glyph_mode);
+        let lay = app.styled_lineage_layout().expect("non-empty lineage");
         // Precondition: the fct grid genuinely overflows this interior (so the
         // minimap guard `edges.any()` fires) AND the interior is big enough.
         assert!(

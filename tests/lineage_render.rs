@@ -226,8 +226,10 @@ fn cursor_keys_traverse_columns_and_highlight_follows() {
     let interior = pane_interior(pane_rects(area, true).lineage);
     let (vw, vh) = (interior.width as usize, interior.height as usize);
 
-    // First frame: anchor on the root (the cursor's home).
-    let lay0 = layout(&app.lineage_display_subgraph());
+    // First frame: anchor on the root (the cursor's home). The layout comes
+    // from the SAME memoized producer the event loop draws from, so this test
+    // exercises the production pipeline (cache key -> styles -> layout) too.
+    let lay0 = app.styled_lineage_layout().expect("non-empty lineage");
     app.ui_state
         .anchor_lineage(lay0.selected_rect, &lay0.grid, vw, vh);
     let root_col = lay0.columns[FCT];
@@ -238,7 +240,7 @@ fn cursor_keys_traverse_columns_and_highlight_follows() {
     for _ in 0..root_col {
         apply_action(&mut app, Action::MoveLeft);
         let cur = app.lineage_cursor_uid().expect("cursor exists");
-        let lay = layout(&app.lineage_display_subgraph());
+        let lay = app.styled_lineage_layout().expect("non-empty lineage");
         assert_eq!(
             lay.columns[&cur],
             prev_col - 1,
@@ -278,7 +280,7 @@ fn cursor_keys_traverse_columns_and_highlight_follows() {
     let cur = app.lineage_cursor_uid().unwrap();
     let cur_name = app.dag.get(&cur).expect("cursor node exists").name.clone();
     assert_ne!(cur, FCT, "the cursor walked off the root");
-    let lay = layout(&app.lineage_display_subgraph());
+    let lay = app.styled_lineage_layout().expect("non-empty lineage");
     let backend = TestBackend::new(100, 30);
     let mut terminal = Terminal::new(backend).expect("terminal");
     {
