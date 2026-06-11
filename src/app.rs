@@ -580,6 +580,37 @@ impl App {
         }
     }
 
+    /// Whether the data was inferred from project source (no compiled manifest)
+    /// — the approximate-lineage mode the startup notice recommends upgrading
+    /// from via `P` (`dbt parse`).
+    pub fn is_source_mode(&self) -> bool {
+        matches!(self.source, DataSource::Project(_))
+    }
+
+    /// The dbt project root (where `dbt_project.yml` is expected): the project
+    /// dir in source mode, or the manifest's `target/..` parent in manifest
+    /// mode. The `dbt parse` effect runs here.
+    pub fn project_root(&self) -> &Path {
+        &self.project_root
+    }
+
+    /// Switch the data source to a compiled manifest at `path` and reload from
+    /// it. On a load error the previous source (and all data, including the
+    /// project root) is restored, so a truncated/corrupt manifest never strands
+    /// the app — same never-corrupt contract as [`reload`](App::reload). On
+    /// success the project root is re-derived from the manifest path, keeping
+    /// the `$EDITOR` jump correct even for a manifest under a different root.
+    pub fn adopt_manifest(&mut self, path: PathBuf) -> Result<()> {
+        let new_root = derive_project_root(&path);
+        let prev = std::mem::replace(&mut self.source, DataSource::Manifest(path));
+        if let Err(err) = self.reload() {
+            self.source = prev;
+            return Err(err);
+        }
+        self.project_root = new_root;
+        Ok(())
+    }
+
     /// Move the selection to the model with this `unique_id` in the active list,
     /// if present. Returns whether it was found. The selection-by-identity
     /// primitive used by reload-restore, mouse re-root, and lineage search.
@@ -1589,6 +1620,10 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             _ => Outcome::cont(),
         },
         Action::Reload => Outcome::effect(Effect::ReloadManifest),
+        // The loop performs the whole flow (resolve dbt from PATH, suspend the
+        // TUI, run, adopt the manifest) and reports the outcome on the notice
+        // channel — the reducer stays free of filesystem/PATH reads.
+        Action::DbtParse => Outcome::effect(Effect::DbtParse),
         // Recenter and the lineage-view actions re-anchor the lineage; that is
         // applied size-aware in the loop, so the reducer just records intent.
         // Recenter additionally sends the cursor home, so `z` always means
@@ -2729,6 +2764,65 @@ mod tests {
             a.selected_unique_id(),
             before_sel,
             "selection unchanged on reload error"
+        );
+    }
+
+    #[test]
+    fn dbt_parse_action_requests_the_effect_without_a_notice() {
+        // The reducer records intent only — PATH lookup, the subprocess, and
+        // the outcome notice all belong to `main::run_dbt_parse`.
+        let mut a = app();
+        let out = apply_action(&mut a, Action::DbtParse);
+        assert_eq!(out.effects, vec![Effect::DbtParse]);
+        assert!(!out.quit);
+        assert_eq!(a.take_notice(), None, "no optimistic toast for dbt parse");
+    }
+
+    #[test]
+    fn adopt_manifest_switches_the_source_and_reverts_on_error() {
+        let project = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample_project");
+        let sample = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/sample_manifest.json"
+        );
+        let dag = load_dag_from_source(project).expect("sample project loads");
+        let mut a = App::from_source(dag, PathBuf::from(project));
+        assert!(a.is_source_mode());
+        assert_eq!(a.project_root(), Path::new(project));
+
+        // A bad manifest path: Err, and the previous source survives (the
+        // never-corrupt contract) — reload still re-reads the project.
+        a.select_by_unique_id("model.sample.stg_orders");
+        assert!(a
+            .adopt_manifest(PathBuf::from("/no/such/manifest.json"))
+            .is_err());
+        assert!(a.is_source_mode(), "failed adopt restores the source");
+        assert_eq!(
+            a.project_root(),
+            Path::new(project),
+            "failed adopt keeps the project root"
+        );
+        assert!(a.reload().is_ok(), "the restored source still loads");
+
+        // The real manifest: source flips, watch follows the FILE, and the
+        // selection survives by unique_id across the rebuild.
+        a.select_by_unique_id("model.sample.stg_orders");
+        a.adopt_manifest(PathBuf::from(sample)).expect("adopts");
+        assert!(!a.is_source_mode());
+        let (root, recursive) = a.watch_root();
+        assert!(root.ends_with("sample_manifest.json"));
+        assert!(!recursive);
+        assert_eq!(
+            a.project_root(),
+            // derive_project_root strips `<root>/target/manifest.json` → `<root>`
+            // (two parents); same derivation `App::new` would have applied.
+            Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests")),
+            "project root re-derived from the adopted manifest"
+        );
+        assert_eq!(
+            a.selected_unique_id().as_deref(),
+            Some("model.sample.stg_orders"),
+            "selection restored by id after the swap"
         );
     }
 

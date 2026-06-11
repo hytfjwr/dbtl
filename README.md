@@ -41,6 +41,10 @@ $ dbtl
 
 That's it. If `target/manifest.json` exists it is used; otherwise the project source is parsed directly.
 
+Source mode infers lineage from the raw SQL (no Jinja rendering), so a compiled
+manifest is always more accurate — if `dbt` is on your `PATH`, press `P` inside
+the app to run `dbt parse` and switch to the generated manifest in place.
+
 ## Install
 
 **Homebrew (macOS / Linux):**
@@ -97,6 +101,7 @@ Press `?` inside the app for the full list. Highlights:
 | `i` / `e` | Copy a Markdown impact report / write the diagram to a file |
 | `Space` `'` | Bookmark / cycle bookmarks |
 | `T` `*` | Filter the list to untested / bookmarked models |
+| `P` | Run `dbt parse` and switch to the compiled manifest |
 | `Ctrl-p` | Command palette |
 | `q` | Quit |
 

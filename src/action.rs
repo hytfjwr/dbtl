@@ -126,6 +126,10 @@ pub enum Action {
     /// Toggle the persistent untested-only / bookmarked-only list filter.
     ToggleUntestedFilter,
     ToggleBookmarkFilter,
+    /// Run `dbt parse` in the project root and adopt the regenerated
+    /// `target/manifest.json` (upgrade source-mode's inferred lineage to the
+    /// compiled manifest's full fidelity; in manifest mode it refreshes).
+    DbtParse,
 }
 
 /// Which pane a search targets (decided from focus when search opens).
@@ -425,6 +429,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('L'))], action: A::LineageRightmost, help: "lineage cursor to last column" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('T'))], action: A::ToggleUntestedFilter, help: "filter list: untested only" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('*'))], action: A::ToggleBookmarkFilter, help: "filter list: bookmarked only" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('P'))], action: A::DbtParse, help: "run dbt parse (build manifest)" },
     // ---- Search mode (printable chars are handled dynamically -> SearchType) ----
     KeyBinding { mode: M::Search, triggers: &[Key(Esc)], action: A::SearchCancel, help: "cancel search" },
     KeyBinding { mode: M::Search, triggers: &[Key(Enter)], action: A::SearchConfirm, help: "confirm" },
@@ -676,6 +681,21 @@ mod tests {
     }
 
     #[test]
+    fn p_runs_dbt_parse_in_selection_but_is_text_in_search() {
+        // 'P' (capital — arrives as Char('P'), SHIFT allowed by Trigger::Key)
+        // requests a dbt parse; in Search it must stay query text.
+        assert_eq!(
+            dispatch(&Mode::Selection, press(Char('P'))),
+            Some(Action::DbtParse)
+        );
+        assert_eq!(
+            dispatch(&search_mode(), press(Char('P'))),
+            Some(Action::SearchType('P')),
+            "'P' in search is text, not a dbt parse"
+        );
+    }
+
+    #[test]
     fn bookmark_and_sort_keys_dispatch_in_selection() {
         let sel = Mode::Selection;
         assert_eq!(
@@ -827,7 +847,8 @@ mod tests {
             | Action::LineageLeftmost
             | Action::LineageRightmost
             | Action::ToggleUntestedFilter
-            | Action::ToggleBookmarkFilter => true,
+            | Action::ToggleBookmarkFilter
+            | Action::DbtParse => true,
             // Dynamic: produced without a fixed key binding (text input). Mouse
             // is handled in the event loop (size-aware), not via the keymap.
             Action::SearchType(_) => false,
@@ -930,6 +951,7 @@ mod tests {
             Action::LineageRightmost,
             Action::ToggleUntestedFilter,
             Action::ToggleBookmarkFilter,
+            Action::DbtParse,
         ];
         for a in samples {
             assert!(
