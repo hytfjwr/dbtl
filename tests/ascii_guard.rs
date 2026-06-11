@@ -199,7 +199,7 @@ fn breadcrumb_title_is_all_ascii() {
     // Re-root twice so the lineage pane title carries a multi-entry breadcrumb
     // ("a > b > root"); its separators (" > ", "..") must stay pure ASCII.
     let mut app = ascii_app(); // rooted at fct_subscription_process
-    app.jump_to("model.jaffle_finance.wt_delivery_base_metrics");
+    app.jump_to("model.jaffle_finance.rpt_delivery_base_metrics");
     app.jump_to("model.jaffle_finance.fct_delivery_monthly_snapshot");
     assert!(
         app.breadcrumb(200).is_some(),

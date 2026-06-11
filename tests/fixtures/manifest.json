@@ -595,10 +595,10 @@
    "database": "finance_stg",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_fiscal_years__enriched"
+     "model.jaffle_finance.int_fiscal_years__combined"
     ]
    },
-   "raw_code": "-- placeholder SQL for dim_fiscal_years (sanitized fixture)\nselect *\nfrom {{ ref('int_fiscal_years__enriched') }}"
+   "raw_code": "-- placeholder SQL for dim_fiscal_years (sanitized fixture)\nselect *\nfrom {{ ref('int_fiscal_years__combined') }}"
   },
   "model.jaffle_finance.dim_supplier_departments": {
    "name": "dim_supplier_departments",
@@ -649,10 +649,10 @@
    "database": "finance_stg",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_supplier_departments__enriched"
+     "model.jaffle_finance.int_supplier_departments__combined"
     ]
    },
-   "raw_code": "-- placeholder SQL for dim_supplier_departments (sanitized fixture)\nselect *\nfrom {{ ref('int_supplier_departments__enriched') }}"
+   "raw_code": "-- placeholder SQL for dim_supplier_departments (sanitized fixture)\nselect *\nfrom {{ ref('int_supplier_departments__combined') }}"
   },
   "model.jaffle_finance.dim_suppliers": {
    "name": "dim_suppliers",
@@ -693,23 +693,23 @@
    "database": "finance_stg",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_suppliers__enriched"
+     "model.jaffle_finance.int_suppliers__combined"
     ]
    },
-   "raw_code": "-- placeholder SQL for dim_suppliers (sanitized fixture)\nselect *\nfrom {{ ref('int_suppliers__enriched') }}"
+   "raw_code": "-- placeholder SQL for dim_suppliers (sanitized fixture)\nselect *\nfrom {{ ref('int_suppliers__combined') }}"
   },
-  "model.jaffle_finance.dim_delivery_classifications": {
-   "name": "dim_delivery_classifications",
+  "model.jaffle_finance.dim_delivery_lanes": {
+   "name": "dim_delivery_lanes",
    "resource_type": "model",
-   "path": "marts/dimensional/jaffle/delivery_classifications/dim_delivery_classifications.sql",
-   "original_file_path": "models/marts/dimensional/jaffle/delivery_classifications/dim_delivery_classifications.sql",
+   "path": "marts/dimensional/jaffle/delivery_lanes/dim_delivery_lanes.sql",
+   "original_file_path": "models/marts/dimensional/jaffle/delivery_lanes/dim_delivery_lanes.sql",
    "description": "This is a sample description.",
    "config": {
     "materialized": "table"
    },
    "columns": {
-    "delivery_classification_key": {
-     "name": "delivery_classification_key",
+    "delivery_lane_key": {
+     "name": "delivery_lane_key",
      "data_type": "varchar",
      "description": "placeholder column description"
     },
@@ -807,10 +807,10 @@
    "database": "finance_stg",
    "depends_on": {
     "nodes": [
-     "snapshot.jaffle_finance.delivery_classifications_snapshot"
+     "snapshot.jaffle_finance.delivery_lanes_snapshot"
     ]
    },
-   "raw_code": "-- placeholder SQL for dim_delivery_classifications (sanitized fixture)\nselect *\nfrom {{ ref('delivery_classifications_snapshot') }}"
+   "raw_code": "-- placeholder SQL for dim_delivery_lanes (sanitized fixture)\nselect *\nfrom {{ ref('delivery_lanes_snapshot') }}"
   },
   "model.jaffle_finance.fct_delivery_monthly_snapshot": {
    "name": "fct_delivery_monthly_snapshot",
@@ -822,8 +822,8 @@
     "materialized": "incremental"
    },
    "columns": {
-    "delivery_classification_key": {
-     "name": "delivery_classification_key",
+    "delivery_lane_key": {
+     "name": "delivery_lane_key",
      "data_type": "varchar",
      "description": "placeholder column description"
     },
@@ -876,13 +876,13 @@
    "database": "finance_stg",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_delivery_monthly__enriched",
+     "model.jaffle_finance.int_delivery_monthly__combined",
      "model.jaffle_finance.fct_subscription_process",
-     "model.jaffle_finance.dim_delivery_classifications",
+     "model.jaffle_finance.dim_delivery_lanes",
      "model.jaffle_finance.dim_fiscal_years"
     ]
    },
-   "raw_code": "-- placeholder SQL for fct_delivery_monthly_snapshot (sanitized fixture)\nselect *\nfrom {{ ref('int_delivery_monthly__enriched') }}\n-- also reads {{ ref('fct_subscription_process') }}\n-- also reads {{ ref('dim_delivery_classifications') }}\n-- also reads {{ ref('dim_fiscal_years') }}"
+   "raw_code": "-- placeholder SQL for fct_delivery_monthly_snapshot (sanitized fixture)\nselect *\nfrom {{ ref('int_delivery_monthly__combined') }}\n-- also reads {{ ref('fct_subscription_process') }}\n-- also reads {{ ref('dim_delivery_lanes') }}\n-- also reads {{ ref('dim_fiscal_years') }}"
   },
   "model.jaffle_finance.fct_delivery_shopper_monthly_visits": {
    "name": "fct_delivery_shopper_monthly_visits",
@@ -923,12 +923,12 @@
    "database": "finance_stg",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_delivery_shopper_monthly__enriched",
-     "model.jaffle_finance.dim_delivery_classifications",
+     "model.jaffle_finance.int_delivery_shopper_monthly__combined",
+     "model.jaffle_finance.dim_delivery_lanes",
      "model.jaffle_finance.dim_fiscal_years"
     ]
    },
-   "raw_code": "-- placeholder SQL for fct_delivery_shopper_monthly_visits (sanitized fixture)\nselect *\nfrom {{ ref('int_delivery_shopper_monthly__enriched') }}\n-- also reads {{ ref('dim_delivery_classifications') }}\n-- also reads {{ ref('dim_fiscal_years') }}"
+   "raw_code": "-- placeholder SQL for fct_delivery_shopper_monthly_visits (sanitized fixture)\nselect *\nfrom {{ ref('int_delivery_shopper_monthly__combined') }}\n-- also reads {{ ref('dim_delivery_lanes') }}\n-- also reads {{ ref('dim_fiscal_years') }}"
   },
   "model.jaffle_finance.fct_subscription_process": {
    "name": "fct_subscription_process",
@@ -950,8 +950,8 @@
      "data_type": "bigint",
      "description": "placeholder column description"
     },
-    "delivery_classification_key": {
-     "name": "delivery_classification_key",
+    "delivery_lane_key": {
+     "name": "delivery_lane_key",
      "data_type": "varchar",
      "description": "placeholder column description"
     },
@@ -984,20 +984,20 @@
    "database": "finance_stg",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_subscriptions__enriched",
-     "model.jaffle_finance.dim_delivery_classifications",
+     "model.jaffle_finance.int_subscriptions__combined",
+     "model.jaffle_finance.dim_delivery_lanes",
      "model.jaffle_finance.dim_suppliers",
      "model.jaffle_finance.dim_supplier_departments",
      "model.jaffle_finance.dim_fiscal_years"
     ]
    },
-   "raw_code": "-- placeholder SQL for fct_subscription_process (sanitized fixture)\nselect *\nfrom {{ ref('int_subscriptions__enriched') }}\n-- also reads {{ ref('dim_delivery_classifications') }}\n-- also reads {{ ref('dim_suppliers') }}\n-- also reads {{ ref('dim_supplier_departments') }}\n-- also reads {{ ref('dim_fiscal_years') }}"
+   "raw_code": "-- placeholder SQL for fct_subscription_process (sanitized fixture)\nselect *\nfrom {{ ref('int_subscriptions__combined') }}\n-- also reads {{ ref('dim_delivery_lanes') }}\n-- also reads {{ ref('dim_suppliers') }}\n-- also reads {{ ref('dim_supplier_departments') }}\n-- also reads {{ ref('dim_fiscal_years') }}"
   },
-  "model.jaffle_finance.int_fiscal_years__enriched": {
-   "name": "int_fiscal_years__enriched",
+  "model.jaffle_finance.int_fiscal_years__combined": {
+   "name": "int_fiscal_years__combined",
    "resource_type": "model",
-   "path": "intermediate/jaffle/fiscal_years/int_fiscal_years__enriched.sql",
-   "original_file_path": "models/intermediate/jaffle/fiscal_years/int_fiscal_years__enriched.sql",
+   "path": "intermediate/jaffle/fiscal_years/int_fiscal_years__combined.sql",
+   "original_file_path": "models/intermediate/jaffle/fiscal_years/int_fiscal_years__combined.sql",
    "description": "This is a sample description.",
    "config": {
     "materialized": "view"
@@ -1025,13 +1025,13 @@
      "model.jaffle_finance.stg_finance__fiscal_years"
     ]
    },
-   "raw_code": "-- placeholder SQL for int_fiscal_years__enriched (sanitized fixture)\nselect *\nfrom {{ ref('stg_finance__fiscal_years') }}"
+   "raw_code": "-- placeholder SQL for int_fiscal_years__combined (sanitized fixture)\nselect *\nfrom {{ ref('stg_finance__fiscal_years') }}"
   },
-  "model.jaffle_finance.int_supplier_departments__enriched": {
-   "name": "int_supplier_departments__enriched",
+  "model.jaffle_finance.int_supplier_departments__combined": {
+   "name": "int_supplier_departments__combined",
    "resource_type": "model",
-   "path": "intermediate/jaffle/supplier_departments/int_supplier_departments__enriched.sql",
-   "original_file_path": "models/intermediate/jaffle/supplier_departments/int_supplier_departments__enriched.sql",
+   "path": "intermediate/jaffle/supplier_departments/int_supplier_departments__combined.sql",
+   "original_file_path": "models/intermediate/jaffle/supplier_departments/int_supplier_departments__combined.sql",
    "description": "This is a sample description.",
    "config": {
     "materialized": "view"
@@ -1074,13 +1074,13 @@
      "model.jaffle_finance.stg_payment__supplier_departments"
     ]
    },
-   "raw_code": "-- placeholder SQL for int_supplier_departments__enriched (sanitized fixture)\nselect *\nfrom {{ ref('stg_payment__supplier_departments') }}"
+   "raw_code": "-- placeholder SQL for int_supplier_departments__combined (sanitized fixture)\nselect *\nfrom {{ ref('stg_payment__supplier_departments') }}"
   },
-  "model.jaffle_finance.int_suppliers__enriched": {
-   "name": "int_suppliers__enriched",
+  "model.jaffle_finance.int_suppliers__combined": {
+   "name": "int_suppliers__combined",
    "resource_type": "model",
-   "path": "intermediate/jaffle/suppliers/int_suppliers__enriched.sql",
-   "original_file_path": "models/intermediate/jaffle/suppliers/int_suppliers__enriched.sql",
+   "path": "intermediate/jaffle/suppliers/int_suppliers__combined.sql",
+   "original_file_path": "models/intermediate/jaffle/suppliers/int_suppliers__combined.sql",
    "description": "This is a sample description.",
    "config": {
     "materialized": "view"
@@ -1113,13 +1113,13 @@
      "model.jaffle_finance.stg_payment__suppliers"
     ]
    },
-   "raw_code": "-- placeholder SQL for int_suppliers__enriched (sanitized fixture)\nselect *\nfrom {{ ref('stg_payment__suppliers') }}"
+   "raw_code": "-- placeholder SQL for int_suppliers__combined (sanitized fixture)\nselect *\nfrom {{ ref('stg_payment__suppliers') }}"
   },
-  "model.jaffle_finance.int_shoppers__enriched": {
-   "name": "int_shoppers__enriched",
+  "model.jaffle_finance.int_shoppers__combined": {
+   "name": "int_shoppers__combined",
    "resource_type": "model",
-   "path": "intermediate/jaffle/shoppers/int_shoppers__enriched.sql",
-   "original_file_path": "models/intermediate/jaffle/shoppers/int_shoppers__enriched.sql",
+   "path": "intermediate/jaffle/shoppers/int_shoppers__combined.sql",
+   "original_file_path": "models/intermediate/jaffle/shoppers/int_shoppers__combined.sql",
    "description": "This is a sample description.",
    "config": {
     "materialized": "view"
@@ -1157,13 +1157,13 @@
      "model.jaffle_finance.stg_payment__shoppers"
     ]
    },
-   "raw_code": "-- placeholder SQL for int_shoppers__enriched (sanitized fixture)\nselect *\nfrom {{ ref('stg_payment__shoppers') }}"
+   "raw_code": "-- placeholder SQL for int_shoppers__combined (sanitized fixture)\nselect *\nfrom {{ ref('stg_payment__shoppers') }}"
   },
-  "model.jaffle_finance.int_delivery_classifications__enriched": {
-   "name": "int_delivery_classifications__enriched",
+  "model.jaffle_finance.int_delivery_lanes__combined": {
+   "name": "int_delivery_lanes__combined",
    "resource_type": "model",
-   "path": "intermediate/jaffle/delivery_classifications/int_delivery_classifications__enriched.sql",
-   "original_file_path": "models/intermediate/jaffle/delivery_classifications/int_delivery_classifications__enriched.sql",
+   "path": "intermediate/jaffle/delivery_lanes/int_delivery_lanes__combined.sql",
+   "original_file_path": "models/intermediate/jaffle/delivery_lanes/int_delivery_lanes__combined.sql",
    "description": "This is a sample description.",
    "config": {
     "materialized": "view"
@@ -1263,13 +1263,13 @@
      "model.jaffle_finance.stg_masterdata__companies"
     ]
    },
-   "raw_code": "-- placeholder SQL for int_delivery_classifications__enriched (sanitized fixture)\nselect *\nfrom {{ ref('stg_masterdata__deliveries') }}\n-- also reads {{ ref('stg_masterdata__delivery_groups') }}\n-- also reads {{ ref('stg_masterdata__companies') }}"
+   "raw_code": "-- placeholder SQL for int_delivery_lanes__combined (sanitized fixture)\nselect *\nfrom {{ ref('stg_masterdata__deliveries') }}\n-- also reads {{ ref('stg_masterdata__delivery_groups') }}\n-- also reads {{ ref('stg_masterdata__companies') }}"
   },
-  "model.jaffle_finance.int_delivery_monthly__enriched": {
-   "name": "int_delivery_monthly__enriched",
+  "model.jaffle_finance.int_delivery_monthly__combined": {
+   "name": "int_delivery_monthly__combined",
    "resource_type": "model",
-   "path": "intermediate/jaffle/delivery_monthly/int_delivery_monthly__enriched.sql",
-   "original_file_path": "models/intermediate/jaffle/delivery_monthly/int_delivery_monthly__enriched.sql",
+   "path": "intermediate/jaffle/delivery_monthly/int_delivery_monthly__combined.sql",
+   "original_file_path": "models/intermediate/jaffle/delivery_monthly/int_delivery_monthly__combined.sql",
    "description": "This is a sample description.",
    "config": {
     "materialized": "view"
@@ -1318,13 +1318,13 @@
      "model.jaffle_finance.stg_payment__scores"
     ]
    },
-   "raw_code": "-- placeholder SQL for int_delivery_monthly__enriched (sanitized fixture)\nselect *\nfrom {{ ref('stg_payment__warehouses') }}\n-- also reads {{ ref('stg_payment__scores') }}"
+   "raw_code": "-- placeholder SQL for int_delivery_monthly__combined (sanitized fixture)\nselect *\nfrom {{ ref('stg_payment__warehouses') }}\n-- also reads {{ ref('stg_payment__scores') }}"
   },
-  "model.jaffle_finance.int_delivery_shopper_monthly__enriched": {
-   "name": "int_delivery_shopper_monthly__enriched",
+  "model.jaffle_finance.int_delivery_shopper_monthly__combined": {
+   "name": "int_delivery_shopper_monthly__combined",
    "resource_type": "model",
-   "path": "intermediate/jaffle/delivery_shopper_monthly/int_delivery_shopper_monthly__enriched.sql",
-   "original_file_path": "models/intermediate/jaffle/delivery_shopper_monthly/int_delivery_shopper_monthly__enriched.sql",
+   "path": "intermediate/jaffle/delivery_shopper_monthly/int_delivery_shopper_monthly__combined.sql",
+   "original_file_path": "models/intermediate/jaffle/delivery_shopper_monthly/int_delivery_shopper_monthly__combined.sql",
    "description": "This is a sample description.",
    "config": {
     "materialized": "view"
@@ -1357,13 +1357,13 @@
      "model.jaffle_finance.stg_payment__warehouses"
     ]
    },
-   "raw_code": "-- placeholder SQL for int_delivery_shopper_monthly__enriched (sanitized fixture)\nselect *\nfrom {{ ref('stg_payment__warehouses') }}"
+   "raw_code": "-- placeholder SQL for int_delivery_shopper_monthly__combined (sanitized fixture)\nselect *\nfrom {{ ref('stg_payment__warehouses') }}"
   },
-  "model.jaffle_finance.int_subscriptions__enriched": {
-   "name": "int_subscriptions__enriched",
+  "model.jaffle_finance.int_subscriptions__combined": {
+   "name": "int_subscriptions__combined",
    "resource_type": "model",
-   "path": "intermediate/jaffle/subscriptions/int_subscriptions__enriched.sql",
-   "original_file_path": "models/intermediate/jaffle/subscriptions/int_subscriptions__enriched.sql",
+   "path": "intermediate/jaffle/subscriptions/int_subscriptions__combined.sql",
+   "original_file_path": "models/intermediate/jaffle/subscriptions/int_subscriptions__combined.sql",
    "description": "This is a sample description.",
    "config": {
     "materialized": "view"
@@ -1423,7 +1423,7 @@
      "model.jaffle_finance.stg_payment__supplier_departments"
     ]
    },
-   "raw_code": "-- placeholder SQL for int_subscriptions__enriched (sanitized fixture)\nselect *\nfrom {{ ref('stg_payment__subscriptions') }}\n-- also reads {{ ref('stg_payment__warehouses') }}\n-- also reads {{ ref('stg_payment__supplier_departments') }}"
+   "raw_code": "-- placeholder SQL for int_subscriptions__combined (sanitized fixture)\nselect *\nfrom {{ ref('stg_payment__subscriptions') }}\n-- also reads {{ ref('stg_payment__warehouses') }}\n-- also reads {{ ref('stg_payment__supplier_departments') }}"
   },
   "model.jaffle_finance.stg_finance__budgets": {
    "name": "stg_finance__budgets",
@@ -2156,11 +2156,11 @@
    },
    "raw_code": "-- placeholder SQL for stg_payment__scores (sanitized fixture)\nselect *\nfrom {{ source('dev_lake_jaffle_payment', 'scores') }}"
   },
-  "model.jaffle_finance.wt_delivery_base_metrics": {
-   "name": "wt_delivery_base_metrics",
+  "model.jaffle_finance.rpt_delivery_base_metrics": {
+   "name": "rpt_delivery_base_metrics",
    "resource_type": "model",
-   "path": "marts/analysis/jaffle/wt_delivery_base_metrics.sql",
-   "original_file_path": "models/marts/analysis/jaffle/wt_delivery_base_metrics.sql",
+   "path": "marts/analysis/jaffle/rpt_delivery_base_metrics.sql",
+   "original_file_path": "models/marts/analysis/jaffle/rpt_delivery_base_metrics.sql",
    "description": "This is a sample description.",
    "config": {
     "materialized": "incremental"
@@ -2281,18 +2281,18 @@
    "depends_on": {
     "nodes": [
      "model.jaffle_finance.fct_delivery_monthly_snapshot",
-     "model.jaffle_finance.dim_delivery_classifications",
+     "model.jaffle_finance.dim_delivery_lanes",
      "model.jaffle_finance.dim_fiscal_years",
      "model.jaffle_finance.stg_finance__budgets"
     ]
    },
-   "raw_code": "-- placeholder SQL for wt_delivery_base_metrics (sanitized fixture)\nselect *\nfrom {{ ref('fct_delivery_monthly_snapshot') }}\n-- also reads {{ ref('dim_delivery_classifications') }}\n-- also reads {{ ref('dim_fiscal_years') }}\n-- also reads {{ ref('stg_finance__budgets') }}"
+   "raw_code": "-- placeholder SQL for rpt_delivery_base_metrics (sanitized fixture)\nselect *\nfrom {{ ref('fct_delivery_monthly_snapshot') }}\n-- also reads {{ ref('dim_delivery_lanes') }}\n-- also reads {{ ref('dim_fiscal_years') }}\n-- also reads {{ ref('stg_finance__budgets') }}"
   },
-  "model.jaffle_finance.wt_delivery_shopper_monthly_visits": {
-   "name": "wt_delivery_shopper_monthly_visits",
+  "model.jaffle_finance.rpt_delivery_shopper_monthly_visits": {
+   "name": "rpt_delivery_shopper_monthly_visits",
    "resource_type": "model",
-   "path": "marts/analysis/jaffle/wt_delivery_shopper_monthly_visits.sql",
-   "original_file_path": "models/marts/analysis/jaffle/wt_delivery_shopper_monthly_visits.sql",
+   "path": "marts/analysis/jaffle/rpt_delivery_shopper_monthly_visits.sql",
+   "original_file_path": "models/marts/analysis/jaffle/rpt_delivery_shopper_monthly_visits.sql",
    "description": "This is a sample description.",
    "config": {
     "materialized": "incremental"
@@ -2341,7 +2341,7 @@
      "model.jaffle_finance.dim_fiscal_years"
     ]
    },
-   "raw_code": "-- placeholder SQL for wt_delivery_shopper_monthly_visits (sanitized fixture)\nselect *\nfrom {{ ref('fct_delivery_shopper_monthly_visits') }}\n-- also reads {{ ref('dim_fiscal_years') }}"
+   "raw_code": "-- placeholder SQL for rpt_delivery_shopper_monthly_visits (sanitized fixture)\nselect *\nfrom {{ ref('fct_delivery_shopper_monthly_visits') }}\n-- also reads {{ ref('dim_fiscal_years') }}"
   },
   "operation.jaffle_finance.jaffle_finance-on-run-start-0": {
    "name": "jaffle_finance-on-run-start-0",
@@ -2878,11 +2878,11 @@
    },
    "raw_code": ""
   },
-  "snapshot.jaffle_finance.delivery_classifications_snapshot": {
-   "name": "delivery_classifications_snapshot",
+  "snapshot.jaffle_finance.delivery_lanes_snapshot": {
+   "name": "delivery_lanes_snapshot",
    "resource_type": "snapshot",
-   "path": "models/marts/dimensional/jaffle/delivery_classifications/delivery_classifications_snapshot.sql",
-   "original_file_path": "models/marts/dimensional/jaffle/delivery_classifications/delivery_classifications_snapshot.yml",
+   "path": "models/marts/dimensional/jaffle/delivery_lanes/delivery_lanes_snapshot.sql",
+   "original_file_path": "models/marts/dimensional/jaffle/delivery_lanes/delivery_lanes_snapshot.yml",
    "description": "This is a sample description.",
    "config": {
     "materialized": "table"
@@ -2893,10 +2893,10 @@
    "database": "finance_stg",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_delivery_classifications__enriched"
+     "model.jaffle_finance.int_delivery_lanes__combined"
     ]
    },
-   "raw_code": "-- placeholder SQL for delivery_classifications_snapshot (sanitized fixture)\nselect *\nfrom {{ ref('int_delivery_classifications__enriched') }}"
+   "raw_code": "-- placeholder SQL for delivery_lanes_snapshot (sanitized fixture)\nselect *\nfrom {{ ref('int_delivery_lanes__combined') }}"
   },
   "test.jaffle_finance.accepted_values_fiscal_years_fiscal_year_start_month__False__1__2__3__4__5__6__7__8__9__10__11__12.41f4e09d3c": {
    "name": "accepted_values_fiscal_years_fiscal_year_start_month__False__1__2__3__4__5__6__7__8__9__10__11__12",
@@ -3105,17 +3105,17 @@
     ]
    }
   },
-  "test.jaffle_finance.dbt_utils_accepted_range_int_delivery_monthly__enriched_handling_fee__True__0.dc43bea6f8": {
-   "name": "dbt_utils_accepted_range_int_delivery_monthly__enriched_handling_fee__True__0",
+  "test.jaffle_finance.dbt_utils_accepted_range_int_delivery_monthly__combined_handling_fee__True__0.dc43bea6f8": {
+   "name": "dbt_utils_accepted_range_int_delivery_monthly__combined_handling_fee__True__0",
    "resource_type": "test",
    "test_metadata": {
     "name": "accepted_range"
    },
-   "attached_node": "model.jaffle_finance.int_delivery_monthly__enriched",
+   "attached_node": "model.jaffle_finance.int_delivery_monthly__combined",
    "column_name": "handling_fee",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_delivery_monthly__enriched"
+     "model.jaffle_finance.int_delivery_monthly__combined"
     ]
    }
   },
@@ -3133,17 +3133,17 @@
     ]
    }
   },
-  "test.jaffle_finance.dbt_utils_accepted_range_wt_delivery_base_metrics_handling_fee__True__0.a05d5187b8": {
-   "name": "dbt_utils_accepted_range_wt_delivery_base_metrics_handling_fee__True__0",
+  "test.jaffle_finance.dbt_utils_accepted_range_rpt_delivery_base_metrics_handling_fee__True__0.a05d5187b8": {
+   "name": "dbt_utils_accepted_range_rpt_delivery_base_metrics_handling_fee__True__0",
    "resource_type": "test",
    "test_metadata": {
     "name": "accepted_range"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_base_metrics",
+   "attached_node": "model.jaffle_finance.rpt_delivery_base_metrics",
    "column_name": "handling_fee",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_base_metrics"
+     "model.jaffle_finance.rpt_delivery_base_metrics"
     ]
    }
   },
@@ -3161,45 +3161,45 @@
     ]
    }
   },
-  "test.jaffle_finance.dbt_utils_expression_is_true_int_delivery_monthly__enriched_extract_day_from_month_date_1.7488ff56bf": {
-   "name": "dbt_utils_expression_is_true_int_delivery_monthly__enriched_extract_day_from_month_date_1",
+  "test.jaffle_finance.dbt_utils_expression_is_true_int_delivery_monthly__combined_extract_day_from_month_date_1.7488ff56bf": {
+   "name": "dbt_utils_expression_is_true_int_delivery_monthly__combined_extract_day_from_month_date_1",
    "resource_type": "test",
    "test_metadata": {
     "name": "expression_is_true"
    },
-   "attached_node": "model.jaffle_finance.int_delivery_monthly__enriched",
+   "attached_node": "model.jaffle_finance.int_delivery_monthly__combined",
    "column_name": null,
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_delivery_monthly__enriched"
+     "model.jaffle_finance.int_delivery_monthly__combined"
     ]
    }
   },
-  "test.jaffle_finance.dbt_utils_expression_is_true_int_delivery_monthly__enriched_new_shopper_count_warehouse_count.52450f3b0d": {
-   "name": "dbt_utils_expression_is_true_int_delivery_monthly__enriched_new_shopper_count_warehouse_count",
+  "test.jaffle_finance.dbt_utils_expression_is_true_int_delivery_monthly__combined_new_shopper_count_warehouse_count.52450f3b0d": {
+   "name": "dbt_utils_expression_is_true_int_delivery_monthly__combined_new_shopper_count_warehouse_count",
    "resource_type": "test",
    "test_metadata": {
     "name": "expression_is_true"
    },
-   "attached_node": "model.jaffle_finance.int_delivery_monthly__enriched",
+   "attached_node": "model.jaffle_finance.int_delivery_monthly__combined",
    "column_name": null,
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_delivery_monthly__enriched"
+     "model.jaffle_finance.int_delivery_monthly__combined"
     ]
    }
   },
-  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_dim_delivery_classifications_delivery_id__is_current.ef6ad755a1": {
-   "name": "dbt_utils_unique_combination_of_columns_dim_delivery_classifications_delivery_id__is_current",
+  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_dim_delivery_lanes_delivery_id__is_current.ef6ad755a1": {
+   "name": "dbt_utils_unique_combination_of_columns_dim_delivery_lanes_delivery_id__is_current",
    "resource_type": "test",
    "test_metadata": {
     "name": "unique_combination_of_columns"
    },
-   "attached_node": "model.jaffle_finance.dim_delivery_classifications",
+   "attached_node": "model.jaffle_finance.dim_delivery_lanes",
    "column_name": null,
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.dim_delivery_classifications"
+     "model.jaffle_finance.dim_delivery_lanes"
     ]
    }
   },
@@ -3231,31 +3231,31 @@
     ]
    }
   },
-  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_int_delivery_monthly__enriched_delivery_id__month_date.92adb93afd": {
-   "name": "dbt_utils_unique_combination_of_columns_int_delivery_monthly__enriched_delivery_id__month_date",
+  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_int_delivery_monthly__combined_delivery_id__month_date.92adb93afd": {
+   "name": "dbt_utils_unique_combination_of_columns_int_delivery_monthly__combined_delivery_id__month_date",
    "resource_type": "test",
    "test_metadata": {
     "name": "unique_combination_of_columns"
    },
-   "attached_node": "model.jaffle_finance.int_delivery_monthly__enriched",
+   "attached_node": "model.jaffle_finance.int_delivery_monthly__combined",
    "column_name": null,
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_delivery_monthly__enriched"
+     "model.jaffle_finance.int_delivery_monthly__combined"
     ]
    }
   },
-  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_int_delivery_shopper_monthly__enriched_delivery_id__shopper_id__month_date.2c9a5762e4": {
-   "name": "dbt_utils_unique_combination_of_columns_int_delivery_shopper_monthly__enriched_delivery_id__shopper_id__month_date",
+  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_int_delivery_shopper_monthly__combined_delivery_id__shopper_id__month_date.2c9a5762e4": {
+   "name": "dbt_utils_unique_combination_of_columns_int_delivery_shopper_monthly__combined_delivery_id__shopper_id__month_date",
    "resource_type": "test",
    "test_metadata": {
     "name": "unique_combination_of_columns"
    },
-   "attached_node": "model.jaffle_finance.int_delivery_shopper_monthly__enriched",
+   "attached_node": "model.jaffle_finance.int_delivery_shopper_monthly__combined",
    "column_name": null,
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_delivery_shopper_monthly__enriched"
+     "model.jaffle_finance.int_delivery_shopper_monthly__combined"
     ]
    }
   },
@@ -3273,31 +3273,31 @@
     ]
    }
   },
-  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_wt_delivery_base_metrics_delivery_id__month_date.c815f23c0a": {
-   "name": "dbt_utils_unique_combination_of_columns_wt_delivery_base_metrics_delivery_id__month_date",
+  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_rpt_delivery_base_metrics_delivery_id__month_date.c815f23c0a": {
+   "name": "dbt_utils_unique_combination_of_columns_rpt_delivery_base_metrics_delivery_id__month_date",
    "resource_type": "test",
    "test_metadata": {
     "name": "unique_combination_of_columns"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_base_metrics",
+   "attached_node": "model.jaffle_finance.rpt_delivery_base_metrics",
    "column_name": null,
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_base_metrics"
+     "model.jaffle_finance.rpt_delivery_base_metrics"
     ]
    }
   },
-  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_wt_delivery_shopper_monthly_visits_delivery_id__shopper_id__month_date.d911fb6eb0": {
-   "name": "dbt_utils_unique_combination_of_columns_wt_delivery_shopper_monthly_visits_delivery_id__shopper_id__month_date",
+  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_rpt_delivery_shopper_monthly_visits_delivery_id__shopper_id__month_date.d911fb6eb0": {
+   "name": "dbt_utils_unique_combination_of_columns_rpt_delivery_shopper_monthly_visits_delivery_id__shopper_id__month_date",
    "resource_type": "test",
    "test_metadata": {
     "name": "unique_combination_of_columns"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_shopper_monthly_visits",
+   "attached_node": "model.jaffle_finance.rpt_delivery_shopper_monthly_visits",
    "column_name": null,
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_shopper_monthly_visits"
+     "model.jaffle_finance.rpt_delivery_shopper_monthly_visits"
     ]
    }
   },
@@ -4029,129 +4029,129 @@
     ]
    }
   },
-  "test.jaffle_finance.not_null_dim_delivery_classifications_area_id.c461a121de": {
-   "name": "not_null_dim_delivery_classifications_area_id",
+  "test.jaffle_finance.not_null_dim_delivery_lanes_area_id.c461a121de": {
+   "name": "not_null_dim_delivery_lanes_area_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.dim_delivery_classifications",
+   "attached_node": "model.jaffle_finance.dim_delivery_lanes",
    "column_name": "area_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.dim_delivery_classifications"
+     "model.jaffle_finance.dim_delivery_lanes"
     ]
    }
   },
-  "test.jaffle_finance.not_null_dim_delivery_classifications_category_id.96bcff0aeb": {
-   "name": "not_null_dim_delivery_classifications_category_id",
+  "test.jaffle_finance.not_null_dim_delivery_lanes_category_id.96bcff0aeb": {
+   "name": "not_null_dim_delivery_lanes_category_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.dim_delivery_classifications",
+   "attached_node": "model.jaffle_finance.dim_delivery_lanes",
    "column_name": "category_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.dim_delivery_classifications"
+     "model.jaffle_finance.dim_delivery_lanes"
     ]
    }
   },
-  "test.jaffle_finance.not_null_dim_delivery_classifications_corporation_id.7e9392ddb4": {
-   "name": "not_null_dim_delivery_classifications_corporation_id",
+  "test.jaffle_finance.not_null_dim_delivery_lanes_corporation_id.7e9392ddb4": {
+   "name": "not_null_dim_delivery_lanes_corporation_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.dim_delivery_classifications",
+   "attached_node": "model.jaffle_finance.dim_delivery_lanes",
    "column_name": "corporation_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.dim_delivery_classifications"
+     "model.jaffle_finance.dim_delivery_lanes"
     ]
    }
   },
-  "test.jaffle_finance.not_null_dim_delivery_classifications_enterprise_id.cc6355d296": {
-   "name": "not_null_dim_delivery_classifications_enterprise_id",
+  "test.jaffle_finance.not_null_dim_delivery_lanes_enterprise_id.cc6355d296": {
+   "name": "not_null_dim_delivery_lanes_enterprise_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.dim_delivery_classifications",
+   "attached_node": "model.jaffle_finance.dim_delivery_lanes",
    "column_name": "enterprise_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.dim_delivery_classifications"
+     "model.jaffle_finance.dim_delivery_lanes"
     ]
    }
   },
-  "test.jaffle_finance.not_null_dim_delivery_classifications_is_current.7e54b80ac8": {
-   "name": "not_null_dim_delivery_classifications_is_current",
+  "test.jaffle_finance.not_null_dim_delivery_lanes_is_current.7e54b80ac8": {
+   "name": "not_null_dim_delivery_lanes_is_current",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.dim_delivery_classifications",
+   "attached_node": "model.jaffle_finance.dim_delivery_lanes",
    "column_name": "is_current",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.dim_delivery_classifications"
+     "model.jaffle_finance.dim_delivery_lanes"
     ]
    }
   },
-  "test.jaffle_finance.not_null_dim_delivery_classifications_delivery_classification_key.8bcacf8292": {
-   "name": "not_null_dim_delivery_classifications_delivery_classification_key",
+  "test.jaffle_finance.not_null_dim_delivery_lanes_delivery_lane_key.8bcacf8292": {
+   "name": "not_null_dim_delivery_lanes_delivery_lane_key",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.dim_delivery_classifications",
-   "column_name": "delivery_classification_key",
+   "attached_node": "model.jaffle_finance.dim_delivery_lanes",
+   "column_name": "delivery_lane_key",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.dim_delivery_classifications"
+     "model.jaffle_finance.dim_delivery_lanes"
     ]
    }
   },
-  "test.jaffle_finance.not_null_dim_delivery_classifications_delivery_id.168f817e7c": {
-   "name": "not_null_dim_delivery_classifications_delivery_id",
+  "test.jaffle_finance.not_null_dim_delivery_lanes_delivery_id.168f817e7c": {
+   "name": "not_null_dim_delivery_lanes_delivery_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.dim_delivery_classifications",
+   "attached_node": "model.jaffle_finance.dim_delivery_lanes",
    "column_name": "delivery_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.dim_delivery_classifications"
+     "model.jaffle_finance.dim_delivery_lanes"
     ]
    }
   },
-  "test.jaffle_finance.not_null_dim_delivery_classifications_valid_from.7dd6d3cfbf": {
-   "name": "not_null_dim_delivery_classifications_valid_from",
+  "test.jaffle_finance.not_null_dim_delivery_lanes_valid_from.7dd6d3cfbf": {
+   "name": "not_null_dim_delivery_lanes_valid_from",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.dim_delivery_classifications",
+   "attached_node": "model.jaffle_finance.dim_delivery_lanes",
    "column_name": "valid_from",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.dim_delivery_classifications"
+     "model.jaffle_finance.dim_delivery_lanes"
     ]
    }
   },
-  "test.jaffle_finance.not_null_dim_delivery_classifications_valid_to.96eb8e0fb9": {
-   "name": "not_null_dim_delivery_classifications_valid_to",
+  "test.jaffle_finance.not_null_dim_delivery_lanes_valid_to.96eb8e0fb9": {
+   "name": "not_null_dim_delivery_lanes_valid_to",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.dim_delivery_classifications",
+   "attached_node": "model.jaffle_finance.dim_delivery_lanes",
    "column_name": "valid_to",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.dim_delivery_classifications"
+     "model.jaffle_finance.dim_delivery_lanes"
     ]
    }
   },
@@ -4225,14 +4225,14 @@
     ]
    }
   },
-  "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_delivery_classification_key.6c86413698": {
-   "name": "not_null_fct_delivery_monthly_snapshot_delivery_classification_key",
+  "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_delivery_lane_key.6c86413698": {
+   "name": "not_null_fct_delivery_monthly_snapshot_delivery_lane_key",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
    "attached_node": "model.jaffle_finance.fct_delivery_monthly_snapshot",
-   "column_name": "delivery_classification_key",
+   "column_name": "delivery_lane_key",
    "depends_on": {
     "nodes": [
      "model.jaffle_finance.fct_delivery_monthly_snapshot"
@@ -4379,14 +4379,14 @@
     ]
    }
   },
-  "test.jaffle_finance.not_null_fct_subscription_process_delivery_classification_key.4cfbe872fb": {
-   "name": "not_null_fct_subscription_process_delivery_classification_key",
+  "test.jaffle_finance.not_null_fct_subscription_process_delivery_lane_key.4cfbe872fb": {
+   "name": "not_null_fct_subscription_process_delivery_lane_key",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
    "attached_node": "model.jaffle_finance.fct_subscription_process",
-   "column_name": "delivery_classification_key",
+   "column_name": "delivery_lane_key",
    "depends_on": {
     "nodes": [
      "model.jaffle_finance.fct_subscription_process"
@@ -4491,171 +4491,171 @@
     ]
    }
   },
-  "test.jaffle_finance.not_null_int_supplier_departments__enriched_supplier_department_id.edb5d2864e": {
-   "name": "not_null_int_supplier_departments__enriched_supplier_department_id",
+  "test.jaffle_finance.not_null_int_supplier_departments__combined_supplier_department_id.edb5d2864e": {
+   "name": "not_null_int_supplier_departments__combined_supplier_department_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.int_supplier_departments__enriched",
+   "attached_node": "model.jaffle_finance.int_supplier_departments__combined",
    "column_name": "supplier_department_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_supplier_departments__enriched"
+     "model.jaffle_finance.int_supplier_departments__combined"
     ]
    }
   },
-  "test.jaffle_finance.not_null_int_suppliers__enriched_supplier_id.e5a16596eb": {
-   "name": "not_null_int_suppliers__enriched_supplier_id",
+  "test.jaffle_finance.not_null_int_suppliers__combined_supplier_id.e5a16596eb": {
+   "name": "not_null_int_suppliers__combined_supplier_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.int_suppliers__enriched",
+   "attached_node": "model.jaffle_finance.int_suppliers__combined",
    "column_name": "supplier_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_suppliers__enriched"
+     "model.jaffle_finance.int_suppliers__combined"
     ]
    }
   },
-  "test.jaffle_finance.not_null_int_delivery_classifications__enriched_delivery_id.ef06b3e728": {
-   "name": "not_null_int_delivery_classifications__enriched_delivery_id",
+  "test.jaffle_finance.not_null_int_delivery_lanes__combined_delivery_id.ef06b3e728": {
+   "name": "not_null_int_delivery_lanes__combined_delivery_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.int_delivery_classifications__enriched",
+   "attached_node": "model.jaffle_finance.int_delivery_lanes__combined",
    "column_name": "delivery_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_delivery_classifications__enriched"
+     "model.jaffle_finance.int_delivery_lanes__combined"
     ]
    }
   },
-  "test.jaffle_finance.not_null_int_delivery_classifications__enriched_updated_at.15eba027cf": {
-   "name": "not_null_int_delivery_classifications__enriched_updated_at",
+  "test.jaffle_finance.not_null_int_delivery_lanes__combined_updated_at.15eba027cf": {
+   "name": "not_null_int_delivery_lanes__combined_updated_at",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.int_delivery_classifications__enriched",
+   "attached_node": "model.jaffle_finance.int_delivery_lanes__combined",
    "column_name": "updated_at",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_delivery_classifications__enriched"
+     "model.jaffle_finance.int_delivery_lanes__combined"
     ]
    }
   },
-  "test.jaffle_finance.not_null_int_delivery_monthly__enriched_business_day_count.093f84766a": {
-   "name": "not_null_int_delivery_monthly__enriched_business_day_count",
+  "test.jaffle_finance.not_null_int_delivery_monthly__combined_business_day_count.093f84766a": {
+   "name": "not_null_int_delivery_monthly__combined_business_day_count",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.int_delivery_monthly__enriched",
+   "attached_node": "model.jaffle_finance.int_delivery_monthly__combined",
    "column_name": "business_day_count",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_delivery_monthly__enriched"
+     "model.jaffle_finance.int_delivery_monthly__combined"
     ]
    }
   },
-  "test.jaffle_finance.not_null_int_delivery_monthly__enriched_handling_fee.e657b3c3e9": {
-   "name": "not_null_int_delivery_monthly__enriched_handling_fee",
+  "test.jaffle_finance.not_null_int_delivery_monthly__combined_handling_fee.e657b3c3e9": {
+   "name": "not_null_int_delivery_monthly__combined_handling_fee",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.int_delivery_monthly__enriched",
+   "attached_node": "model.jaffle_finance.int_delivery_monthly__combined",
    "column_name": "handling_fee",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_delivery_monthly__enriched"
+     "model.jaffle_finance.int_delivery_monthly__combined"
     ]
    }
   },
-  "test.jaffle_finance.not_null_int_delivery_monthly__enriched_month_date.1a9ea44512": {
-   "name": "not_null_int_delivery_monthly__enriched_month_date",
+  "test.jaffle_finance.not_null_int_delivery_monthly__combined_month_date.1a9ea44512": {
+   "name": "not_null_int_delivery_monthly__combined_month_date",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.int_delivery_monthly__enriched",
+   "attached_node": "model.jaffle_finance.int_delivery_monthly__combined",
    "column_name": "month_date",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_delivery_monthly__enriched"
+     "model.jaffle_finance.int_delivery_monthly__combined"
     ]
    }
   },
-  "test.jaffle_finance.not_null_int_delivery_monthly__enriched_new_shopper_count.7d44c7318d": {
-   "name": "not_null_int_delivery_monthly__enriched_new_shopper_count",
+  "test.jaffle_finance.not_null_int_delivery_monthly__combined_new_shopper_count.7d44c7318d": {
+   "name": "not_null_int_delivery_monthly__combined_new_shopper_count",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.int_delivery_monthly__enriched",
+   "attached_node": "model.jaffle_finance.int_delivery_monthly__combined",
    "column_name": "new_shopper_count",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_delivery_monthly__enriched"
+     "model.jaffle_finance.int_delivery_monthly__combined"
     ]
    }
   },
-  "test.jaffle_finance.not_null_int_delivery_monthly__enriched_warehouse_count.844c3466a3": {
-   "name": "not_null_int_delivery_monthly__enriched_warehouse_count",
+  "test.jaffle_finance.not_null_int_delivery_monthly__combined_warehouse_count.844c3466a3": {
+   "name": "not_null_int_delivery_monthly__combined_warehouse_count",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.int_delivery_monthly__enriched",
+   "attached_node": "model.jaffle_finance.int_delivery_monthly__combined",
    "column_name": "warehouse_count",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_delivery_monthly__enriched"
+     "model.jaffle_finance.int_delivery_monthly__combined"
     ]
    }
   },
-  "test.jaffle_finance.not_null_int_delivery_shopper_monthly__enriched_month_date.53d5efc9f0": {
-   "name": "not_null_int_delivery_shopper_monthly__enriched_month_date",
+  "test.jaffle_finance.not_null_int_delivery_shopper_monthly__combined_month_date.53d5efc9f0": {
+   "name": "not_null_int_delivery_shopper_monthly__combined_month_date",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.int_delivery_shopper_monthly__enriched",
+   "attached_node": "model.jaffle_finance.int_delivery_shopper_monthly__combined",
    "column_name": "month_date",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_delivery_shopper_monthly__enriched"
+     "model.jaffle_finance.int_delivery_shopper_monthly__combined"
     ]
    }
   },
-  "test.jaffle_finance.not_null_int_subscriptions__enriched_subscription_id.b2f4b60c0b": {
-   "name": "not_null_int_subscriptions__enriched_subscription_id",
+  "test.jaffle_finance.not_null_int_subscriptions__combined_subscription_id.b2f4b60c0b": {
+   "name": "not_null_int_subscriptions__combined_subscription_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.int_subscriptions__enriched",
+   "attached_node": "model.jaffle_finance.int_subscriptions__combined",
    "column_name": "subscription_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_subscriptions__enriched"
+     "model.jaffle_finance.int_subscriptions__combined"
     ]
    }
   },
-  "test.jaffle_finance.not_null_int_subscriptions__enriched_received_date.2df26258d9": {
-   "name": "not_null_int_subscriptions__enriched_received_date",
+  "test.jaffle_finance.not_null_int_subscriptions__combined_received_date.2df26258d9": {
+   "name": "not_null_int_subscriptions__combined_received_date",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.int_subscriptions__enriched",
+   "attached_node": "model.jaffle_finance.int_subscriptions__combined",
    "column_name": "received_date",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_subscriptions__enriched"
+     "model.jaffle_finance.int_subscriptions__combined"
     ]
    }
   },
@@ -5919,325 +5919,325 @@
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_area_id.2016bb38b9": {
-   "name": "not_null_wt_delivery_base_metrics_area_id",
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_area_id.2016bb38b9": {
+   "name": "not_null_rpt_delivery_base_metrics_area_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_base_metrics",
+   "attached_node": "model.jaffle_finance.rpt_delivery_base_metrics",
    "column_name": "area_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_base_metrics"
+     "model.jaffle_finance.rpt_delivery_base_metrics"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_area_name.594251dfa3": {
-   "name": "not_null_wt_delivery_base_metrics_area_name",
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_area_name.594251dfa3": {
+   "name": "not_null_rpt_delivery_base_metrics_area_name",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_base_metrics",
+   "attached_node": "model.jaffle_finance.rpt_delivery_base_metrics",
    "column_name": "area_name",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_base_metrics"
+     "model.jaffle_finance.rpt_delivery_base_metrics"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_business_days.856991e6ce": {
-   "name": "not_null_wt_delivery_base_metrics_business_days",
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_business_days.856991e6ce": {
+   "name": "not_null_rpt_delivery_base_metrics_business_days",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_base_metrics",
+   "attached_node": "model.jaffle_finance.rpt_delivery_base_metrics",
    "column_name": "business_days",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_base_metrics"
+     "model.jaffle_finance.rpt_delivery_base_metrics"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_corporation_id.f861d9b744": {
-   "name": "not_null_wt_delivery_base_metrics_corporation_id",
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_corporation_id.f861d9b744": {
+   "name": "not_null_rpt_delivery_base_metrics_corporation_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_base_metrics",
+   "attached_node": "model.jaffle_finance.rpt_delivery_base_metrics",
    "column_name": "corporation_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_base_metrics"
+     "model.jaffle_finance.rpt_delivery_base_metrics"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_corporation_name.4a1acc19e9": {
-   "name": "not_null_wt_delivery_base_metrics_corporation_name",
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_corporation_name.4a1acc19e9": {
+   "name": "not_null_rpt_delivery_base_metrics_corporation_name",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_base_metrics",
+   "attached_node": "model.jaffle_finance.rpt_delivery_base_metrics",
    "column_name": "corporation_name",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_base_metrics"
+     "model.jaffle_finance.rpt_delivery_base_metrics"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_cumulative_shopper_count.8c74c4d0a2": {
-   "name": "not_null_wt_delivery_base_metrics_cumulative_shopper_count",
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_cumulative_shopper_count.8c74c4d0a2": {
+   "name": "not_null_rpt_delivery_base_metrics_cumulative_shopper_count",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_base_metrics",
+   "attached_node": "model.jaffle_finance.rpt_delivery_base_metrics",
    "column_name": "cumulative_shopper_count",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_base_metrics"
+     "model.jaffle_finance.rpt_delivery_base_metrics"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_handling_fee.d993746298": {
-   "name": "not_null_wt_delivery_base_metrics_handling_fee",
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_handling_fee.d993746298": {
+   "name": "not_null_rpt_delivery_base_metrics_handling_fee",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_base_metrics",
+   "attached_node": "model.jaffle_finance.rpt_delivery_base_metrics",
    "column_name": "handling_fee",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_base_metrics"
+     "model.jaffle_finance.rpt_delivery_base_metrics"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_enterprise_id.57b3d2a8e3": {
-   "name": "not_null_wt_delivery_base_metrics_enterprise_id",
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_enterprise_id.57b3d2a8e3": {
+   "name": "not_null_rpt_delivery_base_metrics_enterprise_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_base_metrics",
+   "attached_node": "model.jaffle_finance.rpt_delivery_base_metrics",
    "column_name": "enterprise_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_base_metrics"
+     "model.jaffle_finance.rpt_delivery_base_metrics"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_enterprise_name.b75b5e1363": {
-   "name": "not_null_wt_delivery_base_metrics_enterprise_name",
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_enterprise_name.b75b5e1363": {
+   "name": "not_null_rpt_delivery_base_metrics_enterprise_name",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_base_metrics",
+   "attached_node": "model.jaffle_finance.rpt_delivery_base_metrics",
    "column_name": "enterprise_name",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_base_metrics"
+     "model.jaffle_finance.rpt_delivery_base_metrics"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_fiscal_month.90bc812dbe": {
-   "name": "not_null_wt_delivery_base_metrics_fiscal_month",
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_fiscal_month.90bc812dbe": {
+   "name": "not_null_rpt_delivery_base_metrics_fiscal_month",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_base_metrics",
+   "attached_node": "model.jaffle_finance.rpt_delivery_base_metrics",
    "column_name": "fiscal_month",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_base_metrics"
+     "model.jaffle_finance.rpt_delivery_base_metrics"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_fiscal_quarter.11807712df": {
-   "name": "not_null_wt_delivery_base_metrics_fiscal_quarter",
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_fiscal_quarter.11807712df": {
+   "name": "not_null_rpt_delivery_base_metrics_fiscal_quarter",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_base_metrics",
+   "attached_node": "model.jaffle_finance.rpt_delivery_base_metrics",
    "column_name": "fiscal_quarter",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_base_metrics"
+     "model.jaffle_finance.rpt_delivery_base_metrics"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_fiscal_year.5f1dd33da6": {
-   "name": "not_null_wt_delivery_base_metrics_fiscal_year",
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_fiscal_year.5f1dd33da6": {
+   "name": "not_null_rpt_delivery_base_metrics_fiscal_year",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_base_metrics",
+   "attached_node": "model.jaffle_finance.rpt_delivery_base_metrics",
    "column_name": "fiscal_year",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_base_metrics"
+     "model.jaffle_finance.rpt_delivery_base_metrics"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_month_date.f4f4b96054": {
-   "name": "not_null_wt_delivery_base_metrics_month_date",
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_month_date.f4f4b96054": {
+   "name": "not_null_rpt_delivery_base_metrics_month_date",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_base_metrics",
+   "attached_node": "model.jaffle_finance.rpt_delivery_base_metrics",
    "column_name": "month_date",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_base_metrics"
+     "model.jaffle_finance.rpt_delivery_base_metrics"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_new_shopper_count.b7197f3eb9": {
-   "name": "not_null_wt_delivery_base_metrics_new_shopper_count",
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_new_shopper_count.b7197f3eb9": {
+   "name": "not_null_rpt_delivery_base_metrics_new_shopper_count",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_base_metrics",
+   "attached_node": "model.jaffle_finance.rpt_delivery_base_metrics",
    "column_name": "new_shopper_count",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_base_metrics"
+     "model.jaffle_finance.rpt_delivery_base_metrics"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_delivery_id.0016e974db": {
-   "name": "not_null_wt_delivery_base_metrics_delivery_id",
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_delivery_id.0016e974db": {
+   "name": "not_null_rpt_delivery_base_metrics_delivery_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_base_metrics",
+   "attached_node": "model.jaffle_finance.rpt_delivery_base_metrics",
    "column_name": "delivery_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_base_metrics"
+     "model.jaffle_finance.rpt_delivery_base_metrics"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_delivery_name.47edaf367b": {
-   "name": "not_null_wt_delivery_base_metrics_delivery_name",
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_delivery_name.47edaf367b": {
+   "name": "not_null_rpt_delivery_base_metrics_delivery_name",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_base_metrics",
+   "attached_node": "model.jaffle_finance.rpt_delivery_base_metrics",
    "column_name": "delivery_name",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_base_metrics"
+     "model.jaffle_finance.rpt_delivery_base_metrics"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_subscription_count.faa786b24b": {
-   "name": "not_null_wt_delivery_base_metrics_subscription_count",
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_subscription_count.faa786b24b": {
+   "name": "not_null_rpt_delivery_base_metrics_subscription_count",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_base_metrics",
+   "attached_node": "model.jaffle_finance.rpt_delivery_base_metrics",
    "column_name": "subscription_count",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_base_metrics"
+     "model.jaffle_finance.rpt_delivery_base_metrics"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_fiscal_month.a2d3948799": {
-   "name": "not_null_wt_delivery_shopper_monthly_visits_fiscal_month",
+  "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_fiscal_month.a2d3948799": {
+   "name": "not_null_rpt_delivery_shopper_monthly_visits_fiscal_month",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_shopper_monthly_visits",
+   "attached_node": "model.jaffle_finance.rpt_delivery_shopper_monthly_visits",
    "column_name": "fiscal_month",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_shopper_monthly_visits"
+     "model.jaffle_finance.rpt_delivery_shopper_monthly_visits"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_fiscal_quarter.8e0074af4b": {
-   "name": "not_null_wt_delivery_shopper_monthly_visits_fiscal_quarter",
+  "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_fiscal_quarter.8e0074af4b": {
+   "name": "not_null_rpt_delivery_shopper_monthly_visits_fiscal_quarter",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_shopper_monthly_visits",
+   "attached_node": "model.jaffle_finance.rpt_delivery_shopper_monthly_visits",
    "column_name": "fiscal_quarter",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_shopper_monthly_visits"
+     "model.jaffle_finance.rpt_delivery_shopper_monthly_visits"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_fiscal_year.06af69a062": {
-   "name": "not_null_wt_delivery_shopper_monthly_visits_fiscal_year",
+  "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_fiscal_year.06af69a062": {
+   "name": "not_null_rpt_delivery_shopper_monthly_visits_fiscal_year",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_shopper_monthly_visits",
+   "attached_node": "model.jaffle_finance.rpt_delivery_shopper_monthly_visits",
    "column_name": "fiscal_year",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_shopper_monthly_visits"
+     "model.jaffle_finance.rpt_delivery_shopper_monthly_visits"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_month_date.f01212da92": {
-   "name": "not_null_wt_delivery_shopper_monthly_visits_month_date",
+  "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_month_date.f01212da92": {
+   "name": "not_null_rpt_delivery_shopper_monthly_visits_month_date",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_shopper_monthly_visits",
+   "attached_node": "model.jaffle_finance.rpt_delivery_shopper_monthly_visits",
    "column_name": "month_date",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_shopper_monthly_visits"
+     "model.jaffle_finance.rpt_delivery_shopper_monthly_visits"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_shopper_id.f9a658e16f": {
-   "name": "not_null_wt_delivery_shopper_monthly_visits_shopper_id",
+  "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_shopper_id.f9a658e16f": {
+   "name": "not_null_rpt_delivery_shopper_monthly_visits_shopper_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_shopper_monthly_visits",
+   "attached_node": "model.jaffle_finance.rpt_delivery_shopper_monthly_visits",
    "column_name": "shopper_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_shopper_monthly_visits"
+     "model.jaffle_finance.rpt_delivery_shopper_monthly_visits"
     ]
    }
   },
-  "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_delivery_id.efdad79ee0": {
-   "name": "not_null_wt_delivery_shopper_monthly_visits_delivery_id",
+  "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_delivery_id.efdad79ee0": {
+   "name": "not_null_rpt_delivery_shopper_monthly_visits_delivery_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "not_null"
    },
-   "attached_node": "model.jaffle_finance.wt_delivery_shopper_monthly_visits",
+   "attached_node": "model.jaffle_finance.rpt_delivery_shopper_monthly_visits",
    "column_name": "delivery_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.wt_delivery_shopper_monthly_visits"
+     "model.jaffle_finance.rpt_delivery_shopper_monthly_visits"
     ]
    }
   },
@@ -6301,18 +6301,18 @@
     ]
    }
   },
-  "test.jaffle_finance.relationships_fct_delivery_monthly_snapshot_delivery_classification_key__delivery_classification_key__ref_dim_delivery_classifications_.8a2a6eecb7": {
-   "name": "relationships_fct_delivery_monthly_snapshot_delivery_classification_key__delivery_classification_key__ref_dim_delivery_classifications_",
+  "test.jaffle_finance.relationships_fct_delivery_monthly_snapshot_delivery_lane_key__delivery_lane_key__ref_dim_delivery_lanes_.8a2a6eecb7": {
+   "name": "relationships_fct_delivery_monthly_snapshot_delivery_lane_key__delivery_lane_key__ref_dim_delivery_lanes_",
    "resource_type": "test",
    "test_metadata": {
     "name": "relationships"
    },
    "attached_node": "model.jaffle_finance.fct_delivery_monthly_snapshot",
-   "column_name": "delivery_classification_key",
+   "column_name": "delivery_lane_key",
    "depends_on": {
     "nodes": [
      "model.jaffle_finance.fct_delivery_monthly_snapshot",
-     "model.jaffle_finance.dim_delivery_classifications"
+     "model.jaffle_finance.dim_delivery_lanes"
     ]
    }
   },
@@ -6376,18 +6376,18 @@
     ]
    }
   },
-  "test.jaffle_finance.relationships_fct_subscription_process_delivery_classification_key__delivery_classification_key__ref_dim_delivery_classifications_.ee0286e64f": {
-   "name": "relationships_fct_subscription_process_delivery_classification_key__delivery_classification_key__ref_dim_delivery_classifications_",
+  "test.jaffle_finance.relationships_fct_subscription_process_delivery_lane_key__delivery_lane_key__ref_dim_delivery_lanes_.ee0286e64f": {
+   "name": "relationships_fct_subscription_process_delivery_lane_key__delivery_lane_key__ref_dim_delivery_lanes_",
    "resource_type": "test",
    "test_metadata": {
     "name": "relationships"
    },
    "attached_node": "model.jaffle_finance.fct_subscription_process",
-   "column_name": "delivery_classification_key",
+   "column_name": "delivery_lane_key",
    "depends_on": {
     "nodes": [
      "model.jaffle_finance.fct_subscription_process",
-     "model.jaffle_finance.dim_delivery_classifications"
+     "model.jaffle_finance.dim_delivery_lanes"
     ]
    }
   },
@@ -6842,17 +6842,17 @@
     ]
    }
   },
-  "test.jaffle_finance.unique_dim_delivery_classifications_delivery_classification_key.98ff73eb33": {
-   "name": "unique_dim_delivery_classifications_delivery_classification_key",
+  "test.jaffle_finance.unique_dim_delivery_lanes_delivery_lane_key.98ff73eb33": {
+   "name": "unique_dim_delivery_lanes_delivery_lane_key",
    "resource_type": "test",
    "test_metadata": {
     "name": "unique"
    },
-   "attached_node": "model.jaffle_finance.dim_delivery_classifications",
-   "column_name": "delivery_classification_key",
+   "attached_node": "model.jaffle_finance.dim_delivery_lanes",
+   "column_name": "delivery_lane_key",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.dim_delivery_classifications"
+     "model.jaffle_finance.dim_delivery_lanes"
     ]
    }
   },
@@ -6884,87 +6884,87 @@
     ]
    }
   },
-  "test.jaffle_finance.unique_int_fiscal_years__enriched_enterprise_id.4ce90a08d1": {
-   "name": "unique_int_fiscal_years__enriched_enterprise_id",
+  "test.jaffle_finance.unique_int_fiscal_years__combined_enterprise_id.4ce90a08d1": {
+   "name": "unique_int_fiscal_years__combined_enterprise_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "unique"
    },
-   "attached_node": "model.jaffle_finance.int_fiscal_years__enriched",
+   "attached_node": "model.jaffle_finance.int_fiscal_years__combined",
    "column_name": "enterprise_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_fiscal_years__enriched"
+     "model.jaffle_finance.int_fiscal_years__combined"
     ]
    }
   },
-  "test.jaffle_finance.unique_int_supplier_departments__enriched_supplier_department_id.65c7da2d5d": {
-   "name": "unique_int_supplier_departments__enriched_supplier_department_id",
+  "test.jaffle_finance.unique_int_supplier_departments__combined_supplier_department_id.65c7da2d5d": {
+   "name": "unique_int_supplier_departments__combined_supplier_department_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "unique"
    },
-   "attached_node": "model.jaffle_finance.int_supplier_departments__enriched",
+   "attached_node": "model.jaffle_finance.int_supplier_departments__combined",
    "column_name": "supplier_department_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_supplier_departments__enriched"
+     "model.jaffle_finance.int_supplier_departments__combined"
     ]
    }
   },
-  "test.jaffle_finance.unique_int_suppliers__enriched_supplier_id.2476f91258": {
-   "name": "unique_int_suppliers__enriched_supplier_id",
+  "test.jaffle_finance.unique_int_suppliers__combined_supplier_id.2476f91258": {
+   "name": "unique_int_suppliers__combined_supplier_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "unique"
    },
-   "attached_node": "model.jaffle_finance.int_suppliers__enriched",
+   "attached_node": "model.jaffle_finance.int_suppliers__combined",
    "column_name": "supplier_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_suppliers__enriched"
+     "model.jaffle_finance.int_suppliers__combined"
     ]
    }
   },
-  "test.jaffle_finance.unique_int_shoppers__enriched_shopper_id.82d507a0e2": {
-   "name": "unique_int_shoppers__enriched_shopper_id",
+  "test.jaffle_finance.unique_int_shoppers__combined_shopper_id.82d507a0e2": {
+   "name": "unique_int_shoppers__combined_shopper_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "unique"
    },
-   "attached_node": "model.jaffle_finance.int_shoppers__enriched",
+   "attached_node": "model.jaffle_finance.int_shoppers__combined",
    "column_name": "shopper_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_shoppers__enriched"
+     "model.jaffle_finance.int_shoppers__combined"
     ]
    }
   },
-  "test.jaffle_finance.unique_int_delivery_classifications__enriched_delivery_id.a61910c370": {
-   "name": "unique_int_delivery_classifications__enriched_delivery_id",
+  "test.jaffle_finance.unique_int_delivery_lanes__combined_delivery_id.a61910c370": {
+   "name": "unique_int_delivery_lanes__combined_delivery_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "unique"
    },
-   "attached_node": "model.jaffle_finance.int_delivery_classifications__enriched",
+   "attached_node": "model.jaffle_finance.int_delivery_lanes__combined",
    "column_name": "delivery_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_delivery_classifications__enriched"
+     "model.jaffle_finance.int_delivery_lanes__combined"
     ]
    }
   },
-  "test.jaffle_finance.unique_int_subscriptions__enriched_subscription_id.7534648f96": {
-   "name": "unique_int_subscriptions__enriched_subscription_id",
+  "test.jaffle_finance.unique_int_subscriptions__combined_subscription_id.7534648f96": {
+   "name": "unique_int_subscriptions__combined_subscription_id",
    "resource_type": "test",
    "test_metadata": {
     "name": "unique"
    },
-   "attached_node": "model.jaffle_finance.int_subscriptions__enriched",
+   "attached_node": "model.jaffle_finance.int_subscriptions__combined",
    "column_name": "subscription_id",
    "depends_on": {
     "nodes": [
-     "model.jaffle_finance.int_subscriptions__enriched"
+     "model.jaffle_finance.int_subscriptions__combined"
     ]
    }
   },
@@ -8596,60 +8596,60 @@
    "source.jaffle_finance.lake_jaffle_payment.pos_pay"
   ],
   "model.jaffle_finance.dim_fiscal_years": [
-   "model.jaffle_finance.int_fiscal_years__enriched"
+   "model.jaffle_finance.int_fiscal_years__combined"
   ],
   "model.jaffle_finance.dim_supplier_departments": [
-   "model.jaffle_finance.int_supplier_departments__enriched"
+   "model.jaffle_finance.int_supplier_departments__combined"
   ],
   "model.jaffle_finance.dim_suppliers": [
-   "model.jaffle_finance.int_suppliers__enriched"
+   "model.jaffle_finance.int_suppliers__combined"
   ],
-  "model.jaffle_finance.dim_delivery_classifications": [
-   "snapshot.jaffle_finance.delivery_classifications_snapshot"
+  "model.jaffle_finance.dim_delivery_lanes": [
+   "snapshot.jaffle_finance.delivery_lanes_snapshot"
   ],
   "model.jaffle_finance.fct_delivery_monthly_snapshot": [
    "model.jaffle_finance.dim_fiscal_years",
-   "model.jaffle_finance.dim_delivery_classifications",
+   "model.jaffle_finance.dim_delivery_lanes",
    "model.jaffle_finance.fct_subscription_process",
-   "model.jaffle_finance.int_delivery_monthly__enriched"
+   "model.jaffle_finance.int_delivery_monthly__combined"
   ],
   "model.jaffle_finance.fct_delivery_shopper_monthly_visits": [
    "model.jaffle_finance.dim_fiscal_years",
-   "model.jaffle_finance.dim_delivery_classifications",
-   "model.jaffle_finance.int_delivery_shopper_monthly__enriched"
+   "model.jaffle_finance.dim_delivery_lanes",
+   "model.jaffle_finance.int_delivery_shopper_monthly__combined"
   ],
   "model.jaffle_finance.fct_subscription_process": [
    "model.jaffle_finance.dim_fiscal_years",
    "model.jaffle_finance.dim_supplier_departments",
    "model.jaffle_finance.dim_suppliers",
-   "model.jaffle_finance.dim_delivery_classifications",
-   "model.jaffle_finance.int_subscriptions__enriched"
+   "model.jaffle_finance.dim_delivery_lanes",
+   "model.jaffle_finance.int_subscriptions__combined"
   ],
-  "model.jaffle_finance.int_fiscal_years__enriched": [
+  "model.jaffle_finance.int_fiscal_years__combined": [
    "model.jaffle_finance.stg_finance__fiscal_years"
   ],
-  "model.jaffle_finance.int_supplier_departments__enriched": [
+  "model.jaffle_finance.int_supplier_departments__combined": [
    "model.jaffle_finance.stg_payment__supplier_departments"
   ],
-  "model.jaffle_finance.int_suppliers__enriched": [
+  "model.jaffle_finance.int_suppliers__combined": [
    "model.jaffle_finance.stg_payment__suppliers"
   ],
-  "model.jaffle_finance.int_shoppers__enriched": [
+  "model.jaffle_finance.int_shoppers__combined": [
    "model.jaffle_finance.stg_payment__shoppers"
   ],
-  "model.jaffle_finance.int_delivery_classifications__enriched": [
+  "model.jaffle_finance.int_delivery_lanes__combined": [
    "model.jaffle_finance.stg_masterdata__companies",
    "model.jaffle_finance.stg_masterdata__deliveries",
    "model.jaffle_finance.stg_masterdata__delivery_groups"
   ],
-  "model.jaffle_finance.int_delivery_monthly__enriched": [
+  "model.jaffle_finance.int_delivery_monthly__combined": [
    "model.jaffle_finance.stg_payment__warehouses",
    "model.jaffle_finance.stg_payment__scores"
   ],
-  "model.jaffle_finance.int_delivery_shopper_monthly__enriched": [
+  "model.jaffle_finance.int_delivery_shopper_monthly__combined": [
    "model.jaffle_finance.stg_payment__warehouses"
   ],
-  "model.jaffle_finance.int_subscriptions__enriched": [
+  "model.jaffle_finance.int_subscriptions__combined": [
    "model.jaffle_finance.stg_payment__supplier_departments",
    "model.jaffle_finance.stg_payment__subscriptions",
    "model.jaffle_finance.stg_payment__warehouses"
@@ -8694,13 +8694,13 @@
   "model.jaffle_finance.stg_payment__scores": [
    "source.jaffle_finance.dev_lake_jaffle_payment.scores"
   ],
-  "model.jaffle_finance.wt_delivery_base_metrics": [
+  "model.jaffle_finance.rpt_delivery_base_metrics": [
    "model.jaffle_finance.dim_fiscal_years",
-   "model.jaffle_finance.dim_delivery_classifications",
+   "model.jaffle_finance.dim_delivery_lanes",
    "model.jaffle_finance.fct_delivery_monthly_snapshot",
    "model.jaffle_finance.stg_finance__budgets"
   ],
-  "model.jaffle_finance.wt_delivery_shopper_monthly_visits": [
+  "model.jaffle_finance.rpt_delivery_shopper_monthly_visits": [
    "model.jaffle_finance.dim_fiscal_years",
    "model.jaffle_finance.fct_delivery_shopper_monthly_visits"
   ],
@@ -8712,8 +8712,8 @@
   "seed.jaffle_finance.deliveries": [],
   "seed.jaffle_finance.delivery_groups": [],
   "seed.jaffle_finance.source_datetime_policy": [],
-  "snapshot.jaffle_finance.delivery_classifications_snapshot": [
-   "model.jaffle_finance.int_delivery_classifications__enriched"
+  "snapshot.jaffle_finance.delivery_lanes_snapshot": [
+   "model.jaffle_finance.int_delivery_lanes__combined"
   ],
   "source.jaffle_finance.dev_lake_jaffle_finance.budgets": [],
   "source.jaffle_finance.dev_lake_jaffle_finance.fiscal_years": [],
@@ -8794,26 +8794,26 @@
   "test.jaffle_finance.dbt_utils_accepted_range_fct_delivery_monthly_snapshot_handling_fee__True__0.eb7cc55deb": [
    "model.jaffle_finance.fct_delivery_monthly_snapshot"
   ],
-  "test.jaffle_finance.dbt_utils_accepted_range_int_delivery_monthly__enriched_handling_fee__True__0.dc43bea6f8": [
-   "model.jaffle_finance.int_delivery_monthly__enriched"
+  "test.jaffle_finance.dbt_utils_accepted_range_int_delivery_monthly__combined_handling_fee__True__0.dc43bea6f8": [
+   "model.jaffle_finance.int_delivery_monthly__combined"
   ],
   "test.jaffle_finance.dbt_utils_accepted_range_stg_payment__scores_total_score__True__0.3e6250b796": [
    "model.jaffle_finance.stg_payment__scores"
   ],
-  "test.jaffle_finance.dbt_utils_accepted_range_wt_delivery_base_metrics_handling_fee__True__0.a05d5187b8": [
-   "model.jaffle_finance.wt_delivery_base_metrics"
+  "test.jaffle_finance.dbt_utils_accepted_range_rpt_delivery_base_metrics_handling_fee__True__0.a05d5187b8": [
+   "model.jaffle_finance.rpt_delivery_base_metrics"
   ],
   "test.jaffle_finance.dbt_utils_expression_is_true_pos_pay_payment_date___202403_and_payment_date_202604_.98411d6515": [
    "model.jaffle_finance.pos_pay"
   ],
-  "test.jaffle_finance.dbt_utils_expression_is_true_int_delivery_monthly__enriched_extract_day_from_month_date_1.7488ff56bf": [
-   "model.jaffle_finance.int_delivery_monthly__enriched"
+  "test.jaffle_finance.dbt_utils_expression_is_true_int_delivery_monthly__combined_extract_day_from_month_date_1.7488ff56bf": [
+   "model.jaffle_finance.int_delivery_monthly__combined"
   ],
-  "test.jaffle_finance.dbt_utils_expression_is_true_int_delivery_monthly__enriched_new_shopper_count_warehouse_count.52450f3b0d": [
-   "model.jaffle_finance.int_delivery_monthly__enriched"
+  "test.jaffle_finance.dbt_utils_expression_is_true_int_delivery_monthly__combined_new_shopper_count_warehouse_count.52450f3b0d": [
+   "model.jaffle_finance.int_delivery_monthly__combined"
   ],
-  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_dim_delivery_classifications_delivery_id__is_current.ef6ad755a1": [
-   "model.jaffle_finance.dim_delivery_classifications"
+  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_dim_delivery_lanes_delivery_id__is_current.ef6ad755a1": [
+   "model.jaffle_finance.dim_delivery_lanes"
   ],
   "test.jaffle_finance.dbt_utils_unique_combination_of_columns_fct_delivery_monthly_snapshot_delivery_id__month_date.0c486c5847": [
    "model.jaffle_finance.fct_delivery_monthly_snapshot"
@@ -8821,20 +8821,20 @@
   "test.jaffle_finance.dbt_utils_unique_combination_of_columns_fct_delivery_shopper_monthly_visits_delivery_id__shopper_id__month_date.0e155bb676": [
    "model.jaffle_finance.fct_delivery_shopper_monthly_visits"
   ],
-  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_int_delivery_monthly__enriched_delivery_id__month_date.92adb93afd": [
-   "model.jaffle_finance.int_delivery_monthly__enriched"
+  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_int_delivery_monthly__combined_delivery_id__month_date.92adb93afd": [
+   "model.jaffle_finance.int_delivery_monthly__combined"
   ],
-  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_int_delivery_shopper_monthly__enriched_delivery_id__shopper_id__month_date.2c9a5762e4": [
-   "model.jaffle_finance.int_delivery_shopper_monthly__enriched"
+  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_int_delivery_shopper_monthly__combined_delivery_id__shopper_id__month_date.2c9a5762e4": [
+   "model.jaffle_finance.int_delivery_shopper_monthly__combined"
   ],
   "test.jaffle_finance.dbt_utils_unique_combination_of_columns_stg_finance__budgets_delivery_id__month_date.9b72c6cf9a": [
    "model.jaffle_finance.stg_finance__budgets"
   ],
-  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_wt_delivery_base_metrics_delivery_id__month_date.c815f23c0a": [
-   "model.jaffle_finance.wt_delivery_base_metrics"
+  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_rpt_delivery_base_metrics_delivery_id__month_date.c815f23c0a": [
+   "model.jaffle_finance.rpt_delivery_base_metrics"
   ],
-  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_wt_delivery_shopper_monthly_visits_delivery_id__shopper_id__month_date.d911fb6eb0": [
-   "model.jaffle_finance.wt_delivery_shopper_monthly_visits"
+  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_rpt_delivery_shopper_monthly_visits_delivery_id__shopper_id__month_date.d911fb6eb0": [
+   "model.jaffle_finance.rpt_delivery_shopper_monthly_visits"
   ],
   "test.jaffle_finance.not_null_budgets_business_days.9756a9e064": [
    "seed.jaffle_finance.budgets"
@@ -8992,32 +8992,32 @@
   "test.jaffle_finance.not_null_dim_suppliers_supplier_key.109d716694": [
    "model.jaffle_finance.dim_suppliers"
   ],
-  "test.jaffle_finance.not_null_dim_delivery_classifications_area_id.c461a121de": [
-   "model.jaffle_finance.dim_delivery_classifications"
+  "test.jaffle_finance.not_null_dim_delivery_lanes_area_id.c461a121de": [
+   "model.jaffle_finance.dim_delivery_lanes"
   ],
-  "test.jaffle_finance.not_null_dim_delivery_classifications_category_id.96bcff0aeb": [
-   "model.jaffle_finance.dim_delivery_classifications"
+  "test.jaffle_finance.not_null_dim_delivery_lanes_category_id.96bcff0aeb": [
+   "model.jaffle_finance.dim_delivery_lanes"
   ],
-  "test.jaffle_finance.not_null_dim_delivery_classifications_corporation_id.7e9392ddb4": [
-   "model.jaffle_finance.dim_delivery_classifications"
+  "test.jaffle_finance.not_null_dim_delivery_lanes_corporation_id.7e9392ddb4": [
+   "model.jaffle_finance.dim_delivery_lanes"
   ],
-  "test.jaffle_finance.not_null_dim_delivery_classifications_enterprise_id.cc6355d296": [
-   "model.jaffle_finance.dim_delivery_classifications"
+  "test.jaffle_finance.not_null_dim_delivery_lanes_enterprise_id.cc6355d296": [
+   "model.jaffle_finance.dim_delivery_lanes"
   ],
-  "test.jaffle_finance.not_null_dim_delivery_classifications_is_current.7e54b80ac8": [
-   "model.jaffle_finance.dim_delivery_classifications"
+  "test.jaffle_finance.not_null_dim_delivery_lanes_is_current.7e54b80ac8": [
+   "model.jaffle_finance.dim_delivery_lanes"
   ],
-  "test.jaffle_finance.not_null_dim_delivery_classifications_delivery_classification_key.8bcacf8292": [
-   "model.jaffle_finance.dim_delivery_classifications"
+  "test.jaffle_finance.not_null_dim_delivery_lanes_delivery_lane_key.8bcacf8292": [
+   "model.jaffle_finance.dim_delivery_lanes"
   ],
-  "test.jaffle_finance.not_null_dim_delivery_classifications_delivery_id.168f817e7c": [
-   "model.jaffle_finance.dim_delivery_classifications"
+  "test.jaffle_finance.not_null_dim_delivery_lanes_delivery_id.168f817e7c": [
+   "model.jaffle_finance.dim_delivery_lanes"
   ],
-  "test.jaffle_finance.not_null_dim_delivery_classifications_valid_from.7dd6d3cfbf": [
-   "model.jaffle_finance.dim_delivery_classifications"
+  "test.jaffle_finance.not_null_dim_delivery_lanes_valid_from.7dd6d3cfbf": [
+   "model.jaffle_finance.dim_delivery_lanes"
   ],
-  "test.jaffle_finance.not_null_dim_delivery_classifications_valid_to.96eb8e0fb9": [
-   "model.jaffle_finance.dim_delivery_classifications"
+  "test.jaffle_finance.not_null_dim_delivery_lanes_valid_to.96eb8e0fb9": [
+   "model.jaffle_finance.dim_delivery_lanes"
   ],
   "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_business_day_count.13ffd333fa": [
    "model.jaffle_finance.fct_delivery_monthly_snapshot"
@@ -9034,7 +9034,7 @@
   "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_new_shopper_count.086de0ae99": [
    "model.jaffle_finance.fct_delivery_monthly_snapshot"
   ],
-  "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_delivery_classification_key.6c86413698": [
+  "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_delivery_lane_key.6c86413698": [
    "model.jaffle_finance.fct_delivery_monthly_snapshot"
   ],
   "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_delivery_id.92c1006c8c": [
@@ -9067,7 +9067,7 @@
   "test.jaffle_finance.not_null_fct_subscription_process_supplier_key.99aa16c386": [
    "model.jaffle_finance.fct_subscription_process"
   ],
-  "test.jaffle_finance.not_null_fct_subscription_process_delivery_classification_key.4cfbe872fb": [
+  "test.jaffle_finance.not_null_fct_subscription_process_delivery_lane_key.4cfbe872fb": [
    "model.jaffle_finance.fct_subscription_process"
   ],
   "test.jaffle_finance.not_null_fct_subscription_process_delivery_id.6a24e02691": [
@@ -9091,41 +9091,41 @@
   "test.jaffle_finance.not_null_fiscal_years_updated_at.30933e1f1a": [
    "seed.jaffle_finance.fiscal_years"
   ],
-  "test.jaffle_finance.not_null_int_supplier_departments__enriched_supplier_department_id.edb5d2864e": [
-   "model.jaffle_finance.int_supplier_departments__enriched"
+  "test.jaffle_finance.not_null_int_supplier_departments__combined_supplier_department_id.edb5d2864e": [
+   "model.jaffle_finance.int_supplier_departments__combined"
   ],
-  "test.jaffle_finance.not_null_int_suppliers__enriched_supplier_id.e5a16596eb": [
-   "model.jaffle_finance.int_suppliers__enriched"
+  "test.jaffle_finance.not_null_int_suppliers__combined_supplier_id.e5a16596eb": [
+   "model.jaffle_finance.int_suppliers__combined"
   ],
-  "test.jaffle_finance.not_null_int_delivery_classifications__enriched_delivery_id.ef06b3e728": [
-   "model.jaffle_finance.int_delivery_classifications__enriched"
+  "test.jaffle_finance.not_null_int_delivery_lanes__combined_delivery_id.ef06b3e728": [
+   "model.jaffle_finance.int_delivery_lanes__combined"
   ],
-  "test.jaffle_finance.not_null_int_delivery_classifications__enriched_updated_at.15eba027cf": [
-   "model.jaffle_finance.int_delivery_classifications__enriched"
+  "test.jaffle_finance.not_null_int_delivery_lanes__combined_updated_at.15eba027cf": [
+   "model.jaffle_finance.int_delivery_lanes__combined"
   ],
-  "test.jaffle_finance.not_null_int_delivery_monthly__enriched_business_day_count.093f84766a": [
-   "model.jaffle_finance.int_delivery_monthly__enriched"
+  "test.jaffle_finance.not_null_int_delivery_monthly__combined_business_day_count.093f84766a": [
+   "model.jaffle_finance.int_delivery_monthly__combined"
   ],
-  "test.jaffle_finance.not_null_int_delivery_monthly__enriched_handling_fee.e657b3c3e9": [
-   "model.jaffle_finance.int_delivery_monthly__enriched"
+  "test.jaffle_finance.not_null_int_delivery_monthly__combined_handling_fee.e657b3c3e9": [
+   "model.jaffle_finance.int_delivery_monthly__combined"
   ],
-  "test.jaffle_finance.not_null_int_delivery_monthly__enriched_month_date.1a9ea44512": [
-   "model.jaffle_finance.int_delivery_monthly__enriched"
+  "test.jaffle_finance.not_null_int_delivery_monthly__combined_month_date.1a9ea44512": [
+   "model.jaffle_finance.int_delivery_monthly__combined"
   ],
-  "test.jaffle_finance.not_null_int_delivery_monthly__enriched_new_shopper_count.7d44c7318d": [
-   "model.jaffle_finance.int_delivery_monthly__enriched"
+  "test.jaffle_finance.not_null_int_delivery_monthly__combined_new_shopper_count.7d44c7318d": [
+   "model.jaffle_finance.int_delivery_monthly__combined"
   ],
-  "test.jaffle_finance.not_null_int_delivery_monthly__enriched_warehouse_count.844c3466a3": [
-   "model.jaffle_finance.int_delivery_monthly__enriched"
+  "test.jaffle_finance.not_null_int_delivery_monthly__combined_warehouse_count.844c3466a3": [
+   "model.jaffle_finance.int_delivery_monthly__combined"
   ],
-  "test.jaffle_finance.not_null_int_delivery_shopper_monthly__enriched_month_date.53d5efc9f0": [
-   "model.jaffle_finance.int_delivery_shopper_monthly__enriched"
+  "test.jaffle_finance.not_null_int_delivery_shopper_monthly__combined_month_date.53d5efc9f0": [
+   "model.jaffle_finance.int_delivery_shopper_monthly__combined"
   ],
-  "test.jaffle_finance.not_null_int_subscriptions__enriched_subscription_id.b2f4b60c0b": [
-   "model.jaffle_finance.int_subscriptions__enriched"
+  "test.jaffle_finance.not_null_int_subscriptions__combined_subscription_id.b2f4b60c0b": [
+   "model.jaffle_finance.int_subscriptions__combined"
   ],
-  "test.jaffle_finance.not_null_int_subscriptions__enriched_received_date.2df26258d9": [
-   "model.jaffle_finance.int_subscriptions__enriched"
+  "test.jaffle_finance.not_null_int_subscriptions__combined_received_date.2df26258d9": [
+   "model.jaffle_finance.int_subscriptions__combined"
   ],
   "test.jaffle_finance.not_null_deliveries_building.75733030f2": [
    "seed.jaffle_finance.deliveries"
@@ -9397,74 +9397,74 @@
   "test.jaffle_finance.not_null_stg_payment__scores_total_score.d7e292e6bc": [
    "model.jaffle_finance.stg_payment__scores"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_area_id.2016bb38b9": [
-   "model.jaffle_finance.wt_delivery_base_metrics"
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_area_id.2016bb38b9": [
+   "model.jaffle_finance.rpt_delivery_base_metrics"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_area_name.594251dfa3": [
-   "model.jaffle_finance.wt_delivery_base_metrics"
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_area_name.594251dfa3": [
+   "model.jaffle_finance.rpt_delivery_base_metrics"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_business_days.856991e6ce": [
-   "model.jaffle_finance.wt_delivery_base_metrics"
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_business_days.856991e6ce": [
+   "model.jaffle_finance.rpt_delivery_base_metrics"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_corporation_id.f861d9b744": [
-   "model.jaffle_finance.wt_delivery_base_metrics"
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_corporation_id.f861d9b744": [
+   "model.jaffle_finance.rpt_delivery_base_metrics"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_corporation_name.4a1acc19e9": [
-   "model.jaffle_finance.wt_delivery_base_metrics"
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_corporation_name.4a1acc19e9": [
+   "model.jaffle_finance.rpt_delivery_base_metrics"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_cumulative_shopper_count.8c74c4d0a2": [
-   "model.jaffle_finance.wt_delivery_base_metrics"
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_cumulative_shopper_count.8c74c4d0a2": [
+   "model.jaffle_finance.rpt_delivery_base_metrics"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_handling_fee.d993746298": [
-   "model.jaffle_finance.wt_delivery_base_metrics"
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_handling_fee.d993746298": [
+   "model.jaffle_finance.rpt_delivery_base_metrics"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_enterprise_id.57b3d2a8e3": [
-   "model.jaffle_finance.wt_delivery_base_metrics"
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_enterprise_id.57b3d2a8e3": [
+   "model.jaffle_finance.rpt_delivery_base_metrics"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_enterprise_name.b75b5e1363": [
-   "model.jaffle_finance.wt_delivery_base_metrics"
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_enterprise_name.b75b5e1363": [
+   "model.jaffle_finance.rpt_delivery_base_metrics"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_fiscal_month.90bc812dbe": [
-   "model.jaffle_finance.wt_delivery_base_metrics"
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_fiscal_month.90bc812dbe": [
+   "model.jaffle_finance.rpt_delivery_base_metrics"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_fiscal_quarter.11807712df": [
-   "model.jaffle_finance.wt_delivery_base_metrics"
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_fiscal_quarter.11807712df": [
+   "model.jaffle_finance.rpt_delivery_base_metrics"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_fiscal_year.5f1dd33da6": [
-   "model.jaffle_finance.wt_delivery_base_metrics"
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_fiscal_year.5f1dd33da6": [
+   "model.jaffle_finance.rpt_delivery_base_metrics"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_month_date.f4f4b96054": [
-   "model.jaffle_finance.wt_delivery_base_metrics"
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_month_date.f4f4b96054": [
+   "model.jaffle_finance.rpt_delivery_base_metrics"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_new_shopper_count.b7197f3eb9": [
-   "model.jaffle_finance.wt_delivery_base_metrics"
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_new_shopper_count.b7197f3eb9": [
+   "model.jaffle_finance.rpt_delivery_base_metrics"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_delivery_id.0016e974db": [
-   "model.jaffle_finance.wt_delivery_base_metrics"
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_delivery_id.0016e974db": [
+   "model.jaffle_finance.rpt_delivery_base_metrics"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_delivery_name.47edaf367b": [
-   "model.jaffle_finance.wt_delivery_base_metrics"
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_delivery_name.47edaf367b": [
+   "model.jaffle_finance.rpt_delivery_base_metrics"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_subscription_count.faa786b24b": [
-   "model.jaffle_finance.wt_delivery_base_metrics"
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_subscription_count.faa786b24b": [
+   "model.jaffle_finance.rpt_delivery_base_metrics"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_fiscal_month.a2d3948799": [
-   "model.jaffle_finance.wt_delivery_shopper_monthly_visits"
+  "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_fiscal_month.a2d3948799": [
+   "model.jaffle_finance.rpt_delivery_shopper_monthly_visits"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_fiscal_quarter.8e0074af4b": [
-   "model.jaffle_finance.wt_delivery_shopper_monthly_visits"
+  "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_fiscal_quarter.8e0074af4b": [
+   "model.jaffle_finance.rpt_delivery_shopper_monthly_visits"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_fiscal_year.06af69a062": [
-   "model.jaffle_finance.wt_delivery_shopper_monthly_visits"
+  "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_fiscal_year.06af69a062": [
+   "model.jaffle_finance.rpt_delivery_shopper_monthly_visits"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_month_date.f01212da92": [
-   "model.jaffle_finance.wt_delivery_shopper_monthly_visits"
+  "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_month_date.f01212da92": [
+   "model.jaffle_finance.rpt_delivery_shopper_monthly_visits"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_shopper_id.f9a658e16f": [
-   "model.jaffle_finance.wt_delivery_shopper_monthly_visits"
+  "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_shopper_id.f9a658e16f": [
+   "model.jaffle_finance.rpt_delivery_shopper_monthly_visits"
   ],
-  "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_delivery_id.efdad79ee0": [
-   "model.jaffle_finance.wt_delivery_shopper_monthly_visits"
+  "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_delivery_id.efdad79ee0": [
+   "model.jaffle_finance.rpt_delivery_shopper_monthly_visits"
   ],
   "test.jaffle_finance.relationships_pos_ord_lg_id__id__source_lake_jaffle_payment_pos_pay_.bdbf6a8374": [
    "model.jaffle_finance.pos_ord",
@@ -9482,8 +9482,8 @@
    "model.jaffle_finance.dim_fiscal_years",
    "model.jaffle_finance.fct_delivery_monthly_snapshot"
   ],
-  "test.jaffle_finance.relationships_fct_delivery_monthly_snapshot_delivery_classification_key__delivery_classification_key__ref_dim_delivery_classifications_.8a2a6eecb7": [
-   "model.jaffle_finance.dim_delivery_classifications",
+  "test.jaffle_finance.relationships_fct_delivery_monthly_snapshot_delivery_lane_key__delivery_lane_key__ref_dim_delivery_lanes_.8a2a6eecb7": [
+   "model.jaffle_finance.dim_delivery_lanes",
    "model.jaffle_finance.fct_delivery_monthly_snapshot"
   ],
   "test.jaffle_finance.relationships_fct_delivery_shopper_monthly_visits_fiscal_year_key__fiscal_year_key__ref_dim_fiscal_years_.24138d9ce9": [
@@ -9502,8 +9502,8 @@
    "model.jaffle_finance.dim_suppliers",
    "model.jaffle_finance.fct_subscription_process"
   ],
-  "test.jaffle_finance.relationships_fct_subscription_process_delivery_classification_key__delivery_classification_key__ref_dim_delivery_classifications_.ee0286e64f": [
-   "model.jaffle_finance.dim_delivery_classifications",
+  "test.jaffle_finance.relationships_fct_subscription_process_delivery_lane_key__delivery_lane_key__ref_dim_delivery_lanes_.ee0286e64f": [
+   "model.jaffle_finance.dim_delivery_lanes",
    "model.jaffle_finance.fct_subscription_process"
   ],
   "test.jaffle_finance.relationships_stg_payment__supplier_departments_supplier_id__id__ref_stg_payment__suppliers_.536bce0f7e": [
@@ -9605,8 +9605,8 @@
   "test.jaffle_finance.unique_dim_suppliers_supplier_key.c50620593a": [
    "model.jaffle_finance.dim_suppliers"
   ],
-  "test.jaffle_finance.unique_dim_delivery_classifications_delivery_classification_key.98ff73eb33": [
-   "model.jaffle_finance.dim_delivery_classifications"
+  "test.jaffle_finance.unique_dim_delivery_lanes_delivery_lane_key.98ff73eb33": [
+   "model.jaffle_finance.dim_delivery_lanes"
   ],
   "test.jaffle_finance.unique_fct_subscription_process_subscription_id.d391f881ec": [
    "model.jaffle_finance.fct_subscription_process"
@@ -9614,23 +9614,23 @@
   "test.jaffle_finance.unique_fiscal_years_enterprise_id.3f991e98f2": [
    "seed.jaffle_finance.fiscal_years"
   ],
-  "test.jaffle_finance.unique_int_fiscal_years__enriched_enterprise_id.4ce90a08d1": [
-   "model.jaffle_finance.int_fiscal_years__enriched"
+  "test.jaffle_finance.unique_int_fiscal_years__combined_enterprise_id.4ce90a08d1": [
+   "model.jaffle_finance.int_fiscal_years__combined"
   ],
-  "test.jaffle_finance.unique_int_supplier_departments__enriched_supplier_department_id.65c7da2d5d": [
-   "model.jaffle_finance.int_supplier_departments__enriched"
+  "test.jaffle_finance.unique_int_supplier_departments__combined_supplier_department_id.65c7da2d5d": [
+   "model.jaffle_finance.int_supplier_departments__combined"
   ],
-  "test.jaffle_finance.unique_int_suppliers__enriched_supplier_id.2476f91258": [
-   "model.jaffle_finance.int_suppliers__enriched"
+  "test.jaffle_finance.unique_int_suppliers__combined_supplier_id.2476f91258": [
+   "model.jaffle_finance.int_suppliers__combined"
   ],
-  "test.jaffle_finance.unique_int_shoppers__enriched_shopper_id.82d507a0e2": [
-   "model.jaffle_finance.int_shoppers__enriched"
+  "test.jaffle_finance.unique_int_shoppers__combined_shopper_id.82d507a0e2": [
+   "model.jaffle_finance.int_shoppers__combined"
   ],
-  "test.jaffle_finance.unique_int_delivery_classifications__enriched_delivery_id.a61910c370": [
-   "model.jaffle_finance.int_delivery_classifications__enriched"
+  "test.jaffle_finance.unique_int_delivery_lanes__combined_delivery_id.a61910c370": [
+   "model.jaffle_finance.int_delivery_lanes__combined"
   ],
-  "test.jaffle_finance.unique_int_subscriptions__enriched_subscription_id.7534648f96": [
-   "model.jaffle_finance.int_subscriptions__enriched"
+  "test.jaffle_finance.unique_int_subscriptions__combined_subscription_id.7534648f96": [
+   "model.jaffle_finance.int_subscriptions__combined"
   ],
   "test.jaffle_finance.unique_deliveries_id.b803a5a57b": [
    "seed.jaffle_finance.deliveries"
@@ -9704,26 +9704,26 @@
   "unit_test.jaffle_finance.dim_suppliers.test_dim_suppliers_new_record_incremental": [
    "model.jaffle_finance.dim_suppliers"
   ],
-  "unit_test.jaffle_finance.dim_delivery_classifications.test_logical_deletion_uses_actual_deleted_at": [
-   "model.jaffle_finance.dim_delivery_classifications"
+  "unit_test.jaffle_finance.dim_delivery_lanes.test_logical_deletion_uses_actual_deleted_at": [
+   "model.jaffle_finance.dim_delivery_lanes"
   ],
-  "unit_test.jaffle_finance.dim_delivery_classifications.test_three_version_chain_continuity": [
-   "model.jaffle_finance.dim_delivery_classifications"
+  "unit_test.jaffle_finance.dim_delivery_lanes.test_three_version_chain_continuity": [
+   "model.jaffle_finance.dim_delivery_lanes"
   ],
-  "unit_test.jaffle_finance.dim_delivery_classifications.test_undelete_resurrection": [
-   "model.jaffle_finance.dim_delivery_classifications"
+  "unit_test.jaffle_finance.dim_delivery_lanes.test_undelete_resurrection": [
+   "model.jaffle_finance.dim_delivery_lanes"
   ],
-  "unit_test.jaffle_finance.dim_delivery_classifications.test_unknown_member_is_appended": [
-   "model.jaffle_finance.dim_delivery_classifications"
+  "unit_test.jaffle_finance.dim_delivery_lanes.test_unknown_member_is_appended": [
+   "model.jaffle_finance.dim_delivery_lanes"
   ],
-  "unit_test.jaffle_finance.int_supplier_departments__enriched.test_name_normalization": [
-   "model.jaffle_finance.int_supplier_departments__enriched"
+  "unit_test.jaffle_finance.int_supplier_departments__combined.test_name_normalization": [
+   "model.jaffle_finance.int_supplier_departments__combined"
   ],
-  "unit_test.jaffle_finance.int_delivery_classifications__enriched.test_bridge_tables_filter_deleted": [
-   "model.jaffle_finance.int_delivery_classifications__enriched"
+  "unit_test.jaffle_finance.int_delivery_lanes__combined.test_bridge_tables_filter_deleted": [
+   "model.jaffle_finance.int_delivery_lanes__combined"
   ],
-  "unit_test.jaffle_finance.int_delivery_classifications__enriched.test_updated_at_greatest_and_enterprise_join": [
-   "model.jaffle_finance.int_delivery_classifications__enriched"
+  "unit_test.jaffle_finance.int_delivery_lanes__combined.test_updated_at_greatest_and_enterprise_join": [
+   "model.jaffle_finance.int_delivery_lanes__combined"
   ]
  },
  "child_map": {
@@ -9831,8 +9831,8 @@
    "model.jaffle_finance.fct_delivery_monthly_snapshot",
    "model.jaffle_finance.fct_delivery_shopper_monthly_visits",
    "model.jaffle_finance.fct_subscription_process",
-   "model.jaffle_finance.wt_delivery_base_metrics",
-   "model.jaffle_finance.wt_delivery_shopper_monthly_visits",
+   "model.jaffle_finance.rpt_delivery_base_metrics",
+   "model.jaffle_finance.rpt_delivery_shopper_monthly_visits",
    "test.jaffle_finance.not_null_dim_fiscal_years_enterprise_id.fdae1889ad",
    "test.jaffle_finance.not_null_dim_fiscal_years_fiscal_year_key.b26c004fe8",
    "test.jaffle_finance.relationships_fct_delivery_monthly_snapshot_fiscal_year_key__fiscal_year_key__ref_dim_fiscal_years_.d2c65b1b96",
@@ -9869,31 +9869,31 @@
    "unit_test.jaffle_finance.dim_suppliers.test_dim_suppliers_initial_load",
    "unit_test.jaffle_finance.dim_suppliers.test_dim_suppliers_new_record_incremental"
   ],
-  "model.jaffle_finance.dim_delivery_classifications": [
+  "model.jaffle_finance.dim_delivery_lanes": [
    "model.jaffle_finance.fct_delivery_monthly_snapshot",
    "model.jaffle_finance.fct_delivery_shopper_monthly_visits",
    "model.jaffle_finance.fct_subscription_process",
-   "model.jaffle_finance.wt_delivery_base_metrics",
-   "test.jaffle_finance.dbt_utils_unique_combination_of_columns_dim_delivery_classifications_delivery_id__is_current.ef6ad755a1",
-   "test.jaffle_finance.not_null_dim_delivery_classifications_area_id.c461a121de",
-   "test.jaffle_finance.not_null_dim_delivery_classifications_category_id.96bcff0aeb",
-   "test.jaffle_finance.not_null_dim_delivery_classifications_corporation_id.7e9392ddb4",
-   "test.jaffle_finance.not_null_dim_delivery_classifications_enterprise_id.cc6355d296",
-   "test.jaffle_finance.not_null_dim_delivery_classifications_is_current.7e54b80ac8",
-   "test.jaffle_finance.not_null_dim_delivery_classifications_delivery_classification_key.8bcacf8292",
-   "test.jaffle_finance.not_null_dim_delivery_classifications_delivery_id.168f817e7c",
-   "test.jaffle_finance.not_null_dim_delivery_classifications_valid_from.7dd6d3cfbf",
-   "test.jaffle_finance.not_null_dim_delivery_classifications_valid_to.96eb8e0fb9",
-   "test.jaffle_finance.relationships_fct_delivery_monthly_snapshot_delivery_classification_key__delivery_classification_key__ref_dim_delivery_classifications_.8a2a6eecb7",
-   "test.jaffle_finance.relationships_fct_subscription_process_delivery_classification_key__delivery_classification_key__ref_dim_delivery_classifications_.ee0286e64f",
-   "test.jaffle_finance.unique_dim_delivery_classifications_delivery_classification_key.98ff73eb33",
-   "unit_test.jaffle_finance.dim_delivery_classifications.test_logical_deletion_uses_actual_deleted_at",
-   "unit_test.jaffle_finance.dim_delivery_classifications.test_three_version_chain_continuity",
-   "unit_test.jaffle_finance.dim_delivery_classifications.test_undelete_resurrection",
-   "unit_test.jaffle_finance.dim_delivery_classifications.test_unknown_member_is_appended"
+   "model.jaffle_finance.rpt_delivery_base_metrics",
+   "test.jaffle_finance.dbt_utils_unique_combination_of_columns_dim_delivery_lanes_delivery_id__is_current.ef6ad755a1",
+   "test.jaffle_finance.not_null_dim_delivery_lanes_area_id.c461a121de",
+   "test.jaffle_finance.not_null_dim_delivery_lanes_category_id.96bcff0aeb",
+   "test.jaffle_finance.not_null_dim_delivery_lanes_corporation_id.7e9392ddb4",
+   "test.jaffle_finance.not_null_dim_delivery_lanes_enterprise_id.cc6355d296",
+   "test.jaffle_finance.not_null_dim_delivery_lanes_is_current.7e54b80ac8",
+   "test.jaffle_finance.not_null_dim_delivery_lanes_delivery_lane_key.8bcacf8292",
+   "test.jaffle_finance.not_null_dim_delivery_lanes_delivery_id.168f817e7c",
+   "test.jaffle_finance.not_null_dim_delivery_lanes_valid_from.7dd6d3cfbf",
+   "test.jaffle_finance.not_null_dim_delivery_lanes_valid_to.96eb8e0fb9",
+   "test.jaffle_finance.relationships_fct_delivery_monthly_snapshot_delivery_lane_key__delivery_lane_key__ref_dim_delivery_lanes_.8a2a6eecb7",
+   "test.jaffle_finance.relationships_fct_subscription_process_delivery_lane_key__delivery_lane_key__ref_dim_delivery_lanes_.ee0286e64f",
+   "test.jaffle_finance.unique_dim_delivery_lanes_delivery_lane_key.98ff73eb33",
+   "unit_test.jaffle_finance.dim_delivery_lanes.test_logical_deletion_uses_actual_deleted_at",
+   "unit_test.jaffle_finance.dim_delivery_lanes.test_three_version_chain_continuity",
+   "unit_test.jaffle_finance.dim_delivery_lanes.test_undelete_resurrection",
+   "unit_test.jaffle_finance.dim_delivery_lanes.test_unknown_member_is_appended"
   ],
   "model.jaffle_finance.fct_delivery_monthly_snapshot": [
-   "model.jaffle_finance.wt_delivery_base_metrics",
+   "model.jaffle_finance.rpt_delivery_base_metrics",
    "test.jaffle_finance.dbt_utils_accepted_range_fct_delivery_monthly_snapshot_business_day_count__True__31.b88ca79c69",
    "test.jaffle_finance.dbt_utils_accepted_range_fct_delivery_monthly_snapshot_handling_fee__True__0.eb7cc55deb",
    "test.jaffle_finance.dbt_utils_unique_combination_of_columns_fct_delivery_monthly_snapshot_delivery_id__month_date.0c486c5847",
@@ -9902,15 +9902,15 @@
    "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_fiscal_year_key.992b88a3b6",
    "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_month_date.5a2d7e5be1",
    "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_new_shopper_count.086de0ae99",
-   "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_delivery_classification_key.6c86413698",
+   "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_delivery_lane_key.6c86413698",
    "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_delivery_id.92c1006c8c",
    "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_subscription_count.08f822549c",
    "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_warehouse_count.4eecf3dd13",
    "test.jaffle_finance.relationships_fct_delivery_monthly_snapshot_fiscal_year_key__fiscal_year_key__ref_dim_fiscal_years_.d2c65b1b96",
-   "test.jaffle_finance.relationships_fct_delivery_monthly_snapshot_delivery_classification_key__delivery_classification_key__ref_dim_delivery_classifications_.8a2a6eecb7"
+   "test.jaffle_finance.relationships_fct_delivery_monthly_snapshot_delivery_lane_key__delivery_lane_key__ref_dim_delivery_lanes_.8a2a6eecb7"
   ],
   "model.jaffle_finance.fct_delivery_shopper_monthly_visits": [
-   "model.jaffle_finance.wt_delivery_shopper_monthly_visits",
+   "model.jaffle_finance.rpt_delivery_shopper_monthly_visits",
    "test.jaffle_finance.dbt_utils_unique_combination_of_columns_fct_delivery_shopper_monthly_visits_delivery_id__shopper_id__month_date.0e155bb676",
    "test.jaffle_finance.not_null_fct_delivery_shopper_monthly_visits_fiscal_year_key.eab0f80554",
    "test.jaffle_finance.not_null_fct_delivery_shopper_monthly_visits_month_date.249ba56980",
@@ -9923,67 +9923,67 @@
    "test.jaffle_finance.not_null_fct_subscription_process_fiscal_year_key.7ed6f1daf1",
    "test.jaffle_finance.not_null_fct_subscription_process_supplier_department_key.2208a52d86",
    "test.jaffle_finance.not_null_fct_subscription_process_supplier_key.99aa16c386",
-   "test.jaffle_finance.not_null_fct_subscription_process_delivery_classification_key.4cfbe872fb",
+   "test.jaffle_finance.not_null_fct_subscription_process_delivery_lane_key.4cfbe872fb",
    "test.jaffle_finance.not_null_fct_subscription_process_delivery_id.6a24e02691",
    "test.jaffle_finance.not_null_fct_subscription_process_subscription_id.1435301895",
    "test.jaffle_finance.not_null_fct_subscription_process_received_date.dd167cee6a",
    "test.jaffle_finance.relationships_fct_subscription_process_fiscal_year_key__fiscal_year_key__ref_dim_fiscal_years_.e53fdcd498",
    "test.jaffle_finance.relationships_fct_subscription_process_supplier_department_key__supplier_department_key__ref_dim_supplier_departments_.9c51220097",
    "test.jaffle_finance.relationships_fct_subscription_process_supplier_key__supplier_key__ref_dim_suppliers_.036b4f64b2",
-   "test.jaffle_finance.relationships_fct_subscription_process_delivery_classification_key__delivery_classification_key__ref_dim_delivery_classifications_.ee0286e64f",
+   "test.jaffle_finance.relationships_fct_subscription_process_delivery_lane_key__delivery_lane_key__ref_dim_delivery_lanes_.ee0286e64f",
    "test.jaffle_finance.unique_fct_subscription_process_subscription_id.d391f881ec"
   ],
-  "model.jaffle_finance.int_fiscal_years__enriched": [
+  "model.jaffle_finance.int_fiscal_years__combined": [
    "model.jaffle_finance.dim_fiscal_years",
-   "test.jaffle_finance.unique_int_fiscal_years__enriched_enterprise_id.4ce90a08d1"
+   "test.jaffle_finance.unique_int_fiscal_years__combined_enterprise_id.4ce90a08d1"
   ],
-  "model.jaffle_finance.int_supplier_departments__enriched": [
+  "model.jaffle_finance.int_supplier_departments__combined": [
    "model.jaffle_finance.dim_supplier_departments",
-   "test.jaffle_finance.not_null_int_supplier_departments__enriched_supplier_department_id.edb5d2864e",
-   "test.jaffle_finance.unique_int_supplier_departments__enriched_supplier_department_id.65c7da2d5d",
-   "unit_test.jaffle_finance.int_supplier_departments__enriched.test_name_normalization"
+   "test.jaffle_finance.not_null_int_supplier_departments__combined_supplier_department_id.edb5d2864e",
+   "test.jaffle_finance.unique_int_supplier_departments__combined_supplier_department_id.65c7da2d5d",
+   "unit_test.jaffle_finance.int_supplier_departments__combined.test_name_normalization"
   ],
-  "model.jaffle_finance.int_suppliers__enriched": [
+  "model.jaffle_finance.int_suppliers__combined": [
    "model.jaffle_finance.dim_suppliers",
-   "test.jaffle_finance.not_null_int_suppliers__enriched_supplier_id.e5a16596eb",
-   "test.jaffle_finance.unique_int_suppliers__enriched_supplier_id.2476f91258"
+   "test.jaffle_finance.not_null_int_suppliers__combined_supplier_id.e5a16596eb",
+   "test.jaffle_finance.unique_int_suppliers__combined_supplier_id.2476f91258"
   ],
-  "model.jaffle_finance.int_shoppers__enriched": [
-   "test.jaffle_finance.unique_int_shoppers__enriched_shopper_id.82d507a0e2"
+  "model.jaffle_finance.int_shoppers__combined": [
+   "test.jaffle_finance.unique_int_shoppers__combined_shopper_id.82d507a0e2"
   ],
-  "model.jaffle_finance.int_delivery_classifications__enriched": [
-   "snapshot.jaffle_finance.delivery_classifications_snapshot",
-   "test.jaffle_finance.not_null_int_delivery_classifications__enriched_delivery_id.ef06b3e728",
-   "test.jaffle_finance.not_null_int_delivery_classifications__enriched_updated_at.15eba027cf",
-   "test.jaffle_finance.unique_int_delivery_classifications__enriched_delivery_id.a61910c370",
-   "unit_test.jaffle_finance.int_delivery_classifications__enriched.test_bridge_tables_filter_deleted",
-   "unit_test.jaffle_finance.int_delivery_classifications__enriched.test_updated_at_greatest_and_enterprise_join"
+  "model.jaffle_finance.int_delivery_lanes__combined": [
+   "snapshot.jaffle_finance.delivery_lanes_snapshot",
+   "test.jaffle_finance.not_null_int_delivery_lanes__combined_delivery_id.ef06b3e728",
+   "test.jaffle_finance.not_null_int_delivery_lanes__combined_updated_at.15eba027cf",
+   "test.jaffle_finance.unique_int_delivery_lanes__combined_delivery_id.a61910c370",
+   "unit_test.jaffle_finance.int_delivery_lanes__combined.test_bridge_tables_filter_deleted",
+   "unit_test.jaffle_finance.int_delivery_lanes__combined.test_updated_at_greatest_and_enterprise_join"
   ],
-  "model.jaffle_finance.int_delivery_monthly__enriched": [
+  "model.jaffle_finance.int_delivery_monthly__combined": [
    "model.jaffle_finance.fct_delivery_monthly_snapshot",
-   "test.jaffle_finance.dbt_utils_accepted_range_int_delivery_monthly__enriched_handling_fee__True__0.dc43bea6f8",
-   "test.jaffle_finance.dbt_utils_expression_is_true_int_delivery_monthly__enriched_extract_day_from_month_date_1.7488ff56bf",
-   "test.jaffle_finance.dbt_utils_expression_is_true_int_delivery_monthly__enriched_new_shopper_count_warehouse_count.52450f3b0d",
-   "test.jaffle_finance.dbt_utils_unique_combination_of_columns_int_delivery_monthly__enriched_delivery_id__month_date.92adb93afd",
-   "test.jaffle_finance.not_null_int_delivery_monthly__enriched_business_day_count.093f84766a",
-   "test.jaffle_finance.not_null_int_delivery_monthly__enriched_handling_fee.e657b3c3e9",
-   "test.jaffle_finance.not_null_int_delivery_monthly__enriched_month_date.1a9ea44512",
-   "test.jaffle_finance.not_null_int_delivery_monthly__enriched_new_shopper_count.7d44c7318d",
-   "test.jaffle_finance.not_null_int_delivery_monthly__enriched_warehouse_count.844c3466a3"
+   "test.jaffle_finance.dbt_utils_accepted_range_int_delivery_monthly__combined_handling_fee__True__0.dc43bea6f8",
+   "test.jaffle_finance.dbt_utils_expression_is_true_int_delivery_monthly__combined_extract_day_from_month_date_1.7488ff56bf",
+   "test.jaffle_finance.dbt_utils_expression_is_true_int_delivery_monthly__combined_new_shopper_count_warehouse_count.52450f3b0d",
+   "test.jaffle_finance.dbt_utils_unique_combination_of_columns_int_delivery_monthly__combined_delivery_id__month_date.92adb93afd",
+   "test.jaffle_finance.not_null_int_delivery_monthly__combined_business_day_count.093f84766a",
+   "test.jaffle_finance.not_null_int_delivery_monthly__combined_handling_fee.e657b3c3e9",
+   "test.jaffle_finance.not_null_int_delivery_monthly__combined_month_date.1a9ea44512",
+   "test.jaffle_finance.not_null_int_delivery_monthly__combined_new_shopper_count.7d44c7318d",
+   "test.jaffle_finance.not_null_int_delivery_monthly__combined_warehouse_count.844c3466a3"
   ],
-  "model.jaffle_finance.int_delivery_shopper_monthly__enriched": [
+  "model.jaffle_finance.int_delivery_shopper_monthly__combined": [
    "model.jaffle_finance.fct_delivery_shopper_monthly_visits",
-   "test.jaffle_finance.dbt_utils_unique_combination_of_columns_int_delivery_shopper_monthly__enriched_delivery_id__shopper_id__month_date.2c9a5762e4",
-   "test.jaffle_finance.not_null_int_delivery_shopper_monthly__enriched_month_date.53d5efc9f0"
+   "test.jaffle_finance.dbt_utils_unique_combination_of_columns_int_delivery_shopper_monthly__combined_delivery_id__shopper_id__month_date.2c9a5762e4",
+   "test.jaffle_finance.not_null_int_delivery_shopper_monthly__combined_month_date.53d5efc9f0"
   ],
-  "model.jaffle_finance.int_subscriptions__enriched": [
+  "model.jaffle_finance.int_subscriptions__combined": [
    "model.jaffle_finance.fct_subscription_process",
-   "test.jaffle_finance.not_null_int_subscriptions__enriched_subscription_id.b2f4b60c0b",
-   "test.jaffle_finance.not_null_int_subscriptions__enriched_received_date.2df26258d9",
-   "test.jaffle_finance.unique_int_subscriptions__enriched_subscription_id.7534648f96"
+   "test.jaffle_finance.not_null_int_subscriptions__combined_subscription_id.b2f4b60c0b",
+   "test.jaffle_finance.not_null_int_subscriptions__combined_received_date.2df26258d9",
+   "test.jaffle_finance.unique_int_subscriptions__combined_subscription_id.7534648f96"
   ],
   "model.jaffle_finance.stg_finance__budgets": [
-   "model.jaffle_finance.wt_delivery_base_metrics",
+   "model.jaffle_finance.rpt_delivery_base_metrics",
    "test.jaffle_finance.dbt_utils_unique_combination_of_columns_stg_finance__budgets_delivery_id__month_date.9b72c6cf9a",
    "test.jaffle_finance.not_null_stg_finance__budgets_created_at.45f7f9fff0",
    "test.jaffle_finance.not_null_stg_finance__budgets_handling_fee.6f5d4aaf1c",
@@ -9996,7 +9996,7 @@
    "test.jaffle_finance.unique_stg_finance__budgets_id.655671073f"
   ],
   "model.jaffle_finance.stg_finance__fiscal_years": [
-   "model.jaffle_finance.int_fiscal_years__enriched",
+   "model.jaffle_finance.int_fiscal_years__combined",
    "test.jaffle_finance.accepted_values_stg_finance__fiscal_years_fiscal_year_start_month__False__1__2__3__4__5__6__7__8__9__10__11__12.7975fcec8c",
    "test.jaffle_finance.not_null_stg_finance__fiscal_years_created_at.d1e90a199e",
    "test.jaffle_finance.not_null_stg_finance__fiscal_years_enterprise_id.36f938bb83",
@@ -10005,7 +10005,7 @@
    "test.jaffle_finance.unique_stg_finance__fiscal_years_enterprise_id.a4b81a934f"
   ],
   "model.jaffle_finance.stg_masterdata__companies": [
-   "model.jaffle_finance.int_delivery_classifications__enriched",
+   "model.jaffle_finance.int_delivery_lanes__combined",
    "test.jaffle_finance.not_null_stg_masterdata__companies_company_code.94ccc73e96",
    "test.jaffle_finance.not_null_stg_masterdata__companies_company_name.bda32a574f",
    "test.jaffle_finance.not_null_stg_masterdata__companies_created_at.5abbd6900b",
@@ -10015,7 +10015,7 @@
    "test.jaffle_finance.unique_stg_masterdata__companies_id.802232a4c3"
   ],
   "model.jaffle_finance.stg_masterdata__deliveries": [
-   "model.jaffle_finance.int_delivery_classifications__enriched",
+   "model.jaffle_finance.int_delivery_lanes__combined",
    "test.jaffle_finance.not_null_stg_masterdata__deliveries_building.c6b3819ffb",
    "test.jaffle_finance.not_null_stg_masterdata__deliveries_created_at.6f6d302e28",
    "test.jaffle_finance.not_null_stg_masterdata__deliveries_fax_number.cc4315c21d",
@@ -10036,7 +10036,7 @@
    "test.jaffle_finance.unique_stg_masterdata__deliveries_id.4d37dbd600"
   ],
   "model.jaffle_finance.stg_masterdata__delivery_groups": [
-   "model.jaffle_finance.int_delivery_classifications__enriched",
+   "model.jaffle_finance.int_delivery_lanes__combined",
    "test.jaffle_finance.not_null_stg_masterdata__delivery_groups_company_id.a94d395c5f",
    "test.jaffle_finance.not_null_stg_masterdata__delivery_groups_created_at.5b6a684f04",
    "test.jaffle_finance.not_null_stg_masterdata__delivery_groups_id.3512a67a06",
@@ -10047,8 +10047,8 @@
    "test.jaffle_finance.unique_stg_masterdata__delivery_groups_id.bb5e9f8227"
   ],
   "model.jaffle_finance.stg_payment__supplier_departments": [
-   "model.jaffle_finance.int_supplier_departments__enriched",
-   "model.jaffle_finance.int_subscriptions__enriched",
+   "model.jaffle_finance.int_supplier_departments__combined",
+   "model.jaffle_finance.int_subscriptions__combined",
    "test.jaffle_finance.not_null_stg_payment__supplier_departments_department_type_id.af1072fc99",
    "test.jaffle_finance.not_null_stg_payment__supplier_departments_supplier_id.fa1a225bfc",
    "test.jaffle_finance.not_null_stg_payment__supplier_departments_id.240696d7cc",
@@ -10058,7 +10058,7 @@
    "test.jaffle_finance.unique_stg_payment__supplier_departments_id.b215b4b12e"
   ],
   "model.jaffle_finance.stg_payment__suppliers": [
-   "model.jaffle_finance.int_suppliers__enriched",
+   "model.jaffle_finance.int_suppliers__combined",
    "test.jaffle_finance.not_null_stg_payment__suppliers_id.2bc42b3100",
    "test.jaffle_finance.not_null_stg_payment__suppliers_delivery_id.9a2cdc26c7",
    "test.jaffle_finance.not_null_stg_payment__suppliers_updated_at.aa2529964b",
@@ -10066,7 +10066,7 @@
    "test.jaffle_finance.unique_stg_payment__suppliers_id.23b1b20acb"
   ],
   "model.jaffle_finance.stg_payment__shoppers": [
-   "model.jaffle_finance.int_shoppers__enriched",
+   "model.jaffle_finance.int_shoppers__combined",
    "test.jaffle_finance.not_null_stg_payment__shoppers_created_at.2f0154027a",
    "test.jaffle_finance.not_null_stg_payment__shoppers_id.68d87b2b74",
    "test.jaffle_finance.not_null_stg_payment__shoppers_delivery_id.986797ad3c",
@@ -10074,7 +10074,7 @@
    "test.jaffle_finance.unique_stg_payment__shoppers_id.c57ac81654"
   ],
   "model.jaffle_finance.stg_payment__subscriptions": [
-   "model.jaffle_finance.int_subscriptions__enriched",
+   "model.jaffle_finance.int_subscriptions__combined",
    "test.jaffle_finance.not_null_stg_payment__subscriptions_id.f7268b5546",
    "test.jaffle_finance.not_null_stg_payment__subscriptions_delivery_id.b21554ba1e",
    "test.jaffle_finance.not_null_stg_payment__subscriptions_warehouse_id.2058b26105",
@@ -10082,9 +10082,9 @@
    "test.jaffle_finance.unique_stg_payment__subscriptions_id.ee595cd5e7"
   ],
   "model.jaffle_finance.stg_payment__warehouses": [
-   "model.jaffle_finance.int_delivery_monthly__enriched",
-   "model.jaffle_finance.int_delivery_shopper_monthly__enriched",
-   "model.jaffle_finance.int_subscriptions__enriched",
+   "model.jaffle_finance.int_delivery_monthly__combined",
+   "model.jaffle_finance.int_delivery_shopper_monthly__combined",
+   "model.jaffle_finance.int_subscriptions__combined",
    "test.jaffle_finance.not_null_stg_payment__warehouses_id.052696ad5d",
    "test.jaffle_finance.not_null_stg_payment__warehouses_shopper_id.cfb313e29d",
    "test.jaffle_finance.not_null_stg_payment__warehouses_delivery_id.fd0822e684",
@@ -10094,7 +10094,7 @@
    "test.jaffle_finance.unique_stg_payment__warehouses_id.2fa08e7854"
   ],
   "model.jaffle_finance.stg_payment__scores": [
-   "model.jaffle_finance.int_delivery_monthly__enriched",
+   "model.jaffle_finance.int_delivery_monthly__combined",
    "test.jaffle_finance.dbt_utils_accepted_range_stg_payment__scores_total_score__True__0.3e6250b796",
    "test.jaffle_finance.not_null_stg_payment__scores_delivery_id.390b7df176",
    "test.jaffle_finance.not_null_stg_payment__scores_warehouse_id.712a9d2000",
@@ -10102,35 +10102,35 @@
    "test.jaffle_finance.relationships_stg_payment__scores_warehouse_id__id__ref_stg_payment__warehouses_.5a55d84b9a",
    "test.jaffle_finance.unique_stg_payment__scores_warehouse_id.f7cd1be4ba"
   ],
-  "model.jaffle_finance.wt_delivery_base_metrics": [
-   "test.jaffle_finance.dbt_utils_accepted_range_wt_delivery_base_metrics_handling_fee__True__0.a05d5187b8",
-   "test.jaffle_finance.dbt_utils_unique_combination_of_columns_wt_delivery_base_metrics_delivery_id__month_date.c815f23c0a",
-   "test.jaffle_finance.not_null_wt_delivery_base_metrics_area_id.2016bb38b9",
-   "test.jaffle_finance.not_null_wt_delivery_base_metrics_area_name.594251dfa3",
-   "test.jaffle_finance.not_null_wt_delivery_base_metrics_business_days.856991e6ce",
-   "test.jaffle_finance.not_null_wt_delivery_base_metrics_corporation_id.f861d9b744",
-   "test.jaffle_finance.not_null_wt_delivery_base_metrics_corporation_name.4a1acc19e9",
-   "test.jaffle_finance.not_null_wt_delivery_base_metrics_cumulative_shopper_count.8c74c4d0a2",
-   "test.jaffle_finance.not_null_wt_delivery_base_metrics_handling_fee.d993746298",
-   "test.jaffle_finance.not_null_wt_delivery_base_metrics_enterprise_id.57b3d2a8e3",
-   "test.jaffle_finance.not_null_wt_delivery_base_metrics_enterprise_name.b75b5e1363",
-   "test.jaffle_finance.not_null_wt_delivery_base_metrics_fiscal_month.90bc812dbe",
-   "test.jaffle_finance.not_null_wt_delivery_base_metrics_fiscal_quarter.11807712df",
-   "test.jaffle_finance.not_null_wt_delivery_base_metrics_fiscal_year.5f1dd33da6",
-   "test.jaffle_finance.not_null_wt_delivery_base_metrics_month_date.f4f4b96054",
-   "test.jaffle_finance.not_null_wt_delivery_base_metrics_new_shopper_count.b7197f3eb9",
-   "test.jaffle_finance.not_null_wt_delivery_base_metrics_delivery_id.0016e974db",
-   "test.jaffle_finance.not_null_wt_delivery_base_metrics_delivery_name.47edaf367b",
-   "test.jaffle_finance.not_null_wt_delivery_base_metrics_subscription_count.faa786b24b"
+  "model.jaffle_finance.rpt_delivery_base_metrics": [
+   "test.jaffle_finance.dbt_utils_accepted_range_rpt_delivery_base_metrics_handling_fee__True__0.a05d5187b8",
+   "test.jaffle_finance.dbt_utils_unique_combination_of_columns_rpt_delivery_base_metrics_delivery_id__month_date.c815f23c0a",
+   "test.jaffle_finance.not_null_rpt_delivery_base_metrics_area_id.2016bb38b9",
+   "test.jaffle_finance.not_null_rpt_delivery_base_metrics_area_name.594251dfa3",
+   "test.jaffle_finance.not_null_rpt_delivery_base_metrics_business_days.856991e6ce",
+   "test.jaffle_finance.not_null_rpt_delivery_base_metrics_corporation_id.f861d9b744",
+   "test.jaffle_finance.not_null_rpt_delivery_base_metrics_corporation_name.4a1acc19e9",
+   "test.jaffle_finance.not_null_rpt_delivery_base_metrics_cumulative_shopper_count.8c74c4d0a2",
+   "test.jaffle_finance.not_null_rpt_delivery_base_metrics_handling_fee.d993746298",
+   "test.jaffle_finance.not_null_rpt_delivery_base_metrics_enterprise_id.57b3d2a8e3",
+   "test.jaffle_finance.not_null_rpt_delivery_base_metrics_enterprise_name.b75b5e1363",
+   "test.jaffle_finance.not_null_rpt_delivery_base_metrics_fiscal_month.90bc812dbe",
+   "test.jaffle_finance.not_null_rpt_delivery_base_metrics_fiscal_quarter.11807712df",
+   "test.jaffle_finance.not_null_rpt_delivery_base_metrics_fiscal_year.5f1dd33da6",
+   "test.jaffle_finance.not_null_rpt_delivery_base_metrics_month_date.f4f4b96054",
+   "test.jaffle_finance.not_null_rpt_delivery_base_metrics_new_shopper_count.b7197f3eb9",
+   "test.jaffle_finance.not_null_rpt_delivery_base_metrics_delivery_id.0016e974db",
+   "test.jaffle_finance.not_null_rpt_delivery_base_metrics_delivery_name.47edaf367b",
+   "test.jaffle_finance.not_null_rpt_delivery_base_metrics_subscription_count.faa786b24b"
   ],
-  "model.jaffle_finance.wt_delivery_shopper_monthly_visits": [
-   "test.jaffle_finance.dbt_utils_unique_combination_of_columns_wt_delivery_shopper_monthly_visits_delivery_id__shopper_id__month_date.d911fb6eb0",
-   "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_fiscal_month.a2d3948799",
-   "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_fiscal_quarter.8e0074af4b",
-   "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_fiscal_year.06af69a062",
-   "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_month_date.f01212da92",
-   "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_shopper_id.f9a658e16f",
-   "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_delivery_id.efdad79ee0"
+  "model.jaffle_finance.rpt_delivery_shopper_monthly_visits": [
+   "test.jaffle_finance.dbt_utils_unique_combination_of_columns_rpt_delivery_shopper_monthly_visits_delivery_id__shopper_id__month_date.d911fb6eb0",
+   "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_fiscal_month.a2d3948799",
+   "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_fiscal_quarter.8e0074af4b",
+   "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_fiscal_year.06af69a062",
+   "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_month_date.f01212da92",
+   "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_shopper_id.f9a658e16f",
+   "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_delivery_id.efdad79ee0"
   ],
   "operation.jaffle_finance.jaffle_finance-on-run-start-0": [],
   "seed.jaffle_finance.budgets": [
@@ -10221,8 +10221,8 @@
    "test.jaffle_finance.not_null_source_datetime_policy_source_base.50f7ca45f4",
    "test.jaffle_finance.unique_source_datetime_policy_source_base.2282c60098"
   ],
-  "snapshot.jaffle_finance.delivery_classifications_snapshot": [
-   "model.jaffle_finance.dim_delivery_classifications"
+  "snapshot.jaffle_finance.delivery_lanes_snapshot": [
+   "model.jaffle_finance.dim_delivery_lanes"
   ],
   "source.jaffle_finance.dev_lake_jaffle_finance.budgets": [
    "model.jaffle_finance.stg_finance__budgets"
@@ -10338,20 +10338,20 @@
   "test.jaffle_finance.assert_staging_transform.383bea2cea": [],
   "test.jaffle_finance.dbt_utils_accepted_range_fct_delivery_monthly_snapshot_business_day_count__True__31.b88ca79c69": [],
   "test.jaffle_finance.dbt_utils_accepted_range_fct_delivery_monthly_snapshot_handling_fee__True__0.eb7cc55deb": [],
-  "test.jaffle_finance.dbt_utils_accepted_range_int_delivery_monthly__enriched_handling_fee__True__0.dc43bea6f8": [],
+  "test.jaffle_finance.dbt_utils_accepted_range_int_delivery_monthly__combined_handling_fee__True__0.dc43bea6f8": [],
   "test.jaffle_finance.dbt_utils_accepted_range_stg_payment__scores_total_score__True__0.3e6250b796": [],
-  "test.jaffle_finance.dbt_utils_accepted_range_wt_delivery_base_metrics_handling_fee__True__0.a05d5187b8": [],
+  "test.jaffle_finance.dbt_utils_accepted_range_rpt_delivery_base_metrics_handling_fee__True__0.a05d5187b8": [],
   "test.jaffle_finance.dbt_utils_expression_is_true_pos_pay_payment_date___202403_and_payment_date_202604_.98411d6515": [],
-  "test.jaffle_finance.dbt_utils_expression_is_true_int_delivery_monthly__enriched_extract_day_from_month_date_1.7488ff56bf": [],
-  "test.jaffle_finance.dbt_utils_expression_is_true_int_delivery_monthly__enriched_new_shopper_count_warehouse_count.52450f3b0d": [],
-  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_dim_delivery_classifications_delivery_id__is_current.ef6ad755a1": [],
+  "test.jaffle_finance.dbt_utils_expression_is_true_int_delivery_monthly__combined_extract_day_from_month_date_1.7488ff56bf": [],
+  "test.jaffle_finance.dbt_utils_expression_is_true_int_delivery_monthly__combined_new_shopper_count_warehouse_count.52450f3b0d": [],
+  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_dim_delivery_lanes_delivery_id__is_current.ef6ad755a1": [],
   "test.jaffle_finance.dbt_utils_unique_combination_of_columns_fct_delivery_monthly_snapshot_delivery_id__month_date.0c486c5847": [],
   "test.jaffle_finance.dbt_utils_unique_combination_of_columns_fct_delivery_shopper_monthly_visits_delivery_id__shopper_id__month_date.0e155bb676": [],
-  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_int_delivery_monthly__enriched_delivery_id__month_date.92adb93afd": [],
-  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_int_delivery_shopper_monthly__enriched_delivery_id__shopper_id__month_date.2c9a5762e4": [],
+  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_int_delivery_monthly__combined_delivery_id__month_date.92adb93afd": [],
+  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_int_delivery_shopper_monthly__combined_delivery_id__shopper_id__month_date.2c9a5762e4": [],
   "test.jaffle_finance.dbt_utils_unique_combination_of_columns_stg_finance__budgets_delivery_id__month_date.9b72c6cf9a": [],
-  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_wt_delivery_base_metrics_delivery_id__month_date.c815f23c0a": [],
-  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_wt_delivery_shopper_monthly_visits_delivery_id__shopper_id__month_date.d911fb6eb0": [],
+  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_rpt_delivery_base_metrics_delivery_id__month_date.c815f23c0a": [],
+  "test.jaffle_finance.dbt_utils_unique_combination_of_columns_rpt_delivery_shopper_monthly_visits_delivery_id__shopper_id__month_date.d911fb6eb0": [],
   "test.jaffle_finance.not_null_budgets_business_days.9756a9e064": [],
   "test.jaffle_finance.not_null_budgets_created_at.4bfa4c6f12": [],
   "test.jaffle_finance.not_null_budgets_handling_fee.e29622c092": [],
@@ -10404,21 +10404,21 @@
   "test.jaffle_finance.not_null_dim_supplier_departments_supplier_id.c68c443ca2": [],
   "test.jaffle_finance.not_null_dim_suppliers_supplier_id.1ed6bd0936": [],
   "test.jaffle_finance.not_null_dim_suppliers_supplier_key.109d716694": [],
-  "test.jaffle_finance.not_null_dim_delivery_classifications_area_id.c461a121de": [],
-  "test.jaffle_finance.not_null_dim_delivery_classifications_category_id.96bcff0aeb": [],
-  "test.jaffle_finance.not_null_dim_delivery_classifications_corporation_id.7e9392ddb4": [],
-  "test.jaffle_finance.not_null_dim_delivery_classifications_enterprise_id.cc6355d296": [],
-  "test.jaffle_finance.not_null_dim_delivery_classifications_is_current.7e54b80ac8": [],
-  "test.jaffle_finance.not_null_dim_delivery_classifications_delivery_classification_key.8bcacf8292": [],
-  "test.jaffle_finance.not_null_dim_delivery_classifications_delivery_id.168f817e7c": [],
-  "test.jaffle_finance.not_null_dim_delivery_classifications_valid_from.7dd6d3cfbf": [],
-  "test.jaffle_finance.not_null_dim_delivery_classifications_valid_to.96eb8e0fb9": [],
+  "test.jaffle_finance.not_null_dim_delivery_lanes_area_id.c461a121de": [],
+  "test.jaffle_finance.not_null_dim_delivery_lanes_category_id.96bcff0aeb": [],
+  "test.jaffle_finance.not_null_dim_delivery_lanes_corporation_id.7e9392ddb4": [],
+  "test.jaffle_finance.not_null_dim_delivery_lanes_enterprise_id.cc6355d296": [],
+  "test.jaffle_finance.not_null_dim_delivery_lanes_is_current.7e54b80ac8": [],
+  "test.jaffle_finance.not_null_dim_delivery_lanes_delivery_lane_key.8bcacf8292": [],
+  "test.jaffle_finance.not_null_dim_delivery_lanes_delivery_id.168f817e7c": [],
+  "test.jaffle_finance.not_null_dim_delivery_lanes_valid_from.7dd6d3cfbf": [],
+  "test.jaffle_finance.not_null_dim_delivery_lanes_valid_to.96eb8e0fb9": [],
   "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_business_day_count.13ffd333fa": [],
   "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_handling_fee.5f8d07d39e": [],
   "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_fiscal_year_key.992b88a3b6": [],
   "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_month_date.5a2d7e5be1": [],
   "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_new_shopper_count.086de0ae99": [],
-  "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_delivery_classification_key.6c86413698": [],
+  "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_delivery_lane_key.6c86413698": [],
   "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_delivery_id.92c1006c8c": [],
   "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_subscription_count.08f822549c": [],
   "test.jaffle_finance.not_null_fct_delivery_monthly_snapshot_warehouse_count.4eecf3dd13": [],
@@ -10429,7 +10429,7 @@
   "test.jaffle_finance.not_null_fct_subscription_process_fiscal_year_key.7ed6f1daf1": [],
   "test.jaffle_finance.not_null_fct_subscription_process_supplier_department_key.2208a52d86": [],
   "test.jaffle_finance.not_null_fct_subscription_process_supplier_key.99aa16c386": [],
-  "test.jaffle_finance.not_null_fct_subscription_process_delivery_classification_key.4cfbe872fb": [],
+  "test.jaffle_finance.not_null_fct_subscription_process_delivery_lane_key.4cfbe872fb": [],
   "test.jaffle_finance.not_null_fct_subscription_process_delivery_id.6a24e02691": [],
   "test.jaffle_finance.not_null_fct_subscription_process_subscription_id.1435301895": [],
   "test.jaffle_finance.not_null_fct_subscription_process_received_date.dd167cee6a": [],
@@ -10437,18 +10437,18 @@
   "test.jaffle_finance.not_null_fiscal_years_enterprise_id.0df2e16211": [],
   "test.jaffle_finance.not_null_fiscal_years_fiscal_year_start_month.edf1dceef3": [],
   "test.jaffle_finance.not_null_fiscal_years_updated_at.30933e1f1a": [],
-  "test.jaffle_finance.not_null_int_supplier_departments__enriched_supplier_department_id.edb5d2864e": [],
-  "test.jaffle_finance.not_null_int_suppliers__enriched_supplier_id.e5a16596eb": [],
-  "test.jaffle_finance.not_null_int_delivery_classifications__enriched_delivery_id.ef06b3e728": [],
-  "test.jaffle_finance.not_null_int_delivery_classifications__enriched_updated_at.15eba027cf": [],
-  "test.jaffle_finance.not_null_int_delivery_monthly__enriched_business_day_count.093f84766a": [],
-  "test.jaffle_finance.not_null_int_delivery_monthly__enriched_handling_fee.e657b3c3e9": [],
-  "test.jaffle_finance.not_null_int_delivery_monthly__enriched_month_date.1a9ea44512": [],
-  "test.jaffle_finance.not_null_int_delivery_monthly__enriched_new_shopper_count.7d44c7318d": [],
-  "test.jaffle_finance.not_null_int_delivery_monthly__enriched_warehouse_count.844c3466a3": [],
-  "test.jaffle_finance.not_null_int_delivery_shopper_monthly__enriched_month_date.53d5efc9f0": [],
-  "test.jaffle_finance.not_null_int_subscriptions__enriched_subscription_id.b2f4b60c0b": [],
-  "test.jaffle_finance.not_null_int_subscriptions__enriched_received_date.2df26258d9": [],
+  "test.jaffle_finance.not_null_int_supplier_departments__combined_supplier_department_id.edb5d2864e": [],
+  "test.jaffle_finance.not_null_int_suppliers__combined_supplier_id.e5a16596eb": [],
+  "test.jaffle_finance.not_null_int_delivery_lanes__combined_delivery_id.ef06b3e728": [],
+  "test.jaffle_finance.not_null_int_delivery_lanes__combined_updated_at.15eba027cf": [],
+  "test.jaffle_finance.not_null_int_delivery_monthly__combined_business_day_count.093f84766a": [],
+  "test.jaffle_finance.not_null_int_delivery_monthly__combined_handling_fee.e657b3c3e9": [],
+  "test.jaffle_finance.not_null_int_delivery_monthly__combined_month_date.1a9ea44512": [],
+  "test.jaffle_finance.not_null_int_delivery_monthly__combined_new_shopper_count.7d44c7318d": [],
+  "test.jaffle_finance.not_null_int_delivery_monthly__combined_warehouse_count.844c3466a3": [],
+  "test.jaffle_finance.not_null_int_delivery_shopper_monthly__combined_month_date.53d5efc9f0": [],
+  "test.jaffle_finance.not_null_int_subscriptions__combined_subscription_id.b2f4b60c0b": [],
+  "test.jaffle_finance.not_null_int_subscriptions__combined_received_date.2df26258d9": [],
   "test.jaffle_finance.not_null_deliveries_building.75733030f2": [],
   "test.jaffle_finance.not_null_deliveries_created_at.2ceacd632b": [],
   "test.jaffle_finance.not_null_deliveries_fax_number.4ff0b1a1ab": [],
@@ -10539,39 +10539,39 @@
   "test.jaffle_finance.not_null_stg_payment__scores_delivery_id.390b7df176": [],
   "test.jaffle_finance.not_null_stg_payment__scores_warehouse_id.712a9d2000": [],
   "test.jaffle_finance.not_null_stg_payment__scores_total_score.d7e292e6bc": [],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_area_id.2016bb38b9": [],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_area_name.594251dfa3": [],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_business_days.856991e6ce": [],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_corporation_id.f861d9b744": [],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_corporation_name.4a1acc19e9": [],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_cumulative_shopper_count.8c74c4d0a2": [],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_handling_fee.d993746298": [],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_enterprise_id.57b3d2a8e3": [],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_enterprise_name.b75b5e1363": [],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_fiscal_month.90bc812dbe": [],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_fiscal_quarter.11807712df": [],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_fiscal_year.5f1dd33da6": [],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_month_date.f4f4b96054": [],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_new_shopper_count.b7197f3eb9": [],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_delivery_id.0016e974db": [],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_delivery_name.47edaf367b": [],
-  "test.jaffle_finance.not_null_wt_delivery_base_metrics_subscription_count.faa786b24b": [],
-  "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_fiscal_month.a2d3948799": [],
-  "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_fiscal_quarter.8e0074af4b": [],
-  "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_fiscal_year.06af69a062": [],
-  "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_month_date.f01212da92": [],
-  "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_shopper_id.f9a658e16f": [],
-  "test.jaffle_finance.not_null_wt_delivery_shopper_monthly_visits_delivery_id.efdad79ee0": [],
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_area_id.2016bb38b9": [],
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_area_name.594251dfa3": [],
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_business_days.856991e6ce": [],
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_corporation_id.f861d9b744": [],
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_corporation_name.4a1acc19e9": [],
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_cumulative_shopper_count.8c74c4d0a2": [],
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_handling_fee.d993746298": [],
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_enterprise_id.57b3d2a8e3": [],
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_enterprise_name.b75b5e1363": [],
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_fiscal_month.90bc812dbe": [],
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_fiscal_quarter.11807712df": [],
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_fiscal_year.5f1dd33da6": [],
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_month_date.f4f4b96054": [],
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_new_shopper_count.b7197f3eb9": [],
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_delivery_id.0016e974db": [],
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_delivery_name.47edaf367b": [],
+  "test.jaffle_finance.not_null_rpt_delivery_base_metrics_subscription_count.faa786b24b": [],
+  "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_fiscal_month.a2d3948799": [],
+  "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_fiscal_quarter.8e0074af4b": [],
+  "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_fiscal_year.06af69a062": [],
+  "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_month_date.f01212da92": [],
+  "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_shopper_id.f9a658e16f": [],
+  "test.jaffle_finance.not_null_rpt_delivery_shopper_monthly_visits_delivery_id.efdad79ee0": [],
   "test.jaffle_finance.relationships_pos_ord_lg_id__id__source_lake_jaffle_payment_pos_pay_.bdbf6a8374": [],
   "test.jaffle_finance.relationships_pos_rcv_lg_id__id__source_lake_jaffle_payment_pos_pay_.9b50a51711": [],
   "test.jaffle_finance.relationships_dim_supplier_departments_supplier_id__supplier_id__ref_dim_suppliers_.df3c036703": [],
   "test.jaffle_finance.relationships_fct_delivery_monthly_snapshot_fiscal_year_key__fiscal_year_key__ref_dim_fiscal_years_.d2c65b1b96": [],
-  "test.jaffle_finance.relationships_fct_delivery_monthly_snapshot_delivery_classification_key__delivery_classification_key__ref_dim_delivery_classifications_.8a2a6eecb7": [],
+  "test.jaffle_finance.relationships_fct_delivery_monthly_snapshot_delivery_lane_key__delivery_lane_key__ref_dim_delivery_lanes_.8a2a6eecb7": [],
   "test.jaffle_finance.relationships_fct_delivery_shopper_monthly_visits_fiscal_year_key__fiscal_year_key__ref_dim_fiscal_years_.24138d9ce9": [],
   "test.jaffle_finance.relationships_fct_subscription_process_fiscal_year_key__fiscal_year_key__ref_dim_fiscal_years_.e53fdcd498": [],
   "test.jaffle_finance.relationships_fct_subscription_process_supplier_department_key__supplier_department_key__ref_dim_supplier_departments_.9c51220097": [],
   "test.jaffle_finance.relationships_fct_subscription_process_supplier_key__supplier_key__ref_dim_suppliers_.036b4f64b2": [],
-  "test.jaffle_finance.relationships_fct_subscription_process_delivery_classification_key__delivery_classification_key__ref_dim_delivery_classifications_.ee0286e64f": [],
+  "test.jaffle_finance.relationships_fct_subscription_process_delivery_lane_key__delivery_lane_key__ref_dim_delivery_lanes_.ee0286e64f": [],
   "test.jaffle_finance.relationships_stg_payment__supplier_departments_supplier_id__id__ref_stg_payment__suppliers_.536bce0f7e": [],
   "test.jaffle_finance.relationships_stg_payment__subscriptions_warehouse_id__id__ref_stg_payment__warehouses_.d1ed1e6ac5": [],
   "test.jaffle_finance.relationships_stg_payment__scores_warehouse_id__id__ref_stg_payment__warehouses_.5a55d84b9a": [],
@@ -10604,15 +10604,15 @@
   "test.jaffle_finance.unique_dim_supplier_departments_supplier_department_key.2d83d965f3": [],
   "test.jaffle_finance.unique_dim_suppliers_supplier_id.c5d071b5ac": [],
   "test.jaffle_finance.unique_dim_suppliers_supplier_key.c50620593a": [],
-  "test.jaffle_finance.unique_dim_delivery_classifications_delivery_classification_key.98ff73eb33": [],
+  "test.jaffle_finance.unique_dim_delivery_lanes_delivery_lane_key.98ff73eb33": [],
   "test.jaffle_finance.unique_fct_subscription_process_subscription_id.d391f881ec": [],
   "test.jaffle_finance.unique_fiscal_years_enterprise_id.3f991e98f2": [],
-  "test.jaffle_finance.unique_int_fiscal_years__enriched_enterprise_id.4ce90a08d1": [],
-  "test.jaffle_finance.unique_int_supplier_departments__enriched_supplier_department_id.65c7da2d5d": [],
-  "test.jaffle_finance.unique_int_suppliers__enriched_supplier_id.2476f91258": [],
-  "test.jaffle_finance.unique_int_shoppers__enriched_shopper_id.82d507a0e2": [],
-  "test.jaffle_finance.unique_int_delivery_classifications__enriched_delivery_id.a61910c370": [],
-  "test.jaffle_finance.unique_int_subscriptions__enriched_subscription_id.7534648f96": [],
+  "test.jaffle_finance.unique_int_fiscal_years__combined_enterprise_id.4ce90a08d1": [],
+  "test.jaffle_finance.unique_int_supplier_departments__combined_supplier_department_id.65c7da2d5d": [],
+  "test.jaffle_finance.unique_int_suppliers__combined_supplier_id.2476f91258": [],
+  "test.jaffle_finance.unique_int_shoppers__combined_shopper_id.82d507a0e2": [],
+  "test.jaffle_finance.unique_int_delivery_lanes__combined_delivery_id.a61910c370": [],
+  "test.jaffle_finance.unique_int_subscriptions__combined_subscription_id.7534648f96": [],
   "test.jaffle_finance.unique_deliveries_id.b803a5a57b": [],
   "test.jaffle_finance.unique_delivery_groups_id.d3ea688a6b": [],
   "test.jaffle_finance.unique_source_datetime_policy_source_base.2282c60098": [],
@@ -10637,12 +10637,12 @@
   "unit_test.jaffle_finance.dim_suppliers.test_dim_suppliers_attribute_overwrite_incremental": [],
   "unit_test.jaffle_finance.dim_suppliers.test_dim_suppliers_initial_load": [],
   "unit_test.jaffle_finance.dim_suppliers.test_dim_suppliers_new_record_incremental": [],
-  "unit_test.jaffle_finance.dim_delivery_classifications.test_logical_deletion_uses_actual_deleted_at": [],
-  "unit_test.jaffle_finance.dim_delivery_classifications.test_three_version_chain_continuity": [],
-  "unit_test.jaffle_finance.dim_delivery_classifications.test_undelete_resurrection": [],
-  "unit_test.jaffle_finance.dim_delivery_classifications.test_unknown_member_is_appended": [],
-  "unit_test.jaffle_finance.int_supplier_departments__enriched.test_name_normalization": [],
-  "unit_test.jaffle_finance.int_delivery_classifications__enriched.test_bridge_tables_filter_deleted": [],
-  "unit_test.jaffle_finance.int_delivery_classifications__enriched.test_updated_at_greatest_and_enterprise_join": []
+  "unit_test.jaffle_finance.dim_delivery_lanes.test_logical_deletion_uses_actual_deleted_at": [],
+  "unit_test.jaffle_finance.dim_delivery_lanes.test_three_version_chain_continuity": [],
+  "unit_test.jaffle_finance.dim_delivery_lanes.test_undelete_resurrection": [],
+  "unit_test.jaffle_finance.dim_delivery_lanes.test_unknown_member_is_appended": [],
+  "unit_test.jaffle_finance.int_supplier_departments__combined.test_name_normalization": [],
+  "unit_test.jaffle_finance.int_delivery_lanes__combined.test_bridge_tables_filter_deleted": [],
+  "unit_test.jaffle_finance.int_delivery_lanes__combined.test_updated_at_greatest_and_enterprise_join": []
  }
 }
