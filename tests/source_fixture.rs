@@ -303,6 +303,9 @@ fn symlinked_dir_loop_terminates() {
     std::os::unix::fs::symlink(&models, models.join("loop")).unwrap();
 
     let m = manifest_from_source(root).expect("loop project parses");
-    assert!(m.nodes.contains_key("model.looped.a"), "regular file still collected");
+    assert!(
+        m.nodes.contains_key("model.looped.a"),
+        "regular file still collected"
+    );
     assert_eq!(m.nodes.len(), 1, "the symlinked dir is never entered");
 }
