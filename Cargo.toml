@@ -18,7 +18,8 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
-clap = { version = "4", features = ["derive"] }
+# `env` lets --theme default from DBTL_THEME.
+clap = { version = "4", features = ["derive", "env"] }
 ratatui = "0.30.1"
 regex = "1"
 serde = { version = "1", features = ["derive"] }

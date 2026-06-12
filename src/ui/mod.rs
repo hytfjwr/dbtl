@@ -129,42 +129,36 @@ static ASCII_CHROME: Chrome = Chrome {
 /// accent-coloured bar. The fg is the accent and REVERSED swaps it into the
 /// background, so the bar reads as "painted accent" while the REVERSED modifier
 /// stays the machine-readable selection cue the tests scan for.
-pub(crate) fn selected_style() -> Style {
+pub(crate) fn selected_style(t: &theme::Theme) -> Style {
     Style::default()
-        .fg(theme::ACCENT)
+        .fg(t.accent)
         .add_modifier(Modifier::REVERSED)
         .add_modifier(Modifier::BOLD)
 }
 
 /// Style for group-header rows / overlay section headers.
-pub(crate) fn header_style() -> Style {
-    Style::default()
-        .fg(theme::SECTION)
-        .add_modifier(Modifier::BOLD)
+pub(crate) fn header_style(t: &theme::Theme) -> Style {
+    Style::default().fg(t.section).add_modifier(Modifier::BOLD)
 }
 
 /// Border style emphasising the focused pane (read via the public accessor, so
 /// sibling render modules need no access to `UiState`'s private fields).
-pub(crate) fn focus_border(state: &UiState, pane: Focus) -> Style {
+pub(crate) fn focus_border(state: &UiState, pane: Focus, t: &theme::Theme) -> Style {
     if state.focus() == pane {
-        Style::default()
-            .fg(theme::ACCENT)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(theme::BORDER_IDLE)
+        Style::default().fg(t.border_idle)
     }
 }
 
 /// Pane-title style paired with [`focus_border`]: the focused pane's title is
 /// the accent (bold), an unfocused one recedes to dim text — the title and the
 /// border always agree on which pane is active.
-pub(crate) fn title_style(state: &UiState, pane: Focus) -> Style {
+pub(crate) fn title_style(state: &UiState, pane: Focus, t: &theme::Theme) -> Style {
     if state.focus() == pane {
-        Style::default()
-            .fg(theme::ACCENT)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(theme::TEXT_DIM)
+        Style::default().fg(t.text_dim)
     }
 }
 
@@ -188,6 +182,7 @@ pub(crate) fn stamp_scrollbar(
     offset: usize,
     viewport: usize,
     glyphs: crate::GlyphMode,
+    t: &theme::Theme,
 ) {
     // The right border column, and the interior y-range between the top/bottom
     // border corners. Guard tiny rects so the math never underflows.
@@ -203,7 +198,7 @@ pub(crate) fn stamp_scrollbar(
     };
     let x = area.x + area.width - 1;
     let sym = chrome(glyphs).sb_thumb;
-    let style = Style::default().fg(theme::SB_THUMB);
+    let style = Style::default().fg(t.sb_thumb);
     let buf = frame.buffer_mut();
     for y in thumb_top..thumb_top + thumb_len {
         if let Some(cell) = buf.cell_mut((x, y)) {

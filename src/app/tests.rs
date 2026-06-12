@@ -36,6 +36,39 @@ fn yank_and_bookmark_record_oneshot_notices() {
 }
 
 #[test]
+fn theme_cycle_wraps_the_loaded_list_and_notices_the_landing_name() {
+    let mut a = app();
+    assert_eq!(a.theme_name(), "default", "fresh app starts on the default");
+    assert_eq!(a.active_theme(), &crate::ui::theme::DEFAULT);
+
+    // A full lap over the built-in presets lands back on the default, and
+    // every step records a `theme: {name}` toast.
+    let count = crate::ui::theme::preset_names().len();
+    for _ in 0..count {
+        let out = apply_action(&mut a, Action::ThemeCycle);
+        assert!(out.effects.is_empty(), "a theme cycle is pure state");
+        let note = a.take_notice().expect("cycle notices the landing theme");
+        assert_eq!(note, format!("theme: {}", a.theme_name()));
+    }
+    assert_eq!(a.theme_name(), "default", "a full lap wraps around");
+
+    // set_themes (the --theme seam): the list is replaced, the index selects,
+    // an out-of-range index clamps, and an empty list is ignored.
+    let ayu = crate::ui::theme::preset("ayu-dark").expect("preset");
+    a.set_themes(
+        vec![
+            ("default".into(), crate::ui::theme::DEFAULT),
+            ("mine".into(), ayu),
+        ],
+        1,
+    );
+    assert_eq!(a.theme_name(), "mine");
+    assert_eq!(a.active_theme(), &ayu);
+    a.set_themes(Vec::new(), 99);
+    assert_eq!(a.theme_name(), "mine", "empty list ignored, index clamped");
+}
+
+#[test]
 fn export_notice_names_the_written_path() {
     let mut a = app();
     let out = apply_action(&mut a, Action::ExportLineage);

@@ -55,6 +55,7 @@ pub(crate) fn draw_lineage_pane(
     glyphs: crate::GlyphMode,
     minimap: bool,
     layer_bands: Option<&[LayerBand]>,
+    t: &theme::Theme,
 ) {
     let chrome = super::chrome(glyphs);
     let sel_name = list
@@ -71,8 +72,8 @@ pub(crate) fn draw_lineage_pane(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_set(chrome.border)
-        .border_style(focus_border(state, Focus::RightPane))
-        .title(Line::styled(title, title_style(state, Focus::RightPane)));
+        .border_style(focus_border(state, Focus::RightPane, t))
+        .title(Line::styled(title, title_style(state, Focus::RightPane, t)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -104,7 +105,7 @@ pub(crate) fn draw_lineage_pane(
         content_h,
     );
 
-    let emph_style = selected_style();
+    let emph_style = selected_style(t);
     let mut lines: Vec<Line> = Vec::with_capacity(view_h);
     for y in 0..window.height() {
         // Build the row as runs sharing the same (emphasis, attr): the selected
@@ -117,14 +118,14 @@ pub(crate) fn draw_lineage_pane(
             let ch = window.char_at(x, y);
             let key = (window.emphasis_at(x, y), window.attr_at(x, y));
             if key != run_key && !run.is_empty() {
-                spans.push(styled_run(&run, run_key, emph_style));
+                spans.push(styled_run(&run, run_key, emph_style, t));
                 run.clear();
             }
             run_key = key;
             run.push(ch);
         }
         if !run.is_empty() {
-            spans.push(styled_run(&run, run_key, emph_style));
+            spans.push(styled_run(&run, run_key, emph_style, t));
         }
         lines.push(Line::from(spans));
     }
@@ -147,6 +148,7 @@ pub(crate) fn draw_lineage_pane(
             state.lineage_scroll_x(),
             content_w,
             bands,
+            t,
         );
     }
 
@@ -158,7 +160,7 @@ pub(crate) fn draw_lineage_pane(
         content_w,
         content_h,
     );
-    stamp_scroll_markers(frame, area, edges, chrome);
+    stamp_scroll_markers(frame, area, edges, chrome, t);
 
     // Opt-in minimap inset (default OFF, so every existing lineage render is
     // untouched). Only when the diagram OVERFLOWS the pane (a minimap of a
@@ -176,6 +178,7 @@ pub(crate) fn draw_lineage_pane(
             content_w,
             content_h,
             chrome,
+            t,
         );
     }
 }
@@ -200,6 +203,7 @@ fn draw_minimap(
     content_w: usize,
     content_h: usize,
     chrome: &super::Chrome,
+    t: &theme::Theme,
 ) {
     let grid_w = lay.grid.width();
     let grid_h = lay.grid.height();
@@ -215,10 +219,8 @@ fn draw_minimap(
     let sx = grid_w.div_ceil(MM_W as usize).max(1);
     let sy = grid_h.div_ceil(MM_H as usize).max(1);
 
-    let node_style = Style::default().fg(theme::TEXT_FAINT);
-    let view_style = Style::default()
-        .fg(theme::GOLD)
-        .add_modifier(Modifier::BOLD);
+    let node_style = Style::default().fg(t.text_faint);
+    let view_style = Style::default().fg(t.gold).add_modifier(Modifier::BOLD);
 
     // 1. Occupancy: each minimap cell is `#` if ANY node rect overlaps the grid
     //    region it covers, else `.`. (Stamp `.` too, so the inset reads as a
@@ -275,6 +277,7 @@ fn draw_minimap(
 /// Border-row chrome like the scroll markers — pure frame-buffer writes, never
 /// CharGrid, so the layout goldens are untouched. Labels are dbt dir names
 /// (user data), so ascii_guard treats them like any other data text.
+#[allow(clippy::too_many_arguments)]
 fn stamp_layer_bands(
     frame: &mut Frame,
     area: Rect,
@@ -282,6 +285,7 @@ fn stamp_layer_bands(
     scroll_x: usize,
     content_w: usize,
     bands: &[LayerBand],
+    t: &theme::Theme,
 ) {
     if area.height < 2 {
         return;
@@ -295,7 +299,7 @@ fn stamp_layer_bands(
         if seg0 >= seg1 {
             continue; // column fully scrolled out
         }
-        let style = Style::default().fg(lens_color(band.tint).unwrap_or(theme::TEXT_DIM));
+        let style = Style::default().fg(lens_color(band.tint, t).unwrap_or(t.text_dim));
         let avail = seg1 - seg0;
         for (i, ch) in band.label.chars().take(avail).enumerate() {
             let x = target.x + (seg0 - scroll_x + i) as u16;
@@ -328,13 +332,12 @@ fn stamp_scroll_markers(
     area: Rect,
     edges: super::ClipEdges,
     chrome: &super::Chrome,
+    t: &theme::Theme,
 ) {
     if !edges.any() || area.width < 2 || area.height < 2 {
         return;
     }
-    let style = Style::default()
-        .fg(theme::WARN)
-        .add_modifier(Modifier::BOLD);
+    let style = Style::default().fg(t.warn).add_modifier(Modifier::BOLD);
     let right = area.x + area.width - 1;
     let bottom = area.y + area.height - 1;
     let mid_y = area.y + area.height / 2;
@@ -360,9 +363,18 @@ fn stamp_scroll_markers(
 
 /// A span for a run of cells sharing `(emphasis, attr)`: emphasized runs get the
 /// selected style; otherwise colour by materialization class.
-fn styled_run(run: &str, key: (bool, CellAttr), emph_style: Style) -> Span<'static> {
+fn styled_run(
+    run: &str,
+    key: (bool, CellAttr),
+    emph_style: Style,
+    t: &theme::Theme,
+) -> Span<'static> {
     let (emph, attr) = key;
-    let style = if emph { emph_style } else { attr_style(attr) };
+    let style = if emph {
+        emph_style
+    } else {
+        attr_style(attr, t)
+    };
     Span::styled(run.to_string(), style)
 }
 
@@ -381,56 +393,56 @@ fn styled_run(run: &str, key: (bool, CellAttr), emph_style: Style) -> Span<'stat
 /// Warn) > the materialization class colour. The `on_path` background is
 /// independent of all of that, so a dimmed-on-path or tinted-on-path node still
 /// shows the path band.
-fn attr_style(attr: CellAttr) -> Style {
+fn attr_style(attr: CellAttr, t: &theme::Theme) -> Style {
     let mut style = Style::default();
     if attr.dimmed {
         // Focus dim wins the fg so the on-path nodes stand out (lens-independent).
-        style = style.fg(theme::LINEAGE_DIM);
-    } else if let Some(color) = lens_color(attr.lens) {
+        style = style.fg(t.lineage_dim);
+    } else if let Some(color) = lens_color(attr.lens, t) {
         // The active lens's tint wins over the materialization fg (opt-in lens).
         style = style.fg(color);
-    } else if let Some(color) = class_color(attr.class) {
+    } else if let Some(color) = class_color(attr.class, t) {
         style = style.fg(color);
     }
     // Path highlight is an ORTHOGONAL raised-surface background band (a colour,
     // not a Modifier), so it composes with whichever foreground won above.
     if attr.on_path {
-        style = style.bg(theme::SURFACE_HI);
+        style = style.bg(t.surface_hi);
     }
     style
 }
 
 /// Colour for each materialization class (`Plain` = no colour, i.e. connectors).
-fn class_color(class: MaterializationClass) -> Option<Color> {
+fn class_color(class: MaterializationClass, t: &theme::Theme) -> Option<Color> {
     match class {
-        MaterializationClass::Table => Some(theme::CLASS_TABLE),
-        MaterializationClass::View => Some(theme::CLASS_VIEW),
-        MaterializationClass::Incremental => Some(theme::CLASS_INCREMENTAL),
-        MaterializationClass::Ephemeral => Some(theme::CLASS_EPHEMERAL),
-        MaterializationClass::Source => Some(theme::CLASS_SOURCE),
-        MaterializationClass::Seed => Some(theme::CLASS_SEED),
-        MaterializationClass::Snapshot => Some(theme::CLASS_SNAPSHOT),
-        MaterializationClass::OtherModel => Some(theme::CLASS_OTHER),
+        MaterializationClass::Table => Some(t.class_table),
+        MaterializationClass::View => Some(t.class_view),
+        MaterializationClass::Incremental => Some(t.class_incremental),
+        MaterializationClass::Ephemeral => Some(t.class_ephemeral),
+        MaterializationClass::Source => Some(t.class_source),
+        MaterializationClass::Seed => Some(t.class_seed),
+        MaterializationClass::Snapshot => Some(t.class_snapshot),
+        MaterializationClass::OtherModel => Some(t.class_other),
         MaterializationClass::Plain => None,
     }
 }
 
 /// Colour for each lineage-lens [`LensTint`] (`None` = no lens fg, so the class
 /// colour shows through). Coverage `Warn` and `Violation` reuse the danger red;
-/// the heat ramp is OK → WARN → DANGER; each layer gets a distinct colour. All
-/// from the [`theme`] palette, so a retune lands in one file.
-fn lens_color(tint: LensTint) -> Option<Color> {
+/// the heat ramp is low → mid → high; each layer gets a distinct colour. All
+/// from the active [`Theme`](theme::Theme), so a retune lands in one place.
+fn lens_color(tint: LensTint, t: &theme::Theme) -> Option<Color> {
     match tint {
         LensTint::None => None,
-        LensTint::Warn | LensTint::Violation => Some(theme::DANGER),
-        LensTint::HeatLow => Some(theme::HEAT_LOW),
-        LensTint::HeatMid => Some(theme::HEAT_MID),
-        LensTint::HeatHigh => Some(theme::HEAT_HIGH),
-        LensTint::LayerStaging => Some(theme::LAYER_STAGING),
-        LensTint::LayerIntermediate => Some(theme::LAYER_INTERMEDIATE),
-        LensTint::LayerMarts => Some(theme::LAYER_MARTS),
-        LensTint::LayerUtilities => Some(theme::LAYER_UTILITIES),
-        LensTint::LayerOther => Some(theme::LAYER_OTHER),
+        LensTint::Warn | LensTint::Violation => Some(t.danger),
+        LensTint::HeatLow => Some(t.heat_low),
+        LensTint::HeatMid => Some(t.heat_mid),
+        LensTint::HeatHigh => Some(t.heat_high),
+        LensTint::LayerStaging => Some(t.layer_staging),
+        LensTint::LayerIntermediate => Some(t.layer_intermediate),
+        LensTint::LayerMarts => Some(t.layer_marts),
+        LensTint::LayerUtilities => Some(t.layer_utilities),
+        LensTint::LayerOther => Some(t.layer_other),
     }
 }
 
@@ -512,31 +524,43 @@ fn lens_title_suffix(lens: LineageLens) -> &'static str {
 mod tests {
     use super::*;
 
+    /// The default theme, as every non-theme test renders with.
+    const T: &theme::Theme = &theme::DEFAULT;
+
     #[test]
     fn attr_style_lens_tint_wins_over_class_and_path_bg_is_orthogonal() {
         // The lens tint fg wins over the class fg (opt-in lens).
-        let tinted = attr_style(CellAttr {
-            class: MaterializationClass::Table,
-            lens: LensTint::Warn,
-            ..Default::default()
-        });
+        let tinted = attr_style(
+            CellAttr {
+                class: MaterializationClass::Table,
+                lens: LensTint::Warn,
+                ..Default::default()
+            },
+            T,
+        );
         assert_eq!(tinted.fg, Some(theme::DANGER), "Warn tint → danger fg");
         assert_eq!(tinted.bg, None, "no path band when off-path");
 
         // class fg when the lens is None.
-        let plain_class = attr_style(CellAttr {
-            class: MaterializationClass::Table,
-            ..Default::default()
-        });
+        let plain_class = attr_style(
+            CellAttr {
+                class: MaterializationClass::Table,
+                ..Default::default()
+            },
+            T,
+        );
         assert_eq!(plain_class.fg, Some(theme::CLASS_TABLE), "Table → class fg");
 
         // on_path adds an orthogonal bg band and composes with the tint fg.
-        let both = attr_style(CellAttr {
-            class: MaterializationClass::Table,
-            lens: LensTint::Warn,
-            on_path: true,
-            ..Default::default()
-        });
+        let both = attr_style(
+            CellAttr {
+                class: MaterializationClass::Table,
+                lens: LensTint::Warn,
+                on_path: true,
+                ..Default::default()
+            },
+            T,
+        );
         assert_eq!(
             both.fg,
             Some(theme::DANGER),
@@ -558,12 +582,15 @@ mod tests {
     #[test]
     fn attr_style_precedence_dim_beats_tint_beats_class() {
         // dimmed wins the fg over BOTH the lens tint and the class colour.
-        let dim_over_tint = attr_style(CellAttr {
-            class: MaterializationClass::Table, // CLASS_TABLE
-            lens: LensTint::HeatHigh,           // HEAT_HIGH
-            dimmed: true,
-            ..Default::default()
-        });
+        let dim_over_tint = attr_style(
+            CellAttr {
+                class: MaterializationClass::Table, // CLASS_TABLE
+                lens: LensTint::HeatHigh,           // HEAT_HIGH
+                dimmed: true,
+                ..Default::default()
+            },
+            T,
+        );
         assert_eq!(
             dim_over_tint.fg,
             Some(theme::LINEAGE_DIM),
@@ -571,11 +598,14 @@ mod tests {
         );
 
         // The lens tint beats the class colour (when not dimmed).
-        let tint_over_class = attr_style(CellAttr {
-            class: MaterializationClass::Table, // CLASS_TABLE
-            lens: LensTint::HeatMid,            // HEAT_MID
-            ..Default::default()
-        });
+        let tint_over_class = attr_style(
+            CellAttr {
+                class: MaterializationClass::Table, // CLASS_TABLE
+                lens: LensTint::HeatMid,            // HEAT_MID
+                ..Default::default()
+            },
+            T,
+        );
         assert_eq!(
             tint_over_class.fg,
             Some(theme::HEAT_MID),
@@ -583,19 +613,22 @@ mod tests {
         );
 
         // The heat ramp distinct colours.
-        assert_eq!(lens_color(LensTint::HeatLow), Some(theme::HEAT_LOW));
-        assert_eq!(lens_color(LensTint::HeatMid), Some(theme::HEAT_MID));
-        assert_eq!(lens_color(LensTint::HeatHigh), Some(theme::HEAT_HIGH));
+        assert_eq!(lens_color(LensTint::HeatLow, T), Some(theme::HEAT_LOW));
+        assert_eq!(lens_color(LensTint::HeatMid, T), Some(theme::HEAT_MID));
+        assert_eq!(lens_color(LensTint::HeatHigh, T), Some(theme::HEAT_HIGH));
         assert_ne!(theme::HEAT_LOW, theme::HEAT_MID, "ramp steps distinct");
         assert_ne!(theme::HEAT_MID, theme::HEAT_HIGH, "ramp steps distinct");
 
         // on_path bg is preserved even on a DIMMED cell (orthogonal channel).
-        let dim_on_path = attr_style(CellAttr {
-            class: MaterializationClass::View,
-            dimmed: true,
-            on_path: true,
-            ..Default::default()
-        });
+        let dim_on_path = attr_style(
+            CellAttr {
+                class: MaterializationClass::View,
+                dimmed: true,
+                on_path: true,
+                ..Default::default()
+            },
+            T,
+        );
         assert_eq!(dim_on_path.fg, Some(theme::LINEAGE_DIM), "dim fg");
         assert_eq!(
             dim_on_path.bg,
@@ -608,17 +641,23 @@ mod tests {
     #[test]
     fn each_layer_lens_tint_has_a_distinct_colour() {
         use std::collections::HashSet;
-        let colours: HashSet<_> = [
-            LensTint::LayerStaging,
-            LensTint::LayerIntermediate,
-            LensTint::LayerMarts,
-            LensTint::LayerUtilities,
-            LensTint::LayerOther,
-        ]
-        .into_iter()
-        .map(lens_color)
-        .collect();
-        assert_eq!(colours.len(), 5, "five layers → five distinct colours");
+        for (name, preset) in theme::presets() {
+            let colours: HashSet<_> = [
+                LensTint::LayerStaging,
+                LensTint::LayerIntermediate,
+                LensTint::LayerMarts,
+                LensTint::LayerUtilities,
+                LensTint::LayerOther,
+            ]
+            .into_iter()
+            .map(|tint| lens_color(tint, preset))
+            .collect();
+            assert_eq!(
+                colours.len(),
+                5,
+                "preset '{name}': five layers → five distinct colours"
+            );
+        }
     }
 
     #[test]
@@ -627,36 +666,41 @@ mod tests {
         // every lens tint must differ from EVERY materialization-class colour,
         // otherwise an active lens renders some node identically to lens-off
         // and looks broken. Cross-LENS reuse is fine (one lens at a time).
-        let classes = [
-            MaterializationClass::Table,
-            MaterializationClass::View,
-            MaterializationClass::Incremental,
-            MaterializationClass::Ephemeral,
-            MaterializationClass::Source,
-            MaterializationClass::Seed,
-            MaterializationClass::Snapshot,
-            MaterializationClass::OtherModel,
-        ]
-        .map(|c| class_color(c).expect("every class has a colour"));
-        let tints = [
-            LensTint::Warn,
-            LensTint::Violation,
-            LensTint::HeatLow,
-            LensTint::HeatMid,
-            LensTint::HeatHigh,
-            LensTint::LayerStaging,
-            LensTint::LayerIntermediate,
-            LensTint::LayerMarts,
-            LensTint::LayerUtilities,
-            LensTint::LayerOther,
-        ];
-        for tint in tints {
-            let colour = lens_color(tint).expect("every non-None tint has a colour");
-            assert!(
-                !classes.contains(&colour),
-                "lens tint {tint:?} ({colour:?}) collides with a class colour — \
-                 the lens would be invisible on that class"
-            );
+        // Checked for EVERY built-in preset — through the render mapping
+        // itself, so it also guards `class_color`/`lens_color` reading the
+        // right roles (theme::lint covers the raw palette side).
+        for (name, preset) in theme::presets() {
+            let classes = [
+                MaterializationClass::Table,
+                MaterializationClass::View,
+                MaterializationClass::Incremental,
+                MaterializationClass::Ephemeral,
+                MaterializationClass::Source,
+                MaterializationClass::Seed,
+                MaterializationClass::Snapshot,
+                MaterializationClass::OtherModel,
+            ]
+            .map(|c| class_color(c, preset).expect("every class has a colour"));
+            let tints = [
+                LensTint::Warn,
+                LensTint::Violation,
+                LensTint::HeatLow,
+                LensTint::HeatMid,
+                LensTint::HeatHigh,
+                LensTint::LayerStaging,
+                LensTint::LayerIntermediate,
+                LensTint::LayerMarts,
+                LensTint::LayerUtilities,
+                LensTint::LayerOther,
+            ];
+            for tint in tints {
+                let colour = lens_color(tint, preset).expect("every non-None tint has a colour");
+                assert!(
+                    !classes.contains(&colour),
+                    "preset '{name}': lens tint {tint:?} ({colour:?}) collides with a \
+                     class colour — the lens would be invisible on that class"
+                );
+            }
         }
     }
 
@@ -678,11 +722,12 @@ mod tests {
                     on_path: true,
                 },
             ),
-            selected_style(),
+            selected_style(T),
+            T,
         );
         assert_eq!(
             emph.style,
-            selected_style(),
+            selected_style(T),
             "an emphasized cell ignores its lens tint / dim / class"
         );
         // …and a non-emphasized cell with the same attr does NOT get the selected
@@ -698,11 +743,12 @@ mod tests {
                     ..Default::default()
                 },
             ),
-            selected_style(),
+            selected_style(T),
+            T,
         );
         assert_ne!(
             plain.style,
-            selected_style(),
+            selected_style(T),
             "non-emph cell is not selected"
         );
         assert_eq!(

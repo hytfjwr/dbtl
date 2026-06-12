@@ -34,6 +34,7 @@ use anyhow::Result;
 
 use crate::action::{Mode, SearchTarget};
 use crate::effect::Effect;
+use crate::ui::theme::{self, Theme};
 use crate::{
     build_filtered_model_list, build_model_list, coverage_gap, load_dag, load_dag_from_source, Dag,
     ModelList, NodeInfo, SortMode, UiState,
@@ -194,6 +195,15 @@ pub struct App {
     /// styles) and the impact closures. Pure-function results only; invalidated
     /// by key comparison, never explicitly — see [`cache`].
     caches: LineageCaches,
+    /// The loaded colour themes, in Ctrl-t cycle order: the built-in presets by
+    /// default; `main` replaces the list (presets + user theme files) and the
+    /// start index via [`set_themes`](App::set_themes) (`--theme`). Never empty.
+    themes: Vec<(String, Theme)>,
+    /// Index of the ACTIVE theme in `themes`; the loop hands
+    /// [`active_theme`](App::active_theme) to `RenderCtx` each frame, so a
+    /// cycle repaints without touching any cache (the cached layout's attrs
+    /// are semantic — colours resolve at draw time).
+    theme_index: usize,
 }
 
 /// Where the `Dag` was loaded from, so `reload` re-reads the same source.
@@ -244,7 +254,40 @@ impl App {
             project_root,
             generation: 0,
             caches: LineageCaches::default(),
+            themes: theme::presets()
+                .iter()
+                .map(|(n, t)| (n.to_string(), *t))
+                .collect(),
+            theme_index: 0,
         }
+    }
+
+    /// The active colour theme (what the loop hands to `RenderCtx`).
+    pub fn active_theme(&self) -> &Theme {
+        &self.themes[self.theme_index].1
+    }
+
+    /// The active theme's name (the toast / status text).
+    pub fn theme_name(&self) -> &str {
+        &self.themes[self.theme_index].0
+    }
+
+    /// Replace the loaded theme list and the active index (the `--theme` CLI
+    /// seam). An empty list is ignored and an out-of-range index clamps — the
+    /// App must always have an active theme.
+    pub fn set_themes(&mut self, themes: Vec<(String, Theme)>, index: usize) {
+        if !themes.is_empty() {
+            self.themes = themes;
+        }
+        self.theme_index = index.min(self.themes.len().saturating_sub(1));
+    }
+
+    /// Step the active theme to the next loaded one (wrapping) and record the
+    /// landing name as the toast notice.
+    pub fn cycle_theme(&mut self) {
+        self.theme_index = (self.theme_index + 1) % self.themes.len();
+        let name = self.themes[self.theme_index].0.clone();
+        self.set_notice(format!("theme: {name}"));
     }
 
     /// Record a transient notice (the toast text). Last write wins: a later

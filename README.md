@@ -85,6 +85,10 @@ $ dbtl --source /path/to/dbt-project
 
 # Select a model at startup and auto-reload on source changes
 $ dbtl --select stg_orders --watch
+
+# Pick a color theme (or set DBTL_THEME)
+$ dbtl --theme ayu-mirage
+$ dbtl --list-themes
 ```
 
 ### Keybindings
@@ -109,9 +113,26 @@ Press `?` inside the app for the full list. Highlights:
 | `T` `*` | Filter the list to untested / bookmarked models |
 | `P` | Run `dbt parse` and switch to the compiled manifest |
 | `Ctrl-p` | Command palette |
+| `Ctrl-t` | Cycle the color theme |
 | `q` | Quit |
 
 Mouse is supported too: click a lineage node to re-root, wheel to scroll.
+
+### Color themes
+
+Built-in presets: `default` (xterm-256, works everywhere), `ayu-dark`, `ayu-mirage`, `ayu-light`, `gruvbox-dark` (truecolor). Pick one with `--theme <name>` (or the `DBTL_THEME` env var), cycle live with `Ctrl-t`, and list everything with `--list-themes`.
+
+You can also define your own theme as a YAML file under `~/.config/dbtl/themes/` (or `$XDG_CONFIG_HOME/dbtl/themes/`) — the file name becomes the theme name:
+
+```yaml
+# ~/.config/dbtl/themes/my-ayu.yml
+base: ayu-mirage        # optional preset to start from (default: "default")
+colors:                 # override any role; the rest comes from the base
+  accent: "#ffcc66"     # "#rrggbb" truecolor…
+  class_table: 114      # …or an xterm-256 index
+```
+
+Run `dbtl --theme my-ayu`. Unknown roles and bad colours fail with the valid alternatives listed; a palette that breaks the lens-visibility contract (e.g. a lens tint equal to a node colour) starts anyway but prints a warning.
 
 ### If borders look doubled or misaligned
 
