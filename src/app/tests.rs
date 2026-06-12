@@ -736,6 +736,76 @@ fn critical_path_is_a_deterministic_source_rooted_chain() {
 }
 
 #[test]
+fn longest_chain_terminates_on_a_cyclic_manifest() {
+    // A malformed manifest.json can carry a model-level cycle that survives
+    // the prune (only test/operation nodes are dropped): a ⇄ b, plus a clean
+    // tail b → c. Without the on-stack guard the memoized DFS recursed
+    // forever and overflowed the stack as soon as the Stats dashboard (`i`)
+    // computed the critical path.
+    use crate::{RawManifest, RawNode};
+    use std::collections::HashMap;
+    let mut nodes = HashMap::new();
+    let mut add = |id: &str, name: &str| {
+        nodes.insert(
+            id.to_string(),
+            RawNode {
+                name: name.into(),
+                resource_type: "model".into(),
+                ..Default::default()
+            },
+        );
+    };
+    add("model.p.a", "a");
+    add("model.p.b", "b");
+    add("model.p.c", "c");
+    let child_map = HashMap::from([
+        ("model.p.a".to_string(), vec!["model.p.b".to_string()]),
+        (
+            "model.p.b".to_string(),
+            vec!["model.p.a".to_string(), "model.p.c".to_string()],
+        ),
+    ]);
+    let parent_map = HashMap::from([
+        ("model.p.a".to_string(), vec!["model.p.b".to_string()]),
+        ("model.p.b".to_string(), vec!["model.p.a".to_string()]),
+        ("model.p.c".to_string(), vec!["model.p.b".to_string()]),
+    ]);
+    let dag = Dag::build(&RawManifest {
+        nodes,
+        sources: HashMap::new(),
+        parent_map,
+        child_map,
+    });
+    let chain = super::analysis::longest_chain(&dag);
+    // Sane: non-empty, no repeated node, every hop is a real kept edge.
+    assert!(!chain.is_empty(), "a chain is still produced");
+    let unique: std::collections::HashSet<&String> = chain.iter().collect();
+    assert_eq!(unique.len(), chain.len(), "the chain never revisits a node");
+    let edges: std::collections::HashSet<(String, String)> = dag
+        .edges()
+        .into_iter()
+        .map(|(p, c)| {
+            let name = |uid: &str| {
+                dag.get(uid)
+                    .map_or_else(|| uid.to_string(), |n| n.name.clone())
+            };
+            (name(&p), name(&c))
+        })
+        .collect();
+    for hop in chain.windows(2) {
+        assert!(
+            edges.contains(&(hop[0].clone(), hop[1].clone())),
+            "every hop is a real edge: {hop:?}"
+        );
+    }
+    // Deterministic, smallest-uid-first: the DFS visits `a` first, so the
+    // cycle breaks at the back-edge into `a` and the chain is a → b.
+    assert_eq!(chain, vec!["a".to_string(), "b".to_string()]);
+    // Deterministic: a second computation is identical.
+    assert_eq!(chain, super::analysis::longest_chain(&dag));
+}
+
+#[test]
 fn sql_modal_payload_carries_the_file_path() {
     let mut a = app();
     a.select_by_unique_id("model.jaffle_finance.pos_txn");
