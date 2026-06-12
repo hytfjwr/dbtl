@@ -28,7 +28,7 @@
 //!   determinism is unaffected.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::Result;
 
@@ -322,12 +322,25 @@ impl App {
     }
 
     /// The selected model's SQL file path, resolved against the project root
-    /// (`<root>/<original_file_path>`). `None` if nothing is selected or the node
-    /// has no recorded file path.
+    /// (`<root>/<original_file_path>`). `None` if nothing is selected, the node
+    /// has no recorded file path, or the recorded path would escape the
+    /// project root.
     pub fn selected_file_path(&self) -> Option<String> {
         let uid = self.selected_node()?.unique_id.clone();
         let ofp = self.dag.detail(&uid)?.original_file_path.clone()?;
-        Some(self.project_root.join(ofp).to_string_lossy().into_owned())
+        // `original_file_path` comes from an untrusted manifest.json: a crafted
+        // value (absolute, or with a `..` component) would point the `o`
+        // editor jump at an arbitrary file outside the project. Lexical check
+        // on purpose — `canonicalize` fails on not-yet-existing files, and a
+        // plain relative path must keep resolving exactly as before.
+        let rel = Path::new(&ofp);
+        if rel
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
+        {
+            return None;
+        }
+        Some(self.project_root.join(rel).to_string_lossy().into_owned())
     }
 
     /// The list currently driving the left pane: the search view if a search

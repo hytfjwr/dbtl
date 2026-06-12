@@ -1124,6 +1124,71 @@ fn derive_project_root_strips_target() {
 }
 
 #[test]
+fn selected_file_path_stays_under_the_project_root() {
+    // `original_file_path` comes from an untrusted manifest.json: a traversal
+    // value must yield None (no editor jump), while plain relative paths keep
+    // resolving under the root exactly as before.
+    use crate::{RawManifest, RawNode};
+    use std::collections::HashMap;
+
+    let node = |name: &str, ofp: &str| RawNode {
+        name: name.to_string(),
+        resource_type: "model".to_string(),
+        original_file_path: Some(ofp.to_string()),
+        ..Default::default()
+    };
+    let mut nodes = HashMap::new();
+    nodes.insert("model.p.ok".to_string(), node("ok", "models/ok.sql"));
+    nodes.insert(
+        "model.p.dotted".to_string(),
+        node("dotted", "./models/dotted.sql"),
+    );
+    nodes.insert(
+        "model.p.up".to_string(),
+        node("up", "../../../../home/user/.bashrc"),
+    );
+    nodes.insert("model.p.abs".to_string(), node("abs", "/etc/passwd"));
+    nodes.insert(
+        "model.p.mid".to_string(),
+        node("mid", "models/../../outside.sql"),
+    );
+    let dag = Dag::build(&RawManifest {
+        nodes,
+        sources: HashMap::new(),
+        parent_map: HashMap::new(),
+        child_map: HashMap::new(),
+    });
+    let mut a = App::new(dag, PathBuf::from("/x/proj/target/manifest.json"));
+
+    a.select_by_unique_id("model.p.ok");
+    // Built with the same `join` as the implementation so the expected string
+    // carries the platform separator (Windows joins with `\`).
+    let expected = Path::new("/x/proj")
+        .join("models/ok.sql")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        a.selected_file_path().as_deref(),
+        Some(expected.as_str()),
+        "a normal relative path resolves under the root, unchanged"
+    );
+    a.select_by_unique_id("model.p.dotted");
+    let dotted = a
+        .selected_file_path()
+        .expect("a ./-prefixed path is benign");
+    assert!(dotted.ends_with("models/dotted.sql"), "got {dotted}");
+
+    for uid in ["model.p.up", "model.p.abs", "model.p.mid"] {
+        a.select_by_unique_id(uid);
+        assert_eq!(
+            a.selected_file_path(),
+            None,
+            "{uid} must not resolve outside the project root"
+        );
+    }
+}
+
+#[test]
 fn lineage_styles_maps_materialization_and_tests() {
     let a = app();
     let lay = crate::layout(&a.dag.subgraph("model.jaffle_finance.pos_txn"));

@@ -309,3 +309,59 @@ fn symlinked_dir_loop_terminates() {
     );
     assert_eq!(m.nodes.len(), 1, "the symlinked dir is never entered");
 }
+
+/// Regression: `model-paths`/`seed-paths`/`snapshot-paths` come from an
+/// untrusted `dbt_project.yml`; a traversal value (`../outside`, an absolute
+/// path, or a `..` mid-path) must be skipped so the loader never reads
+/// `.sql`/`.csv`/`.yml` files outside the project root.
+#[test]
+fn traversal_resource_paths_are_skipped() {
+    use std::fs;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    // `<tmp>/outside` holds files that must never be ingested; the project
+    // lives one level down so `../outside` points straight at them.
+    let outside = tmp.path().join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("evil.sql"), "select 1 as id\n").unwrap();
+    fs::write(outside.join("evil.csv"), "id\n1\n").unwrap();
+    fs::write(
+        outside.join("schema.yml"),
+        "sources:\n  - name: ext\n    tables:\n      - name: leaked\n",
+    )
+    .unwrap();
+
+    let root = tmp.path().join("project");
+    fs::create_dir_all(root.join("models")).unwrap();
+    fs::write(root.join("models/safe.sql"), "select 1 as id\n").unwrap();
+    fs::write(
+        root.join("dbt_project.yml"),
+        format!(
+            "name: contained\nversion: \"1.0.0\"\nconfig-version: 2\n\
+             model-paths: [\"../outside\", \"models\"]\n\
+             seed-paths: ['{}']\n\
+             snapshot-paths: [\"models/../../outside\"]\n",
+            // Single-quoted YAML: a Windows temp path's backslashes (`C:\U…`)
+            // would be escape sequences in a double-quoted scalar.
+            outside.display()
+        ),
+    )
+    .unwrap();
+
+    let m = manifest_from_source(&root).expect("project parses");
+    assert!(
+        m.nodes.contains_key("model.contained.safe"),
+        "the in-root resource path is still scanned"
+    );
+    assert_eq!(
+        m.nodes.len(),
+        1,
+        "no nodes ingested from outside the root, got {:?}",
+        m.nodes.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        m.sources.is_empty(),
+        "no sources ingested from an outside schema.yml, got {:?}",
+        m.sources.keys().collect::<Vec<_>>()
+    );
+}
