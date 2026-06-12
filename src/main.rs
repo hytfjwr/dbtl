@@ -961,7 +961,10 @@ mod tests {
             split_editor_command("code --wait"),
             Some(("code".to_string(), vec!["--wait".to_string()]))
         );
-        assert_eq!(split_editor_command("vim"), Some(("vim".to_string(), vec![])));
+        assert_eq!(
+            split_editor_command("vim"),
+            Some(("vim".to_string(), vec![]))
+        );
         // Runs of whitespace (tabs included) never produce empty arguments.
         assert_eq!(
             split_editor_command("  emacs \t -nw  "),
