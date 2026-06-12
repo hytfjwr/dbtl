@@ -135,6 +135,9 @@ pub enum Action {
     /// Cycle the colour theme through the App's loaded list (built-in presets
     /// plus any user themes); the toast names the one that landed.
     ThemeCycle,
+    /// Open the baseline-diff summary modal (`--diff`); a toast explains how to
+    /// load a baseline when none is.
+    DiffOpen,
 }
 
 /// Which pane a search targets (decided from focus when search opens).
@@ -234,6 +237,27 @@ pub struct StatsView {
     pub scroll: usize,
 }
 
+/// The baseline-diff modal payload, snapshotted from the App's
+/// [`DagDiff`](crate::DagDiff) when the modal opens (names resolved, reasons
+/// joined), so the render layer never needs a `Dag`. MUST be `Eq` (`Mode`
+/// derives `Eq`) — plain strings and counts only.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiffView {
+    /// Where the baseline came from (the `--diff` argument), for the title.
+    pub baseline: String,
+    /// Added nodes as `(name, resource_type)`, sorted by name.
+    pub added: Vec<(String, String)>,
+    /// Removed (baseline-only) nodes as `(name, resource_type)`, sorted.
+    pub removed: Vec<(String, String)>,
+    /// Modified nodes as `(name, joined reasons)`, sorted by name.
+    pub modified: Vec<(String, String)>,
+    /// Dependency edges present only in the current Dag, `(parent, child)` names.
+    pub edges_added: Vec<(String, String)>,
+    /// Dependency edges present only in the baseline, same shape.
+    pub edges_removed: Vec<(String, String)>,
+    pub scroll: usize,
+}
+
 /// The command-palette state: the live query and the selected candidate index.
 /// The candidate LIST is derived on demand from [`palette_candidates`] (keyed off
 /// [`BINDINGS`]), never stored — so the palette can't drift from the keymap. No
@@ -257,6 +281,8 @@ pub enum Mode {
     Sql(SqlView),
     /// Project stats dashboard (scrollable sections).
     Stats(StatsView),
+    /// Baseline-diff summary (scrollable sections; needs a `--diff` baseline).
+    Diff(DiffView),
     /// Command palette: a fuzzy finder over every Selection-mode command.
     Palette(PaletteState),
     Help {
@@ -273,6 +299,7 @@ pub enum ModeKind {
     Detail,
     Sql,
     Stats,
+    Diff,
     Palette,
     Help,
 }
@@ -285,6 +312,7 @@ impl Mode {
             Mode::Detail(_) => ModeKind::Detail,
             Mode::Sql(_) => ModeKind::Sql,
             Mode::Stats(_) => ModeKind::Stats,
+            Mode::Diff(_) => ModeKind::Diff,
             Mode::Palette(_) => ModeKind::Palette,
             Mode::Help { .. } => ModeKind::Help,
         }
@@ -437,6 +465,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('*'))], action: A::ToggleBookmarkFilter, help: "filter list: bookmarked only" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('P'))], action: A::DbtParse, help: "run dbt parse (build manifest)" },
     KeyBinding { mode: M::Selection, triggers: &[Ctrl('t')], action: A::ThemeCycle, help: "cycle color theme" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('D'))], action: A::DiffOpen, help: "diff vs baseline (--diff)" },
     // ---- Search mode (printable chars are handled dynamically -> SearchType) ----
     KeyBinding { mode: M::Search, triggers: &[Key(Esc)], action: A::SearchCancel, help: "cancel search" },
     KeyBinding { mode: M::Search, triggers: &[Key(Enter)], action: A::SearchConfirm, help: "confirm" },
@@ -474,6 +503,14 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Stats, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up" },
     KeyBinding { mode: M::Stats, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top" },
     KeyBinding { mode: M::Stats, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom" },
+    // ---- Diff summary modal (reuses DetailClose + DetailScroll) ----
+    KeyBinding { mode: M::Diff, triggers: &[Key(Esc), Key(Enter), Key(Char('q'))], action: A::DetailClose, help: "close" },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down" },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up" },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down" },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up" },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top" },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom" },
     // ---- Help overlay ----
     KeyBinding { mode: M::Help, triggers: &[Key(Esc), Key(Char('?')), Key(Char('q'))], action: A::HelpToggle, help: "close help" },
     KeyBinding { mode: M::Help, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down" },
@@ -631,6 +668,9 @@ mod tests {
     }
     fn palette_mode() -> Mode {
         Mode::Palette(PaletteState::default())
+    }
+    fn diff_mode() -> Mode {
+        Mode::Diff(DiffView::default())
     }
     fn stats_mode() -> Mode {
         Mode::Stats(StatsView {
@@ -857,7 +897,8 @@ mod tests {
             | Action::ToggleUntestedFilter
             | Action::ToggleBookmarkFilter
             | Action::DbtParse
-            | Action::ThemeCycle => true,
+            | Action::ThemeCycle
+            | Action::DiffOpen => true,
             // Dynamic: produced without a fixed key binding (text input). Mouse
             // is handled in the event loop (size-aware), not via the keymap.
             Action::SearchType(_) => false,
@@ -879,6 +920,7 @@ mod tests {
                 ModeKind::Detail => detail_mode(),
                 ModeKind::Sql => sql_mode(),
                 ModeKind::Stats => stats_mode(),
+                ModeKind::Diff => diff_mode(),
                 ModeKind::Palette => palette_mode(),
                 ModeKind::Help => Mode::Help { scroll: 0 },
             };
@@ -963,6 +1005,7 @@ mod tests {
             Action::ToggleBookmarkFilter,
             Action::DbtParse,
             Action::ThemeCycle,
+            Action::DiffOpen,
         ];
         for a in samples {
             assert!(

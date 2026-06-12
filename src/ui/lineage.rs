@@ -443,6 +443,8 @@ fn lens_color(tint: LensTint, t: &theme::Theme) -> Option<Color> {
         LensTint::LayerMarts => Some(t.layer_marts),
         LensTint::LayerUtilities => Some(t.layer_utilities),
         LensTint::LayerOther => Some(t.layer_other),
+        LensTint::DiffAdd => Some(t.diff_add),
+        LensTint::DiffMod => Some(t.diff_mod),
     }
 }
 
@@ -517,6 +519,7 @@ fn lens_title_suffix(lens: LineageLens) -> &'static str {
         LineageLens::DegreeHeat => " [lens:heat]",
         LineageLens::Layer => " [lens:layer]",
         LineageLens::LayerViolation => " [lens:violation]",
+        LineageLens::Diff => " [lens:diff]",
     }
 }
 
@@ -692,6 +695,8 @@ mod tests {
                 LensTint::LayerMarts,
                 LensTint::LayerUtilities,
                 LensTint::LayerOther,
+                LensTint::DiffAdd,
+                LensTint::DiffMod,
             ];
             for tint in tints {
                 let colour = lens_color(tint, preset).expect("every non-None tint has a colour");

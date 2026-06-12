@@ -36,8 +36,8 @@ use crate::action::{Mode, SearchTarget};
 use crate::effect::Effect;
 use crate::ui::theme::{self, Theme};
 use crate::{
-    build_filtered_model_list, build_model_list, coverage_gap, load_dag, load_dag_from_source, Dag,
-    ModelList, NodeInfo, SortMode, UiState,
+    build_filtered_model_list, build_model_list, compute_diff, coverage_gap, load_dag,
+    load_dag_from_source, Dag, DagDiff, ModelList, NodeInfo, SortMode, UiState,
 };
 
 mod analysis;
@@ -187,14 +187,25 @@ pub struct App {
     /// dir in source mode), used to resolve a model's `original_file_path` for
     /// the `$EDITOR` jump.
     project_root: PathBuf,
-    /// Monotonic `Dag` identity: bumped by every [`reload`](App::reload) (the
-    /// only place the `Dag` is replaced), so the [`cache`] keys can name "the
-    /// current graph" without hashing it.
+    /// Monotonic identity of the style-relevant graph state: bumped by every
+    /// [`reload`](App::reload) (the only place the `Dag` is replaced) AND by
+    /// [`set_diff_base`](App::set_diff_base) (the diff is a style input via the
+    /// Diff lens), so the [`cache`] keys can name "the current graph + diff"
+    /// without hashing either.
     generation: u64,
     /// Keyed memoization of the per-frame lineage pipeline (subgraph → layout →
     /// styles) and the impact closures. Pure-function results only; invalidated
     /// by key comparison, never explicitly — see [`cache`].
     caches: LineageCaches,
+    /// The `--diff` BASELINE Dag (another manifest / checkout), kept so every
+    /// [`reload`](App::reload) can re-diff the rebuilt current Dag against it.
+    /// `None` = no baseline (the Diff lens is skipped, `D` toasts a hint).
+    diff_base: Option<Dag>,
+    /// Where the baseline came from (the `--diff` argument), for titles/toasts.
+    diff_label: String,
+    /// The computed baseline↔current diff. Derived state: recomputed by
+    /// [`set_diff_base`](App::set_diff_base) and every `reload` — never edited.
+    diff: Option<DagDiff>,
     /// The loaded colour themes, in Ctrl-t cycle order: the built-in presets by
     /// default; `main` replaces the list (presets + user theme files) and the
     /// start index via [`set_themes`](App::set_themes) (`--theme`). Never empty.
@@ -253,6 +264,9 @@ impl App {
             source,
             project_root,
             generation: 0,
+            diff_base: None,
+            diff_label: String::new(),
+            diff: None,
             caches: LineageCaches::default(),
             themes: theme::presets()
                 .iter()
@@ -260,6 +274,40 @@ impl App {
                 .collect(),
             theme_index: 0,
         }
+    }
+
+    /// Load a `--diff` baseline: store it (with its display label), compute the
+    /// diff against the current Dag, and bump the cache generation — the diff is
+    /// a style input (the Diff lens reads it), so any cached styled layout from
+    /// before the baseline landed must miss. Recomputed on every reload; the
+    /// baseline itself never changes after startup.
+    pub fn set_diff_base(&mut self, base: Dag, label: String) {
+        self.diff = Some(compute_diff(&base, &self.dag));
+        self.diff_base = Some(base);
+        self.diff_label = label;
+        self.generation += 1;
+    }
+
+    /// The computed baseline↔current diff (`None` without a `--diff` baseline).
+    pub fn diff(&self) -> Option<&DagDiff> {
+        self.diff.as_ref()
+    }
+
+    /// The `--diff` baseline's display label (empty without a baseline).
+    pub fn diff_label(&self) -> &str {
+        &self.diff_label
+    }
+
+    /// The status-bar diff chip: `"diff +A ~M -R"` (added / modified / removed
+    /// node counts vs the baseline), or `"diff clean"` when the Dags match.
+    /// `None` without a baseline. ASCII by construction.
+    pub fn diff_status_label(&self) -> Option<String> {
+        let diff = self.diff.as_ref()?;
+        if diff.is_empty() {
+            return Some("diff clean".to_string());
+        }
+        let (a, m, r) = diff.counts();
+        Some(format!("diff +{a} ~{m} -{r}"))
     }
 
     /// The active colour theme (what the loop hands to `RenderCtx`).
@@ -568,6 +616,9 @@ impl App {
         // selection-change chokepoint won't fire — reset here or a pre-reload
         // cursor would survive into the rebuilt graph.
         self.lineage_cursor = None;
+        // Re-diff the rebuilt Dag against the (unchanged) --diff baseline, so
+        // the Diff lens / chip / modal always describe the CURRENT graph.
+        self.diff = self.diff_base.as_ref().map(|b| compute_diff(b, &self.dag));
         // Recompute the persistent-filter view over the rebuilt list (it also
         // sets the model count to the active list's length).
         self.apply_list_filter();

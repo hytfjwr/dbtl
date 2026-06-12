@@ -7,7 +7,7 @@ use crate::action::{
     SearchTarget, SqlView,
 };
 use crate::effect::Effect;
-use crate::{build_model_list, reduce_selection, Focus};
+use crate::{build_model_list, reduce_selection, Focus, LineageLens};
 
 use super::{App, LineageView, ListFilter, Outcome};
 
@@ -455,11 +455,26 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             app.mode = Mode::Stats(app.compute_stats_view());
             Outcome::cont()
         }
+        // The baseline-diff summary: opens only with a --diff baseline loaded
+        // (the payload is snapshotted like the other modals); otherwise a toast
+        // explains how to get one.
+        Action::DiffOpen => {
+            match app.compute_diff_view() {
+                Some(dv) => app.mode = Mode::Diff(dv),
+                None => app.set_notice("No diff baseline (start with --diff <manifest|project>)"),
+            }
+            Outcome::cont()
+        }
         // Lineage lens cycle: a pure view-pref mutation. Routed DIRECTLY here (not
         // through reduce_selection, which is only the legacy list-movement arms)
         // per the two-level-reducer contract.
         Action::CycleLens => {
             app.ui_state.cycle_lens();
+            // The Diff lens shows nothing without a --diff baseline: skip it so
+            // the cycle never lands on a slot that looks identical to Off.
+            if app.ui_state.lens() == LineageLens::Diff && app.diff().is_none() {
+                app.ui_state.cycle_lens();
+            }
             Outcome::cont()
         }
         // ---- bookmarks + list sort (Step C) — App-level data, so handled here
@@ -568,7 +583,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
 }
 
 /// The scroll slot of whichever overlay modal is open (`None` in non-modal
-/// modes). The ONE place the four scrollable modals are enumerated, shared by
+/// modes). The ONE place the five scrollable modals are enumerated, shared by
 /// the line / page / home / end scroll arms so a new modal can't be wired into
 /// some arms and missed in others.
 fn modal_scroll_mut(mode: &mut Mode) -> Option<&mut usize> {
@@ -577,6 +592,7 @@ fn modal_scroll_mut(mode: &mut Mode) -> Option<&mut usize> {
         Mode::Detail(dv) => Some(&mut dv.scroll),
         Mode::Sql(sv) => Some(&mut sv.scroll),
         Mode::Stats(sv) => Some(&mut sv.scroll),
+        Mode::Diff(dv) => Some(&mut dv.scroll),
         _ => None,
     }
 }

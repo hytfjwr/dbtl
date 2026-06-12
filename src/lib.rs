@@ -10,6 +10,7 @@
 pub mod action;
 pub mod app;
 pub mod dag;
+pub mod diff;
 pub mod effect;
 pub mod layout;
 pub mod manifest;
@@ -18,13 +19,14 @@ pub mod source;
 pub mod ui;
 
 pub use action::{
-    dispatch, help_lines, Action, Direction, HelpLine, Mode, ModeKind, SearchTarget, SqlView,
-    StatsView,
+    dispatch, help_lines, Action, DiffView, Direction, HelpLine, Mode, ModeKind, SearchTarget,
+    SqlView, StatsView,
 };
 pub use app::{apply_action, layer_violation_edges, App, AppStats, ListFilter, Outcome};
 pub use dag::{
     coverage_gap, load_dag, ColumnInfo, Dag, Edge, NodeDetail, NodeInfo, Subgraph, TestInfo,
 };
+pub use diff::{compute_diff, DagDiff, DiffStatus};
 pub use effect::Effect;
 pub use layout::{
     anchor_offset, blit, clamp_offset, layout, layout_density, layout_mode, CellAttr, CharGrid,

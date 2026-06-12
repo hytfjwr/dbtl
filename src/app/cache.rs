@@ -9,8 +9,9 @@
 //! so a stale value is impossible as long as every input is part of the key.
 //!
 //! Keys capture every input of the cached computation:
-//! - the `Dag` via [`App::generation`] (bumped on every [`App::reload`], the
-//!   only place the `Dag` is replaced),
+//! - the `Dag` AND the `--diff` baseline diff via [`App::generation`] (bumped
+//!   on every [`App::reload`] — the only place the `Dag` is replaced — and by
+//!   `App::set_diff_base`, since the Diff lens styles read the diff),
 //! - the rooted selection, the [`LineageView`] (direction/depth), the validated
 //!   lineage cursor, the active [`LineageLens`], and the [`GlyphMode`].
 //!

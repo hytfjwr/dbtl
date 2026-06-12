@@ -80,6 +80,9 @@ fn render_with_toast(app: &App, width: u16, height: u16, toast: Option<&str>) ->
     // REAL value so the guard actually scans the rendered badge glyphs for
     // ASCII-safety (a hardcoded `↓`/`↑` would fail this render).
     let impact_s = app.impact_status();
+    // The diff chip (ASCII `+/~/-` counts), present only when a guard scenario
+    // loaded a --diff baseline — mirroring the loop's wiring.
+    let diff_s = app.diff_status_label();
     // The re-root breadcrumb (ASCII " > " / ".." separators); `None` until the
     // app has re-root history, so most renders are unchanged. Exercised in
     // ASCII mode by the dedicated breadcrumb test below.
@@ -103,6 +106,7 @@ fn render_with_toast(app: &App, width: u16, height: u16, toast: Option<&str>) ->
             coverage: cov_s.as_deref(),
             bookmarks: bm_s.as_deref(),
             sort: None,
+            diff: diff_s.as_deref(),
             filter: app.list_filter_label(),
         };
         // Mirror the loop's filter-tag wiring so the `[untested]`/`[marked]`
@@ -335,4 +339,31 @@ fn toast_overlay_is_all_ascii() {
         &render_with_toast(&app, 40, 24, Some(long)),
         "truncated toast 40x24",
     );
+}
+
+#[test]
+fn diff_lens_chip_and_modal_are_all_ascii() {
+    // Load a --diff baseline (the fixture against itself = a clean diff, plus
+    // a re-load against an empty-ish second fixture would be identical), then
+    // exercise the three diff surfaces: the Diff lens tint pass, the status
+    // chip, and the `D` summary modal. All marks are plain ASCII (+ ~ - ->).
+    let mut app = ascii_app();
+    let base = load_dag(FIXTURE).expect("fixture loads");
+    app.set_diff_base(base, "baseline".to_string());
+    assert!(app.diff().is_some(), "baseline loaded");
+
+    // Diff lens active (clean diff: tints nothing, but the lens title suffix
+    // and the chip render).
+    app.ui_state.set_lens(dbtl::ui::LineageLens::Diff);
+    assert_all_ascii(&render(&app, 80, 24), "diff lens + chip 80x24");
+    assert_all_ascii(&render(&app, 200, 60), "diff lens + chip 200x60");
+
+    // The summary modal over the panes.
+    apply_action(&mut app, Action::DiffOpen);
+    assert!(
+        matches!(app.mode, dbtl::Mode::Diff(_)),
+        "D opens the diff modal with a baseline"
+    );
+    assert_all_ascii(&render(&app, 80, 24), "diff modal 80x24");
+    assert_all_ascii(&render(&app, 120, 40), "diff modal 120x40");
 }

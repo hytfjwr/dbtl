@@ -3,12 +3,44 @@
 
 use std::collections::BTreeMap;
 
-use crate::action::StatsView;
+use crate::action::{DiffView, StatsView};
 use crate::Dag;
 
 use super::{App, AppStats};
 
 impl App {
+    /// Snapshot the baseline diff into the `D` modal's payload: names resolved
+    /// from the current Dag, change reasons joined, every listing sorted (the
+    /// `DagDiff` listings already are; `added`/`modified` re-sort by NAME here
+    /// because the modal shows names, not `unique_id`s). `None` without a
+    /// `--diff` baseline — the reducer toasts a hint instead of opening.
+    pub fn compute_diff_view(&self) -> Option<DiffView> {
+        let diff = self.diff()?;
+        let pair = |uid: &str| {
+            self.dag
+                .get(uid)
+                .map(|n| (n.name.clone(), n.resource_type.clone()))
+                .unwrap_or_else(|| (uid.to_string(), String::new()))
+        };
+        let mut added: Vec<(String, String)> = diff.added.iter().map(|uid| pair(uid)).collect();
+        added.sort();
+        let mut modified: Vec<(String, String)> = diff
+            .modified
+            .iter()
+            .map(|(uid, reasons)| (pair(uid).0, reasons.join("; ")))
+            .collect();
+        modified.sort();
+        Some(DiffView {
+            baseline: self.diff_label().to_string(),
+            added,
+            removed: diff.removed.clone(),
+            modified,
+            edges_added: diff.edges_added.clone(),
+            edges_removed: diff.edges_removed.clone(),
+            scroll: 0,
+        })
+    }
+
     /// Compute the stats-dashboard payload from the `Dag` at open time, so the
     /// render layer never needs a `Dag` (mirrors [`DetailView`]). Deterministic:
     /// counts accumulate into `BTreeMap`s and hubs are fully sorted (degree desc,
