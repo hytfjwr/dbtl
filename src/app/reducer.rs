@@ -25,6 +25,22 @@ fn yank_with_notice(app: &mut App, text: Option<String>, notice: &str) -> Outcom
     }
 }
 
+/// Export filenames embed the node name, which comes from an untrusted
+/// `manifest.json`: a crafted name (e.g. `../../x`) would let the export write
+/// outside the working directory. Keep ASCII alphanumerics plus `.`/`-`/`_`
+/// and map everything else (separators included) to `_`.
+fn sanitize_file_stem(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// Apply an [`Action`] to the app, returning the [`Outcome`] (quit + effects).
 ///
 /// Size-unaware: it never reads pane dimensions. UiState-only actions are
@@ -345,7 +361,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         }
         Action::ExportLineage => match (app.selected_name(), app.lineage_ascii()) {
             (Some(name), Some(contents)) => {
-                let path = format!("{name}_lineage.txt");
+                let path = format!("{}_lineage.txt", sanitize_file_stem(&name));
                 // Optimistic intent; `run_effect` overwrites it if the write fails.
                 app.set_notice(format!("Exported {path}"));
                 Outcome::effect(Effect::WriteFile { path, contents })
