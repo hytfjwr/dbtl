@@ -496,6 +496,16 @@ impl App {
         self.generation += 1;
         // Drop bookmarks whose model vanished; surviving ids persist (ids stable).
         self.bookmarks.retain(|id| self.dag.get(id).is_some());
+        // Same prune for the re-root history: a stale id would make
+        // history_back/forward pop the entry, push the current node onto the
+        // opposite stack, and then fail to select — consuming the step and
+        // accumulating bogus duplicates instead of landing on a survivor.
+        self.back.retain(|id| self.dag.get(id).is_some());
+        self.forward.retain(|id| self.dag.get(id).is_some());
+        // Pruning can leave adjacent equal entries (A → vanished → A);
+        // collapse them so a history step never "moves" to the same node.
+        self.back.dedup();
+        self.forward.dedup();
         self.filter = None;
         self.mode = Mode::Selection;
         // Cursor home: selection is restored BY ID, so the loop's

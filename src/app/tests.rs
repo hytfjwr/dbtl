@@ -801,6 +801,48 @@ fn jump_to_records_history_and_back_forward_navigate() {
 }
 
 #[test]
+fn reload_prunes_vanished_ids_from_history_and_back_lands_on_a_survivor() {
+    let mut a = app();
+    let survivor = "model.jaffle_finance.stg_payment__shoppers";
+    let current = "model.jaffle_finance.fct_subscription_process";
+    a.select_by_unique_id(survivor);
+    a.jump_to("model.jaffle_finance.int_shoppers__combined");
+    a.jump_to(current);
+    // Simulate visited nodes that the reload removes: a vanished uid is
+    // unconstructable via jump_to (it refuses an unresolvable id), so plant
+    // ghosts directly — the fixture re-read won't contain them. The back
+    // stack sandwiches a ghost between equal survivors (A → ghost → A), the
+    // post-prune adjacent-duplicate case.
+    a.back = vec![
+        survivor.into(),
+        "model.jaffle_finance.ghost_does_not_exist".into(),
+        survivor.into(),
+    ];
+    a.forward = vec!["model.jaffle_finance.ghost_ahead".into()];
+    a.reload().expect("reload ok");
+    assert_eq!(
+        a.back,
+        vec![survivor.to_string()],
+        "back keeps survivors only, adjacent duplicates collapsed"
+    );
+    assert!(
+        a.forward.is_empty(),
+        "the vanished forward entry is dropped"
+    );
+    a.history_back();
+    assert_eq!(
+        a.selected_unique_id().as_deref(),
+        Some(survivor),
+        "back lands on the most recent surviving entry, not a no-op"
+    );
+    assert_eq!(
+        a.forward,
+        vec![current.to_string()],
+        "forward holds exactly the node back navigated away from"
+    );
+}
+
+#[test]
 fn lineage_view_toggles_and_depth_filter_the_subgraph() {
     let mut a = app();
     a.select_by_unique_id("model.jaffle_finance.fct_subscription_process");
