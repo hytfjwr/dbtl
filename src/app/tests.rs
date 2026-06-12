@@ -429,6 +429,45 @@ fn export_lineage_emits_a_write_file_effect_with_the_diagram() {
 }
 
 #[test]
+fn export_sanitizes_untrusted_node_names_into_a_safe_relative_path() {
+    // Node names come from an untrusted manifest.json: a name carrying path
+    // separators must not let the export escape the working directory.
+    use crate::{RawManifest, RawNode};
+    use std::collections::HashMap;
+    let mut nodes = HashMap::new();
+    nodes.insert(
+        "model.p.evil".to_string(),
+        RawNode {
+            name: "../../evil".into(),
+            resource_type: "model".into(),
+            path: Some("marts/evil.sql".into()),
+            ..Default::default()
+        },
+    );
+    let dag = Dag::build(&RawManifest {
+        nodes,
+        sources: HashMap::new(),
+        parent_map: HashMap::new(),
+        child_map: HashMap::new(),
+    });
+    let mut a = App::new(dag, PathBuf::from("/tmp/x/target/manifest.json"));
+    a.select_by_unique_id("model.p.evil");
+    let effects = apply_action(&mut a, Action::ExportLineage).effects;
+    let path = match &effects[..] {
+        [Effect::WriteFile { path, .. }] => path.clone(),
+        other => panic!("expected one WriteFile effect, got {other:?}"),
+    };
+    assert_eq!(path, ".._.._evil_lineage.txt");
+    let p = Path::new(&path);
+    assert!(p.is_relative(), "export path stays relative");
+    assert_eq!(
+        p.components().count(),
+        1,
+        "a single component: separators cannot traverse out of the CWD"
+    );
+}
+
+#[test]
 fn page_down_and_up_move_the_list_selection_by_ten_clamped() {
     let mut a = app();
     assert_eq!(a.ui_state.selected(), 0);
