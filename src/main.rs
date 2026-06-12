@@ -911,20 +911,46 @@ fn open_in_editor(terminal: &mut DefaultTerminal, path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Copy `text` to the macOS clipboard via `pbcopy`. Best-effort; the caller
-/// ignores errors so a missing `pbcopy` never breaks the TUI.
+/// The clipboard commands to try on this platform, in order. Linux has no
+/// single standard tool, so Wayland's `wl-copy` is probed first, then the two
+/// common X11 ones — the first that spawns wins.
+#[cfg(target_os = "macos")]
+const CLIPBOARD_COMMANDS: &[(&str, &[&str])] = &[("pbcopy", &[])];
+
+#[cfg(target_os = "linux")]
+const CLIPBOARD_COMMANDS: &[(&str, &[&str])] = &[
+    ("wl-copy", &[]),
+    ("xclip", &["-selection", "clipboard"]),
+    ("xsel", &["--clipboard", "--input"]),
+];
+
+#[cfg(target_os = "windows")]
+const CLIPBOARD_COMMANDS: &[(&str, &[&str])] = &[("clip", &[])];
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+const CLIPBOARD_COMMANDS: &[(&str, &[&str])] = &[];
+
+/// Copy `text` to the system clipboard via the platform's clipboard command
+/// ([`CLIPBOARD_COMMANDS`]). Best-effort; the caller ignores errors so a
+/// missing clipboard tool never breaks the TUI.
 fn yank_to_clipboard(text: &str) -> Result<()> {
-    let mut child = Command::new("pbcopy")
-        .stdin(Stdio::piped())
-        .spawn()
-        .context("failed to spawn pbcopy")?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(text.as_bytes())
-            .context("failed to write to pbcopy")?;
+    for (program, args) in CLIPBOARD_COMMANDS {
+        let Ok(mut child) = Command::new(program)
+            .args(*args)
+            .stdin(Stdio::piped())
+            .spawn()
+        else {
+            continue;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(text.as_bytes())
+                .with_context(|| format!("failed to write to {program}"))?;
+        }
+        child.wait().with_context(|| format!("{program} failed"))?;
+        return Ok(());
     }
-    child.wait().context("pbcopy failed")?;
-    Ok(())
+    anyhow::bail!("no clipboard command available")
 }
 
 /// Compute the number of visible *display rows* in the list pane, mirroring the
