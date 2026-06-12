@@ -2,6 +2,8 @@
 //! diagrams, the raw-SQL yank, and the Markdown impact report. All are pure
 //! string builders over the current selection — deterministic byte-for-byte.
 
+use std::collections::{BTreeSet, HashMap, HashSet};
+
 use crate::NodeInfo;
 
 use super::App;
@@ -9,8 +11,10 @@ use super::App;
 impl App {
     /// Render the current lineage subgraph as a Mermaid `graph LR` diagram
     /// (deterministic: the subgraph's nodes/edges are already sorted). Node IDs
-    /// are the sanitized `unique_id`; labels carry the name + materialization.
-    /// `None` when nothing is selected / the subgraph is empty.
+    /// come from a per-export [`mermaid_ids`] map — the sanitized `unique_id`,
+    /// with deterministic numeric suffixes when two uids sanitize to the same
+    /// text; labels carry the name + materialization. `None` when nothing is
+    /// selected / the subgraph is empty.
     ///
     /// The diagram is wrapped in a ```` ```mermaid ```` fenced code block so that
     /// pasting the yank straight into a Markdown surface (GitHub, Notion,
@@ -24,23 +28,30 @@ impl App {
         if sg.nodes.is_empty() {
             return None;
         }
+        let ids = mermaid_ids(
+            sg.nodes
+                .iter()
+                .map(|n| n.unique_id.as_str())
+                .chain(sg.edges.iter().map(|e| e.parent.as_str()))
+                .chain(sg.edges.iter().map(|e| e.child.as_str())),
+        );
         let mut out = String::from("```mermaid\ngraph LR\n");
         for n in &sg.nodes {
             let kind = node_kind(n);
             let mark = if n.unique_id == sg.selected { " *" } else { "" };
+            // The kind comes from the manifest too, so the WHOLE label text is
+            // escaped as one unit — not just the name.
             out.push_str(&format!(
-                "  {}[\"{} ({}){}\"]\n",
-                mermaid_id(&n.unique_id),
-                mermaid_label(&n.name),
-                kind,
-                mark,
+                "  {}[\"{}\"]\n",
+                ids[n.unique_id.as_str()],
+                mermaid_label(&format!("{} ({kind}){mark}", n.name)),
             ));
         }
         for e in &sg.edges {
             out.push_str(&format!(
                 "  {} --> {}\n",
-                mermaid_id(&e.parent),
-                mermaid_id(&e.child)
+                ids[e.parent.as_str()],
+                ids[e.child.as_str()]
             ));
         }
         out.push_str("```\n");
@@ -148,17 +159,77 @@ fn node_kind(n: &NodeInfo) -> &str {
     n.materialized.as_deref().unwrap_or(&n.resource_type)
 }
 
-/// A Mermaid-safe node id: non-alphanumeric chars (the `.` in a `unique_id`)
-/// become `_`, so `model.p.x` → `model_p_x`.
-fn mermaid_id(uid: &str) -> String {
-    uid.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect()
+/// Mermaid words that must not appear as a bare node id: `end` closes a
+/// `subgraph` block, and the rest open statements/blocks of their own, so a
+/// `unique_id` that happens to sanitize to one of them would corrupt the graph.
+const MERMAID_RESERVED: &[&str] = &[
+    "end",
+    "subgraph",
+    "graph",
+    "flowchart",
+    "direction",
+    "style",
+    "linkStyle",
+    "classDef",
+    "class",
+    "click",
+];
+
+/// A per-export `unique_id -> Mermaid node id` map.
+///
+/// Each id is the sanitized uid (non-alphanumeric chars — the `.` in a
+/// `unique_id` — become `_`, so `model.p.x` → `model_p_x`). Sanitizing is
+/// lossy: `model.p.x_y` and `model.p_x.y` both flatten to `model_p_x_y`, and
+/// emitting that id for both would silently merge two distinct nodes in the
+/// rendered diagram. So ids are assigned per export from a shared map: uids
+/// are visited in sorted order (determinism — same subgraph, byte-identical
+/// export) and a uid whose sanitized form is already taken gets the first free
+/// `_2`, `_3`, … numeric suffix. Reserved Mermaid words are pre-claimed so a
+/// uid can never sanitize to e.g. `end`, and an (unrealistic) empty uid falls
+/// back to `_` rather than an empty — syntactically invalid — id.
+pub(super) fn mermaid_ids<'a>(uids: impl IntoIterator<Item = &'a str>) -> HashMap<String, String> {
+    let sorted: BTreeSet<&str> = uids.into_iter().collect();
+    let mut used: HashSet<String> = MERMAID_RESERVED.iter().map(|w| w.to_string()).collect();
+    let mut ids = HashMap::with_capacity(sorted.len());
+    for uid in sorted {
+        let base: String = uid
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let base = if base.is_empty() {
+            "_".to_string()
+        } else {
+            base
+        };
+        let mut id = base.clone();
+        let mut n = 1usize;
+        while used.contains(&id) {
+            n += 1;
+            id = format!("{base}_{n}");
+        }
+        used.insert(id.clone());
+        ids.insert(uid.to_string(), id);
+    }
+    ids
 }
 
-/// Escape a label for a Mermaid `["..."]` node (double quotes would close it).
-fn mermaid_label(name: &str) -> String {
-    name.replace('"', "'")
+/// Escape display text for a Mermaid `["..."]` quoted label. Inside the quotes
+/// only two things can break the statement: a `"` (closes the string — emitted
+/// as the `#quot;` entity so the character still renders) and line breaks
+/// (start a new statement mid-label). Every control char collapses to a space,
+/// which also keeps the label inside its line of the surrounding Markdown
+/// fence — a smuggled newline followed by a backtick fence must never
+/// terminate the code block.
+pub(super) fn mermaid_label(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        match c {
+            '"' => out.push_str("#quot;"),
+            c if c.is_control() => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Escape a string for a Graphviz DOT quoted id/label (`\` and `"`).
