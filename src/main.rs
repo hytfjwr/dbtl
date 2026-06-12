@@ -873,13 +873,24 @@ fn dbt_command(exe: &std::path::Path) -> Command {
     Command::new(exe)
 }
 
+/// Split an editor value like `code --wait` into program + leading arguments.
+/// Values such as `$VISUAL` commonly carry flags, so the whole string must not
+/// be treated as a single program name. Whitespace-only values yield `None`.
+fn split_editor_command(value: &str) -> Option<(String, Vec<String>)> {
+    let mut tokens = value.split_whitespace().map(String::from);
+    let program = tokens.next()?;
+    Some((program, tokens.collect()))
+}
+
 /// Suspend the TUI, open `path` in `$VISUAL`/`$EDITOR` (default `vi`), then
 /// re-enter the alternate screen and force a redraw. A missing re-init would
 /// leave the terminal corrupted, so we always re-init even if the editor failed.
 fn open_in_editor(terminal: &mut DefaultTerminal, path: &str) -> Result<()> {
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
-        .unwrap_or_else(|_| "vi".to_string());
+        .unwrap_or_default();
+    let (program, args) =
+        split_editor_command(&editor).unwrap_or_else(|| ("vi".to_string(), Vec::new()));
 
     // Leave the TUI (pop the keyboard enhancement and disable mouse first, then
     // restore raw mode + alt screen) — the editor gets the terminal in the same
@@ -887,14 +898,14 @@ fn open_in_editor(terminal: &mut DefaultTerminal, path: &str) -> Result<()> {
     set_keyboard_enhancement(false);
     set_mouse_capture(false);
     ratatui::restore();
-    let status = Command::new(&editor).arg(path).status();
+    let status = Command::new(&program).args(&args).arg(path).status();
     // Re-enter: re-init the terminal, re-arm keyboard + mouse, force a redraw.
     *terminal = ratatui::try_init().context("failed to re-init terminal after editor")?;
     set_keyboard_enhancement(true);
     set_mouse_capture(true);
     let _ = terminal.clear();
 
-    status.with_context(|| format!("failed to launch editor ({editor})"))?;
+    status.with_context(|| format!("failed to launch editor ({program})"))?;
     Ok(())
 }
 
@@ -943,6 +954,26 @@ fn full_area(terminal: &DefaultTerminal) -> Result<ratatui::layout::Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_editor_command_separates_program_and_args() {
+        assert_eq!(
+            split_editor_command("code --wait"),
+            Some(("code".to_string(), vec!["--wait".to_string()]))
+        );
+        assert_eq!(split_editor_command("vim"), Some(("vim".to_string(), vec![])));
+        // Runs of whitespace (tabs included) never produce empty arguments.
+        assert_eq!(
+            split_editor_command("  emacs \t -nw  "),
+            Some(("emacs".to_string(), vec!["-nw".to_string()]))
+        );
+    }
+
+    #[test]
+    fn split_editor_command_rejects_blank_values() {
+        assert_eq!(split_editor_command(""), None);
+        assert_eq!(split_editor_command("   \t "), None);
+    }
 
     /// `restore` is the single teardown path; it must be safe to call multiple
     /// times (the panic hook and normal exit may both reach it) and must not
