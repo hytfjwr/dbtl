@@ -73,7 +73,7 @@ impl App {
                 "  \"{}\" [label=\"{}\\n({})\"];\n",
                 dot_escape(&n.unique_id),
                 dot_escape(&n.name),
-                kind,
+                dot_escape(kind),
             ));
         }
         for e in &sg.edges {
@@ -155,6 +155,7 @@ impl App {
 
 /// A node's display kind in an export: its materialization if recorded, else its
 /// resource type. Shared by the Mermaid and DOT exporters so the policy is single.
+/// Untrusted (straight from the manifest) — callers must escape it like the name.
 fn node_kind(n: &NodeInfo) -> &str {
     n.materialized.as_deref().unwrap_or(&n.resource_type)
 }
