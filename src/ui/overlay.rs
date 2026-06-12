@@ -47,21 +47,18 @@ fn draw_scrollable_modal(
     lines: Vec<Line<'static>>,
     scroll: usize,
     glyphs: crate::GlyphMode,
+    t: &theme::Theme,
 ) {
     let rect = modal_rect(area);
     frame.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_set(super::chrome(glyphs).border)
-        .border_style(
-            Style::default()
-                .fg(theme::ACCENT)
-                .add_modifier(Modifier::BOLD),
-        )
+        .border_style(Style::default().fg(t.accent).add_modifier(Modifier::BOLD))
         .title(Line::styled(
             title.into(),
             Style::default()
-                .fg(theme::TEXT_BRIGHT)
+                .fg(t.text_bright)
                 .add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(rect);
@@ -72,14 +69,14 @@ fn draw_scrollable_modal(
     let off = scroll.min(total.saturating_sub(view_h));
     let visible: Vec<Line> = lines.into_iter().skip(off).take(view_h).collect();
     frame.render_widget(Paragraph::new(visible), inner);
-    super::stamp_scrollbar(frame, rect, total, off, view_h, glyphs);
+    super::stamp_scrollbar(frame, rect, total, off, view_h, glyphs, t);
 }
 
 /// The help overlay content as display lines, GENERATED from the keymap's
 /// [`help_lines`](crate::action::help_lines) — the single source of truth — so
 /// the `?` overlay can never drift from what the keys actually do. Grouped by
 /// mode with section headers.
-fn help_display_lines() -> Vec<Line<'static>> {
+fn help_display_lines(t: &theme::Theme) -> Vec<Line<'static>> {
     use crate::action::{help_lines, ModeKind};
     let sections = [
         (ModeKind::Selection, "Normal"),
@@ -93,14 +90,11 @@ fn help_display_lines() -> Vec<Line<'static>> {
     let all = help_lines();
     let mut out: Vec<Line> = Vec::new();
     for (mk, title) in sections {
-        out.push(Line::styled(format!("{title}:"), header_style()));
+        out.push(Line::styled(format!("{title}:"), header_style(t)));
         for hl in all.iter().filter(|l| l.mode == mk) {
             // The key column in the accent, the description default — same text.
             out.push(Line::from(vec![
-                Span::styled(
-                    format!("  {:<10} ", hl.keys),
-                    Style::default().fg(theme::ACCENT),
-                ),
+                Span::styled(format!("  {:<10} ", hl.keys), Style::default().fg(t.accent)),
                 Span::raw(hl.desc.to_string()),
             ]));
         }
@@ -111,14 +105,22 @@ fn help_display_lines() -> Vec<Line<'static>> {
 
 /// Clamp a help-overlay scroll offset to the valid range for `area` (size-aware;
 /// the event loop calls this on the stored scroll, mirroring `clamp_lineage`).
+/// Counts with the DEFAULT theme — the line COUNT is theme-independent (a theme
+/// only recolours), so the clamp never needs the active one.
 pub fn clamp_help_scroll(area: Rect, scroll: usize) -> usize {
-    clamp_modal_scroll(area, help_display_lines().len(), scroll)
+    clamp_modal_scroll(area, help_display_lines(&theme::DEFAULT).len(), scroll)
 }
 
 /// Draw the `?` help overlay: a centered, scrollable box listing every binding
 /// (from the keymap). `scroll` is clamped here for display; the loop also clamps
 /// the stored value so up/down stay responsive. `pub(crate)` for `render::draw`.
-pub(crate) fn draw_help(frame: &mut Frame, area: Rect, scroll: usize, glyphs: crate::GlyphMode) {
+pub(crate) fn draw_help(
+    frame: &mut Frame,
+    area: Rect,
+    scroll: usize,
+    glyphs: crate::GlyphMode,
+    t: &theme::Theme,
+) {
     draw_scrollable_modal(
         frame,
         area,
@@ -127,9 +129,10 @@ pub(crate) fn draw_help(frame: &mut Frame, area: Rect, scroll: usize, glyphs: cr
             env!("CARGO_PKG_VERSION"),
             "  (?/Esc/q to close, j/k to scroll) "
         ),
-        help_display_lines(),
+        help_display_lines(t),
         scroll,
         glyphs,
+        t,
     );
 }
 
@@ -138,7 +141,7 @@ pub(crate) fn draw_help(frame: &mut Frame, area: Rect, scroll: usize, glyphs: cr
 /// The structure modal content as display lines: type / location / tags /
 /// description / columns table / tests list. Built once and shared by the clamp
 /// and the renderer so scroll bounds match the content.
-fn detail_display_lines(dv: &DetailView) -> Vec<Line<'static>> {
+fn detail_display_lines(dv: &DetailView, t: &theme::Theme) -> Vec<Line<'static>> {
     let d = &dv.detail;
     let mut out: Vec<Line> = Vec::new();
 
@@ -146,7 +149,7 @@ fn detail_display_lines(dv: &DetailView) -> Vec<Line<'static>> {
         .materialized
         .clone()
         .unwrap_or_else(|| "source".to_string());
-    out.push(Line::styled(format!("type:   {kind}"), header_style()));
+    out.push(Line::styled(format!("type:   {kind}"), header_style(t)));
     let location = match (&d.database, &d.schema) {
         (Some(db), Some(sc)) => format!("{db}.{sc}"),
         (None, Some(sc)) => sc.clone(),
@@ -165,7 +168,7 @@ fn detail_display_lines(dv: &DetailView) -> Vec<Line<'static>> {
     }
     if let Some(desc) = &d.description {
         out.push(Line::from(""));
-        out.push(Line::styled("description:", header_style()));
+        out.push(Line::styled("description:", header_style(t)));
         for line in desc.lines() {
             out.push(Line::from(format!("  {line}")));
         }
@@ -174,7 +177,7 @@ fn detail_display_lines(dv: &DetailView) -> Vec<Line<'static>> {
     out.push(Line::from(""));
     out.push(Line::styled(
         format!("columns ({}):", d.columns.len()),
-        header_style(),
+        header_style(t),
     ));
     for c in &d.columns {
         let ty = c.data_type.as_deref().unwrap_or("");
@@ -185,7 +188,7 @@ fn detail_display_lines(dv: &DetailView) -> Vec<Line<'static>> {
     out.push(Line::from(""));
     out.push(Line::styled(
         format!("tests ({}):", dv.tests.len()),
-        header_style(),
+        header_style(t),
     ));
     for t in &dv.tests {
         let col = t
@@ -200,8 +203,13 @@ fn detail_display_lines(dv: &DetailView) -> Vec<Line<'static>> {
 }
 
 /// Clamp the detail modal's scroll offset to its content/viewport (size-aware).
+/// Counts with the DEFAULT theme — the line count is theme-independent.
 pub fn clamp_detail_scroll(area: Rect, dv: &DetailView) -> usize {
-    clamp_modal_scroll(area, detail_display_lines(dv).len(), dv.scroll)
+    clamp_modal_scroll(
+        area,
+        detail_display_lines(dv, &theme::DEFAULT).len(),
+        dv.scroll,
+    )
 }
 
 /// Draw the structure (detail) modal for the selected node. `pub(crate)` for
@@ -212,14 +220,16 @@ pub(crate) fn draw_detail(
     area: Rect,
     dv: &DetailView,
     glyphs: crate::GlyphMode,
+    t: &theme::Theme,
 ) {
     draw_scrollable_modal(
         frame,
         area,
         format!(" {}  (Esc/q to close, j/k to scroll) ", dv.name),
-        detail_display_lines(dv),
+        detail_display_lines(dv, t),
         dv.scroll,
         glyphs,
+        t,
     );
 }
 
@@ -290,13 +300,13 @@ enum SqlKind {
 
 impl SqlKind {
     /// The theme role for a token class (`Plain` = the default style).
-    fn style(self) -> Style {
+    fn style(self, t: &theme::Theme) -> Style {
         match self {
             SqlKind::Plain => Style::default(),
-            SqlKind::Keyword => Style::default().fg(theme::SQL_KEYWORD),
-            SqlKind::Str => Style::default().fg(theme::SQL_STRING),
-            SqlKind::Comment => Style::default().fg(theme::SQL_COMMENT),
-            SqlKind::Jinja => Style::default().fg(theme::SQL_JINJA),
+            SqlKind::Keyword => Style::default().fg(t.sql_keyword),
+            SqlKind::Str => Style::default().fg(t.sql_string),
+            SqlKind::Comment => Style::default().fg(t.sql_comment),
+            SqlKind::Jinja => Style::default().fg(t.sql_jinja),
         }
     }
 }
@@ -426,19 +436,19 @@ fn sql_line_kinds(chars: &[char], mut state: SqlState) -> (Vec<SqlKind>, SqlStat
 
 /// Group one line's `(char, kind)` pairs into styled spans. Adjacent same-kind
 /// chars merge; the concatenated span text equals the input line verbatim.
-fn sql_line_spans(chars: &[char], kinds: &[SqlKind]) -> Line<'static> {
+fn sql_line_spans(chars: &[char], kinds: &[SqlKind], t: &theme::Theme) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut run = String::new();
     let mut run_kind = SqlKind::Plain;
     for (i, &ch) in chars.iter().enumerate() {
         if kinds[i] != run_kind && !run.is_empty() {
-            spans.push(Span::styled(std::mem::take(&mut run), run_kind.style()));
+            spans.push(Span::styled(std::mem::take(&mut run), run_kind.style(t)));
         }
         run_kind = kinds[i];
         run.push(ch);
     }
     if !run.is_empty() {
-        spans.push(Span::styled(run, run_kind.style()));
+        spans.push(Span::styled(run, run_kind.style(t)));
     }
     Line::from(spans)
 }
@@ -448,7 +458,7 @@ fn sql_line_spans(chars: &[char], kinds: &[SqlKind]) -> Line<'static> {
 /// Jinja `{{ }}` / `{% %}` regions, all from [`theme`] roles. NO wrapping (it
 /// would desync the line-count scroll clamp); long lines truncate at the
 /// width. Text bytes are preserved verbatim — only colour ever changes.
-fn sql_display_lines(sv: &SqlView) -> Vec<Line<'static>> {
+fn sql_display_lines(sv: &SqlView, t: &theme::Theme) -> Vec<Line<'static>> {
     let mut state = SqlState::Normal;
     sv.sql
         .lines()
@@ -456,7 +466,7 @@ fn sql_display_lines(sv: &SqlView) -> Vec<Line<'static>> {
             let chars: Vec<char> = line.chars().collect();
             let (kinds, next) = sql_line_kinds(&chars, state);
             state = next;
-            sql_line_spans(&chars, &kinds)
+            sql_line_spans(&chars, &kinds, t)
         })
         .collect()
 }
@@ -474,7 +484,13 @@ pub fn clamp_sql_scroll(area: Rect, sv: &SqlView) -> usize {
 /// Draw the SQL-preview modal. `pub(crate)` for `render::draw`. The SQL text
 /// rides inside the [`SqlView`] payload (snapshotted at open), so the render
 /// layer never needs a `Dag`.
-pub(crate) fn draw_sql(frame: &mut Frame, area: Rect, sv: &SqlView, glyphs: crate::GlyphMode) {
+pub(crate) fn draw_sql(
+    frame: &mut Frame,
+    area: Rect,
+    sv: &SqlView,
+    glyphs: crate::GlyphMode,
+    t: &theme::Theme,
+) {
     // The path tells the user WHICH file `o` would open; absent for sources /
     // seeds and manifests that omit it.
     let path = sv
@@ -486,9 +502,10 @@ pub(crate) fn draw_sql(frame: &mut Frame, area: Rect, sv: &SqlView, glyphs: crat
         frame,
         area,
         format!(" {}{path}  (Esc/q to close, j/k to scroll) ", sv.name),
-        sql_display_lines(sv),
+        sql_display_lines(sv, t),
         sv.scroll,
         glyphs,
+        t,
     );
 }
 
@@ -511,16 +528,16 @@ fn mini_bar(value: usize, max: usize, width: usize, color: Color) -> Span<'stati
 }
 
 /// The coverage gauge as a two-span run: a graded-colour FILL of spaces over a
-/// dark track of spaces ([`theme::SURFACE_HI`]), `width` cells total, fill
+/// dark track of spaces (the theme's `surface_hi`), `width` cells total, fill
 /// width-proportional to `pct` (integer math). Grade: danger <40, warn <70,
 /// ok ≥70. Spaces only — ASCII in both modes.
-fn coverage_gauge(pct: usize, width: usize) -> Vec<Span<'static>> {
+fn coverage_gauge(pct: usize, width: usize, t: &theme::Theme) -> Vec<Span<'static>> {
     let grade = if pct < 40 {
-        theme::DANGER
+        t.danger
     } else if pct < 70 {
-        theme::WARN
+        t.warn
     } else {
-        theme::OK
+        t.ok
     };
     let filled = (pct * width / 100).min(width);
     let empty = width - filled;
@@ -531,7 +548,7 @@ fn coverage_gauge(pct: usize, width: usize) -> Vec<Span<'static>> {
     if empty > 0 {
         spans.push(Span::styled(
             " ".repeat(empty),
-            Style::default().bg(theme::SURFACE_HI),
+            Style::default().bg(t.surface_hi),
         ));
     }
     spans
@@ -543,13 +560,13 @@ fn coverage_gauge(pct: usize, width: usize) -> Vec<Span<'static>> {
 /// East-Asian-Ambiguous and would fail ascii_guard in BOTH modes. Percentages
 /// are integer math (`StatsView` is `Eq`, no f64). This is the SINGLE source of
 /// the modal's line list, so [`clamp_stats_scroll`] stays correct automatically.
-fn stats_display_lines(sv: &StatsView) -> Vec<Line<'static>> {
+fn stats_display_lines(sv: &StatsView, t: &theme::Theme) -> Vec<Line<'static>> {
     const BAR_W: usize = 16;
     let mut out: Vec<Line> = Vec::new();
     out.push(Line::from(format!("project: {}", sv.project)));
 
     out.push(Line::from(""));
-    out.push(Line::styled("Resource counts:", header_style()));
+    out.push(Line::styled("Resource counts:", header_style(t)));
     let rt_max = sv
         .by_resource_type
         .iter()
@@ -559,12 +576,12 @@ fn stats_display_lines(sv: &StatsView) -> Vec<Line<'static>> {
     for (rt, count) in &sv.by_resource_type {
         out.push(Line::from(vec![
             Span::raw(format!("  {rt:<12} {count:<4} ")),
-            mini_bar(*count, rt_max, BAR_W, theme::BAR_RESOURCE),
+            mini_bar(*count, rt_max, BAR_W, t.bar_resource),
         ]));
     }
 
     out.push(Line::from(""));
-    out.push(Line::styled("Materialization (models):", header_style()));
+    out.push(Line::styled("Materialization (models):", header_style(t)));
     let mat_max = sv
         .by_materialization
         .iter()
@@ -574,7 +591,7 @@ fn stats_display_lines(sv: &StatsView) -> Vec<Line<'static>> {
     for (mat, count) in &sv.by_materialization {
         out.push(Line::from(vec![
             Span::raw(format!("  {mat:<12} {count:<4} ")),
-            mini_bar(*count, mat_max, BAR_W, theme::BAR_MATERIALIZATION),
+            mini_bar(*count, mat_max, BAR_W, t.bar_materialization),
         ]));
     }
 
@@ -582,13 +599,13 @@ fn stats_display_lines(sv: &StatsView) -> Vec<Line<'static>> {
     // Same coverage_gap base as the `t` lens and the status `cov` segment.
     out.push(Line::styled(
         "Test coverage (models / seeds / snapshots):",
-        header_style(),
+        header_style(t),
     ));
     let pct = (sv.testable_tested * 100)
         .checked_div(sv.testable_total)
         .unwrap_or(0);
     let mut cov_spans = vec![Span::raw("  ")];
-    cov_spans.extend(coverage_gauge(pct, 20));
+    cov_spans.extend(coverage_gauge(pct, 20, t));
     cov_spans.push(Span::raw(format!(
         " {}/{} tested ({pct}%)",
         sv.testable_tested, sv.testable_total
@@ -596,19 +613,19 @@ fn stats_display_lines(sv: &StatsView) -> Vec<Line<'static>> {
     out.push(Line::from(cov_spans));
 
     out.push(Line::from(""));
-    out.push(Line::styled("Top hubs (degree):", header_style()));
+    out.push(Line::styled("Top hubs (degree):", header_style(t)));
     let deg_max = sv.top_hubs.iter().map(|(_, _, d)| *d).max().unwrap_or(0);
     for (_, name, degree) in &sv.top_hubs {
         out.push(Line::from(vec![
             Span::raw(format!("  {name:<28} {degree:<4} ")),
-            mini_bar(*degree, deg_max, BAR_W, theme::BAR_DEGREE),
+            mini_bar(*degree, deg_max, BAR_W, t.bar_degree),
         ]));
     }
 
     out.push(Line::from(""));
     out.push(Line::styled(
         "Hubs (transitive downstream):",
-        header_style(),
+        header_style(t),
     ));
     let tr_max = sv
         .transitive_hubs
@@ -619,14 +636,14 @@ fn stats_display_lines(sv: &StatsView) -> Vec<Line<'static>> {
     for (name, count) in &sv.transitive_hubs {
         out.push(Line::from(vec![
             Span::raw(format!("  {name:<28} {count:<4} ")),
-            mini_bar(*count, tr_max, BAR_W, theme::BAR_TRANSITIVE),
+            mini_bar(*count, tr_max, BAR_W, t.bar_transitive),
         ]));
     }
 
     out.push(Line::from(""));
     out.push(Line::styled(
         format!("Critical path (depth {}):", sv.critical_path.len()),
-        header_style(),
+        header_style(t),
     ));
     for (i, name) in sv.critical_path.iter().take(WORKLIST_CAP).enumerate() {
         // Indent each hop one step further: the staircase reads as the chain
@@ -643,7 +660,7 @@ fn stats_display_lines(sv: &StatsView) -> Vec<Line<'static>> {
     out.push(Line::from(""));
     out.push(Line::styled(
         format!("Orphans ({}):", sv.orphan_models.len()),
-        header_style(),
+        header_style(t),
     ));
     for name in sv.orphan_models.iter().take(WORKLIST_CAP) {
         out.push(Line::from(format!("  {name}")));
@@ -658,7 +675,7 @@ fn stats_display_lines(sv: &StatsView) -> Vec<Line<'static>> {
     out.push(Line::from(""));
     out.push(Line::styled(
         format!("Layer violations ({}):", sv.layer_violations.len()),
-        header_style(),
+        header_style(t),
     ));
     for (parent, child) in sv.layer_violations.iter().take(WORKLIST_CAP) {
         out.push(Line::from(format!("  {parent} -> {child}")));
@@ -671,7 +688,7 @@ fn stats_display_lines(sv: &StatsView) -> Vec<Line<'static>> {
     }
 
     out.push(Line::from(""));
-    out.push(Line::styled("Warnings:", header_style()));
+    out.push(Line::styled("Warnings:", header_style(t)));
     out.push(Line::from(format!(
         "  untested (model/seed/snapshot): {}",
         sv.untested_testable
@@ -689,22 +706,34 @@ fn stats_display_lines(sv: &StatsView) -> Vec<Line<'static>> {
 }
 
 /// Clamp the stats modal's scroll offset to its content/viewport (size-aware),
-/// mirroring [`clamp_detail_scroll`].
+/// mirroring [`clamp_detail_scroll`]. Counts with the DEFAULT theme — the line
+/// count is theme-independent.
 pub fn clamp_stats_scroll(area: Rect, sv: &StatsView) -> usize {
-    clamp_modal_scroll(area, stats_display_lines(sv).len(), sv.scroll)
+    clamp_modal_scroll(
+        area,
+        stats_display_lines(sv, &theme::DEFAULT).len(),
+        sv.scroll,
+    )
 }
 
 /// Draw the stats-dashboard modal. `pub(crate)` for `render::draw`. The stats
 /// ride inside the [`StatsView`] payload (computed at open), so the render layer
 /// never needs a `Dag`.
-pub(crate) fn draw_stats(frame: &mut Frame, area: Rect, sv: &StatsView, glyphs: crate::GlyphMode) {
+pub(crate) fn draw_stats(
+    frame: &mut Frame,
+    area: Rect,
+    sv: &StatsView,
+    glyphs: crate::GlyphMode,
+    t: &theme::Theme,
+) {
     draw_scrollable_modal(
         frame,
         area,
         format!(" Stats - {}  (Esc/q to close, j/k to scroll) ", sv.project),
-        stats_display_lines(sv),
+        stats_display_lines(sv, t),
         sv.scroll,
         glyphs,
+        t,
     );
 }
 
@@ -728,6 +757,7 @@ pub(crate) fn draw_palette(
     area: Rect,
     state: &PaletteState,
     glyphs: crate::GlyphMode,
+    t: &theme::Theme,
 ) {
     // ~60% × ~60%, min-clamped so the box never collapses on a tiny terminal.
     let rect = centered_rect(60, 60, area).intersection(area);
@@ -736,15 +766,11 @@ pub(crate) fn draw_palette(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_set(chrome.border)
-        .border_style(
-            Style::default()
-                .fg(theme::ACCENT)
-                .add_modifier(Modifier::BOLD),
-        )
+        .border_style(Style::default().fg(t.accent).add_modifier(Modifier::BOLD))
         .title(Line::styled(
             " commands  (Esc to close, Enter to run) ",
             Style::default()
-                .fg(theme::TEXT_BRIGHT)
+                .fg(t.text_bright)
                 .add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(rect);
@@ -757,15 +783,13 @@ pub(crate) fn draw_palette(
     let query_line = Line::from(vec![
         Span::styled(
             "> ",
-            Style::default()
-                .fg(theme::ACCENT)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             state.query.clone(),
             Style::default().add_modifier(Modifier::BOLD),
         ),
-        Span::styled(chrome.caret.to_string(), Style::default().fg(theme::ACCENT)),
+        Span::styled(chrome.caret.to_string(), Style::default().fg(t.accent)),
     ]);
     let query_rect = Rect { height: 1, ..inner };
     frame.render_widget(Paragraph::new(query_line), query_rect);
@@ -793,7 +817,7 @@ pub(crate) fn draw_palette(
     for (i, b) in candidates.iter().enumerate().skip(off).take(view_h) {
         let selected = i == state.selected;
         let base = if selected {
-            selected_style()
+            selected_style(t)
         } else {
             Style::default()
         };
@@ -801,9 +825,7 @@ pub(crate) fn draw_palette(
         // highlight wins over the base except for the reversed selected row, which
         // keeps the reverse (selection cue beats the match cue).
         let hits = crate::model_list::match_indices(b.help, &state.query);
-        let hi = Style::default()
-            .fg(theme::GOLD)
-            .add_modifier(Modifier::BOLD);
+        let hi = Style::default().fg(t.gold).add_modifier(Modifier::BOLD);
         let mut spans: Vec<Span> = Vec::new();
         spans.push(Span::styled("  ", base));
         for (ci, ch) in b.help.chars().enumerate() {
@@ -826,7 +848,7 @@ pub(crate) fn draw_palette(
         let key_base = if selected {
             base
         } else {
-            Style::default().fg(theme::TEXT_DIM)
+            Style::default().fg(t.text_dim)
         };
         // A row can be admitted by a KEY-LABEL match (e.g. "tab" matches the "Tab"
         // label, not the help text — see `palette_candidates`). When the help has
@@ -856,7 +878,7 @@ pub(crate) fn draw_palette(
     frame.render_widget(Paragraph::new(lines), list_rect);
 
     // Right-border scrollbar thumb on overflow (candidate-list units).
-    super::stamp_scrollbar(frame, rect, total, off, view_h, glyphs);
+    super::stamp_scrollbar(frame, rect, total, off, view_h, glyphs, t);
 }
 
 /// Draw the transient toast: a one-line bordered box floating at the TOP-RIGHT
@@ -868,7 +890,13 @@ pub(crate) fn draw_palette(
 /// Chrome-correct (the glyph-mode border set) and ASCII-safe by construction:
 /// overflow truncation appends a plain `..`, never an ellipsis glyph. Skipped
 /// entirely on a terminal too small to float a legible box.
-pub(crate) fn draw_toast(frame: &mut Frame, area: Rect, text: &str, glyphs: crate::GlyphMode) {
+pub(crate) fn draw_toast(
+    frame: &mut Frame,
+    area: Rect,
+    text: &str,
+    glyphs: crate::GlyphMode,
+    t: &theme::Theme,
+) {
     use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
     // Borders (2) + one-space padding each side (2) + a 2-col right inset.
@@ -906,19 +934,15 @@ pub(crate) fn draw_toast(frame: &mut Frame, area: Rect, text: &str, glyphs: crat
     let block = Block::default()
         .borders(Borders::ALL)
         .border_set(super::chrome(glyphs).border)
-        .border_style(
-            Style::default()
-                .fg(theme::ACCENT)
-                .add_modifier(Modifier::BOLD),
-        )
-        .style(Style::default().bg(theme::SURFACE));
+        .border_style(Style::default().fg(t.accent).add_modifier(Modifier::BOLD))
+        .style(Style::default().bg(t.surface));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     frame.render_widget(
         Paragraph::new(Line::styled(
             format!(" {text} "),
             Style::default()
-                .fg(theme::TEXT_BRIGHT)
+                .fg(t.text_bright)
                 .add_modifier(Modifier::BOLD),
         )),
         inner,
@@ -1036,7 +1060,10 @@ b */
             path: None,
             scroll: 0,
         };
-        assert_eq!(sql_display_lines(&sv).len(), sql.lines().count());
+        assert_eq!(
+            sql_display_lines(&sv, &theme::DEFAULT).len(),
+            sql.lines().count()
+        );
     }
 
     #[test]
@@ -1049,7 +1076,7 @@ b */
         for line in sql.lines() {
             let chars: Vec<char> = line.chars().collect();
             let (kinds, next) = sql_line_kinds(&chars, state);
-            let rendered = sql_line_spans(&chars, &kinds);
+            let rendered = sql_line_spans(&chars, &kinds, &theme::DEFAULT);
             let joined: String = rendered.spans.iter().map(|s| s.content.as_ref()).collect();
             assert_eq!(joined, line, "span text is byte-identical to the input");
             state = next;

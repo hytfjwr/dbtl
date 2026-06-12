@@ -132,6 +132,9 @@ pub enum Action {
     /// `target/manifest.json` (upgrade source-mode's inferred lineage to the
     /// compiled manifest's full fidelity; in manifest mode it refreshes).
     DbtParse,
+    /// Cycle the colour theme through the App's loaded list (built-in presets
+    /// plus any user themes); the toast names the one that landed.
+    ThemeCycle,
 }
 
 /// Which pane a search targets (decided from focus when search opens).
@@ -433,6 +436,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('T'))], action: A::ToggleUntestedFilter, help: "filter list: untested only" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('*'))], action: A::ToggleBookmarkFilter, help: "filter list: bookmarked only" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('P'))], action: A::DbtParse, help: "run dbt parse (build manifest)" },
+    KeyBinding { mode: M::Selection, triggers: &[Ctrl('t')], action: A::ThemeCycle, help: "cycle color theme" },
     // ---- Search mode (printable chars are handled dynamically -> SearchType) ----
     KeyBinding { mode: M::Search, triggers: &[Key(Esc)], action: A::SearchCancel, help: "cancel search" },
     KeyBinding { mode: M::Search, triggers: &[Key(Enter)], action: A::SearchConfirm, help: "confirm" },
@@ -852,7 +856,8 @@ mod tests {
             | Action::LineageRightmost
             | Action::ToggleUntestedFilter
             | Action::ToggleBookmarkFilter
-            | Action::DbtParse => true,
+            | Action::DbtParse
+            | Action::ThemeCycle => true,
             // Dynamic: produced without a fixed key binding (text input). Mouse
             // is handled in the event loop (size-aware), not via the keymap.
             Action::SearchType(_) => false,
@@ -957,6 +962,7 @@ mod tests {
             Action::ToggleUntestedFilter,
             Action::ToggleBookmarkFilter,
             Action::DbtParse,
+            Action::ThemeCycle,
         ];
         for a in samples {
             assert!(
@@ -984,6 +990,18 @@ mod tests {
         let sel = Mode::Selection;
         assert_eq!(dispatch(&sel, ctrl('p')), Some(Action::PaletteOpen));
         assert_eq!(dispatch(&sel, cmd('p')), Some(Action::PaletteOpen));
+    }
+
+    #[test]
+    fn ctrl_t_cycles_the_theme_and_stays_distinct_from_plain_t() {
+        // Ctrl-t is the theme cycle; plain `t` stays the lens cycle (the
+        // `Trigger::Key`-requires-no-Ctrl rule is what keeps them apart).
+        let sel = Mode::Selection;
+        assert_eq!(dispatch(&sel, ctrl('t')), Some(Action::ThemeCycle));
+        assert_eq!(dispatch(&sel, press(Char('t'))), Some(Action::CycleLens));
+        // In text-input modes Ctrl-t is unbound (never typed text).
+        assert_eq!(dispatch(&search_mode(), ctrl('t')), None);
+        assert_eq!(dispatch(&palette_mode(), ctrl('t')), None);
     }
 
     #[test]

@@ -556,6 +556,14 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             app.ui_state.toggle_density();
             Outcome::cont()
         }
+        // Cycle the colour theme (App-level data: the loaded list lives on the
+        // App, not UiState). Pure state + a toast; the loop hands the new
+        // active theme to `RenderCtx` next frame — no cache is touched (the
+        // cached layout's attrs are semantic, colours resolve at draw).
+        Action::ThemeCycle => {
+            app.cycle_theme();
+            Outcome::cont()
+        }
     }
 }
 

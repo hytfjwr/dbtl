@@ -106,6 +106,12 @@ pub struct RenderCtx<'a> {
     /// (crate::App::take_notice) + a stamp); `None` (the default) draws
     /// nothing, so headless renders are untouched.
     pub toast: Option<&'a str>,
+    /// The active colour [`Theme`](theme::Theme) every surface paints with.
+    /// Defaults to [`theme::DEFAULT`] (so headless renders and the
+    /// style-asserting tests keep the legacy palette); the event loop sets the
+    /// App's active theme (`--theme` / Ctrl-t). A borrow, like every other
+    /// field — themes are data, never a global.
+    pub theme: &'a theme::Theme,
 }
 
 /// Default mode for [`RenderCtx::new`] (so tests don't supply one). A `static`
@@ -137,6 +143,7 @@ impl<'a> RenderCtx<'a> {
             filter_label: None,
             layer_bands: None,
             toast: None,
+            theme: &theme::DEFAULT,
         }
     }
 }
@@ -178,6 +185,7 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
             ctx.bookmarks,
             ctx.full_model_count,
             ctx.filter_label,
+            ctx.theme,
         );
     }
     super::lineage::draw_lineage_pane(
@@ -192,6 +200,7 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         ctx.glyphs,
         ctx.minimap,
         ctx.layer_bands,
+        ctx.theme,
     );
     draw_status(
         frame,
@@ -200,23 +209,32 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         ctx.state,
         ctx.status,
         &ctx.segments,
+        ctx.theme,
     );
 
     match ctx.mode {
         crate::action::Mode::Help { scroll } => {
-            super::overlay::draw_help(frame, area, *scroll, ctx.glyphs)
+            super::overlay::draw_help(frame, area, *scroll, ctx.glyphs, ctx.theme)
         }
-        crate::action::Mode::Detail(dv) => super::overlay::draw_detail(frame, area, dv, ctx.glyphs),
-        crate::action::Mode::Sql(sv) => super::overlay::draw_sql(frame, area, sv, ctx.glyphs),
-        crate::action::Mode::Stats(sv) => super::overlay::draw_stats(frame, area, sv, ctx.glyphs),
-        crate::action::Mode::Palette(p) => super::overlay::draw_palette(frame, area, p, ctx.glyphs),
+        crate::action::Mode::Detail(dv) => {
+            super::overlay::draw_detail(frame, area, dv, ctx.glyphs, ctx.theme)
+        }
+        crate::action::Mode::Sql(sv) => {
+            super::overlay::draw_sql(frame, area, sv, ctx.glyphs, ctx.theme)
+        }
+        crate::action::Mode::Stats(sv) => {
+            super::overlay::draw_stats(frame, area, sv, ctx.glyphs, ctx.theme)
+        }
+        crate::action::Mode::Palette(p) => {
+            super::overlay::draw_palette(frame, area, p, ctx.glyphs, ctx.theme)
+        }
         crate::action::Mode::Selection | crate::action::Mode::Search(_) => {}
     }
 
     // The transient toast floats above EVERYTHING (panes and modals alike), so
     // a yank fired from inside the SQL modal is acknowledged too — drawn last.
     if let Some(text) = ctx.toast {
-        super::overlay::draw_toast(frame, area, text, ctx.glyphs);
+        super::overlay::draw_toast(frame, area, text, ctx.glyphs, ctx.theme);
     }
 }
 
@@ -240,6 +258,7 @@ fn draw_list(
     bookmarks: Option<&std::collections::BTreeSet<String>>,
     full_count: Option<usize>,
     filter_label: Option<&str>,
+    t: &theme::Theme,
 ) {
     let chrome = super::chrome(glyphs);
     let mut title = match (search, stats) {
@@ -266,8 +285,8 @@ fn draw_list(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_set(chrome.border)
-        .border_style(focus_border(state, Focus::List))
-        .title(Line::styled(title, title_style(state, Focus::List)));
+        .border_style(focus_border(state, Focus::List, t))
+        .title(Line::styled(title, title_style(state, Focus::List, t)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -284,7 +303,7 @@ fn draw_list(
                 let rule = chrome.rule.repeat(2);
                 let label = format!("{rule} {} ({count})", title_case(layer));
                 let accent = Style::default()
-                    .fg(layer_accent(layer))
+                    .fg(layer_accent(layer, t))
                     .add_modifier(Modifier::BOLD);
                 lines.push(Line::styled(label, accent));
             }
@@ -305,11 +324,11 @@ fn draw_list(
                 // wins over both.
                 let gap = state.lens() == LineageLens::Coverage && node.is_some_and(coverage_gap);
                 let name_style = if selected {
-                    selected_style()
+                    selected_style(t)
                 } else if gap {
-                    Style::default().fg(theme::DANGER)
+                    Style::default().fg(t.danger)
                 } else if orphan {
-                    Style::default().fg(theme::ORPHAN)
+                    Style::default().fg(t.orphan)
                 } else {
                     Style::default()
                 };
@@ -320,9 +339,7 @@ fn draw_list(
                 let name_spans: Vec<Span> = match search {
                     Some(q) if !q.trim().is_empty() => {
                         let hits = crate::model_list::match_indices(name, q);
-                        let hi = Style::default()
-                            .fg(theme::GOLD)
-                            .add_modifier(Modifier::BOLD);
+                        let hi = Style::default().fg(t.gold).add_modifier(Modifier::BOLD);
                         name.chars()
                             .enumerate()
                             .map(|(i, ch)| {
@@ -347,7 +364,7 @@ fn draw_list(
                 // Direct parents/children badges (`↑2 ↓3` / `^2 v3`).
                 spans.push(Span::styled(
                     format!("  {}{up} {}{down}", chrome.badge_up, chrome.badge_down),
-                    Style::default().fg(theme::TEXT_FAINT),
+                    Style::default().fg(t.text_faint),
                 ));
                 // Under the Coverage lens, surface the metric the red tint is
                 // judging: the per-model test count (pure ASCII — guard-safe).
@@ -355,14 +372,14 @@ fn draw_list(
                     if let Some(n) = node {
                         spans.push(Span::styled(
                             format!(" t:{}", n.test_count),
-                            Style::default().fg(theme::TEXT_FAINT),
+                            Style::default().fg(t.text_faint),
                         ));
                     }
                 }
                 if bookmarked {
                     spans.push(Span::styled(
                         format!(" {}", chrome.bookmark),
-                        Style::default().fg(theme::GOLD),
+                        Style::default().fg(t.gold),
                     ));
                 }
                 lines.push(Line::from(spans));
@@ -382,19 +399,20 @@ fn draw_list(
         state.offset(),
         inner.height as usize,
         glyphs,
+        t,
     );
 }
 
 /// The accent color for a layer-header row (list pane only; a SEPARATE path from
 /// the shared `header_style()`). Unknown layers fall back to the gray
-/// [`theme::LAYER_OTHER`].
-fn layer_accent(layer: &str) -> Color {
+/// `layer_other`.
+fn layer_accent(layer: &str, t: &theme::Theme) -> Color {
     match layer {
-        "staging" => theme::LAYER_STAGING,
-        "intermediate" => theme::LAYER_INTERMEDIATE,
-        "marts" => theme::LAYER_MARTS,
-        "utilities" => theme::LAYER_UTILITIES,
-        _ => theme::LAYER_OTHER,
+        "staging" => t.layer_staging,
+        "intermediate" => t.layer_intermediate,
+        "marts" => t.layer_marts,
+        "utilities" => t.layer_utilities,
+        _ => t.layer_other,
     }
 }
 
@@ -426,6 +444,7 @@ fn draw_status(
     state: &UiState,
     status: Option<&str>,
     segments: &StatusSegments,
+    t: &theme::Theme,
 ) {
     use unicode_width::UnicodeWidthStr;
 
@@ -445,13 +464,13 @@ fn draw_status(
     // contains-based assertions keep matching.
     let hints = "[j/k] move  [?] help  sel: ";
     let mut used = hints.width() + sel.width() + note.width();
-    let dim = Style::default().fg(theme::TEXT_DIM);
+    let dim = Style::default().fg(t.text_dim);
     let mut spans: Vec<Span> = vec![
         Span::styled(hints, dim),
         Span::styled(
             sel.to_string(),
             Style::default()
-                .fg(theme::TEXT_BRIGHT)
+                .fg(t.text_bright)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(note, dim),
@@ -469,14 +488,14 @@ fn draw_status(
     //      view label is echoed in the lineage pane title — redundant cues that
     //      should drop first on a narrow terminal).
     let candidates: [(Option<&str>, Color); 8] = [
-        (segments.impact, theme::DANGER),
-        (segments.coverage, theme::WARN),
-        (segments.bookmarks, theme::GOLD),
-        (segments.filter, theme::ACCENT),
-        (segments.sort, theme::ACCENT),
-        (segments.position, theme::TEXT_FAINT),
-        (segments.focus, theme::OK),
-        (segments.view, theme::CHIP_VIEW),
+        (segments.impact, t.danger),
+        (segments.coverage, t.warn),
+        (segments.bookmarks, t.gold),
+        (segments.filter, t.accent),
+        (segments.sort, t.accent),
+        (segments.position, t.text_faint),
+        (segments.focus, t.ok),
+        (segments.view, t.chip_view),
     ];
     let cap = area.width as usize;
     for (txt, color) in candidates.into_iter() {
@@ -492,7 +511,7 @@ fn draw_status(
 
     // The paragraph style paints the SURFACE band across the whole status row
     // (spans inherit the bg), turning the line into a footer bar.
-    let paragraph = Paragraph::new(Line::from(spans))
-        .style(Style::default().fg(theme::TEXT_DIM).bg(theme::SURFACE));
+    let paragraph =
+        Paragraph::new(Line::from(spans)).style(Style::default().fg(t.text_dim).bg(t.surface));
     frame.render_widget(paragraph, area);
 }
