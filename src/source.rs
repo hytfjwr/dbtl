@@ -31,6 +31,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use regex::Regex;
@@ -534,8 +535,8 @@ fn collect_files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
 /// exactly what dbt sees, or source mode silently drops edges the manifest has
 /// (the consistency contract).
 fn strip_jinja_comments(sql: &str) -> String {
-    // Compiled once per call; the loader is a cold path.
-    let jinja = Regex::new(r"(?s)\{#.*?#\}").unwrap();
+    static JINJA: OnceLock<Regex> = OnceLock::new();
+    let jinja = JINJA.get_or_init(|| Regex::new(r"(?s)\{#.*?#\}").unwrap());
     jinja.replace_all(sql, " ").into_owned()
 }
 
