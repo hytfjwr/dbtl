@@ -30,7 +30,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 use regex::Regex;
@@ -56,17 +56,26 @@ pub fn manifest_from_source<P: AsRef<Path>>(project_dir: P) -> Result<RawManifes
         .with_context(|| format!("failed to parse dbt_project.yml: {}", proj_path.display()))?;
 
     let proj = project.name;
-    // `source-paths` is the pre-0.17 alias for `model-paths`.
-    let model_paths = project
-        .model_paths
-        .or(project.source_paths)
-        .unwrap_or_else(|| vec!["models".to_string()]);
-    let seed_paths = project
-        .seed_paths
-        .unwrap_or_else(|| vec!["seeds".to_string()]);
-    let snapshot_paths = project
-        .snapshot_paths
-        .unwrap_or_else(|| vec!["snapshots".to_string()]);
+    // `source-paths` is the pre-0.17 alias for `model-paths`. All three lists
+    // are filtered through `contained_resource_paths`: every later join site
+    // (the .sql/.csv collectors AND the schema.yml scan) trusts them to stay
+    // under the project root.
+    let model_paths = contained_resource_paths(
+        project
+            .model_paths
+            .or(project.source_paths)
+            .unwrap_or_else(|| vec!["models".to_string()]),
+    );
+    let seed_paths = contained_resource_paths(
+        project
+            .seed_paths
+            .unwrap_or_else(|| vec!["seeds".to_string()]),
+    );
+    let snapshot_paths = contained_resource_paths(
+        project
+            .snapshot_paths
+            .unwrap_or_else(|| vec!["snapshots".to_string()]),
+    );
 
     let pat = Patterns::new();
     let mut nodes: HashMap<String, RawNode> = HashMap::new();
@@ -479,6 +488,22 @@ fn file_stem(path: &Path) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_string()
+}
+
+/// Keep only resource paths that are safe to join onto the project root:
+/// relative, with no `..` component. `dbt_project.yml` is untrusted input, so
+/// a traversal value (`../../etc`, `/etc`) is skipped rather than letting the
+/// model/seed/snapshot scan (and the schema.yml scan, which walks the same
+/// lists) read files outside the project directory.
+fn contained_resource_paths(paths: Vec<String>) -> Vec<String> {
+    paths
+        .into_iter()
+        .filter(|p| {
+            Path::new(p)
+                .components()
+                .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+        })
+        .collect()
 }
 
 /// Path relative to the project root (for `original_file_path`), forward-slashed.
