@@ -284,6 +284,19 @@ impl UiState {
         };
     }
 
+    /// Scroll the lineage pane horizontally by a wheel notch (focus-independent;
+    /// the loop's `clamp_lineage` bounds it next frame). Used by a horizontal
+    /// wheel notch (trackpad swipe / tilt wheel) or Shift+vertical wheel over
+    /// the lineage pane — together with [`wheel_lineage`](UiState::wheel_lineage)
+    /// this gives free 2-axis panning of the diagram.
+    pub fn wheel_lineage_x(&mut self, right: bool) {
+        self.lineage_scroll_x = if right {
+            self.lineage_scroll_x.saturating_add(WHEEL_STEP)
+        } else {
+            self.lineage_scroll_x.saturating_sub(WHEEL_STEP)
+        };
+    }
+
     /// Reset the lineage scroll to the initial anchor centering the selected
     /// node's label in a `view_w x view_h` viewport over `grid`. Called by the
     /// event loop whenever the selection changes, so the new node is centered
@@ -647,6 +660,13 @@ mod tests {
         assert_eq!(s.lineage_scroll_y(), WHEEL_STEP);
         s.wheel_lineage(false);
         assert_eq!(s.lineage_scroll_y(), 0);
+        // Horizontal wheel pans scroll_x the same way, saturating at 0.
+        s.wheel_lineage_x(true);
+        assert_eq!(s.lineage_scroll_x(), WHEEL_STEP);
+        s.wheel_lineage_x(false);
+        assert_eq!(s.lineage_scroll_x(), 0);
+        s.wheel_lineage_x(false);
+        assert_eq!(s.lineage_scroll_x(), 0, "saturates at the left edge");
         // Empty list: wheel is a safe no-op.
         let mut empty = state(0);
         empty.wheel_list(true);

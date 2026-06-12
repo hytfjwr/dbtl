@@ -116,7 +116,7 @@ Press `?` inside the app for the full list. Highlights:
 | `Ctrl-t` | Cycle the color theme |
 | `q` | Quit |
 
-Mouse is supported too: click a lineage node to re-root, wheel to scroll.
+Mouse is supported too: click a lineage node to re-root, wheel to scroll. The lineage pane pans on both axes — a horizontal wheel notch (trackpad swipe / tilt wheel) or `Shift`+wheel scrolls it sideways.
 
 ### Color themes
 

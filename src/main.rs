@@ -27,8 +27,9 @@ use dbtl::ui::{
 use dbtl::{load_dag, load_dag_from_source, Mode, SortMode};
 
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, KeyboardEnhancementFlags,
-    MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, KeyModifiers,
+    KeyboardEnhancementFlags, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::supports_keyboard_enhancement;
@@ -874,8 +875,15 @@ fn handle_mouse(app: &mut App, me: MouseEvent, lineage: Option<&Layout>, area: R
                 }
             }
         }
-        MouseEventKind::ScrollDown => wheel(app, list_inner, lin_inner, col, row, true),
-        MouseEventKind::ScrollUp => wheel(app, list_inner, lin_inner, col, row, false),
+        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+            let down = me.kind == MouseEventKind::ScrollDown;
+            let shift = me.modifiers.contains(KeyModifiers::SHIFT);
+            wheel(app, list_inner, lin_inner, col, row, down, shift);
+        }
+        // A native horizontal notch (trackpad swipe / tilt wheel). Only the
+        // lineage diagram scrolls horizontally; the list pane ignores it.
+        MouseEventKind::ScrollRight => wheel_x(app, lin_inner, col, row, true),
+        MouseEventKind::ScrollLeft => wheel_x(app, lin_inner, col, row, false),
         _ => {}
     }
 }
@@ -885,12 +893,36 @@ fn within(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
 }
 
-/// Route a wheel notch to whichever pane the cursor is over.
-fn wheel(app: &mut App, list_inner: Rect, lin_inner: Rect, col: u16, row: u16, down: bool) {
+/// Route a vertical wheel notch to whichever pane the cursor is over. Over the
+/// lineage pane, Shift remaps the notch to a horizontal pan (down = right) —
+/// the usual convention for mice without a horizontal wheel; over the list,
+/// Shift changes nothing (the list has no horizontal axis).
+fn wheel(
+    app: &mut App,
+    list_inner: Rect,
+    lin_inner: Rect,
+    col: u16,
+    row: u16,
+    down: bool,
+    shift: bool,
+) {
     if within(list_inner, col, row) {
         app.ui_state.wheel_list(down);
     } else if within(lin_inner, col, row) {
-        app.ui_state.wheel_lineage(down);
+        if shift {
+            app.ui_state.wheel_lineage_x(down);
+        } else {
+            app.ui_state.wheel_lineage(down);
+        }
+    }
+}
+
+/// Route a horizontal wheel notch to the lineage pane — the only horizontally
+/// scrollable surface. The saturating pan intent is bounded by the loop's
+/// `clamp_lineage` next frame, same as the vertical wheel.
+fn wheel_x(app: &mut App, lin_inner: Rect, col: u16, row: u16, right: bool) {
+    if within(lin_inner, col, row) {
+        app.ui_state.wheel_lineage_x(right);
     }
 }
 
