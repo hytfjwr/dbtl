@@ -712,13 +712,13 @@ fn wheel(app: &mut App, list_inner: Rect, lin_inner: Rect, col: u16, row: u16, d
 
 /// Perform a side effect requested by the reducer. The only impure surface:
 /// it suspends/reinits the terminal for `$EDITOR`, shells out to the clipboard,
-/// or reloads the manifest. Effects that fail non-fatally (clipboard, reload,
-/// file write) keep the TUI running and surface the failure on the notice
-/// channel — overwriting the reducer's optimistic intent toast, so the toast
-/// never claims a copy/export that didn't happen.
+/// or reloads the manifest. Effects that fail non-fatally (editor, clipboard,
+/// reload, file write) keep the TUI running and surface the failure on the
+/// notice channel — overwriting the reducer's optimistic intent toast, so the
+/// toast never claims a copy/export that didn't happen.
 fn run_effect(terminal: &mut DefaultTerminal, app: &mut App, effect: Effect) -> Result<()> {
     match effect {
-        Effect::OpenEditor(path) => open_in_editor(terminal, &path)?,
+        Effect::OpenEditor(path) => open_in_editor(terminal, app, &path)?,
         Effect::Yank(text) => {
             if yank_to_clipboard(&text).is_err() {
                 app.set_notice("Copy failed (clipboard unavailable)");
@@ -887,7 +887,10 @@ fn split_editor_command(value: &str) -> Option<(String, Vec<String>)> {
 /// Suspend the TUI, open `path` in `$VISUAL`/`$EDITOR` (default `vi`), then
 /// re-enter the alternate screen and force a redraw. A missing re-init would
 /// leave the terminal corrupted, so we always re-init even if the editor failed.
-fn open_in_editor(terminal: &mut DefaultTerminal, path: &str) -> Result<()> {
+/// Editor spawn/exit failures are NOT propagated — tearing the TUI down over a
+/// missing editor binary would discard the whole session — they surface on the
+/// notice channel like every other non-fatal effect failure.
+fn open_in_editor(terminal: &mut DefaultTerminal, app: &mut App, path: &str) -> Result<()> {
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_default();
@@ -907,8 +910,23 @@ fn open_in_editor(terminal: &mut DefaultTerminal, path: &str) -> Result<()> {
     set_mouse_capture(true);
     let _ = terminal.clear();
 
-    status.with_context(|| format!("failed to launch editor ({program})"))?;
+    if let Some(note) = editor_failure_notice(&program, &status) {
+        app.set_notice(note);
+    }
     Ok(())
+}
+
+/// Map the editor subprocess outcome to a failure notice (`None` = clean exit).
+/// Pure so the headless suite can cover it.
+fn editor_failure_notice(
+    program: &str,
+    status: &std::io::Result<std::process::ExitStatus>,
+) -> Option<String> {
+    match status {
+        Ok(s) if s.success() => None,
+        Ok(s) => Some(format!("Editor failed ({program}): {s}")),
+        Err(_) => Some(format!("Failed to launch editor ({program})")),
+    }
 }
 
 /// The clipboard commands to try on this platform, in order. Linux has no
@@ -931,26 +949,37 @@ const CLIPBOARD_COMMANDS: &[(&str, &[&str])] = &[("clip", &[])];
 const CLIPBOARD_COMMANDS: &[(&str, &[&str])] = &[];
 
 /// Copy `text` to the system clipboard via the platform's clipboard command
-/// ([`CLIPBOARD_COMMANDS`]). Best-effort; the caller ignores errors so a
-/// missing clipboard tool never breaks the TUI.
+/// ([`CLIPBOARD_COMMANDS`]). Best-effort; the caller surfaces errors as a
+/// toast so a missing clipboard tool never breaks the TUI.
 fn yank_to_clipboard(text: &str) -> Result<()> {
     for (program, args) in CLIPBOARD_COMMANDS {
-        let Ok(mut child) = Command::new(program)
+        let Ok(child) = Command::new(program)
             .args(*args)
             .stdin(Stdio::piped())
             .spawn()
         else {
             continue;
         };
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(text.as_bytes())
-                .with_context(|| format!("failed to write to {program}"))?;
-        }
-        child.wait().with_context(|| format!("{program} failed"))?;
-        return Ok(());
+        return feed_and_reap(child, program, text);
     }
     anyhow::bail!("no clipboard command available")
+}
+
+/// Feed `text` to a spawned clipboard child's stdin and ALWAYS reap it: an
+/// early `?` on the write would skip `wait()` and leave a zombie for the rest
+/// of the process lifetime. The write error (e.g. a broken pipe from a child
+/// that exited without reading) is reported after the reap.
+fn feed_and_reap(mut child: std::process::Child, program: &str, text: &str) -> Result<()> {
+    let write_result = match child.stdin.take() {
+        // `stdin` drops at the end of this arm, closing the pipe so the child
+        // sees EOF and `wait()` below cannot deadlock.
+        Some(mut stdin) => stdin.write_all(text.as_bytes()),
+        None => Ok(()),
+    };
+    let wait_result = child.wait();
+    write_result.with_context(|| format!("failed to write to {program}"))?;
+    wait_result.with_context(|| format!("{program} failed"))?;
+    Ok(())
 }
 
 /// Compute the number of visible *display rows* in the list pane, mirroring the
@@ -1004,6 +1033,55 @@ mod tests {
     fn split_editor_command_rejects_blank_values() {
         assert_eq!(split_editor_command(""), None);
         assert_eq!(split_editor_command("   \t "), None);
+    }
+
+    /// The editor outcome→notice mapping: a clean exit is silent; a spawn
+    /// failure (missing binary) and a non-zero exit both produce a toast that
+    /// names the program — neither may tear the TUI down.
+    #[test]
+    fn editor_failure_notice_maps_outcomes() {
+        let err: std::io::Result<std::process::ExitStatus> =
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        let note = editor_failure_notice("no-such-editor", &err).expect("spawn failure notices");
+        assert!(note.contains("no-such-editor"), "{note}");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            let ok = Ok(std::process::ExitStatus::from_raw(0));
+            assert_eq!(
+                editor_failure_notice("vi", &ok),
+                None,
+                "clean exit is silent"
+            );
+            let fail = Ok(std::process::ExitStatus::from_raw(0x100)); // exit code 1
+            let note = editor_failure_notice("vi", &fail).expect("non-zero exit notices");
+            assert!(note.contains("vi"), "{note}");
+        }
+    }
+
+    /// The yank pipe must reap its child unconditionally: a child that exits
+    /// without reading stdin breaks the pipe mid-write, and the old early `?`
+    /// skipped `wait()` (zombie). Now the write error comes back as `Err`
+    /// AFTER the reap — so this returns (no hang) with the failure visible.
+    #[cfg(unix)]
+    #[test]
+    fn feed_and_reap_reaps_child_and_reports_write_failure() {
+        // Success path: a child that drains stdin.
+        let child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("cat spawns");
+        assert!(feed_and_reap(child, "cat", "hello").is_ok());
+
+        // `false` exits immediately; > pipe-buffer text forces a broken pipe.
+        let child = Command::new("false")
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("false spawns");
+        let big = "x".repeat(1 << 20);
+        assert!(feed_and_reap(child, "false", &big).is_err());
     }
 
     /// `restore` is the single teardown path; it must be safe to call multiple
