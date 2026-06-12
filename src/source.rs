@@ -31,6 +31,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use regex::Regex;
@@ -52,7 +53,7 @@ pub fn manifest_from_source<P: AsRef<Path>>(project_dir: P) -> Result<RawManifes
     let proj_path = dir.join("dbt_project.yml");
     let proj_str = fs::read_to_string(&proj_path)
         .with_context(|| format!("failed to read dbt_project.yml: {}", proj_path.display()))?;
-    let project: DbtProject = serde_yaml::from_str(&proj_str)
+    let project: DbtProject = serde_norway::from_str(&proj_str)
         .with_context(|| format!("failed to parse dbt_project.yml: {}", proj_path.display()))?;
 
     let proj = project.name;
@@ -249,7 +250,7 @@ pub fn manifest_from_source<P: AsRef<Path>>(project_dir: P) -> Result<RawManifes
     for file in &yml_files {
         // A non-schema yml deserializes to all-empty defaults; only a YAML shape
         // error (e.g. a top-level sequence) is skipped.
-        let schema: SchemaFile = match serde_yaml::from_str(&read(file)) {
+        let schema: SchemaFile = match serde_norway::from_str(&read(file)) {
             Ok(s) => s,
             Err(_) => continue,
         };
@@ -394,7 +395,7 @@ fn synth_tests(
     target_uid: &str,
     target_name: &str,
     column: Option<&str>,
-    tests: &[serde_yaml::Value],
+    tests: &[serde_norway::Value],
 ) {
     for test in tests {
         let Some(kind) = test_kind(test) else {
@@ -423,10 +424,10 @@ fn synth_tests(
 /// The test kind from a schema-file `tests:`/`data_tests:` entry: a bare string
 /// (`unique`) is the kind; a single-key map (`accepted_values: {...}`) uses its
 /// key. Anything else is ignored.
-fn test_kind(v: &serde_yaml::Value) -> Option<String> {
+fn test_kind(v: &serde_norway::Value) -> Option<String> {
     match v {
-        serde_yaml::Value::String(s) => Some(s.clone()),
-        serde_yaml::Value::Mapping(m) => m
+        serde_norway::Value::String(s) => Some(s.clone()),
+        serde_norway::Value::Mapping(m) => m
             .iter()
             .next()
             .and_then(|(k, _)| k.as_str().map(str::to_string)),
@@ -559,8 +560,8 @@ fn collect_files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
 /// exactly what dbt sees, or source mode silently drops edges the manifest has
 /// (the consistency contract).
 fn strip_jinja_comments(sql: &str) -> String {
-    // Compiled once per call; the loader is a cold path.
-    let jinja = Regex::new(r"(?s)\{#.*?#\}").unwrap();
+    static JINJA: OnceLock<Regex> = OnceLock::new();
+    let jinja = JINJA.get_or_init(|| Regex::new(r"(?s)\{#.*?#\}").unwrap());
     jinja.replace_all(sql, " ").into_owned()
 }
 
@@ -592,7 +593,7 @@ fn tree_segments(proj: &str, rel: &str) -> Vec<String> {
 /// shallower one, dbt's most-specific-path rule. Descent stops at the first
 /// missing segment (configs collected above it still apply). Only `+`-prefixed
 /// keys are configs; bare keys are path segments.
-fn resolve_tree_config(tree: &serde_yaml::Value, segments: &[String]) -> TreeConfig {
+fn resolve_tree_config(tree: &serde_norway::Value, segments: &[String]) -> TreeConfig {
     let mut out = TreeConfig::default();
     if !tree.is_mapping() {
         return out; // missing level (indexing Null yields Null) — nothing deeper
@@ -719,11 +720,11 @@ struct DbtProject {
     /// [`resolve_tree_config`]; `Value::default()` is `Null`, which resolves to
     /// no config.
     #[serde(default)]
-    models: serde_yaml::Value,
+    models: serde_norway::Value,
     #[serde(default)]
-    seeds: serde_yaml::Value,
+    seeds: serde_norway::Value,
     #[serde(default)]
-    snapshots: serde_yaml::Value,
+    snapshots: serde_norway::Value,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -751,7 +752,7 @@ struct SchemaModel {
     #[serde(default)]
     columns: Vec<SchemaColumn>,
     #[serde(default, alias = "data_tests")]
-    tests: Vec<serde_yaml::Value>,
+    tests: Vec<serde_norway::Value>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -770,7 +771,7 @@ struct SchemaColumn {
     #[serde(default)]
     description: Option<String>,
     #[serde(default, alias = "data_tests")]
-    tests: Vec<serde_yaml::Value>,
+    tests: Vec<serde_norway::Value>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -792,7 +793,7 @@ struct SchemaSourceTable {
     #[serde(default)]
     columns: Vec<SchemaColumn>,
     #[serde(default, alias = "data_tests")]
-    tests: Vec<serde_yaml::Value>,
+    tests: Vec<serde_norway::Value>,
 }
 
 #[cfg(test)]

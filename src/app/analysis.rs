@@ -180,10 +180,13 @@ pub fn layer_violation_edges(dag: &Dag) -> Vec<(String, String)> {
 /// downstream. Memoized DFS over `Dag::edges()` (sorted, so children are
 /// visited in `unique_id` order); ties at every level keep the first (smallest
 /// uid) candidate, making the result fully deterministic. dbt manifests are
-/// acyclic by construction, which the recursion relies on (the same assumption
-/// `layout()`'s longest-path columns already make).
-fn longest_chain(dag: &Dag) -> Vec<String> {
-    use std::collections::HashMap;
+/// acyclic by construction, but a malformed one can carry a cycle that
+/// survives the prune (only test/operation nodes are dropped), so the DFS
+/// keeps an on-stack set and treats a back-edge target as a leaf — the
+/// recursion terminates instead of overflowing the stack. On an acyclic
+/// manifest the guard never fires, so the result is unchanged.
+pub(super) fn longest_chain(dag: &Dag) -> Vec<String> {
+    use std::collections::{HashMap, HashSet};
     let edges = dag.edges();
     let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
     for (p, c) in &edges {
@@ -195,28 +198,37 @@ fn longest_chain(dag: &Dag) -> Vec<String> {
         uid: &'a str,
         children: &HashMap<&'a str, Vec<&'a str>>,
         memo: &mut HashMap<&'a str, (usize, Option<&'a str>)>,
+        on_stack: &mut HashSet<&'a str>,
     ) -> (usize, Option<&'a str>) {
         if let Some(&hit) = memo.get(uid) {
             return hit;
         }
+        // A back-edge into the live DFS stack (a cycle) would recurse forever:
+        // break it by treating the re-entered node as a leaf. NOT memoized —
+        // the node's real value is finished by its own frame further up.
+        if !on_stack.insert(uid) {
+            return (1, None);
+        }
         let mut best = (1, None);
         for &kid in children.get(uid).into_iter().flatten() {
-            let (len, _) = chain(kid, children, memo);
+            let (len, _) = chain(kid, children, memo, on_stack);
             // Strictly greater: kids come sorted, so ties keep the first.
             if len + 1 > best.0 {
                 best = (len + 1, Some(kid));
             }
         }
+        on_stack.remove(uid);
         memo.insert(uid, best);
         best
     }
 
     let mut memo = HashMap::new();
+    let mut on_stack = HashSet::new();
     let mut starts: Vec<&str> = dag.nodes().keys().map(String::as_str).collect();
     starts.sort_unstable();
     let Some(&start) = starts
         .iter()
-        .max_by_key(|uid| chain(uid, &children, &mut memo).0)
+        .max_by_key(|uid| chain(uid, &children, &mut memo, &mut on_stack).0)
     else {
         return Vec::new();
     };
@@ -228,8 +240,14 @@ fn longest_chain(dag: &Dag) -> Vec<String> {
         .expect("a maximum exists");
 
     let mut path = Vec::new();
+    let mut seen = HashSet::new();
     let mut cur = Some(start);
     while let Some(uid) = cur {
+        // Under a cycle the memoized next-hops can point back into the chain;
+        // stop at the first repeat so the walk terminates (acyclic: no-op).
+        if !seen.insert(uid) {
+            break;
+        }
         path.push(
             dag.get(uid)
                 .map_or_else(|| uid.to_string(), |n| n.name.clone()),

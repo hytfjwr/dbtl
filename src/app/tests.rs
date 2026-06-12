@@ -315,6 +315,51 @@ fn yank_mermaid_emits_a_graph_lr_diagram() {
 }
 
 #[test]
+fn mermaid_ids_disambiguate_collisions_deterministically() {
+    use super::export::mermaid_ids;
+    // All three uids sanitize to `model_p_x_y`; before the per-export map the
+    // diagram silently merged them into one node. Suffixes follow sorted-uid
+    // order (`.` < `_`), so the same input always yields the same ids.
+    let ids = mermaid_ids(["model.p_x.y", "model.p.x_y", "model.p_x_y"]);
+    assert_eq!(ids["model.p.x_y"], "model_p_x_y");
+    assert_eq!(ids["model.p_x.y"], "model_p_x_y_2");
+    assert_eq!(ids["model.p_x_y"], "model_p_x_y_3");
+
+    // A suffixed id must not collide with a uid that NATURALLY sanitizes to
+    // that text: `a.b` takes `a_b`, so `a_b` bumps to `a_b_2`, which is
+    // already claimed by `a_b_2` itself by then — everyone stays distinct.
+    let ids = mermaid_ids(["a_b_2", "a.b", "a_b"]);
+    let unique: BTreeSet<&String> = ids.values().collect();
+    assert_eq!(unique.len(), ids.len(), "no two uids share an id: {ids:?}");
+
+    // Reserved Mermaid words are pre-claimed — a uid sanitizing to `end`
+    // would otherwise close an enclosing block. Empty input degrades to `_`.
+    let ids = mermaid_ids(["end", ""]);
+    assert_eq!(ids["end"], "end_2");
+    assert_eq!(ids[""], "_");
+}
+
+#[test]
+fn mermaid_label_neutralizes_hostile_display_names() {
+    use super::export::mermaid_label;
+    // A `"` would close the quoted label and let the rest inject raw Mermaid;
+    // it becomes the `#quot;` entity (still renders as a quote).
+    assert_eq!(
+        mermaid_label(r#"evil"]; pwned["x"#),
+        "evil#quot;]; pwned[#quot;x"
+    );
+    // Line breaks would start a new Mermaid statement (or worse, let an
+    // indented ``` close the surrounding Markdown fence); all control chars
+    // collapse to a space.
+    assert_eq!(mermaid_label("a\nb\r\nc\td"), "a b  c d");
+    // Benign names pass through untouched.
+    assert_eq!(
+        mermaid_label("stg_payment__shoppers"),
+        "stg_payment__shoppers"
+    );
+}
+
+#[test]
 fn yank_dot_emits_a_digraph() {
     let mut a = app();
     a.select_by_unique_id("model.jaffle_finance.stg_payment__shoppers");
@@ -691,6 +736,76 @@ fn critical_path_is_a_deterministic_source_rooted_chain() {
 }
 
 #[test]
+fn longest_chain_terminates_on_a_cyclic_manifest() {
+    // A malformed manifest.json can carry a model-level cycle that survives
+    // the prune (only test/operation nodes are dropped): a ⇄ b, plus a clean
+    // tail b → c. Without the on-stack guard the memoized DFS recursed
+    // forever and overflowed the stack as soon as the Stats dashboard (`i`)
+    // computed the critical path.
+    use crate::{RawManifest, RawNode};
+    use std::collections::HashMap;
+    let mut nodes = HashMap::new();
+    let mut add = |id: &str, name: &str| {
+        nodes.insert(
+            id.to_string(),
+            RawNode {
+                name: name.into(),
+                resource_type: "model".into(),
+                ..Default::default()
+            },
+        );
+    };
+    add("model.p.a", "a");
+    add("model.p.b", "b");
+    add("model.p.c", "c");
+    let child_map = HashMap::from([
+        ("model.p.a".to_string(), vec!["model.p.b".to_string()]),
+        (
+            "model.p.b".to_string(),
+            vec!["model.p.a".to_string(), "model.p.c".to_string()],
+        ),
+    ]);
+    let parent_map = HashMap::from([
+        ("model.p.a".to_string(), vec!["model.p.b".to_string()]),
+        ("model.p.b".to_string(), vec!["model.p.a".to_string()]),
+        ("model.p.c".to_string(), vec!["model.p.b".to_string()]),
+    ]);
+    let dag = Dag::build(&RawManifest {
+        nodes,
+        sources: HashMap::new(),
+        parent_map,
+        child_map,
+    });
+    let chain = super::analysis::longest_chain(&dag);
+    // Sane: non-empty, no repeated node, every hop is a real kept edge.
+    assert!(!chain.is_empty(), "a chain is still produced");
+    let unique: std::collections::HashSet<&String> = chain.iter().collect();
+    assert_eq!(unique.len(), chain.len(), "the chain never revisits a node");
+    let edges: std::collections::HashSet<(String, String)> = dag
+        .edges()
+        .into_iter()
+        .map(|(p, c)| {
+            let name = |uid: &str| {
+                dag.get(uid)
+                    .map_or_else(|| uid.to_string(), |n| n.name.clone())
+            };
+            (name(&p), name(&c))
+        })
+        .collect();
+    for hop in chain.windows(2) {
+        assert!(
+            edges.contains(&(hop[0].clone(), hop[1].clone())),
+            "every hop is a real edge: {hop:?}"
+        );
+    }
+    // Deterministic, smallest-uid-first: the DFS visits `a` first, so the
+    // cycle breaks at the back-edge into `a` and the chain is a → b.
+    assert_eq!(chain, vec!["a".to_string(), "b".to_string()]);
+    // Deterministic: a second computation is identical.
+    assert_eq!(chain, super::analysis::longest_chain(&dag));
+}
+
+#[test]
 fn sql_modal_payload_carries_the_file_path() {
     let mut a = app();
     a.select_by_unique_id("model.jaffle_finance.pos_txn");
@@ -752,6 +867,48 @@ fn jump_to_records_history_and_back_forward_navigate() {
         a.selected_unique_id().as_deref(),
         Some("model.jaffle_finance.pos_txn"),
         "forward is a no-op after a new jump cleared it"
+    );
+}
+
+#[test]
+fn reload_prunes_vanished_ids_from_history_and_back_lands_on_a_survivor() {
+    let mut a = app();
+    let survivor = "model.jaffle_finance.stg_payment__shoppers";
+    let current = "model.jaffle_finance.fct_subscription_process";
+    a.select_by_unique_id(survivor);
+    a.jump_to("model.jaffle_finance.int_shoppers__combined");
+    a.jump_to(current);
+    // Simulate visited nodes that the reload removes: a vanished uid is
+    // unconstructable via jump_to (it refuses an unresolvable id), so plant
+    // ghosts directly — the fixture re-read won't contain them. The back
+    // stack sandwiches a ghost between equal survivors (A → ghost → A), the
+    // post-prune adjacent-duplicate case.
+    a.back = vec![
+        survivor.into(),
+        "model.jaffle_finance.ghost_does_not_exist".into(),
+        survivor.into(),
+    ];
+    a.forward = vec!["model.jaffle_finance.ghost_ahead".into()];
+    a.reload().expect("reload ok");
+    assert_eq!(
+        a.back,
+        vec![survivor.to_string()],
+        "back keeps survivors only, adjacent duplicates collapsed"
+    );
+    assert!(
+        a.forward.is_empty(),
+        "the vanished forward entry is dropped"
+    );
+    a.history_back();
+    assert_eq!(
+        a.selected_unique_id().as_deref(),
+        Some(survivor),
+        "back lands on the most recent surviving entry, not a no-op"
+    );
+    assert_eq!(
+        a.forward,
+        vec![current.to_string()],
+        "forward holds exactly the node back navigated away from"
     );
 }
 
