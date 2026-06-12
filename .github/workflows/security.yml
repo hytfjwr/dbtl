@@ -40,18 +40,29 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      ACTIONLINT_VERSION: v1.7.12
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
 
+      - name: Restore cached actionlint
+        id: cache-actionlint
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/go/bin/actionlint
+          key: actionlint-${{ runner.os }}-${{ env.ACTIONLINT_VERSION }}
+
       # Built from source so the Go module checksum database verifies the
       # binary's provenance (no curl|bash, no unpinned third-party action).
       - name: Install actionlint
-        run: |
-          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        if: steps.cache-actionlint.outputs.cache-hit != 'true'
+        run: go install "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}"
+
+      - name: Add Go bin to PATH
+        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Run actionlint
         run: actionlint -color
@@ -61,16 +72,29 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      PINACT_VERSION: v4.1.0
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
 
+      - name: Restore cached pinact
+        id: cache-pinact
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/go/bin/pinact
+          key: pinact-${{ runner.os }}-${{ env.PINACT_VERSION }}
+
+      # Built from source so the Go module checksum database verifies the
+      # binary's provenance (no curl|bash, no unpinned third-party action).
       - name: Install pinact
-        run: |
-          go install github.com/suzuki-shunsuke/pinact/v4/cmd/pinact@v4.1.0
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        if: steps.cache-pinact.outputs.cache-hit != 'true'
+        run: go install "github.com/suzuki-shunsuke/pinact/v4/cmd/pinact@${PINACT_VERSION}"
+
+      - name: Add Go bin to PATH
+        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       # --verify also checks each pinned SHA matches its trailing version
       # comment (catches a lying `# vX.Y.Z` next to a malicious SHA).
