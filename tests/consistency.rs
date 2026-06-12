@@ -154,6 +154,52 @@ fn tests_are_identical_as_kind_column_multisets() {
 }
 
 #[test]
+fn exposures_are_identical_including_payload() {
+    // Exposures ride the same NodeInfo/closure comparisons as every other node
+    // (node_sets / closures tests above); this pins the exposure-ONLY surface:
+    // the side-map payload (kind / owner / url) and the terminator contract.
+    let (m, s) = dags();
+    let exp_ids: Vec<String> = node_map(&m)
+        .keys()
+        .filter(|k| k.starts_with("exposure."))
+        .cloned()
+        .collect();
+    assert_eq!(exp_ids.len(), 2, "sample project declares two exposures");
+    for uid in &exp_ids {
+        let mp = m.exposure(uid).expect("manifest-mode payload");
+        let sp = s.exposure(uid).expect("source-mode payload");
+        assert_eq!(mp, sp, "exposure payload diverges for {uid}");
+        assert!(
+            m.downstream(uid).is_empty() && s.downstream(uid).is_empty(),
+            "{uid} must be a terminator leaf in both modes"
+        );
+        assert!(
+            !m.upstream(uid).is_empty(),
+            "{uid} depends on at least one kept node"
+        );
+    }
+    // Spot-check the full payload once (the dashboard exposure).
+    let dash = m
+        .exposure("exposure.sample.orders_dashboard")
+        .expect("dashboard payload");
+    assert_eq!(dash.exposure_type.as_deref(), Some("dashboard"));
+    assert_eq!(dash.owner_name.as_deref(), Some("Finance Team"));
+    assert_eq!(dash.owner_email.as_deref(), Some("finance@example.com"));
+    assert_eq!(
+        dash.url.as_deref(),
+        Some("https://bi.example.com/dashboards/42")
+    );
+    // And the minimal one: no email / url, still typed and owned.
+    let nb = m
+        .exposure("exposure.sample.churn_notebook")
+        .expect("notebook payload");
+    assert_eq!(nb.exposure_type.as_deref(), Some("notebook"));
+    assert_eq!(nb.owner_name.as_deref(), Some("Analytics"));
+    assert_eq!(nb.owner_email, None);
+    assert_eq!(nb.url, None);
+}
+
+#[test]
 fn model_list_and_lineage_render_identically() {
     // End-to-end: the left pane grouping and a full lineage CharGrid render are
     // byte-identical across modes (follows from Dag equality + determinism, but

@@ -36,6 +36,7 @@ Key features:
 - **Built for test-coverage and impact chores.** Coverage/blast-radius/layer lenses (the layer lens also labels each column's layer along the pane border), a stats dashboard, untested-model cycling, and one-key export to Mermaid / Graphviz / Markdown impact reports.
 - **Trace a path, see a path.** Move the lineage cursor and the root↔cursor path lights up — nodes AND the connectors between them — while everything off-path dims. A compact mode (`v`) collapses boxes to one-row nodes for big graphs.
 - **Diff two states of the project.** `--diff <baseline>` compares against another manifest or checkout: added models glow green and modified ones amber right in the lineage, a status chip counts `+added ~modified -removed`, and `D` opens a full change summary (nodes, reasons, edge changes).
+- **Exposures answer "who cares".** dbt exposures (dashboards, notebooks, …) render as terminator nodes on the right edge of the lineage — in both manifest and source mode — the impact chip gains an `exp:N` count, and the `i` impact report lists each affected exposure with its kind and owner.
 
 ## Quick Start
 

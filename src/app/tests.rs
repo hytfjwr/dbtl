@@ -169,6 +169,47 @@ fn impact_status_uses_chrome_badges_per_glyph_mode() {
     );
 }
 
+#[test]
+fn impact_splits_exposures_out_of_the_counts_and_chips_them() {
+    // fct's Dag closure holds 4 descendants (2 models + the 2 fixture
+    // exposures); the chip/report counts keep meaning buildable resources, so
+    // the split yields (2, 27, 2) and the chip gains ` exp:2` in BOTH glyph
+    // modes (the suffix is ASCII by construction).
+    let fct = "model.jaffle_finance.fct_subscription_process";
+    let mut a = app();
+    a.select_by_unique_id(fct);
+    assert_eq!(
+        a.dag.downstream(fct).len(),
+        4,
+        "raw closure incl. exposures"
+    );
+    assert_eq!(a.impact_counts(), Some((2, 27)), "counts exclude exposures");
+    assert_eq!(a.impact_breakdown_for(fct), (2, 27, 2));
+    a.glyph_mode = crate::GlyphMode::Unicode;
+    assert_eq!(a.impact_status().as_deref(), Some("impact ↓2 ↑27 exp:2"));
+    a.glyph_mode = crate::GlyphMode::Ascii;
+    assert_eq!(a.impact_status().as_deref(), Some("impact v2 ^27 exp:2"));
+    // The exposure list is name-sorted and carries the side-map payloads.
+    let exps = a.downstream_exposures(fct);
+    let names: Vec<&str> = exps.iter().map(|(n, _)| n.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["delivery_kpi_dashboard", "subscription_churn_notebook"]
+    );
+    assert_eq!(
+        exps[0].1.unwrap().exposure_type.as_deref(),
+        Some("dashboard")
+    );
+    // A node with no downstream exposures keeps the pre-exposure chip
+    // byte-identical (asserted exactly in impact_status_uses_chrome_badges).
+    a.select_by_unique_id("model.jaffle_finance.stg_payment__shoppers");
+    assert_eq!(
+        a.impact_breakdown_for("model.jaffle_finance.stg_payment__shoppers")
+            .2,
+        0
+    );
+}
+
 // ---- lineage breadcrumb ----
 
 #[test]
@@ -430,6 +471,7 @@ fn export_labels_neutralize_untrusted_kind() {
             },
         )]),
         sources: HashMap::new(),
+        exposures: HashMap::new(),
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
     };
@@ -536,6 +578,80 @@ fn yank_impact_emits_a_markdown_blast_radius_report() {
 }
 
 #[test]
+fn yank_impact_lists_affected_exposures_with_kind_and_owner() {
+    // Rooted on fct: the report splits the 2 exposures OUT of the Downstream
+    // list into their own section, each line carrying kind + owner (full
+    // name <email> for the dashboard; name-only for the notebook).
+    let mut a = app();
+    a.select_by_unique_id("model.jaffle_finance.fct_subscription_process");
+    let text = match &apply_action(&mut a, Action::YankImpact).effects[..] {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert!(
+        text.contains("- transitive: 27 upstream / 2 downstream\n"),
+        "transitive counts exclude exposures: {text}"
+    );
+    assert!(text.contains("- affected exposures: 2\n"), "{text}");
+    assert!(
+        text.contains("## Downstream (blast radius) (2)\n"),
+        "{text}"
+    );
+    assert!(text.contains("## Affected exposures (2)\n"), "{text}");
+    assert!(
+        text.contains(
+            "- delivery_kpi_dashboard (dashboard, owner: Finance Analytics <finance-data@example.com>)\n"
+        ),
+        "dashboard line with kind + full owner: {text}"
+    );
+    assert!(
+        text.contains("- subscription_churn_notebook (notebook, owner: Analytics)\n"),
+        "notebook line with name-only owner: {text}"
+    );
+    assert!(
+        !text.contains("- subscription_churn_notebook\n"),
+        "exposures never appear as bare Downstream entries: {text}"
+    );
+}
+
+#[test]
+fn exposures_are_cursor_reachable_but_never_re_rootable() {
+    // Exposures are not list-selectable (the model list holds models only), so
+    // Enter / a click on one must open its structure modal — never re-root.
+    let fct = "model.jaffle_finance.fct_subscription_process";
+    let exp = "exposure.jaffle_finance.subscription_churn_notebook";
+    let mut a = app();
+    a.select_by_unique_id(fct);
+    assert!(
+        !a.model_list
+            .models
+            .iter()
+            .any(|m| m.unique_id.starts_with("exposure.")),
+        "exposures never join the selectable model list"
+    );
+    // A lineage click on the exposure moves the CURSOR there, root unchanged.
+    a.click_lineage_node(exp);
+    assert_eq!(a.selected_unique_id().as_deref(), Some(fct), "no re-root");
+    assert_eq!(a.lineage_cursor_uid().as_deref(), Some(exp), "cursor moved");
+    // Enter on it opens the structure modal with ITS blast radius (a leaf:
+    // 0 downstream, fct + fct's 27 ancestors = 28 upstream).
+    a.ui_state.set_focus(Focus::RightPane);
+    apply_action(&mut a, Action::DetailOpen);
+    match &a.mode {
+        Mode::Detail(dv) => {
+            assert_eq!(dv.model_id, exp);
+            assert_eq!(
+                (dv.downstream_count, dv.upstream_count),
+                (0, 28),
+                "terminator leaf counts"
+            );
+        }
+        m => panic!("expected Detail for the exposure, got {m:?}"),
+    }
+    assert_eq!(a.selected_unique_id().as_deref(), Some(fct), "still rooted");
+}
+
+#[test]
 fn export_lineage_emits_a_write_file_effect_with_the_diagram() {
     let mut a = app();
     a.select_by_unique_id("model.jaffle_finance.stg_payment__shoppers");
@@ -571,6 +687,7 @@ fn export_sanitizes_untrusted_node_names_into_a_safe_relative_path() {
     let dag = Dag::build(&RawManifest {
         nodes,
         sources: HashMap::new(),
+        exposures: HashMap::new(),
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
     });
@@ -852,6 +969,7 @@ fn longest_chain_terminates_on_a_cyclic_manifest() {
     let dag = Dag::build(&RawManifest {
         nodes,
         sources: HashMap::new(),
+        exposures: HashMap::new(),
         parent_map,
         child_map,
     });
@@ -996,7 +1114,10 @@ fn lineage_view_toggles_and_depth_filter_the_subgraph() {
     let mut a = app();
     a.select_by_unique_id("model.jaffle_finance.fct_subscription_process");
     let full = a.lineage_subgraph().nodes.len();
-    assert_eq!(full, 30, "full lineage = 27 up + selected + 2 down");
+    assert_eq!(
+        full, 32,
+        "full lineage = 27 up + selected + 2 down + 2 exposures"
+    );
 
     // Upstream-only: drop the downstream side.
     apply_action(&mut a, Action::ToggleDownstream);
@@ -1188,6 +1309,7 @@ fn selected_file_path_stays_under_the_project_root() {
     let dag = Dag::build(&RawManifest {
         nodes,
         sources: HashMap::new(),
+        exposures: HashMap::new(),
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
     });
@@ -1771,11 +1893,13 @@ fn stats_open_computes_dashboard() {
     // count desc then unique_id asc (the seed/source siblings tie at 17, so
     // `seed.* < source.*` and the four pos_* payment sources order by name;
     // pos_shp @17 drops off the cap). Derived by running against the fixture
-    // and verified against `Dag::downstream`, not guessed.
+    // and verified against `Dag::downstream`, not guessed. The leader counts
+    // the fixture's two exposures (both downstream of fct, which it feeds):
+    // the Dag closure is the raw graph truth, unlike the chip's split counts.
     assert_eq!(
         sv.transitive_hubs,
         vec![
-            ("source_datetime_policy".to_string(), 20),
+            ("source_datetime_policy".to_string(), 22),
             ("pos_prod_aws_store_master".to_string(), 17),
             ("pos_cat".to_string(), 17),
             ("pos_pay".to_string(), 17),
@@ -1788,7 +1912,7 @@ fn stats_open_computes_dashboard() {
         a.dag
             .downstream("seed.jaffle_finance.source_datetime_policy")
             .len(),
-        20,
+        22,
         "leader's transitive downstream closure size"
     );
 
@@ -2259,27 +2383,45 @@ fn tint_of(a: &mut App, lens: LineageLens, uid: &str) -> LensTint {
 #[test]
 fn degree_heat_lens_buckets_by_transitive_downstream() {
     // Fixture-anchored buckets (computed, not guessed): pos_files__assignment
-    // has 16 transitive downstream (HeatHigh), stg_payment__suppliers has 5
-    // (HeatMid), fct_subscription_process has 2 (HeatLow), and the leaf
-    // int_shoppers__combined has 0 (None).
+    // has 16 transitive downstream (HeatHigh), stg_payment__shoppers has 1
+    // (HeatLow), and the leaf int_shoppers__combined has 0 (None). The heat
+    // metric is the raw Dag closure — deliberately UNSPLIT, so the fixture's 2
+    // exposures count as consumers: FCT lands at 4 (HeatMid) and
+    // stg_payment__suppliers at 7, crossing into HeatHigh.
     let mut a = app();
     let hub = "model.jaffle_finance.pos_files__assignment";
-    let mid = "model.jaffle_finance.stg_payment__suppliers";
+    let suppliers = "model.jaffle_finance.stg_payment__suppliers";
+    let low = "model.jaffle_finance.stg_payment__shoppers";
     let leaf = "model.jaffle_finance.int_shoppers__combined";
     assert_eq!(a.dag.downstream(hub).len(), 16, "fixture hub blast radius");
-    assert_eq!(a.dag.downstream(mid).len(), 5, "fixture mid blast radius");
-    assert_eq!(a.dag.downstream(FCT).len(), 2, "fixture FCT blast radius");
+    assert_eq!(
+        a.dag.downstream(suppliers).len(),
+        7,
+        "suppliers blast radius (5 models + 2 exposures)"
+    );
+    assert_eq!(
+        a.dag.downstream(FCT).len(),
+        4,
+        "fixture FCT blast radius (2 models + 2 exposures)"
+    );
+    assert_eq!(a.dag.downstream(low).len(), 1, "fixture low blast radius");
     assert_eq!(a.dag.downstream(leaf).len(), 0, "fixture leaf");
     assert_eq!(
         tint_of(&mut a, LineageLens::DegreeHeat, hub),
         LensTint::HeatHigh
     );
     assert_eq!(
-        tint_of(&mut a, LineageLens::DegreeHeat, mid),
-        LensTint::HeatMid
+        tint_of(&mut a, LineageLens::DegreeHeat, suppliers),
+        LensTint::HeatHigh,
+        "the exposure consumers push suppliers across the high boundary"
     );
     assert_eq!(
         tint_of(&mut a, LineageLens::DegreeHeat, FCT),
+        LensTint::HeatMid,
+        "the exposure consumers push FCT into the mid bucket"
+    );
+    assert_eq!(
+        tint_of(&mut a, LineageLens::DegreeHeat, low),
         LensTint::HeatLow
     );
     assert_eq!(
@@ -2373,6 +2515,7 @@ fn violation_dag() -> Dag {
     Dag::build(&RawManifest {
         nodes,
         sources: HashMap::new(),
+        exposures: HashMap::new(),
         parent_map,
         child_map,
     })
@@ -2870,6 +3013,7 @@ fn diff_base_dag() -> Dag {
     Dag::build(&RawManifest {
         nodes,
         sources: HashMap::new(),
+        exposures: HashMap::new(),
         parent_map: HashMap::from([("model.p.b".to_string(), vec!["model.p.a".to_string()])]),
         child_map: HashMap::from([("model.p.a".to_string(), vec!["model.p.b".to_string()])]),
     })
@@ -2899,6 +3043,7 @@ fn diff_current_dag() -> Dag {
     Dag::build(&RawManifest {
         nodes,
         sources: HashMap::new(),
+        exposures: HashMap::new(),
         parent_map: HashMap::from([
             ("model.p.b".to_string(), vec!["model.p.a".to_string()]),
             ("model.p.c".to_string(), vec!["model.p.b".to_string()]),
@@ -3058,7 +3203,7 @@ fn reload_recomputes_the_diff_against_the_kept_baseline() {
     let mut a = app();
     a.set_diff_base(diff_base_dag(), "base".to_string());
     let before = a.diff().expect("diff computed").counts();
-    assert_eq!(before.0, 91, "every fixture node is added vs the tiny base");
+    assert_eq!(before.0, 93, "every fixture node is added vs the tiny base");
     a.reload().expect("reload ok");
     let after = a.diff().expect("diff survives reload").counts();
     assert_eq!(before, after, "reload re-diffs against the same baseline");

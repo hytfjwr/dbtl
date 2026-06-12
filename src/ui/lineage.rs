@@ -422,6 +422,7 @@ fn class_color(class: MaterializationClass, t: &theme::Theme) -> Option<Color> {
         MaterializationClass::Source => Some(t.class_source),
         MaterializationClass::Seed => Some(t.class_seed),
         MaterializationClass::Snapshot => Some(t.class_snapshot),
+        MaterializationClass::Exposure => Some(t.class_exposure),
         MaterializationClass::OtherModel => Some(t.class_other),
         MaterializationClass::Plain => None,
     }
@@ -681,6 +682,7 @@ mod tests {
                 MaterializationClass::Source,
                 MaterializationClass::Seed,
                 MaterializationClass::Snapshot,
+                MaterializationClass::Exposure,
                 MaterializationClass::OtherModel,
             ]
             .map(|c| class_color(c, preset).expect("every class has a colour"));

@@ -277,6 +277,7 @@ mod tests {
         RawManifest {
             nodes,
             sources: HashMap::new(),
+            exposures: HashMap::new(),
             parent_map,
             child_map,
         }
@@ -421,6 +422,7 @@ mod tests {
                     ("snapshot.p.snap".to_string(), snap_node),
                 ]),
                 sources: HashMap::new(),
+                exposures: HashMap::new(),
                 parent_map: HashMap::new(),
                 child_map: HashMap::new(),
             })

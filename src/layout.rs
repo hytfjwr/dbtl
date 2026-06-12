@@ -109,6 +109,9 @@ pub enum MaterializationClass {
     Source,
     Seed,
     Snapshot,
+    /// A declared downstream consumer (dashboard / notebook / …) — a terminator
+    /// leaf on the right edge of the diagram.
+    Exposure,
 }
 
 impl MaterializationClass {
@@ -121,6 +124,7 @@ impl MaterializationClass {
             "source" => MaterializationClass::Source,
             "seed" => MaterializationClass::Seed,
             "snapshot" => MaterializationClass::Snapshot,
+            "exposure" => MaterializationClass::Exposure,
             "model" => match materialized {
                 Some("table") => MaterializationClass::Table,
                 Some("view") => MaterializationClass::View,
@@ -145,6 +149,7 @@ impl MaterializationClass {
             MaterializationClass::Source => "Source",
             MaterializationClass::Seed => "Seed",
             MaterializationClass::Snapshot => "Snapshot",
+            MaterializationClass::Exposure => "Exposure",
             MaterializationClass::Plain => "Node",
         }
     }

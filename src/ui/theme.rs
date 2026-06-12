@@ -123,6 +123,8 @@ theme_roles!(
     class_source,
     class_seed,
     class_snapshot,
+    /// A declared downstream consumer (exposure) — the impact terminator.
+    class_exposure,
     class_other,
     // ---- layers (list headers + the Layer lens; the VIVID family) ----
     layer_staging,
@@ -205,6 +207,9 @@ pub const CLASS_EPHEMERAL: Color = Color::Indexed(183); // lavender `#d7afff`
 pub const CLASS_SOURCE: Color = Color::Indexed(75); // sky blue `#5fafff` — external
 pub const CLASS_SEED: Color = Color::Indexed(180); // pale sand `#d7af87` (≠ WARN)
 pub const CLASS_SNAPSHOT: Color = Color::Indexed(215); // peach `#ffaf5f`
+/// Exposure — pink `#ff87d7`: the "who consumes this" endpoint, distinct from
+/// every other class AND every lens tint (the lint contract).
+pub const CLASS_EXPOSURE: Color = Color::Indexed(212);
 pub const CLASS_OTHER: Color = Color::Indexed(246); // gray — unknown
 
 // Five DISTINCT layer colours, each also distinct from every CLASS_* value:
@@ -279,6 +284,7 @@ pub const DEFAULT: Theme = Theme {
     class_source: CLASS_SOURCE,
     class_seed: CLASS_SEED,
     class_snapshot: CLASS_SNAPSHOT,
+    class_exposure: CLASS_EXPOSURE,
     class_other: CLASS_OTHER,
     layer_staging: LAYER_STAGING,
     layer_intermediate: LAYER_INTERMEDIATE,
@@ -344,6 +350,7 @@ const AYU_DARK: Theme = Theme {
     class_source: rgb(0x59C2FF),
     class_seed: rgb(0xE6B673),
     class_snapshot: rgb(0xFF8F40),
+    class_exposure: rgb(0xF07178), // ayu dark "markup" pink
     class_other: rgb(0x565B66),
     layer_staging: rgb(0x5CCFE6),
     layer_intermediate: rgb(0xFFCC66),
@@ -390,6 +397,9 @@ const AYU_MIRAGE: Theme = Theme {
     class_source: rgb(0x73D0FF),
     class_seed: rgb(0xFFDFB3),
     class_snapshot: rgb(0xF29E74),
+    // mirage "markup" pink — deliberately shares `orphan`'s value (a list-pane
+    // tint; the two never compete on one surface, like SECTION=CLASS_SNAPSHOT).
+    class_exposure: rgb(0xF28779),
     class_other: rgb(0x707A8C),
     layer_staging: rgb(0x36A3D9),
     layer_intermediate: rgb(0xE6B450),
@@ -438,6 +448,8 @@ const AYU_LIGHT: Theme = Theme {
     class_source: rgb(0x399EE6),
     class_seed: rgb(0xA8854B),
     class_snapshot: rgb(0xFA8D3E),
+    // ayu light "markup" pink — shares `orphan`'s value (see ayu-mirage note).
+    class_exposure: rgb(0xF07171),
     class_other: rgb(0x787B80),
     layer_staging: rgb(0x008FB8),
     layer_intermediate: rgb(0xCC8800),
@@ -485,6 +497,10 @@ const GRUVBOX_DARK: Theme = Theme {
     class_source: rgb(0x83A598),
     class_seed: rgb(0xD5C4A1),
     class_snapshot: rgb(0xFE8019),
+    // gruvbox neutral red — shares `orphan`'s value (a list-pane tint; the two
+    // never compete on one surface). Bright purple D3869B is already
+    // `class_incremental`, so the warm-red family marks the consumer endpoint.
+    class_exposure: rgb(0xCC241D),
     class_other: rgb(0xA89984),
     layer_staging: rgb(0x458588),
     layer_intermediate: rgb(0xD79921),
@@ -628,6 +644,7 @@ pub fn lint(theme: &Theme) -> Vec<String> {
         ("class_source", theme.class_source),
         ("class_seed", theme.class_seed),
         ("class_snapshot", theme.class_snapshot),
+        ("class_exposure", theme.class_exposure),
         ("class_other", theme.class_other),
     ];
     let heat = [

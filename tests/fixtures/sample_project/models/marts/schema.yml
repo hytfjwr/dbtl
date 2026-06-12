@@ -12,3 +12,24 @@ models:
     config:
       # The in-file config (incremental) must win over this schema value.
       materialized: table
+
+exposures:
+  - name: orders_dashboard
+    type: dashboard
+    url: https://bi.example.com/dashboards/42
+    description: "Weekly orders overview for finance."
+    owner:
+      name: Finance Team
+      email: finance@example.com
+    depends_on:
+      - ref('fct_orders')
+      - ref('agg_country_orders')
+  # Minimal shape: owner name only, no url/description; a non-ref dep that
+  # must resolve through source().
+  - name: churn_notebook
+    type: notebook
+    owner:
+      name: Analytics
+    depends_on:
+      - ref('dim_customers')
+      - source('raw', 'customers')

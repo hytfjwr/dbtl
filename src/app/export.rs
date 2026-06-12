@@ -116,22 +116,28 @@ impl App {
     }
 
     /// A Markdown blast-radius report for the selected node: direct +
-    /// transitive up/down counts and the sorted member name lists. The closures
-    /// come from `HashSet`s, so both lists are sorted here — two yanks of the
-    /// same selection are byte-identical. `None` when nothing is selected.
+    /// transitive up/down counts, the sorted member name lists, and — when any
+    /// exist — the downstream exposures (the "who cares" endpoints), with kind
+    /// and owner. Exposures are split OUT of the Downstream list into their own
+    /// section, so the up/down numbers keep matching the status chip. The
+    /// closures come from `HashSet`s, so every list is sorted here — two yanks
+    /// of the same selection are byte-identical. `None` when nothing is selected.
     pub fn impact_report(&self) -> Option<String> {
         let uid = self.selected_unique_id()?;
         let node = self.dag.get(&uid)?;
         let names = |uids: std::collections::HashSet<String>| -> Vec<String> {
             let mut v: Vec<String> = uids
                 .into_iter()
-                .filter_map(|u| self.dag.get(&u).map(|n| n.name.clone()))
+                .filter_map(|u| self.dag.get(&u))
+                .filter(|n| !crate::is_exposure(n))
+                .map(|n| n.name.clone())
                 .collect();
             v.sort();
             v
         };
         let down = names(self.dag.downstream(&uid));
         let up = names(self.dag.upstream(&uid));
+        let exposures = self.downstream_exposures(&uid);
         let mut out = format!("# Impact: {}\n\n", node.name);
         out.push_str(&format!("- unique_id: `{uid}`\n"));
         out.push_str(&format!(
@@ -143,10 +149,19 @@ impl App {
             up.len(),
             down.len()
         ));
+        if !exposures.is_empty() {
+            out.push_str(&format!("- affected exposures: {}\n", exposures.len()));
+        }
         for (title, list) in [("Downstream (blast radius)", &down), ("Upstream", &up)] {
             out.push_str(&format!("\n## {title} ({})\n", list.len()));
             for name in list {
                 out.push_str(&format!("- {name}\n"));
+            }
+        }
+        if !exposures.is_empty() {
+            out.push_str(&format!("\n## Affected exposures ({})\n", exposures.len()));
+            for (info, payload) in &exposures {
+                out.push_str(&format!("- {}{}\n", info.name, exposure_note(*payload)));
             }
         }
         Some(out)
@@ -158,6 +173,26 @@ impl App {
 /// Untrusted (straight from the manifest) — callers must escape it like the name.
 fn node_kind(n: &NodeInfo) -> &str {
     n.materialized.as_deref().unwrap_or(&n.resource_type)
+}
+
+/// The parenthesised kind/owner suffix for one impact-report exposure line:
+/// `" (dashboard, owner: Finance <fin@example.com>)"`. Each part is optional;
+/// the kind falls back to the bare `exposure` so the line always names what it
+/// is. Owner shows `name <email>`, either half standing alone when the other
+/// is missing.
+fn exposure_note(payload: Option<&crate::ExposureInfo>) -> String {
+    let kind = payload
+        .and_then(|p| p.exposure_type.as_deref())
+        .unwrap_or("exposure");
+    let owner = payload.map_or_else(String::new, |p| {
+        match (p.owner_name.as_deref(), p.owner_email.as_deref()) {
+            (Some(n), Some(e)) => format!(", owner: {n} <{e}>"),
+            (Some(n), None) => format!(", owner: {n}"),
+            (None, Some(e)) => format!(", owner: <{e}>"),
+            (None, None) => String::new(),
+        }
+    });
+    format!(" ({kind}{owner})")
 }
 
 /// Mermaid words that must not appear as a bare node id: `end` closes a

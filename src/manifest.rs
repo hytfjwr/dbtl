@@ -96,6 +96,44 @@ pub struct RawSource {
     pub database: Option<String>,
 }
 
+/// `owner` sub-object of an exposure. dbt requires at least one of name/email,
+/// but both stay optional here (exclusion is never a parse failure).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RawExposureOwner {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+}
+
+/// A single exposure in the parsed manifest (`exposures` entry): a declared
+/// downstream consumer (dashboard / notebook / application / …). Exposures are
+/// pure leaves — they have `depends_on` parents and never children — so the
+/// DAG keeps them as terminator nodes.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RawExposure {
+    pub name: String,
+    /// The exposure kind (`dashboard`, `notebook`, `analysis`, `ml`,
+    /// `application`). `type` is a Rust keyword, hence the rename.
+    #[serde(rename = "type", default)]
+    pub exposure_type: Option<String>,
+    #[serde(default)]
+    pub owner: RawExposureOwner,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub original_file_path: Option<String>,
+    /// The nodes this exposure consumes. Used as an adjacency source alongside
+    /// the manifest's `parent_map`/`child_map` (deduplicated in `Dag::build`),
+    /// so a synthesized manifest (source mode) only needs to fill this.
+    #[serde(default)]
+    pub depends_on: RawDependsOn,
+}
+
 /// Minimal subset of the dbt manifest we care about.
 ///
 /// `deny_unknown_fields` is intentionally NOT set: the v12 schema has many
@@ -104,6 +142,10 @@ pub struct RawSource {
 pub struct RawManifest {
     pub nodes: HashMap<String, RawNode>,
     pub sources: HashMap<String, RawSource>,
+    /// `#[serde(default)]`: pre-exposure fixtures (and minimal hand-built
+    /// manifests) omit the key entirely.
+    #[serde(default)]
+    pub exposures: HashMap<String, RawExposure>,
     pub parent_map: HashMap<String, Vec<String>>,
     pub child_map: HashMap<String, Vec<String>>,
 }

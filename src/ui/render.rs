@@ -278,10 +278,19 @@ fn draw_list(
             format!(" Search: {query}{} {}/{} ", chrome.caret, list.len(), total)
         }
         // Otherwise show the project + resource counts (the title-bar stats).
-        (None, Some(s)) => format!(
-            " {} - model:{} src:{} seed:{} snap:{} ",
-            s.project, s.models, s.sources, s.seeds, s.snapshots
-        ),
+        // `exp:` joins only when exposures exist, so a project without them
+        // keeps the pre-exposure title byte-identical.
+        (None, Some(s)) => {
+            let exp = if s.exposures > 0 {
+                format!("exp:{} ", s.exposures)
+            } else {
+                String::new()
+            };
+            format!(
+                " {} - model:{} src:{} seed:{} snap:{} {exp}",
+                s.project, s.models, s.sources, s.seeds, s.snapshots
+            )
+        }
         (None, None) => format!(" Models ({}) ", list.len()),
     };
     // The persistent-filter tag rides at the END of whichever title is up

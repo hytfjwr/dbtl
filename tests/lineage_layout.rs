@@ -312,12 +312,13 @@ fn invariants_upstream_only_pos_txn() {
 
 #[test]
 fn invariants_both_fct_subscription_process() {
-    // The big one: 27 upstream / 2 downstream, 30 nodes, 8 columns, 38 edges.
+    // The big one: 27 upstream / 4 downstream (2 models + the fixture's 2
+    // exposures riding behind them).
     check_structural_invariants(
         &fixture_dag(),
         "model.jaffle_finance.fct_subscription_process",
         27,
-        2,
+        4,
     );
 }
 
@@ -353,7 +354,11 @@ fn invariants_downstream_only_source_subscriptions() {
     let src = "source.jaffle_finance.dev_lake_jaffle_payment.subscriptions";
     let sg = dag.subgraph(src);
     assert!(dag.upstream(src).is_empty(), "source has no upstream");
-    assert_eq!(dag.downstream(src).len(), 5, "source has 5 downstream");
+    assert_eq!(
+        dag.downstream(src).len(),
+        7,
+        "source has 7 downstream (5 models + 2 exposures)"
+    );
 
     let lay = layout(&sg);
     assert_eq!(
@@ -373,17 +378,18 @@ fn invariants_downstream_only_source_subscriptions() {
 #[test]
 fn fct_subgraph_has_expected_shape() {
     // Cross-check the frozen layout dimensions from the contract (jq-verified):
-    // 30 nodes, 8 columns (0..7), selected fct in column 5, all 38 edges
-    // right-going with 8 having delta>1.
+    // 32 nodes (incl. the 2 exposures), 9 columns (0..8 — the dashboard
+    // exposure terminates one column right of the rightmost model), selected
+    // fct in column 5, all 41 edges right-going with 9 having delta>1.
     let dag = fixture_dag();
     let fct = "model.jaffle_finance.fct_subscription_process";
     let sg = dag.subgraph(fct);
-    assert_eq!(sg.nodes.len(), 30, "fct subgraph has 30 nodes");
-    assert_eq!(sg.edges.len(), 38, "fct subgraph has 38 edges");
+    assert_eq!(sg.nodes.len(), 32, "fct subgraph has 32 nodes");
+    assert_eq!(sg.edges.len(), 41, "fct subgraph has 41 edges");
 
     let lay = layout(&sg);
     let max_col = *lay.columns.values().max().unwrap();
-    assert_eq!(max_col, 7, "fct subgraph spans 8 columns (0..=7)");
+    assert_eq!(max_col, 8, "fct subgraph spans 9 columns (0..=8)");
     assert_eq!(lay.columns[fct], 5, "fct is in column 5");
 
     let delta_gt1: HashSet<(&str, &str)> = sg
@@ -394,7 +400,7 @@ fn fct_subgraph_has_expected_shape() {
         .collect();
     assert_eq!(
         delta_gt1.len(),
-        8,
-        "8 edges span more than one column (delta>1)"
+        9,
+        "9 edges span more than one column (delta>1)"
     );
 }
