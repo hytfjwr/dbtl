@@ -377,6 +377,52 @@ fn yank_dot_emits_a_digraph() {
 }
 
 #[test]
+fn export_labels_neutralize_untrusted_kind() {
+    use crate::manifest::{RawConfig, RawManifest, RawNode};
+    use std::collections::HashMap;
+
+    // `materialized` comes straight from the manifest; a crafted value like
+    // `"]` must not close the Mermaid `["..."]` label (or the DOT quoted
+    // label) and inject extra nodes/edges into the yanked diagram.
+    let manifest = RawManifest {
+        nodes: HashMap::from([(
+            "model.p.evil".to_string(),
+            RawNode {
+                name: "evil".into(),
+                resource_type: "model".into(),
+                config: RawConfig {
+                    materialized: Some("table\"] x[\"pwn".into()),
+                },
+                ..Default::default()
+            },
+        )]),
+        sources: HashMap::new(),
+        parent_map: HashMap::new(),
+        child_map: HashMap::new(),
+    };
+    let mut a = App::new(Dag::build(&manifest), PathBuf::from("manifest.json"));
+    assert!(a.select_by_unique_id("model.p.evil"));
+
+    let mermaid = a.lineage_mermaid().expect("mermaid export");
+    // The whole kind stays inside the one quoted label: every `"` becomes the
+    // `#quot;` entity, so the `]` after it can never close the node.
+    assert!(
+        mermaid.contains("model_p_evil[\"evil (table#quot;] x[#quot;pwn) *\"]"),
+        "kind is escaped into a single well-formed label:\n{mermaid}"
+    );
+    assert!(
+        !mermaid.contains("x[\"pwn"),
+        "raw injection payload must not survive:\n{mermaid}"
+    );
+
+    let dot = a.lineage_dot().expect("dot export");
+    assert!(
+        dot.contains(r#""model.p.evil" [label="evil\n(table\"] x[\"pwn)"];"#),
+        "DOT kind quotes are backslash-escaped:\n{dot}"
+    );
+}
+
+#[test]
 fn yank_ascii_emits_the_lineage_text_diagram() {
     let mut a = app();
     a.select_by_unique_id("model.jaffle_finance.stg_payment__shoppers");
