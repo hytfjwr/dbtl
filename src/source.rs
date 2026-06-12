@@ -509,14 +509,16 @@ fn collect_with_root(root: &Path, subdirs: &[String], ext: &str) -> Vec<(PathBuf
 }
 
 /// Recursively collect files with extension `ext` under `dir`. A missing dir is
-/// silently skipped.
+/// silently skipped. Recursion is decided by `entry.file_type()`, which does
+/// NOT follow symlinks: a symlinked directory is never entered, so a link loop
+/// (e.g. `models/loop` -> `models`) can't recurse forever.
 fn collect_files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
             collect_files(&path, ext, out);
         } else if path.extension().and_then(|e| e.to_str()) == Some(ext) {
             out.push(path);

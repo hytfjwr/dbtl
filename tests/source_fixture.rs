@@ -280,3 +280,29 @@ fn missing_project_is_err_not_panic() {
         "error should name the missing project file, got: {msg}"
     );
 }
+
+/// Regression: a directory symlink loop (`models/loop` -> `models`) must not
+/// recurse forever. The collector decides recursion via `entry.file_type()`
+/// (which does not follow symlinks), so loading terminates and still picks up
+/// the regular files next to the link.
+#[cfg(unix)]
+#[test]
+fn symlinked_dir_loop_terminates() {
+    use std::fs;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    fs::write(
+        root.join("dbt_project.yml"),
+        "name: looped\nversion: \"1.0.0\"\nconfig-version: 2\n",
+    )
+    .unwrap();
+    let models = root.join("models");
+    fs::create_dir(&models).unwrap();
+    fs::write(models.join("a.sql"), "select 1 as id\n").unwrap();
+    std::os::unix::fs::symlink(&models, models.join("loop")).unwrap();
+
+    let m = manifest_from_source(root).expect("loop project parses");
+    assert!(m.nodes.contains_key("model.looped.a"), "regular file still collected");
+    assert_eq!(m.nodes.len(), 1, "the symlinked dir is never entered");
+}
