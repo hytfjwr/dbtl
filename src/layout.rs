@@ -29,6 +29,23 @@ pub enum GlyphMode {
     Ascii,
 }
 
+/// How much room each node box takes in the lineage diagram.
+///
+/// `Comfortable` (the default) is the classic 3-row box (materialization tag in
+/// the top border, `tests:N` in the bottom border). `Compact` collapses each
+/// node to a single `│name│` row (no tag / tests labels), fitting roughly twice
+/// as many nodes per screen — the big-graph overview mode. Geometry-only:
+/// the glyph repertoire still comes from [`GlyphMode`], and emphasis still
+/// covers exactly the name cells in both densities.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Density {
+    /// 3-row boxes with the tag / tests borders — the detailed default.
+    #[default]
+    Comfortable,
+    /// 1-row `│name│` nodes — the dense overview.
+    Compact,
+}
+
 /// The concrete glyph set for one [`GlyphMode`]: box borders, connector lines,
 /// and the arrowhead. Corners double as the connector turn glyphs (`╮ ╯ ╰ ╭`
 /// in Unicode; all `+` in ASCII).
@@ -183,9 +200,10 @@ pub struct CellAttr {
     pub on_path: bool,
 }
 
-/// A node's placement rectangle on the [`CharGrid`] (label cells). Height is
-/// always 1 (single-line labels), but the field is kept for clarity / future
-/// multi-line use and for the non-intersection check.
+/// A node's placement rectangle on the [`CharGrid`]: the full BOX rect (3 rows
+/// in [`Density::Comfortable`], 1 row in [`Density::Compact`]). Consumed by the
+/// non-intersection check, viewport anchoring/follow (which shows the whole
+/// box via `height`), and the mouse hit-test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NodeRect {
     /// Left cell x (inclusive).
@@ -369,6 +387,13 @@ pub struct Layout {
     /// subgraph is empty. Anchoring uses the rect's WIDTH so the whole (often
     /// long) label fits in the viewport, not just its start cell.
     pub selected_rect: Option<NodeRect>,
+    /// `(parent, child) -> the connector cells this edge actually drew`
+    /// (segments, corners, and its arrowhead). A cell first claimed by an
+    /// earlier (sorted-order) edge is attributed to THAT edge only, so a shared
+    /// bus or crossing never double-counts. Lets [`apply_edge_styles`]
+    /// (Layout::apply_edge_styles) re-style a specific edge's run without the
+    /// renderer re-deriving connector routes.
+    pub edge_cells: HashMap<(String, String), Vec<(usize, usize)>>,
 }
 
 impl Layout {
@@ -384,6 +409,30 @@ impl Layout {
                 for dy in 0..rect.height {
                     for dx in 0..rect.width {
                         self.grid.set_attr(rect.x + dx, rect.y + dy, *attr);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Stamp per-cell render attributes over each edge's connector cells, from a
+    /// `(parent, child) -> CellAttr` map — the edge twin of
+    /// [`apply_node_styles`](Layout::apply_node_styles), and the same contract:
+    /// an app-side post-pass, attr-only (never a glyph), deterministic (a
+    /// `BTreeMap` source). Unknown edges are ignored.
+    ///
+    /// Cell lists are NOT fully disjoint: siblings into one child share that
+    /// child's arrowhead cell. Stamping is therefore two-phase — non-`on_path`
+    /// attrs first, `on_path` attrs second — so a shared cell always resolves
+    /// to the PATH attr regardless of key order (the path band must never be
+    /// dimmed away by an off-path sibling).
+    pub fn apply_edge_styles(&mut self, styles: &BTreeMap<(String, String), CellAttr>) {
+        let phases = [false, true];
+        for phase in phases {
+            for (key, attr) in styles.iter().filter(|(_, a)| a.on_path == phase) {
+                if let Some(cells) = self.edge_cells.get(key) {
+                    for &(x, y) in cells {
+                        self.grid.set_attr(x, y, *attr);
                     }
                 }
             }
@@ -435,6 +484,44 @@ fn box_width_of(node: &crate::NodeInfo) -> usize {
     let tests_w = tests_label_of(node).map_or(0, |t| t.chars().count());
     let inner = (label_w + 2).max(tag_w + 1).max(tests_w + 1);
     inner + 2
+}
+
+/// The box metrics for a [`Density`]: `(rows per box, connector-attach row
+/// offset within the box)`. Comfortable = the classic 3-row box attaching at
+/// its middle row; Compact = a 1-row node attaching at its only row.
+fn box_metrics(density: Density) -> (usize, usize) {
+    match density {
+        Density::Comfortable => (BOX_H, 1),
+        Density::Compact => (1, 0),
+    }
+}
+
+/// The box width for a node under a [`Density`]: the full bordered box in
+/// Comfortable; just `│` + name + `│` in Compact (no tag / tests labels, so
+/// no widening for them either).
+fn box_width_of_density(node: &crate::NodeInfo, density: Density) -> usize {
+    match density {
+        Density::Comfortable => box_width_of(node),
+        Density::Compact => label_of(node).chars().count() + 2,
+    }
+}
+
+/// Stamp a node's COMPACT representation: a single `│name│` row (the side
+/// borders in `g`'s glyph set). Only the name cells carry the emphasis flag,
+/// so the emphasis region spells exactly the node's name — the same contract
+/// as the 3-row [`draw_box`].
+fn draw_compact_box(grid: &mut CharGrid, g: &BoxGlyphs, rect: NodeRect, label: &str, emph: bool) {
+    let (bx, by, w) = (rect.x, rect.y, rect.width);
+    if w < 2 {
+        return;
+    }
+    grid.put(bx, by, g.v);
+    grid.put(bx + w - 1, by, g.v);
+    for (i, ch) in label.chars().enumerate() {
+        if 1 + i < w - 1 {
+            grid.put_emph(bx + 1 + i, by, ch, emph);
+        }
+    }
 }
 
 /// Stamp a node's box into the grid: a 3-row box (in `g`'s glyph set) with the
@@ -537,14 +624,22 @@ pub fn layout(sg: &Subgraph) -> Layout {
 }
 
 /// Lay out a lineage subgraph into a [`Layout`] (pure; no ratatui), drawing
-/// with the given [`GlyphMode`]'s glyph set.
+/// with the given [`GlyphMode`]'s glyph set at the default (Comfortable)
+/// [`Density`]. The frozen pre-density entry point — geometry is byte-stable.
+pub fn layout_mode(sg: &Subgraph, mode: GlyphMode) -> Layout {
+    layout_density(sg, mode, Density::Comfortable)
+}
+
+/// Lay out a lineage subgraph into a [`Layout`] (pure; no ratatui), drawing
+/// with the given [`GlyphMode`]'s glyph set at the given [`Density`].
 ///
 /// Empty subgraph -> a 1x1 blank grid and empty maps (callers render an empty
 /// pane). Otherwise builds the longest-path columns, stacks each column's nodes
 /// deterministically (by `unique_id`), positions columns left-to-right with a
 /// fixed gutter, stamps connectors, then writes labels on top.
-pub fn layout_mode(sg: &Subgraph, mode: GlyphMode) -> Layout {
+pub fn layout_density(sg: &Subgraph, mode: GlyphMode, density: Density) -> Layout {
     let g = BoxGlyphs::for_mode(mode);
+    let (box_h, box_mid) = box_metrics(density);
     if sg.nodes.is_empty() {
         return Layout {
             grid: CharGrid::new(1, 1),
@@ -552,6 +647,7 @@ pub fn layout_mode(sg: &Subgraph, mode: GlyphMode) -> Layout {
             rects: HashMap::new(),
             selected_coord: None,
             selected_rect: None,
+            edge_cells: HashMap::new(),
         };
     }
 
@@ -574,7 +670,7 @@ pub fn layout_mode(sg: &Subgraph, mode: GlyphMode) -> Layout {
         .map(|nodes| {
             nodes
                 .iter()
-                .map(|n| box_width_of(n))
+                .map(|n| box_width_of_density(n, density))
                 .max()
                 .unwrap_or(1)
                 .max(1)
@@ -591,10 +687,11 @@ pub fn layout_mode(sg: &Subgraph, mode: GlyphMode) -> Layout {
     }
     let grid_width = x;
 
-    // Each node is a 3-row box. Within a column, box i sits at y = i*(BOX_H+ROW_GAP).
-    // `rects` are the BOX rects (used for non-overlap, column order, anchoring,
-    // and mouse hit-testing). Grid height = tallest stacked column.
-    let stride = BOX_H + ROW_GAP;
+    // Each node is a `box_h`-row box. Within a column, box i sits at
+    // y = i*(box_h+ROW_GAP). `rects` are the BOX rects (used for non-overlap,
+    // column order, anchoring, and mouse hit-testing). Grid height = tallest
+    // stacked column.
+    let stride = box_h + ROW_GAP;
     let mut rects: HashMap<String, NodeRect> = HashMap::new();
     let mut max_rows = 0usize;
     for (c, nodes) in col_nodes.iter().enumerate() {
@@ -604,8 +701,8 @@ pub fn layout_mode(sg: &Subgraph, mode: GlyphMode) -> Layout {
                 NodeRect {
                     x: col_x[c],
                     y: i * stride,
-                    width: box_width_of(node),
-                    height: BOX_H,
+                    width: box_width_of_density(node, density),
+                    height: box_h,
                 },
             );
             max_rows = max_rows.max(i + 1);
@@ -614,7 +711,7 @@ pub fn layout_mode(sg: &Subgraph, mode: GlyphMode) -> Layout {
     let grid_height = if max_rows == 0 {
         1
     } else {
-        (max_rows - 1) * stride + BOX_H
+        (max_rows - 1) * stride + box_h
     };
 
     let mut grid = CharGrid::new(grid_width.max(1), grid_height);
@@ -626,12 +723,17 @@ pub fn layout_mode(sg: &Subgraph, mode: GlyphMode) -> Layout {
     // Crossings are acceptable. The arrowhead is a separate second pass so each
     // arrowhead wins its own child-entry cell even when siblings share a turn
     // column.
+    let mut edge_cells: HashMap<(String, String), Vec<(usize, usize)>> = HashMap::new();
     for edge in &sg.edges {
         let (Some(p), Some(c)) = (rects.get(&edge.parent), rects.get(&edge.child)) else {
             continue;
         };
         let (p, c) = (*p, *c);
-        let (py, cy) = (p.y + 1, c.y + 1); // box middle rows
+        // Cells THIS edge draws (claimed cells only — a cell already drawn by an
+        // earlier sorted-order edge belongs to that edge), recorded for
+        // `apply_edge_styles`. The arrowhead joins in pass 2 below.
+        let mut cells: Vec<(usize, usize)> = Vec::new();
+        let (py, cy) = (p.y + box_mid, c.y + box_mid); // connector-attach rows
         let from_x = p.right(); // one past the parent box's right border
         if c.x == 0 {
             continue;
@@ -645,8 +747,10 @@ pub fn layout_mode(sg: &Subgraph, mode: GlyphMode) -> Layout {
             for hx in from_x..arrow_x {
                 if grid.char_at(hx, py) == ' ' {
                     grid.put(hx, py, g.h);
+                    cells.push((hx, py));
                 }
             }
+            edge_cells.insert((edge.parent.clone(), edge.child.clone()), cells);
             continue;
         }
         // Different rows: route the VERTICAL turn one cell further left than the
@@ -661,10 +765,11 @@ pub fn layout_mode(sg: &Subgraph, mode: GlyphMode) -> Layout {
         } else {
             arrow_x
         };
-        // Horizontal leaving the parent at its middle row, up to the channel.
+        // Horizontal leaving the parent at its attach row, up to the channel.
         for hx in from_x..channel_x {
             if grid.char_at(hx, py) == ' ' {
                 grid.put(hx, py, g.h);
+                cells.push((hx, py));
             }
         }
         // Vertical channel from the parent row to the child row, with a corner
@@ -693,22 +798,49 @@ pub fn layout_mode(sg: &Subgraph, mode: GlyphMode) -> Layout {
                 g.v
             };
             grid.put(channel_x, vy, ch);
+            cells.push((channel_x, vy));
         }
         // Short horizontal from the channel's child-side corner into the arrowhead
         // (empty when the channel sits directly left of the arrowhead, GUTTER=3).
         for hx in (channel_x + 1)..arrow_x {
             if grid.char_at(hx, cy) == ' ' {
                 grid.put(hx, cy, g.h);
+                cells.push((hx, cy));
             }
         }
+        // The child-side corner + its lead-in row are SHARED by every
+        // different-row edge into this child (they all route through the same
+        // channel column at the child's attach row) — claim them for THIS edge
+        // even when another edge drew the glyph first, like the arrowhead in
+        // pass 2. Without this, a path edge sorted AFTER an off-path sibling
+        // would miss the shared corner and the path band would show a dimmed
+        // notch there. (A crossing edge's glyph may also occupy the cell; the
+        // band on it is the lesser artifact vs a gap in the path.)
+        for sx in channel_x..arrow_x {
+            if !cells.contains(&(sx, cy)) {
+                cells.push((sx, cy));
+            }
+        }
+        edge_cells.insert((edge.parent.clone(), edge.child.clone()), cells);
     }
-    // Pass 2: arrowheads last, so each arrowhead wins its child-entry cell.
+    // Pass 2: arrowheads last, so each arrowhead wins its child-entry cell. The
+    // arrowhead cell is attributed to ITS edge even when another edge's run was
+    // first through it (the arrow glyph wins the cell, so the attr should too).
+    // Deliberately independent of pass 1's continues: a degenerate edge that
+    // drew no run still gets its arrowhead drawn AND recorded (glyph and attr
+    // stay in lockstep); only a column-0 child (`c.x == 0` — impossible for a
+    // right-going edge) yields no entry at all, which every consumer of
+    // `edge_cells` tolerates by lookup (`get`), never by assumption.
     for edge in &sg.edges {
         let Some(c) = rects.get(&edge.child) else {
             continue;
         };
         if c.x > 0 {
-            grid.put(c.x - 1, c.y + 1, g.arrow);
+            grid.put(c.x - 1, c.y + box_mid, g.arrow);
+            edge_cells
+                .entry((edge.parent.clone(), edge.child.clone()))
+                .or_default()
+                .push((c.x - 1, c.y + box_mid));
         }
     }
 
@@ -717,16 +849,21 @@ pub fn layout_mode(sg: &Subgraph, mode: GlyphMode) -> Layout {
     for node in &sg.nodes {
         let rect = rects[&node.unique_id];
         let emph = node.unique_id == selected_emph;
-        let tests = tests_label_of(node);
-        draw_box(
-            &mut grid,
-            g,
-            rect,
-            label_of(node),
-            tag_of(node),
-            tests.as_deref(),
-            emph,
-        );
+        match density {
+            Density::Comfortable => {
+                let tests = tests_label_of(node);
+                draw_box(
+                    &mut grid,
+                    g,
+                    rect,
+                    label_of(node),
+                    tag_of(node),
+                    tests.as_deref(),
+                    emph,
+                );
+            }
+            Density::Compact => draw_compact_box(&mut grid, g, rect, label_of(node), emph),
+        }
     }
 
     let selected_rect = rects.get(&sg.selected).copied();
@@ -738,6 +875,7 @@ pub fn layout_mode(sg: &Subgraph, mode: GlyphMode) -> Layout {
         rects,
         selected_coord,
         selected_rect,
+        edge_cells,
     }
 }
 
@@ -1239,6 +1377,155 @@ mod tests {
             assert_eq!(regions.len(), 1);
             assert_eq!(regions[0].2, "a");
         }
+    }
+
+    #[test]
+    fn edge_cells_are_recorded_and_edge_styles_are_golden_safe() {
+        // Every drawn edge records a non-empty connector run ending in its
+        // arrowhead cell; stamping edge attrs changes ONLY the attr array
+        // (never text/emphasis — the golden contract, like node styles); and
+        // the recording is deterministic across runs.
+        let sg = asymmetric_three();
+        let lay0 = layout(&sg);
+        let text_before = lay0.grid.to_text();
+        for e in &sg.edges {
+            let key = (e.parent.clone(), e.child.clone());
+            let cells = &lay0.edge_cells[&key];
+            assert!(!cells.is_empty(), "edge {key:?} records its run");
+            let c = lay0.rects[&e.child];
+            assert!(
+                cells.contains(&(c.x - 1, c.y + 1)),
+                "edge {key:?} records its arrowhead cell"
+            );
+        }
+        assert_eq!(
+            layout(&sg).edge_cells,
+            lay0.edge_cells,
+            "edge_cells deterministic"
+        );
+
+        let mut lay = layout(&sg);
+        let key = ("a".to_string(), "b".to_string());
+        lay.apply_edge_styles(&BTreeMap::from([(
+            key.clone(),
+            CellAttr {
+                on_path: true,
+                ..Default::default()
+            },
+        )]));
+        assert_eq!(
+            lay.grid.to_text(),
+            text_before,
+            "edge styling never changes text"
+        );
+        for &(x, y) in &lay.edge_cells[&key] {
+            assert!(lay.grid.attr_at(x, y).on_path, "attr landed on ({x},{y})");
+        }
+        // An unstyled edge's cells stay default.
+        let other = ("a".to_string(), "c".to_string());
+        if let Some(&(x, y)) = lay.edge_cells[&other]
+            .iter()
+            .find(|c| !lay.edge_cells[&key].contains(c))
+        {
+            assert_eq!(lay.grid.attr_at(x, y), CellAttr::default());
+        }
+    }
+
+    #[test]
+    fn shared_channel_corner_is_claimed_by_every_edge_into_the_child() {
+        // Two parents on rows DIFFERENT from their shared child both route
+        // through the same channel column at the child's attach row. The
+        // child-side corner cell must appear in BOTH edges' cell lists (like
+        // the shared arrowhead), so the two-phase apply_edge_styles can give
+        // the path attr the final say regardless of edge sort order.
+        // Column 0 stacks a (y0), b (y4), z (y8); child c sits at y0 in column
+        // 1 — a->c is same-row, b->c and z->c both need the channel.
+        let mut nodes = vec![
+            model("a", "a"),
+            model("b", "b"),
+            model("c", "c"),
+            model("z", "z"),
+        ];
+        nodes.sort_by(|x, y| x.unique_id.cmp(&y.unique_id));
+        let sg = Subgraph {
+            selected: "c".to_string(),
+            nodes,
+            edges: vec![edge("a", "c"), edge("b", "c"), edge("z", "c")],
+        };
+        let lay = layout(&sg);
+        let rc = lay.rects["c"];
+        let corner = (rc.x - 2, rc.y + 1); // channel column, child attach row
+        for parent in ["b", "z"] {
+            let key = (parent.to_string(), "c".to_string());
+            assert!(
+                lay.edge_cells[&key].contains(&corner),
+                "{parent}->c claims the shared child-side corner {corner:?}"
+            );
+        }
+        // And the path attr wins the shared corner even when the path edge
+        // sorts AFTER the off-path edge (z->c is last in sort order).
+        let mut lay = layout(&sg);
+        lay.apply_edge_styles(&BTreeMap::from([
+            (
+                ("b".to_string(), "c".to_string()),
+                CellAttr {
+                    dimmed: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                ("z".to_string(), "c".to_string()),
+                CellAttr {
+                    on_path: true,
+                    ..Default::default()
+                },
+            ),
+        ]));
+        let attr = lay.grid.attr_at(corner.0, corner.1);
+        assert!(attr.on_path, "the path attr wins the shared corner");
+        assert!(!attr.dimmed, "the shared corner is never left dimmed");
+    }
+
+    #[test]
+    fn compact_density_collapses_boxes_to_one_row() {
+        // Compact: every rect is 1 row tall and `name+2` wide; the emphasis
+        // still spells exactly the selected name; the connector attaches at the
+        // node's own row (the arrowhead sits left of the child at its row);
+        // geometry is identical across glyph modes; and the default-density
+        // entry points are untouched (layout_mode == layout_density Comfortable).
+        let sg = asymmetric_three();
+        for mode in [GlyphMode::Unicode, GlyphMode::Ascii] {
+            let lay = layout_density(&sg, mode, Density::Compact);
+            for (uid, r) in &lay.rects {
+                assert_eq!(r.height, 1, "{uid} is one row in compact");
+                let name_len = sg
+                    .nodes
+                    .iter()
+                    .find(|n| &n.unique_id == uid)
+                    .unwrap()
+                    .name
+                    .chars()
+                    .count();
+                assert_eq!(r.width, name_len + 2, "{uid} is |name| wide");
+            }
+            let regions = lay.grid.emphasis_regions();
+            assert_eq!(regions.len(), 1);
+            assert_eq!(regions[0].2, "c", "emphasis spells the selected name");
+            let rc = lay.rects["c"];
+            let g = BoxGlyphs::for_mode(mode);
+            assert_eq!(lay.grid.char_at(rc.x - 1, rc.y), g.arrow, "arrow at row");
+            assert_eq!(lay.grid.char_at(rc.x, rc.y), g.v, "side border glyph");
+        }
+        assert_eq!(
+            layout_density(&sg, GlyphMode::Unicode, Density::Compact).rects,
+            layout_density(&sg, GlyphMode::Ascii, Density::Compact).rects,
+            "compact geometry identical across glyph modes"
+        );
+        assert_eq!(
+            layout_mode(&sg, GlyphMode::Unicode).grid,
+            layout_density(&sg, GlyphMode::Unicode, Density::Comfortable).grid,
+            "layout_mode IS the Comfortable density"
+        );
     }
 
     #[test]

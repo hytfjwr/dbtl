@@ -42,6 +42,13 @@ fn render_with_toast(app: &App, width: u16, height: u16, toast: Option<&str>) ->
     // The SAME memoized producer the event loop draws from, so the guard
     // scans exactly what production renders.
     let lineage = app.styled_lineage_layout();
+    // Layer bands exactly as the loop wires them (Layer lens only), so the
+    // band-stamping path is under the guard too (labels are dir-name data,
+    // but the stamping itself must add no chrome glyph).
+    let layer_bands = match (&lineage, app.ui_state.lens()) {
+        (Some(lay), dbtl::ui::LineageLens::Layer) => Some(app.layer_bands(lay)),
+        _ => None,
+    };
     let status = app.selected_status_note();
     let label = app.lineage_view_label();
 
@@ -104,6 +111,7 @@ fn render_with_toast(app: &App, width: u16, height: u16, toast: Option<&str>) ->
         // Mirror the loop's minimap wiring so the ASCII guard scans the inset's
         // `#`/`.`/`+` glyphs whenever the lens is toggled on (all pure ASCII).
         ctx.minimap = app.ui_state.minimap_visible();
+        ctx.layer_bands = layer_bands.as_deref();
         ctx.toast = toast;
         terminal
             .draw(|frame| draw(frame, &ctx))

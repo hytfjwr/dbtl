@@ -2,6 +2,7 @@
 //! the ACTIVE lens's tint, the root↔cursor focus dim, and the on-path band.
 
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 
 use crate::{
     coverage_gap, CellAttr, Layout, LensTint, LineageLens, MaterializationClass, NodeInfo,
@@ -66,6 +67,95 @@ impl App {
             .collect()
     }
 
+    /// The per-EDGE render attributes for a lineage [`Layout`]: the connector
+    /// twin of [`lineage_styles`](App::lineage_styles), keyed like
+    /// [`Layout::edge_cells`] (`(parent, child)`). Empty when the cursor is home
+    /// (no path → connectors stay Plain, the frozen default render). When a
+    /// root↔cursor path exists, its edges get the `on_path` background band and
+    /// every OTHER edge dims — the same focus treatment the nodes get, extended
+    /// to the lines between them.
+    ///
+    /// CACHE-KEY INVARIANT: memoized inside the styled layout like
+    /// `lineage_styles` — inputs are the cursor/path and the subgraph edges,
+    /// all already part of `cache.rs::LayoutKey`.
+    pub fn lineage_edge_styles(&self, lay: &Layout) -> BTreeMap<(String, String), CellAttr> {
+        let path: HashSet<(String, String)> = self.lineage_path_edges().into_iter().collect();
+        if path.is_empty() {
+            return BTreeMap::new();
+        }
+        lay.edge_cells
+            .keys()
+            .map(|key| {
+                let on_path = path.contains(key);
+                let attr = CellAttr {
+                    on_path,
+                    dimmed: !on_path,
+                    ..Default::default()
+                };
+                (key.clone(), attr)
+            })
+            .collect()
+    }
+
+    /// Per-column layer annotations for the lineage pane's bottom-border band
+    /// (the Layer lens's companion): for each layout column whose MODELS
+    /// unanimously share one `first_dir` layer, a [`LayerBand`] with that
+    /// layer's name and [`layer_tint`] — so the band can never disagree with
+    /// the node tints. A column with mixed layers, or with no models at all
+    /// (e.g. a pure-source column), gets no band rather than a lie.
+    ///
+    /// Deterministic: aggregated into a `BTreeMap` by column index; every node
+    /// in a column shares its `rect.x`, and the width is the column's widest
+    /// box (the same definition the layout used).
+    pub fn layer_bands(&self, lay: &Layout) -> Vec<crate::ui::LayerBand> {
+        use std::collections::BTreeMap;
+        struct Col {
+            x: usize,
+            width: usize,
+            label: Option<String>, // None = no model seen yet
+            unanimous: bool,
+        }
+        let mut cols: BTreeMap<usize, Col> = BTreeMap::new();
+        for (uid, rect) in &lay.rects {
+            let Some(&c) = lay.columns.get(uid) else {
+                continue;
+            };
+            let entry = cols.entry(c).or_insert(Col {
+                x: rect.x,
+                width: 0,
+                label: None,
+                unanimous: true,
+            });
+            entry.width = entry.width.max(rect.width);
+            let Some(node) = self.dag.get(uid) else {
+                continue;
+            };
+            if node.resource_type != "model" {
+                continue; // sources/seeds/snapshots neither label nor disqualify
+            }
+            let layer = crate::model_list::first_dir(node)
+                .unwrap_or("other")
+                .to_string();
+            match &entry.label {
+                None => entry.label = Some(layer),
+                Some(prev) if *prev != layer => entry.unanimous = false,
+                Some(_) => {}
+            }
+        }
+        cols.into_values()
+            .filter_map(|col| {
+                let label = col.label.filter(|_| col.unanimous)?;
+                let tint = layer_tint_of(&label);
+                Some(crate::ui::LayerBand {
+                    x: col.x,
+                    width: col.width,
+                    label,
+                    tint,
+                })
+            })
+            .collect()
+    }
+
     /// The [`LensTint`] for one node under the ACTIVE `lens`. The single place each
     /// lens's per-node metric is mapped to a semantic tint (the render layer turns
     /// the tint into a `Color`); `violation_nodes` is the precomputed project-wide
@@ -104,15 +194,7 @@ impl App {
             // classification the list groups by). Sources/seeds/snapshots get None
             // so their distinctive materialization-class colour keeps showing.
             LineageLens::Layer => match node {
-                Some(n) if n.resource_type == "model" => {
-                    match crate::model_list::first_dir(n).unwrap_or("") {
-                        "staging" => LensTint::LayerStaging,
-                        "intermediate" => LensTint::LayerIntermediate,
-                        "marts" => LensTint::LayerMarts,
-                        "utilities" => LensTint::LayerUtilities,
-                        _ => LensTint::LayerOther,
-                    }
-                }
+                Some(n) if n.resource_type == "model" => layer_tint(n),
                 _ => LensTint::None,
             },
             // Layer violations: tint any node incident to a backward edge.
@@ -124,5 +206,22 @@ impl App {
                 }
             }
         }
+    }
+}
+
+/// A model's layer tint from its `first_dir` layer — shared by the Layer lens
+/// (per node) and the layer bands (per column), so the two can never disagree.
+fn layer_tint(n: &NodeInfo) -> LensTint {
+    layer_tint_of(crate::model_list::first_dir(n).unwrap_or(""))
+}
+
+/// The ONE layer-name → `LensTint::Layer*` mapping.
+fn layer_tint_of(layer: &str) -> LensTint {
+    match layer {
+        "staging" => LensTint::LayerStaging,
+        "intermediate" => LensTint::LayerIntermediate,
+        "marts" => LensTint::LayerMarts,
+        "utilities" => LensTint::LayerUtilities,
+        _ => LensTint::LayerOther,
     }
 }

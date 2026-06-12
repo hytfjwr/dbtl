@@ -122,6 +122,16 @@ pub const CHIP_VIEW: Color = Color::Indexed(176);
 pub const SECTION: Color = CLASS_SNAPSHOT;
 /// SQL keyword highlight in the `s` preview. Editor-style purple.
 pub const SQL_KEYWORD: Color = Color::Indexed(141);
+/// SQL string literals in the `s` preview. Soft green `#afd787` — the classic
+/// editor convention; distinct from every chrome/status role.
+pub const SQL_STRING: Color = Color::Indexed(150);
+/// SQL comments (`--`, `/* */`, and Jinja `{# #}`) in the `s` preview. Aliases
+/// [`TEXT_FAINT`] on purpose: comments recede like tertiary chrome text.
+pub const SQL_COMMENT: Color = TEXT_FAINT;
+/// Jinja expressions/statements (`{{ ref(..) }}` / `{% if %}`) in the `s`
+/// preview. Aliases [`SECTION`]'s warm peach on purpose: the templating layer
+/// is the load-bearing part of a dbt model, so it shares the accent family.
+pub const SQL_JINJA: Color = SECTION;
 
 // ---- stats mini-bars (decorative chart fills, one per chart) ----------------
 

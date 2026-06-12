@@ -538,6 +538,13 @@ fn event_loop(
         // glyph mode's Chrome badges — never hardcoded). Built in App so the
         // string source is single and unit-testable.
         let impact_s = app.impact_status();
+        // Layer bands: the lineage pane's bottom-border column annotations,
+        // present exactly while the Layer lens is active (cheap: one pass over
+        // the layout's rects, only computed when the lens is on).
+        let layer_bands = match (&lineage, app.ui_state.lens()) {
+            (Some(lay), LineageLens::Layer) => Some(app.layer_bands(lay)),
+            _ => None,
+        };
         {
             let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, lineage.as_deref());
             ctx.mode = &app.mode;
@@ -561,6 +568,7 @@ fn event_loop(
             };
             ctx.minimap = app.ui_state.minimap_visible();
             ctx.filter_label = app.list_filter_label();
+            ctx.layer_bands = layer_bands.as_deref();
             ctx.toast = toast.as_ref().map(|(text, _)| text.as_str());
             terminal
                 .draw(|frame| draw(frame, &ctx))
@@ -604,6 +612,7 @@ fn event_loop(
                                 | Action::Reload
                                 | Action::ToggleListPane
                                 | Action::DbtParse
+                                | Action::ToggleDensity
                         );
                         let outcome = apply_action(app, action);
                         for effect in outcome.effects {

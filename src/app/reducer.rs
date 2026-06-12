@@ -534,6 +534,12 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             app.ui_state.toggle_minimap();
             Outcome::cont()
         }
+        // Toggle the lineage density (a pure UiState view-pref, like the
+        // minimap). The loop force-anchors next frame — the grid reshapes.
+        Action::ToggleDensity => {
+            app.ui_state.toggle_density();
+            Outcome::cont()
+        }
     }
 }
 

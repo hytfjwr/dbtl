@@ -264,13 +264,23 @@ impl App {
     ///
     /// [`lineage_styles`]: App::lineage_styles
     pub fn lineage_path_set(&self) -> std::collections::HashSet<String> {
+        self.lineage_path_nodes().into_iter().collect()
+    }
+
+    /// The ORDERED root→cursor path (cursor-side first — the walk-back order;
+    /// only set membership and consecutive PAIRS are consumed, so the direction
+    /// of iteration is irrelevant as long as it is deterministic). Empty when
+    /// the cursor is home or nothing is selected. The shared core of
+    /// [`lineage_path_set`](App::lineage_path_set) (node membership) and
+    /// [`lineage_path_edges`](App::lineage_path_edges) (the connector runs).
+    fn lineage_path_nodes(&self) -> Vec<String> {
         use std::collections::{HashMap, HashSet, VecDeque};
         let (Some(root), Some(cursor)) = (self.selected_unique_id(), self.lineage_cursor_uid())
         else {
-            return HashSet::new();
+            return Vec::new();
         };
         if root == cursor {
-            return HashSet::new();
+            return Vec::new();
         }
         // Root semantics (NOT the display copy): same node/edge set, but keyed off
         // the rooted selection independent of which node the display "selects".
@@ -300,12 +310,12 @@ impl App {
                 }
             }
         }
-        let mut path = HashSet::new();
+        let mut path = Vec::new();
         if found {
             // Walk predecessors back from the cursor to the root, collecting both.
             let mut node = cursor.as_str();
             loop {
-                path.insert(node.to_string());
+                path.push(node.to_string());
                 if node == root.as_str() {
                     break;
                 }
@@ -316,6 +326,36 @@ impl App {
             }
         }
         path
+    }
+
+    /// The root↔cursor path as CANONICAL `(parent, child)` edge keys — each
+    /// consecutive path pair oriented the way it appears in the subgraph's edge
+    /// list (the path is undirected, the edges are not). Keys match
+    /// [`Layout::edge_cells`](crate::Layout::edge_cells), so the styles layer can
+    /// stamp exactly the path's connector runs. Empty when the cursor is home.
+    pub fn lineage_path_edges(&self) -> Vec<(String, String)> {
+        let path = self.lineage_path_nodes();
+        if path.len() < 2 {
+            return Vec::new();
+        }
+        let sg = self.subgraph_rc();
+        let edge_set: std::collections::HashSet<(&str, &str)> = sg
+            .edges
+            .iter()
+            .map(|e| (e.parent.as_str(), e.child.as_str()))
+            .collect();
+        path.windows(2)
+            .filter_map(|w| {
+                let (a, b) = (w[0].as_str(), w[1].as_str());
+                if edge_set.contains(&(a, b)) {
+                    Some((w[0].clone(), w[1].clone()))
+                } else if edge_set.contains(&(b, a)) {
+                    Some((w[1].clone(), w[0].clone()))
+                } else {
+                    None // disconnected pair: BFS over sg edges makes this unreachable
+                }
+            })
+            .collect()
     }
 
     /// The lineage re-root breadcrumb for the pane title: the last up-to-3
