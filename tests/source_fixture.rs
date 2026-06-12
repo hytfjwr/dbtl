@@ -339,8 +339,10 @@ fn traversal_resource_paths_are_skipped() {
         format!(
             "name: contained\nversion: \"1.0.0\"\nconfig-version: 2\n\
              model-paths: [\"../outside\", \"models\"]\n\
-             seed-paths: [\"{}\"]\n\
+             seed-paths: ['{}']\n\
              snapshot-paths: [\"models/../../outside\"]\n",
+            // Single-quoted YAML: a Windows temp path's backslashes (`C:\U…`)
+            // would be escape sequences in a double-quoted scalar.
             outside.display()
         ),
     )
