@@ -1,6 +1,6 @@
 [package]
 name = "dbtl"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "A terminal UI for exploring dbt model lineage as ASCII art"
 license = "MIT"
@@ -26,7 +26,8 @@ serde = { version = "1", features = ["derive"] }
 # becomes an `IndexMap`), so the structure view shows columns as authored.
 serde_json = { version = "1", features = ["preserve_order"] }
 # Parses dbt_project.yml + schema.yml for the source loader (no compiled manifest).
-serde_yaml = "0.9"
+# Maintained fork of the deprecated serde_yaml (API-compatible).
+serde_norway = "0.9"
 # Status-bar segment width measurement (src/ui/render.rs) AND the ascii_guard test
 # (data cells that are unambiguously WIDE render fine everywhere; only
 # ambiguous-width chrome is banned). A normal dependency so `src/` can use it.
