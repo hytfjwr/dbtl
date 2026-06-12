@@ -1,6 +1,7 @@
 /target
 **/*.rs.bk
 .claude/
+/logs/
 
 # dbt artifacts under the committed sample_project fixture (make regen-sample-manifest)
 tests/fixtures/sample_project/target/
