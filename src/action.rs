@@ -102,6 +102,9 @@ pub enum Action {
     YankSql,
     /// Copy a Markdown blast-radius report for the selected node.
     YankImpact,
+    /// Copy a runnable `dbt build --select …` command for the current lineage
+    /// view (root + direction toggles + depth limit as graph operators).
+    YankSelector,
     /// Write the current lineage diagram to `<name>_lineage.txt` in the cwd.
     ExportLineage,
     /// Move the list selection a fixed page (10 models) down / up. List-side
@@ -466,6 +469,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('P'))], action: A::DbtParse, help: "run dbt parse (build manifest)" },
     KeyBinding { mode: M::Selection, triggers: &[Ctrl('t')], action: A::ThemeCycle, help: "cycle color theme" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('D'))], action: A::DiffOpen, help: "diff vs baseline (--diff)" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('!'))], action: A::YankSelector, help: "copy dbt --select command" },
     // ---- Search mode (printable chars are handled dynamically -> SearchType) ----
     KeyBinding { mode: M::Search, triggers: &[Key(Esc)], action: A::SearchCancel, help: "cancel search" },
     KeyBinding { mode: M::Search, triggers: &[Key(Enter)], action: A::SearchConfirm, help: "confirm" },
@@ -709,7 +713,7 @@ mod tests {
         );
         assert_eq!(dispatch(&sel, press(Char('q'))), Some(Action::Quit));
         assert_eq!(dispatch(&sel, ctrl('c')), Some(Action::Quit));
-        assert_eq!(dispatch(&sel, press(Char('!'))), None, "unbound key");
+        assert_eq!(dispatch(&sel, press(Char('~'))), None, "unbound key");
     }
 
     #[test]
@@ -883,6 +887,7 @@ mod tests {
             | Action::YankAscii
             | Action::YankSql
             | Action::YankImpact
+            | Action::YankSelector
             | Action::ExportLineage
             | Action::PageDown
             | Action::PageUp
@@ -990,6 +995,7 @@ mod tests {
             Action::YankAscii,
             Action::YankSql,
             Action::YankImpact,
+            Action::YankSelector,
             Action::ExportLineage,
             Action::PageDown,
             Action::PageUp,
