@@ -41,6 +41,10 @@ pub struct StatusSegments<'a> {
     pub bookmarks: Option<&'a str>,
     /// Sort mode when it is not the default (Layer), e.g. `"sort:downstream"`.
     pub sort: Option<&'a str>,
+    /// Baseline-diff counts when a `--diff` baseline is loaded, e.g.
+    /// `"diff +2 ~1 -3"` (or `"diff clean"`). Always-on with a baseline — the
+    /// chip is the at-a-glance answer `--diff` exists to give.
+    pub diff: Option<&'a str>,
     /// The persistent list filter when active, e.g. `"untested"` (bare — the
     /// segment renderer adds the `[..]`). Echoes the list-title tag so it
     /// stays visible while the list pane is hidden.
@@ -224,6 +228,9 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         }
         crate::action::Mode::Stats(sv) => {
             super::overlay::draw_stats(frame, area, sv, ctx.glyphs, ctx.theme)
+        }
+        crate::action::Mode::Diff(dv) => {
+            super::overlay::draw_diff(frame, area, dv, ctx.glyphs, ctx.theme)
         }
         crate::action::Mode::Palette(p) => {
             super::overlay::draw_palette(frame, area, p, ctx.glyphs, ctx.theme)
@@ -481,14 +488,17 @@ fn draw_status(
     // Each rendered as a bracketed ` [txt]`. Priority:
     //   1. impact — always-on blast radius, the headline readout, right after the
     //      protected core so it survives narrow widths longest.
-    //   2. the user-ACTIVATED states (coverage lens %, bookmarks, sort —
-    //      information shown nowhere else).
+    //   2. the diff chip (present only when a --diff baseline is loaded — the
+    //      at-a-glance readout that mode exists for), then the user-ACTIVATED
+    //      states (coverage lens %, bookmarks, sort — information shown
+    //      nowhere else).
     //   3. position.
     //   4. focus / view LAST (focus is already the accent pane border, and the
     //      view label is echoed in the lineage pane title — redundant cues that
     //      should drop first on a narrow terminal).
-    let candidates: [(Option<&str>, Color); 8] = [
+    let candidates: [(Option<&str>, Color); 9] = [
         (segments.impact, t.danger),
+        (segments.diff, t.diff_mod),
         (segments.coverage, t.warn),
         (segments.bookmarks, t.gold),
         (segments.filter, t.accent),

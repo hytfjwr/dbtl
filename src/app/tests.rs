@@ -2839,3 +2839,227 @@ fn palette_backspace_resets_selected_to_top() {
         unreachable!();
     }
 }
+
+// ---- --diff baseline + Diff lens ------------------------------------------
+
+/// Two tiny synthetic Dags for diffing: the BASE has models a -> b; the
+/// CURRENT keeps a (unchanged), changes b's materialization (modified), and
+/// adds c downstream of b (added). The base also has a model `gone` the
+/// current drops (removed).
+fn diff_base_dag() -> Dag {
+    use crate::{RawConfig, RawManifest, RawNode};
+    use std::collections::HashMap;
+    let mut nodes = HashMap::new();
+    let mut add = |id: &str, name: &str, mat: &str| {
+        nodes.insert(
+            id.to_string(),
+            RawNode {
+                name: name.into(),
+                resource_type: "model".into(),
+                path: Some(format!("marts/{name}.sql")),
+                config: RawConfig {
+                    materialized: Some(mat.into()),
+                },
+                ..Default::default()
+            },
+        );
+    };
+    add("model.p.a", "a", "view");
+    add("model.p.b", "b", "table");
+    add("model.p.gone", "gone", "view");
+    Dag::build(&RawManifest {
+        nodes,
+        sources: HashMap::new(),
+        parent_map: HashMap::from([("model.p.b".to_string(), vec!["model.p.a".to_string()])]),
+        child_map: HashMap::from([("model.p.a".to_string(), vec!["model.p.b".to_string()])]),
+    })
+}
+
+fn diff_current_dag() -> Dag {
+    use crate::{RawConfig, RawManifest, RawNode};
+    use std::collections::HashMap;
+    let mut nodes = HashMap::new();
+    let mut add = |id: &str, name: &str, mat: &str| {
+        nodes.insert(
+            id.to_string(),
+            RawNode {
+                name: name.into(),
+                resource_type: "model".into(),
+                path: Some(format!("marts/{name}.sql")),
+                config: RawConfig {
+                    materialized: Some(mat.into()),
+                },
+                ..Default::default()
+            },
+        );
+    };
+    add("model.p.a", "a", "view");
+    add("model.p.b", "b", "incremental"); // modified vs the base
+    add("model.p.c", "c", "view"); // added vs the base
+    Dag::build(&RawManifest {
+        nodes,
+        sources: HashMap::new(),
+        parent_map: HashMap::from([
+            ("model.p.b".to_string(), vec!["model.p.a".to_string()]),
+            ("model.p.c".to_string(), vec!["model.p.b".to_string()]),
+        ]),
+        child_map: HashMap::from([
+            ("model.p.a".to_string(), vec!["model.p.b".to_string()]),
+            ("model.p.b".to_string(), vec!["model.p.c".to_string()]),
+        ]),
+    })
+}
+
+/// An App over the synthetic CURRENT dag with the BASE loaded as its --diff
+/// baseline (`+1 ~1 -1` plus one added edge).
+fn diff_app() -> App {
+    let mut a = App::new(
+        diff_current_dag(),
+        PathBuf::from("/tmp/x/target/manifest.json"),
+    );
+    a.set_diff_base(diff_base_dag(), "base/manifest.json".to_string());
+    a
+}
+
+#[test]
+fn diff_open_without_baseline_toasts_a_hint() {
+    let mut a = app();
+    assert!(a.diff().is_none(), "no baseline by default");
+    assert_eq!(a.diff_status_label(), None, "no chip without a baseline");
+    let out = apply_action(&mut a, Action::DiffOpen);
+    assert!(!out.quit && out.effects.is_empty());
+    assert_eq!(a.mode, Mode::Selection, "no modal without a baseline");
+    let note = a
+        .take_notice()
+        .expect("DiffOpen without a baseline notices");
+    assert!(note.contains("--diff"), "the hint names the flag: {note}");
+}
+
+#[test]
+fn cycle_lens_skips_diff_without_a_baseline_and_includes_it_with_one() {
+    // Without a baseline the apply_action cycle is the legacy 5-step ring.
+    let mut a = app();
+    for expected in [
+        LineageLens::Coverage,
+        LineageLens::DegreeHeat,
+        LineageLens::Layer,
+        LineageLens::LayerViolation,
+        LineageLens::Off,
+    ] {
+        apply_action(&mut a, Action::CycleLens);
+        assert_eq!(a.ui_state.lens(), expected, "Diff is skipped");
+    }
+    // With a baseline the Diff slot joins the ring after LayerViolation.
+    let mut a = diff_app();
+    a.ui_state.set_lens(LineageLens::Off);
+    for expected in [
+        LineageLens::Coverage,
+        LineageLens::DegreeHeat,
+        LineageLens::Layer,
+        LineageLens::LayerViolation,
+        LineageLens::Diff,
+        LineageLens::Off,
+    ] {
+        apply_action(&mut a, Action::CycleLens);
+        assert_eq!(a.ui_state.lens(), expected, "Diff joins the cycle");
+    }
+}
+
+#[test]
+fn diff_status_label_counts_and_reports_clean() {
+    let a = diff_app();
+    assert_eq!(a.diff_status_label().as_deref(), Some("diff +1 ~1 -1"));
+    // A baseline identical to the current Dag reads as clean.
+    let mut a = app();
+    let same = load_dag(FIXTURE).expect("fixture loads");
+    a.set_diff_base(same, FIXTURE.to_string());
+    assert_eq!(a.diff_status_label().as_deref(), Some("diff clean"));
+}
+
+#[test]
+fn diff_open_snapshots_names_reasons_and_edges_into_the_modal_payload() {
+    let mut a = diff_app();
+    let out = apply_action(&mut a, Action::DiffOpen);
+    assert!(!out.quit && out.effects.is_empty());
+    let Mode::Diff(dv) = &a.mode else {
+        panic!("DiffOpen with a baseline opens the modal, got {:?}", a.mode);
+    };
+    assert_eq!(dv.baseline, "base/manifest.json");
+    assert_eq!(dv.added, vec![("c".to_string(), "model".to_string())]);
+    assert_eq!(dv.removed, vec![("gone".to_string(), "model".to_string())]);
+    assert_eq!(
+        dv.modified,
+        vec![(
+            "b".to_string(),
+            "materialized: table -> incremental".to_string()
+        )]
+    );
+    assert_eq!(dv.edges_added, vec![("b".to_string(), "c".to_string())]);
+    assert!(dv.edges_removed.is_empty());
+    // The shared modal-scroll slot drives this modal too (the
+    // modal_scroll_mut enumeration includes Diff).
+    apply_action(&mut a, Action::DetailScroll(Direction::Down));
+    let Mode::Diff(dv) = &a.mode else {
+        unreachable!()
+    };
+    assert_eq!(dv.scroll, 1, "j scrolls the diff modal");
+    apply_action(&mut a, Action::DetailClose);
+    assert_eq!(a.mode, Mode::Selection, "q/Esc closes it");
+}
+
+#[test]
+fn diff_lens_tints_added_and_modified_nodes_only() {
+    let mut a = diff_app();
+    a.select_by_unique_id("model.p.b");
+    a.ui_state.set_lens(LineageLens::Diff);
+    let lay = crate::layout(&a.lineage_subgraph());
+    let styles = a.lineage_styles(&lay);
+    assert_eq!(
+        styles.get("model.p.c").unwrap().lens,
+        LensTint::DiffAdd,
+        "an added node tints green"
+    );
+    assert_eq!(
+        styles.get("model.p.b").unwrap().lens,
+        LensTint::DiffMod,
+        "a modified node tints amber"
+    );
+    assert_eq!(
+        styles.get("model.p.a").unwrap().lens,
+        LensTint::None,
+        "an unchanged node keeps its class colour"
+    );
+}
+
+#[test]
+fn set_diff_base_invalidates_the_cached_styled_layout() {
+    // The Diff lens reads App state OUTSIDE the layout key's other inputs, so
+    // loading a baseline must bump the generation — otherwise a layout cached
+    // under lens=Diff/no-baseline would survive with no tints.
+    let mut a = App::new(
+        diff_current_dag(),
+        PathBuf::from("/tmp/x/target/manifest.json"),
+    );
+    a.select_by_unique_id("model.p.b");
+    a.ui_state.set_lens(LineageLens::Diff);
+    let before = a.styled_lineage_layout().expect("layout");
+    a.set_diff_base(diff_base_dag(), "base".to_string());
+    let after = a.styled_lineage_layout().expect("layout");
+    assert!(
+        !std::rc::Rc::ptr_eq(&before, &after),
+        "the cached styled layout misses after set_diff_base"
+    );
+}
+
+#[test]
+fn reload_recomputes_the_diff_against_the_kept_baseline() {
+    // Fixture app + a synthetic baseline: everything in the fixture reads as
+    // added. A reload (same file) must re-diff — not drop or stale the result.
+    let mut a = app();
+    a.set_diff_base(diff_base_dag(), "base".to_string());
+    let before = a.diff().expect("diff computed").counts();
+    assert_eq!(before.0, 91, "every fixture node is added vs the tiny base");
+    a.reload().expect("reload ok");
+    let after = a.diff().expect("diff survives reload").counts();
+    assert_eq!(before, after, "reload re-diffs against the same baseline");
+}

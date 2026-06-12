@@ -134,6 +134,9 @@ theme_roles!(
     heat_low,
     heat_mid,
     heat_high,
+    // ---- diff lens (added / modified vs the --diff baseline; VIVID) ----
+    diff_add,
+    diff_mod,
     // ---- status-bar chips ----
     /// The `[view]` direction/depth chip (a chip role, deliberately NOT
     /// `class_view`: it names the lineage view filter, not a materialization).
@@ -221,6 +224,14 @@ pub const HEAT_MID: Color = Color::Indexed(220);
 /// High heat — the [`DANGER`] red.
 pub const HEAT_HIGH: Color = DANGER;
 
+/// Diff lens: node ADDED vs the `--diff` baseline — vivid spring green
+/// `#00d787` (the VCS-green convention; distinct from the pastel
+/// [`CLASS_TABLE`]/[`OK`] green per the lens contract).
+pub const DIFF_ADD: Color = Color::Indexed(42);
+/// Diff lens: node MODIFIED vs the baseline — vivid amber `#ffaf00`
+/// (distinct from the pastel [`CLASS_SNAPSHOT`] peach and from [`GOLD`]).
+pub const DIFF_MOD: Color = Color::Indexed(214);
+
 /// The `[view]` direction/depth chip — orchid hue.
 pub const CHIP_VIEW: Color = Color::Indexed(176);
 
@@ -277,6 +288,8 @@ pub const DEFAULT: Theme = Theme {
     heat_low: HEAT_LOW,
     heat_mid: HEAT_MID,
     heat_high: HEAT_HIGH,
+    diff_add: DIFF_ADD,
+    diff_mod: DIFF_MOD,
     chip_view: CHIP_VIEW,
     section: SECTION,
     sql_keyword: SQL_KEYWORD,
@@ -340,6 +353,8 @@ const AYU_DARK: Theme = Theme {
     heat_low: rgb(0x91B362),
     heat_mid: rgb(0xE6B450),
     heat_high: rgb(0xFF3333),
+    diff_add: rgb(0x7FD962),
+    diff_mod: rgb(0x73B8FF),
     chip_view: rgb(0xD2A6FF),
     section: rgb(0xFF8F40),
     sql_keyword: rgb(0xFF8F40),
@@ -384,6 +399,8 @@ const AYU_MIRAGE: Theme = Theme {
     heat_low: rgb(0x87D96C),
     heat_mid: rgb(0xFFCC66),
     heat_high: rgb(0xFF6666),
+    diff_add: rgb(0x87D96C),
+    diff_mod: rgb(0x80BFFF),
     chip_view: rgb(0xD4BFFF),
     section: rgb(0xF29E74),
     sql_keyword: rgb(0xFFA759),
@@ -430,6 +447,8 @@ const AYU_LIGHT: Theme = Theme {
     heat_low: rgb(0x5F8700),
     heat_mid: rgb(0xCC8800),
     heat_high: rgb(0xE65050),
+    diff_add: rgb(0x6CBF43),
+    diff_mod: rgb(0x478ACC),
     chip_view: rgb(0xA37ACC),
     section: rgb(0xFA8D3E),
     sql_keyword: rgb(0xFA8D3E),
@@ -475,6 +494,8 @@ const GRUVBOX_DARK: Theme = Theme {
     heat_low: rgb(0x98971A),
     heat_mid: rgb(0xD79921),
     heat_high: rgb(0xFB4934),
+    diff_add: rgb(0x98971A),
+    diff_mod: rgb(0xD79921),
     chip_view: rgb(0xD3869B),
     section: rgb(0xFE8019),
     sql_keyword: rgb(0xD3869B),
@@ -621,10 +642,15 @@ pub fn lint(theme: &Theme) -> Vec<String> {
         ("layer_utilities", theme.layer_utilities),
         ("layer_other", theme.layer_other),
     ];
+    let diff = [("diff_add", theme.diff_add), ("diff_mod", theme.diff_mod)];
     let danger = ("danger (coverage/violation lens tint)", theme.danger);
 
     let mut warnings = Vec::new();
-    for (tint_name, tint) in std::iter::once(danger).chain(heat).chain(layers) {
+    for (tint_name, tint) in std::iter::once(danger)
+        .chain(heat)
+        .chain(layers)
+        .chain(diff)
+    {
         for (class_name, class) in classes {
             if tint == class {
                 warnings.push(format!(
@@ -649,6 +675,7 @@ pub fn lint(theme: &Theme) -> Vec<String> {
     };
     distinct(&heat, "the DegreeHeat lens loses a grade");
     distinct(&layers, "the Layer lens cannot tell them apart");
+    distinct(&diff, "the Diff lens cannot tell added from modified");
     warnings
 }
 

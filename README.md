@@ -35,6 +35,7 @@ Key features:
 - **Navigate the graph, not just the list.** Move a cursor between lineage nodes, re-root on any model, filter by direction and depth, and walk your re-root history.
 - **Built for test-coverage and impact chores.** Coverage/blast-radius/layer lenses (the layer lens also labels each column's layer along the pane border), a stats dashboard, untested-model cycling, and one-key export to Mermaid / Graphviz / Markdown impact reports.
 - **Trace a path, see a path.** Move the lineage cursor and the root↔cursor path lights up — nodes AND the connectors between them — while everything off-path dims. A compact mode (`v`) collapses boxes to one-row nodes for big graphs.
+- **Diff two states of the project.** `--diff <baseline>` compares against another manifest or checkout: added models glow green and modified ones amber right in the lineage, a status chip counts `+added ~modified -removed`, and `D` opens a full change summary (nodes, reasons, edge changes).
 
 ## Quick Start
 
@@ -89,7 +90,20 @@ $ dbtl --select stg_orders --watch
 # Pick a color theme (or set DBTL_THEME)
 $ dbtl --theme ayu-mirage
 $ dbtl --list-themes
+
+# Diff against a baseline: "what does my branch change?"
+$ dbtl --diff /path/to/main-checkout            # another worktree (or its manifest.json)
+$ dbtl --diff target/manifest.prod.json         # a saved production manifest
 ```
+
+The diff keys nodes by `unique_id` (a rename reads as removed + added — which is
+what it is to every downstream `ref()`), and compares the surfaces a dbt change
+actually moves: materialization, direct dependencies, columns, tests, and model
+SQL. Two caveats: comparing raw SQL can't see a change inside a shared macro,
+and a compiled-manifest baseline also contains installed packages' models, which
+a source-parsed current side doesn't — for the cleanest signal, diff manifest
+against manifest.
+
 
 ### Keybindings
 
@@ -103,7 +117,7 @@ Press `?` inside the app for the full list. Highlights:
 | `/` | Fuzzy search (list filter / lineage jump) |
 | `u` `d` `[` `]` `0` | Filter the lineage view (direction / depth / reset) |
 | `b` `f` | Back / forward in re-root history |
-| `t` | Cycle lineage lens (test coverage → blast-radius heat → layer → layer violation) |
+| `t` | Cycle lineage lens (test coverage → blast-radius heat → layer → layer violation → diff) |
 | `v` | Toggle compact lineage (1-row nodes — fits ~2x more graph on screen) |
 | `s` / `S` | SQL preview (syntax-highlighted) / project stats dashboard |
 | `o` | Open the model's SQL in `$EDITOR` |
@@ -112,6 +126,7 @@ Press `?` inside the app for the full list. Highlights:
 | `Space` `'` | Bookmark / cycle bookmarks |
 | `T` `*` | Filter the list to untested / bookmarked models |
 | `P` | Run `dbt parse` and switch to the compiled manifest |
+| `D` | Diff summary vs the `--diff` baseline |
 | `Ctrl-p` | Command palette |
 | `Ctrl-t` | Cycle the color theme |
 | `q` | Quit |

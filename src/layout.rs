@@ -174,6 +174,10 @@ pub enum LensTint {
     LayerOther,
     /// Layer-violation lens: incident to a marts→staging-style backward edge.
     Violation,
+    /// Diff lens: node added vs the `--diff` baseline.
+    DiffAdd,
+    /// Diff lens: node modified vs the `--diff` baseline.
+    DiffMod,
 }
 
 /// Per-cell render attributes, orthogonal to the char and the emphasis flag:

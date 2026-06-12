@@ -74,6 +74,12 @@ struct Cli {
     /// List the available color themes (presets + user theme files) and exit.
     #[arg(long)]
     list_themes: bool,
+    /// Baseline to diff against: a manifest.json file, or a dbt project dir
+    /// (its target/manifest.json if compiled, else parsed from source). Adds
+    /// the Diff lens (added/modified tints), the `D` summary modal, and a
+    /// status diff chip.
+    #[arg(long)]
+    diff: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -105,6 +111,15 @@ fn run(cli: &Cli) -> Result<()> {
             app.select_by_name(name),
             "--select: model '{name}' not found"
         );
+    }
+
+    // Load the --diff baseline (a second Dag) and open on the Diff lens so the
+    // differences are visible immediately. A bad baseline fails as plain text
+    // pre-TTY, like every other load error.
+    if let Some(base) = &cli.diff {
+        let (dag, label) = load_baseline(base)?;
+        app.set_diff_base(dag, label);
+        app.ui_state.set_lens(LineageLens::Diff);
     }
 
     // Resolve the colour themes (presets + user files) and the --theme start
@@ -194,6 +209,35 @@ fn build_app(cli: &Cli) -> Result<App> {
             project.display()
         )
     }
+}
+
+/// Resolve the `--diff` baseline into a loaded `Dag` + a display label: a
+/// manifest.json FILE directly, or a dbt project DIR through the same
+/// auto-detect `build_app` uses (compiled `target/manifest.json` first, else
+/// source parse) — so "diff against that other worktree" just works.
+fn load_baseline(path: &str) -> Result<(dbtl::Dag, String)> {
+    let p = PathBuf::from(path);
+    if p.is_file() {
+        let dag = load_dag(&p).with_context(|| format!("--diff: failed to load {path}"))?;
+        return Ok((dag, path.to_string()));
+    }
+    if p.is_dir() {
+        let manifest = p.join("target").join("manifest.json");
+        if manifest.is_file() {
+            let dag = load_dag(&manifest)
+                .with_context(|| format!("--diff: failed to load {}", manifest.display()))?;
+            return Ok((dag, manifest.display().to_string()));
+        }
+        if p.join("dbt_project.yml").is_file() {
+            let dag = load_dag_from_source(&p)
+                .with_context(|| format!("--diff: failed to parse project {path}"))?;
+            return Ok((dag, path.to_string()));
+        }
+    }
+    anyhow::bail!(
+        "--diff: {path} is neither a manifest.json file nor a dbt project dir \
+         (no target/manifest.json or dbt_project.yml found)"
+    )
 }
 
 /// The user theme directory: `$XDG_CONFIG_HOME/dbtl/themes`, falling back to
@@ -663,6 +707,9 @@ fn event_loop(
             dbtl::Mode::Stats(sv) => {
                 sv.scroll = dbtl::ui::clamp_stats_scroll(area, sv);
             }
+            dbtl::Mode::Diff(dv) => {
+                dv.scroll = dbtl::ui::clamp_diff_scroll(area, dv);
+            }
             _ => {}
         }
 
@@ -724,6 +771,8 @@ fn event_loop(
         // glyph mode's Chrome badges — never hardcoded). Built in App so the
         // string source is single and unit-testable.
         let impact_s = app.impact_status();
+        // The baseline-diff chip (present only with a --diff baseline loaded).
+        let diff_s = app.diff_status_label();
         // Layer bands: the lineage pane's bottom-border column annotations,
         // present exactly while the Layer lens is active (cheap: one pass over
         // the layout's rects, only computed when the lens is on).
@@ -750,6 +799,7 @@ fn event_loop(
                 coverage: coverage_s.as_deref(),
                 bookmarks: bookmarks_s.as_deref(),
                 sort: sort_s.as_deref(),
+                diff: diff_s.as_deref(),
                 filter: app.list_filter_label(),
             };
             ctx.minimap = app.ui_state.minimap_visible();

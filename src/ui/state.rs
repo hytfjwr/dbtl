@@ -19,7 +19,9 @@ use ratatui::crossterm::event::KeyEvent;
 /// reproduces the muscle-memory coverage view (and keeps the status-bar cov%).
 ///
 /// Cycle order (`cycle_lens`): Off → Coverage → DegreeHeat → Layer → LayerViolation
-/// → Off.
+/// → Diff → Off. The Diff lens needs a `--diff` baseline to show anything, so
+/// the `apply_action` CycleLens arm SKIPS it when the App has none — the raw
+/// [`cycle_lens`](UiState::cycle_lens) here stays a pure, App-blind step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LineageLens {
     /// No lens — node boxes show their materialization-class colour.
@@ -34,17 +36,20 @@ pub enum LineageLens {
     Layer,
     /// Layer violations: nodes incident to a backward (e.g. marts→staging) edge.
     LayerViolation,
+    /// Diff vs the `--diff` baseline: added nodes green, modified nodes amber.
+    Diff,
 }
 
 impl LineageLens {
-    /// The next lens in the `t`-cycle (wraps `LayerViolation → Off`).
+    /// The next lens in the `t`-cycle (wraps `Diff → Off`).
     pub fn next(self) -> LineageLens {
         match self {
             LineageLens::Off => LineageLens::Coverage,
             LineageLens::Coverage => LineageLens::DegreeHeat,
             LineageLens::DegreeHeat => LineageLens::Layer,
             LineageLens::Layer => LineageLens::LayerViolation,
-            LineageLens::LayerViolation => LineageLens::Off,
+            LineageLens::LayerViolation => LineageLens::Diff,
+            LineageLens::Diff => LineageLens::Off,
         }
     }
 }
@@ -184,6 +189,12 @@ impl UiState {
     /// mutation; the renderer reads [`lens`](UiState::lens) next frame.
     pub fn cycle_lens(&mut self) {
         self.lens = self.lens.next();
+    }
+
+    /// Set the lens directly (the `--diff` startup seam: a loaded baseline
+    /// opens on the Diff lens so the differences are visible immediately).
+    pub fn set_lens(&mut self, lens: LineageLens) {
+        self.lens = lens;
     }
 
     /// Whether the lineage minimap inset is shown.
@@ -801,6 +812,8 @@ mod tests {
         assert_eq!(s.lens(), LineageLens::Layer);
         s.cycle_lens();
         assert_eq!(s.lens(), LineageLens::LayerViolation);
+        s.cycle_lens();
+        assert_eq!(s.lens(), LineageLens::Diff);
         s.cycle_lens();
         assert_eq!(s.lens(), LineageLens::Off, "wraps back to Off");
     }

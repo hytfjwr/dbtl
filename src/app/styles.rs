@@ -205,6 +205,13 @@ impl App {
                     LensTint::None
                 }
             }
+            // Diff: the node's status vs the --diff baseline. Without a
+            // baseline the lens tints nothing (and the CycleLens arm skips it).
+            LineageLens::Diff => match self.diff().map(|d| d.status(uid)) {
+                Some(crate::DiffStatus::Added) => LensTint::DiffAdd,
+                Some(crate::DiffStatus::Modified) => LensTint::DiffMod,
+                _ => LensTint::None,
+            },
         }
     }
 }

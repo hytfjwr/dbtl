@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::action::{palette_candidates, DetailView, PaletteState, SqlView, StatsView};
+use crate::action::{palette_candidates, DetailView, DiffView, PaletteState, SqlView, StatsView};
 
 use super::geom::centered_rect;
 use super::{header_style, selected_style, theme};
@@ -84,6 +84,7 @@ fn help_display_lines(t: &theme::Theme) -> Vec<Line<'static>> {
         (ModeKind::Detail, "Structure modal"),
         (ModeKind::Sql, "SQL preview"),
         (ModeKind::Stats, "Stats dashboard"),
+        (ModeKind::Diff, "Diff summary"),
         (ModeKind::Palette, "Command palette"),
         (ModeKind::Help, "Help"),
     ];
@@ -732,6 +733,128 @@ pub(crate) fn draw_stats(
         format!(" Stats - {}  (Esc/q to close, j/k to scroll) ", sv.project),
         stats_display_lines(sv, t),
         sv.scroll,
+        glyphs,
+        t,
+    );
+}
+
+// ---- baseline-diff summary modal -------------------------------------------
+
+/// The diff modal's content as display lines: one section per change kind
+/// (added / modified / removed nodes, then edge changes), each header counting
+/// its list. UNCAPPED on purpose — unlike the stats worklists (top-N teasers
+/// over data visible elsewhere), this modal is the only COMPLETE listing
+/// surface (removed nodes exist nowhere else in the app), and it scrolls.
+/// Line marks are plain ASCII (`+` / `~` / `-` / `->`), coloured by the diff
+/// roles so the modal agrees with the Diff lens tints. The SINGLE source of
+/// the modal's line list, so [`clamp_diff_scroll`] stays correct automatically.
+fn diff_display_lines(dv: &DiffView, t: &theme::Theme) -> Vec<Line<'static>> {
+    let mut out: Vec<Line> = Vec::new();
+    out.push(Line::from(format!("baseline: {}", dv.baseline)));
+
+    let total = dv.added.len()
+        + dv.modified.len()
+        + dv.removed.len()
+        + dv.edges_added.len()
+        + dv.edges_removed.len();
+    if total == 0 {
+        out.push(Line::from(""));
+        out.push(Line::from("no changes vs the baseline"));
+        return out;
+    }
+
+    // One section: a counting header + every row, pre-marked and tinted.
+    // Shared so the five sections can't drift in shape.
+    let section = |title: &str, rows: Vec<String>, color: Color, out: &mut Vec<Line>| {
+        out.push(Line::from(""));
+        out.push(Line::styled(
+            format!("{title} ({}):", rows.len()),
+            header_style(t),
+        ));
+        for row in rows {
+            out.push(Line::styled(row, Style::default().fg(color)));
+        }
+    };
+
+    let node_row = |mark: char, name: &str, kind: &str| {
+        if kind.is_empty() {
+            format!("  {mark} {name}")
+        } else {
+            format!("  {mark} {name} ({kind})")
+        }
+    };
+    section(
+        "Added",
+        dv.added.iter().map(|(n, k)| node_row('+', n, k)).collect(),
+        t.diff_add,
+        &mut out,
+    );
+    section(
+        "Modified",
+        dv.modified
+            .iter()
+            .map(|(n, reasons)| format!("  ~ {n}: {reasons}"))
+            .collect(),
+        t.diff_mod,
+        &mut out,
+    );
+    section(
+        "Removed",
+        dv.removed
+            .iter()
+            .map(|(n, k)| node_row('-', n, k))
+            .collect(),
+        t.danger,
+        &mut out,
+    );
+    section(
+        "Edges added",
+        dv.edges_added
+            .iter()
+            .map(|(p, c)| format!("  + {p} -> {c}"))
+            .collect(),
+        t.diff_add,
+        &mut out,
+    );
+    section(
+        "Edges removed",
+        dv.edges_removed
+            .iter()
+            .map(|(p, c)| format!("  - {p} -> {c}"))
+            .collect(),
+        t.danger,
+        &mut out,
+    );
+    out
+}
+
+/// Clamp the diff modal's scroll offset to its content/viewport (size-aware),
+/// mirroring [`clamp_stats_scroll`]. Counts with the DEFAULT theme — the line
+/// count is theme-independent.
+pub fn clamp_diff_scroll(area: Rect, dv: &DiffView) -> usize {
+    clamp_modal_scroll(
+        area,
+        diff_display_lines(dv, &theme::DEFAULT).len(),
+        dv.scroll,
+    )
+}
+
+/// Draw the baseline-diff summary modal. `pub(crate)` for `render::draw`. The
+/// diff rides inside the [`DiffView`] payload (snapshotted at open), so the
+/// render layer never needs a `Dag`.
+pub(crate) fn draw_diff(
+    frame: &mut Frame,
+    area: Rect,
+    dv: &DiffView,
+    glyphs: crate::GlyphMode,
+    t: &theme::Theme,
+) {
+    draw_scrollable_modal(
+        frame,
+        area,
+        " Diff vs baseline  (Esc/q to close, j/k to scroll) ",
+        diff_display_lines(dv, t),
+        dv.scroll,
         glyphs,
         t,
     );

@@ -316,6 +316,7 @@ fn filter_tag_renders_in_list_title_and_status_segment() {
         let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, None);
         ctx.filter_label = app.list_filter_label();
         ctx.segments = StatusSegments {
+            diff: None,
             filter: app.list_filter_label(),
             ..StatusSegments::default()
         };
@@ -1136,6 +1137,7 @@ fn status_bar_keeps_protected_core_and_appends_segments() {
             coverage: Some(cov.as_str()),
             bookmarks: None,
             sort: None,
+            diff: None,
             filter: None,
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
@@ -1173,6 +1175,7 @@ fn status_bar_drops_segments_but_never_the_core_on_a_narrow_line() {
             coverage: None,
             bookmarks: None,
             sort: None,
+            diff: None,
             filter: None,
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
@@ -1217,6 +1220,7 @@ fn status_segments_render_at_80_cols() {
             coverage: None,
             bookmarks: None,
             sort: None,
+            diff: None,
             filter: None,
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
@@ -1264,6 +1268,7 @@ fn status_impact_segment_renders_and_survives_narrowest_droppable_line() {
             coverage: None,
             bookmarks: None,
             sort: None,
+            diff: None,
             filter: None,
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
@@ -1291,6 +1296,7 @@ fn status_impact_segment_renders_and_survives_narrowest_droppable_line() {
             coverage: None,
             bookmarks: None,
             sort: None,
+            diff: None,
             filter: None,
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
@@ -1853,5 +1859,105 @@ fn toast_skips_tiny_terminals_and_never_covers_the_status_bar() {
     assert!(
         row_text(&buffer, 3).contains("[j/k]"),
         "the status bar's protected core is untouched"
+    );
+}
+
+// ============================================================================
+// --diff baseline: the diff summary modal + the status diff chip
+// ============================================================================
+
+/// Render a `Mode::Diff(dv)` modal over the base panes (same shape as
+/// [`render_stats_modal`]: payload in the Mode, no `Dag` in `RenderCtx`).
+fn render_diff_modal(dv: dbtl::DiffView, width: u16, height: u16) -> Buffer {
+    use dbtl::Mode;
+    let list = fixture_list();
+    let state = UiState::new(list.len());
+    let mode = Mode::Diff(dv);
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    {
+        let mut ctx = RenderCtx::new(&list, &state, None);
+        ctx.mode = &mode;
+        terminal
+            .draw(|frame| draw(frame, &ctx))
+            .expect("diff modal render must not panic");
+    }
+    terminal.backend().buffer().clone()
+}
+
+#[test]
+fn diff_modal_lists_sections_with_counts_marks_and_more_cap() {
+    let dv = dbtl::DiffView {
+        baseline: "main/target/manifest.json".into(),
+        added: (0..12)
+            .map(|i| (format!("new_model_{i:02}"), "model".to_string()))
+            .collect(),
+        removed: vec![("old_model".into(), "model".into())],
+        modified: vec![("fct_orders".into(), "materialized: view -> table".into())],
+        edges_added: vec![("stg_a".into(), "fct_orders".into())],
+        edges_removed: vec![],
+        scroll: 0,
+    };
+    let text = buffer_to_string(&render_diff_modal(dv, 100, 60));
+    assert!(text.contains("Diff vs baseline"), "modal title");
+    assert!(
+        text.contains("baseline: main/target/manifest.json"),
+        "names the baseline source"
+    );
+    assert!(
+        text.contains("Added (12):"),
+        "added header counts the FULL list"
+    );
+    assert!(text.contains("+ new_model_00 (model)"), "added row mark");
+    assert!(
+        text.contains("+ new_model_11 (model)"),
+        "the listing is UNCAPPED - this modal is the only complete diff surface"
+    );
+    assert!(
+        text.contains("~ fct_orders: materialized: view -> table"),
+        "modified row carries the reasons"
+    );
+    assert!(text.contains("- old_model (model)"), "removed row mark");
+    assert!(
+        text.contains("+ stg_a -> fct_orders"),
+        "edge rows use the ASCII arrow"
+    );
+    assert!(
+        text.contains("Edges removed (0):"),
+        "empty section still counts"
+    );
+}
+
+#[test]
+fn diff_modal_with_no_changes_says_so() {
+    let dv = dbtl::DiffView {
+        baseline: "base".into(),
+        ..Default::default()
+    };
+    let text = buffer_to_string(&render_diff_modal(dv, 100, 30));
+    assert!(
+        text.contains("no changes vs the baseline"),
+        "a clean diff is stated, not an empty wall of zeros"
+    );
+}
+
+#[test]
+fn status_diff_chip_renders_with_counts() {
+    let list = fixture_list();
+    let state = UiState::new(list.len());
+    let backend = TestBackend::new(120, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    {
+        let mut ctx = RenderCtx::new(&list, &state, None);
+        ctx.segments = dbtl::ui::StatusSegments {
+            diff: Some("diff +2 ~1 -3"),
+            ..Default::default()
+        };
+        terminal.draw(|frame| draw(frame, &ctx)).expect("render");
+    }
+    let text = buffer_to_string(&terminal.backend().buffer().clone());
+    assert!(
+        text.contains("[diff +2 ~1 -3]"),
+        "diff chip rendered: {text}"
     );
 }
