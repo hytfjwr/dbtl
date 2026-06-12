@@ -315,6 +315,51 @@ fn yank_mermaid_emits_a_graph_lr_diagram() {
 }
 
 #[test]
+fn mermaid_ids_disambiguate_collisions_deterministically() {
+    use super::export::mermaid_ids;
+    // All three uids sanitize to `model_p_x_y`; before the per-export map the
+    // diagram silently merged them into one node. Suffixes follow sorted-uid
+    // order (`.` < `_`), so the same input always yields the same ids.
+    let ids = mermaid_ids(["model.p_x.y", "model.p.x_y", "model.p_x_y"]);
+    assert_eq!(ids["model.p.x_y"], "model_p_x_y");
+    assert_eq!(ids["model.p_x.y"], "model_p_x_y_2");
+    assert_eq!(ids["model.p_x_y"], "model_p_x_y_3");
+
+    // A suffixed id must not collide with a uid that NATURALLY sanitizes to
+    // that text: `a.b` takes `a_b`, so `a_b` bumps to `a_b_2`, which is
+    // already claimed by `a_b_2` itself by then — everyone stays distinct.
+    let ids = mermaid_ids(["a_b_2", "a.b", "a_b"]);
+    let unique: BTreeSet<&String> = ids.values().collect();
+    assert_eq!(unique.len(), ids.len(), "no two uids share an id: {ids:?}");
+
+    // Reserved Mermaid words are pre-claimed — a uid sanitizing to `end`
+    // would otherwise close an enclosing block. Empty input degrades to `_`.
+    let ids = mermaid_ids(["end", ""]);
+    assert_eq!(ids["end"], "end_2");
+    assert_eq!(ids[""], "_");
+}
+
+#[test]
+fn mermaid_label_neutralizes_hostile_display_names() {
+    use super::export::mermaid_label;
+    // A `"` would close the quoted label and let the rest inject raw Mermaid;
+    // it becomes the `#quot;` entity (still renders as a quote).
+    assert_eq!(
+        mermaid_label(r#"evil"]; pwned["x"#),
+        "evil#quot;]; pwned[#quot;x"
+    );
+    // Line breaks would start a new Mermaid statement (or worse, let an
+    // indented ``` close the surrounding Markdown fence); all control chars
+    // collapse to a space.
+    assert_eq!(mermaid_label("a\nb\r\nc\td"), "a b  c d");
+    // Benign names pass through untouched.
+    assert_eq!(
+        mermaid_label("stg_payment__shoppers"),
+        "stg_payment__shoppers"
+    );
+}
+
+#[test]
 fn yank_dot_emits_a_digraph() {
     let mut a = app();
     a.select_by_unique_id("model.jaffle_finance.stg_payment__shoppers");
