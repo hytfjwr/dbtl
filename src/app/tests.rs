@@ -1115,9 +1115,15 @@ fn selected_file_path_stays_under_the_project_root() {
     let mut a = App::new(dag, PathBuf::from("/x/proj/target/manifest.json"));
 
     a.select_by_unique_id("model.p.ok");
+    // Built with the same `join` as the implementation so the expected string
+    // carries the platform separator (Windows joins with `\`).
+    let expected = Path::new("/x/proj")
+        .join("models/ok.sql")
+        .to_string_lossy()
+        .into_owned();
     assert_eq!(
         a.selected_file_path().as_deref(),
-        Some("/x/proj/models/ok.sql"),
+        Some(expected.as_str()),
         "a normal relative path resolves under the root, unchanged"
     );
     a.select_by_unique_id("model.p.dotted");
