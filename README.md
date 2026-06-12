@@ -24,6 +24,10 @@ A terminal UI for dbt model lineage — no compile, no browser.
 ╰──────────╯
 ```
 
+#### Preview
+<img width="3835" height="2072" alt="Screenshot 2026-06-12 at 11 23 00" src="https://github.com/user-attachments/assets/b5cded19-6019-4e1a-a5e7-18764f48bb81" />
+
+
 Key features:
 
 - **No `dbt compile` required.** Builds lineage straight from `dbt_project.yml` + model `.sql` (`ref()`/`source()`) + `schema.yml`. Uses `target/manifest.json` automatically when present.
