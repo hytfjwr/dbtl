@@ -317,7 +317,9 @@ fn fs_stamp(root: &std::path::Path, recursive: bool) -> Option<(std::time::Syste
             let path = entry.path();
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if path.is_dir() {
+            // file_type() does not follow symlinks, so a symlinked directory
+            // (e.g. a link loop back into the tree) is never walked into.
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
                 if !name.starts_with('.') && name != "target" {
                     walk(&path, best, count);
                 }

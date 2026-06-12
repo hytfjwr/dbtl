@@ -31,3 +31,7 @@ serde_yaml = "0.9"
 # (data cells that are unambiguously WIDE render fine everywhere; only
 # ambiguous-width chrome is banned). A normal dependency so `src/` can use it.
 unicode-width = "0.2"
+
+[dev-dependencies]
+# Temp dbt projects for the symlink-loop regression test (tests/source_fixture.rs).
+tempfile = "3"
