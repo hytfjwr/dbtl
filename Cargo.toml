@@ -1,6 +1,6 @@
 [package]
 name = "dbtl"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 description = "A terminal UI for exploring dbt model lineage as ASCII art"
 license = "MIT"
