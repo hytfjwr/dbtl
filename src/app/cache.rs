@@ -50,11 +50,11 @@ struct LayoutKey {
     generation: u64,
 }
 
-/// Identity of the impact-count pair: `(root, dag generation)`.
+/// Identity of the impact-count triple: `(root, dag generation)`.
 type ImpactKey = (String, u64);
 
-/// `(downstream, upstream)` transitive closure sizes.
-type ImpactCounts = (usize, usize);
+/// `(downstream sans exposures, upstream, downstream exposures)` closure sizes.
+type ImpactCounts = (usize, usize, usize);
 
 /// The per-`App` cache slots. One entry each — the loop only ever needs the
 /// CURRENT frame's values, so an LRU would buy nothing.
@@ -140,17 +140,17 @@ impl App {
         Some(lay)
     }
 
-    /// Memoized [`impact_counts`](App::impact_counts) core: the two transitive
-    /// closures are recomputed only when the selection or the `Dag` changes,
-    /// not on every status-bar refresh.
-    pub(super) fn impact_counts_cached(&self, uid: &str) -> (usize, usize) {
+    /// Memoized [`impact_breakdown_for`](App::impact_breakdown_for) core: the
+    /// transitive closures are recomputed only when the selection or the `Dag`
+    /// changes, not on every status-bar refresh.
+    pub(super) fn impact_breakdown_cached(&self, uid: &str) -> (usize, usize, usize) {
         let key = (uid.to_string(), self.generation);
         if let Some((k, counts)) = self.caches.impact.borrow().as_ref() {
             if *k == key {
                 return *counts;
             }
         }
-        let counts = self.impact_counts_for(uid);
+        let counts = self.impact_breakdown_for(uid);
         *self.caches.impact.borrow_mut() = Some((key, counts));
         counts
     }

@@ -124,6 +124,7 @@ pub struct AppStats {
     pub sources: usize,
     pub seeds: usize,
     pub snapshots: usize,
+    pub exposures: usize,
 }
 
 /// The whole application state. Owns the domain (`dag`, lists) and the UI

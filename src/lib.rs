@@ -24,7 +24,8 @@ pub use action::{
 };
 pub use app::{apply_action, layer_violation_edges, App, AppStats, ListFilter, Outcome};
 pub use dag::{
-    coverage_gap, load_dag, ColumnInfo, Dag, Edge, NodeDetail, NodeInfo, Subgraph, TestInfo,
+    coverage_gap, is_exposure, load_dag, ColumnInfo, Dag, Edge, ExposureInfo, NodeDetail, NodeInfo,
+    Subgraph, TestInfo,
 };
 pub use diff::{compute_diff, DagDiff, DiffStatus};
 pub use effect::Effect;
@@ -33,7 +34,8 @@ pub use layout::{
     Density, GlyphMode, Layout, LensTint, MaterializationClass, NodeRect,
 };
 pub use manifest::{
-    load_manifest, RawConfig, RawDependsOn, RawManifest, RawNode, RawSource, RawTestMetadata,
+    load_manifest, RawConfig, RawDependsOn, RawExposure, RawExposureOwner, RawManifest, RawNode,
+    RawSource, RawTestMetadata,
 };
 pub use model_list::{
     build_filtered_model_list, build_model_list, match_indices, name_matches_query, DisplayRow,

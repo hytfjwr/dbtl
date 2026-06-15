@@ -9724,6 +9724,13 @@
   ],
   "unit_test.jaffle_finance.int_delivery_lanes__combined.test_updated_at_greatest_and_enterprise_join": [
    "model.jaffle_finance.int_delivery_lanes__combined"
+  ],
+  "exposure.jaffle_finance.delivery_kpi_dashboard": [
+   "model.jaffle_finance.fct_delivery_monthly_snapshot",
+   "model.jaffle_finance.rpt_delivery_base_metrics"
+  ],
+  "exposure.jaffle_finance.subscription_churn_notebook": [
+   "model.jaffle_finance.fct_subscription_process"
   ]
  },
  "child_map": {
@@ -9893,6 +9900,7 @@
    "unit_test.jaffle_finance.dim_delivery_lanes.test_unknown_member_is_appended"
   ],
   "model.jaffle_finance.fct_delivery_monthly_snapshot": [
+   "exposure.jaffle_finance.delivery_kpi_dashboard",
    "model.jaffle_finance.rpt_delivery_base_metrics",
    "test.jaffle_finance.dbt_utils_accepted_range_fct_delivery_monthly_snapshot_business_day_count__True__31.b88ca79c69",
    "test.jaffle_finance.dbt_utils_accepted_range_fct_delivery_monthly_snapshot_handling_fee__True__0.eb7cc55deb",
@@ -9919,6 +9927,7 @@
    "test.jaffle_finance.relationships_fct_delivery_shopper_monthly_visits_fiscal_year_key__fiscal_year_key__ref_dim_fiscal_years_.24138d9ce9"
   ],
   "model.jaffle_finance.fct_subscription_process": [
+   "exposure.jaffle_finance.subscription_churn_notebook",
    "model.jaffle_finance.fct_delivery_monthly_snapshot",
    "test.jaffle_finance.not_null_fct_subscription_process_fiscal_year_key.7ed6f1daf1",
    "test.jaffle_finance.not_null_fct_subscription_process_supplier_department_key.2208a52d86",
@@ -10103,6 +10112,7 @@
    "test.jaffle_finance.unique_stg_payment__scores_warehouse_id.f7cd1be4ba"
   ],
   "model.jaffle_finance.rpt_delivery_base_metrics": [
+   "exposure.jaffle_finance.delivery_kpi_dashboard",
    "test.jaffle_finance.dbt_utils_accepted_range_rpt_delivery_base_metrics_handling_fee__True__0.a05d5187b8",
    "test.jaffle_finance.dbt_utils_unique_combination_of_columns_rpt_delivery_base_metrics_delivery_id__month_date.c815f23c0a",
    "test.jaffle_finance.not_null_rpt_delivery_base_metrics_area_id.2016bb38b9",
@@ -10644,5 +10654,48 @@
   "unit_test.jaffle_finance.int_supplier_departments__combined.test_name_normalization": [],
   "unit_test.jaffle_finance.int_delivery_lanes__combined.test_bridge_tables_filter_deleted": [],
   "unit_test.jaffle_finance.int_delivery_lanes__combined.test_updated_at_greatest_and_enterprise_join": []
+ },
+ "exposures": {
+  "exposure.jaffle_finance.delivery_kpi_dashboard": {
+   "name": "delivery_kpi_dashboard",
+   "resource_type": "exposure",
+   "path": "marts/exposures.yml",
+   "original_file_path": "models/marts/exposures.yml",
+   "unique_id": "exposure.jaffle_finance.delivery_kpi_dashboard",
+   "type": "dashboard",
+   "owner": {
+    "email": "finance-data@example.com",
+    "name": "Finance Analytics"
+   },
+   "description": "Delivery KPIs for the finance leadership review.",
+   "url": "https://bi.example.com/dashboards/delivery-kpi",
+   "depends_on": {
+    "macros": [],
+    "nodes": [
+     "model.jaffle_finance.rpt_delivery_base_metrics",
+     "model.jaffle_finance.fct_delivery_monthly_snapshot"
+    ]
+   }
+  },
+  "exposure.jaffle_finance.subscription_churn_notebook": {
+   "name": "subscription_churn_notebook",
+   "resource_type": "exposure",
+   "path": "marts/exposures.yml",
+   "original_file_path": "models/marts/exposures.yml",
+   "unique_id": "exposure.jaffle_finance.subscription_churn_notebook",
+   "type": "notebook",
+   "owner": {
+    "email": null,
+    "name": "Analytics"
+   },
+   "description": "",
+   "url": null,
+   "depends_on": {
+    "macros": [],
+    "nodes": [
+     "model.jaffle_finance.fct_subscription_process"
+    ]
+   }
+  }
  }
 }

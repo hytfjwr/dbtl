@@ -29,7 +29,8 @@ fn merged_map_has_expected_counts() {
     assert_eq!(dag.count_by_resource_type("source"), 38, "source count");
     assert_eq!(dag.count_by_resource_type("seed"), 7, "seed count");
     assert_eq!(dag.count_by_resource_type("snapshot"), 1, "snapshot count");
-    assert_eq!(dag.len(), 91, "total merged entries");
+    assert_eq!(dag.count_by_resource_type("exposure"), 2, "exposure count");
+    assert_eq!(dag.len(), 93, "total merged entries");
 }
 
 #[test]
@@ -147,6 +148,10 @@ fn closure_deep_multihop_fct_subscription_process() {
     let expected_down = set(&[
         "model.jaffle_finance.fct_delivery_monthly_snapshot",
         "model.jaffle_finance.rpt_delivery_base_metrics",
+        // The two fixture exposures: the notebook hangs directly off fct, the
+        // dashboard rides behind both downstream models.
+        "exposure.jaffle_finance.subscription_churn_notebook",
+        "exposure.jaffle_finance.delivery_kpi_dashboard",
     ]);
     assert_eq!(dag.upstream(start).len(), 27, "fct upstream count");
     assert_eq!(dag.upstream(start), expected_up, "fct upstream set");

@@ -37,7 +37,10 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use serde::Deserialize;
 
-use crate::{Dag, RawConfig, RawManifest, RawNode, RawSource, RawTestMetadata};
+use crate::{
+    Dag, RawConfig, RawDependsOn, RawExposure, RawExposureOwner, RawManifest, RawNode, RawSource,
+    RawTestMetadata,
+};
 
 /// Parse a dbt project directory and build its [`Dag`] from source.
 pub fn load_dag_from_source<P: AsRef<Path>>(project_dir: P) -> Result<Dag> {
@@ -81,6 +84,7 @@ pub fn manifest_from_source<P: AsRef<Path>>(project_dir: P) -> Result<RawManifes
     let pat = Patterns::new();
     let mut nodes: HashMap<String, RawNode> = HashMap::new();
     let mut sources: HashMap<String, RawSource> = HashMap::new();
+    let mut exposures: HashMap<String, RawExposure> = HashMap::new();
     // name -> unique_id for models/seeds/snapshots, so `ref('x')` can resolve.
     let mut name_index: HashMap<String, String> = HashMap::new();
     // (uid, Jinja-comment-stripped SQL) deferred to the ref/source pass below.
@@ -238,16 +242,26 @@ pub fn manifest_from_source<P: AsRef<Path>>(project_dir: P) -> Result<RawManifes
     // vendored projects (`dbt_packages/`), build artifacts (`target/`), and
     // virtualenvs — synthesizing phantom sources/tests under this project's
     // namespace and silently diverging from the manifest.
-    let mut yml_files = Vec::new();
+    // `(file, resource root)` pairs: exposures record their `path` relative to
+    // the declaring resource root (the way dbt does for models), so the root
+    // must survive the collection. Dedup by FILE alone (sorting puts equal
+    // files adjacent): overlapping resource paths (e.g. a seed dir nested in a
+    // model dir) collect the same file under two roots, and scanning it twice
+    // would duplicate its synthesized tests — the pre-exposure contract.
+    let mut yml_files: Vec<(PathBuf, PathBuf)> = Vec::new();
     for sub in model_paths.iter().chain(&seed_paths).chain(&snapshot_paths) {
         let sub_root = dir.join(sub);
-        collect_files(&sub_root, "yml", &mut yml_files);
-        collect_files(&sub_root, "yaml", &mut yml_files);
+        let mut files = Vec::new();
+        collect_files(&sub_root, "yml", &mut files);
+        collect_files(&sub_root, "yaml", &mut files);
+        for file in files {
+            yml_files.push((file, sub_root.clone()));
+        }
     }
     yml_files.sort();
-    yml_files.dedup();
+    yml_files.dedup_by(|a, b| a.0 == b.0);
 
-    for file in &yml_files {
+    for (file, yml_root) in &yml_files {
         // A non-schema yml deserializes to all-empty defaults; only a YAML shape
         // error (e.g. a top-level sequence) is skipped.
         let schema: SchemaFile = match serde_norway::from_str(&read(file)) {
@@ -298,6 +312,48 @@ pub fn manifest_from_source<P: AsRef<Path>>(project_dir: P) -> Result<RawManifes
             }
         }
 
+        // Exposures: pure leaf declarations. Their `depends_on` entries are
+        // Jinja strings (`ref('x')` / `source('a','b')`), so the SAME extractors
+        // the .sql scan uses resolve them — an unresolved ref drops out, exactly
+        // like a model's. dbt records `path` resource-root-relative (like a
+        // model's) and `original_file_path` project-root-relative.
+        for exp in &schema.exposures {
+            // `config: enabled: false` parks the exposure like dbt's `disabled`.
+            if exp.config.enabled == Some(false) {
+                continue;
+            }
+            let uid = format!("exposure.{proj}.{}", exp.name);
+            let mut deps: Vec<String> = Vec::new();
+            for dep in &exp.depends_on {
+                for ref_name in pat.refs(dep) {
+                    if let Some(parent) = name_index.get(&ref_name) {
+                        deps.push(parent.clone());
+                    }
+                }
+                for (src, tbl) in pat.sources(dep) {
+                    deps.push(format!("source.{proj}.{src}.{tbl}"));
+                }
+            }
+            deps.sort();
+            deps.dedup();
+            exposures.insert(
+                uid,
+                RawExposure {
+                    name: exp.name.clone(),
+                    exposure_type: exp.exposure_type.clone(),
+                    owner: RawExposureOwner {
+                        name: exp.owner.name.clone(),
+                        email: exp.owner.email.clone(),
+                    },
+                    url: exp.url.clone(),
+                    description: exp.description.clone(),
+                    path: Some(rel_path(yml_root, file)),
+                    original_file_path: Some(yml_path.clone()),
+                    depends_on: RawDependsOn { nodes: deps },
+                },
+            );
+        }
+
         apply_meta(&mut nodes, &mut test_seq, &proj, "model", &schema.models);
         apply_meta(&mut nodes, &mut test_seq, &proj, "seed", &schema.seeds);
         apply_meta(
@@ -324,6 +380,7 @@ pub fn manifest_from_source<P: AsRef<Path>>(project_dir: P) -> Result<RawManifes
     Ok(RawManifest {
         nodes,
         sources,
+        exposures,
         parent_map,
         child_map,
     })
@@ -737,6 +794,8 @@ struct SchemaFile {
     seeds: Vec<SchemaModel>,
     #[serde(default)]
     snapshots: Vec<SchemaModel>,
+    #[serde(default)]
+    exposures: Vec<SchemaExposure>,
 }
 
 /// Shared shape for `models:` / `seeds:` / `snapshots:` entries (only what we read).
@@ -772,6 +831,33 @@ struct SchemaColumn {
     description: Option<String>,
     #[serde(default, alias = "data_tests")]
     tests: Vec<serde_norway::Value>,
+}
+
+/// An `exposures:` entry (only what we surface). `depends_on` holds Jinja
+/// strings (`ref('x')` / `source('a','b')`) per the dbt spec.
+#[derive(Debug, Deserialize, Default)]
+struct SchemaExposure {
+    name: String,
+    #[serde(rename = "type", default)]
+    exposure_type: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    owner: SchemaExposureOwner,
+    #[serde(default)]
+    config: SchemaConfig,
+    #[serde(default)]
+    depends_on: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct SchemaExposureOwner {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]

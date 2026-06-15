@@ -408,6 +408,7 @@ mod tests {
         let manifest = RawManifest {
             nodes,
             sources: HashMap::new(),
+            exposures: HashMap::new(),
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
         };
@@ -592,6 +593,7 @@ mod tests {
         let manifest = RawManifest {
             nodes,
             sources: HashMap::new(),
+            exposures: HashMap::new(),
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
         };
@@ -656,6 +658,7 @@ mod tests {
         let manifest = RawManifest {
             nodes,
             sources: HashMap::new(),
+            exposures: HashMap::new(),
             parent_map,
             child_map,
         };

@@ -1,16 +1,16 @@
 //! The pruned dependency DAG and its value types: merge a parsed manifest's
-//! `nodes` (excluding `test` / `operation`) and `sources` into a single
-//! `unique_id -> NodeInfo` map, build pruned adjacency over the kept set, and
-//! compute upstream / downstream transitive closures (cycle-safe). Side maps
-//! (`details` / `tests` / `sql`) are captured pre-prune as data only — they
-//! never touch the topology.
+//! `nodes` (excluding `test` / `operation`), `sources`, and `exposures` into a
+//! single `unique_id -> NodeInfo` map, build pruned adjacency over the kept
+//! set, and compute upstream / downstream transitive closures (cycle-safe).
+//! Side maps (`details` / `tests` / `sql` / `exposures`) are captured
+//! pre-prune as data only — they never touch the topology.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::Result;
 
-use crate::manifest::{load_manifest, RawManifest, RawNode, RawSource};
+use crate::manifest::{load_manifest, RawExposure, RawManifest, RawNode, RawSource};
 
 /// A merged, prefix-resolved entry in the unified node map.
 ///
@@ -46,6 +46,14 @@ pub fn coverage_gap(n: &NodeInfo) -> bool {
     matches!(n.resource_type.as_str(), "model" | "snapshot" | "seed") && n.test_count == 0
 }
 
+/// Whether a node is a declared downstream consumer (an exposure). Pure over
+/// [`NodeInfo::resource_type`] — the single source of truth for the exposure
+/// predicate (c.f. [`coverage_gap`]), so the impact split and the report can
+/// never disagree on what counts as one.
+pub fn is_exposure(n: &NodeInfo) -> bool {
+    n.resource_type == "exposure"
+}
+
 /// One column of a model/source, as recorded in the manifest. Kept in dbt
 /// *definition* order (the manifest preserves it once `serde_json`'s
 /// `preserve_order` feature is on).
@@ -64,6 +72,19 @@ pub struct TestInfo {
     pub name: String,
     pub kind: String,
     pub column_name: Option<String>,
+}
+
+/// The exposure-specific payload (kind / owner / url), hung off the [`Dag`] as
+/// a side map like `details`/`tests` — so `NodeInfo` (the hot subgraph
+/// clone/equality path) and `NodeDetail` (frozen literals) stay untouched.
+/// Consumed by the impact report's "Affected exposures" section.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExposureInfo {
+    /// `dashboard` / `notebook` / `analysis` / `ml` / `application`, when recorded.
+    pub exposure_type: Option<String>,
+    pub owner_name: Option<String>,
+    pub owner_email: Option<String>,
+    pub url: Option<String>,
 }
 
 /// The detail payload for a node, used by the structure modal and the status
@@ -123,7 +144,9 @@ impl Subgraph {
 
 /// The internal DAG model built from a parsed manifest.
 ///
-/// - `nodes`: unified `unique_id -> NodeInfo` map (model/source/seed/snapshot only).
+/// - `nodes`: unified `unique_id -> NodeInfo` map (every resource type except
+///   the excluded `test` / `operation` — models, sources, seeds, snapshots,
+///   and exposures).
 /// - `parents` / `children`: adjacency lists pruned to the kept node set, so
 ///   neither keys nor neighbours ever reference an excluded node.
 /// - `details`: per-node detail (materialized/schema/columns/…) for the
@@ -145,6 +168,10 @@ pub struct Dag {
     /// manifest↔source consistency comparison (which is field-by-field over
     /// details, never the whole `Dag`) is untouched. Sources/seeds have none.
     sql: HashMap<String, String>,
+    /// Per-exposure payload (kind / owner / url), keyed by `unique_id` — the
+    /// same side-map pattern as `details`/`tests`/`sql`. Only exposure nodes
+    /// have an entry.
+    exposures: HashMap<String, ExposureInfo>,
 }
 
 /// Resource types that are excluded from the unified map and the DAG.
@@ -176,6 +203,7 @@ impl Dag {
         let mut details: HashMap<String, NodeDetail> = HashMap::new();
         let mut tests: HashMap<String, Vec<TestInfo>> = HashMap::new();
         let mut sql: HashMap<String, String> = HashMap::new();
+        let mut exposures: HashMap<String, ExposureInfo> = HashMap::new();
 
         for (unique_id, node) in &manifest.nodes {
             if node.resource_type == "test" {
@@ -221,6 +249,30 @@ impl Dag {
             details.insert(unique_id.clone(), detail_from_source(source));
         }
 
+        for (unique_id, exposure) in &manifest.exposures {
+            nodes.insert(
+                unique_id.clone(),
+                NodeInfo {
+                    unique_id: unique_id.clone(),
+                    name: exposure.name.clone(),
+                    resource_type: "exposure".to_string(),
+                    path: exposure.path.clone(),
+                    materialized: None,
+                    ..Default::default() // direct_up/down filled after pruning below
+                },
+            );
+            details.insert(unique_id.clone(), detail_from_exposure(exposure));
+            exposures.insert(
+                unique_id.clone(),
+                ExposureInfo {
+                    exposure_type: exposure.exposure_type.clone(),
+                    owner_name: exposure.owner.name.clone(),
+                    owner_email: exposure.owner.email.clone(),
+                    url: exposure.url.clone(),
+                },
+            );
+        }
+
         // Deterministic test ordering per node (HashMap iteration is unordered).
         for v in tests.values_mut() {
             v.sort_by(|a, b| {
@@ -232,8 +284,33 @@ impl Dag {
         }
 
         let kept: HashSet<&String> = nodes.keys().collect();
-        let parents = prune_adjacency(&manifest.parent_map, &kept);
-        let children = prune_adjacency(&manifest.child_map, &kept);
+        let mut parents = prune_adjacency(&manifest.parent_map, &kept);
+        let mut children = prune_adjacency(&manifest.child_map, &kept);
+
+        // Exposure edges come from BOTH the manifest's parent/child maps (a real
+        // dbt manifest records them there, pruned above) AND each exposure's own
+        // `depends_on` (the only adjacency a synthesized source-mode manifest
+        // fills), deduplicated — so both modes converge on the same graph.
+        // Iterated in sorted uid order so the appended-edge order (and thus the
+        // adjacency lists) is deterministic. Exposures only ever gain PARENTS:
+        // they are terminator leaves by construction.
+        let mut exposure_ids: Vec<&String> = manifest.exposures.keys().collect();
+        exposure_ids.sort();
+        for uid in exposure_ids {
+            for dep in &manifest.exposures[uid].depends_on.nodes {
+                if !kept.contains(dep) {
+                    continue; // a dangling dep is dropped, like an unresolved ref
+                }
+                let p = parents.entry(uid.clone()).or_default();
+                if !p.contains(dep) {
+                    p.push(dep.clone());
+                }
+                let c = children.entry(dep.clone()).or_default();
+                if !c.contains(uid) {
+                    c.push(uid.clone());
+                }
+            }
+        }
 
         // Stamp each node's direct (1-hop) parent/child counts from the pruned
         // adjacency (list-pane dependency badges + orphan detection) and its
@@ -251,6 +328,7 @@ impl Dag {
             details,
             tests,
             sql,
+            exposures,
         }
     }
 
@@ -305,6 +383,12 @@ impl Dag {
     /// frozen literals.
     pub fn raw_code(&self, unique_id: &str) -> Option<&str> {
         self.sql.get(unique_id).map(String::as_str)
+    }
+
+    /// The exposure payload (kind / owner / url) for an exposure node, or
+    /// `None` for every other node. Side map, like [`detail`](Dag::detail).
+    pub fn exposure(&self, unique_id: &str) -> Option<&ExposureInfo> {
+        self.exposures.get(unique_id)
     }
 
     /// Transitive closure of ancestors (upstream) of `start`, excluding `start`.
@@ -458,6 +542,16 @@ fn detail_from_node(node: &RawNode) -> NodeDetail {
         description: clean_desc(&node.description),
         columns: columns_from(&node.columns),
         original_file_path: node.original_file_path.clone(),
+    }
+}
+
+/// Detail for an exposure (no materialization / warehouse coordinates; the
+/// kind / owner / url live in the [`ExposureInfo`] side map instead).
+fn detail_from_exposure(exposure: &RawExposure) -> NodeDetail {
+    NodeDetail {
+        description: clean_desc(&exposure.description),
+        original_file_path: exposure.original_file_path.clone(),
+        ..Default::default()
     }
 }
 
@@ -630,6 +724,7 @@ mod tests {
         RawManifest {
             nodes,
             sources,
+            exposures: HashMap::new(),
             parent_map,
             child_map,
         }
@@ -729,6 +824,7 @@ mod tests {
         let manifest = RawManifest {
             nodes,
             sources: HashMap::new(),
+            exposures: HashMap::new(),
             parent_map: HashMap::new(),
             child_map,
         };
@@ -784,6 +880,107 @@ mod tests {
         let mut sorted = node_ids.clone();
         sorted.sort_unstable();
         assert_eq!(node_ids, sorted, "nodes sorted by unique_id");
+    }
+
+    #[test]
+    fn exposures_join_as_terminator_leaves_with_side_map_payload() {
+        // An exposure declared via depends_on ONLY (the source-mode shape: no
+        // parent_map/child_map entries) still joins the kept set as a leaf:
+        // parents from depends_on, downstream closure reaches it, and it never
+        // gains children. The kind/owner/url land in the side map; a dangling
+        // dep is dropped like an unresolved ref.
+        use crate::manifest::{RawExposure, RawExposureOwner};
+        let mut manifest = sample_manifest();
+        manifest.exposures.insert(
+            "exposure.p.dash".to_string(),
+            RawExposure {
+                name: "dash".into(),
+                exposure_type: Some("dashboard".into()),
+                owner: RawExposureOwner {
+                    name: Some("Finance".into()),
+                    email: Some("fin@example.com".into()),
+                },
+                url: Some("https://bi.example.com/1".into()),
+                description: Some("Weekly overview.\n".into()),
+                depends_on: crate::RawDependsOn {
+                    nodes: vec![
+                        "model.p.b".to_string(),
+                        "model.p.missing".to_string(), // dangling: dropped
+                    ],
+                },
+                ..Default::default()
+            },
+        );
+        let dag = Dag::build(&manifest);
+        let exp = "exposure.p.dash";
+        assert_eq!(dag.count_by_resource_type("exposure"), 1);
+        let info = dag.get(exp).expect("exposure is a kept node");
+        assert_eq!(info.resource_type, "exposure");
+        assert_eq!(
+            (info.direct_up, info.direct_down),
+            (1, 0),
+            "leaf with 1 parent"
+        );
+        assert_eq!(
+            dag.upstream(exp),
+            HashSet::from([
+                "model.p.b".to_string(),
+                "model.p.a".to_string(),
+                "source.p.s.c".to_string(),
+            ]),
+            "the dangling dep never became an edge"
+        );
+        assert!(dag.downstream(exp).is_empty(), "exposures have no children");
+        assert!(
+            dag.downstream("model.p.a").contains(exp),
+            "the exposure is reachable downstream of its ancestors"
+        );
+        let payload = dag.exposure(exp).expect("side-map payload");
+        assert_eq!(payload.exposure_type.as_deref(), Some("dashboard"));
+        assert_eq!(payload.owner_name.as_deref(), Some("Finance"));
+        assert_eq!(payload.owner_email.as_deref(), Some("fin@example.com"));
+        assert_eq!(payload.url.as_deref(), Some("https://bi.example.com/1"));
+        assert!(
+            dag.exposure("model.p.b").is_none(),
+            "models have no payload"
+        );
+        let detail = dag.detail(exp).expect("exposure detail");
+        assert_eq!(detail.description.as_deref(), Some("Weekly overview."));
+        assert_eq!(detail.materialized, None);
+    }
+
+    #[test]
+    fn exposure_edges_from_parent_map_and_depends_on_are_deduplicated() {
+        // A real manifest records exposure edges in parent_map/child_map AND in
+        // depends_on; the merge must not double-count them (direct_up == 1).
+        use crate::manifest::RawExposure;
+        let mut manifest = sample_manifest();
+        manifest.exposures.insert(
+            "exposure.p.dash".to_string(),
+            RawExposure {
+                name: "dash".into(),
+                depends_on: crate::RawDependsOn {
+                    nodes: vec!["model.p.b".to_string()],
+                },
+                ..Default::default()
+            },
+        );
+        manifest
+            .parent_map
+            .insert("exposure.p.dash".to_string(), vec!["model.p.b".to_string()]);
+        manifest
+            .child_map
+            .entry("model.p.b".to_string())
+            .or_default()
+            .push("exposure.p.dash".to_string());
+        let dag = Dag::build(&manifest);
+        let info = dag.get("exposure.p.dash").unwrap();
+        assert_eq!(
+            info.direct_up, 1,
+            "parent_map + depends_on dedup to one edge"
+        );
+        let b = dag.get("model.p.b").unwrap();
+        assert_eq!(b.direct_down, 1, "child side deduplicated too");
     }
 
     #[test]

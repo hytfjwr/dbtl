@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use crate::action::{DiffView, StatsView};
-use crate::Dag;
+use crate::{Dag, NodeInfo};
 
 use super::{App, AppStats};
 
@@ -132,32 +132,90 @@ impl App {
     /// Order-independent (just `.len()` over a `HashSet`), hence deterministic.
     /// `None` when nothing is selected.
     pub fn impact_counts(&self) -> Option<(usize, usize)> {
-        self.selected_unique_id()
-            .map(|uid| self.impact_counts_cached(&uid))
+        self.selected_unique_id().map(|uid| {
+            let (down, up, _) = self.impact_breakdown_cached(&uid);
+            (down, up)
+        })
     }
 
     /// The blast radius of an arbitrary node as `(downstream_count,
     /// upstream_count)`. Shared by [`impact_counts`](App::impact_counts) (root) and
     /// the structure modal (which targets the focus uid, NOT necessarily the root —
-    /// the lineage cursor can sit on a non-root source/seed/snapshot).
+    /// the lineage cursor can sit on a non-root source/seed/snapshot). Exposures
+    /// are EXCLUDED from `downstream_count` (the two-number surface drops their
+    /// split); use [`impact_breakdown_for`](App::impact_breakdown_for) when the
+    /// caller also needs the exposure count.
     pub fn impact_counts_for(&self, uid: &str) -> (usize, usize) {
-        (self.dag.downstream(uid).len(), self.dag.upstream(uid).len())
+        let (down, up, _) = self.impact_breakdown_for(uid);
+        (down, up)
+    }
+
+    /// The full blast-radius breakdown of a node: `(downstream count WITHOUT
+    /// exposures, upstream count, downstream exposure count)`. Exposures are
+    /// split out so "downstream" keeps meaning *buildable* resources (the
+    /// pre-exposure numbers every frozen assertion pins) while the "who cares"
+    /// half gets its own count. One closure walk computes all three; the
+    /// upstream side needs no split — exposures have no children, so they can
+    /// never be anyone's ancestor.
+    pub fn impact_breakdown_for(&self, uid: &str) -> (usize, usize, usize) {
+        let down = self.dag.downstream(uid);
+        let exposures = down
+            .iter()
+            .filter(|id| self.dag.get(id).is_some_and(crate::is_exposure))
+            .count();
+        (
+            down.len() - exposures,
+            self.dag.upstream(uid).len(),
+            exposures,
+        )
+    }
+
+    /// The downstream exposures of a node, as `(info, payload)` pairs sorted by
+    /// name (then uid — names are unique per project, but stay deterministic
+    /// anyway). The impact report's "Affected exposures" section and the status
+    /// chip's `exp:N` both derive from this set.
+    pub fn downstream_exposures(
+        &self,
+        uid: &str,
+    ) -> Vec<(&NodeInfo, Option<&crate::ExposureInfo>)> {
+        let mut out: Vec<&NodeInfo> = self
+            .dag
+            .downstream(uid)
+            .into_iter()
+            .filter_map(|id| self.dag.get(&id))
+            .filter(|n| crate::is_exposure(n))
+            .collect();
+        out.sort_by(|a, b| {
+            a.name
+                .cmp(&b.name)
+                .then_with(|| a.unique_id.cmp(&b.unique_id))
+        });
+        out.into_iter()
+            .map(|n| (n, self.dag.exposure(&n.unique_id)))
+            .collect()
     }
 
     /// The "impact ↓D ↑U" status segment for the selected node, using the active
     /// glyph mode's [`Chrome`](crate::ui::Chrome) down/up badges (Unicode `↓`/`↑`,
     /// ASCII `v`/`^`) so the arrows are never hardcoded (the ascii-guard contract).
-    /// `None` when nothing is selected. Mirrors
+    /// Gains an ` exp:N` suffix when N downstream exposures exist (the "who
+    /// cares" half of the impact question); 0 stays silent so the pre-exposure
+    /// chip is byte-identical. `None` when nothing is selected. Mirrors
     /// [`lineage_view_label`](App::lineage_view_label)'s role: the one place this
     /// string is built, reused by the loop and the ascii-guard render test.
     pub fn impact_status(&self) -> Option<String> {
-        let (down, up) = self.impact_counts()?;
+        let uid = self.selected_unique_id()?;
+        let (down, up, exposures) = self.impact_breakdown_cached(&uid);
         let chrome = crate::ui::chrome(self.glyph_mode);
-        Some(format!(
+        let mut out = format!(
             "impact {d}{down} {u}{up}",
             d = chrome.badge_down,
             u = chrome.badge_up
-        ))
+        );
+        if exposures > 0 {
+            out.push_str(&format!(" exp:{exposures}"));
+        }
+        Some(out)
     }
 
     /// `(tested, total)` over the project's testable resources (the
@@ -308,5 +366,6 @@ pub(super) fn compute_stats(dag: &Dag) -> AppStats {
         sources: dag.count_by_resource_type("source"),
         seeds: dag.count_by_resource_type("seed"),
         snapshots: dag.count_by_resource_type("snapshot"),
+        exposures: dag.count_by_resource_type("exposure"),
     }
 }
