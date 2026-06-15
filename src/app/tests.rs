@@ -652,6 +652,36 @@ fn exposures_are_cursor_reachable_but_never_re_rootable() {
 }
 
 #[test]
+fn yank_selector_mirrors_the_lineage_view_as_graph_operators() {
+    let mut a = app();
+    a.select_by_unique_id("model.jaffle_finance.stg_payment__shoppers");
+    let yank = |a: &mut App| match &apply_action(a, Action::YankSelector).effects[..] {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    // Default view (both directions, unlimited) = the full closure.
+    assert_eq!(yank(&mut a), "dbt build --select +stg_payment__shoppers+");
+    // Downstream toggled off → upstream-only prefix form.
+    apply_action(&mut a, Action::ToggleDownstream);
+    assert_eq!(yank(&mut a), "dbt build --select +stg_payment__shoppers");
+    // Upstream off too → just the node itself.
+    apply_action(&mut a, Action::ToggleUpstream);
+    assert_eq!(yank(&mut a), "dbt build --select stg_payment__shoppers");
+    // Downstream back on → suffix form.
+    apply_action(&mut a, Action::ToggleDownstream);
+    assert_eq!(yank(&mut a), "dbt build --select stg_payment__shoppers+");
+    // A depth limit bounds the active side(s): `[` enters at 3 hops.
+    apply_action(&mut a, Action::DepthDecrease);
+    assert_eq!(yank(&mut a), "dbt build --select stg_payment__shoppers+3");
+    apply_action(&mut a, Action::ToggleUpstream);
+    assert_eq!(yank(&mut a), "dbt build --select 3+stg_payment__shoppers+3");
+    // Reset restores the default form; the toast records the copy intent.
+    apply_action(&mut a, Action::ResetView);
+    assert_eq!(yank(&mut a), "dbt build --select +stg_payment__shoppers+");
+    assert_eq!(a.take_notice().as_deref(), Some("Copied dbt selector"));
+}
+
+#[test]
 fn export_lineage_emits_a_write_file_effect_with_the_diagram() {
     let mut a = app();
     a.select_by_unique_id("model.jaffle_finance.stg_payment__shoppers");

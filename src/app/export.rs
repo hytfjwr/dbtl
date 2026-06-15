@@ -115,6 +115,30 @@ impl App {
             .map(str::to_string)
     }
 
+    /// A runnable `dbt build --select …` command for the current lineage view:
+    /// the rooted node expressed through dbt's graph operators, mirroring the
+    /// pane exactly — the upstream toggle becomes a `+` prefix, the downstream
+    /// toggle a `+` suffix, and a hop-depth limit becomes the `N+`/`+N` bounded
+    /// forms, so what the user yanks is what the pane shows. The root is always
+    /// a model (the list holds only models, and `jump_to` re-roots only to list
+    /// members), so the bare name is always a valid node selector — no
+    /// `source:` method needed. `None` when nothing is selected.
+    pub fn dbt_selector_command(&self) -> Option<String> {
+        let base = self.selected_name()?;
+        let view = &self.lineage_view;
+        let prefix = match (view.upstream, view.depth) {
+            (false, _) => String::new(),
+            (true, None) => "+".to_string(),
+            (true, Some(n)) => format!("{n}+"),
+        };
+        let suffix = match (view.downstream, view.depth) {
+            (false, _) => String::new(),
+            (true, None) => "+".to_string(),
+            (true, Some(n)) => format!("+{n}"),
+        };
+        Some(format!("dbt build --select {prefix}{base}{suffix}"))
+    }
+
     /// A Markdown blast-radius report for the selected node: direct +
     /// transitive up/down counts, the sorted member name lists, and — when any
     /// exist — the downstream exposures (the "who cares" endpoints), with kind

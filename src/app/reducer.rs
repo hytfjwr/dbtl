@@ -359,6 +359,10 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             let text = app.impact_report();
             yank_with_notice(app, text, "Copied impact report")
         }
+        Action::YankSelector => {
+            let text = app.dbt_selector_command();
+            yank_with_notice(app, text, "Copied dbt selector")
+        }
         Action::ExportLineage => match (app.selected_name(), app.lineage_ascii()) {
             (Some(name), Some(contents)) => {
                 let path = format!("{}_lineage.txt", sanitize_file_stem(&name));
