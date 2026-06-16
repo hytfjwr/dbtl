@@ -45,6 +45,9 @@ use ratatui::DefaultTerminal;
     about = "Browse dbt model lineage from a manifest or project source"
 )]
 struct Cli {
+    /// Print version information and exit (lowercase alias of `-V`/`--version`).
+    #[arg(short = 'v', action = clap::ArgAction::Version)]
+    version_short: Option<bool>,
     /// Path to a compiled dbt manifest.json (forces manifest mode).
     #[arg(long, conflicts_with = "source")]
     manifest: Option<String>,
