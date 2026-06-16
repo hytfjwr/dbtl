@@ -23,11 +23,6 @@ use crate::{coverage_gap, Dag, NodeInfo, LAYER_ORDER};
 /// `README.md` sits at the root and links into here.
 const NODES_DIR: &str = "models";
 
-/// Hop depth for a per-node Mermaid neighbourhood diagram. Bounded so a node in
-/// a huge graph gets a focused "near lineage" picture rather than the whole
-/// project; the index `README.md` carries the full graph.
-const PER_NODE_DEPTH: usize = 2;
-
 /// Generate the full documentation set for `dag` as `(relative path, contents)`
 /// pairs: one `models/<sanitized-uid>.md` per node and a single `README.md`
 /// index. `project_name` titles the index; `source_label` records where the
@@ -220,17 +215,19 @@ fn node_markdown(dag: &Dag, uid: &str, files: &BTreeMap<String, String>) -> Stri
     ));
     push_dep_list(&mut s, dag, &children, files);
 
-    // Per-node Mermaid neighbourhood diagram (reuses the shared core, so the id
-    // assignment and label escaping match the interactive yank). The diagram is
-    // the near lineage (±PER_NODE_DEPTH hops) — distinct from the dependency
-    // COUNTS above, which are transitive (whole closure). Note that, so a reader
-    // never reads a "2 hop" picture as the full blast radius.
+    // Per-node Mermaid lineage (reuses the shared core, so the id assignment and
+    // label escaping match the interactive `m` yank). Built as the FULL upstream
+    // + downstream closure (unbounded depth) — the SAME node set the `m` yank
+    // produces at its default view (upstream+downstream, no depth limit), so the
+    // two surfaces render the same diagram for a node and never diverge. (A
+    // central node in a large project therefore gets a large figure; the README's
+    // whole-graph diagram is the one that degrades to a per-layer split.)
     s.push_str("\n## Lineage\n\n");
-    s.push_str(&format!(
-        "Near lineage (up to {PER_NODE_DEPTH} hops up/down). \
-         The dependency counts above are transitive (the full closure).\n\n"
-    ));
-    let sg = dag.subgraph_view(uid, true, true, Some(PER_NODE_DEPTH));
+    s.push_str(
+        "Full lineage (all upstream + downstream dependencies). \
+         Matches the interactive `m` yank for this node.\n\n",
+    );
+    let sg = dag.subgraph_view(uid, true, true, None);
     if sg.nodes.is_empty() {
         s.push_str("No lineage.\n");
     } else {
@@ -1184,5 +1181,79 @@ mod tests {
             Some("jaffle_finance"),
             "project name read from unique_id"
         );
+    }
+
+    /// Extract the single fenced `\`\`\`mermaid … \`\`\`` block from a page,
+    /// including both fences and the trailing newline — the exact byte shape
+    /// [`subgraph_mermaid_linked`] / [`crate::app::App::lineage_mermaid`] emit.
+    fn fenced_mermaid_block(page: &str) -> String {
+        let open = "```mermaid\n";
+        let start = page.find(open).expect("page has a mermaid fence");
+        let after = start + open.len();
+        let rel_end = page[after..].find("\n```\n").expect("closing fence");
+        let end = after + rel_end + "\n```\n".len();
+        page[start..end].to_string()
+    }
+
+    /// Drop the docs-only `click <id> "<href>"` navigation lines from a fenced
+    /// Mermaid block, leaving the bare diagram body (what the `m` yank emits).
+    fn strip_click_lines(block: &str) -> String {
+        block
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("click "))
+            .map(|l| format!("{l}\n"))
+            .collect()
+    }
+
+    #[test]
+    fn per_node_lineage_figure_equals_the_m_key_yank() {
+        // For EVERY selectable node, the per-node docs Lineage figure must render
+        // the SAME diagram the interactive `m` yank produces for that node at the
+        // default view (upstream + downstream, unbounded depth) — both go through
+        // the one shared `subgraph_mermaid_linked` core over the SAME full-closure
+        // subgraph. The docs variant only adds `click` navigation lines inside the
+        // fence; stripping those must leave a body byte-identical to the yank.
+        // This locks the two surfaces together so they can never drift.
+        //
+        // Selection is BY UNIQUE_ID, not by name: the fixture has distinct nodes
+        // that share a name (e.g. a model AND a source both named `pos_txn`), so a
+        // name lookup would be ambiguous (and `nodes()` iteration order is not
+        // deterministic). Walk uids in sorted order for a deterministic run.
+        use crate::App;
+        use std::path::PathBuf;
+
+        let dag = fixture_dag();
+        let files = node_files(&dag);
+        let out = generate_docs(&dag, "p", "src");
+
+        let mut uids: Vec<&str> = dag.nodes().keys().map(String::as_str).collect();
+        uids.sort_unstable();
+        let mut compared = 0usize;
+        for uid in uids {
+            let mut app = App::new(dag.clone(), PathBuf::from(FIXTURE));
+            // Only models are selectable lineage roots — the left pane lists
+            // `resource_type == "model"` only, and re-rooting only ever lands on
+            // a model — so the `m` yank only exists for models. Non-models (their
+            // docs page still renders) have no yank to compare against; skip them.
+            if !app.select_by_unique_id(uid) {
+                continue;
+            }
+            let yank = app
+                .lineage_mermaid()
+                .expect("a selectable node yields an m yank");
+            let page = file(&out, &files[uid]);
+            let body = strip_click_lines(&fenced_mermaid_block(page));
+            assert_eq!(
+                body, yank,
+                "docs Lineage figure for {uid} must equal the `m` yank (minus click lines)"
+            );
+            compared += 1;
+        }
+        // Coverage: every model is a selectable root, and the invariant held for
+        // each. (Guards against `select_by_unique_id` silently breaking and the
+        // loop comparing nothing.)
+        let model_count = dag.count_by_resource_type("model");
+        assert!(model_count > 0, "fixture has models to compare");
+        assert_eq!(compared, model_count, "every model's figure was compared");
     }
 }
