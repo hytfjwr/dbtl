@@ -96,7 +96,7 @@ $ dbtl --list-themes
 $ dbtl --diff /path/to/main-checkout            # another worktree (or its manifest.json)
 $ dbtl --diff target/manifest.prod.json         # a saved production manifest
 
-# Generate static Markdown docs (no TUI) — like tbls, for dbt
+# Generate static Markdown docs (no TUI)
 $ dbtl docs --out ./dbt-docs                    # auto-detect the data source, write into ./dbt-docs
 $ dbtl docs --manifest target/manifest.json --out docs/lineage
 $ dbtl docs --source /path/to/project --out ./dbt-docs --quiet   # no compile needed; CI-quiet
@@ -106,7 +106,7 @@ $ dbtl docs --source /path/to/project --out ./dbt-docs --quiet   # no compile ne
 ### Markdown docs (`dbtl docs`)
 
 `dbtl docs --out <DIR>` is a non-interactive subcommand (it never starts the TUI,
-so it runs fine in CI with no TTY). It writes a [tbls](https://github.com/k1LoW/tbls)-style
+so it runs fine in CI with no TTY). It writes a Markdown
 documentation tree you can commit straight to a repo and read on GitHub/GitLab:
 
 - **One page per node** (model / source / seed / snapshot / exposure): description,
