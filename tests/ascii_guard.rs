@@ -366,4 +366,19 @@ fn diff_lens_chip_and_modal_are_all_ascii() {
     );
     assert_all_ascii(&render(&app, 80, 24), "diff modal 80x24");
     assert_all_ascii(&render(&app, 120, 40), "diff modal 120x40");
+
+    // A DIFFERING baseline (the sample manifest is another project, so every
+    // current node reads as added) makes the diff non-empty — now the PR impact
+    // pack (CI command, affected marts/exposures, risk flags) actually renders.
+    // Scan those new lines for ambiguous-width glyphs too.
+    const SAMPLE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sample_manifest.json"
+    );
+    let mut app = ascii_app();
+    let other = load_dag(SAMPLE).expect("sample manifest loads");
+    app.set_diff_base(other, "sample".to_string());
+    apply_action(&mut app, Action::DiffOpen);
+    assert_all_ascii(&render(&app, 80, 24), "PR impact pack 80x24");
+    assert_all_ascii(&render(&app, 120, 60), "PR impact pack 120x60");
 }

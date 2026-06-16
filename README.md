@@ -35,7 +35,7 @@ Key features:
 - **Navigate the graph, not just the list.** Move a cursor between lineage nodes, re-root on any model, filter by direction and depth, and walk your re-root history.
 - **Built for test-coverage and impact chores.** Coverage/blast-radius/layer lenses (the layer lens also labels each column's layer along the pane border), a stats dashboard, untested-model cycling, and one-key export to Mermaid / Graphviz / Markdown impact reports.
 - **Trace a path, see a path.** Move the lineage cursor and the root↔cursor path lights up — nodes AND the connectors between them — while everything off-path dims. A compact mode (`v`) collapses boxes to one-row nodes for big graphs.
-- **Diff two states of the project.** `--diff <baseline>` compares against another manifest or checkout: added models glow green and modified ones amber right in the lineage, a status chip counts `+added ~modified -removed`, and `D` opens a full change summary (nodes, reasons, edge changes).
+- **Diff two states of the project, then ship the review.** `--diff <baseline>` compares against another manifest or checkout: added models glow green and modified ones amber right in the lineage, a status chip counts `+added ~modified -removed`, and `D` opens a reviewer-shaped **PR impact report** — the changed nodes (with reasons), the aggregate downstream blast radius and affected marts, the affected exposures, a ready-to-run `dbt build --select …` command, and risk flags (untested changes, changed hubs, newly-introduced layer violations). Press `e` to export it as Markdown for the PR description, `y` to copy the build command.
 - **Exposures answer "who cares".** dbt exposures (dashboards, notebooks, …) render as terminator nodes on the right edge of the lineage — in both manifest and source mode — the impact chip gains an `exp:N` count, and the `i` impact report lists each affected exposure with its kind and owner.
 
 ## Quick Start
@@ -153,7 +153,7 @@ Press `?` inside the app for the full list. Highlights:
 | `Space` `'` | Bookmark / cycle bookmarks |
 | `T` `*` | Filter the list to untested / bookmarked models |
 | `P` | Run `dbt parse` and switch to the compiled manifest |
-| `D` | Diff summary vs the `--diff` baseline |
+| `D` | PR impact report vs the `--diff` baseline (then `e` exports it as Markdown, `y` copies the suggested `dbt build` command) |
 | `Ctrl-p` | Command palette |
 | `Ctrl-t` | Cycle the color theme |
 | `q` | Quit |

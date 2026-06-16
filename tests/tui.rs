@@ -1896,6 +1896,7 @@ fn diff_modal_lists_sections_with_counts_marks_and_more_cap() {
         modified: vec![("fct_orders".into(), "materialized: view -> table".into())],
         edges_added: vec![("stg_a".into(), "fct_orders".into())],
         edges_removed: vec![],
+        pr: dbtl::PrImpact::default(),
         scroll: 0,
     };
     let text = buffer_to_string(&render_diff_modal(dv, 100, 60));
@@ -1938,6 +1939,39 @@ fn diff_modal_with_no_changes_says_so() {
     assert!(
         text.contains("no changes vs the baseline"),
         "a clean diff is stated, not an empty wall of zeros"
+    );
+}
+
+#[test]
+fn diff_modal_renders_the_pr_impact_pack_sections() {
+    // With changes present, the modal appends the reviewer-shaped PR impact pack
+    // below the diff sections: blast radius, exposures, CI command, risk flags.
+    let dv = dbtl::DiffView {
+        baseline: "main".into(),
+        modified: vec![("stg_a".into(), "SQL changed".into())],
+        pr: dbtl::PrImpact {
+            affected_models: 3,
+            affected_marts: vec!["fct_x".into(), "fct_y".into()],
+            affected_exposures: vec!["exec_dash (dashboard, owner: Finance)".into()],
+            ci_command: Some("dbt build --select stg_a+".into()),
+            untested_changes: vec!["stg_a".into()],
+            changed_hubs: vec![("stg_a".into(), 7)],
+            new_layer_violations: vec![("fct_x".into(), "stg_z".into())],
+        },
+        ..Default::default()
+    };
+    let text = buffer_to_string(&render_diff_modal(dv, 100, 60));
+    assert!(text.contains("PR impact pack"), "the pack header: {text}");
+    assert!(text.contains("affected models: 3"), "{text}");
+    assert!(text.contains("affected marts: fct_x, fct_y"), "{text}");
+    assert!(text.contains("CI: dbt build --select stg_a+"), "{text}");
+    assert!(text.contains("Affected exposures (1):"), "{text}");
+    assert!(text.contains("Risk flags"), "{text}");
+    assert!(text.contains("untested change: stg_a"), "{text}");
+    assert!(text.contains("hub change: stg_a (7 downstream)"), "{text}");
+    assert!(
+        text.contains("new layer violation: fct_x -> stg_z"),
+        "{text}"
     );
 }
 

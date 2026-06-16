@@ -20,8 +20,8 @@ pub mod source;
 pub mod ui;
 
 pub use action::{
-    dispatch, help_lines, Action, DiffView, Direction, HelpLine, Mode, ModeKind, SearchTarget,
-    SqlView, StatsView,
+    dispatch, help_lines, Action, DiffView, Direction, HelpLine, Mode, ModeKind, PrImpact,
+    SearchTarget, SqlView, StatsView,
 };
 pub use app::{apply_action, layer_violation_edges, App, AppStats, ListFilter, Outcome};
 pub use dag::{
