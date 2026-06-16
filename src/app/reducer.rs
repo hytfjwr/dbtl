@@ -469,6 +469,45 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             }
             Outcome::cont()
         }
+        // Export the PR impact report from the open Diff modal: render the
+        // snapshotted `DiffView` to Markdown (so the file matches the screen) and
+        // write it to `<project>_pr_impact.md`. The borrow of `app.mode` is
+        // released before the mutating notice/effect.
+        Action::ExportPrImpact => {
+            let payload = if let Mode::Diff(dv) = &app.mode {
+                let project = app.dag.project_name().unwrap_or("dbt").to_string();
+                Some((project, app.pr_impact_markdown(dv)))
+            } else {
+                None
+            };
+            match payload {
+                Some((project, contents)) => {
+                    let path = format!("{}_pr_impact.md", sanitize_file_stem(&project));
+                    // Optimistic intent; `run_effect` overwrites it on failure.
+                    app.set_notice(format!("Exported {path}"));
+                    Outcome::effect(Effect::WriteFile { path, contents })
+                }
+                None => Outcome::cont(),
+            }
+        }
+        // Copy the suggested `dbt build --select …` command from the open Diff
+        // modal. A blank command (nothing buildable changed) notices instead of
+        // silently clobbering the clipboard. The `&app.mode` borrow is released
+        // (the command is cloned) before the mutating notice/yank.
+        Action::YankPrSelector => {
+            let cmd = match &app.mode {
+                Mode::Diff(dv) => Some(dv.pr.ci_command.clone()),
+                _ => None,
+            };
+            match cmd {
+                Some(Some(c)) => yank_with_notice(app, Some(c), "Copied dbt build command"),
+                Some(None) => {
+                    app.set_notice("No changed models to build");
+                    Outcome::cont()
+                }
+                None => Outcome::cont(),
+            }
+        }
         // Lineage lens cycle: a pure view-pref mutation. Routed DIRECTLY here (not
         // through reduce_selection, which is only the legacy list-movement arms)
         // per the two-level-reducer contract.

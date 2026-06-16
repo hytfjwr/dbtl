@@ -3238,3 +3238,290 @@ fn reload_recomputes_the_diff_against_the_kept_baseline() {
     let after = a.diff().expect("diff survives reload").counts();
     assert_eq!(before, after, "reload re-diffs against the same baseline");
 }
+
+// ---- PR Impact Pack (issue #36): the reviewer-shaped report over --diff ----
+
+/// Open the `D` modal on `diff_app` and return its snapshotted `PrImpact`.
+fn pr_impact_of(a: &mut App) -> crate::PrImpact {
+    apply_action(a, Action::DiffOpen);
+    let Mode::Diff(dv) = &a.mode else {
+        panic!("DiffOpen with a baseline opens the modal");
+    };
+    dv.pr.clone()
+}
+
+#[test]
+fn pr_impact_packs_ci_command_and_flags_untested_for_the_diff_fixture() {
+    // diff_app: base a->b(+gone), current a->b(modified)->c(added). The only
+    // downstream of the changed set {b,c} is c itself — which is changed, so the
+    // aggregate blast radius is empty. Both changed models are untested.
+    let mut a = diff_app();
+    let pr = pr_impact_of(&mut a);
+    assert_eq!(
+        pr.affected_models, 0,
+        "c is changed, so it isn't 'affected'"
+    );
+    assert!(pr.affected_marts.is_empty());
+    assert!(pr.affected_exposures.is_empty());
+    assert_eq!(
+        pr.ci_command.as_deref(),
+        Some("dbt build --select b+ c+"),
+        "added + modified buildable nodes, each with a downstream selector"
+    );
+    assert_eq!(
+        pr.untested_changes,
+        vec!["b".to_string(), "c".to_string()],
+        "both changed models carry no tests"
+    );
+    assert!(pr.changed_hubs.is_empty(), "neither has wide fan-out");
+    assert!(pr.new_layer_violations.is_empty());
+}
+
+/// A model node for a hand-built PR-impact dag, in a given layer dir and
+/// SQL-stamped so a `raw_code` change reads as "modified".
+fn pr_model(name: &str, layer: &str, sql: &str) -> crate::RawNode {
+    crate::RawNode {
+        name: name.into(),
+        resource_type: "model".into(),
+        path: Some(format!("{layer}/{name}.sql")),
+        raw_code: Some(sql.to_string()),
+        config: crate::RawConfig {
+            materialized: Some("view".into()),
+        },
+        ..Default::default()
+    }
+}
+
+/// Assemble a `Dag` from `(uid, node)` models, `(parent, child)` edges, and
+/// `(uid, exposure)` consumers — the building block for the PR-impact scenarios.
+fn pr_dag(
+    nodes: Vec<(&str, crate::RawNode)>,
+    edges: &[(&str, &str)],
+    exposures: Vec<(&str, crate::RawExposure)>,
+) -> Dag {
+    use std::collections::HashMap;
+    let mut node_map = HashMap::new();
+    for (uid, n) in nodes {
+        node_map.insert(uid.to_string(), n);
+    }
+    let mut parent_map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut child_map: HashMap<String, Vec<String>> = HashMap::new();
+    for (p, c) in edges {
+        parent_map
+            .entry(c.to_string())
+            .or_default()
+            .push(p.to_string());
+        child_map
+            .entry(p.to_string())
+            .or_default()
+            .push(c.to_string());
+    }
+    let mut exposure_map = HashMap::new();
+    for (uid, e) in exposures {
+        exposure_map.insert(uid.to_string(), e);
+    }
+    Dag::build(&crate::RawManifest {
+        nodes: node_map,
+        sources: HashMap::new(),
+        exposures: exposure_map,
+        parent_map,
+        child_map,
+    })
+}
+
+#[test]
+fn pr_impact_aggregates_blast_radius_marts_and_exposures() {
+    // base: stg_a -> {fct_x, fct_y}. current: stg_a SQL-modified (untested),
+    // the two marts unchanged, plus a dashboard consuming fct_x.
+    let base = pr_dag(
+        vec![
+            ("model.p.stg_a", pr_model("stg_a", "staging", "select 1")),
+            ("model.p.fct_x", pr_model("fct_x", "marts", "select 2")),
+            ("model.p.fct_y", pr_model("fct_y", "marts", "select 3")),
+        ],
+        &[
+            ("model.p.stg_a", "model.p.fct_x"),
+            ("model.p.stg_a", "model.p.fct_y"),
+        ],
+        vec![],
+    );
+    let dash = crate::RawExposure {
+        name: "exec_dash".into(),
+        exposure_type: Some("dashboard".into()),
+        owner: crate::RawExposureOwner {
+            name: Some("Finance".into()),
+            email: Some("fin@example.com".into()),
+        },
+        depends_on: crate::RawDependsOn {
+            nodes: vec!["model.p.fct_x".into()],
+        },
+        ..Default::default()
+    };
+    let current = pr_dag(
+        vec![
+            ("model.p.stg_a", pr_model("stg_a", "staging", "select 999")),
+            ("model.p.fct_x", pr_model("fct_x", "marts", "select 2")),
+            ("model.p.fct_y", pr_model("fct_y", "marts", "select 3")),
+        ],
+        &[
+            ("model.p.stg_a", "model.p.fct_x"),
+            ("model.p.stg_a", "model.p.fct_y"),
+        ],
+        vec![("exposure.p.exec_dash", dash)],
+    );
+    let mut a = App::new(current, PathBuf::from("/p/target/manifest.json"));
+    a.set_diff_base(base, "base".into());
+    let pr = pr_impact_of(&mut a);
+
+    assert_eq!(pr.affected_models, 2, "both marts are downstream of stg_a");
+    assert_eq!(
+        pr.affected_marts,
+        vec!["fct_x".to_string(), "fct_y".to_string()]
+    );
+    assert_eq!(
+        pr.affected_exposures,
+        vec!["exec_dash (dashboard, owner: Finance <fin@example.com>)".to_string()],
+        "the downstream exposure is the 'who cares' line"
+    );
+    assert_eq!(pr.ci_command.as_deref(), Some("dbt build --select stg_a+"));
+    assert_eq!(pr.untested_changes, vec!["stg_a".to_string()]);
+    assert!(pr.changed_hubs.is_empty(), "2 downstream < hub threshold");
+    assert!(pr.new_layer_violations.is_empty());
+}
+
+#[test]
+fn pr_impact_flags_changed_hubs_at_the_threshold() {
+    use super::analysis::PR_HUB_MIN_DOWNSTREAM as MIN;
+    // A hub fanning out to exactly MIN marts; modified by an SQL change.
+    let children: Vec<String> = (0..MIN).map(|i| format!("model.p.c{i}")).collect();
+    let edges: Vec<(&str, &str)> = children
+        .iter()
+        .map(|c| ("model.p.hub", c.as_str()))
+        .collect();
+    let mut nodes = vec![("model.p.hub", pr_model("hub", "staging", "select 1"))];
+    for (i, uid) in children.iter().enumerate() {
+        nodes.push((
+            uid.as_str(),
+            pr_model(&format!("c{i}"), "marts", "select 0"),
+        ));
+    }
+    let base = pr_dag(nodes.clone(), &edges, vec![]);
+    // current: same graph, hub's SQL changed.
+    let mut cur_nodes = nodes.clone();
+    cur_nodes[0] = ("model.p.hub", pr_model("hub", "staging", "select 2"));
+    let current = pr_dag(cur_nodes, &edges, vec![]);
+
+    let mut a = App::new(current, PathBuf::from("/p/target/manifest.json"));
+    a.set_diff_base(base, "base".into());
+    let pr = pr_impact_of(&mut a);
+    assert_eq!(
+        pr.changed_hubs,
+        vec![("hub".to_string(), MIN)],
+        "a changed node at the downstream threshold is a hub risk"
+    );
+    assert_eq!(pr.affected_models, MIN, "all MIN children are downstream");
+}
+
+#[test]
+fn pr_impact_reports_only_newly_introduced_layer_violations() {
+    // base: stg_a -> fct_x (clean). current adds `bad` (staging) fed BY fct_x —
+    // a marts->staging backward edge that did not exist in the baseline.
+    let base = pr_dag(
+        vec![
+            ("model.p.stg_a", pr_model("stg_a", "staging", "select 1")),
+            ("model.p.fct_x", pr_model("fct_x", "marts", "select 2")),
+        ],
+        &[("model.p.stg_a", "model.p.fct_x")],
+        vec![],
+    );
+    let current = pr_dag(
+        vec![
+            ("model.p.stg_a", pr_model("stg_a", "staging", "select 1")),
+            ("model.p.fct_x", pr_model("fct_x", "marts", "select 2")),
+            ("model.p.bad", pr_model("bad", "staging", "select 3")),
+        ],
+        &[
+            ("model.p.stg_a", "model.p.fct_x"),
+            ("model.p.fct_x", "model.p.bad"),
+        ],
+        vec![],
+    );
+    let mut a = App::new(current, PathBuf::from("/p/target/manifest.json"));
+    a.set_diff_base(base, "base".into());
+    let pr = pr_impact_of(&mut a);
+    assert_eq!(
+        pr.new_layer_violations,
+        vec![("fct_x".to_string(), "bad".to_string())],
+        "the new backward edge is flagged, baseline-only ones are not"
+    );
+}
+
+#[test]
+fn pr_impact_markdown_is_pasteable_and_deterministic() {
+    let a = diff_app();
+    let dv = a.compute_diff_view().expect("baseline loaded");
+    let md = a.pr_impact_markdown(&dv);
+    assert!(md.starts_with("# PR Impact Report: p"), "{md}");
+    assert!(md.contains("- baseline: `base/manifest.json`"), "{md}");
+    assert!(
+        md.contains("- changed: +1 added, ~1 modified, -1 removed"),
+        "{md}"
+    );
+    assert!(md.contains("## Added (1)"), "{md}");
+    assert!(md.contains("- c (model)"), "{md}");
+    assert!(md.contains("## Suggested CI command"), "{md}");
+    assert!(
+        md.contains("```sh\ndbt build --select b+ c+\n```"),
+        "the CI command is fenced for copy-paste: {md}"
+    );
+    assert!(md.contains("### Untested changes (2)"), "{md}");
+    // Pure formatter over the snapshot → byte-identical on repeat.
+    assert_eq!(md, a.pr_impact_markdown(&dv), "deterministic");
+}
+
+#[test]
+fn export_pr_impact_writes_markdown_only_inside_the_diff_modal() {
+    let mut a = diff_app();
+    // Outside the modal it is a no-op (it reads the open DiffView snapshot).
+    let out = apply_action(&mut a, Action::ExportPrImpact);
+    assert!(out.effects.is_empty(), "no export without the modal open");
+
+    apply_action(&mut a, Action::DiffOpen);
+    let out = apply_action(&mut a, Action::ExportPrImpact);
+    let [Effect::WriteFile { path, contents }] = out.effects.as_slice() else {
+        panic!(
+            "ExportPrImpact in the modal writes a file: {:?}",
+            out.effects
+        );
+    };
+    assert_eq!(path, "p_pr_impact.md", "named for the project");
+    assert!(contents.contains("# PR Impact Report"), "{contents}");
+    assert_eq!(a.take_notice().as_deref(), Some("Exported p_pr_impact.md"));
+}
+
+#[test]
+fn yank_pr_selector_copies_the_ci_command_from_the_modal() {
+    let mut a = diff_app();
+    apply_action(&mut a, Action::DiffOpen);
+    let out = apply_action(&mut a, Action::YankPrSelector);
+    assert!(
+        matches!(out.effects.as_slice(), [Effect::Yank(t)] if t == "dbt build --select b+ c+"),
+        "yanks the changed-set selector: {:?}",
+        out.effects
+    );
+    assert_eq!(a.take_notice().as_deref(), Some("Copied dbt build command"));
+}
+
+#[test]
+fn yank_pr_selector_notices_when_nothing_buildable_changed() {
+    // A baseline identical to the current dag: no changes, so no command.
+    let mut a = App::new(diff_current_dag(), PathBuf::from("/p/target/manifest.json"));
+    a.set_diff_base(diff_current_dag(), "base".into());
+    apply_action(&mut a, Action::DiffOpen);
+    let out = apply_action(&mut a, Action::YankPrSelector);
+    assert!(out.effects.is_empty(), "nothing to copy");
+    assert_eq!(
+        a.take_notice().as_deref(),
+        Some("No changed models to build")
+    );
+}

@@ -1,12 +1,19 @@
 //! Graph analytics over the `Dag`: blast radius (impact), test coverage, the
 //! stats dashboard payload, layer violations, and the critical path.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use crate::action::{DiffView, StatsView};
-use crate::{Dag, NodeInfo};
+use crate::action::{DiffView, PrImpact, StatsView};
+use crate::{Dag, DagDiff, NodeInfo};
 
+use super::export::exposure_note;
 use super::{App, AppStats};
+
+/// A changed node whose transitive downstream (buildable) closure is at least
+/// this large is flagged as a "hub" risk in the PR impact pack — changing it
+/// ripples widely. A pragmatic default: large enough to skip the long tail of
+/// leaf models, small enough to surface real fan-out.
+pub const PR_HUB_MIN_DOWNSTREAM: usize = 5;
 
 impl App {
     /// Snapshot the baseline diff into the `D` modal's payload: names resolved
@@ -37,8 +44,152 @@ impl App {
             modified,
             edges_added: diff.edges_added.clone(),
             edges_removed: diff.edges_removed.clone(),
+            pr: self.pr_impact_data(diff),
             scroll: 0,
         })
+    }
+
+    /// The reviewer-shaped "PR Impact Pack" analysis over the `--diff` changed
+    /// set: the aggregate downstream blast radius (affected models + the marts
+    /// within it), the affected exposures ("who cares"), a suggested
+    /// `dbt build --select …` command, and the risk flags (untested changes,
+    /// changed hubs, newly-introduced layer violations). The SINGLE source of
+    /// this analysis — snapshotted into the `D` modal and re-read verbatim by the
+    /// Markdown export — so the screen, the file, and the yanked command agree.
+    ///
+    /// Deterministic by construction: the changed set is sorted; closures come
+    /// from `HashSet`s but every emitted listing is sorted; the new-violation set
+    /// is a `BTreeSet` difference. Identity is `unique_id` throughout (matching
+    /// [`compute_diff`](crate::compute_diff)) — the changed set and the layer
+    /// violations key on it, so a rename reads as added + removed, never a phantom
+    /// modification.
+    pub(super) fn pr_impact_data(&self, diff: &DagDiff) -> PrImpact {
+        // The changed BUILDABLE set: added ∪ modified, restricted to nodes that
+        // still exist in the current Dag and that `dbt build` can target
+        // (model / seed / snapshot). Removed nodes are gone — not buildable, not
+        // traversable; added/modified exposures aren't buildable either.
+        let mut changed: Vec<String> = diff
+            .added
+            .iter()
+            .chain(diff.modified.keys())
+            .filter(|uid| {
+                self.dag.get(uid).is_some_and(|n| {
+                    matches!(n.resource_type.as_str(), "model" | "seed" | "snapshot")
+                })
+            })
+            .cloned()
+            .collect();
+        changed.sort();
+        changed.dedup();
+        let changed_set: HashSet<&str> = changed.iter().map(String::as_str).collect();
+
+        // The union of every changed node's downstream closure — the aggregate
+        // blast radius. Split into affected models (with the marts subset) and
+        // affected exposures; the changed nodes themselves are excluded.
+        let mut down_uids: HashSet<String> = HashSet::new();
+        for uid in &changed {
+            down_uids.extend(self.dag.downstream(uid));
+        }
+        let mut affected_models = 0usize;
+        let mut affected_marts: Vec<String> = Vec::new();
+        let mut exposure_uids: Vec<String> = Vec::new();
+        for uid in &down_uids {
+            if changed_set.contains(uid.as_str()) {
+                continue;
+            }
+            let Some(n) = self.dag.get(uid) else { continue };
+            if crate::is_exposure(n) {
+                exposure_uids.push(uid.clone());
+            } else if n.resource_type == "model" {
+                affected_models += 1;
+                if crate::model_list::first_dir(n) == Some("marts") {
+                    affected_marts.push(n.name.clone());
+                }
+            }
+        }
+        affected_marts.sort();
+        exposure_uids.sort();
+        exposure_uids.dedup();
+        let mut affected_exposures: Vec<String> = exposure_uids
+            .iter()
+            .filter_map(|uid| self.dag.get(uid).map(|n| (n, self.dag.exposure(uid))))
+            .map(|(n, payload)| format!("{}{}", n.name, exposure_note(payload)))
+            .collect();
+        affected_exposures.sort();
+
+        // Suggested CI command: each changed node with a `+` (downstream)
+        // selector — `dbt build --select a+ b+ …`, the manual equivalent of
+        // `state:modified+`. `None` when nothing buildable changed.
+        let ci_command = if changed.is_empty() {
+            None
+        } else {
+            let mut names: Vec<String> = changed
+                .iter()
+                .filter_map(|uid| self.dag.get(uid).map(|n| n.name.clone()))
+                .collect();
+            names.sort();
+            names.dedup();
+            let selectors: Vec<String> = names.iter().map(|n| format!("{n}+")).collect();
+            Some(format!("dbt build --select {}", selectors.join(" ")))
+        };
+
+        // Risk: changed nodes that carry no tests (the coverage_gap predicate).
+        let mut untested_changes: Vec<String> = changed
+            .iter()
+            .filter_map(|uid| self.dag.get(uid))
+            .filter(|n| crate::coverage_gap(n))
+            .map(|n| n.name.clone())
+            .collect();
+        untested_changes.sort();
+
+        // Risk: changed hubs (wide downstream fan-out). The buildable-downstream
+        // count (exposures excluded) is the blast radius; flag the big ones.
+        let mut changed_hubs: Vec<(String, usize)> = changed
+            .iter()
+            .filter_map(|uid| {
+                let (down, _, _) = self.impact_breakdown_for(uid);
+                (down >= PR_HUB_MIN_DOWNSTREAM)
+                    .then(|| self.dag.get(uid).map(|n| (n.name.clone(), down)))
+                    .flatten()
+            })
+            .collect();
+        changed_hubs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        // Risk: layer-violation edges present now but NOT in the baseline. Both
+        // sides are uid pairs (identity = unique_id), so the difference is a true
+        // "newly introduced" set; resolve names from the current Dag for display.
+        let current_v: BTreeSet<(String, String)> =
+            layer_violation_edges(&self.dag).into_iter().collect();
+        let base_v: BTreeSet<(String, String)> = self
+            .diff_base
+            .as_ref()
+            .map(|b| layer_violation_edges(b).into_iter().collect())
+            .unwrap_or_default();
+        let mut new_layer_violations: Vec<(String, String)> = current_v
+            .difference(&base_v)
+            .map(|(p, c)| {
+                let pn = self
+                    .dag
+                    .get(p)
+                    .map_or_else(|| p.clone(), |n| n.name.clone());
+                let cn = self
+                    .dag
+                    .get(c)
+                    .map_or_else(|| c.clone(), |n| n.name.clone());
+                (pn, cn)
+            })
+            .collect();
+        new_layer_violations.sort();
+
+        PrImpact {
+            affected_models,
+            affected_marts,
+            affected_exposures,
+            ci_command,
+            untested_changes,
+            changed_hubs,
+            new_layer_violations,
+        }
     }
 
     /// Compute the stats-dashboard payload from the `Dag` at open time, so the

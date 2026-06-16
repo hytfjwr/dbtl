@@ -825,6 +825,68 @@ fn diff_display_lines(dv: &DiffView, t: &theme::Theme) -> Vec<Line<'static>> {
         t.danger,
         &mut out,
     );
+
+    // ---- PR impact pack: blast radius / exposures / CI command / risks ----
+    // Appended after the diff sections so the modal IS the reviewer's report.
+    // Reached only when there ARE changes (the no-change case returned above).
+    let pr = &dv.pr;
+    out.push(Line::from(""));
+    out.push(Line::styled("PR impact pack", header_style(t)));
+    out.push(Line::from(format!(
+        "  affected models: {}",
+        pr.affected_models
+    )));
+    if !pr.affected_marts.is_empty() {
+        out.push(Line::from(format!(
+            "  affected marts: {}",
+            pr.affected_marts.join(", ")
+        )));
+    }
+    match &pr.ci_command {
+        Some(cmd) => out.push(Line::styled(
+            format!("  CI: {cmd}"),
+            Style::default().fg(t.accent),
+        )),
+        None => out.push(Line::from("  CI: no buildable changes")),
+    }
+
+    if !pr.affected_exposures.is_empty() {
+        section(
+            "Affected exposures",
+            pr.affected_exposures
+                .iter()
+                .map(|e| format!("  {e}"))
+                .collect(),
+            t.accent,
+            &mut out,
+        );
+    }
+
+    if !pr.untested_changes.is_empty()
+        || !pr.changed_hubs.is_empty()
+        || !pr.new_layer_violations.is_empty()
+    {
+        out.push(Line::from(""));
+        out.push(Line::styled("Risk flags", header_style(t)));
+        for name in &pr.untested_changes {
+            out.push(Line::styled(
+                format!("  untested change: {name}"),
+                Style::default().fg(t.warn),
+            ));
+        }
+        for (name, count) in &pr.changed_hubs {
+            out.push(Line::styled(
+                format!("  hub change: {name} ({count} downstream)"),
+                Style::default().fg(t.warn),
+            ));
+        }
+        for (p, c) in &pr.new_layer_violations {
+            out.push(Line::styled(
+                format!("  new layer violation: {p} -> {c}"),
+                Style::default().fg(t.danger),
+            ));
+        }
+    }
     out
 }
 
@@ -852,7 +914,7 @@ pub(crate) fn draw_diff(
     draw_scrollable_modal(
         frame,
         area,
-        " Diff vs baseline  (Esc/q to close, j/k to scroll) ",
+        " Diff vs baseline - PR impact  (e: export, y: copy CI cmd, Esc/q: close) ",
         diff_display_lines(dv, t),
         dv.scroll,
         glyphs,

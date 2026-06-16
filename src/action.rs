@@ -141,6 +141,14 @@ pub enum Action {
     /// Open the baseline-diff summary modal (`--diff`); a toast explains how to
     /// load a baseline when none is.
     DiffOpen,
+    /// Export the PR impact report (the diff modal's full content) as Markdown to
+    /// `<project>_pr_impact.md`. Bound INSIDE the Diff modal (the `e`-style
+    /// export); reads the open [`DiffView`] snapshot so the file matches screen.
+    ExportPrImpact,
+    /// Copy the suggested `dbt build --select …` command for the changed-node set
+    /// to the clipboard. Bound INSIDE the Diff modal; reads the open
+    /// [`DiffView`]'s [`PrImpact::ci_command`].
+    YankPrSelector,
 }
 
 /// Which pane a search targets (decided from focus when search opens).
@@ -240,6 +248,40 @@ pub struct StatsView {
     pub scroll: usize,
 }
 
+/// The reviewer-shaped "PR Impact Pack" analysis derived from the App's
+/// [`DagDiff`](crate::DagDiff) + the current Dag's closures: the aggregate
+/// blast radius of the changed-node set, the affected marts/exposures, a
+/// suggested CI selector, and the risk flags. Snapshotted into [`DiffView`] at
+/// modal-open time (so the render layer stays Dag-free) and re-read verbatim by
+/// the Markdown export — both from the single `App::pr_impact_data`, so the
+/// modal, the file, and the yanked command can never disagree. `Eq` (rides in
+/// the `Eq` [`Mode`]): plain data only.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrImpact {
+    /// Total affected models: the union of the changed set's downstream model
+    /// closures, with the changed nodes themselves excluded.
+    pub affected_models: usize,
+    /// The marts (downstream models in the `marts` layer) within that blast
+    /// radius, by name, sorted.
+    pub affected_marts: Vec<String>,
+    /// Downstream exposures of the changed set as display strings
+    /// (`"name (kind, owner: …)"`), sorted, deduped — the "who cares" line.
+    pub affected_exposures: Vec<String>,
+    /// The suggested `dbt build --select a+ b+ …` command over the changed
+    /// buildable set, or `None` when nothing buildable changed.
+    pub ci_command: Option<String>,
+    /// Risk: changed nodes that carry no tests (the [`coverage_gap`](crate::coverage_gap)
+    /// predicate), by name, sorted.
+    pub untested_changes: Vec<String>,
+    /// Risk: changed "hub" nodes whose transitive downstream (buildable) closure
+    /// is at or above the hub threshold, as `(name, count)` sorted desc by count
+    /// then name.
+    pub changed_hubs: Vec<(String, usize)>,
+    /// Risk: layer-violation edges present now but NOT in the baseline, as
+    /// `(parent, child)` names, sorted.
+    pub new_layer_violations: Vec<(String, String)>,
+}
+
 /// The baseline-diff modal payload, snapshotted from the App's
 /// [`DagDiff`](crate::DagDiff) when the modal opens (names resolved, reasons
 /// joined), so the render layer never needs a `Dag`. MUST be `Eq` (`Mode`
@@ -258,6 +300,9 @@ pub struct DiffView {
     pub edges_added: Vec<(String, String)>,
     /// Dependency edges present only in the baseline, same shape.
     pub edges_removed: Vec<(String, String)>,
+    /// The reviewer-shaped PR impact analysis over the changed set (blast
+    /// radius / exposures / CI command / risk flags), snapshotted at open.
+    pub pr: PrImpact,
     pub scroll: usize,
 }
 
@@ -509,6 +554,8 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Stats, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom" },
     // ---- Diff summary modal (reuses DetailClose + DetailScroll) ----
     KeyBinding { mode: M::Diff, triggers: &[Key(Esc), Key(Enter), Key(Char('q'))], action: A::DetailClose, help: "close" },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('e'))], action: A::ExportPrImpact, help: "export PR impact report (Markdown)" },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('y'))], action: A::YankPrSelector, help: "copy dbt build --select command" },
     KeyBinding { mode: M::Diff, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down" },
     KeyBinding { mode: M::Diff, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up" },
     KeyBinding { mode: M::Diff, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down" },
@@ -903,7 +950,9 @@ mod tests {
             | Action::ToggleBookmarkFilter
             | Action::DbtParse
             | Action::ThemeCycle
-            | Action::DiffOpen => true,
+            | Action::DiffOpen
+            | Action::ExportPrImpact
+            | Action::YankPrSelector => true,
             // Dynamic: produced without a fixed key binding (text input). Mouse
             // is handled in the event loop (size-aware), not via the keymap.
             Action::SearchType(_) => false,
@@ -1012,6 +1061,8 @@ mod tests {
             Action::DbtParse,
             Action::ThemeCycle,
             Action::DiffOpen,
+            Action::ExportPrImpact,
+            Action::YankPrSelector,
         ];
         for a in samples {
             assert!(
