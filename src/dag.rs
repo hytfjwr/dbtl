@@ -365,6 +365,23 @@ impl Dag {
             .count()
     }
 
+    /// The dbt project name, read from node `unique_id`s
+    /// (`<resource_type>.<project>.<name>` → the `<project>` segment). Takes the
+    /// lexicographically-smallest such segment, so it is deterministic and
+    /// well-defined for a multi-project manifest (and stable for the usual
+    /// single-project one). `None` when no node carries a project segment.
+    ///
+    /// This is the authoritative project name (it reads the actual dbt
+    /// identity, not a filesystem path), shared by the docs index heading and
+    /// the title-bar stats so the two never disagree.
+    pub fn project_name(&self) -> Option<&str> {
+        self.nodes
+            .keys()
+            .filter_map(|uid| uid.split('.').nth(1))
+            .filter(|seg| !seg.is_empty())
+            .min()
+    }
+
     /// The detail payload (materialized / schema / columns / …) for a node, or
     /// `None` if unknown. Used by the structure modal and the status line.
     pub fn detail(&self, unique_id: &str) -> Option<&NodeDetail> {

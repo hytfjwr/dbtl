@@ -351,15 +351,10 @@ pub(super) fn longest_chain(dag: &Dag) -> Vec<String> {
 /// segment of any node's `unique_id` (`model.<project>.<name>`), which is the
 /// same across a single dbt project.
 pub(super) fn compute_stats(dag: &Dag) -> AppStats {
-    // Deterministic across runs: take the lexicographically-smallest project
-    // segment (stable for a single-project manifest; well-defined for multi).
-    let project = dag
-        .nodes()
-        .keys()
-        .filter_map(|uid| uid.split('.').nth(1))
-        .min()
-        .unwrap_or("")
-        .to_string();
+    // The shared project-name derivation (deterministic: the
+    // lexicographically-smallest `unique_id` project segment) lives on `Dag`,
+    // so the title bar and the docs index quote the same name.
+    let project = dag.project_name().unwrap_or("").to_string();
     AppStats {
         project,
         models: dag.count_by_resource_type("model"),

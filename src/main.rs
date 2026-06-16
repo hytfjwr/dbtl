@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 use dbtl::action::{dispatch, Action};
 use dbtl::app::{apply_action, App, LineageView};
@@ -80,6 +80,40 @@ struct Cli {
     /// status diff chip.
     #[arg(long)]
     diff: Option<String>,
+    /// A non-interactive subcommand. Omitted = launch the TUI (the default,
+    /// unchanged behaviour).
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+/// Non-interactive subcommands. Absent → the TUI; present → run and exit
+/// without ever touching the terminal (like `--list-themes`).
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Generate static Markdown docs (tbls-style) for the project and exit,
+    /// without launching the TUI. Writes one Markdown page per node plus an
+    /// index README.md under <DIR>. The data source is resolved the same way
+    /// the TUI resolves it (--manifest / --source / --project / auto-detect).
+    Docs {
+        /// Output directory for the generated docs. Created if missing; existing
+        /// node pages / README.md are overwritten (no files are deleted).
+        #[arg(long)]
+        out: String,
+        /// Path to a compiled dbt manifest.json (forces manifest mode).
+        #[arg(long, conflicts_with = "source")]
+        manifest: Option<String>,
+        /// Path to a dbt project dir, parsed from source with no compile.
+        #[arg(long, conflicts_with = "manifest")]
+        source: Option<String>,
+        /// dbt project dir for auto-detect: prefer <dir>/target/manifest.json,
+        /// else parse source.
+        #[arg(long, default_value = ".")]
+        project: String,
+        /// Suppress the success summary on stdout (errors still go to stderr).
+        /// For quiet CI runs where only the exit code matters.
+        #[arg(long)]
+        quiet: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -99,6 +133,19 @@ fn run(cli: &Cli) -> Result<()> {
     if cli.list_themes {
         print_theme_list();
         return Ok(());
+    }
+
+    // Non-interactive subcommands run and return BEFORE any terminal init /
+    // probe (same as --list-themes), so they work in a non-TTY / CI environment.
+    if let Some(Commands::Docs {
+        out,
+        manifest,
+        source,
+        project,
+        quiet,
+    }) = &cli.command
+    {
+        return run_docs(out, manifest, source, project, *quiet);
     }
 
     // Build the data model up front so load errors (missing manifest, bad
@@ -182,26 +229,57 @@ fn run(cli: &Cli) -> Result<()> {
     loop_result
 }
 
-/// Resolve the CLI into a loaded [`App`]. Explicit `--manifest` / `--source` win;
-/// otherwise auto-detect under `--project`: a compiled `target/manifest.json` if
-/// present (full fidelity), else parse the project from source.
-fn build_app(cli: &Cli) -> Result<App> {
-    if let Some(path) = &cli.manifest {
+/// A resolved data source: the loaded `Dag`, a human-readable label of where it
+/// came from (a manifest path or a project dir, for docs provenance), and
+/// whether it was parsed from source (vs a compiled manifest).
+struct ResolvedSource {
+    dag: dbtl::Dag,
+    label: String,
+    is_source: bool,
+}
+
+/// The shared data-source resolution, identical for the TUI and the `docs`
+/// subcommand. Explicit `manifest` / `source` win; otherwise auto-detect under
+/// `project`: a compiled `target/manifest.json` if present (full fidelity), else
+/// parse the project from source. The TUI ([`build_app`]) and docs both go
+/// through here so the precedence can never diverge.
+fn resolve_source(
+    manifest: &Option<String>,
+    source: &Option<String>,
+    project: &str,
+) -> Result<ResolvedSource> {
+    if let Some(path) = manifest {
         let dag = load_dag(path)?;
-        return Ok(App::new(dag, PathBuf::from(path)));
+        return Ok(ResolvedSource {
+            dag,
+            label: path.clone(),
+            is_source: false,
+        });
     }
-    if let Some(dir) = &cli.source {
+    if let Some(dir) = source {
         let dag = load_dag_from_source(dir)?;
-        return Ok(App::from_source(dag, PathBuf::from(dir)));
+        return Ok(ResolvedSource {
+            dag,
+            label: dir.clone(),
+            is_source: true,
+        });
     }
-    let project = PathBuf::from(&cli.project);
+    let project = PathBuf::from(project);
     let manifest = project.join("target").join("manifest.json");
     if manifest.is_file() {
         let dag = load_dag(&manifest)?;
-        Ok(App::new(dag, manifest))
+        Ok(ResolvedSource {
+            dag,
+            label: manifest.display().to_string(),
+            is_source: false,
+        })
     } else if project.join("dbt_project.yml").is_file() {
         let dag = load_dag_from_source(&project)?;
-        Ok(App::from_source(dag, project))
+        Ok(ResolvedSource {
+            dag,
+            label: project.display().to_string(),
+            is_source: true,
+        })
     } else {
         anyhow::bail!(
             "no data source under {}: neither target/manifest.json nor dbt_project.yml found \
@@ -209,6 +287,93 @@ fn build_app(cli: &Cli) -> Result<App> {
             project.display()
         )
     }
+}
+
+/// Resolve the CLI into a loaded [`App`]. Explicit `--manifest` / `--source` win;
+/// otherwise auto-detect under `--project`: a compiled `target/manifest.json` if
+/// present (full fidelity), else parse the project from source.
+fn build_app(cli: &Cli) -> Result<App> {
+    let resolved = resolve_source(&cli.manifest, &cli.source, &cli.project)?;
+    let ResolvedSource {
+        dag,
+        label,
+        is_source,
+    } = resolved;
+    if is_source {
+        Ok(App::from_source(dag, PathBuf::from(label)))
+    } else {
+        Ok(App::new(dag, PathBuf::from(label)))
+    }
+}
+
+/// Run the `docs` subcommand: resolve the data source (shared with the TUI),
+/// generate the Markdown doc set in memory (the pure [`dbtl::generate_docs`]),
+/// then write each file under `out` — creating the directory tree as needed and
+/// overwriting existing pages, never deleting. Prints a one-line summary to
+/// stdout on success. Every failure (load error, IO error) returns `Err`, which
+/// `main` reports as plain text + a non-zero exit — no panic, no terminal init.
+fn run_docs(
+    out: &str,
+    manifest: &Option<String>,
+    source: &Option<String>,
+    project: &str,
+    quiet: bool,
+) -> Result<()> {
+    let resolved = resolve_source(manifest, source, project)?;
+    let provenance = if resolved.is_source {
+        format!("project source ({})", resolved.label)
+    } else {
+        format!("manifest ({})", resolved.label)
+    };
+    let project_name = docs_project_name(&resolved.dag, &resolved.label);
+    let files = dbtl::generate_docs(&resolved.dag, &project_name, &provenance);
+
+    let out_dir = PathBuf::from(out);
+    for (rel_path, contents) in &files {
+        let path = out_dir.join(rel_path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        std::fs::write(&path, contents)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+    }
+    // The success summary is the only stdout `docs` writes; `--quiet` drops it
+    // for CI. Errors are returned as `Err` and printed to stderr by `main`
+    // either way, so silencing stdout never hides a failure.
+    if !quiet {
+        println!("wrote {} files to {}", files.len(), out_dir.display());
+    }
+    Ok(())
+}
+
+/// A project title for the docs index. Prefers the dbt project name read from
+/// the loaded graph itself ([`dbtl::Dag::project_name`], the `unique_id` project
+/// segment) — authoritative and identical in manifest and source mode. Falls
+/// back to a label-derived heuristic (the dir name of a `<root>/target/
+/// manifest.json`, else the path's file name) only when the graph has no node
+/// with a project segment, and finally to a generic title so the heading is
+/// never blank.
+fn docs_project_name(dag: &dbtl::Dag, label: &str) -> String {
+    if let Some(name) = dag.project_name().filter(|s| !s.is_empty()) {
+        return name.to_string();
+    }
+    let path = std::path::Path::new(label);
+    // Manifest path `<root>/target/manifest.json` → `<root>` dir name.
+    if path.file_name().and_then(|f| f.to_str()) == Some("manifest.json") {
+        if let Some(root) = path.parent().and_then(|p| p.parent()) {
+            if let Some(name) = root.file_name().and_then(|f| f.to_str()) {
+                if !name.is_empty() {
+                    return name.to_string();
+                }
+            }
+        }
+    }
+    path.file_name()
+        .and_then(|f| f.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("dbt project")
+        .to_string()
 }
 
 /// Resolve the `--diff` baseline into a loaded `Dag` + a display label: a

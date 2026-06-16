@@ -95,7 +95,32 @@ $ dbtl --list-themes
 # Diff against a baseline: "what does my branch change?"
 $ dbtl --diff /path/to/main-checkout            # another worktree (or its manifest.json)
 $ dbtl --diff target/manifest.prod.json         # a saved production manifest
+
+# Generate static Markdown docs (no TUI) — like tbls, for dbt
+$ dbtl docs --out ./dbt-docs                    # auto-detect the data source, write into ./dbt-docs
+$ dbtl docs --manifest target/manifest.json --out docs/lineage
+$ dbtl docs --source /path/to/project --out ./dbt-docs --quiet   # no compile needed; CI-quiet
 ```
+
+
+### Markdown docs (`dbtl docs`)
+
+`dbtl docs --out <DIR>` is a non-interactive subcommand (it never starts the TUI,
+so it runs fine in CI with no TTY). It writes a [tbls](https://github.com/k1LoW/tbls)-style
+documentation tree you can commit straight to a repo and read on GitHub/GitLab:
+
+- **One page per node** (model / source / seed / snapshot / exposure): description,
+  materialization, schema, tags, a column definition table (in dbt definition order),
+  tests, direct + transitive upstream/downstream (as links), and a per-node Mermaid
+  lineage diagram.
+- **An index `README.md`**: project summary, test-coverage % and orphan-model list,
+  a table of every node (linked), and a whole-project Mermaid diagram (split by layer
+  for large projects).
+
+The data source is resolved exactly like the TUI (`--manifest` / `--source` / `--project`
+/ auto-detect). Output is **deterministic** — regenerating from the same input is
+byte-for-byte identical, so a CI job can `dbtl docs … && git diff --exit-code` to
+assert the docs are up to date. Existing files are overwritten, never deleted.
 
 The diff keys nodes by `unique_id` (a rename reads as removed + added — which is
 what it is to every downstream `ref()`), and compares the surfaces a dbt change
