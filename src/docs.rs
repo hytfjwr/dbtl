@@ -1207,13 +1207,18 @@ mod tests {
 
     #[test]
     fn per_node_lineage_figure_equals_the_m_key_yank() {
-        // The per-node docs Lineage figure must render the SAME diagram the
-        // interactive `m` yank produces for that node at the default view
-        // (upstream + downstream, unbounded depth) — both go through the one
-        // shared `subgraph_mermaid_linked` core over the SAME full-closure
-        // subgraph. The docs variant only adds `click` navigation lines inside
-        // the fence; stripping those must leave a body byte-identical to the
-        // yank. This locks the two surfaces together so they can never drift.
+        // For EVERY selectable node, the per-node docs Lineage figure must render
+        // the SAME diagram the interactive `m` yank produces for that node at the
+        // default view (upstream + downstream, unbounded depth) — both go through
+        // the one shared `subgraph_mermaid_linked` core over the SAME full-closure
+        // subgraph. The docs variant only adds `click` navigation lines inside the
+        // fence; stripping those must leave a body byte-identical to the yank.
+        // This locks the two surfaces together so they can never drift.
+        //
+        // Selection is BY UNIQUE_ID, not by name: the fixture has distinct nodes
+        // that share a name (e.g. a model AND a source both named `pos_txn`), so a
+        // name lookup would be ambiguous (and `nodes()` iteration order is not
+        // deterministic). Walk uids in sorted order for a deterministic run.
         use crate::App;
         use std::path::PathBuf;
 
@@ -1221,25 +1226,34 @@ mod tests {
         let files = node_files(&dag);
         let out = generate_docs(&dag, "p", "src");
 
-        // A spread of shapes: a deep mart, a table model, and a leaf source.
-        for name in ["fct_subscription_process", "pos_txn"] {
-            let uid = dag
-                .nodes()
-                .values()
-                .find(|n| n.name == name)
-                .map(|n| n.unique_id.clone())
-                .unwrap_or_else(|| panic!("fixture has {name}"));
-
+        let mut uids: Vec<&str> = dag.nodes().keys().map(String::as_str).collect();
+        uids.sort_unstable();
+        let mut compared = 0usize;
+        for uid in uids {
             let mut app = App::new(dag.clone(), PathBuf::from(FIXTURE));
-            assert!(app.select_by_name(name), "select {name}");
-            let yank = app.lineage_mermaid().expect("m yank for a selected node");
-
-            let page = file(&out, &files[&uid]);
+            // Only models are selectable lineage roots — the left pane lists
+            // `resource_type == "model"` only, and re-rooting only ever lands on
+            // a model — so the `m` yank only exists for models. Non-models (their
+            // docs page still renders) have no yank to compare against; skip them.
+            if !app.select_by_unique_id(uid) {
+                continue;
+            }
+            let yank = app
+                .lineage_mermaid()
+                .expect("a selectable node yields an m yank");
+            let page = file(&out, &files[uid]);
             let body = strip_click_lines(&fenced_mermaid_block(page));
             assert_eq!(
                 body, yank,
-                "docs Lineage figure for {name} must equal the `m` yank (minus click lines)"
+                "docs Lineage figure for {uid} must equal the `m` yank (minus click lines)"
             );
+            compared += 1;
         }
+        // Coverage: every model is a selectable root, and the invariant held for
+        // each. (Guards against `select_by_unique_id` silently breaking and the
+        // loop comparing nothing.)
+        let model_count = dag.count_by_resource_type("model");
+        assert!(model_count > 0, "fixture has models to compare");
+        assert_eq!(compared, model_count, "every model's figure was compared");
     }
 }
