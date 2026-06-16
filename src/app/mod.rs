@@ -50,6 +50,11 @@ mod styles;
 mod tests;
 
 pub use analysis::layer_violation_edges;
+// The subgraph→fenced-Mermaid core, shared with the static docs generator
+// (`crate::docs`). Re-exported because the `export` submodule is private; the
+// function itself is `pub(crate)` and reuses the `mermaid_ids`/`mermaid_label`
+// escaping internally, so docs inherits that escaping without re-implementing it.
+pub(crate) use export::subgraph_mermaid_linked;
 pub(crate) use lineage::fit_breadcrumb;
 pub use reducer::apply_action;
 

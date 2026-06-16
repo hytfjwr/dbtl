@@ -11,6 +11,7 @@ pub mod action;
 pub mod app;
 pub mod dag;
 pub mod diff;
+pub mod docs;
 pub mod effect;
 pub mod layout;
 pub mod manifest;
@@ -28,6 +29,7 @@ pub use dag::{
     Subgraph, TestInfo,
 };
 pub use diff::{compute_diff, DagDiff, DiffStatus};
+pub use docs::generate_docs;
 pub use effect::Effect;
 pub use layout::{
     anchor_offset, blit, clamp_offset, layout, layout_density, layout_mode, CellAttr, CharGrid,
