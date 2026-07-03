@@ -175,8 +175,12 @@ pub struct Dag {
 }
 
 /// Resource types that are excluded from the unified map and the DAG.
+///
+/// `analysis` is excluded alongside `test`/`operation` because `source.rs`
+/// never parses `analyses/` at all — showing it only in manifest mode would
+/// break the manifest↔source consistency contract (the same graph either way).
 fn is_excluded(resource_type: &str) -> bool {
-    resource_type == "test" || resource_type == "operation"
+    resource_type == "test" || resource_type == "operation" || resource_type == "analysis"
 }
 
 /// Convenience: load a manifest from disk and build its DAG in one call.
@@ -188,8 +192,9 @@ pub fn load_dag<P: AsRef<Path>>(path: P) -> Result<Dag> {
 impl Dag {
     /// Build the DAG from a parsed manifest.
     ///
-    /// Excludes `test` / `operation` nodes, merges `nodes` + `sources` into a
-    /// single map, and prunes `parent_map` / `child_map` down to the kept set
+    /// Excludes `test` / `operation` / `analysis` nodes, merges `nodes` +
+    /// `sources` into a single map, and prunes `parent_map` / `child_map` down
+    /// to the kept set
     /// (both keys and neighbour lists) so traversal never touches an excluded
     /// node as an endpoint or as an intermediate hop.
     ///
@@ -756,6 +761,46 @@ mod tests {
         assert!(dag.contains("source.p.s.c"));
         assert!(!dag.contains("test.p.t"));
         assert_eq!(dag.count_by_resource_type("test"), 0);
+    }
+
+    #[test]
+    fn analysis_nodes_are_excluded_like_tests() {
+        // manifest mode is the only loader that ever sees `analysis` nodes
+        // (source.rs never parses `analyses/`); excluding them here keeps the
+        // two load paths' graphs identical.
+        let nodes = HashMap::from([
+            (
+                "model.p.a".to_string(),
+                RawNode {
+                    name: "a".into(),
+                    resource_type: "model".into(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "analysis.p.x".to_string(),
+                RawNode {
+                    name: "x".into(),
+                    resource_type: "analysis".into(),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        let parent_map =
+            HashMap::from([("analysis.p.x".to_string(), vec!["model.p.a".to_string()])]);
+        let child_map =
+            HashMap::from([("model.p.a".to_string(), vec!["analysis.p.x".to_string()])]);
+        let dag = Dag::build(&RawManifest {
+            nodes,
+            sources: HashMap::new(),
+            exposures: HashMap::new(),
+            parent_map,
+            child_map,
+        });
+        assert!(dag.get("analysis.p.x").is_none());
+        assert_eq!(dag.count_by_resource_type("analysis"), 0);
+        assert!(dag.upstream("model.p.a").is_empty());
+        assert!(dag.downstream("model.p.a").is_empty());
     }
 
     #[test]
