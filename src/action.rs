@@ -95,6 +95,9 @@ pub enum Action {
     ToggleMinimap,
     /// Toggle the lineage density (Comfortable 3-row boxes <-> Compact 1-row).
     ToggleDensity,
+    /// Toggle the whole-graph overview (the lineage pane shows the ENTIRE DAG
+    /// instead of the rooted subgraph; always Compact density).
+    ToggleOverview,
     /// Copy the current lineage diagram to the clipboard as plain text (the
     /// same glyphs the pane draws).
     YankAscii,
@@ -515,6 +518,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Selection, triggers: &[Ctrl('t')], action: A::ThemeCycle, help: "cycle color theme" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('D'))], action: A::DiffOpen, help: "diff vs baseline (--diff)" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('!'))], action: A::YankSelector, help: "copy dbt --select command" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('w'))], action: A::ToggleOverview, help: "toggle whole-graph overview" },
     // ---- Search mode (printable chars are handled dynamically -> SearchType) ----
     KeyBinding { mode: M::Search, triggers: &[Key(Esc)], action: A::SearchCancel, help: "cancel search" },
     KeyBinding { mode: M::Search, triggers: &[Key(Enter)], action: A::SearchConfirm, help: "confirm" },
@@ -931,6 +935,7 @@ mod tests {
             | Action::SortCycle
             | Action::ToggleMinimap
             | Action::ToggleDensity
+            | Action::ToggleOverview
             | Action::YankAscii
             | Action::YankSql
             | Action::YankImpact
@@ -1041,6 +1046,7 @@ mod tests {
             Action::SortCycle,
             Action::ToggleMinimap,
             Action::ToggleDensity,
+            Action::ToggleOverview,
             Action::YankAscii,
             Action::YankSql,
             Action::YankImpact,

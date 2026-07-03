@@ -48,6 +48,24 @@ fn sanitize_file_stem(name: &str) -> String {
 /// handled here. The match is exhaustive over [`Action`], so a new variant is a
 /// compile error until it is given behaviour.
 pub fn apply_action(app: &mut App, action: Action) -> Outcome {
+    // The overview shows the WHOLE graph: the rooted view filters
+    // (direction/depth) and the density toggle have no visible effect while
+    // it is on, so gate them to a notice instead of mutating state that
+    // would surprisingly apply the moment the user drills back in.
+    if app.ui_state.overview()
+        && matches!(
+            action,
+            Action::ToggleUpstream
+                | Action::ToggleDownstream
+                | Action::DepthDecrease
+                | Action::DepthIncrease
+                | Action::ResetView
+                | Action::ToggleDensity
+        )
+    {
+        app.set_notice("view filters are off in overview (w to exit)");
+        return Outcome::cont();
+    }
     match action {
         Action::Quit => Outcome::quit(),
         // Movement keys are focus-routed: lineage-pane focus moves the lineage
@@ -363,15 +381,27 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             let text = app.dbt_selector_command();
             yank_with_notice(app, text, "Copied dbt selector")
         }
-        Action::ExportLineage => match (app.selected_name(), app.lineage_ascii()) {
-            (Some(name), Some(contents)) => {
-                let path = format!("{}_lineage.txt", sanitize_file_stem(&name));
-                // Optimistic intent; `run_effect` overwrites it if the write fails.
-                app.set_notice(format!("Exported {path}"));
-                Outcome::effect(Effect::WriteFile { path, contents })
+        Action::ExportLineage => {
+            // The overview exports the whole graph — name the file after the
+            // project, not the (incidental) selection.
+            let stem = if app.ui_state.overview() {
+                app.dag
+                    .project_name()
+                    .map(|p| format!("{}_overview", sanitize_file_stem(p)))
+            } else {
+                app.selected_name()
+                    .map(|n| format!("{}_lineage", sanitize_file_stem(&n)))
+            };
+            match (stem, app.lineage_ascii()) {
+                (Some(stem), Some(contents)) => {
+                    let path = format!("{stem}.txt");
+                    // Optimistic intent; `run_effect` overwrites it if the write fails.
+                    app.set_notice(format!("Exported {path}"));
+                    Outcome::effect(Effect::WriteFile { path, contents })
+                }
+                _ => Outcome::cont(),
             }
-            _ => Outcome::cont(),
-        },
+        }
         Action::Reload => Outcome::effect(Effect::ReloadManifest),
         // The loop performs the whole flow (resolve dbt from PATH, suspend the
         // TUI, run, adopt the manifest) and reports the outcome on the notice
@@ -612,6 +642,23 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         // minimap). The loop force-anchors next frame — the grid reshapes.
         Action::ToggleDensity => {
             app.ui_state.toggle_density();
+            Outcome::cont()
+        }
+        // Toggle the whole-graph overview (a pure UiState view-pref, like the
+        // density). Entering also switches the minimap on (the diagram is
+        // guaranteed to overflow) and toasts an orientation hint; the loop
+        // force-anchors next frame — the grid reshapes completely.
+        Action::ToggleOverview => {
+            app.ui_state.toggle_overview();
+            if app.ui_state.overview() {
+                if !app.ui_state.minimap_visible() {
+                    app.ui_state.toggle_minimap();
+                }
+                // ASCII-only: the toast draws in BOTH glyph modes, and an em
+                // dash is ambiguous-width (the exact desync ASCII mode exists
+                // to avoid).
+                app.set_notice(format!("overview: {} nodes (w to exit)", app.dag.len()));
+            }
             Outcome::cont()
         }
         // Cycle the colour theme (App-level data: the loaded list lives on the

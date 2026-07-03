@@ -13,7 +13,8 @@
 //!   on every [`App::reload`] — the only place the `Dag` is replaced — and by
 //!   `App::set_diff_base`, since the Diff lens styles read the diff),
 //! - the rooted selection, the [`LineageView`] (direction/depth), the validated
-//!   lineage cursor, the active [`LineageLens`], and the [`GlyphMode`].
+//!   lineage cursor, the active [`LineageLens`], the [`GlyphMode`], and the
+//!   whole-graph overview flag (`UiState::overview`).
 //!
 //! Values are wrapped in `Rc` so a cache hit is a pointer clone, never a deep
 //! copy. Interior mutability (`RefCell`) keeps the public accessors `&self`;
@@ -28,11 +29,12 @@ use crate::{layout_density, Density, GlyphMode, Layout, LineageLens, Subgraph};
 
 use super::{App, LineageView};
 
-/// Identity of a rooted subgraph: `(root, view, dag generation)`.
+/// Identity of a rooted subgraph: `(root, view, overview, dag generation)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SubgraphKey {
     root: String,
     view: LineageView,
+    overview: bool,
     generation: u64,
 }
 
@@ -47,6 +49,7 @@ struct LayoutKey {
     lens: LineageLens,
     glyphs: GlyphMode,
     density: Density,
+    overview: bool,
     generation: u64,
 }
 
@@ -76,6 +79,7 @@ impl App {
         let key = SubgraphKey {
             root,
             view: self.lineage_view.clone(),
+            overview: self.ui_state.overview(),
             generation: self.generation,
         };
         if let Some((k, sg)) = self.caches.subgraph.borrow().as_ref() {
@@ -83,7 +87,13 @@ impl App {
                 return Rc::clone(sg);
             }
         }
-        let sg = Rc::new(if key.root.is_empty() {
+        let sg = Rc::new(if key.overview {
+            // The whole graph, with the current selection as the emphasised
+            // "you are here" node (an empty root just emphasises nothing).
+            let mut sg = self.dag.full_subgraph();
+            sg.selected = key.root.clone();
+            sg
+        } else if key.root.is_empty() {
             Subgraph {
                 selected: String::new(),
                 nodes: Vec::new(),
@@ -110,7 +120,13 @@ impl App {
     /// frame: display subgraph → [`layout_mode`] → [`App::lineage_styles`] →
     /// [`Layout::apply_node_styles`]. A cache hit skips all of it.
     pub fn styled_lineage_layout(&self) -> Option<Rc<Layout>> {
-        let root = self.selected_unique_id()?;
+        let overview = self.ui_state.overview();
+        let root = match self.selected_unique_id() {
+            Some(r) => r,
+            None if overview => String::new(),
+            None => return None,
+        };
+        let density = self.effective_density();
         let key = LayoutKey {
             // The VALIDATED cursor (home == Some(root)), so a stale stored
             // cursor or an explicit home both key identically to "at the root".
@@ -119,7 +135,8 @@ impl App {
             view: self.lineage_view.clone(),
             lens: self.ui_state.lens(),
             glyphs: self.glyph_mode,
-            density: self.ui_state.density(),
+            density,
+            overview,
             generation: self.generation,
         };
         if let Some((k, lay)) = self.caches.layout.borrow().as_ref() {
@@ -131,7 +148,7 @@ impl App {
         if sg.nodes.is_empty() {
             return None;
         }
-        let mut lay = layout_density(&sg, self.glyph_mode, self.ui_state.density());
+        let mut lay = layout_density(&sg, self.glyph_mode, density);
         lay.apply_edge_styles(&self.lineage_edge_styles(&lay));
         let styles = self.lineage_styles(&lay);
         lay.apply_node_styles(&styles);

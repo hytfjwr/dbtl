@@ -275,6 +275,12 @@ impl App {
     /// [`lineage_path_edges`](App::lineage_path_edges) (the connector runs).
     fn lineage_path_nodes(&self) -> Vec<String> {
         use std::collections::{HashMap, HashSet, VecDeque};
+        // The root↔cursor path is a rooted-view concept; the overview has no
+        // meaningful root-to-cursor story (and a whole-graph BFS per frame would
+        // be wasted work), so no path — and therefore no dimming — while it is on.
+        if self.ui_state.overview() {
+            return Vec::new();
+        }
         let (Some(root), Some(cursor)) = (self.selected_unique_id(), self.lineage_cursor_uid())
         else {
             return Vec::new();
@@ -375,6 +381,11 @@ impl App {
     /// survive — so the loop should hand the FULL trail (`usize::MAX`) here and let
     /// the draw seam be the single width authority.
     pub fn breadcrumb(&self, max_width: usize) -> Option<String> {
+        // The breadcrumb narrates the re-root trail — meaningless while the pane
+        // shows the whole graph, so the title falls back to the overview body.
+        if self.ui_state.overview() {
+            return None;
+        }
         if self.back.is_empty() {
             return None;
         }

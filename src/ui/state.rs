@@ -128,6 +128,11 @@ pub struct UiState {
     /// or Compact 1-row `|name|` nodes for big-graph overviews. Toggled by
     /// `Action::ToggleDensity` directly in `apply_action`.
     density: crate::Density,
+    /// Whether the lineage pane shows the WHOLE graph instead of the rooted
+    /// subgraph (a pure view-pref like `density`). Toggled by
+    /// `Action::ToggleOverview` directly in `apply_action`. Defaulting OFF
+    /// keeps every existing render/golden untouched.
+    overview: bool,
 }
 
 impl UiState {
@@ -145,6 +150,7 @@ impl UiState {
             lens: LineageLens::default(),
             minimap_visible: false,
             density: crate::Density::default(),
+            overview: false,
         }
     }
 
@@ -221,6 +227,18 @@ impl UiState {
             crate::Density::Comfortable => crate::Density::Compact,
             crate::Density::Compact => crate::Density::Comfortable,
         };
+    }
+
+    /// Whether the whole-graph overview is active.
+    pub fn overview(&self) -> bool {
+        self.overview
+    }
+
+    /// Flip the whole-graph overview. A pure view-pref toggle like the density;
+    /// the cached subgraph/layout rebuild next frame (the flag is part of both
+    /// keys) and the loop force-anchors the reshaped diagram.
+    pub fn toggle_overview(&mut self) {
+        self.overview = !self.overview;
     }
 
     /// Toggle the focused pane — a no-op while the list pane is hidden (the

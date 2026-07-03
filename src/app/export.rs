@@ -70,7 +70,7 @@ impl App {
             return None;
         }
         Some(
-            crate::layout_density(&sg, self.glyph_mode, self.ui_state.density())
+            crate::layout_density(&sg, self.glyph_mode, self.effective_density())
                 .grid
                 .to_text(),
         )
