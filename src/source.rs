@@ -26,7 +26,11 @@
 //! Scope: this covers the common project shape, not dbt's full resolver. NOT
 //! handled (a `ref` to one of these simply drops out, which `prune_adjacency`
 //! tolerates): cross-package `ref`, `{% if %}`/`var()`-gated refs, and
-//! singular (`.sql`) tests.
+//! singular (`.sql`) tests. A versioned ref resolves to the unversioned name
+//! (approximation — the `.vN` node a `versions:` block would define is not
+//! synthesized); YAML-defined snapshots (dbt 1.9+) ARE synthesized as nodes.
+//! Recoverable oddities (an unparsable schema.yml, a duplicate resource name)
+//! are reported as warnings, not errors.
 
 use std::collections::HashMap;
 use std::fs;
@@ -44,7 +48,16 @@ use crate::{
 
 /// Parse a dbt project directory and build its [`Dag`] from source.
 pub fn load_dag_from_source<P: AsRef<Path>>(project_dir: P) -> Result<Dag> {
-    Ok(Dag::build(&manifest_from_source(project_dir)?))
+    load_dag_from_source_with_warnings(project_dir).map(|(dag, _)| dag)
+}
+
+/// Like [`load_dag_from_source`], but also returns the recoverable warnings
+/// from [`manifest_from_source_with_warnings`] instead of discarding them.
+pub fn load_dag_from_source_with_warnings<P: AsRef<Path>>(
+    project_dir: P,
+) -> Result<(Dag, Vec<String>)> {
+    let (manifest, warnings) = manifest_from_source_with_warnings(project_dir)?;
+    Ok((Dag::build(&manifest), warnings))
 }
 
 /// Parse a dbt project directory into a synthesized [`RawManifest`].
@@ -52,6 +65,16 @@ pub fn load_dag_from_source<P: AsRef<Path>>(project_dir: P) -> Result<Dag> {
 /// Exposed (not just `load_dag_from_source`) so the synthesis can be asserted
 /// directly in tests without building the whole DAG.
 pub fn manifest_from_source<P: AsRef<Path>>(project_dir: P) -> Result<RawManifest> {
+    manifest_from_source_with_warnings(project_dir).map(|(m, _)| m)
+}
+
+/// Like [`manifest_from_source`], but also returns recoverable warnings (an
+/// unparsable schema.yml, a duplicate resource name) instead of silently
+/// dropping them — dbtl is a viewer, not `dbt`, so these are surfaced rather
+/// than treated as hard errors.
+pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
+    project_dir: P,
+) -> Result<(RawManifest, Vec<String>)> {
     let dir = project_dir.as_ref();
     let proj_path = dir.join("dbt_project.yml");
     let proj_str = fs::read_to_string(&proj_path)
@@ -93,6 +116,10 @@ pub fn manifest_from_source<P: AsRef<Path>>(project_dir: P) -> Result<RawManifes
     // (precedence: in-file config() > schema.yml > project tree > default view).
     let mut tree_mat: HashMap<String, String> = HashMap::new();
     let mut test_seq = 0usize;
+    // Recoverable oddities (an unparsable schema.yml, a duplicate resource
+    // name): never fatal, so the project still loads — surfaced to the
+    // caller instead of silently dropped.
+    let mut warnings: Vec<String> = Vec::new();
 
     // --- models (.sql) ---
     for (file, root) in collect_with_root(dir, &model_paths, "sql") {
@@ -111,6 +138,16 @@ pub fn manifest_from_source<P: AsRef<Path>>(project_dir: P) -> Result<RawManifes
         // Disabled models never reach the manifest's `nodes` (dbt parks them
         // under `disabled`); drop them here too, edges included.
         if pat.disabled(&stripped) || tree.enabled == Some(false) {
+            continue;
+        }
+        // `collect_with_root` sorts by path, so the first file to claim a
+        // name wins deterministically; drop (and warn on) a later same-stem
+        // file before it can touch `tree_mat`/`nodes`/`name_index`/`node_sql`.
+        if name_index.contains_key(&name) {
+            warnings.push(format!(
+                "duplicate resource name '{name}': ignoring {}",
+                rel_path(dir, &file)
+            ));
             continue;
         }
         if let Some(m) = &tree.materialized {
@@ -141,6 +178,13 @@ pub fn manifest_from_source<P: AsRef<Path>>(project_dir: P) -> Result<RawManifes
         let path = rel_path(&root, &file);
         let tree = resolve_tree_config(&project.seeds, &tree_segments(&proj, &path));
         if tree.enabled == Some(false) {
+            continue;
+        }
+        if name_index.contains_key(&name) {
+            warnings.push(format!(
+                "duplicate resource name '{name}': ignoring {}",
+                rel_path(dir, &file)
+            ));
             continue;
         }
         nodes.insert(
@@ -182,6 +226,10 @@ pub fn manifest_from_source<P: AsRef<Path>>(project_dir: P) -> Result<RawManifes
             if resolve_tree_config(&project.snapshots, &segments).enabled == Some(false) {
                 continue;
             }
+            if name_index.contains_key(&name) {
+                warnings.push(format!("duplicate resource name '{name}': ignoring {ofp}"));
+                continue;
+            }
             nodes.insert(
                 uid.clone(),
                 RawNode {
@@ -200,6 +248,111 @@ pub fn manifest_from_source<P: AsRef<Path>>(project_dir: P) -> Result<RawManifes
             );
             name_index.insert(name, uid.clone());
             node_sql.push((uid, stripped.clone()));
+        }
+    }
+
+    // --- schema.yml: collect + parse once ---
+    // dbt reads "properties" yml ONLY from the configured resource paths, so the
+    // scan is restricted to them. Scanning the whole project dir would ingest
+    // vendored projects (`dbt_packages/`), build artifacts (`target/`), and
+    // virtualenvs — synthesizing phantom sources/tests under this project's
+    // namespace and silently diverging from the manifest.
+    // `(file, resource root)` pairs: exposures record their `path` relative to
+    // the declaring resource root (the way dbt does for models), so the root
+    // must survive the collection. Dedup by FILE alone (sorting puts equal
+    // files adjacent): overlapping resource paths (e.g. a seed dir nested in a
+    // model dir) collect the same file under two roots, and scanning it twice
+    // would duplicate its synthesized tests — the pre-exposure contract.
+    let mut yml_files: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for sub in model_paths.iter().chain(&seed_paths).chain(&snapshot_paths) {
+        let sub_root = dir.join(sub);
+        let mut files = Vec::new();
+        collect_files(&sub_root, "yml", &mut files);
+        collect_files(&sub_root, "yaml", &mut files);
+        for file in files {
+            yml_files.push((file, sub_root.clone()));
+        }
+    }
+    yml_files.sort();
+    yml_files.dedup_by(|a, b| a.0 == b.0);
+
+    // Parsed once, kept for BOTH the YAML-snapshot synthesis pass below AND
+    // the schema-metadata pass further down, so a file is never re-parsed. A
+    // non-schema yml deserializes to all-empty defaults; only a YAML shape
+    // error (e.g. a top-level sequence) fails to parse — reported as a
+    // warning (not silently skipped) so one broken file never sinks the rest
+    // of the project.
+    let mut parsed: Vec<(SchemaFile, PathBuf, PathBuf)> = Vec::new();
+    for (file, yml_root) in yml_files {
+        match serde_norway::from_str::<SchemaFile>(&read(&file)) {
+            Ok(schema) => parsed.push((schema, file, yml_root)),
+            Err(err) => warnings.push(format!(
+                "skipped {}: invalid schema file ({err})",
+                rel_path(dir, &file)
+            )),
+        }
+    }
+
+    // --- YAML-defined snapshots (dbt 1.9+ `snapshots:` schema entries with a
+    // `relation:`, replacing the `{% snapshot %}` block) become nodes here,
+    // BEFORE ref/source resolution, so both a model that refs one AND the
+    // relation's own ref/source resolve.
+    for (schema, file, yml_root) in &parsed {
+        for entry in &schema.snapshots {
+            let Some(rel) = &entry.relation else {
+                continue;
+            };
+            if entry.config.enabled == Some(false) {
+                continue;
+            }
+            if name_index.contains_key(&entry.name) {
+                warnings.push(format!(
+                    "duplicate resource name '{}': ignoring {}",
+                    entry.name,
+                    rel_path(dir, file)
+                ));
+                continue;
+            }
+            // dbt keys snapshot configs by NAME (same rule as the
+            // `{% snapshot %}` path).
+            let yml_rel = rel_path(yml_root, file);
+            let mut segments = tree_segments(&proj, &yml_rel);
+            segments.pop();
+            segments.push(entry.name.clone());
+            if resolve_tree_config(&project.snapshots, &segments).enabled == Some(false) {
+                continue;
+            }
+            // dbt V2 synthesizes `select * from {relation}` (wrapping a bare
+            // ref()/source() in {{ }}) and feeds it through the normal
+            // pipeline — mirror that so the SQL preview and the edge
+            // extractors see real text.
+            let body = if rel.contains("{{") {
+                rel.clone()
+            } else {
+                format!("{{{{ {rel} }}}}")
+            };
+            let sql = format!("select * from {body}");
+            let uid = format!("snapshot.{proj}.{}", entry.name);
+            // dbt records a YAML-defined snapshot's `path` as a virtual
+            // `<declaring yml>/<name>.sql` (there is no real .sql file) —
+            // matched here so source and manifest mode agree on `NodeInfo`.
+            let path = format!("{yml_rel}/{}.sql", entry.name);
+            nodes.insert(
+                uid.clone(),
+                RawNode {
+                    name: entry.name.clone(),
+                    resource_type: "snapshot".to_string(),
+                    path: Some(path),
+                    original_file_path: Some(rel_path(dir, file)),
+                    config: RawConfig {
+                        materialized: Some("snapshot".to_string()),
+                    },
+                    raw_code: Some(sql.clone()),
+                    ..Default::default()
+                },
+            );
+            name_index.insert(entry.name.clone(), uid.clone());
+            node_sql.push((uid, sql));
         }
     }
 
@@ -237,38 +390,7 @@ pub fn manifest_from_source<P: AsRef<Path>>(project_dir: P) -> Result<RawManifes
     }
 
     // --- schema.yml: source nodes + metadata/tests for everything ---
-    // dbt reads "properties" yml ONLY from the configured resource paths, so the
-    // scan is restricted to them. Scanning the whole project dir would ingest
-    // vendored projects (`dbt_packages/`), build artifacts (`target/`), and
-    // virtualenvs — synthesizing phantom sources/tests under this project's
-    // namespace and silently diverging from the manifest.
-    // `(file, resource root)` pairs: exposures record their `path` relative to
-    // the declaring resource root (the way dbt does for models), so the root
-    // must survive the collection. Dedup by FILE alone (sorting puts equal
-    // files adjacent): overlapping resource paths (e.g. a seed dir nested in a
-    // model dir) collect the same file under two roots, and scanning it twice
-    // would duplicate its synthesized tests — the pre-exposure contract.
-    let mut yml_files: Vec<(PathBuf, PathBuf)> = Vec::new();
-    for sub in model_paths.iter().chain(&seed_paths).chain(&snapshot_paths) {
-        let sub_root = dir.join(sub);
-        let mut files = Vec::new();
-        collect_files(&sub_root, "yml", &mut files);
-        collect_files(&sub_root, "yaml", &mut files);
-        for file in files {
-            yml_files.push((file, sub_root.clone()));
-        }
-    }
-    yml_files.sort();
-    yml_files.dedup_by(|a, b| a.0 == b.0);
-
-    for (file, yml_root) in &yml_files {
-        // A non-schema yml deserializes to all-empty defaults; only a YAML shape
-        // error (e.g. a top-level sequence) is skipped.
-        let schema: SchemaFile = match serde_norway::from_str(&read(file)) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-
+    for (schema, file, yml_root) in &parsed {
         // dbt records a source's `path`/`original_file_path` as the declaring
         // schema file (project-root-relative) — match it so the detail modal
         // and the `$EDITOR` jump work identically in both modes.
@@ -298,6 +420,15 @@ pub fn manifest_from_source<P: AsRef<Path>>(project_dir: P) -> Result<RawManifes
                     None,
                     &tbl.tests,
                 );
+                synth_tests(
+                    &mut nodes,
+                    &mut test_seq,
+                    &proj,
+                    &uid,
+                    &tbl.name,
+                    None,
+                    &tbl.data_tests,
+                );
                 for col in &tbl.columns {
                     synth_tests(
                         &mut nodes,
@@ -307,6 +438,15 @@ pub fn manifest_from_source<P: AsRef<Path>>(project_dir: P) -> Result<RawManifes
                         &tbl.name,
                         Some(&col.name),
                         &col.tests,
+                    );
+                    synth_tests(
+                        &mut nodes,
+                        &mut test_seq,
+                        &proj,
+                        &uid,
+                        &tbl.name,
+                        Some(&col.name),
+                        &col.data_tests,
                     );
                 }
             }
@@ -377,13 +517,16 @@ pub fn manifest_from_source<P: AsRef<Path>>(project_dir: P) -> Result<RawManifes
         }
     }
 
-    Ok(RawManifest {
-        nodes,
-        sources,
-        exposures,
-        parent_map,
-        child_map,
-    })
+    Ok((
+        RawManifest {
+            nodes,
+            sources,
+            exposures,
+            parent_map,
+            child_map,
+        },
+        warnings,
+    ))
 }
 
 /// Attach schema-file metadata (description / materialization / tags / columns)
@@ -427,6 +570,7 @@ fn apply_meta(
         }
         // `node`'s borrow ends here; synth_tests re-borrows `nodes` mutably.
         synth_tests(nodes, seq, proj, &uid, &entry.name, None, &entry.tests);
+        synth_tests(nodes, seq, proj, &uid, &entry.name, None, &entry.data_tests);
         for col in &entry.columns {
             synth_tests(
                 nodes,
@@ -436,6 +580,15 @@ fn apply_meta(
                 &entry.name,
                 Some(&col.name),
                 &col.tests,
+            );
+            synth_tests(
+                nodes,
+                seq,
+                proj,
+                &uid,
+                &entry.name,
+                Some(&col.name),
+                &col.data_tests,
             );
         }
     }
@@ -673,8 +826,12 @@ fn resolve_tree_config(tree: &serde_norway::Value, segments: &[String]) -> TreeC
 /// backreferences, so each quote is matched independently (`['"]`) — a mismatched
 /// `'x"` is vanishingly rare in real SQL and harmless if it slips through. The
 /// leading `\b` stops `my_ref(...)` / `data_source(...)` identifiers producing
-/// spurious edges. Versioned `ref('x', v=2)` does not match (the `v=` arg defeats
-/// the trailing `)`) and is dropped — acceptable, like the other ref scope-outs.
+/// spurious edges. A versioned or kwarg-bearing `ref('x', v=2)` /
+/// `ref('x', version=2)` IS matched — the trailing `(?:,[^)]*)?` absorbs any
+/// extra args up to (but never past) the call's closing `)`, so the version
+/// is ignored and the edge resolves to the unversioned name `x` (an
+/// approximation; the `.vN` node a `versions:` block would define is not
+/// synthesized).
 struct Patterns {
     ref_re: Regex,
     source_re: Regex,
@@ -686,8 +843,10 @@ struct Patterns {
 impl Patterns {
     fn new() -> Self {
         Patterns {
-            ref_re: Regex::new(r#"\bref\s*\(\s*['"]([^'"]+)['"]\s*(?:,\s*['"]([^'"]+)['"]\s*)?\)"#)
-                .unwrap(),
+            ref_re: Regex::new(
+                r#"\bref\s*\(\s*['"]([^'"]+)['"]\s*(?:,\s*['"]([^'"]+)['"]\s*)?(?:,[^)]*)?\)"#,
+            )
+            .unwrap(),
             source_re: Regex::new(
                 r#"\bsource\s*\(\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]+)['"]\s*\)"#,
             )
@@ -799,6 +958,12 @@ struct SchemaFile {
 }
 
 /// Shared shape for `models:` / `seeds:` / `snapshots:` entries (only what we read).
+///
+/// `tests` and `data_tests` are kept as SEPARATE fields (not one aliased
+/// field) so a file declaring both keys on the same entry still deserializes
+/// — serde treats an `alias` as just another name for the SAME field, so two
+/// keys mapping to it is a duplicate-field error that silently drops the
+/// whole file; the two lists are unioned by the caller instead.
 #[derive(Debug, Deserialize, Default)]
 struct SchemaModel {
     name: String,
@@ -810,8 +975,15 @@ struct SchemaModel {
     tags: Vec<String>,
     #[serde(default)]
     columns: Vec<SchemaColumn>,
-    #[serde(default, alias = "data_tests")]
+    #[serde(default)]
     tests: Vec<serde_norway::Value>,
+    #[serde(default)]
+    data_tests: Vec<serde_norway::Value>,
+    /// The `relation:` Jinja expression of a YAML-defined snapshot (dbt
+    /// 1.9+), e.g. `ref('stg_orders')`. Always `None` for models/seeds and
+    /// for a `{% snapshot %}`-block snapshot (its relation is implicit).
+    #[serde(default)]
+    relation: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -829,8 +1001,10 @@ struct SchemaColumn {
     data_type: Option<String>,
     #[serde(default)]
     description: Option<String>,
-    #[serde(default, alias = "data_tests")]
+    #[serde(default)]
     tests: Vec<serde_norway::Value>,
+    #[serde(default)]
+    data_tests: Vec<serde_norway::Value>,
 }
 
 /// An `exposures:` entry (only what we surface). `depends_on` holds Jinja
@@ -878,8 +1052,10 @@ struct SchemaSourceTable {
     description: Option<String>,
     #[serde(default)]
     columns: Vec<SchemaColumn>,
-    #[serde(default, alias = "data_tests")]
+    #[serde(default)]
     tests: Vec<serde_norway::Value>,
+    #[serde(default)]
+    data_tests: Vec<serde_norway::Value>,
 }
 
 #[cfg(test)]
@@ -902,5 +1078,24 @@ mod tests {
         assert!(!pat.disabled("where enabled = false"));
         assert!(!pat.disabled("-- note: enabled=false someday"));
         assert!(!pat.disabled("{% set enabled=false %}"));
+    }
+
+    #[test]
+    fn ref_regex_handles_versioned_and_extra_args() {
+        let pat = Patterns::new();
+        assert_eq!(pat.refs("{{ ref('m', v=2) }}"), vec!["m".to_string()]);
+        assert_eq!(pat.refs("{{ ref('m', version=2) }}"), vec!["m".to_string()]);
+        assert_eq!(
+            pat.refs("{{ ref('pkg', 'm', v=2) }}"),
+            vec!["m".to_string()]
+        );
+        // No cross-call over-matching: `[^)]*` must not cross the first `)`.
+        assert_eq!(
+            pat.refs("{{ ref('a') }} x {{ ref('b') }}"),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        // A non-literal arg (a macro call, not a quoted string) still drops,
+        // like before this change.
+        assert!(pat.refs("{{ ref(var('x')) }}").is_empty());
     }
 }

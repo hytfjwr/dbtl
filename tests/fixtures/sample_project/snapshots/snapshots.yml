@@ -1,0 +1,9 @@
+snapshots:
+  - name: customers_snapshot
+    relation: ref('dim_customers')
+    description: yaml-defined snapshot
+    config:
+      schema: snapshots
+      unique_key: id
+      strategy: check
+      check_cols: all

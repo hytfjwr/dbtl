@@ -1,0 +1,6 @@
+name: coll
+version: "1.0.0"
+config-version: 2
+profile: none
+
+model-paths: ["models"]

@@ -1,0 +1,8 @@
+snapshots:
+  - name: s1
+    relation: ref('base')
+    description: yaml snapshot
+    config:
+      strategy: check
+      unique_key: id
+      check_cols: all

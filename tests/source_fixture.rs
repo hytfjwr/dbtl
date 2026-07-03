@@ -2,10 +2,23 @@
 //! manifest) and assert the synthesized manifest / DAG. Mirrors the
 //! `manifest_fixture` strategy: assert structure, not rendering.
 
-use dbtl::{build_model_list, load_dag_from_source, manifest_from_source, SortMode};
+use std::collections::HashSet;
+
+use dbtl::{
+    build_model_list, load_dag_from_source, load_dag_from_source_with_warnings,
+    manifest_from_source, SortMode,
+};
 
 const PROJECT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample_project");
 const MISSING: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/does_not_exist");
+const YAML_SNAPSHOT_PROJECT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/yaml_snapshot_project"
+);
+const COLLISION_PROJECT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/collision_project"
+);
 
 #[test]
 fn synthesizes_nodes_and_sources() {
@@ -15,8 +28,10 @@ fn synthesizes_nodes_and_sources() {
         "model.sample.fct_orders",
         "model.sample.dim_customers",
         "model.sample.agg_country_orders",
+        "model.sample.fct_customer_history",
         "seed.sample.country_codes",
         "snapshot.sample.orders_snapshot",
+        "snapshot.sample.customers_snapshot",
     ] {
         assert!(m.nodes.contains_key(uid), "missing node {uid}");
     }
@@ -184,10 +199,10 @@ fn schema_tests_are_captured_but_never_dag_nodes() {
 #[test]
 fn builds_dag_with_expected_counts_and_lineage() {
     let dag = load_dag_from_source(PROJECT).unwrap();
-    assert_eq!(dag.count_by_resource_type("model"), 4, "model count");
+    assert_eq!(dag.count_by_resource_type("model"), 5, "model count");
     assert_eq!(dag.count_by_resource_type("source"), 2, "source count");
     assert_eq!(dag.count_by_resource_type("seed"), 1, "seed count");
-    assert_eq!(dag.count_by_resource_type("snapshot"), 1, "snapshot count");
+    assert_eq!(dag.count_by_resource_type("snapshot"), 2, "snapshot count");
 
     // fct_orders upstream: stg_orders + its source (transitive) + the seed.
     let up = dag.upstream("model.sample.fct_orders");
@@ -363,5 +378,105 @@ fn traversal_resource_paths_are_skipped() {
         m.sources.is_empty(),
         "no sources ingested from an outside schema.yml, got {:?}",
         m.sources.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn yaml_defined_snapshot_becomes_a_node() {
+    // dbt 1.9+ lets a snapshot be declared entirely in schema.yml (a
+    // `relation:` key instead of a `{% snapshot %}` SQL block); it must be
+    // synthesized as a real node, not silently dropped.
+    let m = manifest_from_source(YAML_SNAPSHOT_PROJECT).expect("project parses");
+    let node = m
+        .nodes
+        .get("snapshot.ysnap.s1")
+        .expect("s1 is synthesized as a node");
+    assert_eq!(node.resource_type, "snapshot");
+    assert_eq!(node.config.materialized.as_deref(), Some("snapshot"));
+    assert_eq!(
+        node.raw_code.as_deref(),
+        Some("select * from {{ ref('base') }}"),
+        "raw_code wraps the bare relation like dbt V2 does"
+    );
+    assert_eq!(node.description.as_deref(), Some("yaml snapshot"));
+}
+
+#[test]
+fn yaml_snapshot_edges_resolve_in_both_directions() {
+    let dag = load_dag_from_source(YAML_SNAPSHOT_PROJECT).expect("project loads");
+    let up = dag.upstream("snapshot.ysnap.s1");
+    assert!(
+        up.contains("model.ysnap.base"),
+        "s1's relation ref is an upstream edge, got {up:?}"
+    );
+    let down = dag.downstream("snapshot.ysnap.s1");
+    assert!(
+        down.contains("model.ysnap.uses_snap"),
+        "a model ref'ing the yaml snapshot is a downstream edge, got {down:?}"
+    );
+}
+
+#[test]
+fn versioned_ref_resolves_to_unversioned_model() {
+    let dag = load_dag_from_source(YAML_SNAPSHOT_PROJECT).expect("project loads");
+    let up = dag.upstream("model.ysnap.uses_versioned");
+    assert!(
+        up.contains("model.ysnap.base"),
+        "ref('base', v=2) resolves to the unversioned model, got {up:?}"
+    );
+}
+
+#[test]
+fn duplicate_stem_keeps_first_and_warns() {
+    // `models/a/dup.sql` and `models/b/dup.sql` both produce the uid
+    // `model.coll.dup`; path-sorted collection makes `a/dup.sql` the winner.
+    let (dag, warnings) =
+        load_dag_from_source_with_warnings(COLLISION_PROJECT).expect("project loads");
+    assert_eq!(
+        dag.upstream("model.coll.dup"),
+        HashSet::from(["model.coll.parent_a".to_string()]),
+        "the first (path-sorted) file wins"
+    );
+    assert!(
+        dag.downstream("model.coll.parent_b").is_empty(),
+        "the losing file's ref never became an edge"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("dup") && w.contains("models/b/dup.sql")),
+        "the losing file is named in a warning, got {warnings:?}"
+    );
+}
+
+#[test]
+fn tests_and_data_tests_merge_instead_of_dropping_the_file() {
+    // `models/schema.yml` declares BOTH `tests:` and `data_tests:` on the same
+    // column — real dbt hard-errors on this, but dbtl unions instead of
+    // dropping the whole file (and its `sources:` block) silently.
+    let dag = load_dag_from_source(COLLISION_PROJECT).expect("project loads");
+    assert!(
+        dag.contains("source.coll.rawsrc.t1"),
+        "the file survived parsing"
+    );
+    let kinds: HashSet<&str> = dag
+        .tests("model.coll.parent_a")
+        .iter()
+        .map(|t| t.kind.as_str())
+        .collect();
+    assert_eq!(kinds, HashSet::from(["unique", "not_null"]));
+}
+
+#[test]
+fn invalid_yaml_emits_warning_but_project_loads() {
+    let (dag, warnings) =
+        load_dag_from_source_with_warnings(COLLISION_PROJECT).expect("project loads");
+    assert!(
+        warnings.iter().any(|w| w.contains("broken.yml")),
+        "warnings: {warnings:?}"
+    );
+    assert!(
+        dag.contains("model.coll.parent_a"),
+        "the rest of the project still loads"
     );
 }

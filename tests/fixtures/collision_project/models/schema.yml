@@ -1,0 +1,12 @@
+sources:
+  - name: rawsrc
+    tables:
+      - name: t1
+models:
+  - name: parent_a
+    columns:
+      - name: id
+        tests:
+          - unique
+        data_tests:
+          - not_null

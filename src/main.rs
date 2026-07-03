@@ -24,7 +24,7 @@ use dbtl::ui::{
     draw, hit_test, lineage_content_rect, pane_interior, pane_rects, Focus, LineageLens, RenderCtx,
     StatusSegments,
 };
-use dbtl::{load_dag, load_dag_from_source, Mode, SortMode};
+use dbtl::{load_dag, load_dag_from_source_with_warnings, Mode, SortMode};
 
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, KeyModifiers,
@@ -260,7 +260,10 @@ fn resolve_source(
         });
     }
     if let Some(dir) = source {
-        let dag = load_dag_from_source(dir)?;
+        let (dag, warnings) = load_dag_from_source_with_warnings(dir)?;
+        for w in &warnings {
+            eprintln!("warning: {w}");
+        }
         return Ok(ResolvedSource {
             dag,
             label: dir.clone(),
@@ -277,7 +280,10 @@ fn resolve_source(
             is_source: false,
         })
     } else if project.join("dbt_project.yml").is_file() {
-        let dag = load_dag_from_source(&project)?;
+        let (dag, warnings) = load_dag_from_source_with_warnings(&project)?;
+        for w in &warnings {
+            eprintln!("warning: {w}");
+        }
         Ok(ResolvedSource {
             dag,
             label: project.display().to_string(),
@@ -397,8 +403,11 @@ fn load_baseline(path: &str) -> Result<(dbtl::Dag, String)> {
             return Ok((dag, manifest.display().to_string()));
         }
         if p.join("dbt_project.yml").is_file() {
-            let dag = load_dag_from_source(&p)
+            let (dag, warnings) = load_dag_from_source_with_warnings(&p)
                 .with_context(|| format!("--diff: failed to parse project {path}"))?;
+            for w in &warnings {
+                eprintln!("warning (--diff baseline): {w}");
+            }
             return Ok((dag, path.to_string()));
         }
     }
@@ -988,8 +997,13 @@ fn event_loop(
                     // Same semantics as the `r` key: on failure the app keeps
                     // running on the old data; the reshaped graph re-centres.
                     let note = match app.reload() {
-                        Ok(()) => "Reloaded (source changed)",
-                        Err(_) => "Reload failed (kept previous data)",
+                        Ok(w) if w.is_empty() => "Reloaded (source changed)".to_string(),
+                        Ok(w) => format!(
+                            "Reloaded (source changed) — {} warning(s): {}",
+                            w.len(),
+                            w[0]
+                        ),
+                        Err(_) => "Reload failed (kept previous data)".to_string(),
                     };
                     app.set_notice(note);
                     force_anchor = true;
@@ -1162,8 +1176,9 @@ fn run_effect(terminal: &mut DefaultTerminal, app: &mut App, effect: Effect) -> 
             // On failure the app is left unchanged (reload `?`-returns before
             // mutating), so we keep running on the old data.
             let note = match app.reload() {
-                Ok(()) => "Reloaded",
-                Err(_) => "Reload failed (kept previous data)",
+                Ok(w) if w.is_empty() => "Reloaded".to_string(),
+                Ok(w) => format!("Reloaded — {} warning(s): {}", w.len(), w[0]),
+                Err(_) => "Reload failed (kept previous data)".to_string(),
             };
             app.set_notice(note);
         }

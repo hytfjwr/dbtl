@@ -43,7 +43,10 @@ pub use model_list::{
     build_filtered_model_list, build_model_list, match_indices, name_matches_query, DisplayRow,
     ModelGroup, ModelList, SortMode, LAYER_ORDER,
 };
-pub use source::{load_dag_from_source, manifest_from_source};
+pub use source::{
+    load_dag_from_source, load_dag_from_source_with_warnings, manifest_from_source,
+    manifest_from_source_with_warnings,
+};
 pub use ui::{
     draw, handle_key, reduce_selection, Focus, KeyOutcome, LineageLens, RenderCtx, UiState,
 };
