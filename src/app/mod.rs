@@ -363,6 +363,11 @@ impl App {
     pub fn jump_to(&mut self, unique_id: &str) {
         let current = self.selected_unique_id();
         if self.select_by_unique_id(unique_id) {
+            // A successful re-root is the overview's drill-in gesture: leave the
+            // whole-graph view and land on the rooted lineage of the target.
+            if self.ui_state.overview() {
+                self.ui_state.toggle_overview();
+            }
             if let Some(cur) = current {
                 if cur != unique_id {
                     self.back.push(cur);
@@ -407,6 +412,27 @@ impl App {
     /// The selected node's display name, if any.
     pub fn selected_name(&self) -> Option<String> {
         self.selected_node().map(|n| n.name.clone())
+    }
+
+    /// The density the lineage pipeline actually renders at: the overview
+    /// forces Compact (a whole graph at 3-row boxes is unusably tall), else
+    /// the user's `v` toggle. Shared by the cached layout AND `lineage_ascii`
+    /// so the yank stays byte-identical to the pane.
+    pub(crate) fn effective_density(&self) -> crate::Density {
+        if self.ui_state.overview() {
+            crate::Density::Compact
+        } else {
+            self.ui_state.density()
+        }
+    }
+
+    /// The lineage pane's title body while the whole-graph overview is on
+    /// (`"Overview: N nodes"`), `None` otherwise. Precomputed Dag-aware at the
+    /// loop seam so `RenderCtx` stays Dag-free.
+    pub fn overview_title(&self) -> Option<String> {
+        self.ui_state
+            .overview()
+            .then(|| format!("Overview: {} nodes", self.dag.len()))
     }
 
     /// A node's display name, falling back to the `unique_id` itself when the node

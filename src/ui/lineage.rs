@@ -52,6 +52,7 @@ pub(crate) fn draw_lineage_pane(
     search: Option<&str>,
     view_label: Option<&str>,
     breadcrumb: Option<&str>,
+    overview_title: Option<&str>,
     glyphs: crate::GlyphMode,
     minimap: bool,
     layer_bands: Option<&[LayerBand]>,
@@ -67,7 +68,14 @@ pub(crate) fn draw_lineage_pane(
     // helper). It is empty when the lens is Off, so default titles are unchanged.
     let lens = lens_title_suffix(state.lens());
     let title = compose_lineage_title(
-        sel_name, search, view_label, breadcrumb, lens, caret, area.width,
+        sel_name,
+        search,
+        view_label,
+        breadcrumb,
+        overview_title,
+        lens,
+        caret,
+        area.width,
     );
     let block = Block::default()
         .borders(Borders::ALL)
@@ -453,7 +461,7 @@ fn lens_color(tint: LensTint, t: &theme::Theme) -> Option<Color> {
 /// layer is the size-aware seam, so the breadcrumb's strict truncation lives HERE
 /// where `area.width` is known).
 ///
-/// Three shapes:
+/// Four shapes:
 /// - **Search**: `" Lineage: {sel} /{query}{caret} "` — unchanged.
 /// - **No breadcrumb**: `" Lineage: {sel} [{v}]{lens} "` / `" Lineage: {sel}{lens} "`
 ///   — BYTE-IDENTICAL to the pre-breadcrumb titles (the default render is pinned).
@@ -464,14 +472,20 @@ fn lens_color(tint: LensTint, t: &theme::Theme) -> Option<Color> {
 ///   [`fit_breadcrumb`](crate::app::fit_breadcrumb), dropping oldest entries then a
 ///   `".."` prefix, finally to empty) so the suffixes ALWAYS survive even when
 ///   ratatui would otherwise clip the title's right side.
+/// - **Overview**: `" {body}{lens} "` — the whole-graph overview title, which
+///   takes priority over both the `Lineage: {sel}` body and the breadcrumb (the
+///   view suffix is meaningless while it is on, since the direction/depth
+///   toggles are gated).
 ///
 /// `total_w` is the bordered pane width; the title sits between the two corner
 /// glyphs, so the usable title width is `total_w - 2`.
+#[allow(clippy::too_many_arguments)]
 fn compose_lineage_title(
     sel_name: &str,
     search: Option<&str>,
     view_label: Option<&str>,
     breadcrumb: Option<&str>,
+    overview: Option<&str>,
     lens: &str,
     caret: &str,
     total_w: u16,
@@ -481,6 +495,13 @@ fn compose_lineage_title(
     // Search shape is unaffected by the breadcrumb.
     if let Some(query) = search {
         return format!(" Lineage: {sel_name}  /{query}{caret} ");
+    }
+
+    // Overview: the body replaces both the `Lineage: {name}` body and the
+    // breadcrumb; the lens suffix is kept (the view suffix is meaningless —
+    // the direction/depth toggles are gated while the overview is on).
+    if let Some(body) = overview {
+        return format!(" {body}{lens} ");
     }
 
     // The `[{v}]` view suffix (when a label is present) plus the lens suffix.
@@ -775,5 +796,23 @@ mod tests {
             lens_title_suffix(LineageLens::LayerViolation),
             " [lens:violation]"
         );
+    }
+
+    #[test]
+    fn compose_lineage_title_overview_wins_over_breadcrumb_and_view() {
+        // The overview body replaces both the `Lineage: {sel}` body and the
+        // breadcrumb; the lens suffix survives (the view suffix does not, since
+        // it is meaningless while the overview is on).
+        let title = compose_lineage_title(
+            "x",
+            None,
+            Some("↑↓"),
+            Some("a > b"),
+            Some("Overview: 93 nodes"),
+            " [lens:heat]",
+            "_",
+            80,
+        );
+        assert_eq!(title, " Overview: 93 nodes [lens:heat] ");
     }
 }

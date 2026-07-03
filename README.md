@@ -145,6 +145,7 @@ Press `?` inside the app for the full list. Highlights:
 | `b` `f` | Back / forward in re-root history |
 | `t` | Cycle lineage lens (test coverage → blast-radius heat → layer → layer violation → diff) |
 | `v` | Toggle compact lineage (1-row nodes — fits ~2x more graph on screen) |
+| `w` | Toggle whole-graph overview (the entire DAG in the lineage pane; Compact, minimap on) |
 | `s` / `S` | SQL preview (syntax-highlighted) / project stats dashboard |
 | `o` | Open the model's SQL in `$EDITOR` |
 | `m` `x` `c` | Copy lineage as Mermaid / Graphviz DOT / ASCII art |

@@ -1458,6 +1458,8 @@ fn lineage_title_row(app: &dbtl::app::App, width: u16, height: u16) -> String {
     let view_label = app.lineage_view_label();
     // The loop hands the FULL trail; the draw seam is the single width authority.
     let breadcrumb = app.breadcrumb(usize::MAX);
+    // `None` outside the whole-graph overview, mirroring the loop's wiring.
+    let overview_title = app.overview_title();
     // The production producer (memoized), exactly as the event loop draws.
     let lay = app.styled_lineage_layout().expect("non-empty lineage");
 
@@ -1469,6 +1471,7 @@ fn lineage_title_row(app: &dbtl::app::App, width: u16, height: u16) -> String {
         ctx.glyphs = app.glyph_mode;
         ctx.lineage_label = Some(view_label.as_str());
         ctx.breadcrumb = breadcrumb.as_deref();
+        ctx.overview_title = overview_title.as_deref();
         ctx.segments = StatusSegments::default();
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
     }
@@ -1519,6 +1522,31 @@ fn lineage_title_omits_body_when_breadcrumb_present_but_keeps_view_and_lens() {
     assert!(
         title.contains(&vlabel),
         "view label {vlabel:?} kept, got {title:?}"
+    );
+}
+
+#[test]
+fn overview_title_replaces_lineage_title() {
+    // Toggling the whole-graph overview replaces the `Lineage: {name}` title
+    // body with `Overview: N nodes` — the lineage pane title row must show it,
+    // and must not still say `Lineage:`.
+    use dbtl::app::{apply_action, App};
+    use dbtl::Action;
+
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    app.select_by_unique_id("model.jaffle_finance.fct_subscription_process");
+    apply_action(&mut app, Action::ToggleOverview);
+    assert!(app.ui_state.overview(), "precondition: overview is on");
+
+    let expected = app.overview_title().expect("overview title is set");
+    let title = lineage_title_row(&app, 100, 30);
+    assert!(
+        title.contains(&expected),
+        "title row shows the overview body, got {title:?}"
+    );
+    assert!(
+        !title.contains("Lineage:"),
+        "the `Lineage:` body is replaced while the overview is on, got {title:?}"
     );
 }
 

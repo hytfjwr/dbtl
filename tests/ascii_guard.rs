@@ -87,6 +87,9 @@ fn render_with_toast(app: &App, width: u16, height: u16, toast: Option<&str>) ->
     // app has re-root history, so most renders are unchanged. Exercised in
     // ASCII mode by the dedicated breadcrumb test below.
     let breadcrumb = app.breadcrumb(width as usize);
+    // The whole-graph overview title (`None` outside it), mirroring the
+    // loop's wiring so the overview surface is under the guard too.
+    let overview_title = app.overview_title();
 
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
@@ -97,6 +100,7 @@ fn render_with_toast(app: &App, width: u16, height: u16, toast: Option<&str>) ->
         ctx.stats = Some(&app.stats);
         ctx.lineage_label = Some(&label);
         ctx.breadcrumb = breadcrumb.as_deref();
+        ctx.overview_title = overview_title.as_deref();
         ctx.glyphs = app.glyph_mode;
         ctx.segments = StatusSegments {
             impact: impact_s.as_deref(),
@@ -381,4 +385,16 @@ fn diff_lens_chip_and_modal_are_all_ascii() {
     apply_action(&mut app, Action::DiffOpen);
     assert_all_ascii(&render(&app, 80, 24), "PR impact pack 80x24");
     assert_all_ascii(&render(&app, 120, 60), "PR impact pack 120x60");
+}
+
+#[test]
+fn overview_pane_is_all_ascii() {
+    // The whole-graph overview draws every node in the fixture at once (with
+    // the minimap auto-enabled) — the biggest diagram the guard ever renders,
+    // and its title body (`Overview: N nodes`) is a new title shape.
+    let mut app = ascii_app();
+    apply_action(&mut app, Action::ToggleOverview);
+    assert!(app.ui_state.overview(), "precondition: overview is on");
+    assert_all_ascii(&render(&app, 80, 24), "overview 80x24");
+    assert_all_ascii(&render(&app, 200, 60), "overview 200x60");
 }

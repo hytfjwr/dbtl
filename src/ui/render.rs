@@ -76,6 +76,11 @@ pub struct RenderCtx<'a> {
     /// empty, so a fresh title is unchanged. Computed at the width-aware loop seam
     /// ([`App::breadcrumb`](crate::App::breadcrumb) is itself size-unaware).
     pub breadcrumb: Option<&'a str>,
+    /// The whole-graph overview title body (`"Overview: N nodes"`), replacing
+    /// the `Lineage: {name}` body (and the breadcrumb/view suffix) while the
+    /// overview is on. `None` (the default) leaves every title untouched.
+    /// Precomputed at the loop seam (`App::overview_title`) — Dag-free here.
+    pub overview_title: Option<&'a str>,
     /// Which glyph repertoire the chrome (borders/markers/badges/caret) and the
     /// lineage grid were drawn with. Defaults to Unicode; the event loop sets
     /// the app's detected/forced mode.
@@ -139,6 +144,7 @@ impl<'a> RenderCtx<'a> {
             stats: None,
             lineage_label: None,
             breadcrumb: None,
+            overview_title: None,
             glyphs: crate::GlyphMode::default(),
             bookmarks: None,
             full_model_count: None,
@@ -201,6 +207,7 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         lineage_query,
         ctx.lineage_label,
         ctx.breadcrumb,
+        ctx.overview_title,
         ctx.glyphs,
         ctx.minimap,
         ctx.layer_bands,

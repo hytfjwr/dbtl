@@ -245,3 +245,22 @@ fn load_manifest_invalid_json_returns_err() {
         "error should name the parse cause, got: {msg}"
     );
 }
+
+// ---- whole-graph overview subgraph ----
+
+#[test]
+fn full_subgraph_covers_the_whole_dag() {
+    let dag = fixture_dag();
+    let sg = dag.full_subgraph();
+    assert_eq!(sg.nodes.len(), dag.len(), "every kept node is present");
+    assert!(
+        sg.nodes.windows(2).all(|w| w[0].unique_id < w[1].unique_id),
+        "nodes are sorted by unique_id"
+    );
+    assert_eq!(
+        sg.edges.len(),
+        dag.edges().len(),
+        "every pruned edge is present"
+    );
+    assert!(sg.selected.is_empty(), "no node is emphasised");
+}

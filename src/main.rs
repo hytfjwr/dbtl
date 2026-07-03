@@ -900,6 +900,7 @@ fn event_loop(
         // the crumb so the trailing `[{v}]{lens}` title suffixes always survive.
         // `None` until the user re-roots.
         let breadcrumb = app.breadcrumb(usize::MAX);
+        let overview_title = app.overview_title();
 
         // Status-bar segments (all owned `String`s precomputed here; the borrows
         // live to the draw call). Each is set only when meaningful — an absent
@@ -920,7 +921,9 @@ fn event_loop(
                 app.active_list().len()
             ))
         };
-        let view_seg = if app.lineage_view != LineageView::default() {
+        let view_seg = if app.ui_state.overview() {
+            Some("overview")
+        } else if app.lineage_view != LineageView::default() {
             Some(view_label.as_str())
         } else {
             None
@@ -964,6 +967,7 @@ fn event_loop(
             ctx.stats = Some(&app.stats);
             ctx.lineage_label = Some(&view_label);
             ctx.breadcrumb = breadcrumb.as_deref();
+            ctx.overview_title = overview_title.as_deref();
             ctx.glyphs = app.glyph_mode;
             ctx.bookmarks = Some(&app.bookmarks);
             // Full model count for the search title's N/M (M = full list len).
@@ -1032,6 +1036,7 @@ fn event_loop(
                                 | Action::ToggleListPane
                                 | Action::DbtParse
                                 | Action::ToggleDensity
+                                | Action::ToggleOverview
                         );
                         let outcome = apply_action(app, action);
                         for effect in outcome.effects {
