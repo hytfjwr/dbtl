@@ -373,7 +373,7 @@ fn push_readme_lineage(s: &mut String, dag: &Dag, files: &BTreeMap<String, Strin
         return;
     }
     if dag.len() < FULL_GRAPH_NODE_LIMIT {
-        let sg = full_subgraph(dag);
+        let sg = dag.full_subgraph();
         push_linked_diagram(s, dag, &sg, files, href);
         return;
     }
@@ -584,26 +584,6 @@ fn model_layer_rank(node: &NodeInfo) -> usize {
     }
     let layer = crate::model_list::first_dir(node).unwrap_or("");
     layer_rank(layer)
-}
-
-/// A synthetic whole-project [`crate::Subgraph`]: every node (sorted by uid) and
-/// every edge (sorted), with no node marked selected (an empty `selected` uid
-/// matches nothing, so [`subgraph_mermaid_linked`] adds no ` *`). Reuses [`Dag::edges`]
-/// and the node map directly, so the whole-graph diagram goes through the same
-/// shared Mermaid core as every per-node one.
-fn full_subgraph(dag: &Dag) -> crate::Subgraph {
-    let mut nodes: Vec<NodeInfo> = dag.nodes().values().cloned().collect();
-    nodes.sort_by(|a, b| a.unique_id.cmp(&b.unique_id));
-    let edges = dag
-        .edges()
-        .into_iter()
-        .map(|(parent, child)| crate::Edge { parent, child })
-        .collect();
-    crate::Subgraph {
-        selected: String::new(),
-        nodes,
-        edges,
-    }
 }
 
 /// The direct (1-hop) neighbour uids of `uid`, on the `upstream` side (parents)

@@ -515,6 +515,26 @@ impl Dag {
             edges,
         }
     }
+
+    /// The whole-project [`Subgraph`]: every kept node (sorted by `unique_id`)
+    /// and every pruned 1-hop edge (sorted, via [`edges`](Dag::edges)).
+    /// `selected` is left EMPTY — the interactive overview sets it to the
+    /// current selection afterwards; the docs generator keeps it empty so no
+    /// node is emphasised.
+    pub fn full_subgraph(&self) -> Subgraph {
+        let mut nodes: Vec<NodeInfo> = self.nodes.values().cloned().collect();
+        nodes.sort_by(|a, b| a.unique_id.cmp(&b.unique_id));
+        let edges = self
+            .edges()
+            .into_iter()
+            .map(|(parent, child)| Edge { parent, child })
+            .collect();
+        Subgraph {
+            selected: String::new(),
+            nodes,
+            edges,
+        }
+    }
 }
 
 /// Trim a description (strip surrounding whitespace / trailing newlines), turning
