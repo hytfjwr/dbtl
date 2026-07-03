@@ -2,8 +2,8 @@ use super::*;
 use crate::action::{palette_candidates, Action, Direction, Mode, SearchTarget};
 use crate::effect::Effect;
 use crate::{
-    coverage_gap, reduce_selection, Dag, Focus, LensTint, LineageLens, MaterializationClass,
-    NodeInfo, SortMode, UiState,
+    coverage_gap, load_dag_from_source, reduce_selection, Dag, Focus, LensTint, LineageLens,
+    MaterializationClass, NodeInfo, SortMode, UiState,
 };
 
 use std::path::{Path, PathBuf};
@@ -795,8 +795,8 @@ fn modal_page_scroll_and_home_end_record_intent() {
 #[test]
 fn gap_next_and_prev_cycle_through_untested_models() {
     // The big fixture has zero untested MODELS, so it pins the no-op side;
-    // the sample manifest (dim_customers / agg_country_orders untested)
-    // exercises the cycle itself.
+    // the sample manifest (dim_customers / agg_country_orders /
+    // fct_customer_history untested) exercises the cycle itself.
     let mut full = app();
     apply_action(&mut full, Action::GapNext);
     assert_eq!(full.ui_state.selected(), 0, "no gaps -> selection unmoved");
@@ -817,7 +817,7 @@ fn gap_next_and_prev_cycle_through_untested_models() {
         .filter(|(_, m)| crate::coverage_gap(m))
         .map(|(i, _)| i)
         .collect();
-    assert_eq!(gaps.len(), 2, "sample manifest has two untested models");
+    assert_eq!(gaps.len(), 3, "sample manifest has three untested models");
     apply_action(&mut a, Action::GapNext);
     let first = a.ui_state.selected();
     assert!(gaps.contains(&first), "n lands on a coverage gap");
@@ -881,14 +881,14 @@ fn untested_filter_narrows_the_list_and_toggles_off() {
     let full = a.model_list.len();
     apply_action(&mut a, Action::ToggleUntestedFilter);
     assert_eq!(a.list_filter, ListFilter::Untested);
-    assert_eq!(a.active_list().len(), 2, "only the two untested models");
+    assert_eq!(a.active_list().len(), 3, "only the three untested models");
     assert!(
         a.active_list().models.iter().all(crate::coverage_gap),
         "every visible model is untested"
     );
     assert_eq!(
         a.ui_state.model_count(),
-        2,
+        3,
         "selection space follows the filtered view"
     );
     assert_eq!(a.list_filter_label(), Some("untested"));

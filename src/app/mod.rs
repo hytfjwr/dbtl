@@ -37,7 +37,7 @@ use crate::effect::Effect;
 use crate::ui::theme::{self, Theme};
 use crate::{
     build_filtered_model_list, build_model_list, compute_diff, coverage_gap, load_dag,
-    load_dag_from_source, Dag, DagDiff, ModelList, NodeInfo, SortMode, UiState,
+    load_dag_from_source_with_warnings, Dag, DagDiff, ModelList, NodeInfo, SortMode, UiState,
 };
 
 mod analysis;
@@ -590,13 +590,15 @@ impl App {
     /// Re-read the manifest from disk and rebuild, preserving the current
     /// selection by `unique_id` when possible. On a load error the app is left
     /// unchanged (the `?` returns before any mutation), so reload never corrupts
-    /// state — the caller can keep running on the old data.
-    pub fn reload(&mut self) -> Result<()> {
+    /// state — the caller can keep running on the old data. Returns the
+    /// source-mode parse warnings (unparsable schema.yml, duplicate resource
+    /// names); manifest mode always returns an empty vec.
+    pub fn reload(&mut self) -> Result<Vec<String>> {
         let current = self.selected_node().map(|n| n.unique_id.clone());
         // Re-read from the same source; returns before mutating on error.
-        let dag = match &self.source {
-            DataSource::Manifest(path) => load_dag(path)?,
-            DataSource::Project(dir) => load_dag_from_source(dir)?,
+        let (dag, warnings) = match &self.source {
+            DataSource::Manifest(path) => (load_dag(path)?, Vec::new()),
+            DataSource::Project(dir) => load_dag_from_source_with_warnings(dir)?,
         };
         self.model_list = build_model_list(&dag, self.sort);
         self.stats = compute_stats(&dag);
@@ -631,7 +633,7 @@ impl App {
         if let Some(uid) = current {
             self.select_by_unique_id(&uid);
         }
-        Ok(())
+        Ok(warnings)
     }
 
     /// Rebuild the filtered list view for the current list-search query and
