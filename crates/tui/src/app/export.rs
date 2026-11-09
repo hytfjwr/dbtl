@@ -166,6 +166,20 @@ impl App {
         Some(out)
     }
 
+    /// The `yl` payload: `col`'s column-level lineage closure as a
+    /// deterministic Markdown table — literally
+    /// [`closure_report`](crate::closure_report)'s `Display`, so the yank and
+    /// `dbtl columns` print the same bytes for the same target. Drives the
+    /// app-owned [`NameMatchResolver`](crate::NameMatchResolver); the report
+    /// labels columns `model.column` (display names).
+    pub fn column_lineage_markdown(
+        &self,
+        col: &crate::ColumnRef,
+        direction: crate::ClosureDirection,
+    ) -> String {
+        crate::closure_report(&self.dag, &self.cll, col, direction).to_string()
+    }
+
     /// Render the `--diff` baseline comparison as a reviewer-shaped "PR Impact
     /// Pack" in Markdown, ready to paste into a PR description: the changed
     /// models grouped by kind (the same listings the `D` modal shows), the

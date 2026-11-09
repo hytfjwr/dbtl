@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use dbtl::app::App;
-use dbtl::{load_dag, load_dag_from_source_with_warnings};
+use dbtl::{load_dag, load_dag_from_source_with_warnings, ColumnResolver};
 
 /// dbtl: browse dbt models and their lineage — from a compiled manifest.json
 /// or straight from project source (no `dbt compile`).
@@ -166,14 +166,50 @@ pub enum Commands {
         #[arg(long)]
         quiet: bool,
     },
+    /// Print a column's column-level lineage to stdout and exit — the same
+    /// `ColumnReport` the TUI's `yl` yank copies (Markdown by default,
+    /// `--format json` for automation). `TARGET` is `<model>.<column>`; the
+    /// model resolves by name (or exact unique_id), the column by the
+    /// resolver's normalized name. Downstream is the default direction.
+    /// Non-interactive: works in a non-TTY / CI environment.
+    Columns {
+        /// The column to trace, as `<model>.<column>` — e.g.
+        /// `cll_demo.order_id`. The model segment is a node name or unique_id;
+        /// the column segment matches case-insensitively (unquoted-identifier
+        /// normalization, same as the resolver).
+        target: String,
+        /// List the columns feeding INTO the target (provenance). Default is
+        /// the downstream blast radius.
+        #[arg(long, conflicts_with = "downstream")]
+        upstream: bool,
+        /// List the columns the target feeds (the default). Explicit so the
+        /// direction is self-documenting in scripts.
+        #[arg(long)]
+        downstream: bool,
+        /// Output format: `markdown` (default) or `json`.
+        #[arg(long, value_enum, default_value = "markdown")]
+        format: ImpactFormat,
+        /// Path to a compiled dbt manifest.json (forces manifest mode).
+        #[arg(long, conflicts_with = "source")]
+        manifest: Option<String>,
+        /// Path to a dbt project dir, parsed from source with no compile.
+        #[arg(long, conflicts_with = "manifest")]
+        source: Option<String>,
+        /// dbt project dir for auto-detect: prefer <dir>/target/manifest.json,
+        /// else parse source.
+        #[arg(long, default_value = ".")]
+        project: String,
+    },
 }
 
-/// The `dbtl impact` output format.
+/// The `dbtl impact` / `dbtl columns` output format — Markdown for pasting
+/// into a review, JSON for automation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum ImpactFormat {
-    /// The reviewer-shaped Markdown report (same bytes as the `D`→`e` export).
+    /// The reviewer-shaped Markdown report (same bytes as the `D`→`e` export
+    /// for `impact`, the `yl` yank for `columns`).
     Markdown,
-    /// The `DiffReport` payload as pretty JSON, for automation.
+    /// The payload as pretty JSON, for automation.
     Json,
 }
 
@@ -555,6 +591,91 @@ pub fn run_check(
     } else {
         anyhow::bail!("{} check(s) failed", failures.len())
     }
+}
+
+/// Run the `columns` subcommand: resolve the data source (shared with the
+/// TUI), split `<model>.<column>`, and print the column's upstream or
+/// downstream [`dbtl::ColumnReport`] — Markdown by default (the SAME bytes
+/// the `yl` yank writes), `--format json` for automation. Everything is
+/// `Err`-shaped like the other subcommands: a bad model or column name
+/// reports as plain text with a non-zero exit, never a panic or a TTY probe.
+pub fn run_columns(
+    target: &str,
+    upstream: bool,
+    format: ImpactFormat,
+    manifest: &Option<String>,
+    source: &Option<String>,
+    project: &str,
+) -> Result<()> {
+    let (model, column) = target
+        .rsplit_once('.')
+        .with_context(|| format!("columns: expected <model>.<column>, got '{target}'"))?;
+    anyhow::ensure!(
+        !model.is_empty() && !column.is_empty(),
+        "columns: expected <model>.<column>, got '{target}'"
+    );
+    let resolved = resolve_source(manifest, source, project)?;
+    let dag = &resolved.dag;
+
+    // The model segment: an exact unique_id first, else the unique node NAME
+    // (dbt names are project-unique; two matches → ambiguous, so bail and
+    // tell the caller to pass the uid).
+    let uid = if dag.contains(model) {
+        model.to_string()
+    } else {
+        let mut hits: Vec<&str> = dag
+            .nodes()
+            .values()
+            .filter(|n| n.name == model)
+            .map(|n| n.unique_id.as_str())
+            .collect();
+        hits.sort();
+        match hits.as_slice() {
+            [one] => (*one).to_string(),
+            [] => anyhow::bail!("columns: no node named '{model}'"),
+            _ => anyhow::bail!(
+                "columns: '{model}' is ambiguous ({}); pass the unique_id",
+                hits.join(", ")
+            ),
+        }
+    };
+
+    // The CLL resolver, built exactly like the app's: the auto-detected
+    // `target/catalog.json` (when present) is the top column-list tier.
+    let catalog_path = if resolved.is_source {
+        dbtl::default_catalog_path(None, Some(std::path::Path::new(&resolved.label)))
+    } else {
+        dbtl::default_catalog_path(Some(std::path::Path::new(&resolved.label)), None)
+    };
+    let catalog = catalog_path
+        .filter(|p| p.is_file())
+        .and_then(|p| dbtl::Catalog::load(&p).ok())
+        .map(std::rc::Rc::new);
+    let resolver = dbtl::NameMatchResolver::new(catalog);
+
+    let col = dbtl::ColumnRef::new(&uid, column);
+    let known = resolver.columns(dag, &uid);
+    anyhow::ensure!(
+        known.contains(&col.column),
+        "columns: '{model}' has no column '{column}' (known: {})",
+        if known.is_empty() {
+            "(none — the node has no resolvable columns)".to_string()
+        } else {
+            known.join(", ")
+        }
+    );
+
+    let direction = if upstream {
+        dbtl::ClosureDirection::Upstream
+    } else {
+        dbtl::ClosureDirection::Downstream
+    };
+    let report = dbtl::closure_report(dag, &resolver, &col, direction);
+    match format {
+        ImpactFormat::Markdown => print!("{report}"),
+        ImpactFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+    }
+    Ok(())
 }
 
 /// A project title for the docs index. Prefers the dbt project name read from

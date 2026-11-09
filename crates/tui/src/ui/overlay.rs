@@ -140,10 +140,11 @@ pub(crate) fn draw_help(
 
 // ---- structure (detail) modal --------------------------------------------
 
-/// The structure modal content as display lines: type / location / tags /
-/// description / columns table / tests list. Built once and shared by the clamp
-/// and the renderer so scroll bounds match the content.
-fn detail_display_lines(dv: &DetailView, t: &theme::Theme) -> Vec<Line<'static>> {
+/// The structure modal's lines BEFORE the columns section: type / location /
+/// tags / description, ending with the blank separator. The section split
+/// exists so [`detail_columns_line0`] and the renderer agree on where the
+/// cursor-addressable rows sit.
+fn detail_head_lines(dv: &DetailView, t: &theme::Theme) -> Vec<Line<'static>> {
     let d = &dv.detail;
     let mut out: Vec<Line> = Vec::new();
 
@@ -198,17 +199,103 @@ fn detail_display_lines(dv: &DetailView, t: &theme::Theme) -> Vec<Line<'static>>
             out.push(Line::from(format!("  {line}")));
         }
     }
-
     out.push(Line::from(""));
-    out.push(Line::styled(
-        format!("columns ({}):", d.columns.len()),
-        header_style(t),
-    ));
-    for c in &d.columns {
-        let ty = c.data_type.as_deref().unwrap_or("");
-        let desc = c.description.as_deref().unwrap_or("");
-        out.push(Line::from(format!("  {:<28} {:<14} {}", c.name, ty, desc)));
+    out
+}
+
+/// The (name, type, description) rows the columns section renders: the
+/// declared columns when the node documents them, else the resolver's
+/// inferred `col_names` (so undocumented models show SOMETHING cursorable).
+/// The returned bool marks the inferred fallback (the header flags it).
+fn detail_column_rows(dv: &DetailView) -> (Vec<(String, String, String)>, bool) {
+    let d = &dv.detail;
+    if d.columns.is_empty() {
+        (
+            dv.col_names
+                .iter()
+                .map(|n| (n.clone(), String::new(), String::new()))
+                .collect(),
+            true,
+        )
+    } else {
+        (
+            d.columns
+                .iter()
+                .map(|c| {
+                    (
+                        c.name.clone(),
+                        c.data_type.clone().unwrap_or_default(),
+                        c.description.clone().unwrap_or_default(),
+                    )
+                })
+                .collect(),
+            false,
+        )
     }
+}
+
+/// The columns section: header + one row per [`detail_column_rows`] entry,
+/// each with the h/l cursor marker (`> `, the shared `SELECTED_MARKER`) and the
+/// column-level up/down closure counts in the chrome badge glyphs.
+fn detail_column_lines(
+    dv: &DetailView,
+    glyphs: crate::GlyphMode,
+    t: &theme::Theme,
+) -> Vec<Line<'static>> {
+    let chrome = super::chrome(glyphs);
+    let (rows, inferred) = detail_column_rows(dv);
+    // ASCII-safe header tags (the `ascii_guard` renders scan this surface in
+    // GlyphMode::Ascii — no `·`).
+    let mut header = format!("columns ({})", rows.len());
+    if inferred && !rows.is_empty() {
+        header.push_str(" [from SQL]");
+    }
+    if dv.stale {
+        header.push_str(" [stale]");
+    }
+    header.push(':');
+    let mut out = vec![Line::styled(header, header_style(t))];
+    for (i, (name, ty, desc)) in rows.iter().enumerate() {
+        // The counts look up the NORMALIZED name — the resolver's key space —
+        // while the row prints the declared spelling.
+        let counts = dv
+            .col_counts
+            .get(&crate::normalize_column(name))
+            .map(|(u, d)| format!("{}{} {}{}", chrome.badge_up, u, chrome.badge_down, d))
+            .unwrap_or_default();
+        let selected = i == dv.col_index;
+        let mark = if selected {
+            super::SELECTED_MARKER
+        } else {
+            "  "
+        };
+        let text = format!("  {mark}{name:<26} {ty:<14} {desc} {counts}");
+        out.push(if selected {
+            Line::styled(text, selected_style(t))
+        } else {
+            Line::from(text)
+        });
+    }
+    out
+}
+
+/// The line index of the FIRST column row inside the modal body (head + the
+/// `columns (N):` header) — the base the cursor's ensure-visible math needs.
+/// Line-count only, so the theme/glyph args don't matter.
+pub fn detail_columns_line0(dv: &DetailView) -> usize {
+    detail_head_lines(dv, &theme::DEFAULT).len() + 1
+}
+
+/// The structure modal content as display lines: type / location / tags /
+/// description / columns table / tests list. Built once and shared by the clamp
+/// and the renderer so scroll bounds match the content.
+fn detail_display_lines(
+    dv: &DetailView,
+    glyphs: crate::GlyphMode,
+    t: &theme::Theme,
+) -> Vec<Line<'static>> {
+    let mut out = detail_head_lines(dv, t);
+    out.extend(detail_column_lines(dv, glyphs, t));
 
     out.push(Line::from(""));
     out.push(Line::styled(
@@ -227,14 +314,25 @@ fn detail_display_lines(dv: &DetailView, t: &theme::Theme) -> Vec<Line<'static>>
     out
 }
 
-/// Clamp the detail modal's scroll offset to its content/viewport (size-aware).
-/// Counts with the DEFAULT theme — the line count is theme-independent.
+/// Clamp the detail modal's scroll offset to its content/viewport (size-aware),
+/// then ensure the column cursor's row is inside the window — the minimal-pan
+/// follow the lineage cursor already uses. Counts with the DEFAULT theme —
+/// the line count is theme- and glyph-independent.
 pub fn clamp_detail_scroll(area: Rect, dv: &DetailView) -> usize {
-    clamp_modal_scroll(
-        area,
-        detail_display_lines(dv, &theme::DEFAULT).len(),
-        dv.scroll,
-    )
+    let total = detail_display_lines(dv, crate::GlyphMode::Ascii, &theme::DEFAULT).len();
+    let view_h = modal_rect(area).height.saturating_sub(2) as usize;
+    let mut scroll = clamp_modal_scroll(area, total, dv.scroll);
+    // Ensure-visible for the h/l column cursor: pan just enough to keep its
+    // row inside [scroll, scroll + view_h) — never a re-center.
+    if dv.col_index != usize::MAX && dv.col_index < dv.col_names.len() {
+        let row = detail_columns_line0(dv) + dv.col_index;
+        if row < scroll {
+            scroll = row;
+        } else if view_h > 0 && row >= scroll + view_h {
+            scroll = row + 1 - view_h;
+        }
+    }
+    scroll.min(total.saturating_sub(view_h))
 }
 
 /// Draw the structure (detail) modal for the selected node. `pub(crate)` for
@@ -250,8 +348,8 @@ pub(crate) fn draw_detail(
     draw_scrollable_modal(
         frame,
         area,
-        format!(" {}  (Esc/q to close, j/k to scroll) ", dv.name),
-        detail_display_lines(dv, t),
+        format!(" {}  (Esc/q to close, j/k scroll, h/l column) ", dv.name),
+        detail_display_lines(dv, glyphs, t),
         dv.scroll,
         glyphs,
         t,

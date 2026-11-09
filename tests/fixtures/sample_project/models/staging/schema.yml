@@ -15,6 +15,9 @@ sources:
             description: "{{ doc('sample', 'primary_key_doc') }}"
             tests:
               - not_null
+          - name: status
+          - name: country_code
+          - name: disabled_flag
       - name: customers
         # A Jinja comment in a description vanishes entirely for dbt —
         # including the doc() inside it (an undefined one errors nothing).
@@ -43,3 +46,5 @@ models:
         tests:
           - accepted_values:
               values: ["new", "shipped"]
+      - name: country_code
+      - name: disabled_flag

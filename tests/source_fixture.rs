@@ -199,7 +199,7 @@ fn schema_tests_are_captured_but_never_dag_nodes() {
 #[test]
 fn builds_dag_with_expected_counts_and_lineage() {
     let dag = load_dag_from_source(PROJECT).unwrap();
-    assert_eq!(dag.count_by_resource_type("model"), 5, "model count");
+    assert_eq!(dag.count_by_resource_type("model"), 6, "model count");
     assert_eq!(dag.count_by_resource_type("source"), 2, "source count");
     assert_eq!(dag.count_by_resource_type("seed"), 1, "seed count");
     assert_eq!(dag.count_by_resource_type("snapshot"), 2, "snapshot count");
@@ -237,7 +237,11 @@ fn columns_preserve_schema_definition_order() {
         .expect("stg_orders detail")
         .columns;
     let names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
-    assert_eq!(names, vec!["id", "status"], "columns kept in schema order");
+    assert_eq!(
+        names,
+        vec!["id", "status", "country_code", "disabled_flag"],
+        "columns kept in schema order"
+    );
 }
 
 #[test]

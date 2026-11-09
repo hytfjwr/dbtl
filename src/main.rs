@@ -25,7 +25,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use cli::{build_app, load_baseline, run_check, run_docs, run_impact, Cli, Commands};
+use cli::{build_app, load_baseline, run_check, run_columns, run_docs, run_impact, Cli, Commands};
 use event_loop::{event_loop, find_dbt};
 use terminal::{
     detect_keyboard_enhancement, resolve_glyph_mode, set_keyboard_enhancement, set_mouse_capture,
@@ -82,6 +82,17 @@ fn run(cli: &Cli) -> Result<()> {
             quiet,
         }) => {
             return run_check(diff, *coverage_min, manifest, source, project, *quiet);
+        }
+        Some(Commands::Columns {
+            target,
+            upstream,
+            format,
+            manifest,
+            source,
+            project,
+            ..
+        }) => {
+            return run_columns(target, *upstream, *format, manifest, source, project);
         }
         None => {}
     }

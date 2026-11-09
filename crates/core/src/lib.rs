@@ -7,6 +7,7 @@
 //! `Subgraph`→Mermaid text core shared by the TUI yank and `dbtl-docs`.
 
 pub mod catalog;
+pub mod cll;
 pub mod compiled;
 pub mod dag;
 pub mod diff;
@@ -19,6 +20,11 @@ pub mod select;
 pub mod source;
 
 pub use catalog::{default_catalog_path, Catalog, CatalogColumn, CatalogNode, CatalogStat};
+pub use cll::{
+    closure_report, normalize_column, resolution_sql, ClosureDirection, ColumnEdge, ColumnEdgeKind,
+    ColumnLineage, ColumnRef, ColumnReport, ColumnResolver, ColumnRow, Confidence,
+    NameMatchResolver,
+};
 pub use compiled::{default_compiled_dir, default_target_dir, CompiledSql};
 pub use dag::{
     coverage_gap, is_exposure, load_dag, ColumnInfo, Dag, Edge, ExposureInfo, MacroInfo,

@@ -683,6 +683,37 @@ impl Dag {
         self.details.get(unique_id)
     }
 
+    /// The kept 1-hop parent uids of `unique_id` (empty slice when none or
+    /// unknown). Order is the pruned adjacency's — deterministic per manifest.
+    /// The column-lineage engine resolves each node's edges against exactly
+    /// this set.
+    pub fn direct_parents(&self, unique_id: &str) -> &[String] {
+        self.parents.get(unique_id).map_or(&[], Vec::as_slice)
+    }
+
+    /// The kept 1-hop child uids of `unique_id` (empty slice when none or
+    /// unknown) — the counterpart of [`direct_parents`](Dag::direct_parents),
+    /// for callers scanning a node's consumers (column-lineage downstream
+    /// queries) without a full subgraph build.
+    pub fn direct_children(&self, unique_id: &str) -> &[String] {
+        self.children.get(unique_id).map_or(&[], Vec::as_slice)
+    }
+
+    /// Test-only seam: inject a compiled-SQL entry directly. A `stale` flag
+    /// cannot be expressed in a manifest literal, and forging
+    /// `target/compiled/` mtimes inside a unit test needs `filetime`-grade APIs
+    /// the crate does not carry.
+    #[cfg(test)]
+    pub fn set_compiled_for_test(&mut self, unique_id: &str, code: &str, stale: bool) {
+        self.compiled.insert(
+            unique_id.to_string(),
+            CompiledSql {
+                code: code.to_string(),
+                stale,
+            },
+        );
+    }
+
     /// The name of the package that OWNS this graph — the ROOT project's name
     /// when the manifest records it (see [`project_name`](Dag::project_name)),
     /// else the most frequent `unique_id` project segment

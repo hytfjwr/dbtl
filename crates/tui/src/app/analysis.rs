@@ -150,6 +150,16 @@ impl App {
         (down, up)
     }
 
+    /// The per-column `(upstream, downstream)` transitive closure sizes for a
+    /// node — the structure modal's `↑u ↓d` counts beside each column row.
+    /// Drives the app-owned [`NameMatchResolver`](crate::NameMatchResolver)
+    /// through a fresh lazy [`ColumnLineage`](crate::ColumnLineage) (the
+    /// resolver's own per-uid memos persist; the engine's per-node memo is
+    /// one-shot by design). Keyed by normalized column name; deterministic.
+    pub fn column_counts_for(&self, uid: &str) -> BTreeMap<String, (usize, usize)> {
+        crate::ColumnLineage::new(&self.dag, &self.cll).column_counts(uid)
+    }
+
     /// The full blast-radius breakdown of a node: `(downstream count WITHOUT
     /// exposures, upstream count, downstream exposure count)`. Exposures are
     /// split out so "downstream" keeps meaning *buildable* resources (the

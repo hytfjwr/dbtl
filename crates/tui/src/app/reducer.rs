@@ -145,6 +145,22 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             // source/seed/snapshot the lineage cursor sits on, NOT the root).
             let (downstream_count, upstream_count) = app.impact_counts_for(&uid);
             let catalog = app.catalog_note(&uid, &detail);
+            // Column-level lineage snapshot (lazy + memoized in the resolver;
+            // resolving THIS node + its direct children is the only cost).
+            // `col_names` is the cursor-addressable list — declared columns,
+            // else the resolver's inferred names so an undocumented model
+            // still gets a cursor + counts.
+            let col_counts = app.column_counts_for(&uid);
+            let col_names: Vec<String> = if detail.columns.is_empty() {
+                col_counts.keys().cloned().collect()
+            } else {
+                detail.columns.iter().map(|c| c.name.clone()).collect()
+            };
+            let col_index = if col_names.is_empty() { usize::MAX } else { 0 };
+            let stale = matches!(
+                crate::resolution_sql(&app.dag, &uid),
+                Some((_, crate::Confidence::Stale))
+            );
             app.mode = Mode::Detail(DetailView {
                 model_id: uid,
                 name,
@@ -153,6 +169,10 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                 downstream_count,
                 upstream_count,
                 catalog,
+                col_names,
+                col_index,
+                col_counts,
+                stale,
                 scroll: 0,
             });
             Outcome::cont()
@@ -163,9 +183,33 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         }
         // Open the yank-prefix which-key (`y` + key). The menu itself is
         // rendered from the M::Yank BINDINGS rows; the one-shot close lives in
-        // the post-match step at the bottom of this function.
+        // the post-match step at the bottom of this function. The Detail
+        // modal's column target is stashed for `yl` — the which-key closes to
+        // Selection after any key, so the column must be captured BEFORE the
+        // mode swap. (The `y` row exists in Mode::Detail's bindings.)
         Action::YankPrefix => {
+            app.pending_col = match &app.mode {
+                Mode::Detail(dv) if dv.col_index != usize::MAX => dv
+                    .col_names
+                    .get(dv.col_index)
+                    .map(|c| crate::ColumnRef::new(&dv.model_id, c)),
+                _ => None,
+            };
             app.mode = Mode::Yank;
+            Outcome::cont()
+        }
+        // The structure modal's column cursor (h/l): a SELECTION, not a scroll —
+        // the loop's per-frame `clamp_detail_scroll` does the ensure-visible.
+        Action::DetailColumnMove(dir) => {
+            if let Mode::Detail(dv) = &mut app.mode {
+                if dv.col_index != usize::MAX && !dv.col_names.is_empty() {
+                    let last = dv.col_names.len() - 1;
+                    dv.col_index = match dir {
+                        Direction::Up | Direction::Left => dv.col_index.saturating_sub(1),
+                        _ => (dv.col_index + 1).min(last),
+                    };
+                }
+            }
             Outcome::cont()
         }
         // Overlay scroll: acts inside whichever scrollable overlay is open. The
@@ -406,6 +450,23 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                 }
                 None => {
                     app.set_notice("no compiled SQL for this node (run dbt compile)");
+                    Outcome::cont()
+                }
+            }
+        }
+        Action::YankColumnLineage => {
+            // `pending_col` is rewritten on every YankPrefix: `Some` = the
+            // menu opened over the structure modal's column cursor; `None` =
+            // it came from selection (no column under a cursor), so explain
+            // how to pick one instead of writing noise to the clipboard.
+            match app.pending_col.take() {
+                Some(col) => {
+                    let text =
+                        app.column_lineage_markdown(&col, crate::ClosureDirection::Downstream);
+                    yank_with_notice(app, Some(text), "Copied column lineage")
+                }
+                None => {
+                    app.set_notice("no column selected — Enter, h/l pick a column, then y l");
                     Outcome::cont()
                 }
             }

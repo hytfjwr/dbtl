@@ -9,6 +9,9 @@ models:
       - name: id
         data_tests:
           - not_null
+      - name: status
+      - name: country_code
+      - name: country
   - name: dim_customers
     description: "Customer dimension"
     config:
