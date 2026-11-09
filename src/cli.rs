@@ -257,10 +257,11 @@ pub fn build_app(cli: &Cli) -> Result<App> {
     // the graph's own package). Source mode resolves to a no-op naturally —
     // every synthesized uid already names the project.
     let dag = if cli.project_only {
-        match dag.primary_package() {
-            Some(pkg) => dag.filtered(|n| n.unique_id.split('.').nth(1) == Some(pkg.as_str())),
-            None => dag,
+        let (dag, warning) = project_only_filter(dag);
+        if let Some(w) = warning {
+            eprintln!("warning (--project-only): {w}");
         }
+        dag
     } else {
         dag
     };
@@ -275,6 +276,24 @@ pub fn build_app(cli: &Cli) -> Result<App> {
         app.set_run_results(PathBuf::from(rr))?;
     }
     Ok(app)
+}
+
+/// Apply `--project-only`: keep only nodes whose `unique_id` package segment
+/// is the owning package ([`Dag::primary_package`]). Returns the filtered Dag
+/// plus a warning to surface when the filter emptied the graph — a manifest
+/// whose recorded root project contributes NO kept nodes (a deps-only
+/// project, or every local node disabled) is a valid if surprising outcome:
+/// the empty graph is honest, whereas silently re-scoping to a foreign
+/// package would show the exact opposite of the flag's intent.
+fn project_only_filter(dag: dbtl::Dag) -> (dbtl::Dag, Option<String>) {
+    let Some(pkg) = dag.primary_package() else {
+        return (dag, None);
+    };
+    let filtered = dag.filtered(|n| n.unique_id.split('.').nth(1) == Some(pkg.as_str()));
+    let warning = filtered
+        .is_empty()
+        .then(|| format!("no nodes belong to the project '{pkg}' — the graph is empty"));
+    (filtered, warning)
 }
 
 /// Run the `docs` subcommand: resolve the data source (shared with the TUI),
@@ -546,7 +565,7 @@ pub fn run_check(
 /// else the path's file name) only when the graph has no name at all, and
 /// finally to a generic title so the heading is never blank.
 fn docs_project_name(dag: &dbtl::Dag, label: &str) -> String {
-    if let Some(name) = dag.project_name().filter(|s| !s.is_empty()) {
+    if let Some(name) = dag.project_name().filter(|s| !s.trim().is_empty()) {
         return name.to_string();
     }
     let path = std::path::Path::new(label);
@@ -597,4 +616,76 @@ pub fn load_baseline(path: &str) -> Result<(dbtl::Dag, String)> {
         "--diff: {path} is neither a manifest.json file nor a dbt project dir \
          (no target/manifest.json or dbt_project.yml found)"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dbtl::{Dag, RawManifest, RawMetadata, RawNode};
+    use std::collections::HashMap;
+
+    /// A `Dag` whose recorded root project is `project_name`, built from
+    /// model `unique_id`s (each `model.<pkg>.<name>` — the package segment is
+    /// what `--project-only` scopes by).
+    fn dag_with(project_name: Option<&str>, uids: &[&str]) -> Dag {
+        let nodes = uids
+            .iter()
+            .map(|uid| {
+                (
+                    uid.to_string(),
+                    RawNode {
+                        name: uid.rsplit('.').next().unwrap_or(uid).into(),
+                        resource_type: "model".into(),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        Dag::build(&RawManifest {
+            metadata: RawMetadata {
+                project_name: project_name.map(str::to_string),
+            },
+            nodes,
+            sources: HashMap::new(),
+            exposures: HashMap::new(),
+            macros: HashMap::new(),
+            semantic_models: HashMap::new(),
+            metrics: HashMap::new(),
+            saved_queries: HashMap::new(),
+            unit_tests: HashMap::new(),
+            parent_map: HashMap::new(),
+            child_map: HashMap::new(),
+        })
+    }
+
+    #[test]
+    fn project_only_filter_warns_when_the_graph_goes_empty() {
+        // A deps-only project: the recorded root `zzz_proj` contributes NO
+        // nodes — every kept node belongs to an installed package. Strict
+        // scope keeps none of them, so the graph is empty AND a warning
+        // explains it (re-scoping to `aaa_pkg` would show the exact opposite
+        // of the flag's intent).
+        let dag = dag_with(Some("zzz_proj"), &["model.aaa_pkg.a", "model.aaa_pkg.b"]);
+        let (dag, warning) = project_only_filter(dag);
+        assert!(dag.is_empty(), "the filter stays strict — no foreign nodes");
+        let w = warning.expect("an empty result must carry a warning");
+        assert!(
+            w.contains("zzz_proj"),
+            "the warning names the missing project, got: {w}"
+        );
+    }
+
+    #[test]
+    fn project_only_filter_keeps_root_nodes_silently() {
+        // The normal case: the root project's nodes survive, foreign ones are
+        // dropped, no warning.
+        let dag = dag_with(
+            Some("zzz_proj"),
+            &["model.zzz_proj.root_model", "model.aaa_pkg.a"],
+        );
+        let (dag, warning) = project_only_filter(dag);
+        assert_eq!(dag.len(), 1, "only the root project's model survives");
+        assert!(dag.contains("model.zzz_proj.root_model"));
+        assert!(warning.is_none(), "no warning when the scope is non-empty");
+    }
 }

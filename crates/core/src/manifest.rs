@@ -229,8 +229,10 @@ pub struct RawMetadata {
 /// fields we don't model, and they must be ignored.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RawManifest {
-    /// `#[serde(default)]`: pre-1.6 manifests and minimal hand-built fixtures
-    /// omit the key entirely; `Dag::build` then falls back to inferring the
+    /// `#[serde(default)]`: real dbt manifests always carry a `metadata`
+    /// object (though `project_name` exists in it only since dbt 1.6) — this
+    /// guard is for manifests that omit the object entirely (minimal or
+    /// hand-built ones). Either way `Dag::build` falls back to inferring the
     /// project name from node `unique_id`s.
     #[serde(default)]
     pub metadata: RawMetadata,

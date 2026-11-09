@@ -479,13 +479,14 @@ impl Dag {
             exposures,
             macros,
             node_macros,
-            // An empty metadata name is as good as absent — same guard the
-            // `unique_id`-segment fallbacks apply (`!seg.is_empty()`).
+            // A blank metadata name is as good as absent — the same guard the
+            // `unique_id`-segment fallbacks apply (`!seg.is_empty()`), plus
+            // whitespace-only.
             root_project: manifest
                 .metadata
                 .project_name
                 .clone()
-                .filter(|s| !s.is_empty()),
+                .filter(|s| !s.trim().is_empty()),
         }
     }
 
@@ -1486,37 +1487,29 @@ mod tests {
         );
     }
 
-    /// A two-package manifest: `zzz_proj` is the root project (one model) and
-    /// `aaa_pkg` an installed package (more models — it wins BOTH the
-    /// lexicographic min AND the frequency count), parameterized by whether
-    /// `metadata.project_name` is recorded (real dbt ≥1.6 manifests do).
+    /// A three-package manifest where the uid-segment heuristics DISAGREE —
+    /// `aaa_pkg` is the lexicographic min (1 model), `mmm_pkg` the most
+    /// frequent (3 models), `zzz_proj` the recorded root project (1 model) —
+    /// parameterized by `metadata.project_name` so each test picks
+    /// recorded-vs-fallback. The min/most-frequent divergence matters: a
+    /// fixture where they coincide could not detect the wrong one being used.
     fn multi_package_manifest(root_project: Option<&str>) -> RawManifest {
-        let nodes = HashMap::from([
-            (
-                "model.zzz_proj.root_model".to_string(),
+        let mut nodes = HashMap::new();
+        let mut model = |uid: &str, name: &str| {
+            nodes.insert(
+                uid.to_string(),
                 RawNode {
-                    name: "root_model".into(),
+                    name: name.into(),
                     resource_type: "model".into(),
                     ..Default::default()
                 },
-            ),
-            (
-                "model.aaa_pkg.pkg_a".to_string(),
-                RawNode {
-                    name: "pkg_a".into(),
-                    resource_type: "model".into(),
-                    ..Default::default()
-                },
-            ),
-            (
-                "model.aaa_pkg.pkg_b".to_string(),
-                RawNode {
-                    name: "pkg_b".into(),
-                    resource_type: "model".into(),
-                    ..Default::default()
-                },
-            ),
-        ]);
+            );
+        };
+        model("model.zzz_proj.root_model", "root_model");
+        model("model.aaa_pkg.pkg_a", "pkg_a");
+        for i in 0..3 {
+            model(&format!("model.mmm_pkg.pkg_{i}"), &format!("mmm_{i}"));
+        }
         RawManifest {
             metadata: crate::manifest::RawMetadata {
                 project_name: root_project.map(str::to_string),
@@ -1536,21 +1529,55 @@ mod tests {
 
     #[test]
     fn project_name_prefers_root_project_metadata() {
-        // The package name `aaa_pkg` sorts BEFORE `zzz_proj` and outnumbers it
-        // — but metadata says the root project is `zzz_proj`, and that wins.
+        // `aaa_pkg` sorts BEFORE `zzz_proj` and `mmm_pkg` outnumbers it — but
+        // metadata says the root project is `zzz_proj`, and that wins for both
+        // the display name and the `--project-only` scope.
         let dag = Dag::build(&multi_package_manifest(Some("zzz_proj")));
         assert_eq!(dag.project_name(), Some("zzz_proj"));
         assert_eq!(dag.primary_package().as_deref(), Some("zzz_proj"));
     }
 
     #[test]
-    fn project_name_falls_back_to_min_segment_without_metadata() {
-        // Old/hand-built manifests record no `metadata.project_name`: keep the
-        // legacy inference (min segment for the name, most frequent for the
-        // primary package) so behaviour is unchanged there.
+    fn project_name_and_primary_package_fall_back_to_uid_heuristics() {
+        // Manifests recording no `metadata.project_name` keep the legacy
+        // inference — and the two heuristics must not be conflated: the
+        // display name is the lexicographic min (`aaa_pkg`), the owning
+        // package the most frequent (`mmm_pkg`).
         let dag = Dag::build(&multi_package_manifest(None));
         assert_eq!(dag.project_name(), Some("aaa_pkg"));
-        assert_eq!(dag.primary_package().as_deref(), Some("aaa_pkg"));
+        assert_eq!(dag.primary_package().as_deref(), Some("mmm_pkg"));
+    }
+
+    #[test]
+    fn blank_project_name_metadata_falls_back_too() {
+        // An empty or whitespace-only `project_name` is as good as absent —
+        // the fallback answers, not the blank string.
+        for blank in ["", "  "] {
+            let dag = Dag::build(&multi_package_manifest(Some(blank)));
+            assert_eq!(dag.project_name(), Some("aaa_pkg"), "blank {blank:?}");
+            assert_eq!(
+                dag.primary_package().as_deref(),
+                Some("mmm_pkg"),
+                "blank {blank:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn primary_package_names_root_even_when_root_has_no_nodes() {
+        // A deps-only manifest records a root project that contributes NO
+        // nodes: `primary_package` still names it honestly (it is a fact
+        // about the manifest, not a vote over surviving uids) — and a
+        // `--project-only` filter therefore yields an EMPTY graph, which
+        // `cli.rs` surfaces as a warning rather than silently re-scoping to a
+        // foreign package.
+        let mut manifest = multi_package_manifest(Some("zzz_proj"));
+        manifest.nodes.remove("model.zzz_proj.root_model");
+        let dag = Dag::build(&manifest);
+        assert_eq!(dag.primary_package().as_deref(), Some("zzz_proj"));
+        assert!(dag
+            .filtered(|n| n.unique_id.split('.').nth(1) == Some("zzz_proj"))
+            .is_empty());
     }
 
     #[test]
