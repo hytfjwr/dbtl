@@ -84,13 +84,13 @@ Move a cursor between lineage nodes and re-root on any model. You can filter by 
 <td valign="top">
 
 ### Trace a path
-The path from the root to the cursor lights up, including the connectors between nodes, and everything off the path dims. Compact mode (`v`) shrinks boxes to one-row nodes for big graphs. Overview mode (`w`) shows the whole DAG.
+The path from the root to the cursor lights up, including the connectors between nodes, and everything off the path dims. Anchor the path's start on the selected model with `p` and it answers "why does X reach Y" for any two nodes — dbt's `A+,+B`. Compact mode (`v`) shrinks boxes to one-row nodes for big graphs. Overview mode (`w`) shows the whole DAG.
 
 </td>
 <td valign="top">
 
 ### Coverage and impact lenses
-Lenses tint the lineage by test coverage, downstream blast radius, layer, or layer violation. There is also a stats dashboard, a key to jump between untested models, and one-key export to Mermaid, Graphviz, or a Markdown impact report.
+Lenses tint the lineage by test coverage, downstream blast radius, layer, layer violation, or `--diff` changes — and, with `run_results.json` loaded, by last-run status and runtime heat. There is also a stats dashboard, a key to jump between untested models, and one-key export to Mermaid, Graphviz, or a Markdown impact report.
 
 </td>
 </tr>
@@ -103,8 +103,22 @@ Compare against another manifest or checkout. Added models show green and modifi
 </td>
 <td valign="top">
 
-### Exposures show who is affected
-dbt exposures such as dashboards and notebooks appear as end nodes at the right edge of the lineage, in both manifest and source mode. The impact report lists each affected exposure with its type and owner.
+### Exposures and the semantic layer
+dbt exposures such as dashboards and notebooks appear as end nodes at the right edge of the lineage, in both manifest and source mode — and a compiled manifest adds semantic models, metrics, and saved queries there too. The impact report lists each affected exposure with its type and owner, dbt unit tests count toward the `tests:N` badge, and the `Enter` structure view shows governance fields (access, group, contract, version) when declared.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### The last run and the warehouse
+`dbtl` auto-detects `run_results.json` and `catalog.json` next to the data source (usually under `target/`). The last run adds two `t` lenses — per-node status and runtime heat — a status chip, and a runtime-weighted critical path in the `S` dashboard. The catalog puts real column types, row counts, and a schema↔warehouse drift check in the `Enter` structure view.
+
+</td>
+<td valign="top">
+
+### Search and select like dbt
+The `/` list search takes a `!`-prefixed dbt selector (`!tag:nightly`, `!+fct_orders`, `!state:modified+` with `--diff`) or a `?`-prefixed full-text query over descriptions, column names, and raw SQL. `--select` accepts the same selectors.
 
 </td>
 </tr>
@@ -123,8 +137,12 @@ $ dbtl --project /path/to/dbt-project
 $ dbtl --manifest /path/to/target/manifest.json
 $ dbtl --source /path/to/dbt-project
 
-# Select a model at startup and auto-reload on source changes
-$ dbtl --select stg_orders --watch
+# Select a model at startup — a name, or a dbt selector spec (first match wins)
+$ dbtl --select stg_orders --watch              # --watch: auto-reload on source changes
+$ dbtl --select 'tag:nightly'
+
+# Hide models installed from dbt packages (manifest mode)
+$ dbtl --project-only
 
 # Pick a color theme (or set DBTL_THEME)
 $ dbtl --theme ayu-mirage
@@ -133,6 +151,9 @@ $ dbtl --list-themes
 # Diff against a baseline: "what does my branch change?"
 $ dbtl --diff /path/to/main-checkout            # another worktree (or its manifest.json)
 $ dbtl --diff target/manifest.prod.json         # a saved production manifest
+
+# The last run's statuses + runtimes (target/run_results.json is auto-detected)
+$ dbtl --run-results /path/to/run_results.json
 
 # Generate static Markdown docs (no TUI)
 $ dbtl docs --out ./dbt-docs                    # auto-detect the data source, write into ./dbt-docs
@@ -150,15 +171,28 @@ $ dbtl check --diff /path/to/main-checkout --coverage-min 80      # + new violat
 
 ### How `--diff` compares
 
-The diff identifies nodes by `unique_id`, so a rename shows up as one node removed and another added. That is also how every downstream `ref()` sees it. It compares the things a dbt change actually moves: materialization, direct dependencies, columns, tests, and model SQL.
+The diff identifies nodes by `unique_id`, so a rename shows up as one node removed and another added — which is also how every downstream `ref()` sees it. It compares the surfaces a dbt change actually moves: materialization, direct dependencies, columns, tests, and model SQL.
 
-There are two caveats. Comparing raw SQL cannot see a change inside a shared macro. A compiled-manifest baseline also contains the models of installed packages, which a source-parsed current side does not. For the cleanest result, compare a manifest against a manifest.
+When both sides are compiled manifests, a change inside a shared **macro** is caught too: the diff reads each manifest's `macros` plus every node's `depends_on.macros` and marks callers of a changed macro — including transitive macro→macro calls — with a `macro:<name>` reason. That is the one surface raw SQL can't show.
+
+One caveat left: a compiled-manifest baseline also contains installed packages' models, which a source-parsed current side doesn't — for the cleanest signal, diff manifest against manifest, and use `--project-only` if installed-package noise matters.
+
+#### Hiding installed packages (`--project-only`)
+
+A compiled manifest mixes `deps`-installed packages (`dbt_utils`, …) into `nodes`. `--project-only` keeps only the project's own models: the owning package is the most frequent `model.<pkg>.<name>` uid segment, and every dangling edge/side-map entry from dropped nodes is pruned with them. Each node's `package_name` is shown in the `Enter` structure view either way.
+
+### The last run and the warehouse
+
+Two more dbt artifacts are picked up automatically when they sit next to the data source — the manifest's directory (usually `target/`) in manifest mode, `<project>/target/` in source mode. A missing file just means less data, never an error.
+
+- **`run_results.json`** — the last `dbt run`/`build`/`test` outcome — adds two `t` lenses after Diff: **RunStatus** (error/fail → red, warn → yellow, skipped → muted; success keeps the node colour) and **RunTime** (execution-time heat on the same low/mid/high ramp as blast radius). The status bar gains a `run 12/34 @2024-05-01` chip — how many of the graph's nodes the artifact covers plus its date, so a stale or partial run is visible — and the `S` dashboard a runtime-weighted critical path. Pass `--run-results <path>` to point at a different file; `r` reload re-reads it, so `--watch` picks up a fresh `dbt run` in place.
+- **`catalog.json`** — the warehouse record `dbt docs generate` writes — makes the `Enter` structure view show what the warehouse actually has: real column types, row counts, byte size, and a `drift:` line when the documented columns and the warehouse disagree (documented-but-missing vs undocumented).
 
 ### Markdown docs (`dbtl docs`)
 
 `dbtl docs --out <DIR>` never starts the TUI, so it runs in CI without a TTY. It writes a Markdown documentation tree that you can commit to a repo and read on GitHub or GitLab:
 
-- **One page per node** (model, source, seed, snapshot, exposure). Each page has the description, materialization, schema, tags, a column table in dbt definition order, tests, direct and transitive upstream/downstream links, and a Mermaid lineage diagram.
+- **One page per node** — model, source, seed, snapshot, exposure, plus semantic models, metrics, and saved queries from a compiled manifest. Each page has the description, materialization, schema, tags, a column table in dbt definition order, tests, direct and transitive upstream/downstream links, and a Mermaid lineage diagram.
 - **An index `README.md`** with a project summary, test coverage %, a list of orphan models, a linked table of every node, and a whole-project Mermaid diagram. Large projects get the diagram split by layer.
 
 The data source is chosen the same way as in the TUI (`--manifest` / `--source` / `--project` / auto-detect). The output is deterministic: regenerating from the same input produces byte-identical files.
@@ -167,26 +201,6 @@ Every generated file starts with a `<!-- Generated by dbtl. Do not edit. -->` ma
 
 - **`--clean`** writes the docs, then deletes marked files under `<DIR>` that this run did not regenerate, such as the pages of removed or renamed models. Only marked files are ever removed, so a hand-written `.md` in the same directory is safe.
 - **`--check`** writes nothing. It compares the generated set against `<DIR>`, prints one line per difference (a missing, changed, or stale marked file), and exits 1 if there are any. Unlike running `git diff --exit-code` after regenerating, it also catches stale pages, and it needs no checkout step in CI: `dbtl docs --out docs/ --check`.
-
-The diff keys nodes by `unique_id` (a rename reads as removed + added — which is
-what it is to every downstream `ref()`), and compares the surfaces a dbt change
-actually moves: materialization, direct dependencies, columns, tests, and model
-SQL. When both sides are compiled manifests, a change inside a shared **macro**
-is caught too: the diff reads each manifest's `macros` + every node's
-`depends_on.macros` and marks callers of a changed macro (including transitive
-macro→macro calls) with a `macro:<name>` reason — the one surface raw SQL
-can't show. One caveat left: a compiled-manifest baseline also contains
-installed packages' models, which a source-parsed current side doesn't — for
-the cleanest signal, diff manifest against manifest, and keep `--project-only`
-on both sides if installed-package noise matters.
-
-#### Hiding installed packages (`--project-only`)
-
-A compiled manifest mixes `deps`-installed packages (`dbt_utils`, …) into
-`nodes`. `--project-only` keeps only the project's own models: the owning
-package is the most frequent `model.<pkg>.<name>` uid segment, and every
-dangling edge/side-map entry from dropped nodes is pruned with them. Each
-node's `package_name` is shown in the `d` detail modal either way.
 
 ### PR impact + CI checks (`dbtl impact` / `dbtl check`)
 
@@ -217,7 +231,6 @@ dbtl check  --manifest target/manifest.json --diff "$BASE/target/manifest.json" 
     --coverage-min 80
 ```
 
-
 ## Keybindings
 
 Press `?` inside the app for the full list. The most useful ones:
@@ -225,28 +238,41 @@ Press `?` inside the app for the full list. The most useful ones:
 | Key | Action |
 |------|------|
 | `j` `k` `h` `l` | Move in the list / move the lineage cursor |
+| `g` `G` | Jump to the first / last model in the list |
+| `PgUp` `PgDn` | Page the model list (`Ctrl-u` `Ctrl-d` also work) |
+| `H` `L` | Send the lineage cursor to the first / last column |
 | `Tab` | Switch focus between list ⇄ lineage |
-| `Enter` | Structure view (columns / tests / description); on a lineage node, re-root to it |
-| `/` | Fuzzy search (list filter / lineage jump) |
+| `Ctrl-b` `Cmd-b` | Show / hide the model list pane |
+| `Enter` | Structure view (columns / tests / description); on a lineage model, re-root to it |
+| `/` | Fuzzy search (list filter / lineage jump) — a `!` prefix is a dbt selector, a `?` prefix full-text search |
+| `p` | Anchor / clear a two-node path (the highlight runs anchor↔cursor) |
 | `u` `d` `[` `]` `0` | Filter the lineage view (direction / depth / reset) |
 | `b` `f` | Back / forward in re-root history |
-| `t` | Cycle lineage lens (test coverage → blast-radius heat → layer → layer violation → diff) |
+| `z` | Home the lineage cursor and re-center |
+| `r` | Reload the data source |
+| `t` | Cycle lineage lens (off → coverage → blast radius → layer → layer violation → diff → run status → runtime; lenses with no data are skipped) |
 | `v` | Toggle compact lineage (1-row nodes — fits ~2x more graph on screen) |
 | `w` | Toggle whole-graph overview (the entire DAG in the lineage pane; Compact, minimap on) |
+| `M` | Toggle the lineage minimap |
+| `.` | Cycle the list sort (layer → downstream → tests) |
+| `n` `N` | Jump to the next / previous untested model |
+| `Space` `'` `"` | Bookmark / cycle bookmarks forward / backward |
+| `T` `*` | Filter the list to untested / bookmarked models |
 | `s` / `S` | SQL preview (syntax-highlighted) / project stats dashboard |
 | `o` | Open the model's SQL in `$EDITOR` |
 | `m` `x` `c` | Copy lineage as Mermaid / Graphviz DOT / ASCII art |
 | `Y` `C` | Copy model name / raw SQL |
 | `i` / `e` | Copy a Markdown impact report / write the diagram to a file |
 | `!` | Copy the view as a runnable `dbt build --select` command |
-| `y` + key | Yank prefix menu — `yy` unique_id, `ym` Mermaid, `yx` DOT, `yc` ASCII, `yC` SQL, `yi` impact, `y!` selector (the single keys above still work) |
-| `Space` `'` | Bookmark / cycle bookmarks |
-| `T` `*` | Filter the list to untested / bookmarked models |
+| `y` + key | Yank prefix menu — `yy` unique_id, `yY` name, `ym` Mermaid, `yx` DOT, `yc` ASCII, `yC` SQL, `yi` impact, `y!` selector (the single keys above still work) |
 | `P` | Run `dbt parse` and switch to the compiled manifest |
 | `D` | PR impact report vs the `--diff` baseline (then `e` exports it as Markdown, `y` copies the suggested `dbt build` command) |
-| `Ctrl-p` | Command palette |
+| `Ctrl-p` `Cmd-p` | Command palette |
 | `Ctrl-t` | Cycle the color theme |
-| `q` | Quit |
+| `?` | Toggle the full help overlay |
+| `q` | Quit (`Ctrl-c` from anywhere) |
+
+Inside a modal, `j`/`k` scroll, `d`/`u`/`Ctrl-d`/`Ctrl-u`/`PgDn`/`PgUp` page, `g`/`G` jump to the top / bottom, and `Esc`/`Enter`/`q` (or `?` for the help overlay) closes. In a `/` search, `Up`/`Down` move between matches.
 
 The mouse works too: click a lineage node to re-root, and use the wheel to scroll. The lineage pane pans in both directions. A horizontal wheel notch (trackpad swipe or tilt wheel) or `Shift`+wheel scrolls it sideways.
 
