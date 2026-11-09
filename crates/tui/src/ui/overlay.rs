@@ -483,9 +483,10 @@ fn sql_line_spans(chars: &[char], kinds: &[SqlKind], t: &theme::Theme) -> Line<'
 /// Jinja `{{ }}` / `{% %}` regions, all from [`theme`] roles. NO wrapping (it
 /// would desync the line-count scroll clamp); long lines truncate at the
 /// width. Text bytes are preserved verbatim — only colour ever changes.
+/// Highlights the ACTIVE variant (`sv.active_sql()`): raw or compiled.
 fn sql_display_lines(sv: &SqlView, t: &theme::Theme) -> Vec<Line<'static>> {
     let mut state = SqlState::Normal;
-    sv.sql
+    sv.active_sql()
         .lines()
         .map(|line| {
             let chars: Vec<char> = line.chars().collect();
@@ -497,18 +498,20 @@ fn sql_display_lines(sv: &SqlView, t: &theme::Theme) -> Vec<Line<'static>> {
 }
 
 /// Clamp the SQL modal's scroll offset to its content/viewport (size-aware),
-/// mirroring [`clamp_detail_scroll`]. Counts `sv.sql.lines()` directly instead
-/// of building [`sql_display_lines`]: the highlighter maps input lines 1:1
-/// (never splits or injects — asserted by `sql_display_lines_count_matches_
-/// input_lines`), and the clamp runs EVERY FRAME while the modal is open, so
-/// it must not re-run the tokenizer.
+/// mirroring [`clamp_detail_scroll`]. Counts the active variant's `.lines()`
+/// directly instead of building [`sql_display_lines`]: the highlighter maps
+/// input lines 1:1 (never splits or injects — asserted by `sql_display_lines_
+/// count_matches_input_lines`), and the clamp runs EVERY FRAME while the
+/// modal is open, so it must not re-run the tokenizer.
 pub fn clamp_sql_scroll(area: Rect, sv: &SqlView) -> usize {
-    clamp_modal_scroll(area, sv.sql.lines().count(), sv.scroll)
+    clamp_modal_scroll(area, sv.active_sql().lines().count(), sv.scroll)
 }
 
 /// Draw the SQL-preview modal. `pub(crate)` for `render::draw`. The SQL text
 /// rides inside the [`SqlView`] payload (snapshotted at open), so the render
-/// layer never needs a `Dag`.
+/// layer never needs a `Dag`. The title's `[raw]`/`[compiled]`/`[compiled,
+/// stale]` tag names the displayed variant (`c` toggles when a compiled text
+/// exists — `sv.variant_label()` is the single naming home).
 pub(crate) fn draw_sql(
     frame: &mut Frame,
     area: Rect,
@@ -523,10 +526,22 @@ pub(crate) fn draw_sql(
         .as_deref()
         .map(|p| format!(" - {p}"))
         .unwrap_or_default();
+    // The `c` hint only appears when there IS a compiled variant to toggle to
+    // — advertising it on a raw-only node would promise a dead key.
+    let toggle = if sv.compiled.is_some() {
+        ", c: raw/compiled"
+    } else {
+        ""
+    };
     draw_scrollable_modal(
         frame,
         area,
-        format!(" {}{path}  (Esc/q to close, j/k to scroll) ", sv.name),
+        format!(
+            " {}{path} [{}] (Esc/q to close, j/k to scroll{}) ",
+            sv.name,
+            sv.variant_label(),
+            toggle
+        ),
         sql_display_lines(sv, t),
         sv.scroll,
         glyphs,
@@ -1347,6 +1362,9 @@ b */
             model_id: String::new(),
             name: String::new(),
             sql: sql.to_string(),
+            compiled: None,
+            compiled_stale: false,
+            show_compiled: false,
             path: None,
             scroll: 0,
         };

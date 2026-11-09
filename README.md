@@ -259,13 +259,13 @@ Press `?` inside the app for the full list. The most useful ones:
 | `n` `N` | Jump to the next / previous untested model |
 | `Space` `'` `"` | Bookmark / cycle bookmarks forward / backward |
 | `T` `*` | Filter the list to untested / bookmarked models |
-| `s` / `S` | SQL preview (syntax-highlighted) / project stats dashboard |
+| `s` / `S` | SQL preview (syntax-highlighted) / project stats dashboard. Inside the preview, `c` toggles raw ↔ compiled SQL — the title shows `[raw]`, `[compiled]`, or `[compiled, stale]` when the source file is newer than the expansion. Compiled SQL comes from the manifest's `compiled_code` or `target/compiled/` (run `dbt compile`/`build` to produce it) |
 | `o` | Open the model's SQL in `$EDITOR` |
 | `m` `x` `c` | Copy lineage as Mermaid / Graphviz DOT / ASCII art |
 | `Y` `C` | Copy model name / raw SQL |
 | `i` / `e` | Copy a Markdown impact report / write the diagram to a file |
 | `!` | Copy the view as a runnable `dbt build --select` command |
-| `y` + key | Yank prefix menu — `yy` unique_id, `yY` name, `ym` Mermaid, `yx` DOT, `yc` ASCII, `yC` SQL, `yi` impact, `y!` selector (the single keys above still work) |
+| `y` + key | Yank prefix menu — `yy` unique_id, `yY` name, `ym` Mermaid, `yx` DOT, `yc` ASCII, `yC` raw SQL, `ys` compiled SQL, `yi` impact, `y!` selector (the single keys above still work) |
 | `P` | Run `dbt parse` and switch to the compiled manifest |
 | `D` | PR impact report vs the `--diff` baseline (then `e` exports it as Markdown, `y` copies the suggested `dbt build` command) |
 | `Ctrl-p` `Cmd-p` | Command palette |

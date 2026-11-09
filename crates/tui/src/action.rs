@@ -80,6 +80,10 @@ pub enum Action {
     // their own later steps, so the keymap is never edited again). ---
     /// Open the SQL preview modal for the selected / cursored node.
     SqlOpen,
+    /// Inside the SQL preview: switch the displayed text between the raw
+    /// (uncompiled) SQL and the compiled (Jinja-expanded) one — when the node
+    /// has compiled SQL at all (`target/compiled/` or manifest `compiled_code`).
+    SqlToggleCompiled,
     /// Open the project stats dashboard modal.
     StatsOpen,
     /// Cycle the lineage colour lens (Off → Coverage → DegreeHeat → Layer →
@@ -112,6 +116,10 @@ pub enum Action {
     /// Copy a runnable `dbt build --select …` command for the current lineage
     /// view (root + direction toggles + depth limit as graph operators).
     YankSelector,
+    /// Copy the selected node's compiled (Jinja-expanded) SQL — the
+    /// `target/compiled/` / `compiled_code` counterpart of [`YankSql`], which
+    /// stays raw-only. Bound as `ys` inside the yank-prefix menu.
+    YankCompiledSql,
     /// Open the yank prefix menu (a which-key over `Mode::Yank`): every yank
     /// action is also reachable as `y` + the same letter it always used
     /// (`ym` = Mermaid, `yi` = impact, `yy` = unique_id). The single-key
@@ -214,10 +222,47 @@ pub struct SqlView {
     pub name: String,
     /// The raw SQL, or a one-line placeholder for sources/seeds/missing.
     pub sql: String,
+    /// The compiled (Jinja-expanded) SQL when the project was compiled — from
+    /// the manifest's `compiled_code` or `target/compiled/`. `c` toggles the
+    /// display between this and `sql`; `None` = nothing to toggle to.
+    pub compiled: Option<String>,
+    /// The compiled text was expanded before the source `.sql` last changed —
+    /// the title shows `[compiled, stale]` instead of `[compiled]`.
+    pub compiled_stale: bool,
+    /// Which variant is displayed (`false` = raw). Opens on raw, except when
+    /// the raw text is a placeholder and compiled exists — show something real.
+    pub show_compiled: bool,
     /// The node's project-relative file path, echoed in the modal title (so
     /// the preview says WHICH file `o` would open). `None` when unknown.
     pub path: Option<String>,
     pub scroll: usize,
+}
+
+impl SqlView {
+    /// The text currently displayed: compiled when `show_compiled` (and a
+    /// compiled payload exists — the toggle arm guards this, the fallback is
+    /// belt-and-braces), raw otherwise.
+    pub fn active_sql(&self) -> &str {
+        if self.show_compiled {
+            self.compiled.as_deref().unwrap_or(&self.sql)
+        } else {
+            &self.sql
+        }
+    }
+
+    /// The title tag naming the displayed variant: `[raw]`, `[compiled]`, or
+    /// `[compiled, stale]`.
+    pub fn variant_label(&self) -> &'static str {
+        if self.show_compiled && self.compiled.is_some() {
+            if self.compiled_stale {
+                "compiled, stale"
+            } else {
+                "compiled"
+            }
+        } else {
+            "raw"
+        }
+    }
 }
 
 /// The stats-dashboard modal payload, computed when the modal opens so the
@@ -524,6 +569,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Yank, triggers: &[Key(Char('x'))], action: A::YankDot, help: "copy lineage as Graphviz DOT" },
     KeyBinding { mode: M::Yank, triggers: &[Key(Char('c'))], action: A::YankAscii, help: "copy lineage as text diagram" },
     KeyBinding { mode: M::Yank, triggers: &[Key(Char('C'))], action: A::YankSql, help: "copy raw SQL" },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('s'))], action: A::YankCompiledSql, help: "copy compiled SQL" },
     KeyBinding { mode: M::Yank, triggers: &[Key(Char('i'))], action: A::YankImpact, help: "copy impact report (Markdown)" },
     KeyBinding { mode: M::Yank, triggers: &[Key(Char('!'))], action: A::YankSelector, help: "copy dbt --select command" },
     KeyBinding { mode: M::Yank, triggers: &[Key(Esc), Key(Char('q'))], action: A::DetailClose, help: "cancel" },
@@ -550,6 +596,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Detail, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom" },
     // ---- SQL preview modal (reuses DetailClose + DetailScroll) ----
     KeyBinding { mode: M::Sql, triggers: &[Key(Esc), Key(Enter), Key(Char('q'))], action: A::DetailClose, help: "close" },
+    KeyBinding { mode: M::Sql, triggers: &[Key(Char('c'))], action: A::SqlToggleCompiled, help: "toggle raw / compiled SQL" },
     KeyBinding { mode: M::Sql, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down" },
     KeyBinding { mode: M::Sql, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up" },
     KeyBinding { mode: M::Sql, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down" },
@@ -726,6 +773,9 @@ mod tests {
             model_id: "m".into(),
             name: "m".into(),
             sql: String::new(),
+            compiled: None,
+            compiled_stale: false,
+            show_compiled: false,
             path: None,
             scroll: 0,
         })
@@ -938,6 +988,7 @@ mod tests {
             | Action::HistoryBack
             | Action::HistoryForward
             | Action::SqlOpen
+            | Action::SqlToggleCompiled
             | Action::StatsOpen
             | Action::CycleLens
             | Action::BookmarkToggle
@@ -949,6 +1000,7 @@ mod tests {
             | Action::PathToggle
             | Action::YankAscii
             | Action::YankSql
+            | Action::YankCompiledSql
             | Action::YankImpact
             | Action::YankSelector
             | Action::YankPrefix
@@ -1052,6 +1104,7 @@ mod tests {
             Action::HistoryBack,
             Action::HistoryForward,
             Action::SqlOpen,
+            Action::SqlToggleCompiled,
             Action::StatsOpen,
             Action::CycleLens,
             Action::BookmarkToggle,
@@ -1063,6 +1116,7 @@ mod tests {
             Action::PathToggle,
             Action::YankAscii,
             Action::YankSql,
+            Action::YankCompiledSql,
             Action::YankImpact,
             Action::YankSelector,
             Action::YankPrefix,

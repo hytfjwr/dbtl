@@ -84,6 +84,13 @@ pub struct RawNode {
     /// `..Default::default()` never churn; sources/seeds carry none.
     #[serde(default)]
     pub raw_code: Option<String>,
+    /// The node's compiled (Jinja-expanded) SQL — only present when the
+    /// manifest was written BY `dbt compile`/`build`/`run` (a `dbt parse`
+    /// manifest leaves it null). `#[serde(default)]` like `raw_code`; the
+    /// `target/compiled/` files are the fallback for every parse-produced
+    /// manifest.
+    #[serde(default)]
+    pub compiled_code: Option<String>,
     // --- governance fields (dbt model access controls) ---
     /// `private`/`protected`/`public` — who may `ref()` this model.
     #[serde(default)]

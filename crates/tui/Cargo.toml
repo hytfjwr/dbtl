@@ -17,3 +17,5 @@ unicode-width.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+# Temp target/compiled trees for the stale-yank test (app/tests.rs).
+tempfile = "3"

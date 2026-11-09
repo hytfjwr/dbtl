@@ -59,8 +59,16 @@ pub fn load_dag_from_source<P: AsRef<Path>>(project_dir: P) -> Result<Dag> {
 pub fn load_dag_from_source_with_warnings<P: AsRef<Path>>(
     project_dir: P,
 ) -> Result<(Dag, Vec<String>)> {
-    let (manifest, warnings) = manifest_from_source_with_warnings(project_dir)?;
-    Ok((Dag::build(&manifest), warnings))
+    let dir = project_dir.as_ref();
+    let (manifest, warnings) = manifest_from_source_with_warnings(dir)?;
+    let mut dag = Dag::build(&manifest);
+    // Same auto-detect as `load_dag`: a project the user already compiled
+    // (`dbt compile`/`build`) has Jinja-expanded SQL under target/compiled/ —
+    // absent files are simply "no compiled SQL".
+    if let Some(compiled_dir) = crate::compiled::default_compiled_dir(None, Some(dir)) {
+        dag.ingest_compiled(&compiled_dir, Some(dir));
+    }
+    Ok((dag, warnings))
 }
 
 /// Parse a dbt project directory into a synthesized [`RawManifest`].

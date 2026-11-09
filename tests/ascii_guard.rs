@@ -241,6 +241,33 @@ fn sql_modal_is_all_ascii() {
 }
 
 #[test]
+fn sql_modal_compiled_variant_is_all_ascii() {
+    // The `[raw]`/`[compiled]`/`[compiled, stale]` title tag and the
+    // `c: raw/compiled` hint are bracket/letter ASCII chrome; the expansion
+    // text is DATA (highlighted like raw). Exercise both title variants from
+    // the compiled fixture — mart_one via manifest `compiled_code` (always
+    // fresh), stg_one via `target/compiled/` (stale depends on checkout
+    // mtimes — either title must stay ASCII).
+    const COMPILED: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/compiled_project/target/manifest.json"
+    );
+    let dag = load_dag(COMPILED).expect("compiled fixture loads");
+    let mut app = App::new(dag, std::path::PathBuf::from(COMPILED));
+    app.glyph_mode = GlyphMode::Ascii;
+    app.select_by_unique_id("model.compiled_demo.mart_one");
+    apply_action(&mut app, Action::SqlOpen);
+    assert_all_ascii(&render(&app, 100, 40), "sql modal [raw]");
+    apply_action(&mut app, Action::SqlToggleCompiled);
+    assert_all_ascii(&render(&app, 100, 40), "sql modal [compiled]");
+
+    app.select_by_unique_id("model.compiled_demo.stg_one");
+    apply_action(&mut app, Action::SqlOpen);
+    apply_action(&mut app, Action::SqlToggleCompiled);
+    assert_all_ascii(&render(&app, 100, 40), "sql modal compiled file fallback");
+}
+
+#[test]
 fn stats_modal_is_all_ascii() {
     // The coverage bar is plain ASCII (#/-); section headers carry no chrome.
     let mut app = ascii_app();

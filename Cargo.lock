@@ -474,6 +474,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_norway",
+ "tempfile",
 ]
 
 [[package]]
@@ -495,6 +496,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_norway",
+ "tempfile",
  "unicode-width",
 ]
 

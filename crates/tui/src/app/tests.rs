@@ -1946,6 +1946,264 @@ fn sql_open_respects_focus() {
     }
 }
 
+/// A single-model `Dag` whose node carries raw AND manifest `compiled_code`
+/// — the `c`-toggle scenario, no filesystem involved (`Dag::build` is pure).
+fn compiled_app(raw: &str, compiled: Option<&str>) -> App {
+    let mut node = pr_model("m", "marts", raw);
+    node.compiled_code = compiled.map(str::to_string);
+    node.original_file_path = Some("models/marts/m.sql".into());
+    let dag = pr_dag(vec![("model.p.m", node)], &[], vec![]);
+    let mut a = App::new(dag, PathBuf::from("/p/target/manifest.json"));
+    a.select_by_unique_id("model.p.m");
+    a
+}
+
+#[test]
+fn sql_modal_compiled_toggle_flips_text_and_resets_scroll() {
+    let mut a = compiled_app("select {{ ref('x') }}", Some("select 42 /* expanded */"));
+    apply_action(&mut a, Action::SqlOpen);
+    match &a.mode {
+        Mode::Sql(sv) => {
+            // Both variants rode in the same open-time snapshot (Dag-free
+            // render), and the modal opens on RAW.
+            assert_eq!(sv.compiled.as_deref(), Some("select 42 /* expanded */"));
+            assert!(!sv.compiled_stale, "manifest compiled_code is never stale");
+            assert!(!sv.show_compiled);
+            assert_eq!(sv.active_sql(), "select {{ ref('x') }}");
+            assert_eq!(sv.variant_label(), "raw");
+        }
+        m => panic!("expected Mode::Sql, got {m:?}"),
+    }
+    // Wander the scroll, then toggle: the display flips and the scroll resets
+    // (raw and compiled are different texts; a carried offset is arbitrary).
+    if let Mode::Sql(sv) = &mut a.mode {
+        sv.scroll = 5;
+    }
+    apply_action(&mut a, Action::SqlToggleCompiled);
+    match &a.mode {
+        Mode::Sql(sv) => {
+            assert!(sv.show_compiled);
+            assert_eq!(sv.active_sql(), "select 42 /* expanded */");
+            assert_eq!(sv.variant_label(), "compiled");
+            assert_eq!(sv.scroll, 0, "toggle resets the scroll");
+        }
+        m => panic!("expected Mode::Sql, got {m:?}"),
+    }
+    apply_action(&mut a, Action::SqlToggleCompiled);
+    match &a.mode {
+        Mode::Sql(sv) => {
+            assert!(!sv.show_compiled);
+            assert_eq!(sv.variant_label(), "raw");
+        }
+        m => panic!("expected Mode::Sql, got {m:?}"),
+    }
+}
+
+#[test]
+fn sql_toggle_without_compiled_only_notices() {
+    // `c` on a raw-only node: no mode change, a one-shot notice explains why
+    // (the fixture manifest has no target/compiled/ dir beside it).
+    let mut a = app();
+    a.select_by_unique_id("model.jaffle_finance.pos_txn");
+    apply_action(&mut a, Action::SqlOpen);
+    apply_action(&mut a, Action::SqlToggleCompiled);
+    match &a.mode {
+        Mode::Sql(sv) => {
+            assert!(!sv.show_compiled && sv.variant_label() == "raw");
+            assert_eq!(sv.compiled, None);
+        }
+        m => panic!("expected Mode::Sql, got {m:?}"),
+    }
+    assert_eq!(
+        a.take_notice().as_deref(),
+        Some("no compiled SQL for this node (run dbt compile)")
+    );
+}
+
+#[test]
+fn sql_toggle_ignores_other_modes() {
+    // The arm is scoped to Mode::Sql — a stray dispatch elsewhere is a no-op.
+    let mut a = app();
+    apply_action(&mut a, Action::SqlToggleCompiled);
+    assert_eq!(a.mode, Mode::Selection);
+    assert_eq!(a.take_notice(), None);
+}
+
+#[test]
+fn sql_variant_label_names_the_three_states() {
+    use crate::action::SqlView;
+    let base = SqlView {
+        model_id: "m".into(),
+        name: "m".into(),
+        sql: "raw".into(),
+        compiled: None,
+        compiled_stale: false,
+        show_compiled: false,
+        path: None,
+        scroll: 0,
+    };
+    assert_eq!(base.variant_label(), "raw");
+    // Compiled flag without a compiled payload can never claim compiled mode.
+    let sv = SqlView {
+        show_compiled: true,
+        ..base.clone()
+    };
+    assert_eq!(sv.variant_label(), "raw");
+    let sv = SqlView {
+        compiled: Some("c".into()),
+        show_compiled: true,
+        ..base.clone()
+    };
+    assert_eq!(sv.variant_label(), "compiled");
+    let sv = SqlView {
+        compiled_stale: true,
+        ..sv
+    };
+    assert_eq!(sv.variant_label(), "compiled, stale");
+    // …and the fallback keeps the raw text reachable.
+    let sv = SqlView {
+        compiled: Some("c".into()),
+        show_compiled: true,
+        ..base.clone()
+    };
+    assert_eq!(sv.active_sql(), "c");
+}
+
+#[test]
+fn yank_compiled_sql_copies_the_expansion() {
+    let mut a = compiled_app("select raw", Some("select compiled"));
+    let out = apply_action(&mut a, Action::YankCompiledSql);
+    match &out.effects[..] {
+        [Effect::Yank(t)] => assert_eq!(t, "select compiled"),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    }
+    assert_eq!(
+        a.take_notice().as_deref(),
+        Some("Copied compiled SQL"),
+        "fresh copy notice"
+    );
+}
+
+#[test]
+fn sql_modal_opens_on_compiled_when_raw_is_blank() {
+    // `raw_code: ""` or whitespace-only is no better than absent — a
+    // compiled-only node opens already flipped to [compiled] (there is
+    // nothing to look at in [raw]).
+    for blank in ["", "  \n\t  "] {
+        let mut a = compiled_app(blank, Some("select compiled"));
+        apply_action(&mut a, Action::SqlOpen);
+        match &a.mode {
+            Mode::Sql(sv) => {
+                assert!(sv.show_compiled, "blank raw {blank:?} should auto-flip");
+                assert_eq!(sv.active_sql(), "select compiled");
+                assert_eq!(sv.variant_label(), "compiled");
+            }
+            m => panic!("expected Mode::Sql, got {m:?}"),
+        }
+    }
+}
+
+#[test]
+fn yank_compiled_sql_marks_a_stale_copy() {
+    // A stale expansion still copies — the notice flags it. Only
+    // `ingest_compiled` can produce `stale: true` (manifest `compiled_code`
+    // never is), so this one needs a real target/ tree.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let stamp = |p: &std::path::Path, secs_ago: u64| {
+        std::fs::File::options()
+            .write(true)
+            .open(p)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(secs_ago))
+            .unwrap();
+    };
+    let cfile = root.join("target/compiled/p/models/marts/m.sql");
+    std::fs::create_dir_all(cfile.parent().unwrap()).unwrap();
+    std::fs::write(&cfile, "select compiled").unwrap();
+    stamp(&cfile, 3600); // expansion is old…
+    let src = root.join("models/marts/m.sql");
+    std::fs::create_dir_all(src.parent().unwrap()).unwrap();
+    std::fs::write(&src, "select raw").unwrap();
+    stamp(&src, 60); // …than the source → stale
+
+    let mut node = pr_model("m", "marts", "select raw");
+    node.original_file_path = Some("models/marts/m.sql".into());
+    node.package_name = Some("p".into());
+    let mut dag = pr_dag(vec![("model.p.m", node)], &[], vec![]);
+    dag.ingest_compiled(&root.join("target/compiled"), Some(root));
+    assert!(
+        dag.compiled("model.p.m").unwrap().stale,
+        "the stamped setup must yield a stale entry"
+    );
+
+    let mut a = App::new(dag, PathBuf::from("/p/target/manifest.json"));
+    a.select_by_unique_id("model.p.m");
+    let out = apply_action(&mut a, Action::YankCompiledSql);
+    match &out.effects[..] {
+        [Effect::Yank(t)] => assert_eq!(t, "select compiled"),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    }
+    assert_eq!(
+        a.take_notice().as_deref(),
+        Some("Copied compiled SQL (stale)")
+    );
+}
+
+#[test]
+fn yank_compiled_sql_without_compiled_notices_and_copies_nothing() {
+    let mut a = app();
+    a.select_by_unique_id("model.jaffle_finance.pos_txn");
+    let out = apply_action(&mut a, Action::YankCompiledSql);
+    assert!(
+        out.effects.is_empty(),
+        "no Yank effect when there is nothing to copy"
+    );
+    assert_eq!(
+        a.take_notice().as_deref(),
+        Some("no compiled SQL for this node (run dbt compile)")
+    );
+    // `yC` stays raw-only — the new key did not move it.
+    a.select_by_unique_id("model.jaffle_finance.pos_txn");
+    let out = apply_action(&mut a, Action::YankSql);
+    match &out.effects[..] {
+        [Effect::Yank(t)] => {
+            assert_eq!(
+                t.as_str(),
+                a.dag.raw_code("model.jaffle_finance.pos_txn").unwrap()
+            )
+        }
+        other => panic!("expected one Yank effect, got {other:?}"),
+    }
+}
+
+#[test]
+fn sql_and_yank_compiled_keys_dispatch() {
+    use crate::dispatch;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let press = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+    // `c` inside the SQL modal is the raw/compiled toggle…
+    let sql_mode = Mode::Sql(crate::action::SqlView {
+        model_id: "m".into(),
+        name: "m".into(),
+        sql: String::new(),
+        compiled: None,
+        compiled_stale: false,
+        show_compiled: false,
+        path: None,
+        scroll: 0,
+    });
+    assert_eq!(
+        dispatch(&sql_mode, press(KeyCode::Char('c'))),
+        Some(Action::SqlToggleCompiled)
+    );
+    // …and `ys` inside the yank prefix copies the compiled SQL.
+    assert_eq!(
+        dispatch(&Mode::Yank, press(KeyCode::Char('s'))),
+        Some(Action::YankCompiledSql)
+    );
+}
+
 #[test]
 fn stats_open_computes_dashboard() {
     let mut a = app();

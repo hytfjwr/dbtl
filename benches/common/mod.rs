@@ -122,6 +122,7 @@ pub fn synth_manifest(params: &SynthParams) -> RawManifest {
                         macros: vec![],
                     },
                     raw_code: Some(format!("select {k} as id")),
+                    compiled_code: None,
                     access: None,
                     group: None,
                     contract: None,

@@ -1,0 +1,79 @@
+{
+  "metadata": {
+    "dbt_schema_version": "https://schemas.getdbt.com/dbt/manifest/v12.json",
+    "project_name": "compiled_demo"
+  },
+  "nodes": {
+    "model.compiled_demo.stg_one": {
+      "name": "stg_one",
+      "resource_type": "model",
+      "package_name": "compiled_demo",
+      "path": "staging/stg_one.sql",
+      "original_file_path": "models/staging/stg_one.sql",
+      "schema": "main",
+      "database": "demo",
+      "depends_on": {
+        "nodes": ["source.compiled_demo.raw.events"]
+      },
+      "config": {
+        "materialized": "view"
+      },
+      "raw_code": "select id, status\nfrom {{ source('raw', 'events') }}\n"
+    },
+    "model.compiled_demo.mart_one": {
+      "name": "mart_one",
+      "resource_type": "model",
+      "package_name": "compiled_demo",
+      "path": "marts/mart_one.sql",
+      "original_file_path": "models/marts/mart_one.sql",
+      "schema": "main",
+      "database": "demo",
+      "depends_on": {
+        "nodes": ["model.compiled_demo.stg_one"]
+      },
+      "config": {
+        "materialized": "table"
+      },
+      "raw_code": "select status, count(*) as n\nfrom {{ ref('stg_one') }}\ngroup by status\n",
+      "compiled_code": "select status, count(*) as n\nfrom demo.main.stg_one\ngroup by status\n"
+    },
+    "model.compiled_demo.lonely_model": {
+      "name": "lonely_model",
+      "resource_type": "model",
+      "package_name": "compiled_demo",
+      "path": "marts/lonely_model.sql",
+      "original_file_path": "models/marts/lonely_model.sql",
+      "schema": "main",
+      "database": "demo",
+      "depends_on": {
+        "nodes": []
+      },
+      "config": {
+        "materialized": "view"
+      },
+      "raw_code": "select 1 as never_compiled\n"
+    }
+  },
+  "sources": {
+    "source.compiled_demo.raw.events": {
+      "name": "events",
+      "resource_type": "source",
+      "package_name": "compiled_demo",
+      "source_name": "raw",
+      "schema": "raw",
+      "database": "demo"
+    }
+  },
+  "parent_map": {
+    "model.compiled_demo.stg_one": ["source.compiled_demo.raw.events"],
+    "model.compiled_demo.mart_one": ["model.compiled_demo.stg_one"],
+    "model.compiled_demo.lonely_model": [],
+    "source.compiled_demo.raw.events": []
+  },
+  "child_map": {
+    "source.compiled_demo.raw.events": ["model.compiled_demo.stg_one"],
+    "model.compiled_demo.stg_one": ["model.compiled_demo.mart_one"],
+    "model.compiled_demo.mart_one": [],
+    "model.compiled_demo.lonely_model": []
+  }
+}

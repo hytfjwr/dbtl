@@ -422,6 +422,55 @@ fn detail_modal_impact_line_targets_the_cursored_node_not_the_root() {
     );
 }
 
+#[test]
+fn sql_modal_titles_the_active_variant() {
+    // End-to-end through the REAL draw path against the compiled fixture:
+    // `s` opens on [raw] with the toggle hint, `c` flips to [compiled] showing
+    // the manifest's expansion, and forcing `compiled_stale` yields
+    // [compiled, stale] (the mtime side of stale is covered by the core and
+    // fixture tests — this asserts the title chrome reaches the buffer).
+    use dbtl::app::{apply_action, App};
+    use dbtl::{Action, Mode};
+    const COMPILED: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/compiled_project/target/manifest.json"
+    );
+    let dag = load_dag(COMPILED).expect("compiled fixture loads");
+    let mut app = App::new(dag, std::path::PathBuf::from(COMPILED));
+    app.select_by_unique_id("model.compiled_demo.mart_one");
+    apply_action(&mut app, Action::SqlOpen);
+
+    // 140 cols: the modal is 80% of the area, so the full title (name + path +
+    // tag + hints) fits without clipping.
+    let text = buffer_to_string(&render_app(&app, 140, 40));
+    assert!(text.contains("[raw]"), "raw title tag renders: {text}");
+    assert!(
+        text.contains("c: raw/compiled"),
+        "toggle hint renders when compiled exists: {text}"
+    );
+    assert!(
+        text.contains("ref('stg_one')"),
+        "the raw text (unexpanded Jinja) is shown: {text}"
+    );
+
+    apply_action(&mut app, Action::SqlToggleCompiled);
+    let text = buffer_to_string(&render_app(&app, 140, 40));
+    assert!(text.contains("[compiled]"), "compiled title tag: {text}");
+    assert!(
+        text.contains("demo.main.stg_one"),
+        "the expanded SQL is shown: {text}"
+    );
+
+    if let Mode::Sql(sv) = &mut app.mode {
+        sv.compiled_stale = true;
+    }
+    let text = buffer_to_string(&render_app(&app, 140, 40));
+    assert!(
+        text.contains("[compiled, stale]"),
+        "stale title tag: {text}"
+    );
+}
+
 /// Render a `Mode::Stats(sv)` modal over the base panes into a buffer (the same
 /// `draw` path the event loop drives, with the modal data carried in the Mode
 /// payload — no `Dag` in `RenderCtx`).

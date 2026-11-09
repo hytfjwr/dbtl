@@ -15,17 +15,15 @@ use serde::Deserialize;
 
 /// The default side-map location: `target/catalog.json` next to the data
 /// source — a `manifest.json` lives inside `target/` so its sibling is used,
-/// a project dir gets `target/catalog.json` appended (same rule as
+/// a project dir gets `target/catalog.json` appended (the shared
+/// [`crate::compiled::default_target_dir`] rule, same as
 /// [`crate::run_results::default_run_results_path`]).
 pub fn default_catalog_path(
     manifest_path: Option<&Path>,
     project_dir: Option<&Path>,
 ) -> Option<PathBuf> {
-    if let Some(m) = manifest_path {
-        m.parent().map(|dir| dir.join("catalog.json"))
-    } else {
-        project_dir.map(|dir| dir.join("target").join("catalog.json"))
-    }
+    crate::compiled::default_target_dir(manifest_path, project_dir)
+        .map(|dir| dir.join("catalog.json"))
 }
 
 /// A parsed `catalog.json`, keyed by `unique_id` — the same key space as the
