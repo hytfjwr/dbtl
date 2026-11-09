@@ -177,7 +177,16 @@ is caught too: the diff reads each manifest's `macros` + every node's
 macro→macro calls) with a `macro:<name>` reason — the one surface raw SQL
 can't show. One caveat left: a compiled-manifest baseline also contains
 installed packages' models, which a source-parsed current side doesn't — for
-the cleanest signal, diff manifest against manifest.
+the cleanest signal, diff manifest against manifest, and keep `--project-only`
+on both sides if installed-package noise matters.
+
+#### Hiding installed packages (`--project-only`)
+
+A compiled manifest mixes `deps`-installed packages (`dbt_utils`, …) into
+`nodes`. `--project-only` keeps only the project's own models: the owning
+package is the most frequent `model.<pkg>.<name>` uid segment, and every
+dangling edge/side-map entry from dropped nodes is pruned with them. Each
+node's `package_name` is shown in the `d` detail modal either way.
 
 ### PR impact + CI checks (`dbtl impact` / `dbtl check`)
 

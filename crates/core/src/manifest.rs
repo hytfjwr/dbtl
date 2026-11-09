@@ -65,6 +65,11 @@ pub struct RawNode {
     pub schema: Option<String>,
     #[serde(default)]
     pub database: Option<String>,
+    /// The dbt package that DEFINED this node (`my_project`, `dbt_utils`, …).
+    /// Real manifests always set it; source-synthesized nodes leave it `None`
+    /// (they're all local — the uid's project segment already names them).
+    #[serde(default)]
+    pub package_name: Option<String>,
     // --- test-only fields (captured pre-prune for the tests side map) ---
     #[serde(default)]
     pub test_metadata: Option<RawTestMetadata>,
@@ -98,6 +103,10 @@ pub struct RawSource {
     pub schema: Option<String>,
     #[serde(default)]
     pub database: Option<String>,
+    /// The dbt package that declared this source (`package_name` in the
+    /// manifest; `None` for synthesized source-mode nodes).
+    #[serde(default)]
+    pub package_name: Option<String>,
 }
 
 /// `owner` sub-object of an exposure. dbt requires at least one of name/email,

@@ -409,6 +409,10 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                         columns: columns_json(&tbl.columns),
                         schema: src.schema.clone(),
                         database: src.database.clone(),
+                        // Source mode synthesizes a manifest for the local
+                        // project only — no foreign package can appear, so
+                        // package identity is vacuous here.
+                        package_name: None,
                     },
                 );
                 synth_tests(

@@ -157,6 +157,9 @@ fn detail_display_lines(dv: &DetailView, t: &theme::Theme) -> Vec<Line<'static>>
         _ => "-".to_string(),
     };
     out.push(Line::from(format!("location: {location}")));
+    if let Some(pkg) = &d.package_name {
+        out.push(Line::from(format!("package: {pkg}")));
+    }
     if let Some(p) = &d.original_file_path {
         out.push(Line::from(format!("path:   {p}")));
     }

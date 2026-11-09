@@ -99,6 +99,10 @@ pub struct NodeDetail {
     pub description: Option<String>,
     pub columns: Vec<ColumnInfo>,
     pub original_file_path: Option<String>,
+    /// The dbt package that defined the node (manifest `package_name`) —
+    /// distinguishes installed-package models from the project's own. `None`
+    /// in source mode (where every node is local).
+    pub package_name: Option<String>,
 }
 
 /// A directed dependency edge `parent -> child` inside a subgraph (both
@@ -442,6 +446,100 @@ impl Dag {
         self.details.get(unique_id)
     }
 
+    /// The name of the package that OWNS this graph — the most frequent
+    /// `unique_id` project segment (`model.<pkg>.<name>`). Unlike
+    /// [`project_name`](Dag::project_name) (the lexicographic min, for display
+    /// continuity), this is robust to installed packages that happen to sort
+    /// first; ties break to the smaller name. Drives `--project-only`.
+    pub fn primary_package(&self) -> Option<String> {
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for uid in self.nodes.keys() {
+            if let Some(seg) = uid.split('.').nth(1).filter(|s| !s.is_empty()) {
+                *counts.entry(seg).or_default() += 1;
+            }
+        }
+        counts
+            .into_iter()
+            .max_by(|(a, ca), (b, cb)| ca.cmp(cb).then_with(|| b.cmp(a)))
+            .map(|(name, _)| name.to_string())
+    }
+
+    /// The sub-Dag containing only nodes `keep` accepts — every side map
+    /// (`details`/`tests`/`sql`/`exposures`/`node_macros`) and every edge
+    /// endpoint pruned to the same uid set, so no dangling reference survives.
+    /// Deterministic (same maps, subset). Powers `--project-only`.
+    pub fn filtered(&self, keep: impl Fn(&NodeInfo) -> bool) -> Dag {
+        let nodes: HashMap<String, NodeInfo> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| keep(n))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let prune_map = |m: &HashMap<String, Vec<String>>,
+                         keep: &HashMap<String, NodeInfo>|
+         -> HashMap<String, Vec<String>> {
+            m.iter()
+                .filter(|(k, _)| keep.contains_key(*k))
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        v.iter()
+                            .filter(|u| keep.contains_key(u.as_str()))
+                            .cloned()
+                            .collect(),
+                    )
+                })
+                .collect()
+        };
+        let parents = prune_map(&self.parents, &nodes);
+        let children = prune_map(&self.children, &nodes);
+        // direct_up/direct_down on NodeInfo must reflect the SURVIVING edges,
+        // not the pre-filter topology.
+        let mut nodes = nodes;
+        for (uid, info) in nodes.iter_mut() {
+            info.direct_up = parents.get(uid).map_or(0, Vec::len);
+            info.direct_down = children.get(uid).map_or(0, Vec::len);
+        }
+        Dag {
+            parents,
+            children,
+            details: self
+                .details
+                .iter()
+                .filter(|(k, _)| nodes.contains_key(*k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            tests: self
+                .tests
+                .iter()
+                .filter(|(k, _)| nodes.contains_key(*k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            sql: self
+                .sql
+                .iter()
+                .filter(|(k, _)| nodes.contains_key(*k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            exposures: self
+                .exposures
+                .iter()
+                .filter(|(k, _)| nodes.contains_key(*k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            // The macro registry is small and shared: keep it whole so
+            // surviving nodes' macro deps still resolve.
+            macros: self.macros.clone(),
+            node_macros: self
+                .node_macros
+                .iter()
+                .filter(|(k, _)| nodes.contains_key(*k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            nodes,
+        }
+    }
+
     /// The tests attached to a node (empty slice when none). Captured pre-prune,
     /// sorted by `(kind, column, name)` for determinism.
     pub fn tests(&self, unique_id: &str) -> &[TestInfo] {
@@ -633,6 +731,7 @@ fn detail_from_node(node: &RawNode) -> NodeDetail {
         description: clean_desc(&node.description),
         columns: columns_from(&node.columns),
         original_file_path: node.original_file_path.clone(),
+        package_name: node.package_name.clone(),
     }
 }
 
@@ -665,6 +764,7 @@ fn detail_from_source(source: &RawSource) -> NodeDetail {
         description: clean_desc(&source.description),
         columns: columns_from(&source.columns),
         original_file_path: source.original_file_path.clone(),
+        package_name: source.package_name.clone(),
     }
 }
 
@@ -1135,5 +1235,43 @@ mod tests {
         assert!(sg.nodes.is_empty());
         assert!(sg.edges.is_empty());
         assert_eq!(sg.selected, "model.p.nope");
+    }
+
+    #[test]
+    fn filtered_prunes_nodes_edges_and_side_maps() {
+        // model.p.a -> model.p.b -> model.q.c: keep only package p.
+        let mut manifest = sample_manifest();
+        manifest.nodes.insert(
+            "model.q.c".to_string(),
+            crate::RawNode {
+                name: "c".into(),
+                resource_type: "model".into(),
+                package_name: Some("q".into()),
+                ..Default::default()
+            },
+        );
+        manifest
+            .parent_map
+            .insert("model.q.c".to_string(), vec!["model.p.b".to_string()]);
+        manifest
+            .child_map
+            .entry("model.p.b".to_string())
+            .or_default()
+            .push("model.q.c".to_string());
+        let dag = Dag::build(&manifest);
+        assert_eq!(dag.primary_package().as_deref(), Some("p"));
+
+        let f = dag.filtered(|n| n.unique_id.starts_with("model.p."));
+        assert!(f.get("model.q.c").is_none(), "foreign package dropped");
+        assert!(
+            f.edges()
+                .iter()
+                .all(|(p, c)| f.get(p).is_some() && f.get(c).is_some()),
+            "no edge endpoint dangles into the pruned set"
+        );
+        assert!(
+            f.get("model.p.b").unwrap().direct_down == 0,
+            "b's dropped child no longer counts"
+        );
     }
 }
