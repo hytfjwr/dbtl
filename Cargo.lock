@@ -451,7 +451,7 @@ dependencies = [
 
 [[package]]
 name = "dbtl"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -467,7 +467,7 @@ dependencies = [
 
 [[package]]
 name = "dbtl-core"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "regex",
@@ -478,7 +478,7 @@ dependencies = [
 
 [[package]]
 name = "dbtl-docs"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "dbtl-core",
  "dbtl-tui",
@@ -487,7 +487,7 @@ dependencies = [
 
 [[package]]
 name = "dbtl-tui"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "dbtl-core",
