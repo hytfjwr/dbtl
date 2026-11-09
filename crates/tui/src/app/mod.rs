@@ -238,6 +238,10 @@ pub struct App {
     catalog: Option<crate::Catalog>,
     /// Where `catalog` was auto-detected — `reload` re-reads it.
     catalog_path: Option<PathBuf>,
+    /// The `p`-anchored path start (`unique_id`): while set, the lineage path
+    /// highlight runs anchor↔cursor instead of root↔cursor — the two-node
+    /// "why does X reach Y" answer. `None` = normal root↔cursor pathing.
+    pub(super) path_anchor: Option<String>,
 }
 
 /// Where the `Dag` was loaded from, so `reload` re-reads the same source.
@@ -336,6 +340,7 @@ impl App {
             run_results_path,
             catalog,
             catalog_path,
+            path_anchor: None,
         }
     }
 
@@ -830,9 +835,16 @@ impl App {
         let current = self.selected_node().map(|n| n.unique_id.clone());
         // `!`-prefixed queries are dbt selectors, not fuzzy name matches:
         // `!tag:nightly`, `!+fct_orders`, `!state:modified+` (with --diff).
+        // `?`-prefixed queries are FULL-TEXT: match description, column names,
+        // and raw SQL — "who references this table/column" (`/?raw_events`).
         let filtered = if let Some(spec) = query.strip_prefix('!') {
             let set = crate::select::select(&self.dag, self.diff(), spec);
             crate::model_list::filter_model_list(self.base_list(), |m| set.contains(&m.unique_id))
+        } else if let Some(needle) = query.strip_prefix('?') {
+            let needle = needle.to_lowercase();
+            crate::model_list::filter_model_list(self.base_list(), |m| {
+                self.full_text_match(&m.unique_id, &needle)
+            })
         } else {
             build_filtered_model_list(self.base_list(), &query)
         };
@@ -852,6 +864,23 @@ impl App {
         if !resolved {
             self.ui_state.set_selected(0);
         }
+    }
+
+    /// Full-text predicate behind `/<query>`: case-insensitive substring over
+    /// the node's description, column names, and raw (uncompiled) SQL — the
+    /// surfaces the name-only fuzzy match can't reach ("who selects from
+    /// `raw_events`", "who writes `customer_id`").
+    fn full_text_match(&self, uid: &str, needle: &str) -> bool {
+        let hit = |s: &str| s.to_lowercase().contains(needle);
+        if let Some(d) = self.dag.detail(uid) {
+            if d.description.as_deref().is_some_and(hit) {
+                return true;
+            }
+            if d.columns.iter().any(|c| hit(&c.name)) {
+                return true;
+            }
+        }
+        self.dag.raw_code(uid).is_some_and(hit)
     }
 
     /// Leave search mode, dropping the filter and restoring the full list, then

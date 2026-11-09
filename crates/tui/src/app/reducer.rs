@@ -672,6 +672,24 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             }
             Outcome::cont()
         }
+        // `p` two-node path: first press anchors the path start at the
+        // selection (the highlight then runs anchor↔cursor), second press
+        // clears it back to root↔cursor. Pure state + a toast; the
+        // path-set BFS reads `path_anchor` next frame — no cache reset needed
+        // (styles are recomputed per draw anyway).
+        Action::PathToggle => {
+            if let Some(uid) = app.path_anchor.take() {
+                let name = app.node_name_or_uid(&uid);
+                app.set_notice(format!("path anchor cleared ({name})"));
+            } else if let Some(uid) = app.selected_unique_id() {
+                let name = app.node_name_or_uid(&uid);
+                app.path_anchor = Some(uid);
+                app.set_notice(format!(
+                    "path anchor: {name} — move cursor to target (p clears)"
+                ));
+            }
+            Outcome::cont()
+        }
         // Cycle the colour theme (App-level data: the loaded list lives on the
         // App, not UiState). Pure state + a toast; the loop hands the new
         // active theme to `RenderCtx` next frame — no cache is touched (the

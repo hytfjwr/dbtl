@@ -285,9 +285,14 @@ impl App {
         else {
             return Vec::new();
         };
-        if root == cursor {
+        // A `p`-anchored path start overrides the root: the highlight then
+        // answers "how does ANCHOR reach the cursor" (two arbitrary nodes —
+        // dbt's `A+,+B`), not "how does the root reach the cursor".
+        let start = self.path_anchor.clone().unwrap_or(root);
+        if start == cursor {
             return Vec::new();
         }
+        let root = start;
         // Root semantics (NOT the display copy): same node/edge set, but keyed off
         // the rooted selection independent of which node the display "selects".
         let sg = self.subgraph_rc();

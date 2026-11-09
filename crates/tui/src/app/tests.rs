@@ -3927,3 +3927,51 @@ fn stats_view_carries_the_runtime_critical_path_when_results_load() {
     assert_eq!(path.len(), 3);
     assert_eq!(total, "33.0s", "10+20+3 seconds");
 }
+
+#[test]
+fn path_anchor_reroots_the_path_highlight() {
+    // stg_finance__fiscal_years -> int_fiscal_years__combined -> dim_fiscal_years
+    let mut a = app();
+    assert!(a.select_by_unique_id("model.jaffle_finance.stg_finance__fiscal_years"));
+    apply_action(&mut a, Action::PathToggle);
+    assert!(a.path_anchor.is_some(), "p anchors the path start");
+    let _ = a.take_notice();
+    // Navigate to the downstream end: cursor re-homes to the new root.
+    assert!(a.select_by_unique_id("model.jaffle_finance.dim_fiscal_years"));
+    let path = a.lineage_path_set();
+    assert!(
+        path.contains("model.jaffle_finance.stg_finance__fiscal_years"),
+        "anchor in path"
+    );
+    assert!(
+        path.contains("model.jaffle_finance.int_fiscal_years__combined"),
+        "middle hop in path"
+    );
+    assert!(
+        path.contains("model.jaffle_finance.dim_fiscal_years"),
+        "target in path"
+    );
+    apply_action(&mut a, Action::PathToggle);
+    assert!(a.path_anchor.is_none(), "p again clears the anchor");
+}
+
+#[test]
+fn full_text_search_matches_desc_columns_and_sql() {
+    let mut a = app();
+    a.mode = Mode::Search(crate::action::SearchState {
+        target: SearchTarget::List,
+        query: "?old_file_id".into(), // a column on pos_files__assignment only
+        origin_uid: None,
+        match_idx: 0,
+    });
+    a.refilter();
+    let ids: Vec<String> = (0..a.active_list().len())
+        .filter_map(|i| a.active_list().model_at(i))
+        .map(|m| m.unique_id.clone())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["model.jaffle_finance.pos_files__assignment"],
+        "column hit: {ids:?}"
+    );
+}
