@@ -887,6 +887,7 @@ mod tests {
         let child_map =
             HashMap::from([("model.p.up".to_string(), vec!["model.p.evil".to_string()])]);
         let manifest = RawManifest {
+            metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
             exposures: HashMap::new(),
@@ -1131,6 +1132,7 @@ mod tests {
             );
         }
         Dag::build(&RawManifest {
+            metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
             exposures: HashMap::new(),

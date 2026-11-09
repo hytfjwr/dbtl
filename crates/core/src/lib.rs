@@ -29,8 +29,8 @@ pub use impact::{
 };
 pub use layer::{first_dir, layer_rank, LAYER_ORDER};
 pub use manifest::{
-    load_manifest, RawConfig, RawDependsOn, RawExposure, RawExposureOwner, RawManifest, RawNode,
-    RawSource, RawTestMetadata,
+    load_manifest, RawConfig, RawDependsOn, RawExposure, RawExposureOwner, RawManifest,
+    RawMetadata, RawNode, RawSource, RawTestMetadata,
 };
 pub use mermaid::{
     mermaid_ids, mermaid_label, node_kind, subgraph_mermaid, subgraph_mermaid_linked,

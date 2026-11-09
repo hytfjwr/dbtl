@@ -338,13 +338,11 @@ pub(super) fn weighted_chain(dag: &Dag, weight: impl Fn(&str) -> f64) -> (Vec<St
     (path, best_score.0)
 }
 
-/// Compute the title-bar stats from a `Dag`. The project name is the second
-/// segment of any node's `unique_id` (`model.<project>.<name>`), which is the
-/// same across a single dbt project.
+/// Compute the title-bar stats from a `Dag`. The project name is the
+/// manifest's recorded root project (`metadata.project_name`), falling back
+/// to a `unique_id`-segment heuristic — resolved by [`Dag::project_name`] so
+/// the title bar and the docs index quote the same name.
 pub(super) fn compute_stats(dag: &Dag) -> AppStats {
-    // The shared project-name derivation (deterministic: the
-    // lexicographically-smallest `unique_id` project segment) lives on `Dag`,
-    // so the title bar and the docs index quote the same name.
     let project = dag.project_name().unwrap_or("").to_string();
     AppStats {
         project,

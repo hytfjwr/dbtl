@@ -135,6 +135,7 @@ pub fn synth_manifest(params: &SynthParams) -> RawManifest {
     }
 
     RawManifest {
+        metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
         exposures: HashMap::new(),

@@ -135,6 +135,16 @@ fn seed_columns_are_a_source_mode_superset() {
 }
 
 #[test]
+fn project_name_is_identical() {
+    // The root project's name travels `metadata.project_name` (real dbt
+    // ≥1.6) ↔ `dbt_project.yml`'s `name` (synthesized by source mode) — the
+    // same `Dag` field either way, so both modes name the project identically.
+    let (m, s) = dags();
+    assert_eq!(m.project_name(), Some("sample"), "manifest mode");
+    assert_eq!(s.project_name(), Some("sample"), "source mode");
+}
+
+#[test]
 fn tests_are_identical_as_kind_column_multisets() {
     // dbt mints hashed test NAMES; the UI shows kind+column, so that is the
     // contract: per-node multisets of (kind, column_name) must match.

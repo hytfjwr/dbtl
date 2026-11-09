@@ -213,12 +213,29 @@ pub struct RawMacro {
     pub depends_on: RawDependsOn,
 }
 
+/// `metadata` sub-object of the manifest. Only the fields we surface:
+/// `project_name` is the ROOT project's name as dbt recorded it (dbt ≥1.6) —
+/// the authoritative answer to "which package owns this graph", immune to
+/// installed packages whose names happen to sort first in `unique_id`s.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RawMetadata {
+    #[serde(default)]
+    pub project_name: Option<String>,
+}
+
 /// Minimal subset of the dbt manifest we care about.
 ///
 /// `deny_unknown_fields` is intentionally NOT set: the v12 schema has many
 /// fields we don't model, and they must be ignored.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RawManifest {
+    /// `#[serde(default)]`: real dbt manifests always carry a `metadata`
+    /// object (though `project_name` exists in it only since dbt 1.6) — this
+    /// guard is for manifests that omit the object entirely (minimal or
+    /// hand-built ones). Either way `Dag::build` falls back to inferring the
+    /// project name from node `unique_id`s.
+    #[serde(default)]
+    pub metadata: RawMetadata,
     pub nodes: HashMap<String, RawNode>,
     pub sources: HashMap<String, RawSource>,
     /// `#[serde(default)]`: pre-exposure fixtures (and minimal hand-built

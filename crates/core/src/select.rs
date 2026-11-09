@@ -229,6 +229,7 @@ mod tests {
             ),
         ]);
         Dag::build(&RawManifest {
+            metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
             exposures: HashMap::new(),
@@ -299,6 +300,7 @@ mod tests {
     fn state_modified_uses_the_diff() {
         // current: fct's SQL changed → modified.
         let mut changed = RawManifest {
+            metadata: Default::default(),
             nodes: HashMap::new(),
             sources: HashMap::new(),
             exposures: HashMap::new(),

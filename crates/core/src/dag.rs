@@ -194,6 +194,14 @@ pub struct Dag {
     /// The macro `unique_id`s each kept node's compiled SQL calls (the node's
     /// `depends_on.macros`), a side map like `sql`/`details`.
     node_macros: HashMap<String, Vec<String>>,
+    /// The ROOT project's name as dbt recorded it (`manifest.metadata.
+    /// project_name`, present since dbt 1.6; `source.rs` synthesizes it from
+    /// `dbt_project.yml`'s `name`). `None` for old/hand-built manifests —
+    /// `project_name`/`primary_package` then fall back to inferring it from
+    /// node `unique_id`s. Not a side map: one scalar for the whole graph,
+    /// propagated by [`filtered`](Dag::filtered) so a `--project-only` view
+    /// keeps naming itself after the root project.
+    root_project: Option<String>,
 }
 
 /// A manifest macro's diff-relevant payload. The [`Dag`] stores these keyed by
@@ -471,6 +479,14 @@ impl Dag {
             exposures,
             macros,
             node_macros,
+            // A blank metadata name is as good as absent — the same guard the
+            // `unique_id`-segment fallbacks apply (`!seg.is_empty()`), plus
+            // whitespace-only.
+            root_project: manifest
+                .metadata
+                .project_name
+                .clone()
+                .filter(|s| !s.trim().is_empty()),
         }
     }
 
@@ -521,21 +537,28 @@ impl Dag {
             .count()
     }
 
-    /// The dbt project name, read from node `unique_id`s
-    /// (`<resource_type>.<project>.<name>` → the `<project>` segment). Takes the
-    /// lexicographically-smallest such segment, so it is deterministic and
-    /// well-defined for a multi-project manifest (and stable for the usual
-    /// single-project one). `None` when no node carries a project segment.
+    /// The dbt project name — the ROOT project's name when the manifest
+    /// records it (`metadata.project_name`, dbt ≥1.6; source mode synthesizes
+    /// it from `dbt_project.yml`). That is the authoritative answer: an
+    /// installed package whose name sorts first in `unique_id`s can no longer
+    /// masquerade as the project.
     ///
-    /// This is the authoritative project name (it reads the actual dbt
-    /// identity, not a filesystem path), shared by the docs index heading and
-    /// the title-bar stats so the two never disagree.
+    /// Fallback (old/hand-built manifests with no metadata): the
+    /// lexicographically-smallest `<project>` segment of the node
+    /// `unique_id`s (`<resource_type>.<project>.<name>`) — deterministic and
+    /// stable for the usual single-project manifest. `None` when no node
+    /// carries a project segment.
+    ///
+    /// Shared by the docs index heading and the title-bar stats so the two
+    /// never disagree.
     pub fn project_name(&self) -> Option<&str> {
-        self.nodes
-            .keys()
-            .filter_map(|uid| uid.split('.').nth(1))
-            .filter(|seg| !seg.is_empty())
-            .min()
+        self.root_project.as_deref().or_else(|| {
+            self.nodes
+                .keys()
+                .filter_map(|uid| uid.split('.').nth(1))
+                .filter(|seg| !seg.is_empty())
+                .min()
+        })
     }
 
     /// The detail payload (materialized / schema / columns / …) for a node, or
@@ -544,12 +567,16 @@ impl Dag {
         self.details.get(unique_id)
     }
 
-    /// The name of the package that OWNS this graph — the most frequent
-    /// `unique_id` project segment (`model.<pkg>.<name>`). Unlike
-    /// [`project_name`](Dag::project_name) (the lexicographic min, for display
-    /// continuity), this is robust to installed packages that happen to sort
-    /// first; ties break to the smaller name. Drives `--project-only`.
+    /// The name of the package that OWNS this graph — the ROOT project's name
+    /// when the manifest records it (see [`project_name`](Dag::project_name)),
+    /// else the most frequent `unique_id` project segment
+    /// (`model.<pkg>.<name>`), robust to installed packages that happen to
+    /// sort first; ties break to the smaller name. Drives `--project-only`
+    /// (which therefore scopes to the root project, not the biggest package).
     pub fn primary_package(&self) -> Option<String> {
+        if let Some(root) = &self.root_project {
+            return Some(root.clone());
+        }
         let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
         for uid in self.nodes.keys() {
             if let Some(seg) = uid.split('.').nth(1).filter(|s| !s.is_empty()) {
@@ -634,6 +661,9 @@ impl Dag {
                 .filter(|(k, _)| nodes.contains_key(*k))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
+            // The root identity is a property of the source manifest, not of
+            // the kept uid set — a `--project-only` view is still that project.
+            root_project: self.root_project.clone(),
             nodes,
         }
     }
@@ -1038,6 +1068,7 @@ mod tests {
             ("model.p.b".to_string(), vec!["test.p.t".to_string()]),
         ]);
         RawManifest {
+            metadata: Default::default(),
             nodes,
             sources,
             exposures: HashMap::new(),
@@ -1090,6 +1121,7 @@ mod tests {
         let child_map =
             HashMap::from([("model.p.a".to_string(), vec!["analysis.p.x".to_string()])]);
         let dag = Dag::build(&RawManifest {
+            metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
             exposures: HashMap::new(),
@@ -1188,6 +1220,7 @@ mod tests {
             ("model.p.b".to_string(), vec!["model.p.a".to_string()]),
         ]);
         let manifest = RawManifest {
+            metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
             exposures: HashMap::new(),
@@ -1452,5 +1485,110 @@ mod tests {
                 .any(|t| t.kind == "unit" && t.name == "test_b"),
             "unit test recorded on its model"
         );
+    }
+
+    /// A three-package manifest where the uid-segment heuristics DISAGREE —
+    /// `aaa_pkg` is the lexicographic min (1 model), `mmm_pkg` the most
+    /// frequent (3 models), `zzz_proj` the recorded root project (1 model) —
+    /// parameterized by `metadata.project_name` so each test picks
+    /// recorded-vs-fallback. The min/most-frequent divergence matters: a
+    /// fixture where they coincide could not detect the wrong one being used.
+    fn multi_package_manifest(root_project: Option<&str>) -> RawManifest {
+        let mut nodes = HashMap::new();
+        let mut model = |uid: &str, name: &str| {
+            nodes.insert(
+                uid.to_string(),
+                RawNode {
+                    name: name.into(),
+                    resource_type: "model".into(),
+                    ..Default::default()
+                },
+            );
+        };
+        model("model.zzz_proj.root_model", "root_model");
+        model("model.aaa_pkg.pkg_a", "pkg_a");
+        for i in 0..3 {
+            model(&format!("model.mmm_pkg.pkg_{i}"), &format!("mmm_{i}"));
+        }
+        RawManifest {
+            metadata: crate::manifest::RawMetadata {
+                project_name: root_project.map(str::to_string),
+            },
+            nodes,
+            sources: HashMap::new(),
+            exposures: HashMap::new(),
+            macros: HashMap::new(),
+            semantic_models: HashMap::new(),
+            metrics: HashMap::new(),
+            saved_queries: HashMap::new(),
+            unit_tests: HashMap::new(),
+            parent_map: HashMap::new(),
+            child_map: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn project_name_prefers_root_project_metadata() {
+        // `aaa_pkg` sorts BEFORE `zzz_proj` and `mmm_pkg` outnumbers it — but
+        // metadata says the root project is `zzz_proj`, and that wins for both
+        // the display name and the `--project-only` scope.
+        let dag = Dag::build(&multi_package_manifest(Some("zzz_proj")));
+        assert_eq!(dag.project_name(), Some("zzz_proj"));
+        assert_eq!(dag.primary_package().as_deref(), Some("zzz_proj"));
+    }
+
+    #[test]
+    fn project_name_and_primary_package_fall_back_to_uid_heuristics() {
+        // Manifests recording no `metadata.project_name` keep the legacy
+        // inference — and the two heuristics must not be conflated: the
+        // display name is the lexicographic min (`aaa_pkg`), the owning
+        // package the most frequent (`mmm_pkg`).
+        let dag = Dag::build(&multi_package_manifest(None));
+        assert_eq!(dag.project_name(), Some("aaa_pkg"));
+        assert_eq!(dag.primary_package().as_deref(), Some("mmm_pkg"));
+    }
+
+    #[test]
+    fn blank_project_name_metadata_falls_back_too() {
+        // An empty or whitespace-only `project_name` is as good as absent —
+        // the fallback answers, not the blank string.
+        for blank in ["", "  "] {
+            let dag = Dag::build(&multi_package_manifest(Some(blank)));
+            assert_eq!(dag.project_name(), Some("aaa_pkg"), "blank {blank:?}");
+            assert_eq!(
+                dag.primary_package().as_deref(),
+                Some("mmm_pkg"),
+                "blank {blank:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn primary_package_names_root_even_when_root_has_no_nodes() {
+        // A deps-only manifest records a root project that contributes NO
+        // nodes: `primary_package` still names it honestly (it is a fact
+        // about the manifest, not a vote over surviving uids) — and a
+        // `--project-only` filter therefore yields an EMPTY graph, which
+        // `cli.rs` surfaces as a warning rather than silently re-scoping to a
+        // foreign package.
+        let mut manifest = multi_package_manifest(Some("zzz_proj"));
+        manifest.nodes.remove("model.zzz_proj.root_model");
+        let dag = Dag::build(&manifest);
+        assert_eq!(dag.primary_package().as_deref(), Some("zzz_proj"));
+        assert!(dag
+            .filtered(|n| n.unique_id.split('.').nth(1) == Some("zzz_proj"))
+            .is_empty());
+    }
+
+    #[test]
+    fn filtered_keeps_the_root_project_name() {
+        // `--project-only` filters to the root package; the filtered Dag must
+        // still name itself `zzz_proj` (metadata is a property of the source
+        // manifest, not of the surviving uid set).
+        let dag = Dag::build(&multi_package_manifest(Some("zzz_proj")));
+        let f = dag.filtered(|n| n.unique_id.split('.').nth(1) == Some("zzz_proj"));
+        assert_eq!(f.len(), 1);
+        assert_eq!(f.project_name(), Some("zzz_proj"));
+        assert_eq!(f.primary_package().as_deref(), Some("zzz_proj"));
     }
 }

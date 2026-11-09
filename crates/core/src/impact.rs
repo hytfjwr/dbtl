@@ -489,6 +489,7 @@ mod tests {
         nodes.get_mut("model.p.fct_x").unwrap().depends_on.nodes =
             vec!["model.p.stg_x".to_string()];
         RawManifest {
+            metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
             exposures: HashMap::new(),
