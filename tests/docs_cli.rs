@@ -37,6 +37,24 @@ fn run_docs(out: &PathBuf, quiet: bool) -> std::process::Output {
     cmd.output().expect("failed to run dbtl docs")
 }
 
+/// Run `docs` with extra flags (`--clean`, `--check`) appended.
+fn run_docs_flags(out: &PathBuf, flags: &[&str]) -> std::process::Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_dbtl"));
+    cmd.arg("docs")
+        .arg("--manifest")
+        .arg(fixture_manifest())
+        .arg("--out")
+        .arg(out);
+    for f in flags {
+        cmd.arg(f);
+    }
+    cmd.output().expect("failed to run dbtl docs")
+}
+
+/// The marker every generated file leads with — the lib export the binary
+/// itself uses, so the test can never drift from the emitted bytes.
+const MARKER: &str = dbtl::GENERATED_MARKER;
+
 #[test]
 fn docs_succeeds_and_prints_summary_without_quiet() {
     let out = temp_out("loud");
@@ -128,4 +146,151 @@ fn missing_data_source_fails_with_nonzero_exit_and_stderr() {
     );
     let _ = std::fs::remove_dir_all(&empty);
     let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn generated_files_carry_the_marker() {
+    // The `--clean`/`--check` identification contract, observed on disk.
+    let out = temp_out("marker");
+    let _ = std::fs::remove_dir_all(&out);
+    assert!(run_docs(&out, false).status.success());
+    let readme = std::fs::read_to_string(out.join("README.md")).expect("README");
+    assert!(
+        readme.starts_with(MARKER),
+        "README.md must lead with the generated marker"
+    );
+    let page = std::fs::read_dir(out.join("models"))
+        .expect("models dir")
+        .flatten()
+        .next()
+        .expect("at least one node page")
+        .path();
+    let page = std::fs::read_to_string(page).expect("node page");
+    assert!(
+        page.starts_with(MARKER),
+        "node pages must lead with the generated marker"
+    );
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn clean_removes_stale_marked_pages_but_keeps_user_files() {
+    // A page a previous run generated for a now-deleted model is marked and
+    // no longer regenerated: `--clean` removes it. A hand-written file under
+    // the same dir (no marker) is never touched.
+    let out = temp_out("clean");
+    let _ = std::fs::remove_dir_all(&out);
+    assert!(run_docs(&out, false).status.success());
+
+    let stale = out.join("models/model.proj.deleted_model.md");
+    std::fs::write(&stale, format!("{MARKER}\n\n# deleted_model\n")).unwrap();
+    let handwritten = out.join("models/notes.md");
+    std::fs::write(&handwritten, "# my notes\n").unwrap();
+
+    let result = run_docs_flags(&out, &["--clean"]);
+    assert!(result.status.success(), "clean run exits 0");
+    assert!(!stale.exists(), "stale marked page was removed");
+    assert!(
+        handwritten.is_file(),
+        "hand-written unmarked file survives --clean"
+    );
+    // Real generated pages are untouched.
+    assert!(out.join("README.md").is_file(), "README.md remains");
+
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn check_passes_when_up_to_date_and_writes_nothing() {
+    let out = temp_out("check_ok");
+    let _ = std::fs::remove_dir_all(&out);
+    assert!(run_docs(&out, false).status.success());
+
+    // Snapshot the file set + mtimes to prove --check writes nothing.
+    let before: Vec<String> = {
+        let mut v: Vec<String> = std::fs::read_dir(out.join("models"))
+            .expect("models dir")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    };
+
+    let result = run_docs_flags(&out, &["--check"]);
+    assert!(
+        result.status.success(),
+        "up-to-date docs must exit 0, stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert!(stdout.contains("up to date"), "got: {stdout:?}");
+
+    let after: Vec<String> = {
+        let mut v: Vec<String> = std::fs::read_dir(out.join("models"))
+            .expect("models dir")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(before, after, "--check must not create or delete files");
+
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn check_fails_on_missing_changed_and_stale_files() {
+    let out = temp_out("check_bad");
+    let _ = std::fs::remove_dir_all(&out);
+    assert!(run_docs(&out, false).status.success());
+
+    // missing: delete a node page. changed: corrupt the README.
+    // stale: a marked page the generator no longer emits.
+    let gone = std::fs::read_dir(out.join("models"))
+        .expect("models dir")
+        .flatten()
+        .next()
+        .expect("a node page")
+        .path();
+    std::fs::remove_file(&gone).unwrap();
+    let readme = out.join("README.md");
+    std::fs::write(&readme, format!("{MARKER}\n\n# tampered\n")).unwrap();
+    let stale = out.join("models/model.proj.ghost.md");
+    std::fs::write(&stale, format!("{MARKER}\n\n# ghost\n")).unwrap();
+
+    let result = run_docs_flags(&out, &["--check"]);
+    assert!(!result.status.success(), "diverged docs must exit non-zero");
+    assert_eq!(result.status.code(), Some(1), "exit code is exactly 1");
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert!(stdout.contains("missing: "), "missing reported: {stdout}");
+    assert!(
+        stdout.contains("changed: README.md"),
+        "changed reported: {stdout}"
+    );
+    assert!(
+        stdout.contains("stale: models/model.proj.ghost.md"),
+        "stale reported: {stdout}"
+    );
+    // The divergence report is stdout (the CI log); the failure lands on stderr.
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("error:"), "stderr error line: {stderr}");
+
+    // --check repaired nothing: the stale file is still there.
+    assert!(stale.is_file(), "--check never deletes");
+    assert!(!gone.exists(), "--check never writes");
+
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn check_fails_on_empty_or_absent_output_dir() {
+    // Never-generated output: every expected file is missing → exit 1.
+    let out = temp_out("check_absent");
+    let _ = std::fs::remove_dir_all(&out);
+    let result = run_docs_flags(&out, &["--check"]);
+    assert_eq!(result.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert!(stdout.contains("missing: README.md"), "got: {stdout}");
 }
