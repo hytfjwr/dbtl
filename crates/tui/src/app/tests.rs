@@ -8,7 +8,10 @@ use crate::{
 
 use std::path::{Path, PathBuf};
 
-const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifest.json");
+const FIXTURE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../tests/fixtures/manifest.json"
+);
 
 fn app() -> App {
     let dag = load_dag(FIXTURE).expect("fixture loads");
@@ -390,7 +393,7 @@ fn yank_mermaid_emits_a_graph_lr_diagram() {
 
 #[test]
 fn mermaid_ids_disambiguate_collisions_deterministically() {
-    use super::export::mermaid_ids;
+    use dbtl_core::mermaid::mermaid_ids;
     // All three uids sanitize to `model_p_x_y`; before the per-export map the
     // diagram silently merged them into one node. Suffixes follow sorted-uid
     // order (`.` < `_`), so the same input always yields the same ids.
@@ -415,7 +418,7 @@ fn mermaid_ids_disambiguate_collisions_deterministically() {
 
 #[test]
 fn mermaid_label_neutralizes_hostile_display_names() {
-    use super::export::mermaid_label;
+    use dbtl_core::mermaid::mermaid_label;
     // A `"` would close the quoted label and let the rest inject raw Mermaid;
     // it becomes the `#quot;` entity (still renders as a quote).
     assert_eq!(
@@ -803,7 +806,7 @@ fn gap_next_and_prev_cycle_through_untested_models() {
 
     let sample = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/sample_manifest.json"
+        "/../../tests/fixtures/sample_manifest.json"
     );
     let mut a = App::new(
         load_dag(sample).expect("sample loads"),
@@ -872,7 +875,7 @@ fn lineage_extreme_jumps_send_the_cursor_to_first_and_last_columns() {
 fn untested_filter_narrows_the_list_and_toggles_off() {
     let sample = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/sample_manifest.json"
+        "/../../tests/fixtures/sample_manifest.json"
     );
     let mut a = App::new(
         load_dag(sample).expect("sample loads"),
@@ -1221,10 +1224,13 @@ fn dbt_parse_action_requests_the_effect_without_a_notice() {
 
 #[test]
 fn adopt_manifest_switches_the_source_and_reverts_on_error() {
-    let project = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample_project");
+    let project = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/sample_project"
+    );
     let sample = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/sample_manifest.json"
+        "/../../tests/fixtures/sample_manifest.json"
     );
     let dag = load_dag_from_source(project).expect("sample project loads");
     let mut a = App::from_source(dag, PathBuf::from(project));
@@ -1257,7 +1263,7 @@ fn adopt_manifest_switches_the_source_and_reverts_on_error() {
         a.project_root(),
         // derive_project_root strips `<root>/target/manifest.json` → `<root>`
         // (two parents); same derivation `App::new` would have applied.
-        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests")),
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests")),
         "project root re-derived from the adopted manifest"
     );
     assert_eq!(

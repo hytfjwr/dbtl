@@ -1,0 +1,16 @@
+[package]
+name = "dbtl-tui"
+description = "dbtl's interactive terminal UI — keymap, reducer, and ratatui rendering over dbtl-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+dbtl-core.workspace = true
+anyhow.workspace = true
+ratatui.workspace = true
+serde.workspace = true
+serde_norway.workspace = true
+unicode-width.workspace = true

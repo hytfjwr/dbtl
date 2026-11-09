@@ -349,12 +349,43 @@ version = "0.4.1"
 dependencies = [
  "anyhow",
  "clap",
+ "dbtl-core",
+ "dbtl-docs",
+ "dbtl-tui",
  "ratatui",
+ "tempfile",
+ "unicode-width",
+]
+
+[[package]]
+name = "dbtl-core"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
  "regex",
  "serde",
  "serde_json",
  "serde_norway",
- "tempfile",
+]
+
+[[package]]
+name = "dbtl-docs"
+version = "0.4.1"
+dependencies = [
+ "dbtl-core",
+ "dbtl-tui",
+ "serde_json",
+]
+
+[[package]]
+name = "dbtl-tui"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "dbtl-core",
+ "ratatui",
+ "serde",
+ "serde_norway",
  "unicode-width",
 ]
 
