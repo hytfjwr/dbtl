@@ -236,8 +236,10 @@ Press `?` inside the app for the full list. The most useful ones:
 | `s` / `S` | SQL preview (syntax-highlighted) / project stats dashboard |
 | `o` | Open the model's SQL in `$EDITOR` |
 | `m` `x` `c` | Copy lineage as Mermaid / Graphviz DOT / ASCII art |
+| `Y` `C` | Copy model name / raw SQL |
 | `i` / `e` | Copy a Markdown impact report / write the diagram to a file |
 | `!` | Copy the view as a runnable `dbt build --select` command |
+| `y` + key | Yank prefix menu — `yy` unique_id, `ym` Mermaid, `yx` DOT, `yc` ASCII, `yC` SQL, `yi` impact, `y!` selector (the single keys above still work) |
 | `Space` `'` | Bookmark / cycle bookmarks |
 | `T` `*` | Filter the list to untested / bookmarked models |
 | `P` | Run `dbt parse` and switch to the compiled manifest |

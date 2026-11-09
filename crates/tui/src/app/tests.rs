@@ -39,6 +39,49 @@ fn yank_and_bookmark_record_oneshot_notices() {
 }
 
 #[test]
+fn yank_prefix_opens_menu_and_second_key_executes_then_closes() {
+    let mut a = app();
+    apply_action(&mut a, Action::YankPrefix);
+    assert_eq!(a.mode, Mode::Yank, "y opens the which-key menu");
+    // The second key dispatches the yank AND closes the menu (one-shot).
+    let out = apply_action(&mut a, Action::YankMermaid);
+    assert!(matches!(out.effects.as_slice(), [Effect::Yank(_)]));
+    assert_eq!(a.mode, Mode::Selection, "menu closes after the yank");
+    // Esc/q cancel closes without any yank effect.
+    apply_action(&mut a, Action::YankPrefix);
+    let out = apply_action(&mut a, Action::DetailClose);
+    assert!(out.effects.is_empty());
+    assert_eq!(a.mode, Mode::Selection);
+}
+
+#[test]
+fn yank_prefix_keymap_routes_second_keys() {
+    use crate::dispatch;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let press = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+    // `y` in Selection opens the prefix; the same letters then dispatch the
+    // yank actions from Mode::Yank.
+    assert_eq!(
+        dispatch(&Mode::Selection, press(KeyCode::Char('y'))),
+        Some(Action::YankPrefix)
+    );
+    assert_eq!(
+        dispatch(&Mode::Yank, press(KeyCode::Char('m'))),
+        Some(Action::YankMermaid)
+    );
+    assert_eq!(
+        dispatch(&Mode::Yank, press(KeyCode::Char('y'))),
+        Some(Action::YankId)
+    );
+    assert_eq!(
+        dispatch(&Mode::Yank, press(KeyCode::Esc)),
+        Some(Action::DetailClose)
+    );
+    // Unbound second keys don't dispatch (menu stays open until a valid key).
+    assert_eq!(dispatch(&Mode::Yank, press(KeyCode::Char('z'))), None);
+}
+
+#[test]
 fn theme_cycle_wraps_the_loaded_list_and_notices_the_landing_name() {
     let mut a = app();
     assert_eq!(a.theme_name(), "default", "fresh app starts on the default");

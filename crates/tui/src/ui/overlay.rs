@@ -86,6 +86,7 @@ fn help_display_lines(t: &theme::Theme) -> Vec<Line<'static>> {
         (ModeKind::Stats, "Stats dashboard"),
         (ModeKind::Diff, "Diff summary"),
         (ModeKind::Palette, "Command palette"),
+        (ModeKind::Yank, "Yank (y + key)"),
         (ModeKind::Help, "Help"),
     ];
     let all = help_lines();
@@ -1103,6 +1104,71 @@ pub(crate) fn draw_palette(
 
     // Right-border scrollbar thumb on overflow (candidate-list units).
     super::stamp_scrollbar(frame, rect, total, off, view_h, glyphs, t);
+}
+
+/// Draw the `y` yank-prefix which-key menu: a compact box anchored bottom-center
+/// listing each `y<key>` binding. Rows are GENERATED from the `M::Yank` keymap
+/// entries (same source of truth as dispatch + `?` help), so the menu can't
+/// drift from what the keys actually do. The second-key label is prefixed with
+/// the `y` the user already pressed.
+pub(crate) fn draw_yank_menu(
+    frame: &mut Frame,
+    area: Rect,
+    glyphs: crate::GlyphMode,
+    t: &theme::Theme,
+) {
+    use crate::action::{ModeKind, BINDINGS};
+    let rows: Vec<Line> = BINDINGS
+        .iter()
+        .filter(|b| b.mode == ModeKind::Yank)
+        .map(|b| {
+            Line::from(vec![
+                Span::styled(
+                    format!("  y{:<3}", b.key_label()),
+                    Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(format!(" {}", b.help)),
+            ])
+        })
+        .collect();
+    if rows.is_empty() {
+        return;
+    }
+    // Size to content: borders + rows, width = longest row + padding, centered
+    // horizontally and hugging the bottom edge (which-key convention).
+    let width = rows
+        .iter()
+        .map(|l| l.width() as u16)
+        .max()
+        .unwrap_or(10)
+        .saturating_add(4)
+        .min(area.width.saturating_sub(2));
+    let height = (rows.len() as u16 + 2).min(area.height);
+    if width < 8 || height < 4 {
+        return;
+    }
+    let rect = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height + 1),
+        width,
+        height,
+    }
+    .intersection(area);
+    let chrome = super::chrome(glyphs);
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(chrome.border)
+        .border_style(Style::default().fg(t.accent).add_modifier(Modifier::BOLD))
+        .title(Line::styled(
+            " yank + key ",
+            Style::default()
+                .fg(t.text_bright)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    frame.render_widget(Paragraph::new(rows), inner);
 }
 
 /// Draw the transient toast: a one-line bordered box floating at the TOP-RIGHT

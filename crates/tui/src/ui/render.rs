@@ -245,6 +245,9 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         crate::action::Mode::Palette(p) => {
             super::overlay::draw_palette(frame, area, p, ctx.glyphs, ctx.theme)
         }
+        crate::action::Mode::Yank => {
+            super::overlay::draw_yank_menu(frame, area, ctx.glyphs, ctx.theme)
+        }
         crate::action::Mode::Selection | crate::action::Mode::Search(_) => {}
     }
 
