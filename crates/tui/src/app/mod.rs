@@ -748,7 +748,14 @@ impl App {
             _ => return,
         };
         let current = self.selected_node().map(|n| n.unique_id.clone());
-        let filtered = build_filtered_model_list(self.base_list(), &query);
+        // `!`-prefixed queries are dbt selectors, not fuzzy name matches:
+        // `!tag:nightly`, `!+fct_orders`, `!state:modified+` (with --diff).
+        let filtered = if let Some(spec) = query.strip_prefix('!') {
+            let set = crate::select::select(&self.dag, self.diff(), spec);
+            crate::model_list::filter_model_list(self.base_list(), |m| set.contains(&m.unique_id))
+        } else {
+            build_filtered_model_list(self.base_list(), &query)
+        };
         self.ui_state.set_model_count(filtered.len());
         self.filter = Some(filtered);
         // Prefer keeping the current node if it survived the filter, else the
