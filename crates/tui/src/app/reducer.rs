@@ -139,6 +139,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             // Blast radius of THIS node (the focus target — may be a non-root
             // source/seed/snapshot the lineage cursor sits on, NOT the root).
             let (downstream_count, upstream_count) = app.impact_counts_for(&uid);
+            let catalog = app.catalog_note(&uid, &detail);
             app.mode = Mode::Detail(DetailView {
                 model_id: uid,
                 name,
@@ -146,6 +147,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                 tests,
                 downstream_count,
                 upstream_count,
+                catalog,
                 scroll: 0,
             });
             Outcome::cont()

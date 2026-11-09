@@ -189,6 +189,10 @@ pub struct DetailView {
     /// layer stays Dag-free.
     pub downstream_count: usize,
     pub upstream_count: usize,
+    /// Pre-rendered `catalog:`/`drift:` lines from `catalog.json` (real column
+    /// types, row count, byte size, doc↔warehouse drift) — snapshotted at open
+    /// like every other field; empty without catalog coverage.
+    pub catalog: Vec<String>,
     pub scroll: usize,
 }
 
@@ -686,6 +690,7 @@ mod tests {
             tests: vec![],
             downstream_count: 0,
             upstream_count: 0,
+            catalog: vec![],
             scroll: 0,
         })
     }
