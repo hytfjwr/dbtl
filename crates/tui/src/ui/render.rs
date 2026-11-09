@@ -45,6 +45,9 @@ pub struct StatusSegments<'a> {
     /// `"diff +2 ~1 -3"` (or `"diff clean"`). Always-on with a baseline — the
     /// chip is the at-a-glance answer `--diff` exists to give.
     pub diff: Option<&'a str>,
+    /// The run_results readout (`run 12/34 @ 2024-01-02` — coverage + freshness
+    /// of the loaded artifact). `None` when no run_results is loaded.
+    pub run: Option<&'a str>,
     /// The persistent list filter when active, e.g. `"untested"` (bare — the
     /// segment renderer adds the `[..]`). Echoes the list-title tag so it
     /// stays visible while the list pane is hidden.
@@ -512,9 +515,10 @@ fn draw_status(
     //   4. focus / view LAST (focus is already the accent pane border, and the
     //      view label is echoed in the lineage pane title — redundant cues that
     //      should drop first on a narrow terminal).
-    let candidates: [(Option<&str>, Color); 9] = [
+    let candidates: [(Option<&str>, Color); 10] = [
         (segments.impact, t.danger),
         (segments.diff, t.diff_mod),
+        (segments.run, t.warn),
         (segments.coverage, t.warn),
         (segments.bookmarks, t.gold),
         (segments.filter, t.accent),

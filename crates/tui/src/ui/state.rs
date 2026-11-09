@@ -19,9 +19,10 @@ use ratatui::crossterm::event::KeyEvent;
 /// reproduces the muscle-memory coverage view (and keeps the status-bar cov%).
 ///
 /// Cycle order (`cycle_lens`): Off → Coverage → DegreeHeat → Layer → LayerViolation
-/// → Diff → Off. The Diff lens needs a `--diff` baseline to show anything, so
-/// the `apply_action` CycleLens arm SKIPS it when the App has none — the raw
-/// [`cycle_lens`](UiState::cycle_lens) here stays a pure, App-blind step.
+/// → Diff → RunStatus → RunTime → Off. The Diff lens needs a `--diff` baseline
+/// and the Run* lenses need a loaded `run_results.json` to show anything, so
+/// the `apply_action` CycleLens arm SKIPS them when the App lacks the data —
+/// the raw [`cycle_lens`](UiState::cycle_lens) here stays a pure, App-blind step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LineageLens {
     /// No lens — node boxes show their materialization-class colour.
@@ -38,10 +39,16 @@ pub enum LineageLens {
     LayerViolation,
     /// Diff vs the `--diff` baseline: added nodes green, modified nodes amber.
     Diff,
+    /// Last-run status from `run_results.json`: error/fail red, warn yellow,
+    /// skipped muted (success keeps its class colour).
+    RunStatus,
+    /// Last-run `execution_time` heat: the slowest nodes glow on the same
+    /// low/mid/high ramp the DegreeHeat lens uses.
+    RunTime,
 }
 
 impl LineageLens {
-    /// The next lens in the `t`-cycle (wraps `Diff → Off`).
+    /// The next lens in the `t`-cycle (wraps `RunTime → Off`).
     pub fn next(self) -> LineageLens {
         match self {
             LineageLens::Off => LineageLens::Coverage,
@@ -49,7 +56,9 @@ impl LineageLens {
             LineageLens::DegreeHeat => LineageLens::Layer,
             LineageLens::Layer => LineageLens::LayerViolation,
             LineageLens::LayerViolation => LineageLens::Diff,
-            LineageLens::Diff => LineageLens::Off,
+            LineageLens::Diff => LineageLens::RunStatus,
+            LineageLens::RunStatus => LineageLens::RunTime,
+            LineageLens::RunTime => LineageLens::Off,
         }
     }
 }
@@ -832,6 +841,10 @@ mod tests {
         assert_eq!(s.lens(), LineageLens::LayerViolation);
         s.cycle_lens();
         assert_eq!(s.lens(), LineageLens::Diff);
+        s.cycle_lens();
+        assert_eq!(s.lens(), LineageLens::RunStatus);
+        s.cycle_lens();
+        assert_eq!(s.lens(), LineageLens::RunTime);
         s.cycle_lens();
         assert_eq!(s.lens(), LineageLens::Off, "wraps back to Off");
     }

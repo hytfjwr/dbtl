@@ -111,6 +111,7 @@ fn render_with_toast(app: &App, width: u16, height: u16, toast: Option<&str>) ->
             bookmarks: bm_s.as_deref(),
             sort: None,
             diff: diff_s.as_deref(),
+            run: None,
             filter: app.list_filter_label(),
         };
         // Mirror the loop's filter-tag wiring so the `[untested]`/`[marked]`

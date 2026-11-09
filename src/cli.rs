@@ -58,6 +58,13 @@ pub struct Cli {
     /// status diff chip.
     #[arg(long)]
     pub diff: Option<String>,
+    /// Path to a dbt run_results.json (the last run's per-node status +
+    /// execution_time). Adds the RunStatus/RunTime lenses, a `run n/m @date`
+    /// status chip, and the runtime-weighted critical path in the `S` stats
+    /// modal. Default: auto-detect target/run_results.json next to the data
+    /// source — a missing file just means no run data, never an error.
+    #[arg(long)]
+    pub run_results: Option<String>,
     /// A non-interactive subcommand. Omitted = launch the TUI (the default,
     /// unchanged behaviour).
     #[command(subcommand)]
@@ -240,11 +247,17 @@ pub fn build_app(cli: &Cli) -> Result<App> {
         label,
         is_source,
     } = resolved;
-    if is_source {
-        Ok(App::from_source(dag, PathBuf::from(label)))
+    let mut app = if is_source {
+        App::from_source(dag, PathBuf::from(label))
     } else {
-        Ok(App::new(dag, PathBuf::from(label)))
+        App::new(dag, PathBuf::from(label))
+    };
+    // An explicit --run-results overrides the auto-detected sibling; its load
+    // error IS user-facing (unlike the silent auto-detect).
+    if let Some(rr) = &cli.run_results {
+        app.set_run_results(PathBuf::from(rr))?;
     }
+    Ok(app)
 }
 
 /// Run the `docs` subcommand: resolve the data source (shared with the TUI),
