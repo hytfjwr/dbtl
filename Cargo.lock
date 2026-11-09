@@ -386,6 +386,7 @@ dependencies = [
  "dbtl-core",
  "ratatui",
  "serde",
+ "serde_json",
  "serde_norway",
  "unicode-width",
 ]

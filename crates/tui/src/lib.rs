@@ -14,6 +14,7 @@ pub mod app;
 pub mod effect;
 pub mod layout;
 pub mod model_list;
+pub mod persist;
 pub mod ui;
 
 pub use action::{
@@ -30,6 +31,7 @@ pub use model_list::{
     build_filtered_model_list, build_model_list, match_indices, name_matches_query, DisplayRow,
     ModelGroup, ModelList, SortMode, LAYER_ORDER,
 };
+pub use persist::{Config, PersistedState};
 pub use ui::{
     draw, handle_key, reduce_selection, Focus, KeyOutcome, LineageLens, RenderCtx, UiState,
 };

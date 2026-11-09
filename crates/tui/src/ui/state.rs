@@ -228,6 +228,12 @@ impl UiState {
         self.density
     }
 
+    /// Set the lineage box density directly (state restore / config default —
+    /// the interactive path still goes through [`toggle_density`](Self::toggle_density)).
+    pub fn set_density(&mut self, density: crate::Density) {
+        self.density = density;
+    }
+
     /// Flip the lineage density (Comfortable <-> Compact). A pure view-pref
     /// toggle like the minimap; the cached layout rebuilds next frame (density
     /// is part of its key) and the loop force-anchors the reshaped diagram.

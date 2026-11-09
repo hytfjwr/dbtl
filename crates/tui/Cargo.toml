@@ -14,3 +14,6 @@ ratatui.workspace = true
 serde.workspace = true
 serde_norway.workspace = true
 unicode-width.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
