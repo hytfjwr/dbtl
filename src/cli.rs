@@ -91,6 +91,17 @@ pub enum Commands {
         /// For quiet CI runs where only the exit code matters.
         #[arg(long)]
         quiet: bool,
+        /// After writing, delete stale generated pages: marked dbtl files under
+        /// <DIR> that this run did not regenerate (e.g. pages of deleted or
+        /// renamed models). Only files carrying the generated marker are
+        /// removed — hand-written pages sharing the dir are never touched.
+        #[arg(long)]
+        clean: bool,
+        /// Write nothing: compare the generated set against <DIR> on disk and
+        /// exit 1 if anything differs — a missing page, a changed page, or a
+        /// stale marked file. Prints one line per difference for the CI log.
+        #[arg(long, conflicts_with = "clean")]
+        check: bool,
     },
 }
 
@@ -180,15 +191,20 @@ pub fn build_app(cli: &Cli) -> Result<App> {
 /// Run the `docs` subcommand: resolve the data source (shared with the TUI),
 /// generate the Markdown doc set in memory (the pure [`dbtl::generate_docs`]),
 /// then write each file under `out` — creating the directory tree as needed and
-/// overwriting existing pages, never deleting. Prints a one-line summary to
-/// stdout on success. Every failure (load error, IO error) returns `Err`, which
-/// `main` reports as plain text + a non-zero exit — no panic, no terminal init.
+/// overwriting existing pages. `--check` writes nothing and exits 1 when the
+/// on-disk set differs; `--clean` additionally deletes marked generated files
+/// the run did not regenerate (stale pages of removed models). Prints a
+/// one-line summary to stdout on success. Every failure (load error, IO error)
+/// returns `Err`, which `main` reports as plain text + a non-zero exit — no
+/// panic, no terminal init.
 pub fn run_docs(
     out: &str,
     manifest: &Option<String>,
     source: &Option<String>,
     project: &str,
     quiet: bool,
+    clean: bool,
+    check: bool,
 ) -> Result<()> {
     let resolved = resolve_source(manifest, source, project)?;
     let provenance = if resolved.is_source {
@@ -200,6 +216,10 @@ pub fn run_docs(
     let files = dbtl::generate_docs(&resolved.dag, &project_name, &provenance);
 
     let out_dir = PathBuf::from(out);
+    if check {
+        return check_docs(&out_dir, &files, quiet);
+    }
+
     for (rel_path, contents) in &files {
         let path = out_dir.join(rel_path);
         if let Some(parent) = path.parent() {
@@ -209,6 +229,12 @@ pub fn run_docs(
         std::fs::write(&path, contents)
             .with_context(|| format!("failed to write {}", path.display()))?;
     }
+    if clean {
+        let removed = remove_stale_docs(&out_dir, &files)?;
+        if !quiet && !removed.is_empty() {
+            println!("removed {} stale file(s)", removed.len());
+        }
+    }
     // The success summary is the only stdout `docs` writes; `--quiet` drops it
     // for CI. Errors are returned as `Err` and printed to stderr by `main`
     // either way, so silencing stdout never hides a failure.
@@ -216,6 +242,105 @@ pub fn run_docs(
         println!("wrote {} files to {}", files.len(), out_dir.display());
     }
     Ok(())
+}
+
+/// The dbtl-owned Markdown files under `out_dir`: every `*.md` file whose
+/// contents start with [`dbtl::GENERATED_MARKER`], returned as sorted relative
+/// paths (`/`-separated, matching the generated rel paths). Unmarked files —
+/// hand-written docs sharing the dir — are invisible here, so `--clean` and
+/// `--check` can never touch them.
+fn marked_docs_on_disk(out_dir: &std::path::Path) -> Vec<String> {
+    fn walk(dir: &std::path::Path, base: &std::path::Path, found: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                walk(&path, base, found);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let Ok(contents) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if !contents.starts_with(dbtl::GENERATED_MARKER) {
+                continue;
+            }
+            if let Ok(rel) = path.strip_prefix(base) {
+                found.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(out_dir, out_dir, &mut found);
+    found.sort();
+    found
+}
+
+/// `docs --check`: compare the in-memory generated set against what's on disk
+/// without writing anything. Prints one sorted line per difference — a
+/// `missing:` page, a `changed:` page, or a `stale:` marked file — then returns
+/// `Err` so `main` exits 1. An exact match exits 0.
+fn check_docs(out_dir: &std::path::Path, files: &[(String, String)], quiet: bool) -> Result<()> {
+    let expected: std::collections::HashSet<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
+    let mut problems: Vec<String> = Vec::new();
+
+    for (rel, want) in files {
+        match std::fs::read_to_string(out_dir.join(rel)) {
+            Err(_) => problems.push(format!("missing: {rel}")),
+            Ok(have) if have != *want => problems.push(format!("changed: {rel}")),
+            Ok(_) => {}
+        }
+    }
+    for rel in marked_docs_on_disk(out_dir) {
+        if !expected.contains(rel.as_str()) {
+            problems.push(format!("stale: {rel}"));
+        }
+    }
+
+    if problems.is_empty() {
+        if !quiet {
+            println!("docs up to date ({} files)", files.len());
+        }
+        return Ok(());
+    }
+    problems.sort();
+    for p in &problems {
+        println!("{p}");
+    }
+    anyhow::bail!("docs are out of date: {} difference(s)", problems.len())
+}
+
+/// `docs --clean`: delete marked generated files under `out_dir` that this run
+/// did NOT regenerate (the stale pages of removed/renamed models), then prune
+/// directories the deletions left empty. Returns the removed relative paths
+/// (sorted). Only files carrying the generated marker are ever considered.
+fn remove_stale_docs(out_dir: &std::path::Path, files: &[(String, String)]) -> Result<Vec<String>> {
+    let expected: std::collections::HashSet<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
+    let mut removed = Vec::new();
+    for rel in marked_docs_on_disk(out_dir) {
+        if expected.contains(rel.as_str()) {
+            continue;
+        }
+        let path = out_dir.join(&rel);
+        std::fs::remove_file(&path)
+            .with_context(|| format!("failed to remove stale {}", path.display()))?;
+        // Prune the (possibly nested) parent dirs the deletion emptied, bottom
+        // up, stopping at `out_dir` — `remove_dir` is a no-op error on a dir
+        // that still holds files, so a half-emptied tree stops cleanly.
+        let mut dir = path.parent().map(|p| p.to_path_buf());
+        while let Some(d) = dir {
+            if d == out_dir || std::fs::remove_dir(&d).is_err() {
+                break;
+            }
+            dir = d.parent().map(|p| p.to_path_buf());
+        }
+        removed.push(rel);
+    }
+    Ok(removed)
 }
 
 /// A project title for the docs index. Prefers the dbt project name read from
