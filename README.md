@@ -264,6 +264,22 @@ colors:                 # override any role; the rest comes from the base
 
 Then run `dbtl --theme my-ayu`. An unknown role or an invalid color stops startup with an error that lists the valid values. If a palette makes a lens invisible (for example, a lens tint equal to a node color), `dbtl` still starts but prints a warning.
 
+## State and config
+
+`dbtl` remembers your view per project: bookmarks (`Space`), the active lens, box density, list sort, and the last selected model are saved under `$XDG_STATE_HOME/dbtl/` (or `~/.local/state/dbtl/`) when you quit and restored on the next run. One JSON file per project; deleting it just resets the view.
+
+Defaults for a fresh project (or values a config can't express) come from `~/.config/dbtl/config.yml` (or `$XDG_CONFIG_HOME/dbtl/config.yml`):
+
+```yaml
+# ~/.config/dbtl/config.yml — every field optional
+theme: ayu-mirage      # same names as --theme (CLI/env still wins)
+lens: coverage         # off|coverage|degree-heat|layer|layer-violation|diff|run-status|run-time
+density: compact       # comfortable|compact
+sort: downstream       # layer|downstream|tests
+```
+
+Precedence is `config.yml` < saved project state < explicit CLI flags — so `dbtl --theme x` always wins over a configured theme, and a project you already visited restores its saved lens rather than the configured one. A malformed `config.yml` prints a warning and is ignored; a stale state file can reference models that no longer exist — those bookmarks are simply dropped.
+
 ## Troubleshooting
 
 <details>

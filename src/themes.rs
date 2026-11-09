@@ -14,14 +14,7 @@ fn user_theme_dir() -> Option<PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(xdg).join("dbtl").join("themes"));
     }
-    std::env::var_os("HOME")
-        .filter(|v| !v.is_empty())
-        .map(|home| {
-            PathBuf::from(home)
-                .join(".config")
-                .join("dbtl")
-                .join("themes")
-        })
+    crate::state::home_dir().map(|home| home.join(".config").join("dbtl").join("themes"))
 }
 
 /// The `*.yml` / `*.yaml` files under `dir`, sorted by file name so the theme

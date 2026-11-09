@@ -15,6 +15,7 @@
 
 mod cli;
 mod event_loop;
+mod state;
 mod terminal;
 mod themes;
 mod watch;
@@ -85,10 +86,25 @@ fn run(cli: &Cli) -> Result<()> {
         None => {}
     }
 
+    // User defaults from ~/.config/dbtl/config.yml. A malformed file is a
+    // warning, not a startup failure (the TUI still runs on built-in defaults).
+    let config = match state::load_config() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("warning: ignoring dbtl config.yml: {e}");
+            dbtl::Config::default()
+        }
+    };
+
     // Build the data model up front so load errors (missing manifest, bad
     // dbt_project.yml, YAML errors) are reported as plain text *before* we ever
     // touch the terminal.
     let mut app = build_app(cli)?;
+
+    // Layered prefs: config defaults under the per-project saved state (the
+    // state's `Some` fields win); --select/--diff below still override both.
+    app.apply_prefs(&config.as_prefs());
+    app.apply_prefs(&state::load_state(app.project_root()));
     if let Some(name) = &cli.select {
         // Fail as plain text before the terminal is touched, like a load error.
         // Plain model name first; on a miss, try it as a dbt selector spec
@@ -113,7 +129,7 @@ fn run(cli: &Cli) -> Result<()> {
     // Resolve the colour themes (presets + user files) and the --theme start
     // index. A bad EXPLICIT selection fails as plain text pre-TTY; user themes
     // get palette-lint WARNINGS inside load_themes, never errors.
-    let (themes, theme_idx) = load_themes(cli.theme.as_deref())?;
+    let (themes, theme_idx) = load_themes(cli.theme.as_deref().or(config.theme.as_deref()))?;
     app.set_themes(themes, theme_idx);
 
     // Enter raw mode + alternate screen and install the panic-restoring hook.
@@ -166,6 +182,10 @@ fn run(cli: &Cli) -> Result<()> {
     set_keyboard_enhancement(false);
     set_mouse_capture(false);
     ratatui::restore();
+
+    // Persist per-project prefs (bookmarks/lens/density/sort/selection) for
+    // the next run. Best-effort — an unwritable state dir is ignored.
+    state::save_state(app.project_root(), &app.prefs_snapshot());
 
     loop_result
 }
