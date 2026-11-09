@@ -103,6 +103,65 @@ pub enum Commands {
         #[arg(long, conflicts_with = "clean")]
         check: bool,
     },
+    /// Print the PR impact pack for a `--diff` baseline comparison to stdout
+    /// and exit — Markdown by default (paste into a PR description), `--format
+    /// json` for automation. The same `dbtl_core::diff_report` payload the TUI's
+    /// `D` modal snapshots, so a CI comment matches the screen byte-for-byte.
+    Impact {
+        /// Baseline to diff against: a manifest.json file, or a dbt project dir
+        /// (same resolution as the TUI's --diff).
+        #[arg(long)]
+        diff: String,
+        /// Output format: `markdown` (default) or `json`.
+        #[arg(long, value_enum, default_value = "markdown")]
+        format: ImpactFormat,
+        /// Path to a compiled dbt manifest.json (forces manifest mode).
+        #[arg(long, conflicts_with = "source")]
+        manifest: Option<String>,
+        /// Path to a dbt project dir, parsed from source with no compile.
+        #[arg(long, conflicts_with = "manifest")]
+        source: Option<String>,
+        /// dbt project dir for auto-detect: prefer <dir>/target/manifest.json,
+        /// else parse source.
+        #[arg(long, default_value = ".")]
+        project: String,
+    },
+    /// Run CI checks over the resolved data source and exit 1 when any fails:
+    /// test coverage below `--coverage-min`, newly introduced layer violations,
+    /// or changed buildable nodes without tests (the last two need `--diff`).
+    /// The report is plain lines on stdout, one per check.
+    Check {
+        /// Baseline to diff against: enables the new-layer-violation and
+        /// untested-change checks (same resolution as the TUI's --diff).
+        #[arg(long)]
+        diff: Option<String>,
+        /// Fail when test coverage (model/seed/snapshot nodes with ≥1 test)
+        /// falls below this percent. 0 disables the coverage check.
+        #[arg(long, default_value = "0", value_parser = clap::value_parser!(u8))]
+        coverage_min: u8,
+        /// Path to a compiled dbt manifest.json (forces manifest mode).
+        #[arg(long, conflicts_with = "source")]
+        manifest: Option<String>,
+        /// Path to a dbt project dir, parsed from source with no compile.
+        #[arg(long, conflicts_with = "manifest")]
+        source: Option<String>,
+        /// dbt project dir for auto-detect: prefer <dir>/target/manifest.json,
+        /// else parse source.
+        #[arg(long, default_value = ".")]
+        project: String,
+        /// Suppress the per-check report on stdout; only the exit code matters.
+        #[arg(long)]
+        quiet: bool,
+    },
+}
+
+/// The `dbtl impact` output format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ImpactFormat {
+    /// The reviewer-shaped Markdown report (same bytes as the `D`→`e` export).
+    Markdown,
+    /// The `DiffReport` payload as pretty JSON, for automation.
+    Json,
 }
 
 /// A resolved data source: the loaded `Dag`, a human-readable label of where it
@@ -341,6 +400,112 @@ fn remove_stale_docs(out_dir: &std::path::Path, files: &[(String, String)]) -> R
         removed.push(rel);
     }
     Ok(removed)
+}
+
+/// Run the `impact` subcommand: resolve the current source + the `--diff`
+/// baseline, compute the shared [`dbtl::diff_report`] payload, and print it as
+/// Markdown (the same bytes the TUI's `D`→`e` export writes) or pretty JSON —
+/// to stdout, no TTY needed, so CI can post it as a PR comment.
+pub fn run_impact(
+    diff_path: &str,
+    format: ImpactFormat,
+    manifest: &Option<String>,
+    source: &Option<String>,
+    project: &str,
+) -> Result<()> {
+    let resolved = resolve_source(manifest, source, project)?;
+    let (base, label) = load_baseline(diff_path)?;
+    let diff = dbtl::compute_diff(&base, &resolved.dag);
+    let report = dbtl::diff_report(&resolved.dag, Some(&base), &diff, &label);
+    match format {
+        ImpactFormat::Markdown => {
+            let project = resolved.dag.project_name().unwrap_or("dbt");
+            print!("{}", dbtl::pr_impact_markdown(project, &report));
+        }
+        ImpactFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+    }
+    Ok(())
+}
+
+/// Run the `check` subcommand: evaluate the CI gates over the resolved source
+/// and return `Err` (exit 1 via `main`) when any fails. Coverage below
+/// `--coverage-min` (when >0), and — only with `--diff` — newly introduced
+/// layer violations and changed buildable nodes without tests, all from the
+/// single [`dbtl::pr_impact`] analysis. Prints one PASS/FAIL line per check to
+/// stdout; `--quiet` prints nothing (exit code only).
+pub fn run_check(
+    diff_path: &Option<String>,
+    coverage_min: u8,
+    manifest: &Option<String>,
+    source: &Option<String>,
+    project: &str,
+    quiet: bool,
+) -> Result<()> {
+    let resolved = resolve_source(manifest, source, project)?;
+    let dag = &resolved.dag;
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+
+    // Coverage — always measured (the shared `coverage_counts` base, the same
+    // numbers the TUI's `cov` segment quotes); the gate only engages above 0.
+    let (tested, total) = dbtl::coverage_counts(dag);
+    // No buildable nodes → nothing untested → 100%.
+    let pct = (tested * 100).checked_div(total).unwrap_or(100);
+    if coverage_min == 0 || pct >= usize::from(coverage_min) {
+        lines.push(format!("PASS coverage: {tested}/{total} ({pct}%)"));
+    } else {
+        let msg =
+            format!("coverage {pct}% below --coverage-min {coverage_min}% ({tested}/{total})");
+        lines.push(format!("FAIL {msg}"));
+        failures.push(msg);
+    }
+
+    if let Some(diff_path) = diff_path {
+        let (base, label) = load_baseline(diff_path)?;
+        let diff = dbtl::compute_diff(&base, dag);
+        let pr = dbtl::pr_impact(dag, Some(&base), &diff);
+        lines.push(format!("baseline: {label}"));
+        if pr.new_layer_violations.is_empty() {
+            lines.push("PASS new layer violations: none".to_string());
+        } else {
+            let msg = format!(
+                "{} new layer violation(s): {}",
+                pr.new_layer_violations.len(),
+                pr.new_layer_violations
+                    .iter()
+                    .map(|(p, c)| format!("{p} -> {c}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            lines.push(format!("FAIL {msg}"));
+            failures.push(msg);
+        }
+        if pr.untested_changes.is_empty() {
+            lines.push("PASS untested changes: none".to_string());
+        } else {
+            let msg = format!(
+                "{} changed node(s) without tests: {}",
+                pr.untested_changes.len(),
+                pr.untested_changes.join(", ")
+            );
+            lines.push(format!("FAIL {msg}"));
+            failures.push(msg);
+        }
+    }
+
+    if !quiet {
+        for line in &lines {
+            println!("{line}");
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!("{} check(s) failed", failures.len())
+    }
 }
 
 /// A project title for the docs index. Prefers the dbt project name read from

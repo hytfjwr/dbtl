@@ -353,6 +353,7 @@ dependencies = [
  "dbtl-docs",
  "dbtl-tui",
  "ratatui",
+ "serde_json",
  "tempfile",
  "unicode-width",
 ]

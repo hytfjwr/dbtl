@@ -24,7 +24,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use cli::{build_app, load_baseline, run_docs, Cli, Commands};
+use cli::{build_app, load_baseline, run_check, run_docs, run_impact, Cli, Commands};
 use event_loop::{event_loop, find_dbt};
 use terminal::{
     detect_keyboard_enhancement, resolve_glyph_mode, set_keyboard_enhancement, set_mouse_capture,
@@ -55,17 +55,34 @@ fn run(cli: &Cli) -> Result<()> {
 
     // Non-interactive subcommands run and return BEFORE any terminal init /
     // probe (same as --list-themes), so they work in a non-TTY / CI environment.
-    if let Some(Commands::Docs {
-        out,
-        manifest,
-        source,
-        project,
-        quiet,
-        clean,
-        check,
-    }) = &cli.command
-    {
-        return run_docs(out, manifest, source, project, *quiet, *clean, *check);
+    match &cli.command {
+        Some(Commands::Docs {
+            out,
+            manifest,
+            source,
+            project,
+            quiet,
+            clean,
+            check,
+        }) => return run_docs(out, manifest, source, project, *quiet, *clean, *check),
+        Some(Commands::Impact {
+            diff,
+            format,
+            manifest,
+            source,
+            project,
+        }) => return run_impact(diff, *format, manifest, source, project),
+        Some(Commands::Check {
+            diff,
+            coverage_min,
+            manifest,
+            source,
+            project,
+            quiet,
+        }) => {
+            return run_check(diff, *coverage_min, manifest, source, project, *quiet);
+        }
+        None => {}
     }
 
     // Build the data model up front so load errors (missing manifest, bad

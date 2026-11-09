@@ -8,7 +8,7 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::{NodeDetail, TestInfo};
+use crate::{NodeDetail, PrImpact, TestInfo};
 
 /// A movement / scroll direction, reused across actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,40 +251,13 @@ pub struct StatsView {
     pub scroll: usize,
 }
 
-/// The reviewer-shaped "PR Impact Pack" analysis derived from the App's
-/// [`DagDiff`](crate::DagDiff) + the current Dag's closures: the aggregate
-/// blast radius of the changed-node set, the affected marts/exposures, a
-/// suggested CI selector, and the risk flags. Snapshotted into [`DiffView`] at
-/// modal-open time (so the render layer stays Dag-free) and re-read verbatim by
-/// the Markdown export — both from the single `App::pr_impact_data`, so the
-/// modal, the file, and the yanked command can never disagree. `Eq` (rides in
-/// the `Eq` [`Mode`]): plain data only.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PrImpact {
-    /// Total affected models: the union of the changed set's downstream model
-    /// closures, with the changed nodes themselves excluded.
-    pub affected_models: usize,
-    /// The marts (downstream models in the `marts` layer) within that blast
-    /// radius, by name, sorted.
-    pub affected_marts: Vec<String>,
-    /// Downstream exposures of the changed set as display strings
-    /// (`"name (kind, owner: …)"`), sorted, deduped — the "who cares" line.
-    pub affected_exposures: Vec<String>,
-    /// The suggested `dbt build --select a+ b+ …` command over the changed
-    /// buildable set, or `None` when nothing buildable changed.
-    pub ci_command: Option<String>,
-    /// Risk: changed nodes that carry no tests (the [`coverage_gap`](crate::coverage_gap)
-    /// predicate), by name, sorted.
-    pub untested_changes: Vec<String>,
-    /// Risk: changed "hub" nodes whose transitive downstream (buildable) closure
-    /// is at or above the hub threshold, as `(name, count)` sorted desc by count
-    /// then name.
-    pub changed_hubs: Vec<(String, usize)>,
-    /// Risk: layer-violation edges present now but NOT in the baseline, as
-    /// `(parent, child)` names, sorted.
-    pub new_layer_violations: Vec<(String, String)>,
-}
-
+/// The reviewer-shaped "PR Impact Pack" analysis — [`crate::PrImpact`], defined
+/// in `dbtl-core` so `dbtl impact`/`dbtl check` share the same computation as
+/// this modal. Snapshotted into [`DiffView`] at modal-open time (so the render
+/// layer stays Dag-free) and re-read verbatim by the Markdown export — both
+/// from the single `dbtl_core::diff_report`, so the modal, the file, the
+/// yanked command, and the CI output can never disagree.
+///
 /// The baseline-diff modal payload, snapshotted from the App's
 /// [`DagDiff`](crate::DagDiff) when the modal opens (names resolved, reasons
 /// joined), so the render layer never needs a `Dag`. MUST be `Eq` (`Mode`

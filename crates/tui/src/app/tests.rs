@@ -3406,7 +3406,7 @@ fn pr_impact_aggregates_blast_radius_marts_and_exposures() {
 
 #[test]
 fn pr_impact_flags_changed_hubs_at_the_threshold() {
-    use super::analysis::PR_HUB_MIN_DOWNSTREAM as MIN;
+    use crate::PR_HUB_MIN_DOWNSTREAM as MIN;
     // A hub fanning out to exactly MIN marts; modified by an SQL change.
     let children: Vec<String> = (0..MIN).map(|i| format!("model.p.c{i}")).collect();
     let edges: Vec<(&str, &str)> = children

@@ -49,7 +49,10 @@ mod styles;
 #[cfg(test)]
 mod tests;
 
-pub use analysis::layer_violation_edges;
+// The single violation predicate lives in `dbtl_core::impact` (shared by the
+// lens, the stats worklist, the PR impact pack, and `dbtl check`); re-export
+// it here so `dbtl::app::layer_violation_edges` keeps resolving.
+pub use crate::layer_violation_edges;
 // The subgraph→fenced-Mermaid core lives in `dbtl_core::mermaid` so the static
 // docs generator (`dbtl-docs`) shares the identical id-assignment/escaping
 // without depending on this crate.
