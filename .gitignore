@@ -8,3 +8,6 @@
 tests/fixtures/sample_project/target/
 tests/fixtures/sample_project/logs/
 tests/fixtures/sample_project/.user.yml
+
+# local progress scratchpad (session work tracking — not for the repo)
+PROGRESS.md
