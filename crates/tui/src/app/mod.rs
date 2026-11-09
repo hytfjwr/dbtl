@@ -36,9 +36,9 @@ use crate::action::{Mode, SearchTarget};
 use crate::effect::Effect;
 use crate::ui::theme::{self, Theme};
 use crate::{
-    build_filtered_model_list, build_model_list, compute_diff, coverage_gap,
+    build_filtered_model_list, build_model_list, compute_diff, coverage_gap, default_catalog_path,
     default_run_results_path, load_dag, load_dag_from_source_with_warnings, Dag, DagDiff,
-    ModelList, NodeInfo, RunResults, SortMode, UiState,
+    ModelList, NodeDetail, NodeInfo, RunResults, SortMode, UiState,
 };
 
 mod analysis;
@@ -232,6 +232,12 @@ pub struct App {
     /// auto-detected sibling), so [`reload`](App::reload) re-reads the same
     /// file — `--watch` picks up a fresh `dbt run`'s results for free.
     run_results_path: Option<PathBuf>,
+    /// The `dbt docs generate` warehouse record (`catalog.json`), keyed by
+    /// `unique_id` — real column types, row counts, byte sizes, and the
+    /// schema.yml↔warehouse drift check for the detail modal.
+    catalog: Option<crate::Catalog>,
+    /// Where `catalog` was auto-detected — `reload` re-reads it.
+    catalog_path: Option<PathBuf>,
 }
 
 /// Where the `Dag` was loaded from, so `reload` re-reads the same source.
@@ -249,6 +255,15 @@ impl DataSource {
         match self {
             DataSource::Manifest(m) => default_run_results_path(Some(m), None),
             DataSource::Project(d) => default_run_results_path(None, Some(d)),
+        }
+    }
+
+    /// The catalog.json `dbt docs generate` would write next to this source
+    /// (the auto-detect target [`crate::default_catalog_path`] encodes).
+    fn default_catalog_path(&self) -> Option<PathBuf> {
+        match self {
+            DataSource::Manifest(m) => default_catalog_path(Some(m), None),
+            DataSource::Project(d) => default_catalog_path(None, Some(d)),
         }
     }
 }
@@ -281,6 +296,13 @@ impl App {
             .as_ref()
             .filter(|p| p.is_file())
             .and_then(|p| RunResults::load(p).ok());
+        // Same auto-detect for target/catalog.json — warehouse truth for the
+        // detail modal (real types, row counts, schema.yml drift).
+        let catalog_path = source.default_catalog_path();
+        let catalog = catalog_path
+            .as_ref()
+            .filter(|p| p.is_file())
+            .and_then(|p| crate::Catalog::load(p).ok());
         App {
             dag,
             model_list,
@@ -312,6 +334,8 @@ impl App {
             theme_index: 0,
             run_results,
             run_results_path,
+            catalog,
+            catalog_path,
         }
     }
 
@@ -329,6 +353,57 @@ impl App {
         self.run_results = Some(RunResults::load(&path)?);
         self.run_results_path = Some(path);
         Ok(())
+    }
+
+    /// The loaded `catalog.json` side-map, if any — the detail modal reads it
+    /// for real column types, row counts, byte sizes, and doc↔warehouse drift.
+    pub fn catalog(&self) -> Option<&crate::Catalog> {
+        self.catalog.as_ref()
+    }
+
+    /// The detail-modal catalog block for a node: `catalog:` stats line (rows,
+    /// size), a per-column real type when the manifest only documents a name,
+    /// and a `drift:` line when documented/actual column sets disagree. Empty
+    /// when the catalog doesn't cover this uid.
+    pub fn catalog_note(&self, uid: &str, detail: &NodeDetail) -> Vec<String> {
+        let Some(node) = self.catalog.as_ref().and_then(|c| c.get(uid)) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut stats = Vec::new();
+        if let Some(rows) = node.row_count() {
+            stats.push(format!("{rows} rows"));
+        }
+        if let Some(bytes) = node.size_bytes() {
+            stats.push(format!("{bytes} bytes"));
+        }
+        if !stats.is_empty() {
+            out.push(format!("catalog: {}", stats.join(", ")));
+        }
+        // Real warehouse type per documented column (the manifest's data_type
+        // is usually None — schema.yml rarely declares it).
+        for col in &detail.columns {
+            if let Some(ty) = node.column_type(&col.name) {
+                if col.data_type.as_deref() != Some(ty) {
+                    out.push(format!("  {}: {}", col.name, ty));
+                }
+            }
+        }
+        let (missing_in_wh, missing_in_docs) = node.drift(
+            &detail
+                .columns
+                .iter()
+                .map(|c| c.name.clone())
+                .collect::<Vec<_>>(),
+        );
+        if !missing_in_wh.is_empty() || !missing_in_docs.is_empty() {
+            out.push(format!(
+                "drift:   {} documented-but-missing, {} undocumented",
+                missing_in_wh.len(),
+                missing_in_docs.len()
+            ));
+        }
+        out
     }
 
     /// The status-bar readout for the loaded run results:
@@ -716,6 +791,11 @@ impl App {
             .as_ref()
             .filter(|p| p.is_file())
             .and_then(|p| RunResults::load(p).ok());
+        self.catalog = self
+            .catalog_path
+            .as_ref()
+            .filter(|p| p.is_file())
+            .and_then(|p| crate::Catalog::load(p).ok());
         self.filter = None;
         self.mode = Mode::Selection;
         // Cursor home: selection is restored BY ID, so the loop's

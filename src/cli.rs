@@ -65,6 +65,12 @@ pub struct Cli {
     /// source — a missing file just means no run data, never an error.
     #[arg(long)]
     pub run_results: Option<String>,
+    /// Hide models installed from dbt packages (`dbt_utils`, …): keep only the
+    /// project's own nodes. Manifest mode only — a compiled manifest mixes
+    /// `deps`-installed packages into `nodes`; source mode is local-only by
+    /// construction.
+    #[arg(long)]
+    pub project_only: bool,
     /// A non-interactive subcommand. Omitted = launch the TUI (the default,
     /// unchanged behaviour).
     #[command(subcommand)]
@@ -247,6 +253,17 @@ pub fn build_app(cli: &Cli) -> Result<App> {
         label,
         is_source,
     } = resolved;
+    // --project-only: drop installed-package nodes (uid's package segment ≠
+    // the graph's own package). Source mode resolves to a no-op naturally —
+    // every synthesized uid already names the project.
+    let dag = if cli.project_only {
+        match dag.primary_package() {
+            Some(pkg) => dag.filtered(|n| n.unique_id.split('.').nth(1) == Some(pkg.as_str())),
+            None => dag,
+        }
+    } else {
+        dag
+    };
     let mut app = if is_source {
         App::from_source(dag, PathBuf::from(label))
     } else {

@@ -157,6 +157,9 @@ fn detail_display_lines(dv: &DetailView, t: &theme::Theme) -> Vec<Line<'static>>
         _ => "-".to_string(),
     };
     out.push(Line::from(format!("location: {location}")));
+    if let Some(pkg) = &d.package_name {
+        out.push(Line::from(format!("package: {pkg}")));
+    }
     if let Some(p) = &d.original_file_path {
         out.push(Line::from(format!("path:   {p}")));
     }
@@ -164,6 +167,9 @@ fn detail_display_lines(dv: &DetailView, t: &theme::Theme) -> Vec<Line<'static>>
         "impact: {} downstream / {} upstream",
         dv.downstream_count, dv.upstream_count
     )));
+    // catalog.json warehouse truth (real types / rows / size / drift) —
+    // pre-rendered lines snapshotted when the modal opened.
+    out.extend(dv.catalog.iter().map(|l| Line::from(l.clone())));
     if !d.tags.is_empty() {
         out.push(Line::from(format!("tags:   {}", d.tags.join(", "))));
     }
