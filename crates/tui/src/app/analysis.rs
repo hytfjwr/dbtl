@@ -98,6 +98,14 @@ impl App {
             .collect();
         layer_violations.sort();
         let critical_path = longest_chain(&self.dag);
+        // The runtime-weighted critical path, only when run_results is loaded:
+        // the chain that costs the most wall-clock time (unweighted sibling of
+        // the depth chain — a 3-hop path of 60s models beats a 10-hop of 1s).
+        let critical_path_runtime = self.run_results().map(|rr| {
+            let (path, total) =
+                weighted_chain(&self.dag, |uid| rr.execution_time(uid).unwrap_or(0.0));
+            (path, format!("{total:.1}s"))
+        });
         StatsView {
             project: self.stats.project.clone(),
             by_resource_type: by_rt.into_iter().collect(),
@@ -109,6 +117,7 @@ impl App {
             orphan_models: orphans,
             layer_violations,
             critical_path,
+            critical_path_runtime,
             untested_testable: testable_total - testable_tested,
             zero_downstream_models: zero_down,
             no_description_models: no_desc,
@@ -229,6 +238,24 @@ impl App {
 /// recursion terminates instead of overflowing the stack. On an acyclic
 /// manifest the guard never fires, so the result is unchanged.
 pub(super) fn longest_chain(dag: &Dag) -> Vec<String> {
+    // Unweighted: every node costs 1, so (score, hops) degenerates to hops —
+    // the same longest-path DP, same tie-breaks, the score just rides along.
+    weighted_chain(dag, |_| 1.0).0
+}
+
+/// The heaviest-scored dependency chain in the DAG: a memoized DFS maximizing
+/// `(total weight, hop count)` lexicographically — a heavy short chain beats a
+/// cheap long one, and equal scores prefer MORE hops (a deeper chain is the
+/// better "critical path" story). `weight` maps a `unique_id` to its cost
+/// (the runtime path weighs nodes by `execution_time`, absent → 0.0).
+///
+/// Returns `(node-name path upstream→downstream, total weight)`. Tie-breaks
+/// are deterministic: children iterate sorted (`Dag::edges` order), a strict
+/// `>` keeps the first-best child, and the start is the smallest `unique_id`
+/// achieving the max score. Same cycle guard as the unweighted version —
+/// a back-edge target counts as a leaf so malformed cyclic manifests still
+/// terminate.
+pub(super) fn weighted_chain(dag: &Dag, weight: impl Fn(&str) -> f64) -> (Vec<String>, f64) {
     use std::collections::{HashMap, HashSet};
     let edges = dag.edges();
     let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
@@ -236,13 +263,14 @@ pub(super) fn longest_chain(dag: &Dag) -> Vec<String> {
         children.entry(p.as_str()).or_default().push(c.as_str());
     }
 
-    // (chain length from uid, the next hop on that chain).
+    // ((total weight, hop count) from uid, the next hop on that chain).
     fn chain<'a>(
         uid: &'a str,
         children: &HashMap<&'a str, Vec<&'a str>>,
-        memo: &mut HashMap<&'a str, (usize, Option<&'a str>)>,
+        weight: &dyn Fn(&str) -> f64,
+        memo: &mut HashMap<&'a str, ((f64, usize), Option<&'a str>)>,
         on_stack: &mut HashSet<&'a str>,
-    ) -> (usize, Option<&'a str>) {
+    ) -> ((f64, usize), Option<&'a str>) {
         if let Some(&hit) = memo.get(uid) {
             return hit;
         }
@@ -250,14 +278,16 @@ pub(super) fn longest_chain(dag: &Dag) -> Vec<String> {
         // break it by treating the re-entered node as a leaf. NOT memoized —
         // the node's real value is finished by its own frame further up.
         if !on_stack.insert(uid) {
-            return (1, None);
+            return ((weight(uid), 1), None);
         }
-        let mut best = (1, None);
+        let w = weight(uid);
+        let mut best = ((w, 1), None);
         for &kid in children.get(uid).into_iter().flatten() {
-            let (len, _) = chain(kid, children, memo, on_stack);
+            let ((kw, kl), _) = chain(kid, children, weight, memo, on_stack);
+            let cand = (w + kw, kl + 1);
             // Strictly greater: kids come sorted, so ties keep the first.
-            if len + 1 > best.0 {
-                best = (len + 1, Some(kid));
+            if cand.0 > best.0 .0 || (cand.0 == best.0 .0 && cand.1 > best.0 .1) {
+                best = (cand, Some(kid));
             }
         }
         on_stack.remove(uid);
@@ -269,18 +299,26 @@ pub(super) fn longest_chain(dag: &Dag) -> Vec<String> {
     let mut on_stack = HashSet::new();
     let mut starts: Vec<&str> = dag.nodes().keys().map(String::as_str).collect();
     starts.sort_unstable();
-    let Some(&start) = starts
-        .iter()
-        .max_by_key(|uid| chain(uid, &children, &mut memo, &mut on_stack).0)
-    else {
-        return Vec::new();
+    // Compute every start's score, then take the FIRST maximum (sorted order
+    // is ascending uid → smallest-uid winner, deterministic).
+    let mut best_start: Option<&str> = None;
+    let mut best_score = (0.0f64, 0usize);
+    for &uid in &starts {
+        let score = chain(uid, &children, &weight, &mut memo, &mut on_stack).0;
+        let better = match best_start {
+            None => true,
+            Some(_) => {
+                score.0 > best_score.0 || (score.0 == best_score.0 && score.1 > best_score.1)
+            }
+        };
+        if better {
+            best_start = Some(uid);
+            best_score = score;
+        }
+    }
+    let Some(start) = best_start else {
+        return (Vec::new(), 0.0);
     };
-    // max_by_key keeps the LAST maximum; re-scan for the FIRST (smallest uid).
-    let best_len = memo[start].0;
-    let start = *starts
-        .iter()
-        .find(|uid| memo[**uid].0 == best_len)
-        .expect("a maximum exists");
 
     let mut path = Vec::new();
     let mut seen = HashSet::new();
@@ -297,7 +335,7 @@ pub(super) fn longest_chain(dag: &Dag) -> Vec<String> {
         );
         cur = memo[uid].1;
     }
-    path
+    (path, best_score.0)
 }
 
 /// Compute the title-bar stats from a `Dag`. The project name is the second

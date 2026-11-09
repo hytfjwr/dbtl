@@ -244,6 +244,10 @@ pub struct StatsView {
     /// downstream; deterministic tie-breaks by `unique_id`). Its `len()` is the
     /// graph's depth — the "how many hops can a change ripple" readout.
     pub critical_path: Vec<String>,
+    /// The runtime-heaviest dependency chain under the loaded run_results
+    /// (node names + a `"12.3s"` total): the critical path that actually costs
+    /// wall-clock time, not just hops. `None` without run_results.
+    pub critical_path_runtime: Option<(Vec<String>, String)>,
     /// `testable_total - testable_tested` (same coverage_gap base as above).
     pub untested_testable: usize,
     pub zero_downstream_models: usize,
@@ -712,6 +716,7 @@ mod tests {
             orphan_models: vec![],
             layer_violations: vec![],
             critical_path: vec![],
+            critical_path_runtime: None,
             untested_testable: 0,
             zero_downstream_models: 0,
             no_description_models: 0,

@@ -317,6 +317,7 @@ fn filter_tag_renders_in_list_title_and_status_segment() {
         ctx.filter_label = app.list_filter_label();
         ctx.segments = StatusSegments {
             diff: None,
+            run: None,
             filter: app.list_filter_label(),
             ..StatusSegments::default()
         };
@@ -457,6 +458,7 @@ fn stats_view_with(n_orphans: usize, n_viol: usize) -> dbtl::StatsView {
             .map(|i| (format!("mart_{i:02}"), format!("stg_{i:02}")))
             .collect(),
         critical_path: vec!["src_a".into(), "stg_a".into(), "mart_a".into()],
+        critical_path_runtime: None,
         untested_testable: 1,
         zero_downstream_models: 2,
         no_description_models: 4,
@@ -1138,6 +1140,7 @@ fn status_bar_keeps_protected_core_and_appends_segments() {
             bookmarks: None,
             sort: None,
             diff: None,
+            run: None,
             filter: None,
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
@@ -1176,6 +1179,7 @@ fn status_bar_drops_segments_but_never_the_core_on_a_narrow_line() {
             bookmarks: None,
             sort: None,
             diff: None,
+            run: None,
             filter: None,
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
@@ -1221,6 +1225,7 @@ fn status_segments_render_at_80_cols() {
             bookmarks: None,
             sort: None,
             diff: None,
+            run: None,
             filter: None,
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
@@ -1269,6 +1274,7 @@ fn status_impact_segment_renders_and_survives_narrowest_droppable_line() {
             bookmarks: None,
             sort: None,
             diff: None,
+            run: None,
             filter: None,
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
@@ -1297,6 +1303,7 @@ fn status_impact_segment_renders_and_survives_narrowest_droppable_line() {
             bookmarks: None,
             sort: None,
             diff: None,
+            run: None,
             filter: None,
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");

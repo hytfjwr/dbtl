@@ -543,9 +543,18 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         // per the two-level-reducer contract.
         Action::CycleLens => {
             app.ui_state.cycle_lens();
-            // The Diff lens shows nothing without a --diff baseline: skip it so
-            // the cycle never lands on a slot that looks identical to Off.
-            if app.ui_state.lens() == LineageLens::Diff && app.diff().is_none() {
+            // Data-less lenses look identical to Off — skip them so the cycle
+            // never lands on a dead slot: Diff without a --diff baseline,
+            // RunStatus/RunTime without a loaded run_results.json.
+            loop {
+                let dead = match app.ui_state.lens() {
+                    LineageLens::Diff => app.diff().is_none(),
+                    LineageLens::RunStatus | LineageLens::RunTime => app.run_results().is_none(),
+                    _ => false,
+                };
+                if !dead {
+                    break;
+                }
                 app.ui_state.cycle_lens();
             }
             Outcome::cont()

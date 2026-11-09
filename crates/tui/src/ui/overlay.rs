@@ -658,6 +658,22 @@ fn stats_display_lines(sv: &StatsView, t: &theme::Theme) -> Vec<Line<'static>> {
         )));
     }
 
+    // The runtime-weighted sibling: which chain costs wall-clock time, not
+    // just depth. Only present when run_results.json loaded.
+    if let Some((path, total)) = &sv.critical_path_runtime {
+        out.push(Line::from(""));
+        out.push(Line::styled(
+            format!("Critical path by runtime ({total}):"),
+            header_style(t),
+        ));
+        for (i, name) in path.iter().take(WORKLIST_CAP).enumerate() {
+            out.push(Line::from(format!("  {}{name}", " ".repeat(i))));
+        }
+        if path.len() > WORKLIST_CAP {
+            out.push(Line::from(format!("  +{} more", path.len() - WORKLIST_CAP)));
+        }
+    }
+
     out.push(Line::from(""));
     out.push(Line::styled(
         format!("Orphans ({}):", sv.orphan_models.len()),

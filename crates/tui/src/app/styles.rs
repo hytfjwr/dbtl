@@ -161,7 +161,7 @@ impl App {
     /// the tint into a `Color`); `violation_nodes` is the precomputed project-wide
     /// incident set (empty unless the lens is `LayerViolation`). Returns
     /// `LensTint::None` for `Off` and for nodes a lens doesn't tint.
-    fn lens_tint(
+    pub(super) fn lens_tint(
         &self,
         lens: LineageLens,
         uid: &str,
@@ -212,6 +212,30 @@ impl App {
                 Some(crate::DiffStatus::Modified) => LensTint::DiffMod,
                 _ => LensTint::None,
             },
+            // RunStatus: the node's outcome in the loaded run_results — a
+            // failed model/test is what you actually hunt after a red CI run.
+            // success / absent → keep the class colour (the file's coverage
+            // already shows in the `run n/m` status segment).
+            LineageLens::RunStatus => match self.run_results().and_then(|r| r.status(uid)) {
+                Some(s) if s.is_failure() => LensTint::Violation,
+                Some(crate::RunStatus::Warn) => LensTint::RunWarn,
+                Some(crate::RunStatus::Skipped) => LensTint::RunSkip,
+                _ => LensTint::None,
+            },
+            // RunTime: the same low/mid/high ramp as DegreeHeat, bucketed by
+            // wall-clock seconds so the slow models glow. No result → None.
+            LineageLens::RunTime => {
+                match self
+                    .run_results()
+                    .and_then(|r| r.execution_time(uid))
+                    .unwrap_or(0.0)
+                {
+                    t if t < 1.0 => LensTint::None,
+                    t if t < 10.0 => LensTint::HeatLow,
+                    t if t < 60.0 => LensTint::HeatMid,
+                    _ => LensTint::HeatHigh,
+                }
+            }
         }
     }
 }

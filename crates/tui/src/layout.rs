@@ -183,6 +183,11 @@ pub enum LensTint {
     DiffAdd,
     /// Diff lens: node modified vs the `--diff` baseline.
     DiffMod,
+    /// RunStatus lens: the node's last run ended `warn` (error/fail reuse
+    /// `Violation`'s red; success keeps the class colour).
+    RunWarn,
+    /// RunStatus lens: the node's last run was `skipped` (muted).
+    RunSkip,
 }
 
 /// Per-cell render attributes, orthogonal to the char and the emphasis flag:

@@ -36,8 +36,9 @@ use crate::action::{Mode, SearchTarget};
 use crate::effect::Effect;
 use crate::ui::theme::{self, Theme};
 use crate::{
-    build_filtered_model_list, build_model_list, compute_diff, coverage_gap, load_dag,
-    load_dag_from_source_with_warnings, Dag, DagDiff, ModelList, NodeInfo, SortMode, UiState,
+    build_filtered_model_list, build_model_list, compute_diff, coverage_gap,
+    default_run_results_path, load_dag, load_dag_from_source_with_warnings, Dag, DagDiff,
+    ModelList, NodeInfo, RunResults, SortMode, UiState,
 };
 
 mod analysis;
@@ -222,6 +223,15 @@ pub struct App {
     /// cycle repaints without touching any cache (the cached layout's attrs
     /// are semantic — colours resolve at draw time).
     theme_index: usize,
+    /// The last dbt run's outcomes (`run_results.json`), keyed by `unique_id`
+    /// — the RunStatus/RunTime lenses' and the runtime-weighted critical
+    /// path's data source. `None` = no results found (those lenses are
+    /// skipped, like Diff without a baseline). Reloaded alongside the Dag.
+    run_results: Option<RunResults>,
+    /// Where `run_results` was loaded from (explicit `--run-results` or the
+    /// auto-detected sibling), so [`reload`](App::reload) re-reads the same
+    /// file — `--watch` picks up a fresh `dbt run`'s results for free.
+    run_results_path: Option<PathBuf>,
 }
 
 /// Where the `Dag` was loaded from, so `reload` re-reads the same source.
@@ -230,6 +240,17 @@ enum DataSource {
     Manifest(PathBuf),
     /// A dbt project directory parsed from source (no `dbt compile`).
     Project(PathBuf),
+}
+
+impl DataSource {
+    /// The run_results.json dbt would have written next to this source
+    /// (the auto-detect target [`crate::default_run_results_path`] encodes).
+    fn default_run_results_path(&self) -> Option<PathBuf> {
+        match self {
+            DataSource::Manifest(m) => default_run_results_path(Some(m), None),
+            DataSource::Project(d) => default_run_results_path(None, Some(d)),
+        }
+    }
 }
 
 impl App {
@@ -251,6 +272,15 @@ impl App {
         let model_list = build_model_list(&dag, sort);
         let ui_state = UiState::new(model_list.len());
         let stats = compute_stats(&dag);
+        // Auto-detect the sibling run_results.json (target/run_results.json
+        // next to the manifest, or under the project dir in source mode).
+        // Missing/unreadable → simply no run data; an explicit --run-results
+        // failure IS an error and is reported by the caller.
+        let run_results_path = source.default_run_results_path();
+        let run_results = run_results_path
+            .as_ref()
+            .filter(|p| p.is_file())
+            .and_then(|p| RunResults::load(p).ok());
         App {
             dag,
             model_list,
@@ -280,7 +310,40 @@ impl App {
                 .map(|(n, t)| (n.to_string(), *t))
                 .collect(),
             theme_index: 0,
+            run_results,
+            run_results_path,
         }
+    }
+
+    /// The loaded `run_results.json` side-map, if any (auto-detected sibling or
+    /// an explicit `--run-results`). The RunStatus/RunTime lenses and the
+    /// runtime-weighted critical path read it; `None` skips them all.
+    pub fn run_results(&self) -> Option<&RunResults> {
+        self.run_results.as_ref()
+    }
+
+    /// Point the app at a specific `run_results.json` (`--run-results`). A load
+    /// failure is the caller's error to report — the App only ever stores a
+    /// successfully parsed file. Re-read by [`reload`](App::reload).
+    pub fn set_run_results(&mut self, path: PathBuf) -> Result<()> {
+        self.run_results = Some(RunResults::load(&path)?);
+        self.run_results_path = Some(path);
+        Ok(())
+    }
+
+    /// The status-bar readout for the loaded run results:
+    /// `run 12/34 @ 2024-01-02` — covered/dag-nodes plus the artifact's date —
+    /// so a stale or partial run is visible at a glance. `None` when unloaded.
+    pub fn run_status_label(&self) -> Option<String> {
+        let rr = self.run_results.as_ref()?;
+        let covered = rr.covered_in(&self.dag);
+        let total = self.dag.nodes().len();
+        let date = rr
+            .generated_at
+            .as_deref()
+            .map(|ts| ts.get(..10).unwrap_or(ts)) // ISO date part only
+            .unwrap_or("?");
+        Some(format!("run {covered}/{total} @{date}"))
     }
 
     /// Load a `--diff` baseline: store it (with its display label), compute the
@@ -645,6 +708,14 @@ impl App {
         // collapse them so a history step never "moves" to the same node.
         self.back.dedup();
         self.forward.dedup();
+        // Same source, fresh outcomes: re-read the run_results the lenses and
+        // the weighted critical path read (a `dbt run` between reloads shows up
+        // without a restart). A vanished file → no run data, never an error.
+        self.run_results = self
+            .run_results_path
+            .as_ref()
+            .filter(|p| p.is_file())
+            .and_then(|p| RunResults::load(p).ok());
         self.filter = None;
         self.mode = Mode::Selection;
         // Cursor home: selection is restored BY ID, so the loop's

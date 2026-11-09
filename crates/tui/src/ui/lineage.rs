@@ -454,6 +454,8 @@ fn lens_color(tint: LensTint, t: &theme::Theme) -> Option<Color> {
         LensTint::LayerOther => Some(t.layer_other),
         LensTint::DiffAdd => Some(t.diff_add),
         LensTint::DiffMod => Some(t.diff_mod),
+        LensTint::RunWarn => Some(t.warn),
+        LensTint::RunSkip => Some(t.text_faint),
     }
 }
 
@@ -542,6 +544,8 @@ fn lens_title_suffix(lens: LineageLens) -> &'static str {
         LineageLens::Layer => " [lens:layer]",
         LineageLens::LayerViolation => " [lens:violation]",
         LineageLens::Diff => " [lens:diff]",
+        LineageLens::RunStatus => " [lens:run]",
+        LineageLens::RunTime => " [lens:time]",
     }
 }
 
