@@ -1,18 +1,26 @@
-<h1 align="center">dbtl</h1>
-
 <p align="center">
-A terminal UI for dbt model lineage — no compile, no browser.
+  <img src=".github/assets/banner.png" alt="dbtl — a terminal UI for dbt model lineage. No compile, no browser." width="100%">
 </p>
 
 <p align="center">
-<a href="https://github.com/hytfjwr/dbtl/actions/workflows/ci.yml"><img src="https://github.com/hytfjwr/dbtl/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-<a href="https://github.com/hytfjwr/dbtl/actions/workflows/security.yml"><img src="https://github.com/hytfjwr/dbtl/actions/workflows/security.yml/badge.svg" alt="Security"></a>
-<a href="https://github.com/hytfjwr/dbtl/releases"><img src="https://img.shields.io/github/v/release/hytfjwr/dbtl" alt="GitHub release"></a>
-<a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-<img src="https://img.shields.io/badge/rust-1.92+-orange.svg" alt="Rust 1.92+">
+  <a href="https://github.com/hytfjwr/dbtl/actions/workflows/ci.yml"><img src="https://github.com/hytfjwr/dbtl/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/hytfjwr/dbtl/actions/workflows/security.yml"><img src="https://github.com/hytfjwr/dbtl/actions/workflows/security.yml/badge.svg" alt="Security"></a>
+  <a href="https://github.com/hytfjwr/dbtl/releases"><img src="https://img.shields.io/github/v/release/hytfjwr/dbtl" alt="GitHub release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/rust-1.92+-orange.svg" alt="Rust 1.92+">
 </p>
 
-`dbtl` renders your dbt project's dependency graph as ASCII art in a two-pane terminal UI. Pick a model on the left, see its lineage on the right, and answer "what does this model depend on, and what does it affect?" without leaving the terminal.
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#usage">Usage</a> ·
+  <a href="#keybindings">Keybindings</a>
+</p>
+
+---
+
+`dbtl` draws your dbt project's dependency graph in a two-pane terminal UI. Pick a model on the left and its lineage appears on the right, so you can answer *"what does this model depend on, and what does it affect?"* without running `dbt compile` or opening a browser.
 
 ```
 ╭Seed────────────────────╮   ╭View───────────────────╮   ╭View────────────────────╮
@@ -24,21 +32,26 @@ A terminal UI for dbt model lineage — no compile, no browser.
 ╰──────────╯
 ```
 
-#### Preview
-<img width="3835" height="2072" alt="Screenshot 2026-06-12 at 11 23 00" src="https://github.com/user-attachments/assets/b5cded19-6019-4e1a-a5e7-18764f48bb81" />
+<img width="3835" height="2072" alt="dbtl running in a terminal: the model list on the left, the selected model's lineage on the right" src="https://github.com/user-attachments/assets/b5cded19-6019-4e1a-a5e7-18764f48bb81" />
 
+## Install
 
-Key features:
+```console
+$ brew install hytfjwr/tap/dbtl
+```
 
-- **No `dbt compile` required.** Builds lineage straight from `dbt_project.yml` + model `.sql` (`ref()`/`source()`) + `schema.yml`. Uses `target/manifest.json` automatically when present.
-- **Single static binary, works over SSH.** Everything happens inside the terminal — no `dbt docs serve`, no browser.
-- **Navigate the graph, not just the list.** Move a cursor between lineage nodes, re-root on any model, filter by direction and depth, and walk your re-root history.
-- **Built for test-coverage and impact chores.** Coverage/blast-radius/layer lenses (the layer lens also labels each column's layer along the pane border), a stats dashboard, untested-model cycling, and one-key export to Mermaid / Graphviz / Markdown impact reports.
-- **Trace a path, see a path.** Move the lineage cursor and the root↔cursor path lights up — nodes AND the connectors between them — while everything off-path dims. A compact mode (`v`) collapses boxes to one-row nodes for big graphs.
-- **Diff two states of the project, then ship the review.** `--diff <baseline>` compares against another manifest or checkout: added models glow green and modified ones amber right in the lineage, a status chip counts `+added ~modified -removed`, and `D` opens a reviewer-shaped **PR impact report** — the changed nodes (with reasons), the aggregate downstream blast radius and affected marts, the affected exposures, a ready-to-run `dbt build --select …` command, and risk flags (untested changes, changed hubs, newly-introduced layer violations). Press `e` to export it as Markdown for the PR description, `y` to copy the build command.
-- **Exposures answer "who cares".** dbt exposures (dashboards, notebooks, …) render as terminator nodes on the right edge of the lineage — in both manifest and source mode — the impact chip gains an `exp:N` count, and the `i` impact report lists each affected exposure with its kind and owner.
+Homebrew works on macOS and Linux. Other options:
 
-## Quick Start
+- **Prebuilt binaries.** Download a tarball for your platform from the [releases page](https://github.com/hytfjwr/dbtl/releases). `checksums.txt` is included.
+- **From source** (Rust 1.92+):
+
+  ```console
+  $ git clone https://github.com/hytfjwr/dbtl.git
+  $ cd dbtl
+  $ cargo install --path .
+  ```
+
+## Quick start
 
 Run it at the root of any dbt project:
 
@@ -46,31 +59,56 @@ Run it at the root of any dbt project:
 $ dbtl
 ```
 
-That's it. If `target/manifest.json` exists it is used; otherwise the project source is parsed directly.
+If `target/manifest.json` exists, `dbtl` uses it. Otherwise it parses the project source directly.
 
-Source mode infers lineage from the raw SQL (no Jinja rendering), so a compiled
-manifest is always more accurate — if `dbt` is on your `PATH`, press `P` inside
-the app to run `dbt parse` and switch to the generated manifest in place.
+Source mode infers lineage from the raw SQL without rendering Jinja, so a compiled manifest is always more accurate. If `dbt` is on your `PATH`, press `P` inside the app to run `dbt parse` and switch to the generated manifest in place.
 
-## Install
+## Features
 
-**Homebrew (macOS / Linux):**
+<table>
+<tr>
+<td width="50%" valign="top">
 
-```console
-$ brew install hytfjwr/tap/dbtl
-```
+### No compile, no browser
+`dbtl` builds lineage from `dbt_project.yml`, model `.sql` files (`ref()` / `source()`) and `schema.yml`. It is a single static binary and runs entirely in the terminal, including over SSH. There is no `dbt docs serve` step.
 
-**Prebuilt binaries:** grab a tarball for your platform from the
-[releases page](https://github.com/hytfjwr/dbtl/releases) (`checksums.txt`
-included).
+</td>
+<td width="50%" valign="top">
 
-**From source (requires Rust 1.92+):**
+### Navigate the graph itself
+Move a cursor between lineage nodes and re-root on any model. You can filter by direction and depth, and go back and forward through your re-root history. A mouse click on a node re-roots too.
 
-```console
-$ git clone https://github.com/hytfjwr/dbtl.git
-$ cd dbtl
-$ cargo install --path .
-```
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### Trace a path
+The path from the root to the cursor lights up, including the connectors between nodes, and everything off the path dims. Compact mode (`v`) shrinks boxes to one-row nodes for big graphs. Overview mode (`w`) shows the whole DAG.
+
+</td>
+<td valign="top">
+
+### Coverage and impact lenses
+Lenses tint the lineage by test coverage, downstream blast radius, layer, or layer violation. There is also a stats dashboard, a key to jump between untested models, and one-key export to Mermaid, Graphviz, or a Markdown impact report.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### Review a branch with `--diff`
+Compare against another manifest or checkout. Added models show green and modified ones amber. `D` opens a PR impact report that lists changed nodes with reasons, downstream blast radius, affected marts and exposures, a ready-to-run `dbt build --select …`, and risk flags. Press `e` to export it as Markdown.
+
+</td>
+<td valign="top">
+
+### Exposures show who is affected
+dbt exposures such as dashboards and notebooks appear as end nodes at the right edge of the lineage, in both manifest and source mode. The impact report lists each affected exposure with its type and owner.
+
+</td>
+</tr>
+</table>
 
 ## Usage
 
@@ -104,48 +142,29 @@ $ dbtl docs --out ./dbt-docs --clean            # also delete stale generated pa
 $ dbtl docs --out ./dbt-docs --check            # write nothing; exit 1 if docs are stale
 ```
 
+### How `--diff` compares
+
+The diff identifies nodes by `unique_id`, so a rename shows up as one node removed and another added. That is also how every downstream `ref()` sees it. It compares the things a dbt change actually moves: materialization, direct dependencies, columns, tests, and model SQL.
+
+There are two caveats. Comparing raw SQL cannot see a change inside a shared macro. A compiled-manifest baseline also contains the models of installed packages, which a source-parsed current side does not. For the cleanest result, compare a manifest against a manifest.
 
 ### Markdown docs (`dbtl docs`)
 
-`dbtl docs --out <DIR>` is a non-interactive subcommand (it never starts the TUI,
-so it runs fine in CI with no TTY). It writes a Markdown
-documentation tree you can commit straight to a repo and read on GitHub/GitLab:
+`dbtl docs --out <DIR>` never starts the TUI, so it runs in CI without a TTY. It writes a Markdown documentation tree that you can commit to a repo and read on GitHub or GitLab:
 
-- **One page per node** (model / source / seed / snapshot / exposure): description,
-  materialization, schema, tags, a column definition table (in dbt definition order),
-  tests, direct + transitive upstream/downstream (as links), and a per-node Mermaid
-  lineage diagram.
-- **An index `README.md`**: project summary, test-coverage % and orphan-model list,
-  a table of every node (linked), and a whole-project Mermaid diagram (split by layer
-  for large projects).
+- **One page per node** (model, source, seed, snapshot, exposure). Each page has the description, materialization, schema, tags, a column table in dbt definition order, tests, direct and transitive upstream/downstream links, and a Mermaid lineage diagram.
+- **An index `README.md`** with a project summary, test coverage %, a list of orphan models, a linked table of every node, and a whole-project Mermaid diagram. Large projects get the diagram split by layer.
 
-The data source is resolved exactly like the TUI (`--manifest` / `--source` / `--project`
-/ auto-detect). Output is **deterministic** — regenerating from the same input is
-byte-for-byte identical. Every generated file leads with a
-`<!-- Generated by dbtl. Do not edit. -->` marker, which powers two housekeeping
-flags:
+The data source is chosen the same way as in the TUI (`--manifest` / `--source` / `--project` / auto-detect). The output is deterministic: regenerating from the same input produces byte-identical files.
 
-- **`--clean`** — after writing, delete marked files under `<DIR>` that the run
-  did not regenerate (the stale pages of removed or renamed models). Only
-  marked files are ever removed; a hand-written `.md` sharing the dir is safe.
-- **`--check`** — write nothing; compare the generated set against `<DIR>` and
-  exit 1 on any difference (missing, changed, or stale marked file), printing
-  one line per difference. This catches stale pages that
-  `git diff --exit-code` after a regenerate cannot, and is the lighter CI
-  assertion: `dbtl docs --out docs/ --check` with no checkout step at all.
+Every generated file starts with a `<!-- Generated by dbtl. Do not edit. -->` marker. Two housekeeping flags rely on it:
 
-The diff keys nodes by `unique_id` (a rename reads as removed + added — which is
-what it is to every downstream `ref()`), and compares the surfaces a dbt change
-actually moves: materialization, direct dependencies, columns, tests, and model
-SQL. Two caveats: comparing raw SQL can't see a change inside a shared macro,
-and a compiled-manifest baseline also contains installed packages' models, which
-a source-parsed current side doesn't — for the cleanest signal, diff manifest
-against manifest.
+- **`--clean`** writes the docs, then deletes marked files under `<DIR>` that this run did not regenerate, such as the pages of removed or renamed models. Only marked files are ever removed, so a hand-written `.md` in the same directory is safe.
+- **`--check`** writes nothing. It compares the generated set against `<DIR>`, prints one line per difference (a missing, changed, or stale marked file), and exits 1 if there are any. Unlike running `git diff --exit-code` after regenerating, it also catches stale pages, and it needs no checkout step in CI: `dbtl docs --out docs/ --check`.
 
+## Keybindings
 
-### Keybindings
-
-Press `?` inside the app for the full list. Highlights:
+Press `?` inside the app for the full list. The most useful ones:
 
 | Key | Action |
 |------|------|
@@ -171,13 +190,13 @@ Press `?` inside the app for the full list. Highlights:
 | `Ctrl-t` | Cycle the color theme |
 | `q` | Quit |
 
-Mouse is supported too: click a lineage node to re-root, wheel to scroll. The lineage pane pans on both axes — a horizontal wheel notch (trackpad swipe / tilt wheel) or `Shift`+wheel scrolls it sideways.
+The mouse works too: click a lineage node to re-root, and use the wheel to scroll. The lineage pane pans in both directions. A horizontal wheel notch (trackpad swipe or tilt wheel) or `Shift`+wheel scrolls it sideways.
 
-### Color themes
+## Color themes
 
-Built-in presets: `default` (xterm-256, works everywhere), `ayu-dark`, `ayu-mirage`, `ayu-light`, `gruvbox-dark` (truecolor). Pick one with `--theme <name>` (or the `DBTL_THEME` env var), cycle live with `Ctrl-t`, and list everything with `--list-themes`.
+Built-in presets: `default` (xterm-256, works everywhere), `ayu-dark`, `ayu-mirage`, `ayu-light`, and `gruvbox-dark` (truecolor). Choose one with `--theme <name>` or the `DBTL_THEME` environment variable, switch live with `Ctrl-t`, and list them all with `--list-themes`.
 
-You can also define your own theme as a YAML file under `~/.config/dbtl/themes/` (or `$XDG_CONFIG_HOME/dbtl/themes/`) — the file name becomes the theme name:
+To define your own theme, put a YAML file under `~/.config/dbtl/themes/` (or `$XDG_CONFIG_HOME/dbtl/themes/`). The file name becomes the theme name:
 
 ```yaml
 # ~/.config/dbtl/themes/my-ayu.yml
@@ -187,16 +206,23 @@ colors:                 # override any role; the rest comes from the base
   class_table: 114      # …or an xterm-256 index
 ```
 
-Run `dbtl --theme my-ayu`. Unknown roles and bad colours fail with the valid alternatives listed; a palette that breaks the lens-visibility contract (e.g. a lens tint equal to a node colour) starts anyway but prints a warning.
+Then run `dbtl --theme my-ayu`. An unknown role or an invalid color stops startup with an error that lists the valid values. If a palette makes a lens invisible (for example, a lens tint equal to a node color), `dbtl` still starts but prints a warning.
 
-### If borders look doubled or misaligned
+## Troubleshooting
 
-Unicode box-drawing characters are East Asian Ambiguous width; some terminal configurations draw them 2 cells wide. `dbtl` probes the terminal at startup and falls back to pure ASCII (`+ - | >`) automatically, and you can force a mode:
+<details>
+<summary><b>Borders look doubled or misaligned</b></summary>
+
+<br>
+
+Unicode box-drawing characters have East Asian Ambiguous width, and some terminal configurations draw them 2 cells wide. `dbtl` probes the terminal at startup and falls back to pure ASCII (`+ - | >`) automatically. You can also force a mode:
 
 ```console
 $ dbtl --ascii     # pure ASCII rendering
 $ dbtl --unicode   # skip the probe, keep Unicode box drawing
 ```
+
+</details>
 
 ## License
 
