@@ -156,7 +156,11 @@ impl App {
         if !exposures.is_empty() {
             out.push_str(&format!("\n## Affected exposures ({})\n", exposures.len()));
             for (info, payload) in &exposures {
-                out.push_str(&format!("- {}{}\n", info.name, exposure_note(*payload)));
+                out.push_str(&format!(
+                    "- {}{}\n",
+                    info.name,
+                    crate::exposure_note(*payload)
+                ));
             }
         }
         Some(out)
@@ -176,169 +180,20 @@ impl App {
     /// is deterministic. Empty sections are omitted so the report stays tight.
     pub fn pr_impact_markdown(&self, dv: &crate::DiffView) -> String {
         let project = self.dag.project_name().unwrap_or("dbt");
-        let pr = &dv.pr;
-        let mut out = format!("# PR Impact Report: {project}\n\n");
-        out.push_str(&format!("- baseline: `{}`\n", dv.baseline));
-        out.push_str(&format!(
-            "- changed: +{} added, ~{} modified, -{} removed\n",
-            dv.added.len(),
-            dv.modified.len(),
-            dv.removed.len()
-        ));
-        out.push_str(&format!(
-            "- edges: +{} / -{}\n",
-            dv.edges_added.len(),
-            dv.edges_removed.len()
-        ));
-        out.push_str(&format!("- affected models: {}\n", pr.affected_models));
-        if !pr.affected_marts.is_empty() {
-            out.push_str(&format!("- affected marts: {}\n", pr.affected_marts.len()));
-        }
-        if !pr.affected_exposures.is_empty() {
-            out.push_str(&format!(
-                "- affected exposures: {}\n",
-                pr.affected_exposures.len()
-            ));
-        }
-
-        // The changed-node listings, mirroring the `D` modal sections. A list of
-        // `(title, rows)`; empty sections are skipped (a clean diff prints none).
-        let node_row = |name: &str, kind: &str| {
-            if kind.is_empty() {
-                format!("- {name}")
-            } else {
-                format!("- {name} ({kind})")
-            }
+        // The formatter lives in dbtl_core so `dbtl impact` prints the exact
+        // same bytes the `e` export writes; DiffView is the same data plus a
+        // scroll offset, so it maps back to DiffReport field-for-field.
+        let report = crate::DiffReport {
+            baseline: dv.baseline.clone(),
+            added: dv.added.clone(),
+            removed: dv.removed.clone(),
+            modified: dv.modified.clone(),
+            edges_added: dv.edges_added.clone(),
+            edges_removed: dv.edges_removed.clone(),
+            pr: dv.pr.clone(),
         };
-        let sections: [(&str, Vec<String>); 5] = [
-            (
-                "Added",
-                dv.added.iter().map(|(n, k)| node_row(n, k)).collect(),
-            ),
-            (
-                "Modified",
-                dv.modified
-                    .iter()
-                    .map(|(n, reasons)| format!("- {n}: {reasons}"))
-                    .collect(),
-            ),
-            (
-                "Removed",
-                dv.removed.iter().map(|(n, k)| node_row(n, k)).collect(),
-            ),
-            (
-                "Edges added",
-                dv.edges_added
-                    .iter()
-                    .map(|(p, c)| format!("- {p} -> {c}"))
-                    .collect(),
-            ),
-            (
-                "Edges removed",
-                dv.edges_removed
-                    .iter()
-                    .map(|(p, c)| format!("- {p} -> {c}"))
-                    .collect(),
-            ),
-        ];
-        for (title, rows) in &sections {
-            if rows.is_empty() {
-                continue;
-            }
-            out.push_str(&format!("\n## {title} ({})\n", rows.len()));
-            for row in rows {
-                out.push_str(row);
-                out.push('\n');
-            }
-        }
-
-        out.push_str(&format!(
-            "\n## Blast radius ({} affected models)\n",
-            pr.affected_models
-        ));
-        if pr.affected_marts.is_empty() {
-            out.push_str("- no affected marts\n");
-        } else {
-            out.push_str(&format!(
-                "\n### Affected marts ({})\n",
-                pr.affected_marts.len()
-            ));
-            for name in &pr.affected_marts {
-                out.push_str(&format!("- {name}\n"));
-            }
-        }
-
-        if !pr.affected_exposures.is_empty() {
-            out.push_str(&format!(
-                "\n## Affected exposures ({})\n",
-                pr.affected_exposures.len()
-            ));
-            for e in &pr.affected_exposures {
-                out.push_str(&format!("- {e}\n"));
-            }
-        }
-
-        out.push_str("\n## Suggested CI command\n");
-        match &pr.ci_command {
-            Some(cmd) => out.push_str(&format!("```sh\n{cmd}\n```\n")),
-            None => out.push_str("- no buildable changes\n"),
-        }
-
-        // Risk flags — each subsection only when it has entries.
-        let has_risk = !pr.untested_changes.is_empty()
-            || !pr.changed_hubs.is_empty()
-            || !pr.new_layer_violations.is_empty();
-        if has_risk {
-            out.push_str("\n## Risk flags\n");
-            if !pr.untested_changes.is_empty() {
-                out.push_str(&format!(
-                    "\n### Untested changes ({})\n",
-                    pr.untested_changes.len()
-                ));
-                for name in &pr.untested_changes {
-                    out.push_str(&format!("- {name}\n"));
-                }
-            }
-            if !pr.changed_hubs.is_empty() {
-                out.push_str(&format!("\n### Changed hubs ({})\n", pr.changed_hubs.len()));
-                for (name, count) in &pr.changed_hubs {
-                    out.push_str(&format!("- {name} ({count} downstream)\n"));
-                }
-            }
-            if !pr.new_layer_violations.is_empty() {
-                out.push_str(&format!(
-                    "\n### New layer violations ({})\n",
-                    pr.new_layer_violations.len()
-                ));
-                for (p, c) in &pr.new_layer_violations {
-                    out.push_str(&format!("- {p} -> {c}\n"));
-                }
-            }
-        }
-
-        out
+        crate::pr_impact_markdown(project, &report)
     }
-}
-
-/// The parenthesised kind/owner suffix for one impact-report exposure line:
-/// `" (dashboard, owner: Finance <fin@example.com>)"`. Each part is optional;
-/// the kind falls back to the bare `exposure` so the line always names what it
-/// is. Owner shows `name <email>`, either half standing alone when the other
-/// is missing. `pub(super)` so the PR-impact analysis ([`App::pr_impact_data`])
-/// formats its affected-exposure lines through the SAME rule.
-pub(super) fn exposure_note(payload: Option<&crate::ExposureInfo>) -> String {
-    let kind = payload
-        .and_then(|p| p.exposure_type.as_deref())
-        .unwrap_or("exposure");
-    let owner = payload.map_or_else(String::new, |p| {
-        match (p.owner_name.as_deref(), p.owner_email.as_deref()) {
-            (Some(n), Some(e)) => format!(", owner: {n} <{e}>"),
-            (Some(n), None) => format!(", owner: {n}"),
-            (None, Some(e)) => format!(", owner: <{e}>"),
-            (None, None) => String::new(),
-        }
-    });
-    format!(" ({kind}{owner})")
 }
 
 /// Escape a string for a Graphviz DOT quoted id/label (`\` and `"`).

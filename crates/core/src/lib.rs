@@ -8,16 +8,21 @@
 
 pub mod dag;
 pub mod diff;
+pub mod impact;
 pub mod layer;
 pub mod manifest;
 pub mod mermaid;
 pub mod source;
 
 pub use dag::{
-    coverage_gap, is_exposure, load_dag, ColumnInfo, Dag, Edge, ExposureInfo, NodeDetail, NodeInfo,
-    Subgraph, TestInfo,
+    coverage_gap, is_exposure, load_dag, ColumnInfo, Dag, Edge, ExposureInfo, MacroInfo,
+    NodeDetail, NodeInfo, Subgraph, TestInfo,
 };
 pub use diff::{compute_diff, DagDiff, DiffStatus};
+pub use impact::{
+    coverage_counts, diff_report, exposure_note, layer_violation_edges, pr_impact,
+    pr_impact_markdown, DiffReport, PrImpact, PR_HUB_MIN_DOWNSTREAM,
+};
 pub use layer::{first_dir, layer_rank, LAYER_ORDER};
 pub use manifest::{
     load_manifest, RawConfig, RawDependsOn, RawExposure, RawExposureOwner, RawManifest, RawNode,

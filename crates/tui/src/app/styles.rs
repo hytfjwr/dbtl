@@ -8,8 +8,8 @@ use crate::{
     coverage_gap, CellAttr, Layout, LensTint, LineageLens, MaterializationClass, NodeInfo,
 };
 
-use super::analysis::layer_violation_edges;
 use super::App;
+use crate::layer_violation_edges;
 
 impl App {
     /// Build the per-node render attributes for a lineage [`Layout`], folding in

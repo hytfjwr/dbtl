@@ -140,6 +140,12 @@ $ dbtl docs --manifest target/manifest.json --out docs/lineage
 $ dbtl docs --source /path/to/project --out ./dbt-docs --quiet   # no compile needed; CI-quiet
 $ dbtl docs --out ./dbt-docs --clean            # also delete stale generated pages
 $ dbtl docs --out ./dbt-docs --check            # write nothing; exit 1 if docs are stale
+
+# PR impact + CI gates (no TUI)
+$ dbtl impact --diff /path/to/main-checkout                       # PR impact pack as Markdown
+$ dbtl impact --diff target/manifest.prod.json --format json      # same payload as JSON
+$ dbtl check --coverage-min 80                                    # fail under 80% test coverage
+$ dbtl check --diff /path/to/main-checkout --coverage-min 80      # + new violations & untested changes
 ```
 
 ### How `--diff` compares
@@ -172,6 +178,36 @@ macro→macro calls) with a `macro:<name>` reason — the one surface raw SQL
 can't show. One caveat left: a compiled-manifest baseline also contains
 installed packages' models, which a source-parsed current side doesn't — for
 the cleanest signal, diff manifest against manifest.
+
+### PR impact + CI checks (`dbtl impact` / `dbtl check`)
+
+Two more non-interactive subcommands (no TTY needed — both return before any
+terminal init, just like `dbtl docs`). They compute the *same*
+`dbtl_core::diff_report` payload the TUI's `D` diff modal snapshots, so a CI
+comment can never disagree with the screen.
+
+- **`dbtl impact --diff <BASELINE>`** prints the PR impact pack — the diff
+  listings (added / removed / modified / edge changes), the aggregate blast
+  radius, affected marts and exposures, a suggested `dbt build --select …`
+  command, and the risk flags — as **Markdown** (the exact bytes the `D`→`e`
+  export writes; paste or post as a PR comment). `--format json` emits the
+  `DiffReport` payload verbatim for automation.
+- **`dbtl check`** prints one `PASS`/`FAIL` line per gate and exits 1 when any
+  fails. Gates: **`--coverage-min <pct>`** (test coverage below the
+  threshold — the same `coverage_gap` counts the status `cov%` shows), and —
+  with `--diff <BASELINE>` — **newly introduced layer violations** and
+  **changed models/seeds/snapshots without tests** (the impact pack's risk
+  flags). `--quiet` suppresses the report for an exit-code-only check.
+
+Example GitHub-Actions shape:
+
+```sh
+dbtl impact --manifest target/manifest.json --diff "$BASE/target/manifest.json" \
+    >> "$GITHUB_STEP_SUMMARY"
+dbtl check  --manifest target/manifest.json --diff "$BASE/target/manifest.json" \
+    --coverage-min 80
+```
+
 
 ## Keybindings
 
