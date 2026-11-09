@@ -382,6 +382,7 @@ mod tests {
             },
         );
         let manifest = RawManifest {
+            metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
             exposures: HashMap::new(),
@@ -572,6 +573,7 @@ mod tests {
             },
         );
         let manifest = RawManifest {
+            metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
             exposures: HashMap::new(),
@@ -642,6 +644,7 @@ mod tests {
         );
         parent_map.insert("model.p.i_y".to_string(), vec!["model.p.s_b".to_string()]);
         let manifest = RawManifest {
+            metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
             exposures: HashMap::new(),

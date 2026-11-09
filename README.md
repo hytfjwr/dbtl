@@ -180,7 +180,7 @@ One caveat left: a compiled-manifest baseline also contains installed packages' 
 
 #### Hiding installed packages (`--project-only`)
 
-A compiled manifest mixes `deps`-installed packages (`dbt_utils`, …) into `nodes`. `--project-only` keeps only the project's own nodes: the owning package is the most frequent `model.<pkg>.<name>` uid segment, and every dangling edge/side-map entry from dropped nodes is pruned with them. Each node's `package_name` is shown in the `Enter` structure view either way.
+A compiled manifest mixes `deps`-installed packages (`dbt_utils`, …) into `nodes`. `--project-only` keeps only the project's own nodes: the owning package is the manifest's `metadata.project_name` (the root project dbt recorded; on old manifests without it, the most frequent `model.<pkg>.<name>` uid segment), and every dangling edge/side-map entry from dropped nodes is pruned with them. Each node's `package_name` is shown in the `Enter` structure view either way.
 
 ### The last run and the warehouse
 

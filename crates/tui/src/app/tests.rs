@@ -505,6 +505,7 @@ fn export_labels_neutralize_untrusted_kind() {
     // `"]` must not close the Mermaid `["..."]` label (or the DOT quoted
     // label) and inject extra nodes/edges into the yanked diagram.
     let manifest = RawManifest {
+        metadata: Default::default(),
         nodes: HashMap::from([(
             "model.p.evil".to_string(),
             RawNode {
@@ -766,6 +767,7 @@ fn export_sanitizes_untrusted_node_names_into_a_safe_relative_path() {
         },
     );
     let dag = Dag::build(&RawManifest {
+        metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
         exposures: HashMap::new(),
@@ -1053,6 +1055,7 @@ fn longest_chain_terminates_on_a_cyclic_manifest() {
         ("model.p.c".to_string(), vec!["model.p.b".to_string()]),
     ]);
     let dag = Dag::build(&RawManifest {
+        metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
         exposures: HashMap::new(),
@@ -1401,6 +1404,7 @@ fn selected_file_path_stays_under_the_project_root() {
         node("mid", "models/../../outside.sql"),
     );
     let dag = Dag::build(&RawManifest {
+        metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
         exposures: HashMap::new(),
@@ -2612,6 +2616,7 @@ fn violation_dag() -> Dag {
     parent_map.insert("model.p.st".to_string(), vec!["model.p.mt".to_string()]);
     parent_map.insert("model.p.it".to_string(), vec!["model.p.st".to_string()]);
     Dag::build(&RawManifest {
+        metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
         exposures: HashMap::new(),
@@ -3115,6 +3120,7 @@ fn diff_base_dag() -> Dag {
     add("model.p.b", "b", "table");
     add("model.p.gone", "gone", "view");
     Dag::build(&RawManifest {
+        metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
         exposures: HashMap::new(),
@@ -3150,6 +3156,7 @@ fn diff_current_dag() -> Dag {
     add("model.p.b", "b", "incremental"); // modified vs the base
     add("model.p.c", "c", "view"); // added vs the base
     Dag::build(&RawManifest {
+        metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
         exposures: HashMap::new(),
@@ -3405,6 +3412,7 @@ fn pr_dag(
         exposure_map.insert(uid.to_string(), e);
     }
     Dag::build(&crate::RawManifest {
+        metadata: Default::default(),
         nodes: node_map,
         sources: HashMap::new(),
         exposures: exposure_map,

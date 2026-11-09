@@ -42,8 +42,8 @@ use regex::Regex;
 use serde::Deserialize;
 
 use crate::{
-    Dag, RawConfig, RawDependsOn, RawExposure, RawExposureOwner, RawManifest, RawNode, RawSource,
-    RawTestMetadata,
+    Dag, RawConfig, RawDependsOn, RawExposure, RawExposureOwner, RawManifest, RawMetadata, RawNode,
+    RawSource, RawTestMetadata,
 };
 
 /// Parse a dbt project directory and build its [`Dag`] from source.
@@ -526,6 +526,12 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
 
     Ok((
         RawManifest {
+            // `dbt_project.yml`'s `name` IS the root project — record it where
+            // real dbt does so `Dag::project_name` resolves identically in
+            // both load modes (the consistency suite asserts that).
+            metadata: RawMetadata {
+                project_name: Some(proj),
+            },
             nodes,
             sources,
             exposures,

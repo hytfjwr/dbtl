@@ -539,12 +539,12 @@ pub fn run_check(
 }
 
 /// A project title for the docs index. Prefers the dbt project name read from
-/// the loaded graph itself ([`dbtl::Dag::project_name`], the `unique_id` project
-/// segment) — authoritative and identical in manifest and source mode. Falls
-/// back to a label-derived heuristic (the dir name of a `<root>/target/
-/// manifest.json`, else the path's file name) only when the graph has no node
-/// with a project segment, and finally to a generic title so the heading is
-/// never blank.
+/// the loaded graph itself ([`dbtl::Dag::project_name`] — the manifest's
+/// `metadata.project_name`, else a `unique_id`-segment heuristic) —
+/// authoritative and identical in manifest and source mode. Falls back to a
+/// label-derived heuristic (the dir name of a `<root>/target/manifest.json`,
+/// else the path's file name) only when the graph has no name at all, and
+/// finally to a generic title so the heading is never blank.
 fn docs_project_name(dag: &dbtl::Dag, label: &str) -> String {
     if let Some(name) = dag.project_name().filter(|s| !s.is_empty()) {
         return name.to_string();

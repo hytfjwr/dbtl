@@ -360,6 +360,7 @@ mod tests {
             child_map.insert("model.p.b".to_string(), vec![uid.to_string()]);
         }
         RawManifest {
+            metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
             exposures: HashMap::new(),
@@ -533,6 +534,7 @@ mod tests {
         };
         let dag_with = |seed_node: RawNode, snap_node: RawNode| {
             Dag::build(&RawManifest {
+                metadata: Default::default(),
                 nodes: HashMap::from([
                     ("seed.p.fiscal".to_string(), seed_node),
                     ("snapshot.p.snap".to_string(), snap_node),
