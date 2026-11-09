@@ -118,7 +118,7 @@ dbt exposures such as dashboards and notebooks appear as end nodes at the right 
 <td valign="top">
 
 ### Search and select like dbt
-The `/` list search takes a `!`-prefixed dbt selector (`!tag:nightly`, `!+fct_orders`, `!state:modified+` with `--diff`) or a `?`-prefixed full-text query over descriptions, column names, and raw SQL. `--select` accepts the same selectors.
+The `/` list search takes a `!`-prefixed dbt selector (`!tag:nightly`, `!+fct_orders`, `!state:modified+` with `--diff`) or a `?`-prefixed full-text query over descriptions, column names, and raw SQL. `--select` accepts the same selectors minus `state:` (it resolves to the first matching model).
 
 </td>
 </tr>
@@ -137,7 +137,8 @@ $ dbtl --project /path/to/dbt-project
 $ dbtl --manifest /path/to/target/manifest.json
 $ dbtl --source /path/to/dbt-project
 
-# Select a model at startup — a name, or a dbt selector spec (first match wins)
+# Select a model at startup — a name, or a dbt selector spec (first matching
+# model wins; `state:` is unavailable — it resolves before --diff loads)
 $ dbtl --select stg_orders --watch              # --watch: auto-reload on source changes
 $ dbtl --select 'tag:nightly'
 
@@ -179,13 +180,13 @@ One caveat left: a compiled-manifest baseline also contains installed packages' 
 
 #### Hiding installed packages (`--project-only`)
 
-A compiled manifest mixes `deps`-installed packages (`dbt_utils`, …) into `nodes`. `--project-only` keeps only the project's own models: the owning package is the most frequent `model.<pkg>.<name>` uid segment, and every dangling edge/side-map entry from dropped nodes is pruned with them. Each node's `package_name` is shown in the `Enter` structure view either way.
+A compiled manifest mixes `deps`-installed packages (`dbt_utils`, …) into `nodes`. `--project-only` keeps only the project's own nodes: the owning package is the most frequent `model.<pkg>.<name>` uid segment, and every dangling edge/side-map entry from dropped nodes is pruned with them. Each node's `package_name` is shown in the `Enter` structure view either way.
 
 ### The last run and the warehouse
 
 Two more dbt artifacts are picked up automatically when they sit next to the data source — the manifest's directory (usually `target/`) in manifest mode, `<project>/target/` in source mode. A missing file just means less data, never an error.
 
-- **`run_results.json`** — the last `dbt run`/`build`/`test` outcome — adds two `t` lenses after Diff: **RunStatus** (error/fail → red, warn → yellow, skipped → muted; success keeps the node colour) and **RunTime** (execution-time heat on the same low/mid/high ramp as blast radius). The status bar gains a `run 12/34 @2024-05-01` chip — how many of the graph's nodes the artifact covers plus its date, so a stale or partial run is visible — and the `S` dashboard a runtime-weighted critical path. Pass `--run-results <path>` to point at a different file; `r` reload re-reads it, so `--watch` picks up a fresh `dbt run` in place.
+- **`run_results.json`** — the last `dbt run`/`build`/`test` outcome — adds two `t` lenses after Diff: **RunStatus** (error/fail → red, warn → yellow, skipped → muted; success keeps the node colour) and **RunTime** (execution-time heat on the same low/mid/high ramp as blast radius). The status bar gains a `run 12/34 @2024-05-01` chip — how many of the graph's nodes the artifact covers plus its date, so a stale or partial run is visible — and the `S` dashboard a runtime-weighted critical path. Pass `--run-results <path>` to point at a different file; `r` reload re-reads it, so `--watch` picks up a fresh `dbt run` in place (manifest mode — the run rewrites the manifest).
 - **`catalog.json`** — the warehouse record `dbt docs generate` writes — makes the `Enter` structure view show what the warehouse actually has: real column types, row counts, byte size, and a `drift:` line when the documented columns and the warehouse disagree (documented-but-missing vs undocumented).
 
 ### Markdown docs (`dbtl docs`)
@@ -237,14 +238,14 @@ Press `?` inside the app for the full list. The most useful ones:
 
 | Key | Action |
 |------|------|
-| `j` `k` `h` `l` | Move in the list / move the lineage cursor |
+| `j` `k` `h` `l` | Move in the list / move the lineage cursor (arrow keys work too) |
 | `g` `G` | Jump to the first / last model in the list |
 | `PgUp` `PgDn` | Page the model list (`Ctrl-u` `Ctrl-d` also work) |
 | `H` `L` | Send the lineage cursor to the first / last column |
 | `Tab` | Switch focus between list ⇄ lineage |
 | `Ctrl-b` `Cmd-b` | Show / hide the model list pane |
 | `Enter` | Structure view (columns / tests / description); on a lineage model, re-root to it |
-| `/` | Fuzzy search (list filter / lineage jump) — a `!` prefix is a dbt selector, a `?` prefix full-text search |
+| `/` | Fuzzy search (list filter / lineage jump) — in the list, a `!` prefix is a dbt selector and a `?` prefix full-text |
 | `p` | Anchor / clear a two-node path (the highlight runs anchor↔cursor) |
 | `u` `d` `[` `]` `0` | Filter the lineage view (direction / depth / reset) |
 | `b` `f` | Back / forward in re-root history |
@@ -272,7 +273,7 @@ Press `?` inside the app for the full list. The most useful ones:
 | `?` | Toggle the full help overlay |
 | `q` | Quit (`Ctrl-c` from anywhere) |
 
-Inside a modal, `j`/`k` scroll, `d`/`u`/`Ctrl-d`/`Ctrl-u`/`PgDn`/`PgUp` page, `g`/`G` jump to the top / bottom, and `Esc`/`Enter`/`q` (or `?` for the help overlay) closes. In a `/` search, `Up`/`Down` move between matches.
+Inside a scrollable modal, `j`/`k` scroll, `d`/`u`/`Ctrl-d`/`Ctrl-u`/`PgDn`/`PgUp` page, `g`/`G` jump to the top / bottom, and `Esc`/`Enter`/`q` (`?` too, for the help overlay) closes. In a `/` search, `Up`/`Down` move between matches.
 
 The mouse works too: click a lineage node to re-root, and use the wheel to scroll. The lineage pane pans in both directions. A horizontal wheel notch (trackpad swipe or tilt wheel) or `Shift`+wheel scrolls it sideways.
 
