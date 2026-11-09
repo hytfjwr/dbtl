@@ -160,6 +160,23 @@ fn detail_display_lines(dv: &DetailView, t: &theme::Theme) -> Vec<Line<'static>>
     if let Some(pkg) = &d.package_name {
         out.push(Line::from(format!("package: {pkg}")));
     }
+    // Governance (dbt access controls): shown only when declared.
+    if let Some(access) = &d.access {
+        out.push(Line::from(format!("access:  {access}")));
+    }
+    if let Some(group) = &d.group {
+        out.push(Line::from(format!("group:   {group}")));
+    }
+    if d.contract_enforced {
+        out.push(Line::from("contract: enforced".to_string()));
+    }
+    match (&d.version, &d.latest_version) {
+        (Some(v), Some(latest)) if v != latest => {
+            out.push(Line::from(format!("version: {v} (latest {latest})")));
+        }
+        (Some(v), _) => out.push(Line::from(format!("version: {v}"))),
+        _ => {}
+    }
     if let Some(p) = &d.original_file_path {
         out.push(Line::from(format!("path:   {p}")));
     }

@@ -84,6 +84,32 @@ pub struct RawNode {
     /// `..Default::default()` never churn; sources/seeds carry none.
     #[serde(default)]
     pub raw_code: Option<String>,
+    // --- governance fields (dbt model access controls) ---
+    /// `private`/`protected`/`public` — who may `ref()` this model.
+    #[serde(default)]
+    pub access: Option<String>,
+    /// The model group it belongs to (a `groups:` entry in the project).
+    #[serde(default)]
+    pub group: Option<String>,
+    /// `contract: {enforced: true}` — the model's declared columns are the
+    /// enforced warehouse contract.
+    #[serde(default)]
+    pub contract: Option<RawContract>,
+    /// The version this node IS (for `versions:`-ed models) — `v1`, `2`, …
+    /// (the wire type is a JSON string).
+    #[serde(default)]
+    pub version: Option<String>,
+    /// The newest version's name when this node is versioned.
+    #[serde(default)]
+    pub latest_version: Option<String>,
+}
+
+/// `contract` sub-object: whether `enforced` is on (the declared column list
+/// becomes the actual warehouse schema).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RawContract {
+    #[serde(default)]
+    pub enforced: bool,
 }
 
 /// A single source in the parsed manifest (`sources` entry).
@@ -147,6 +173,33 @@ pub struct RawExposure {
     pub depends_on: RawDependsOn,
 }
 
+/// A semantic-layer resource (`semantic_models` / `metrics` / `saved_queries`)
+/// — like an exposure, a declared downstream consumer that only ever gains
+/// parents, so it joins the DAG as a terminator node. `resource_type` comes
+/// from which manifest map it arrived in (not a field on the wire).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RawSemanticResource {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub original_file_path: Option<String>,
+    #[serde(default)]
+    pub depends_on: RawDependsOn,
+}
+
+/// A dbt unit test (`unit_tests` entry, dbt ≥1.8): attached to ONE model via
+/// its `model` field (the manifest key's last uid segment).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RawUnitTest {
+    pub name: String,
+    /// The model name this unit test is declared on.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
 /// A single macro in the parsed manifest (`macros` entry). Only the fields the
 /// diff needs: `macro_sql` is the surface a shared-macro change moves, and
 /// `depends_on.macros` is the macro→macro call graph for transitive impact.
@@ -177,6 +230,18 @@ pub struct RawManifest {
     /// an absent map disables macro-diff detection rather than inventing one.
     #[serde(default)]
     pub macros: HashMap<String, RawMacro>,
+    /// Semantic layer (dbt ≥1.6): all three resource kinds are downstream-only
+    /// terminators, so one raw type serves all three maps.
+    #[serde(default)]
+    pub semantic_models: HashMap<String, RawSemanticResource>,
+    #[serde(default)]
+    pub metrics: HashMap<String, RawSemanticResource>,
+    #[serde(default)]
+    pub saved_queries: HashMap<String, RawSemanticResource>,
+    /// dbt ≥1.8 unit tests — excluded from the DAG like schema tests; captured
+    /// into the per-model `tests` side map instead.
+    #[serde(default)]
+    pub unit_tests: HashMap<String, RawUnitTest>,
     pub parent_map: HashMap<String, Vec<String>>,
     pub child_map: HashMap<String, Vec<String>>,
 }

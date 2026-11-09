@@ -532,6 +532,12 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             parent_map,
             child_map,
             macros: HashMap::new(),
+            // Source mode never synthesizes the semantic layer or unit tests —
+            // they're YAML-only resources the source parser doesn't scan.
+            semantic_models: HashMap::new(),
+            metrics: HashMap::new(),
+            saved_queries: HashMap::new(),
+            unit_tests: HashMap::new(),
         },
         warnings,
     ))
