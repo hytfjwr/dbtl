@@ -1,6 +1,6 @@
 [package]
 name = "dbtl"
-version = "0.5.0"
+version.workspace = true
 edition = "2021"
 description = "A terminal UI for exploring dbt model lineage as ASCII art"
 license = "MIT"
@@ -20,7 +20,7 @@ path = "src/main.rs"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/hytfjwr/dbtl"
