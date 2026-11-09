@@ -55,217 +55,233 @@ pub fn event_loop(
     // iteration — the 250ms idle tick guarantees that redraw happens promptly.
     const TOAST_TTL: Duration = Duration::from_millis(2500);
     let mut toast: Option<(String, std::time::Instant)> = None;
+    // Dirty-flag redraw: the frame work below only runs when something
+    // actually changed (first frame, any event, a toast flip, a --watch
+    // reload). An idle 250ms tick with none of those skips straight back to
+    // `event::poll` — before this, every tick recomputed the O(N) status
+    // aggregates and rewrote the whole terminal.
+    let mut dirty = true;
+    // The last frame's lineage layout + full area: recomputed only inside a
+    // dirty pass, but the mouse handler reads them after the draw section —
+    // hit-testing against a stale layout would misattribute clicks.
+    let mut lineage: Option<std::rc::Rc<dbtl::Layout>> = None;
+    let mut area = ratatui::layout::Rect::default();
 
     loop {
         if let Some(text) = app.take_notice() {
             toast = Some((text, std::time::Instant::now()));
+            dirty = true;
         }
         if toast
             .as_ref()
             .is_some_and(|(_, at)| at.elapsed() >= TOAST_TTL)
         {
             toast = None;
+            dirty = true;
         }
-        let sel = app.ui_state.selected();
-        let sel_uid = app.selected_unique_id();
-        let selection_changed = last_selection != sel_uid;
-        if selection_changed {
-            // The single cursor-reset chokepoint: EVERY selection change (keys,
-            // mouse click, search confirm, history, reload-restore) funnels
-            // through here before the next draw, so the cursor always re-homes
-            // to the new root — no per-call-site resets to forget.
-            app.reset_lineage_cursor();
-        }
+        if dirty {
+            let sel = app.ui_state.selected();
+            let sel_uid = app.selected_unique_id();
+            let selection_changed = last_selection != sel_uid;
+            if selection_changed {
+                // The single cursor-reset chokepoint: EVERY selection change (keys,
+                // mouse click, search confirm, history, reload-restore) funnels
+                // through here before the next draw, so the cursor always re-homes
+                // to the new root — no per-call-site resets to forget.
+                app.reset_lineage_cursor();
+            }
 
-        // Follow list scroll BEFORE drawing (display-row space) so a jump never
-        // renders a stale frame with the selection off-screen. Read the row
-        // numbers from the active list first (immutable borrow), then mutate.
-        let (reveal_row, model_row, row_count) = {
-            let list = app.active_list();
-            (
-                list.reveal_row_of_model(sel),
-                list.row_of_model(sel),
-                list.row_count(),
-            )
-        };
-        let list_height = list_pane_height(terminal)?;
-        app.ui_state
-            .ensure_visible(list_height, reveal_row, model_row, row_count);
-
-        // The lineage layout for the current selection — memoized in App, so an
-        // idle tick or a non-lineage keypress reuses the previous frame's
-        // subgraph + layout + styles instead of recomputing them. The DISPLAY
-        // subgraph carries the lineage cursor as its `selected`, so the
-        // emphasis highlight and `selected_rect` below both track the cursor;
-        // the viewport is then sized exactly as `draw` will size it, so
-        // anchor/clamp matches the drawn window (the 2D display-row guarantee).
-        let lineage = app.styled_lineage_layout();
-        let (view_w, view_h) = lineage_viewport(terminal, app.ui_state.list_visible())?;
-        let cursor = app.lineage_cursor_uid();
-        if let Some(lay) = lineage.as_deref() {
-            // A lineage node-jump search anchors the viewport on the cycled match
-            // (size-aware), overriding the usual selection-based anchor/clamp.
-            // `current_lineage_match` is `None` for an empty query, so opening
-            // search never jolts the view off the rooted node.
-            let search_rect = app
-                .current_lineage_match()
-                .and_then(|uid| lay.rects.get(&uid).copied());
-            if let Some(rect) = search_rect {
-                app.ui_state
-                    .anchor_lineage(Some(rect), &lay.grid, view_w, view_h);
-            } else if selection_changed || force_anchor {
-                // New root / reshaped view: centre on the display-selected node
-                // (the cursor, which a selection change just re-homed to the root).
-                app.ui_state
-                    .anchor_lineage(lay.selected_rect, &lay.grid, view_w, view_h);
-            } else if last_cursor != cursor {
-                // Cursor moved within the same graph: scroll MINIMALLY so the
-                // cursor's box shows — never a re-center (that would bring back
-                // the per-keypress viewport pan the cursor replaced).
-                if let Some(rect) = lay.selected_rect {
-                    app.ui_state.ensure_lineage_visible(
-                        rect,
-                        lay.grid.width(),
-                        lay.grid.height(),
-                        view_w,
-                        view_h,
-                    );
-                }
-            } else {
-                app.ui_state
-                    .clamp_lineage(lay.grid.width(), lay.grid.height(), view_w, view_h);
-            }
-        }
-        last_selection = sel_uid;
-        last_cursor = cursor;
-        force_anchor = false;
-
-        // Overlay scroll clamp (size-aware), same seam as the lineage clamp: the
-        // pure reducer records scroll intent, the loop bounds it to the screen.
-        let area = full_area(terminal)?;
-        match &mut app.mode {
-            dbtl::Mode::Help { scroll } => {
-                *scroll = dbtl::ui::clamp_help_scroll(area, *scroll);
-            }
-            dbtl::Mode::Detail(dv) => {
-                dv.scroll = dbtl::ui::clamp_detail_scroll(area, dv);
-            }
-            dbtl::Mode::Sql(sv) => {
-                sv.scroll = dbtl::ui::clamp_sql_scroll(area, sv);
-            }
-            dbtl::Mode::Stats(sv) => {
-                sv.scroll = dbtl::ui::clamp_stats_scroll(area, sv);
-            }
-            dbtl::Mode::Diff(dv) => {
-                dv.scroll = dbtl::ui::clamp_diff_scroll(area, dv);
-            }
-            _ => {}
-        }
-
-        // Precompute Dag-aware strings so RenderCtx stays Dag-free; the borrows
-        // live for the draw call below.
-        let status_note = app.selected_status_note();
-        let view_label = app.lineage_view_label();
-        // The re-root breadcrumb for the lineage pane title. `App::breadcrumb` is
-        // size-unaware (max_width is a parameter); the FULL trail is handed to the
-        // draw seam, which is the single width authority — it strictly re-truncates
-        // the crumb so the trailing `[{v}]{lens}` title suffixes always survive.
-        // `None` until the user re-roots.
-        let breadcrumb = app.breadcrumb(usize::MAX);
-        let overview_title = app.overview_title();
-
-        // Status-bar segments (all owned `String`s precomputed here; the borrows
-        // live to the draw call). Each is set only when meaningful — an absent
-        // `Option` simply omits that segment (graceful degradation seam).
-        let focus_s = match app.ui_state.focus() {
-            Focus::List => "list",
-            Focus::RightPane => "lineage",
-        };
-        // Position is meaningful only when the active list has selectable models;
-        // an empty project or a zero-match search omits the segment entirely
-        // (rather than papering over the empty case as a misleading `1/1`).
-        let pos_s = if app.active_list().is_empty() {
-            None
-        } else {
-            Some(format!(
-                "{}/{}",
-                app.ui_state.selected() + 1,
-                app.active_list().len()
-            ))
-        };
-        let view_seg = if app.ui_state.overview() {
-            Some("overview")
-        } else if app.lineage_view != LineageView::default() {
-            Some(view_label.as_str())
-        } else {
-            None
-        };
-        // The cov% segment keys on the COVERAGE lens specifically (the other
-        // lenses recolour the lineage but quote no coverage number).
-        let coverage_s = if app.ui_state.lens() == LineageLens::Coverage {
-            let (tested, total) = app.coverage_summary();
-            let pct = (tested * 100).checked_div(total).unwrap_or(0);
-            Some(format!("cov {pct}% ({tested}/{total})"))
-        } else {
-            None
-        };
-        let bookmarks_s = if app.bookmarks.is_empty() {
-            None
-        } else {
-            Some(format!("bm:{}", app.bookmarks.len()))
-        };
-        let sort_s = if app.sort != SortMode::default() {
-            Some(format!("sort:{}", app.sort.label()))
-        } else {
-            None
-        };
-        // Blast radius of the selected node (always-on; arrows from the active
-        // glyph mode's Chrome badges — never hardcoded). Built in App so the
-        // string source is single and unit-testable.
-        let impact_s = app.impact_status();
-        // The baseline-diff chip (present only with a --diff baseline loaded).
-        let diff_s = app.diff_status_label();
-        // The run_results chip (coverage + freshness of the loaded artifact).
-        let run_s = app.run_status_label();
-        // Layer bands: the lineage pane's bottom-border column annotations,
-        // present exactly while the Layer lens is active (cheap: one pass over
-        // the layout's rects, only computed when the lens is on).
-        let layer_bands = match (&lineage, app.ui_state.lens()) {
-            (Some(lay), LineageLens::Layer) => Some(app.layer_bands(lay)),
-            _ => None,
-        };
-        {
-            let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, lineage.as_deref());
-            ctx.mode = &app.mode;
-            ctx.status = status_note.as_deref();
-            ctx.stats = Some(&app.stats);
-            ctx.lineage_label = Some(&view_label);
-            ctx.breadcrumb = breadcrumb.as_deref();
-            ctx.overview_title = overview_title.as_deref();
-            ctx.glyphs = app.glyph_mode;
-            ctx.bookmarks = Some(&app.bookmarks);
-            // Full model count for the search title's N/M (M = full list len).
-            ctx.full_model_count = Some(app.model_list.len());
-            ctx.segments = StatusSegments {
-                impact: impact_s.as_deref(),
-                focus: Some(focus_s),
-                view: view_seg,
-                position: pos_s.as_deref(),
-                coverage: coverage_s.as_deref(),
-                bookmarks: bookmarks_s.as_deref(),
-                sort: sort_s.as_deref(),
-                diff: diff_s.as_deref(),
-                run: run_s.as_deref(),
-                filter: app.list_filter_label(),
+            // Follow list scroll BEFORE drawing (display-row space) so a jump never
+            // renders a stale frame with the selection off-screen. Read the row
+            // numbers from the active list first (immutable borrow), then mutate.
+            let (reveal_row, model_row, row_count) = {
+                let list = app.active_list();
+                (
+                    list.reveal_row_of_model(sel),
+                    list.row_of_model(sel),
+                    list.row_count(),
+                )
             };
-            ctx.minimap = app.ui_state.minimap_visible();
-            ctx.filter_label = app.list_filter_label();
-            ctx.layer_bands = layer_bands.as_deref();
-            ctx.toast = toast.as_ref().map(|(text, _)| text.as_str());
-            ctx.theme = app.active_theme();
-            terminal
-                .draw(|frame| draw(frame, &ctx))
-                .context("failed to draw frame")?;
+            let list_height = list_pane_height(terminal)?;
+            app.ui_state
+                .ensure_visible(list_height, reveal_row, model_row, row_count);
+
+            // The lineage layout for the current selection — memoized in App, so an
+            // idle tick or a non-lineage keypress reuses the previous frame's
+            // subgraph + layout + styles instead of recomputing them. The DISPLAY
+            // subgraph carries the lineage cursor as its `selected`, so the
+            // emphasis highlight and `selected_rect` below both track the cursor;
+            // the viewport is then sized exactly as `draw` will size it, so
+            // anchor/clamp matches the drawn window (the 2D display-row guarantee).
+            lineage = app.styled_lineage_layout();
+            let (view_w, view_h) = lineage_viewport(terminal, app.ui_state.list_visible())?;
+            let cursor = app.lineage_cursor_uid();
+            if let Some(lay) = lineage.as_deref() {
+                // A lineage node-jump search anchors the viewport on the cycled match
+                // (size-aware), overriding the usual selection-based anchor/clamp.
+                // `current_lineage_match` is `None` for an empty query, so opening
+                // search never jolts the view off the rooted node.
+                let search_rect = app
+                    .current_lineage_match()
+                    .and_then(|uid| lay.rects.get(&uid).copied());
+                if let Some(rect) = search_rect {
+                    app.ui_state
+                        .anchor_lineage(Some(rect), &lay.grid, view_w, view_h);
+                } else if selection_changed || force_anchor {
+                    // New root / reshaped view: centre on the display-selected node
+                    // (the cursor, which a selection change just re-homed to the root).
+                    app.ui_state
+                        .anchor_lineage(lay.selected_rect, &lay.grid, view_w, view_h);
+                } else if last_cursor != cursor {
+                    // Cursor moved within the same graph: scroll MINIMALLY so the
+                    // cursor's box shows — never a re-center (that would bring back
+                    // the per-keypress viewport pan the cursor replaced).
+                    if let Some(rect) = lay.selected_rect {
+                        app.ui_state.ensure_lineage_visible(
+                            rect,
+                            lay.grid.width(),
+                            lay.grid.height(),
+                            view_w,
+                            view_h,
+                        );
+                    }
+                } else {
+                    app.ui_state
+                        .clamp_lineage(lay.grid.width(), lay.grid.height(), view_w, view_h);
+                }
+            }
+            last_selection = sel_uid;
+            last_cursor = cursor;
+            force_anchor = false;
+
+            // Overlay scroll clamp (size-aware), same seam as the lineage clamp: the
+            // pure reducer records scroll intent, the loop bounds it to the screen.
+            area = full_area(terminal)?;
+            match &mut app.mode {
+                dbtl::Mode::Help { scroll } => {
+                    *scroll = dbtl::ui::clamp_help_scroll(area, *scroll);
+                }
+                dbtl::Mode::Detail(dv) => {
+                    dv.scroll = dbtl::ui::clamp_detail_scroll(area, dv);
+                }
+                dbtl::Mode::Sql(sv) => {
+                    sv.scroll = dbtl::ui::clamp_sql_scroll(area, sv);
+                }
+                dbtl::Mode::Stats(sv) => {
+                    sv.scroll = dbtl::ui::clamp_stats_scroll(area, sv);
+                }
+                dbtl::Mode::Diff(dv) => {
+                    dv.scroll = dbtl::ui::clamp_diff_scroll(area, dv);
+                }
+                _ => {}
+            }
+
+            // Precompute Dag-aware strings so RenderCtx stays Dag-free; the borrows
+            // live for the draw call below.
+            let status_note = app.selected_status_note();
+            let view_label = app.lineage_view_label();
+            // The re-root breadcrumb for the lineage pane title. `App::breadcrumb` is
+            // size-unaware (max_width is a parameter); the FULL trail is handed to the
+            // draw seam, which is the single width authority — it strictly re-truncates
+            // the crumb so the trailing `[{v}]{lens}` title suffixes always survive.
+            // `None` until the user re-roots.
+            let breadcrumb = app.breadcrumb(usize::MAX);
+            let overview_title = app.overview_title();
+
+            // Status-bar segments (all owned `String`s precomputed here; the borrows
+            // live to the draw call). Each is set only when meaningful — an absent
+            // `Option` simply omits that segment (graceful degradation seam).
+            let focus_s = match app.ui_state.focus() {
+                Focus::List => "list",
+                Focus::RightPane => "lineage",
+            };
+            // Position is meaningful only when the active list has selectable models;
+            // an empty project or a zero-match search omits the segment entirely
+            // (rather than papering over the empty case as a misleading `1/1`).
+            let pos_s = if app.active_list().is_empty() {
+                None
+            } else {
+                Some(format!(
+                    "{}/{}",
+                    app.ui_state.selected() + 1,
+                    app.active_list().len()
+                ))
+            };
+            let view_seg = if app.ui_state.overview() {
+                Some("overview")
+            } else if app.lineage_view != LineageView::default() {
+                Some(view_label.as_str())
+            } else {
+                None
+            };
+            // The cov% segment keys on the COVERAGE lens specifically (the other
+            // lenses recolour the lineage but quote no coverage number).
+            let coverage_s = if app.ui_state.lens() == LineageLens::Coverage {
+                let (tested, total) = app.coverage_summary();
+                let pct = (tested * 100).checked_div(total).unwrap_or(0);
+                Some(format!("cov {pct}% ({tested}/{total})"))
+            } else {
+                None
+            };
+            let bookmarks_s = if app.bookmarks.is_empty() {
+                None
+            } else {
+                Some(format!("bm:{}", app.bookmarks.len()))
+            };
+            let sort_s = if app.sort != SortMode::default() {
+                Some(format!("sort:{}", app.sort.label()))
+            } else {
+                None
+            };
+            // Blast radius of the selected node (always-on; arrows from the active
+            // glyph mode's Chrome badges — never hardcoded). Built in App so the
+            // string source is single and unit-testable.
+            let impact_s = app.impact_status();
+            // The baseline-diff chip (present only with a --diff baseline loaded).
+            let diff_s = app.diff_status_label();
+            // The run_results chip (coverage + freshness of the loaded artifact).
+            let run_s = app.run_status_label();
+            // Layer bands: the lineage pane's bottom-border column annotations,
+            // present exactly while the Layer lens is active (cheap: one pass over
+            // the layout's rects, only computed when the lens is on).
+            let layer_bands = match (&lineage, app.ui_state.lens()) {
+                (Some(lay), LineageLens::Layer) => Some(app.layer_bands(lay)),
+                _ => None,
+            };
+            {
+                let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, lineage.as_deref());
+                ctx.mode = &app.mode;
+                ctx.status = status_note.as_deref();
+                ctx.stats = Some(&app.stats);
+                ctx.lineage_label = Some(&view_label);
+                ctx.breadcrumb = breadcrumb.as_deref();
+                ctx.overview_title = overview_title.as_deref();
+                ctx.glyphs = app.glyph_mode;
+                ctx.bookmarks = Some(&app.bookmarks);
+                // Full model count for the search title's N/M (M = full list len).
+                ctx.full_model_count = Some(app.model_list.len());
+                ctx.segments = StatusSegments {
+                    impact: impact_s.as_deref(),
+                    focus: Some(focus_s),
+                    view: view_seg,
+                    position: pos_s.as_deref(),
+                    coverage: coverage_s.as_deref(),
+                    bookmarks: bookmarks_s.as_deref(),
+                    sort: sort_s.as_deref(),
+                    diff: diff_s.as_deref(),
+                    run: run_s.as_deref(),
+                    filter: app.list_filter_label(),
+                };
+                ctx.minimap = app.ui_state.minimap_visible();
+                ctx.filter_label = app.list_filter_label();
+                ctx.layer_bands = layer_bands.as_deref();
+                ctx.toast = toast.as_ref().map(|(text, _)| text.as_str());
+                ctx.theme = app.active_theme();
+                terminal
+                    .draw(|frame| draw(frame, &ctx))
+                    .context("failed to draw frame")?;
+            }
+            dirty = false;
         }
 
         // Block for the next event (no busy-poll). An idle tick (timeout) is
@@ -286,11 +302,13 @@ pub fn event_loop(
                     };
                     app.set_notice(note);
                     force_anchor = true;
+                    dirty = true;
                 }
             }
             continue;
         }
         {
+            dirty = true; // any delivered event may change the frame
             match event::read().context("event read failed")? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if let Some(action) = dispatch(&app.mode, key) {
