@@ -16,14 +16,22 @@ sources:
             tests:
               - not_null
       - name: customers
-        description: "Raw customers"
+        # A Jinja comment in a description vanishes entirely for dbt —
+        # including the doc() inside it (an undefined one errors nothing).
+        description: "{# hidden {{ doc('undefined_doc') }} #}Raw customers"
 
 models:
   - name: stg_schema_disabled
     config:
       enabled: false
   - name: stg_orders
-    description: "Staged orders"
+    # `{{-` eats the preceding whitespace (Jinja whitespace control), so
+    # this renders as "Staged orders.<body>" — the source loader must
+    # reproduce that exactly.
+    description: |
+      Staged orders.
+      {{- doc('raw_orders_doc') }}
+      Refreshed nightly.
     columns:
       - name: id
         data_type: integer

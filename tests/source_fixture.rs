@@ -301,8 +301,16 @@ fn doc_blocks_render_in_descriptions() {
             .as_deref(),
         Some("One row per order, enriched with the customer's country.\n\nGrain: `order_id`."),
     );
-    // Model column description: an inline (single-line) block.
+    // Model description: `{{-` whitespace control eats the newline before
+    // the tag, exactly like dbt's Jinja render.
     let stg = dag.detail("model.sample.stg_orders").unwrap();
+    assert_eq!(
+        stg.description.as_deref(),
+        Some(
+            "Staged orders.Orders exactly as exported by the operational app.\nRefreshed nightly."
+        ),
+    );
+    // Model column description: an inline (single-line) block.
     assert_eq!(
         stg.columns
             .iter()
@@ -318,6 +326,13 @@ fn doc_blocks_render_in_descriptions() {
         src.description.as_deref(),
         Some("Orders exactly as exported by the operational app."),
     );
+    // Source-table description: a `{# #}` Jinja comment disappears entirely
+    // (dbt renders the description as Jinja first) — the doc() inside it is
+    // never evaluated, so even an undefined block warns/errors nothing.
+    let cust = dag
+        .detail("source.sample.raw.customers")
+        .expect("raw.customers detail");
+    assert_eq!(cust.description.as_deref(), Some("Raw customers"));
     // Source-table COLUMN description: 2-arg `doc('sample', 'x')` naming the
     // project itself resolves locally (verified against real dbt).
     assert_eq!(
@@ -367,6 +382,50 @@ fn undefined_doc_ref_warns_and_keeps_raw_text() {
             .as_deref(),
         Some("{{ doc('ghost') }}"),
         "unresolved doc() keeps the raw text"
+    );
+}
+
+#[test]
+fn unclosed_and_stray_docs_tags_warn() {
+    // Real dbt hard-errors on a `{% docs %}` with no `{% enddocs %}` (and on
+    // a stray `{% enddocs %}`); dbtl degrades to warnings and keeps loading.
+    use std::fs;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    fs::write(
+        root.join("dbt_project.yml"),
+        "name: d\nversion: \"1.0.0\"\nconfig-version: 2\n",
+    )
+    .unwrap();
+    fs::create_dir(root.join("models")).unwrap();
+    fs::write(root.join("models/m.sql"), "select 1 as id\n").unwrap();
+    fs::write(
+        root.join("models/broken.md"),
+        "{% docs good %}GOOD{% enddocs %}\n{% docs orphan %}no close\n",
+    )
+    .unwrap();
+    fs::write(root.join("models/stray.md"), "text\n{% enddocs %}\n").unwrap();
+    fs::write(
+        root.join("models/schema.yml"),
+        "version: 2\nmodels:\n  - name: m\n    description: \"{{ doc('good') }}\"\n",
+    )
+    .unwrap();
+
+    let (dag, warnings) = load_dag_from_source_with_warnings(root).expect("project loads");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("unclosed") && w.contains("orphan")),
+        "{warnings:?}"
+    );
+    assert!(warnings.iter().any(|w| w.contains("stray")), "{warnings:?}");
+    // Well-formed blocks in the same files still resolve.
+    assert_eq!(
+        dag.detail("model.d.m")
+            .expect("m detail")
+            .description
+            .as_deref(),
+        Some("GOOD")
     );
 }
 
