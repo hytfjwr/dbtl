@@ -167,16 +167,15 @@ impl RunResults {
 
 /// Where the sibling `run_results.json` for a data source lives: next to a
 /// compiled manifest (`target/run_results.json`), or under a project dir's
-/// `target/` in source mode.
+/// `target/` in source mode. The underlying "where is `target/`" rule is
+/// [`crate::compiled::default_target_dir`] — shared by every sibling-artifact
+/// loader.
 pub fn default_run_results_path(
     manifest_path: Option<&Path>,
     project_dir: Option<&Path>,
 ) -> Option<std::path::PathBuf> {
-    if let Some(m) = manifest_path {
-        m.parent().map(|dir| dir.join("run_results.json"))
-    } else {
-        project_dir.map(|dir| dir.join("target").join("run_results.json"))
-    }
+    crate::compiled::default_target_dir(manifest_path, project_dir)
+        .map(|dir| dir.join("run_results.json"))
 }
 
 #[cfg(test)]

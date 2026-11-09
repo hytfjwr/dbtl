@@ -387,6 +387,29 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             let text = app.selected_raw_sql();
             yank_with_notice(app, text, "Copied raw SQL")
         }
+        Action::YankCompiledSql => {
+            // The selection's compiled SQL (`yC` stays raw-only). Same
+            // blank-is-absent rule as `selected_raw_sql` — an empty expansion
+            // must not clobber the clipboard with nothing.
+            let text = app
+                .selected_unique_id()
+                .and_then(|uid| app.dag.compiled(&uid).map(|c| (c.code.clone(), c.stale)))
+                .filter(|(code, _)| !code.trim().is_empty());
+            match text {
+                Some((code, stale)) => {
+                    let notice = if stale {
+                        "Copied compiled SQL (stale)"
+                    } else {
+                        "Copied compiled SQL"
+                    };
+                    yank_with_notice(app, Some(code), notice)
+                }
+                None => {
+                    app.set_notice("no compiled SQL for this node (run dbt compile)");
+                    Outcome::cont()
+                }
+            }
+        }
         Action::YankImpact => {
             let text = app.impact_report();
             yank_with_notice(app, text, "Copied impact report")
@@ -475,8 +498,9 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             let name = app.node_name_or_uid(&uid);
             // Sources/seeds (and manifests omitting raw_code) get a placeholder —
             // there is no transient-status channel in this app.
-            let sql = match app.dag.raw_code(&uid) {
-                Some(code) => code.to_string(),
+            let raw = app.dag.raw_code(&uid).map(str::to_string);
+            let sql = match &raw {
+                Some(code) => code.clone(),
                 None => {
                     let rt = app
                         .dag
@@ -486,6 +510,16 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                     format!("(no SQL for this {rt})")
                 }
             };
+            // The compiled variant rides in the same snapshot (RenderCtx stays
+            // Dag-free): `c` inside the modal only flips a flag.
+            let (compiled, compiled_stale) = app
+                .dag
+                .compiled(&uid)
+                .map(|c| (Some(c.code.clone()), c.stale))
+                .unwrap_or((None, false));
+            // Open on the compiled text when it is the only real SQL there is
+            // (a placeholder raw + a compiled file — rare, but show something).
+            let show_compiled = raw.is_none() && compiled.is_some();
             let path = app
                 .dag
                 .detail(&uid)
@@ -494,9 +528,26 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                 model_id: uid,
                 name,
                 sql,
+                compiled,
+                compiled_stale,
+                show_compiled,
                 path,
                 scroll: 0,
             });
+            Outcome::cont()
+        }
+        Action::SqlToggleCompiled => {
+            match &mut app.mode {
+                // Flip the display flag only; both texts were snapshotted at
+                // open. The scroll resets — raw and compiled are different
+                // texts, so a carried offset would land on an arbitrary line.
+                Mode::Sql(sv) if sv.compiled.is_some() => {
+                    sv.show_compiled = !sv.show_compiled;
+                    sv.scroll = 0;
+                }
+                Mode::Sql(_) => app.set_notice("no compiled SQL for this node (run dbt compile)"),
+                _ => {}
+            }
             Outcome::cont()
         }
         Action::StatsOpen => {

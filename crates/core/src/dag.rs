@@ -2,14 +2,15 @@
 //! `nodes` (excluding `test` / `operation`), `sources`, and `exposures` into a
 //! single `unique_id -> NodeInfo` map, build pruned adjacency over the kept
 //! set, and compute upstream / downstream transitive closures (cycle-safe).
-//! Side maps (`details` / `tests` / `sql` / `exposures`) are captured
-//! pre-prune as data only — they never touch the topology.
+//! Side maps (`details` / `tests` / `sql` / `compiled` / `exposures`) are
+//! captured pre-prune as data only — they never touch the topology.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+use crate::compiled::CompiledSql;
 use crate::manifest::{load_manifest, RawExposure, RawMacro, RawManifest, RawNode, RawSource};
 
 /// A merged, prefix-resolved entry in the unified node map.
@@ -183,6 +184,13 @@ pub struct Dag {
     /// manifest↔source consistency comparison (which is field-by-field over
     /// details, never the whole `Dag`) is untouched. Sources/seeds have none.
     sql: HashMap<String, String>,
+    /// Per-node compiled (Jinja-expanded) SQL + freshness, keyed by
+    /// `unique_id` — the same side-map pattern as `sql`. Sources are the
+    /// manifest's `compiled_code` (only present in a compile-produced
+    /// manifest) or, falling that, `target/compiled/<pkg>/<original_file_path>`
+    /// filled by [`Dag::ingest_compiled`]. Sources/seeds/exposures never have
+    /// an entry; a node without any compiled artifact simply has none.
+    compiled: HashMap<String, CompiledSql>,
     /// Per-exposure payload (kind / owner / url), keyed by `unique_id` — the
     /// same side-map pattern as `details`/`tests`/`sql`. Only exposure nodes
     /// have an entry.
@@ -228,9 +236,28 @@ fn is_excluded(resource_type: &str) -> bool {
 }
 
 /// Convenience: load a manifest from disk and build its DAG in one call.
+///
+/// Also auto-detects the compiled-SQL side map: `target/compiled/` next to
+/// the manifest (same sibling-artifact pattern as `run_results.json` /
+/// `catalog.json`). Missing dirs/files are simply "no compiled SQL", never
+/// an error.
 pub fn load_dag<P: AsRef<Path>>(path: P) -> Result<Dag> {
+    let path = path.as_ref();
     let manifest = load_manifest(path)?;
-    Ok(Dag::build(&manifest))
+    let mut dag = Dag::build(&manifest);
+    if let Some(target) = crate::compiled::default_target_dir(Some(path), None) {
+        // The project root is `target/..` — the stale check resolves each
+        // node's `original_file_path` against it. Since `default_target_dir`
+        // IS the manifest's own dir, this is exactly the TUI's
+        // `derive_project_root` two-parents rule (`<root>/target/manifest.json`
+        // → `<root>`); a missing source file just means "not stale".
+        let root = target
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        dag.ingest_compiled(&target.join("compiled"), &root);
+    }
+    Ok(dag)
 }
 
 impl Dag {
@@ -252,6 +279,7 @@ impl Dag {
         let mut details: HashMap<String, NodeDetail> = HashMap::new();
         let mut tests: HashMap<String, Vec<TestInfo>> = HashMap::new();
         let mut sql: HashMap<String, String> = HashMap::new();
+        let mut compiled: HashMap<String, CompiledSql> = HashMap::new();
         let mut exposures: HashMap<String, ExposureInfo> = HashMap::new();
         let mut node_macros: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -280,6 +308,20 @@ impl Dag {
             details.insert(unique_id.clone(), detail_from_node(node));
             if let Some(code) = &node.raw_code {
                 sql.insert(unique_id.clone(), code.clone());
+            }
+            // Manifest-carried compiled SQL: only a compile/build-produced
+            // manifest fills `compiled_code` (dbt parse leaves it null).
+            // Non-empty only — an empty field falls through to the
+            // `target/compiled/` files like an absent one. Never stale: it
+            // ships in the same artifact as `raw_code`.
+            if let Some(code) = node.compiled_code.as_ref().filter(|c| !c.trim().is_empty()) {
+                compiled.insert(
+                    unique_id.clone(),
+                    CompiledSql {
+                        code: code.clone(),
+                        stale: false,
+                    },
+                );
             }
         }
 
@@ -476,6 +518,7 @@ impl Dag {
             details,
             tests,
             sql,
+            compiled,
             exposures,
             macros,
             node_macros,
@@ -487,6 +530,61 @@ impl Dag {
                 .project_name
                 .clone()
                 .filter(|s| !s.trim().is_empty()),
+        }
+    }
+
+    /// Fill the `compiled` side map from `target/compiled/` — the
+    /// Jinja-expanded SQL `dbt compile`/`build`/`run`/`test` writes per node
+    /// as `<compiled_dir>/<package>/<original_file_path>`. The disk loaders
+    /// ([`load_dag`], `source::load_dag_from_source_with_warnings`) call this
+    /// automatically; `Dag::build` itself stays pure (manifest-only) so a
+    /// `RawManifest` literal is all a test needs.
+    ///
+    /// Per-node resolution order: a non-empty manifest `compiled_code`
+    /// already in the map wins (the same artifact as `raw_code`); otherwise
+    /// the on-disk file. Missing/unreadable files and whitespace-only
+    /// contents are skipped — absence is never an error. A file read is
+    /// marked stale when the source `.sql` is newer than the expansion.
+    /// Deterministic: each entry depends only on its own node's coordinates,
+    /// never on iteration order.
+    pub fn ingest_compiled(&mut self, compiled_dir: &Path, project_root: &Path) {
+        if !compiled_dir.is_dir() {
+            return;
+        }
+        for (uid, detail) in &self.details {
+            if self.compiled.contains_key(uid) {
+                continue; // manifest compiled_code already won
+            }
+            let Some(ofp) = detail.original_file_path.as_deref() else {
+                continue;
+            };
+            // Compiled artifacts are .sql only — a source's `.yml` or a
+            // seed's `.csv` `original_file_path` can never resolve.
+            if !ofp.ends_with(".sql") {
+                continue;
+            }
+            // The package segment: `package_name` in a real manifest; the
+            // uid's second segment covers synthesized source-mode nodes
+            // (which leave `package_name` None — every node is local).
+            let Some(pkg) = detail
+                .package_name
+                .as_deref()
+                .or_else(|| uid.split('.').nth(1))
+            else {
+                continue;
+            };
+            let Some(path) = crate::compiled::compiled_file_path(compiled_dir, pkg, ofp) else {
+                continue;
+            };
+            let Ok(code) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if code.trim().is_empty() {
+                continue;
+            }
+            let stale = crate::compiled::is_stale(&path, project_root, pkg, ofp);
+            self.compiled
+                .insert(uid.clone(), CompiledSql { code, stale });
         }
     }
 
@@ -646,6 +744,12 @@ impl Dag {
                 .filter(|(k, _)| nodes.contains_key(*k))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
+            compiled: self
+                .compiled
+                .iter()
+                .filter(|(k, _)| nodes.contains_key(*k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
             exposures: self
                 .exposures
                 .iter()
@@ -680,6 +784,23 @@ impl Dag {
     /// frozen literals.
     pub fn raw_code(&self, unique_id: &str) -> Option<&str> {
         self.sql.get(unique_id).map(String::as_str)
+    }
+
+    /// The compiled-SQL side-map entry for a node (expanded text + `stale`
+    /// freshness flag), or `None` when neither the manifest's `compiled_code`
+    /// nor a `target/compiled/` file covered it. Counterpart of
+    /// [`detail`](Dag::detail) for the [`compiled_code`](Dag::compiled_code)
+    /// accessor.
+    pub fn compiled(&self, unique_id: &str) -> Option<&CompiledSql> {
+        self.compiled.get(unique_id)
+    }
+
+    /// The compiled (Jinja-expanded) SQL text for a node, or `None` — the
+    /// counterpart of [`raw_code`](Dag::raw_code). Resolution order:
+    /// non-empty manifest `compiled_code`, then `target/compiled/` (see
+    /// [`Dag::ingest_compiled`]).
+    pub fn compiled_code(&self, unique_id: &str) -> Option<&str> {
+        self.compiled.get(unique_id).map(|c| c.code.as_str())
     }
 
     /// The exposure payload (kind / owner / url) for an exposure node, or

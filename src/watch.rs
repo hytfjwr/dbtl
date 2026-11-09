@@ -46,8 +46,10 @@ impl Watch {
 /// The on-disk stamp `(max mtime, file count)` for a watch root: the file's own
 /// mtime (count 1) when `recursive` is false, else over every data file
 /// (`.sql`/`.yml`/`.yaml`/`.csv`) under the tree — skipping dot-dirs and
-/// `target/` (dbt writes artifacts there on every invocation, which would
-/// self-trigger). `None` when the root is unreadable.
+/// `target/` EXCEPT `target/compiled/` (a recompile's expanded `.sql` SHOULD
+/// refresh the compiled-SQL view; every other artifact — `run/`, logs,
+/// `manifest.json` — writes on every invocation and would self-trigger).
+/// `None` when the root is unreadable.
 pub fn fs_stamp(root: &std::path::Path, recursive: bool) -> Option<(std::time::SystemTime, usize)> {
     fn walk(dir: &std::path::Path, best: &mut Option<std::time::SystemTime>, count: &mut usize) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -60,7 +62,12 @@ pub fn fs_stamp(root: &std::path::Path, recursive: bool) -> Option<(std::time::S
             // file_type() does not follow symlinks, so a symlinked directory
             // (e.g. a link loop back into the tree) is never walked into.
             if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                if !name.starts_with('.') && name != "target" {
+                if name == "target" {
+                    // `target/` itself is still skipped wholesale — only its
+                    // `compiled/` subtree carries reload-worthy user data (the
+                    // expanded SQL + stale state the SQL modal shows).
+                    walk(&path.join("compiled"), best, count);
+                } else if !name.starts_with('.') {
                     walk(&path, best, count);
                 }
                 continue;
@@ -104,12 +111,21 @@ mod tests {
         std::fs::create_dir_all(dir.join("target")).unwrap();
         std::fs::write(dir.join("models/a.sql"), "select 1").unwrap();
         std::fs::write(dir.join("dbt_project.yml"), "name: t").unwrap();
-        // Artifacts under target/ and non-data files never count.
+        // Artifacts under target/ and non-data files never count — EXCEPT
+        // target/compiled/*.sql, which a recompile refreshes (the SQL modal
+        // shows it, and a stale flag depends on its mtime).
         std::fs::write(dir.join("target/manifest.json"), "{}").unwrap();
+        std::fs::create_dir_all(dir.join("target/run/t")).unwrap();
+        std::fs::write(dir.join("target/run/t/a.sql"), "select 1").unwrap();
+        std::fs::create_dir_all(dir.join("target/compiled/t/models")).unwrap();
+        std::fs::write(dir.join("target/compiled/t/models/a.sql"), "select 1").unwrap();
         std::fs::write(dir.join("README.md"), "x").unwrap();
 
         let (_, count) = fs_stamp(&dir, true).expect("stamp exists");
-        assert_eq!(count, 2, "a.sql + dbt_project.yml only");
+        assert_eq!(
+            count, 3,
+            "a.sql + dbt_project.yml + the compiled .sql only (run/ + manifest skipped)"
+        );
 
         let mut w = Watch::new(dir.clone(), true);
         assert!(!w.poll(), "throttled: no immediate re-scan");
@@ -119,10 +135,14 @@ mod tests {
         std::fs::write(dir.join("models/b.sql"), "select 2").unwrap();
         w.last_check = std::time::Instant::now() - Duration::from_secs(3);
         assert!(w.poll(), "new data file detected");
-        // Deleting it lowers the count back — also a change.
+        // A fresh compiled file changes the count too — a `dbt compile`
+        // refreshes the view like a source edit.
         std::fs::remove_file(dir.join("models/b.sql")).unwrap();
         w.last_check = std::time::Instant::now() - Duration::from_secs(3);
         assert!(w.poll(), "deletion detected via the file count");
+        std::fs::write(dir.join("target/compiled/t/models/b.sql"), "select 2").unwrap();
+        w.last_check = std::time::Instant::now() - Duration::from_secs(3);
+        assert!(w.poll(), "new target/compiled file detected");
 
         // Single-file (manifest) mode stamps that file alone.
         let manifest = dir.join("target/manifest.json");

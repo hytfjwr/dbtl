@@ -1,0 +1,6 @@
+name: compiled_demo
+version: "1.0.0"
+config-version: 2
+profile: compiled_demo
+
+model-paths: ["models"]
