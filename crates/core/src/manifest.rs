@@ -18,11 +18,15 @@ pub struct RawConfig {
     pub materialized: Option<String>,
 }
 
-/// `depends_on` sub-object of a node (the node refs it points at).
+/// `depends_on` sub-object of a node (the node refs it points at). `macros`
+/// carries the macro unique_ids (`macro.<project>.<name>`) the node's compiled
+/// SQL calls — present on real manifests, empty on synthesized source ones.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct RawDependsOn {
     #[serde(default)]
     pub nodes: Vec<String>,
+    #[serde(default)]
+    pub macros: Vec<String>,
 }
 
 /// `test_metadata` sub-object of a generic test node (`name` is the test kind:
@@ -134,6 +138,19 @@ pub struct RawExposure {
     pub depends_on: RawDependsOn,
 }
 
+/// A single macro in the parsed manifest (`macros` entry). Only the fields the
+/// diff needs: `macro_sql` is the surface a shared-macro change moves, and
+/// `depends_on.macros` is the macro→macro call graph for transitive impact.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RawMacro {
+    pub name: String,
+    /// The macro's Jinja body — the real dbt manifest field name (v12).
+    #[serde(default)]
+    pub macro_sql: Option<String>,
+    #[serde(default)]
+    pub depends_on: RawDependsOn,
+}
+
 /// Minimal subset of the dbt manifest we care about.
 ///
 /// `deny_unknown_fields` is intentionally NOT set: the v12 schema has many
@@ -146,6 +163,11 @@ pub struct RawManifest {
     /// manifests) omit the key entirely.
     #[serde(default)]
     pub exposures: HashMap<String, RawExposure>,
+    /// `#[serde(default)]`: manifests before the macros key existed (and every
+    /// synthesized source-mode manifest, which never parses macros) omit it —
+    /// an absent map disables macro-diff detection rather than inventing one.
+    #[serde(default)]
+    pub macros: HashMap<String, RawMacro>,
     pub parent_map: HashMap<String, Vec<String>>,
     pub child_map: HashMap<String, Vec<String>>,
 }

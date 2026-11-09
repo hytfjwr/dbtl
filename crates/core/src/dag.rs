@@ -5,12 +5,12 @@
 //! Side maps (`details` / `tests` / `sql` / `exposures`) are captured
 //! pre-prune as data only — they never touch the topology.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::Result;
 
-use crate::manifest::{load_manifest, RawExposure, RawManifest, RawNode, RawSource};
+use crate::manifest::{load_manifest, RawExposure, RawMacro, RawManifest, RawNode, RawSource};
 
 /// A merged, prefix-resolved entry in the unified node map.
 ///
@@ -172,6 +172,27 @@ pub struct Dag {
     /// same side-map pattern as `details`/`tests`/`sql`. Only exposure nodes
     /// have an entry.
     exposures: HashMap<String, ExposureInfo>,
+    /// The manifest's macros, keyed by macro `unique_id`
+    /// (`macro.<project>.<name>`). Empty for synthesized source-mode manifests
+    /// (which never parse macros) — macro-diff detection keys off this.
+    macros: BTreeMap<String, MacroInfo>,
+    /// The macro `unique_id`s each kept node's compiled SQL calls (the node's
+    /// `depends_on.macros`), a side map like `sql`/`details`.
+    node_macros: HashMap<String, Vec<String>>,
+}
+
+/// A manifest macro's diff-relevant payload. The [`Dag`] stores these keyed by
+/// macro `unique_id`; [`MacroInfo::depends_on`] is the macro→macro call graph
+/// the diff walks for transitive shared-macro impact.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MacroInfo {
+    /// The macro's short name (`macro.project.name` → `name`), for the
+    /// `macro:<name>` modified reason.
+    pub name: String,
+    /// The Jinja body (`macro_sql`) — the surface a shared-macro change moves.
+    pub sql: Option<String>,
+    /// Macro `unique_id`s this macro itself calls.
+    pub depends_on: Vec<String>,
 }
 
 /// Resource types that are excluded from the unified map and the DAG.
@@ -209,6 +230,7 @@ impl Dag {
         let mut tests: HashMap<String, Vec<TestInfo>> = HashMap::new();
         let mut sql: HashMap<String, String> = HashMap::new();
         let mut exposures: HashMap<String, ExposureInfo> = HashMap::new();
+        let mut node_macros: HashMap<String, Vec<String>> = HashMap::new();
 
         for (unique_id, node) in &manifest.nodes {
             if node.resource_type == "test" {
@@ -217,6 +239,9 @@ impl Dag {
             }
             if is_excluded(&node.resource_type) {
                 continue;
+            }
+            if !node.depends_on.macros.is_empty() {
+                node_macros.insert(unique_id.clone(), node.depends_on.macros.clone());
             }
             nodes.insert(
                 unique_id.clone(),
@@ -326,6 +351,14 @@ impl Dag {
             info.test_count = tests.get(uid).map_or(0, |v| v.len());
         }
 
+        // The macro side map: every macro the manifest declares, keyed by its
+        // `unique_id`. Sorted-map storage so macro-driven output is ordered.
+        let macros: BTreeMap<String, MacroInfo> = manifest
+            .macros
+            .iter()
+            .map(|(uid, m)| (uid.clone(), macro_info(m)))
+            .collect();
+
         Dag {
             nodes,
             parents,
@@ -334,7 +367,23 @@ impl Dag {
             tests,
             sql,
             exposures,
+            macros,
+            node_macros,
         }
+    }
+
+    /// The manifest's macros (`macro.<project>.<name>` → [`MacroInfo`]). Empty
+    /// for a synthesized source-mode manifest — macro-diff detection is
+    /// manifest-vs-manifest only, by design.
+    pub fn macros(&self) -> &BTreeMap<String, MacroInfo> {
+        &self.macros
+    }
+
+    /// The macro `unique_id`s a kept node's compiled SQL calls
+    /// (`depends_on.macros`). Empty for nodes that call no macro — and for
+    /// every node in source mode.
+    pub fn node_macros(&self, unique_id: &str) -> &[String] {
+        self.node_macros.get(unique_id).map_or(&[], Vec::as_slice)
     }
 
     /// The unified `unique_id -> NodeInfo` map (read-only access).
@@ -597,6 +646,15 @@ fn detail_from_exposure(exposure: &RawExposure) -> NodeDetail {
     }
 }
 
+/// Convert a wire `RawMacro` into its stored [`MacroInfo`] payload.
+fn macro_info(m: &RawMacro) -> MacroInfo {
+    MacroInfo {
+        name: m.name.clone(),
+        sql: m.macro_sql.clone(),
+        depends_on: m.depends_on.macros.clone(),
+    }
+}
+
 /// Detail for a source node (no materialization; it's an external table).
 fn detail_from_source(source: &RawSource) -> NodeDetail {
     NodeDetail {
@@ -767,6 +825,7 @@ mod tests {
             nodes,
             sources,
             exposures: HashMap::new(),
+            macros: HashMap::new(),
             parent_map,
             child_map,
         }
@@ -816,6 +875,7 @@ mod tests {
             exposures: HashMap::new(),
             parent_map,
             child_map,
+            macros: HashMap::new(),
         });
         assert!(dag.get("analysis.p.x").is_none());
         assert_eq!(dag.count_by_resource_type("analysis"), 0);
@@ -909,6 +969,7 @@ mod tests {
             exposures: HashMap::new(),
             parent_map: HashMap::new(),
             child_map,
+            macros: HashMap::new(),
         };
         let dag = Dag::build(&manifest);
         let down = dag.downstream("model.p.a");
@@ -989,6 +1050,7 @@ mod tests {
                         "model.p.b".to_string(),
                         "model.p.missing".to_string(), // dangling: dropped
                     ],
+                    macros: vec![],
                 },
                 ..Default::default()
             },
@@ -1043,6 +1105,7 @@ mod tests {
                 name: "dash".into(),
                 depends_on: crate::RawDependsOn {
                     nodes: vec!["model.p.b".to_string()],
+                    macros: vec![],
                 },
                 ..Default::default()
             },

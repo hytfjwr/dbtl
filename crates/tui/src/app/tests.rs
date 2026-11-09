@@ -477,6 +477,7 @@ fn export_labels_neutralize_untrusted_kind() {
         exposures: HashMap::new(),
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
+        macros: HashMap::new(),
     };
     let mut a = App::new(Dag::build(&manifest), PathBuf::from("manifest.json"));
     assert!(a.select_by_unique_id("model.p.evil"));
@@ -723,6 +724,7 @@ fn export_sanitizes_untrusted_node_names_into_a_safe_relative_path() {
         exposures: HashMap::new(),
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
+        macros: HashMap::new(),
     });
     let mut a = App::new(dag, PathBuf::from("/tmp/x/target/manifest.json"));
     a.select_by_unique_id("model.p.evil");
@@ -1005,6 +1007,7 @@ fn longest_chain_terminates_on_a_cyclic_manifest() {
         exposures: HashMap::new(),
         parent_map,
         child_map,
+        macros: HashMap::new(),
     });
     let chain = super::analysis::longest_chain(&dag);
     // Sane: non-empty, no repeated node, every hop is a real kept edge.
@@ -1348,6 +1351,7 @@ fn selected_file_path_stays_under_the_project_root() {
         exposures: HashMap::new(),
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
+        macros: HashMap::new(),
     });
     let mut a = App::new(dag, PathBuf::from("/x/proj/target/manifest.json"));
 
@@ -2554,6 +2558,7 @@ fn violation_dag() -> Dag {
         exposures: HashMap::new(),
         parent_map,
         child_map,
+        macros: HashMap::new(),
     })
 }
 
@@ -3052,6 +3057,7 @@ fn diff_base_dag() -> Dag {
         exposures: HashMap::new(),
         parent_map: HashMap::from([("model.p.b".to_string(), vec!["model.p.a".to_string()])]),
         child_map: HashMap::from([("model.p.a".to_string(), vec!["model.p.b".to_string()])]),
+        macros: HashMap::new(),
     })
 }
 
@@ -3088,6 +3094,7 @@ fn diff_current_dag() -> Dag {
             ("model.p.a".to_string(), vec!["model.p.b".to_string()]),
             ("model.p.b".to_string(), vec!["model.p.c".to_string()]),
         ]),
+        macros: HashMap::new(),
     })
 }
 
@@ -3332,6 +3339,7 @@ fn pr_dag(
         exposures: exposure_map,
         parent_map,
         child_map,
+        macros: HashMap::new(),
     })
 }
 
@@ -3360,6 +3368,7 @@ fn pr_impact_aggregates_blast_radius_marts_and_exposures() {
         },
         depends_on: crate::RawDependsOn {
             nodes: vec!["model.p.fct_x".into()],
+            macros: vec![],
         },
         ..Default::default()
     };

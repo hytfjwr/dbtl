@@ -387,6 +387,7 @@ mod tests {
             exposures: HashMap::new(),
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
+            macros: HashMap::new(),
         };
         Dag::build(&manifest)
     }
@@ -572,6 +573,7 @@ mod tests {
             exposures: HashMap::new(),
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
+            macros: HashMap::new(),
         };
         let list = build_model_list(&Dag::build(&manifest), SortMode::Layer);
         let layers: Vec<&str> = list.groups.iter().map(|g| g.layer.as_str()).collect();
@@ -637,6 +639,7 @@ mod tests {
             exposures: HashMap::new(),
             parent_map,
             child_map,
+            macros: HashMap::new(),
         };
         Dag::build(&manifest)
     }
