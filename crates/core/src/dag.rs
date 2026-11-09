@@ -103,6 +103,17 @@ pub struct NodeDetail {
     /// distinguishes installed-package models from the project's own. `None`
     /// in source mode (where every node is local).
     pub package_name: Option<String>,
+    // --- governance (dbt model access controls) ---
+    /// `private`/`protected`/`public` — who may `ref()` this model.
+    pub access: Option<String>,
+    /// The `groups:` entry the model belongs to.
+    pub group: Option<String>,
+    /// `contract.enforced` — declared columns are the enforced schema.
+    pub contract_enforced: bool,
+    /// This node's version name, when the model is versioned.
+    pub version: Option<String>,
+    /// The newest version's name, when the model is versioned.
+    pub latest_version: Option<String>,
 }
 
 /// A directed dependency edge `parent -> child` inside a subgraph (both
@@ -307,6 +318,64 @@ impl Dag {
             );
         }
 
+        // Semantic-layer resources (semantic models / metrics / saved queries)
+        // — declared downstream consumers, exactly like exposures: terminator
+        // nodes fed by their own `depends_on` (metrics chain off semantic
+        // models, which is fine — all three maps become nodes).
+        for (map, resource_type) in [
+            (&manifest.semantic_models, "semantic_model"),
+            (&manifest.metrics, "metric"),
+            (&manifest.saved_queries, "saved_query"),
+        ] {
+            for (unique_id, res) in map {
+                nodes.insert(
+                    unique_id.clone(),
+                    NodeInfo {
+                        unique_id: unique_id.clone(),
+                        name: res.name.clone(),
+                        resource_type: resource_type.to_string(),
+                        path: res.path.clone(),
+                        materialized: None,
+                        ..Default::default()
+                    },
+                );
+                details.insert(
+                    unique_id.clone(),
+                    NodeDetail {
+                        description: clean_desc(&res.description),
+                        original_file_path: res.original_file_path.clone(),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+
+        // dbt ≥1.8 unit tests: excluded from the DAG like schema tests,
+        // recorded per-target model. A unit_test uid is
+        // `unit_tests.<pkg>.<model>.<name>` — the target is `model.<pkg>.<model>`;
+        // `model` (the bare name) is the fallback when the uid shape differs.
+        for (uid, ut) in &manifest.unit_tests {
+            let mut segs = uid.split('.');
+            let target = match (segs.nth(1), segs.next()) {
+                (Some(pkg), Some(model)) if !pkg.is_empty() => {
+                    let guess = format!("model.{pkg}.{model}");
+                    if nodes.contains_key(&guess) {
+                        Some(guess)
+                    } else {
+                        ut.model.as_ref().and_then(|m| model_uid_by_name(&nodes, m))
+                    }
+                }
+                _ => ut.model.as_ref().and_then(|m| model_uid_by_name(&nodes, m)),
+            };
+            if let Some(target) = target {
+                tests.entry(target).or_default().push(TestInfo {
+                    name: ut.name.clone(),
+                    kind: "unit".to_string(),
+                    column_name: None,
+                });
+            }
+        }
+
         // Deterministic test ordering per node (HashMap iteration is unordered).
         for v in tests.values_mut() {
             v.sort_by(|a, b| {
@@ -332,6 +401,35 @@ impl Dag {
         exposure_ids.sort();
         for uid in exposure_ids {
             for dep in &manifest.exposures[uid].depends_on.nodes {
+                if !kept.contains(dep) {
+                    continue; // a dangling dep is dropped, like an unresolved ref
+                }
+                let p = parents.entry(uid.clone()).or_default();
+                if !p.contains(dep) {
+                    p.push(dep.clone());
+                }
+                let c = children.entry(dep.clone()).or_default();
+                if !c.contains(uid) {
+                    c.push(uid.clone());
+                }
+            }
+        }
+        // Semantic-layer resources: same terminator-edge rule — real manifests
+        // already carry them in parent/child_map, but `depends_on` is the
+        // guaranteed adjacency (metrics may even reference semantic models).
+        let mut semantic_edges: Vec<(&String, &Vec<String>)> = Vec::new();
+        for map in [
+            &manifest.semantic_models,
+            &manifest.metrics,
+            &manifest.saved_queries,
+        ] {
+            for (uid, res) in map {
+                semantic_edges.push((uid, &res.depends_on.nodes));
+            }
+        }
+        semantic_edges.sort_by_key(|(uid, _)| *uid);
+        for (uid, deps) in semantic_edges {
+            for dep in deps {
                 if !kept.contains(dep) {
                     continue; // a dangling dep is dropped, like an unresolved ref
                 }
@@ -732,6 +830,11 @@ fn detail_from_node(node: &RawNode) -> NodeDetail {
         columns: columns_from(&node.columns),
         original_file_path: node.original_file_path.clone(),
         package_name: node.package_name.clone(),
+        access: node.access.clone(),
+        group: node.group.clone(),
+        contract_enforced: node.contract.as_ref().is_some_and(|c| c.enforced),
+        version: node.version.clone(),
+        latest_version: node.latest_version.clone(),
     }
 }
 
@@ -765,7 +868,20 @@ fn detail_from_source(source: &RawSource) -> NodeDetail {
         columns: columns_from(&source.columns),
         original_file_path: source.original_file_path.clone(),
         package_name: source.package_name.clone(),
+        ..Default::default() // sources carry no governance fields
     }
+}
+
+/// Resolve a model NAME to its `model.<pkg>.<name>` uid — the fallback when a
+/// unit_test's uid doesn't carry the standard `unit_tests.<pkg>.<model>` shape.
+/// Returns the single match (a name colliding across packages can't be
+/// resolved reliably anyway).
+fn model_uid_by_name(nodes: &HashMap<String, NodeInfo>, name: &str) -> Option<String> {
+    nodes
+        .values()
+        .filter(|n| n.resource_type == "model" && n.name == name)
+        .map(|n| n.unique_id.clone())
+        .next()
 }
 
 /// Record a test node into the per-target tests map. The target is the test's
@@ -926,6 +1042,10 @@ mod tests {
             sources,
             exposures: HashMap::new(),
             macros: HashMap::new(),
+            semantic_models: HashMap::new(),
+            metrics: HashMap::new(),
+            saved_queries: HashMap::new(),
+            unit_tests: HashMap::new(),
             parent_map,
             child_map,
         }
@@ -973,6 +1093,10 @@ mod tests {
             nodes,
             sources: HashMap::new(),
             exposures: HashMap::new(),
+            semantic_models: HashMap::new(),
+            metrics: HashMap::new(),
+            saved_queries: HashMap::new(),
+            unit_tests: HashMap::new(),
             parent_map,
             child_map,
             macros: HashMap::new(),
@@ -1067,6 +1191,10 @@ mod tests {
             nodes,
             sources: HashMap::new(),
             exposures: HashMap::new(),
+            semantic_models: HashMap::new(),
+            metrics: HashMap::new(),
+            saved_queries: HashMap::new(),
+            unit_tests: HashMap::new(),
             parent_map: HashMap::new(),
             child_map,
             macros: HashMap::new(),
@@ -1272,6 +1400,57 @@ mod tests {
         assert!(
             f.get("model.p.b").unwrap().direct_down == 0,
             "b's dropped child no longer counts"
+        );
+    }
+
+    #[test]
+    fn semantic_resources_and_unit_tests_attach() {
+        let mut manifest = sample_manifest();
+        manifest.semantic_models.insert(
+            "semantic_model.p.orders".to_string(),
+            crate::manifest::RawSemanticResource {
+                name: "orders".into(),
+                depends_on: crate::RawDependsOn {
+                    nodes: vec!["model.p.b".to_string()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        manifest.metrics.insert(
+            "metric.p.order_total".to_string(),
+            crate::manifest::RawSemanticResource {
+                name: "order_total".into(),
+                depends_on: crate::RawDependsOn {
+                    nodes: vec!["semantic_model.p.orders".to_string()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        manifest.unit_tests.insert(
+            "unit_tests.p.b.test_b".to_string(),
+            crate::manifest::RawUnitTest {
+                name: "test_b".into(),
+                model: Some("b".into()),
+            },
+        );
+        let dag = Dag::build(&manifest);
+        let sem = dag.get("semantic_model.p.orders").unwrap();
+        assert_eq!(sem.resource_type, "semantic_model");
+        assert_eq!(sem.direct_up, 1, "semantic model hangs off model.p.b");
+        let met = dag.get("metric.p.order_total").unwrap();
+        assert_eq!(met.direct_up, 1, "metric chains off the semantic model");
+        assert_eq!(
+            dag.get("model.p.b").unwrap().direct_down,
+            1,
+            "semantic consumer counts as downstream"
+        );
+        assert!(
+            dag.tests("model.p.b")
+                .iter()
+                .any(|t| t.kind == "unit" && t.name == "test_b"),
+            "unit test recorded on its model"
         );
     }
 }

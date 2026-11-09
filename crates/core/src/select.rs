@@ -233,6 +233,10 @@ mod tests {
             sources: HashMap::new(),
             exposures: HashMap::new(),
             macros: HashMap::new(),
+            semantic_models: HashMap::new(),
+            metrics: HashMap::new(),
+            saved_queries: HashMap::new(),
+            unit_tests: HashMap::new(),
             parent_map: HashMap::from([
                 ("model.p.int".into(), vec!["model.p.stg".into()]),
                 ("model.p.fct".into(), vec!["model.p.int".into()]),
@@ -299,6 +303,10 @@ mod tests {
             sources: HashMap::new(),
             exposures: HashMap::new(),
             macros: HashMap::new(),
+            semantic_models: HashMap::new(),
+            metrics: HashMap::new(),
+            saved_queries: HashMap::new(),
+            unit_tests: HashMap::new(),
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
         };
