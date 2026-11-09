@@ -112,6 +112,11 @@ pub enum Action {
     /// Copy a runnable `dbt build --select …` command for the current lineage
     /// view (root + direction toggles + depth limit as graph operators).
     YankSelector,
+    /// Open the yank prefix menu (a which-key over `Mode::Yank`): every yank
+    /// action is also reachable as `y` + the same letter it always used
+    /// (`ym` = Mermaid, `yi` = impact, `yy` = unique_id). The single-key
+    /// bindings stay bound for the migration period.
+    YankPrefix,
     /// Write the current lineage diagram to `<name>_lineage.txt` in the cwd.
     ExportLineage,
     /// Move the list selection a fixed page (10 models) down / up. List-side
@@ -321,6 +326,9 @@ pub enum Mode {
     Diff(DiffView),
     /// Command palette: a fuzzy finder over every Selection-mode command.
     Palette(PaletteState),
+    /// The `y` yank-prefix which-key menu: any key dispatched here runs its
+    /// yank action and closes the menu (one-shot); `Esc`/`q` cancel.
+    Yank,
     Help {
         scroll: usize,
     },
@@ -337,6 +345,7 @@ pub enum ModeKind {
     Stats,
     Diff,
     Palette,
+    Yank,
     Help,
 }
 
@@ -350,6 +359,7 @@ impl Mode {
             Mode::Stats(_) => ModeKind::Stats,
             Mode::Diff(_) => ModeKind::Diff,
             Mode::Palette(_) => ModeKind::Palette,
+            Mode::Yank => ModeKind::Yank,
             Mode::Help { .. } => ModeKind::Help,
         }
     }
@@ -460,7 +470,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('/'))], action: A::SearchOpen, help: "search (list filter / lineage jump)" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "toggle this help" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('o'))], action: A::OpenEditor, help: "open SQL in $EDITOR" },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('y'))], action: A::YankId, help: "copy unique_id" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('y'))], action: A::YankPrefix, help: "yank prefix menu" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('Y'))], action: A::YankName, help: "copy model name" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('m'))], action: A::YankMermaid, help: "copy lineage as Mermaid" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('x'))], action: A::YankDot, help: "copy lineage as Graphviz DOT" },
@@ -505,6 +515,18 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('!'))], action: A::YankSelector, help: "copy dbt --select command" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('w'))], action: A::ToggleOverview, help: "toggle whole-graph overview" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('p'))], action: A::PathToggle, help: "anchor/clear two-node path" },
+    // ---- Yank prefix mode (`y` + one key): the second key is the SAME letter
+    // the single-key binding always used, so muscle memory carries over as
+    // `ym`/`yC`/…; `yy` copies the unique_id (what bare `y` used to do). ----
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('y'))], action: A::YankId, help: "copy unique_id" },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('Y'))], action: A::YankName, help: "copy model name" },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('m'))], action: A::YankMermaid, help: "copy lineage as Mermaid" },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('x'))], action: A::YankDot, help: "copy lineage as Graphviz DOT" },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('c'))], action: A::YankAscii, help: "copy lineage as text diagram" },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('C'))], action: A::YankSql, help: "copy raw SQL" },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('i'))], action: A::YankImpact, help: "copy impact report (Markdown)" },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('!'))], action: A::YankSelector, help: "copy dbt --select command" },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Esc), Key(Char('q'))], action: A::DetailClose, help: "cancel" },
     // ---- Search mode (printable chars are handled dynamically -> SearchType) ----
     KeyBinding { mode: M::Search, triggers: &[Key(Esc)], action: A::SearchCancel, help: "cancel search" },
     KeyBinding { mode: M::Search, triggers: &[Key(Enter)], action: A::SearchConfirm, help: "confirm" },
@@ -929,6 +951,7 @@ mod tests {
             | Action::YankSql
             | Action::YankImpact
             | Action::YankSelector
+            | Action::YankPrefix
             | Action::ExportLineage
             | Action::PageDown
             | Action::PageUp
@@ -970,6 +993,7 @@ mod tests {
                 ModeKind::Stats => stats_mode(),
                 ModeKind::Diff => diff_mode(),
                 ModeKind::Palette => palette_mode(),
+                ModeKind::Yank => Mode::Yank,
                 ModeKind::Help => Mode::Help { scroll: 0 },
             };
             for t in b.triggers {
@@ -1041,6 +1065,7 @@ mod tests {
             Action::YankSql,
             Action::YankImpact,
             Action::YankSelector,
+            Action::YankPrefix,
             Action::ExportLineage,
             Action::PageDown,
             Action::PageUp,

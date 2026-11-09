@@ -66,7 +66,12 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         app.set_notice("view filters are off in overview (w to exit)");
         return Outcome::cont();
     }
-    match action {
+    // The yank-prefix menu is a one-shot which-key: ANY action dispatched out
+    // of it (a yank, the Esc/q cancel) closes it afterwards. Snapshotting the
+    // mode BEFORE the match keeps the close logic in this one place instead of
+    // duplicating it into every Yank-mode arm.
+    let in_yank_menu = matches!(app.mode, Mode::Yank);
+    let outcome = match action {
         Action::Quit => Outcome::quit(),
         // Movement keys are focus-routed: lineage-pane focus moves the lineage
         // CURSOR (Dag-aware, so it lives here, not in the UiState sub-reducer);
@@ -154,6 +159,13 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         }
         Action::DetailClose => {
             app.mode = Mode::Selection;
+            Outcome::cont()
+        }
+        // Open the yank-prefix which-key (`y` + key). The menu itself is
+        // rendered from the M::Yank BINDINGS rows; the one-shot close lives in
+        // the post-match step at the bottom of this function.
+        Action::YankPrefix => {
+            app.mode = Mode::Yank;
             Outcome::cont()
         }
         // Overlay scroll: acts inside whichever scrollable overlay is open. The
@@ -698,7 +710,11 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             app.cycle_theme();
             Outcome::cont()
         }
+    };
+    if in_yank_menu && matches!(app.mode, Mode::Yank) {
+        app.mode = Mode::Selection;
     }
+    outcome
 }
 
 /// The scroll slot of whichever overlay modal is open (`None` in non-modal
