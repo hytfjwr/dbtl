@@ -91,10 +91,14 @@ fn run(cli: &Cli) -> Result<()> {
     let mut app = build_app(cli)?;
     if let Some(name) = &cli.select {
         // Fail as plain text before the terminal is touched, like a load error.
-        anyhow::ensure!(
-            app.select_by_name(name),
-            "--select: model '{name}' not found"
-        );
+        // Plain model name first; on a miss, try it as a dbt selector spec
+        // (`--select 'tag:nightly'` → the first matching model, sorted).
+        let found = app.select_by_name(name)
+            || dbtl::select(&app.dag, app.diff(), name)
+                .iter()
+                .next()
+                .is_some_and(|uid| app.select_by_unique_id(uid));
+        anyhow::ensure!(found, "--select: model '{name}' not found");
     }
 
     // Load the --diff baseline (a second Dag) and open on the Diff lens so the

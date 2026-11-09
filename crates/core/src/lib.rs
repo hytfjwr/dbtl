@@ -13,6 +13,7 @@ pub mod layer;
 pub mod manifest;
 pub mod mermaid;
 pub mod run_results;
+pub mod select;
 pub mod source;
 
 pub use dag::{
@@ -33,6 +34,7 @@ pub use mermaid::{
     mermaid_ids, mermaid_label, node_kind, subgraph_mermaid, subgraph_mermaid_linked,
 };
 pub use run_results::{default_run_results_path, RunResult, RunResults, RunStatus};
+pub use select::select;
 pub use source::{
     load_dag_from_source, load_dag_from_source_with_warnings, manifest_from_source,
     manifest_from_source_with_warnings,
