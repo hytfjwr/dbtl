@@ -61,9 +61,11 @@ fn run(cli: &Cli) -> Result<()> {
         source,
         project,
         quiet,
+        clean,
+        check,
     }) = &cli.command
     {
-        return run_docs(out, manifest, source, project, *quiet);
+        return run_docs(out, manifest, source, project, *quiet, *clean, *check);
     }
 
     // Build the data model up front so load errors (missing manifest, bad
