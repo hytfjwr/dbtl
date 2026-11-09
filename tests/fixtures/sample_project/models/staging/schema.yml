@@ -6,26 +6,36 @@ sources:
     schema: raw_data
     tables:
       - name: orders
-        description: "Raw orders from the app"
+        # Whitespace-controlled docs block ({%- docs -%}).
+        description: "{{ doc('raw_orders_doc') }}"
         columns:
           - name: id
             data_type: integer
-            description: "Order id"
+            # 2-arg doc() naming the project itself resolves locally.
+            description: "{{ doc('sample', 'primary_key_doc') }}"
             tests:
               - not_null
       - name: customers
-        description: "Raw customers"
+        # A Jinja comment in a description vanishes entirely for dbt —
+        # including the doc() inside it (an undefined one errors nothing).
+        description: "{# hidden {{ doc('undefined_doc') }} #}Raw customers"
 
 models:
   - name: stg_schema_disabled
     config:
       enabled: false
   - name: stg_orders
-    description: "Staged orders"
+    # `{{-` eats the preceding whitespace (Jinja whitespace control), so
+    # this renders as "Staged orders.<body>" — the source loader must
+    # reproduce that exactly.
+    description: |
+      Staged orders.
+      {{- doc('raw_orders_doc') }}
+      Refreshed nightly.
     columns:
       - name: id
         data_type: integer
-        description: "Order id"
+        description: "{{ doc('primary_key_doc') }}"
         tests:
           - unique
           - not_null
