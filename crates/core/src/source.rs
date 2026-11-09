@@ -126,6 +126,10 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
     // uid -> dbt_project.yml tree materialization, applied AFTER schema.yml
     // (precedence: in-file config() > schema.yml > project tree > default view).
     let mut tree_mat: HashMap<String, String> = HashMap::new();
+    // uid -> dbt_project.yml tree `+meta` dict, merged AFTER schema.yml like
+    // `tree_mat` (the meta precedence chain is the same shape: in-file
+    // config(meta=…) > schema.yml meta/config.meta > project tree).
+    let mut tree_meta: HashMap<String, serde_json::Map<String, serde_json::Value>> = HashMap::new();
     let mut test_seq = 0usize;
     // Recoverable oddities (an unparsable schema.yml, a duplicate resource
     // name): never fatal, so the project still loads — surfaced to the
@@ -199,6 +203,9 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
         if let Some(m) = &tree.materialized {
             tree_mat.insert(uid.clone(), m.clone());
         }
+        if !tree.meta.is_empty() {
+            tree_meta.insert(uid.clone(), tree.meta.clone());
+        }
         nodes.insert(
             uid.clone(),
             RawNode {
@@ -209,6 +216,9 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                 config: RawConfig {
                     materialized: pat.materialized(&stripped),
                 },
+                // In-file `config(meta={…})` is the HIGHEST precedence level;
+                // schema.yml and the project tree merge under it per key.
+                meta: config_meta(&stripped).unwrap_or_default(),
                 raw_code: Some(raw),
                 ..Default::default()
             },
@@ -232,6 +242,9 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                 rel_path(dir, &file)
             ));
             continue;
+        }
+        if !tree.meta.is_empty() {
+            tree_meta.insert(uid.clone(), tree.meta.clone());
         }
         nodes.insert(
             uid.clone(),
@@ -269,12 +282,16 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             // swap the final segment when they differ.
             segments.pop();
             segments.push(name.clone());
-            if resolve_tree_config(&project.snapshots, &segments).enabled == Some(false) {
+            let tree = resolve_tree_config(&project.snapshots, &segments);
+            if tree.enabled == Some(false) {
                 continue;
             }
             if name_index.contains_key(&name) {
                 warnings.push(format!("duplicate resource name '{name}': ignoring {ofp}"));
                 continue;
+            }
+            if !tree.meta.is_empty() {
+                tree_meta.insert(uid.clone(), tree.meta.clone());
             }
             nodes.insert(
                 uid.clone(),
@@ -286,6 +303,10 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                     config: RawConfig {
                         materialized: Some("snapshot".to_string()),
                     },
+                    // The `{{ config(…) }}` inside a `{% snapshot %}` block is
+                    // extracted file-wide like the other pattern extractors
+                    // (multi-block files share the config — rare).
+                    meta: config_meta(&stripped).unwrap_or_default(),
                     // The whole (multi-block) file is stored per block; raw_code
                     // is never compared, and snapshots are rare, so this is fine.
                     raw_code: Some(raw.clone()),
@@ -365,7 +386,8 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             let mut segments = tree_segments(&proj, &yml_rel);
             segments.pop();
             segments.push(entry.name.clone());
-            if resolve_tree_config(&project.snapshots, &segments).enabled == Some(false) {
+            let tree = resolve_tree_config(&project.snapshots, &segments);
+            if tree.enabled == Some(false) {
                 continue;
             }
             // dbt V2 synthesizes `select * from {relation}` (wrapping a bare
@@ -379,10 +401,14 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             };
             let sql = format!("select * from {body}");
             let uid = format!("snapshot.{proj}.{}", entry.name);
+            if !tree.meta.is_empty() {
+                tree_meta.insert(uid.clone(), tree.meta.clone());
+            }
             // dbt records a YAML-defined snapshot's `path` as a virtual
-            // `<declaring yml>/<name>.sql` (there is no real .sql file) —
-            // matched here so source and manifest mode agree on `NodeInfo`.
-            let path = format!("{yml_rel}/{}.sql", entry.name);
+            // `<name>.sql` (there is no real .sql file; dbt ≤1.11 prefixed the
+            // declaring yml, 1.12 records the bare name — the loader tracks the
+            // current convention so source and manifest mode agree).
+            let path = format!("{}.sql", entry.name);
             nodes.insert(
                 uid.clone(),
                 RawNode {
@@ -462,6 +488,10 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                         // project only — no foreign package can appear, so
                         // package identity is vacuous here.
                         package_name: None,
+                        // Source-level `meta:` cascades to every table; a
+                        // table-level `meta:` overrides it per key (dbt's
+                        // merge, verified).
+                        meta: source_meta(src, tbl),
                     },
                 );
                 synth_tests(
@@ -585,12 +615,20 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
     // Fill remaining model materializations from the dbt_project.yml tree, then
     // dbt's default `view` (the tree is applied AFTER schema.yml so the full
     // precedence chain is in-file > schema.yml > tree > default, like dbt).
+    // The tree's `+meta` is likewise the LOWEST precedence: it fills only keys
+    // not already set by schema.yml or in-file `config(meta=…)` (dbt merges
+    // meta dicts shallowly — a higher-precedence key wins whole-value).
     for (uid, node) in nodes.iter_mut() {
         if node.resource_type == "model" && node.config.materialized.is_none() {
             node.config.materialized = tree_mat
                 .get(uid)
                 .cloned()
                 .or_else(|| Some("view".to_string()));
+        }
+        if let Some(tree) = tree_meta.get(uid) {
+            for (k, v) in tree {
+                node.meta.entry(k.clone()).or_insert_with(|| v.clone());
+            }
         }
     }
 
@@ -658,6 +696,21 @@ fn apply_meta(
         if !entry.tags.is_empty() {
             node.tags = entry.tags.clone();
         }
+        // Schema `meta:` / `config.meta:` merge per top-level key: the entry's
+        // `config.meta` wins over its top-level `meta:` (declaring both is a
+        // dbt parse error — degraded here to a warning + that merge), and any
+        // in-file `config(meta=…)` wins over both (`entry().or_insert`).
+        if entry.meta.is_mapping() && entry.config.meta.is_mapping() {
+            warnings.push(format!(
+                "{} '{}' declares meta: both at the entry level and under config: (a dbt parse error); merging with config: winning",
+                type_prefix, entry.name
+            ));
+        }
+        let mut schema_meta = meta_map(&entry.meta);
+        schema_meta.extend(meta_map(&entry.config.meta));
+        for (k, v) in schema_meta {
+            node.meta.entry(k).or_insert(v);
+        }
         if !entry.columns.is_empty() {
             node.columns = columns_json(&entry.columns, docs, warnings);
         }
@@ -685,6 +738,38 @@ fn apply_meta(
             );
         }
     }
+}
+
+/// A YAML `meta:` mapping → the `serde_json` map `RawNode.meta` /
+/// `RawSource.meta` carry. A non-mapping `meta:` (a dbt error) yields an
+/// empty map — degraded, never a parse failure.
+fn meta_map(v: &serde_norway::Value) -> serde_json::Map<String, serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    if let serde_norway::Value::Mapping(m) = v {
+        for (k, v) in m {
+            let key = match k {
+                serde_norway::Value::String(s) => s.clone(),
+                other => match norway_to_json(other) {
+                    serde_json::Value::String(s) => s,
+                    j => j.to_string(),
+                },
+            };
+            out.insert(key, norway_to_json(v));
+        }
+    }
+    out
+}
+
+/// A source table's merged `meta`: the source-level `meta:` cascades to every
+/// table and a table-level `meta:` overrides it per top-level key (dbt's
+/// shallow merge, verified).
+fn source_meta(
+    src: &SchemaSource,
+    tbl: &SchemaSourceTable,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut out = meta_map(&src.meta);
+    out.extend(meta_map(&tbl.meta));
+    out
 }
 
 /// Record each schema-file test as a synthetic `resource_type: "test"` node so
@@ -1076,6 +1161,10 @@ fn strip_jinja_comments_with(text: &str, replacement: &str) -> String {
 struct TreeConfig {
     materialized: Option<String>,
     enabled: Option<bool>,
+    /// The `+meta` dict merged down the tree: deeper levels override per
+    /// TOP-LEVEL key (a nested dict is replaced wholesale, not deep-merged —
+    /// verified against real dbt).
+    meta: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The config-tree lookup path for a node: the project name, then each
@@ -1094,10 +1183,11 @@ fn tree_segments(proj: &str, rel: &str) -> Vec<String> {
 }
 
 /// Walk a resource tree along `segments`, collecting `+materialized` /
-/// `+enabled` at every level — a deeper (more specific) value overrides a
-/// shallower one, dbt's most-specific-path rule. Descent stops at the first
-/// missing segment (configs collected above it still apply). Only `+`-prefixed
-/// keys are configs; bare keys are path segments.
+/// `+enabled` / `+meta` at every level — a deeper (more specific) value
+/// overrides a shallower one, dbt's most-specific-path rule. Descent stops at
+/// the first missing segment (configs collected above it still apply). Only
+/// `+`-prefixed keys are configs; bare keys are path segments. `+meta` maps
+/// merge by top-level key (a deeper key replaces the whole value).
 fn resolve_tree_config(tree: &serde_norway::Value, segments: &[String]) -> TreeConfig {
     let mut out = TreeConfig::default();
     if !tree.is_mapping() {
@@ -1109,12 +1199,59 @@ fn resolve_tree_config(tree: &serde_norway::Value, segments: &[String]) -> TreeC
     if let Some(e) = tree["+enabled"].as_bool() {
         out.enabled = Some(e);
     }
+    if let serde_norway::Value::Mapping(m) = &tree["+meta"] {
+        for (k, v) in m {
+            if let Some(key) = k.as_str() {
+                out.meta.insert(key.to_string(), norway_to_json(v));
+            }
+        }
+    }
     if let Some((seg, rest)) = segments.split_first() {
         let deeper = resolve_tree_config(&tree[seg.as_str()], rest);
         out.materialized = deeper.materialized.or(out.materialized);
         out.enabled = deeper.enabled.or(out.enabled);
+        out.meta.extend(deeper.meta); // deeper keys replace same-named ones
     }
     out
+}
+
+/// Convert a `serde_norway` YAML value to `serde_json` — the wire type
+/// `RawNode.meta` / `RawSource.meta` carry (identical to what a real
+/// manifest's JSON deserializes into). Non-string mapping keys stringify
+/// like a JSON object key would; `!Tagged` values unwrap to their content.
+fn norway_to_json(v: &serde_norway::Value) -> serde_json::Value {
+    match v {
+        serde_norway::Value::Null => serde_json::Value::Null,
+        serde_norway::Value::Bool(b) => (*b).into(),
+        serde_norway::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                i.into()
+            } else if let Some(u) = n.as_u64() {
+                u.into()
+            } else {
+                serde_json::json!(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        serde_norway::Value::String(s) => s.clone().into(),
+        serde_norway::Value::Sequence(seq) => {
+            seq.iter().map(norway_to_json).collect::<Vec<_>>().into()
+        }
+        serde_norway::Value::Mapping(m) => {
+            let mut obj = serde_json::Map::new();
+            for (k, v) in m {
+                let key = match k {
+                    serde_norway::Value::String(s) => s.clone(),
+                    other => match norway_to_json(other) {
+                        serde_json::Value::String(s) => s,
+                        j => j.to_string(),
+                    },
+                };
+                obj.insert(key, norway_to_json(v));
+            }
+            obj.into()
+        }
+        serde_norway::Value::Tagged(t) => norway_to_json(&t.value),
+    }
 }
 
 /// The dbt-syntax extractors, compiled once. The `regex` crate has no
@@ -1263,6 +1400,278 @@ impl Patterns {
     }
 }
 
+/// The `meta={…}` dict of an in-file `config(meta={…})` call. dbt config
+/// kwargs are Python/Jinja literals, so the dict is parsed by [`LitParser`]
+/// (a `[^)]*` regex could never see past the nested braces/strings). A
+/// non-dict or unresolvable expression (`var()`, `env_var()`, an identifier)
+/// yields `None` — the meta is dropped, never guessed.
+fn config_meta(sql: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let expr = kwarg(config_call_args(sql)?, "meta")?;
+    let mut p = LitParser { s: expr, i: 0 };
+    let v = p.value()?;
+    p.ws();
+    if p.i != p.s.len() {
+        return None; // trailing tokens — not a clean literal
+    }
+    match v {
+        serde_json::Value::Object(m) => Some(m),
+        _ => None,
+    }
+}
+
+/// The argument text of the FIRST `config(…)` call in `sql` — the string
+/// between its parens — found by a balanced-paren/quote scan, so nested
+/// `(`/`)` inside dicts or macro calls can't end the call early (the
+/// `[^)]*` approach the materialized regex uses would).
+fn config_call_args(sql: &str) -> Option<&str> {
+    static CONFIG: OnceLock<Regex> = OnceLock::new();
+    let m = CONFIG
+        .get_or_init(|| Regex::new(r"\bconfig\s*\(").unwrap())
+        .find(sql)?;
+    let start = m.end(); // just after '('
+    let mut depth = 0usize;
+    let mut chars = sql[start..].char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                if depth == 0 {
+                    // ')' closes the call; a bare ']'/'}' here is malformed.
+                    return (c == ')').then(|| &sql[start..start + i]);
+                }
+                depth -= 1;
+            }
+            '\'' | '"' => {
+                let it = chars.by_ref();
+                while let Some((_, d)) = it.next() {
+                    if d == '\\' {
+                        it.next(); // consume the escaped char
+                    } else if d == c {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None // unclosed call
+}
+
+/// Split `s` at commas sitting at bracket-depth 0 and outside string quotes —
+/// the top-level kwargs of a `config(…)` call (a comma inside `{'a': 'b'}`,
+/// `[x, y]`, or a quoted string must not split the argument list).
+fn top_level_segments(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut last = 0;
+    let mut depth = 0usize;
+    let mut chars = s.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            '\'' | '"' => {
+                let it = chars.by_ref();
+                while let Some((_, d)) = it.next() {
+                    if d == '\\' {
+                        it.next();
+                    } else if d == c {
+                        break;
+                    }
+                }
+            }
+            ',' if depth == 0 => {
+                out.push(&s[last..i]);
+                last = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&s[last..]);
+    out
+}
+
+/// The expression text bound to keyword `name` inside a `config(…)` call's
+/// arguments (`meta={…}` → `{…}`). `name` must match exactly — a
+/// `metadata=` kwarg is not `meta`. The name/expr separator is the first
+/// `=` at bracket-depth 0 outside quotes.
+fn kwarg<'a>(args: &'a str, name: &str) -> Option<&'a str> {
+    for seg in top_level_segments(args) {
+        let seg = seg.trim();
+        let mut depth = 0usize;
+        let mut chars = seg.char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth = depth.saturating_sub(1),
+                '\'' | '"' => {
+                    let it = chars.by_ref();
+                    while let Some((_, d)) = it.next() {
+                        if d == '\\' {
+                            it.next();
+                        } else if d == c {
+                            break;
+                        }
+                    }
+                }
+                '=' if depth == 0 => {
+                    if seg[..i].trim() == name {
+                        return Some(seg[i + 1..].trim_start());
+                    }
+                    break; // a different kwarg — its expr can't contain `meta=`
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// Recursive-descent parser for the Python/Jinja literals a `config()` kwarg
+/// holds: `{'k': v}` dicts, `[…]`/`(…)` sequences, quoted strings, `True` /
+/// `False` / `None`, and numbers. Anything else — `var('x')`, an identifier,
+/// a Jinja expression — is unresolvable from source and returns `None`.
+struct LitParser<'a> {
+    s: &'a str,
+    i: usize,
+}
+
+impl LitParser<'_> {
+    fn peek(&self) -> Option<char> {
+        self.s[self.i..].chars().next()
+    }
+    fn bump(&mut self) -> Option<char> {
+        let c = self.peek()?;
+        self.i += c.len_utf8();
+        Some(c)
+    }
+    fn ws(&mut self) {
+        while self.peek().is_some_and(char::is_whitespace) {
+            self.bump();
+        }
+    }
+    fn value(&mut self) -> Option<serde_json::Value> {
+        self.ws();
+        match self.peek()? {
+            '{' => self.dict(),
+            '[' | '(' => self.list(),
+            '\'' | '"' => self.string().map(serde_json::Value::from),
+            'T' | 'F' | 'N' | 't' | 'f' | 'n' => self.keyword(),
+            _ => self.number(),
+        }
+    }
+    /// `{'k': v, …}` — keys may be any literal; non-string keys stringify
+    /// the same way `norway_to_json` stringifies non-string mapping keys.
+    fn dict(&mut self) -> Option<serde_json::Value> {
+        self.bump();
+        let mut obj = serde_json::Map::new();
+        loop {
+            self.ws();
+            if self.peek() == Some('}') {
+                self.bump();
+                return Some(obj.into());
+            }
+            let key = match self.value()? {
+                serde_json::Value::String(s) => s,
+                other => other.to_string(),
+            };
+            self.ws();
+            if self.bump() != Some(':') {
+                return None;
+            }
+            obj.insert(key, self.value()?);
+            self.ws();
+            match self.bump()? {
+                ',' => continue,
+                '}' => return Some(obj.into()),
+                _ => return None,
+            }
+        }
+    }
+    /// `[a, b]` / `(a, b)` — a tuple maps to a JSON array (JSON has no tuple).
+    fn list(&mut self) -> Option<serde_json::Value> {
+        let close = if self.bump()? == '[' { ']' } else { ')' };
+        let mut items = Vec::new();
+        loop {
+            self.ws();
+            if self.peek() == Some(close) {
+                self.bump();
+                return Some(items.into());
+            }
+            items.push(self.value()?);
+            self.ws();
+            match self.bump()? {
+                ',' => continue,
+                c if c == close => return Some(items.into()),
+                _ => return None,
+            }
+        }
+    }
+    fn string(&mut self) -> Option<String> {
+        let quote = self.bump()?;
+        let mut out = String::new();
+        loop {
+            match self.bump()? {
+                '\\' => out.push(match self.bump()? {
+                    'n' => '\n',
+                    't' => '\t',
+                    'r' => '\r',
+                    other => other, // \' \" \\ and any other escaped char
+                }),
+                c if c == quote => return Some(out),
+                c => out.push(c),
+            }
+        }
+    }
+    /// `True` / `False` / `None`, delimited — a `Truex` identifier is not
+    /// the literal (and can't be resolved anyway). Jinja also accepts the
+    /// lowercase spellings (`true`/`false`/`none` are its canonical names).
+    fn keyword(&mut self) -> Option<serde_json::Value> {
+        for (tok, v) in [
+            ("True", serde_json::Value::from(true)),
+            ("true", serde_json::Value::from(true)),
+            ("False", serde_json::Value::from(false)),
+            ("false", serde_json::Value::from(false)),
+            ("None", serde_json::Value::Null),
+            ("none", serde_json::Value::Null),
+            ("null", serde_json::Value::Null),
+        ] {
+            if self.s[self.i..].starts_with(tok) {
+                let end = self.i + tok.len();
+                if self.s[end..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                {
+                    return None;
+                }
+                self.i = end;
+                return Some(v);
+            }
+        }
+        None
+    }
+    fn number(&mut self) -> Option<serde_json::Value> {
+        let start = self.i;
+        while self
+            .peek()
+            .is_some_and(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.' | 'e' | 'E'))
+        {
+            self.bump();
+        }
+        let tok = &self.s[start..self.i];
+        if let Ok(i) = tok.parse::<i64>() {
+            Some(i.into())
+        } else if let Ok(u) = tok.parse::<u64>() {
+            Some(u.into())
+        } else {
+            tok.parse::<f64>()
+                .ok()
+                .and_then(serde_json::Number::from_f64)
+                .map(Into::into)
+        }
+    }
+}
+
 // ---- dbt_project.yml / schema.yml deserialization (only the fields we use) ----
 
 #[derive(Debug, Deserialize, Default)]
@@ -1340,6 +1749,12 @@ struct SchemaModel {
     /// for a `{% snapshot %}`-block snapshot (its relation is implicit).
     #[serde(default)]
     relation: Option<String>,
+    /// Top-level `meta:` dict — dbt treats it as equivalent to
+    /// `config.meta` (both together are a dbt parse error; here it merges
+    /// with `config.meta` winning per key). Kept as raw `Value` so a
+    /// non-mapping `meta:` can't fail the whole file's deserialization.
+    #[serde(default)]
+    meta: serde_norway::Value,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1348,6 +1763,9 @@ struct SchemaConfig {
     materialized: Option<String>,
     #[serde(default)]
     enabled: Option<bool>,
+    /// `config: meta:` — merges over a top-level `meta:` per key.
+    #[serde(default)]
+    meta: serde_norway::Value,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1397,6 +1815,10 @@ struct SchemaSource {
     database: Option<String>,
     #[serde(default)]
     schema: Option<String>,
+    /// `meta:` at the source level — cascades to every table (a table-level
+    /// `meta:` overrides it per key, verified against real dbt).
+    #[serde(default)]
+    meta: serde_norway::Value,
     #[serde(default)]
     tables: Vec<SchemaSourceTable>,
 }
@@ -1406,6 +1828,9 @@ struct SchemaSourceTable {
     name: String,
     #[serde(default)]
     description: Option<String>,
+    /// `meta:` at the table level — overrides the source's `meta:` per key.
+    #[serde(default)]
+    meta: serde_norway::Value,
     #[serde(default)]
     columns: Vec<SchemaColumn>,
     #[serde(default)]
@@ -1580,6 +2005,38 @@ mod tests {
         // A non-doc `{{ ... }}` expression is not our business — no warning.
         assert_eq!(docs.render("{{ 1 + 1 }}", &mut w), "{{ 1 + 1 }}");
         assert_eq!(w.len(), 2, "{w:?}");
+    }
+
+    #[test]
+    fn config_meta_parses_literal_dicts() {
+        let m = config_meta(
+            "{{ config(materialized='table', meta={'owner': 'alice', 'deep': {'x': 1}}) }}",
+        )
+        .expect("a meta dict parses");
+        assert_eq!(m["owner"], serde_json::json!("alice"));
+        assert_eq!(m["deep"], serde_json::json!({"x": 1}));
+        // Numbers/bools/lists/tuples and double quotes all convert.
+        let m = config_meta(
+            r#"{{ config(meta={'n': 2, 'f': 1.5, 'b': True, 'l': [1, "x"], 't': (3,)}) }}"#,
+        )
+        .unwrap();
+        assert_eq!(m["n"], serde_json::json!(2));
+        assert_eq!(m["f"], serde_json::json!(1.5));
+        assert_eq!(m["b"], serde_json::json!(true));
+        assert_eq!(m["l"], serde_json::json!([1, "x"]));
+        assert_eq!(m["t"], serde_json::json!([3]));
+        // Jinja's lowercase literal spellings convert the same way.
+        let m = config_meta(r#"{{ config(meta={'b': true, 'x': none}) }}"#).unwrap();
+        assert_eq!(m["b"], serde_json::json!(true));
+        assert_eq!(m["x"], serde_json::Value::Null);
+        // `metadata=` is not `meta`; a `meta` inside comments/strings elsewhere
+        // can't configure the node; unresolvable exprs drop rather than guess.
+        assert!(config_meta("{{ config(metadata={'a': 1}) }}").is_none());
+        assert!(config_meta("{{ config(meta=var('m')) }}").is_none());
+        assert!(config_meta("-- no config here").is_none());
+        assert!(config_meta("{{ config(meta={'a': 1} if x else {}) }}").is_none());
+        // A second call's meta is not read (dbt uses the first config call).
+        assert!(config_meta("{{ config(meta='not-a-dict') }}").is_none());
     }
 
     #[test]

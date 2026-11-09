@@ -37,10 +37,10 @@ use crate::action::{Mode, SearchTarget};
 use crate::effect::Effect;
 use crate::ui::theme::{self, Theme};
 use crate::{
-    build_filtered_model_list, build_model_list, compute_diff, coverage_gap, default_catalog_path,
-    default_run_results_path, load_dag_from_source_with_warnings, load_dag_with_warnings,
-    ColumnRef, Dag, DagDiff, ModelList, NameMatchResolver, NodeDetail, NodeInfo, RunResults,
-    SortMode, UiState,
+    build_filtered_model_list, build_model_list, build_model_list_grouped, compute_diff,
+    coverage_gap, default_catalog_path, default_run_results_path,
+    load_dag_from_source_with_warnings, load_dag_with_warnings, ColumnRef, Dag, DagDiff,
+    ModelList, NameMatchResolver, NodeDetail, NodeInfo, RunResults, SortMode, UiState,
 };
 
 mod analysis;
@@ -153,9 +153,18 @@ pub struct App {
     /// The `list_filter` view of `model_list` (`None` when `list_filter` is
     /// `All`). Rebuilt ONLY by [`apply_list_filter`](App::apply_list_filter).
     filtered_base: Option<ModelList>,
-    /// How the left pane orders models within each layer group (the `.`-cycle).
+    /// How the left pane orders models within each group (the `.`-cycle).
     /// Preserved across reload; the full + filtered lists are rebuilt with it.
     pub sort: SortMode,
+    /// `config.yml`'s `group_by_meta`: `Some(key)` groups the model list by
+    /// that `meta` key's VALUE instead of the layer dirs — replacing the
+    /// layer grouping outright (`key=value` groups, `(no key)` last). `sort`
+    /// still orders within each group; every list rebuild reads this.
+    pub group_by_meta: Option<String>,
+    /// The `meta` key the PR-impact pack collects as "affected owners"
+    /// (`config.yml` `owner_meta_key`, default `owner`). Feeds the `D` modal
+    /// snapshot + `e` export through [`crate::diff_report`].
+    pub owner_meta_key: String,
     /// Bookmarked model `unique_id`s (Space toggles, `'` cycles). A `BTreeSet`
     /// for deterministic iteration; lives on `App` (not the list) so toggling a
     /// bookmark never rebuilds the list and it survives a refilter untouched.
@@ -337,6 +346,8 @@ impl App {
             list_filter: ListFilter::default(),
             filtered_base: None,
             sort,
+            group_by_meta: None,
+            owner_meta_key: "owner".to_string(),
             bookmarks: BTreeSet::new(),
             ui_state,
             mode: Mode::Selection,
@@ -472,6 +483,30 @@ impl App {
     /// The `--diff` baseline's display label (empty without a baseline).
     pub fn diff_label(&self) -> &str {
         &self.diff_label
+    }
+
+    /// Set the `meta` key the model list groups by (`config.yml`
+    /// `group_by_meta`; `None` = the default layer grouping) and rebuild the
+    /// list like a sort change — selection re-resolves by `unique_id`.
+    pub fn set_group_by_meta(&mut self, key: Option<String>) {
+        if self.group_by_meta == key {
+            return;
+        }
+        self.group_by_meta = key;
+        let current = self.selected_unique_id();
+        self.model_list =
+            build_model_list_grouped(&self.dag, self.sort, self.group_by_meta.as_deref());
+        self.apply_list_filter();
+        if let Some(uid) = &current {
+            self.select_by_unique_id(uid);
+        }
+    }
+
+    /// Set the `meta` key the impact reports read as "affected owners"
+    /// (`config.yml` `owner_meta_key`). A plain assignment — it feeds the
+    /// next `diff_report` snapshot, not any cached list.
+    pub fn set_owner_meta_key(&mut self, key: impl Into<String>) {
+        self.owner_meta_key = key.into();
     }
 
     /// The status-bar diff chip: `"diff +A ~M -R"` (added / modified / removed
@@ -820,7 +855,7 @@ impl App {
             DataSource::Manifest(path) => load_dag_with_warnings(path)?,
             DataSource::Project(dir) => load_dag_from_source_with_warnings(dir)?,
         };
-        self.model_list = build_model_list(&dag, self.sort);
+        self.model_list = build_model_list_grouped(&dag, self.sort, self.group_by_meta.as_deref());
         self.stats = compute_stats(&dag);
         self.dag = dag;
         // New graph identity: every cache key embedding the generation misses

@@ -2081,6 +2081,7 @@ fn diff_modal_renders_the_pr_impact_pack_sections() {
             affected_models: 3,
             affected_marts: vec!["fct_x".into(), "fct_y".into()],
             affected_exposures: vec!["exec_dash (dashboard, owner: Finance)".into()],
+            affected_owners: vec!["alice".into(), "bob".into()],
             ci_command: Some("dbt build --select stg_a+".into()),
             untested_changes: vec!["stg_a".into()],
             changed_hubs: vec![("stg_a".into(), 7)],
@@ -2092,6 +2093,7 @@ fn diff_modal_renders_the_pr_impact_pack_sections() {
     assert!(text.contains("PR impact pack"), "the pack header: {text}");
     assert!(text.contains("affected models: 3"), "{text}");
     assert!(text.contains("affected marts: fct_x, fct_y"), "{text}");
+    assert!(text.contains("affected owners: alice, bob"), "{text}");
     assert!(text.contains("CI: dbt build --select stg_a+"), "{text}");
     assert!(text.contains("Affected exposures (1):"), "{text}");
     assert!(text.contains("Risk flags"), "{text}");

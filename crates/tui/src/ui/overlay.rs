@@ -192,6 +192,19 @@ fn detail_head_lines(dv: &DetailView, t: &theme::Theme) -> Vec<Line<'static>> {
     if !d.tags.is_empty() {
         out.push(Line::from(format!("tags:   {}", d.tags.join(", "))));
     }
+    // The `meta` dict as a key-value block (`BTreeMap` → sorted keys); nested
+    // values show their compact-JSON form (`deep: {"x":1}`).
+    if !d.meta.is_empty() {
+        out.push(Line::from(""));
+        out.push(Line::styled(
+            format!("meta ({}):", d.meta.len()),
+            header_style(t),
+        ));
+        let w = d.meta.keys().map(String::len).max().unwrap_or(0);
+        for (k, v) in &d.meta {
+            out.push(Line::from(format!("  {k:<w$}: {v}")));
+        }
+    }
     if let Some(desc) = &d.description {
         out.push(Line::from(""));
         out.push(Line::styled("description:", header_style(t)));
@@ -997,6 +1010,14 @@ fn diff_display_lines(dv: &DiffView, t: &theme::Theme) -> Vec<Line<'static>> {
             pr.affected_marts.join(", ")
         )));
     }
+    // The "who to page" line — the meta[owner_key] values of the affected
+    // downstream models (same set the export's Affected owners section lists).
+    if !pr.affected_owners.is_empty() {
+        out.push(Line::from(format!(
+            "  affected owners: {}",
+            pr.affected_owners.join(", ")
+        )));
+    }
     match &pr.ci_command {
         Some(cmd) => out.push(Line::styled(
             format!("  CI: {cmd}"),
@@ -1357,6 +1378,54 @@ pub(crate) fn draw_toast(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detail_meta_block_is_sorted_and_key_aligned() {
+        use std::collections::BTreeMap;
+        let dv = DetailView {
+            model_id: "model.p.m".into(),
+            name: "m".into(),
+            detail: crate::NodeDetail {
+                meta: BTreeMap::from_iter([
+                    ("zone".to_string(), "z1".to_string()),
+                    ("owner".to_string(), "alice".to_string()),
+                    ("deep".to_string(), r#"{"x":1}"#.to_string()),
+                ]),
+                ..Default::default()
+            },
+            tests: vec![],
+            downstream_count: 0,
+            upstream_count: 0,
+            catalog: vec![],
+            scroll: 0,
+        };
+        let lines = detail_display_lines(&dv, &theme::DEFAULT);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        let meta_at = text
+            .iter()
+            .position(|l| l == "meta (3):")
+            .expect("the meta header");
+        // Rows follow the header, BTreeMap-sorted by key (deep < owner < zone),
+        // key column padded to the widest key.
+        assert_eq!(
+            &text[meta_at + 1..meta_at + 4],
+            &[
+                "  deep : {\"x\":1}".to_string(),
+                "  owner: alice".to_string(),
+                "  zone : z1".to_string(),
+            ]
+        );
+        // An empty meta dict draws no block at all.
+        let mut empty = dv.clone();
+        empty.detail.meta = BTreeMap::new();
+        let lines = detail_display_lines(&empty, &theme::DEFAULT);
+        assert!(lines
+            .iter()
+            .all(|l| !l.spans.iter().any(|s| s.content.starts_with("meta"))));
+    }
 
     /// Tokenize a multi-line SQL snippet into per-line `(text, kind)` span
     /// pairs, mirroring `sql_display_lines`'s state threading.

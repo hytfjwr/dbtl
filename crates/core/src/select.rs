@@ -6,7 +6,7 @@
 //! term    := factor ("," factor)*       // comma = intersection
 //! factor  := [N] "+""? atom "+"?         // hop prefixes/suffixes
 //! atom    := "tag:"x | "path:"x | "config.materialized:"x | "exposure:"x
-//!          | "state:"x | name            // bare name
+//!          | "state:"x | "meta:"k["="v] | name   // bare name; meta:k = key exists
 //! ```
 //!
 //! `2+name` = the node plus ≤2 upstream hops; `name+` = node + all downstream;
@@ -92,6 +92,23 @@ fn evaluate_atom(dag: &Dag, diff: Option<&DagDiff>, atom: &str) -> BTreeSet<Stri
                 .collect(),
             _ => BTreeSet::new(),
         };
+    }
+    // `meta:key=value` / `meta:key` — dotted like `config.` is not (dbt's own
+    // selector dialect has no meta atom; this is `key[=value]` after the
+    // `meta:` prefix). The value compares against the meta dict's STRINGIFIED
+    // form (scalars unquoted, nested values compact JSON), so
+    // `meta:owner=alice` and `meta:cfg={"a":1}` both work.
+    if let Some(m) = atom.strip_prefix("meta:") {
+        let (key, val) = m.split_once('=').map_or((m, None), |(k, v)| (k, Some(v)));
+        return nodes()
+            .filter(|(uid, _)| {
+                dag.detail(uid).is_some_and(|d| match d.meta.get(key) {
+                    Some(have) => val.is_none_or(|v| have == v),
+                    None => false,
+                })
+            })
+            .map(|(uid, _)| uid.clone())
+            .collect();
     }
     match atom.split_once(':') {
         Some(("tag", t)) => nodes()
@@ -294,6 +311,71 @@ mod tests {
                 "tag:nightly,config.materialized:ephemeral"
             )),
             vec!["int"]
+        );
+    }
+
+    /// Two models carrying `meta` dicts (incl. a nested object value) + one
+    /// without — the meta selector testbed.
+    fn meta_dag() -> Dag {
+        let mk = |uid: &str, name: &str, meta: serde_json::Value| {
+            (
+                uid.to_string(),
+                RawNode {
+                    name: name.into(),
+                    resource_type: "model".into(),
+                    meta: meta.as_object().cloned().unwrap_or_default(),
+                    ..Default::default()
+                },
+            )
+        };
+        let nodes = HashMap::from([
+            mk(
+                "model.p.orders",
+                "orders",
+                serde_json::json!({"owner": "alice", "domain": "sales"}),
+            ),
+            mk(
+                "model.p.custs",
+                "custs",
+                serde_json::json!({"owner": "bob", "cfg": {"tier": 1}}),
+            ),
+            mk("model.plain", "plain", serde_json::json!({})),
+        ]);
+        Dag::build(&RawManifest {
+            metadata: Default::default(),
+            nodes,
+            sources: HashMap::new(),
+            exposures: HashMap::new(),
+            macros: HashMap::new(),
+            semantic_models: HashMap::new(),
+            metrics: HashMap::new(),
+            saved_queries: HashMap::new(),
+            unit_tests: HashMap::new(),
+            parent_map: HashMap::new(),
+            child_map: HashMap::new(),
+        })
+    }
+
+    #[test]
+    fn meta_selectors() {
+        let d = meta_dag();
+        // key=value
+        assert_eq!(names(&select(&d, None, "meta:owner=alice")), vec!["orders"]);
+        // missing key matches nothing, even for existing nodes
+        assert!(select(&d, None, "meta:nosuch=v").is_empty());
+        // wrong value matches nothing
+        assert!(select(&d, None, "meta:owner=carol").is_empty());
+        // key existence alone
+        assert_eq!(names(&select(&d, None, "meta:domain")), vec!["orders"]);
+        // a nested dict compares as its compact-JSON string form
+        assert_eq!(
+            names(&select(&d, None, r#"meta:cfg={"tier":1}"#)),
+            vec!["custs"]
+        );
+        // meta composes with hops/intersection like every other atom
+        assert_eq!(
+            names(&select(&d, None, "meta:owner=bob,meta:cfg")),
+            vec!["custs"]
         );
     }
 

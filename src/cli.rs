@@ -495,6 +495,17 @@ fn remove_stale_docs(out_dir: &std::path::Path, files: &[(String, String)]) -> R
     Ok(removed)
 }
 
+/// The `meta` key the affected-owners set reads, from
+/// `~/.config/dbtl/config.yml`'s `owner_meta_key` (default `owner`) — the
+/// same config the TUI reads, so a `dbtl impact` comment and the `D` modal
+/// never disagree on who to page.
+fn owner_meta_key() -> String {
+    crate::state::load_config()
+        .ok()
+        .and_then(|c| c.owner_meta_key)
+        .unwrap_or_else(|| "owner".to_string())
+}
+
 /// Run the `impact` subcommand: resolve the current source + the `--diff`
 /// baseline, compute the shared [`dbtl::diff_report`] payload, and print it as
 /// Markdown (the same bytes the TUI's `D`→`e` export writes) or pretty JSON —
@@ -509,7 +520,7 @@ pub fn run_impact(
     let resolved = resolve_source(manifest, source, project)?;
     let (base, label) = load_baseline(diff_path)?;
     let diff = dbtl::compute_diff(&base, &resolved.dag);
-    let report = dbtl::diff_report(&resolved.dag, Some(&base), &diff, &label);
+    let report = dbtl::diff_report(&resolved.dag, Some(&base), &diff, &label, &owner_meta_key());
     match format {
         ImpactFormat::Markdown => {
             let project = resolved.dag.project_name().unwrap_or("dbt");
@@ -559,7 +570,7 @@ pub fn run_check(
     if let Some(diff_path) = diff_path {
         let (base, label) = load_baseline(diff_path)?;
         let diff = dbtl::compute_diff(&base, dag);
-        let pr = dbtl::pr_impact(dag, Some(&base), &diff);
+        let pr = dbtl::pr_impact(dag, Some(&base), &diff, &owner_meta_key());
         lines.push(format!("baseline: {label}"));
         if pr.new_layer_violations.is_empty() {
             lines.push("PASS new layer violations: none".to_string());

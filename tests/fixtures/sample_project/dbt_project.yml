@@ -10,9 +10,22 @@ snapshot-paths: ["snapshots"]
 # Directory-hierarchical configs: dbt resolves `+materialized` by path, with
 # more specific directories winning. The source loader must honour this tree
 # (precedence: in-file config() > schema.yml config > this tree > default view).
+# `+meta` merges the same way — per top-level key, deeper paths winning.
 models:
   sample:
+    +meta:
+      team: analytics-eng
     marts:
       +materialized: table
+      +meta:
+        domain: finance
     legacy:
       +enabled: false
+seeds:
+  sample:
+    +meta:
+      domain: reference
+snapshots:
+  sample:
+    +meta:
+      domain: snapshots

@@ -1,4 +1,7 @@
-{{ config(materialized='table') }}
+-- `meta` merges shallowly over schema.yml's config.meta and the project tree
+-- per top-level key: `owner` below beats the schema value, `deep` exercises a
+-- nested dict (displayed as compact JSON).
+{{ config(materialized='table', meta={'owner': 'alice', 'deep': {'x': 1}}) }}
 
 -- Trap for the in-file config extractors: `enabled=false` / `materialized='…'`
 -- OUTSIDE a config() call (here: plain comment text) must configure NOTHING —

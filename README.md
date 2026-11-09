@@ -100,13 +100,13 @@ Lenses tint the lineage by test coverage, downstream blast radius, layer, layer 
 <td valign="top">
 
 ### Review a branch with `--diff`
-Compare against another manifest or checkout. Added models show green and modified ones amber. `D` opens a PR impact report that lists changed nodes with reasons, downstream blast radius, affected marts and exposures, a ready-to-run `dbt build --select …`, and risk flags. Press `e` to export it as Markdown.
+Compare against another manifest or checkout. Added models show green and modified ones amber. `D` opens a PR impact report that lists changed nodes with reasons, downstream blast radius, affected marts, exposures, and owners (from a `meta` key, default `owner`), a ready-to-run `dbt build --select …`, and risk flags. Press `e` to export it as Markdown.
 
 </td>
 <td valign="top">
 
 ### Exposures and the semantic layer
-dbt exposures such as dashboards and notebooks appear as end nodes at the right edge of the lineage, in both manifest and source mode — and a compiled manifest adds semantic models, metrics, and saved queries there too. The impact report lists each affected exposure with its type and owner, dbt unit tests count toward the `tests:N` badge, and the `Enter` structure view shows governance fields (access, group, contract, version) when declared.
+dbt exposures such as dashboards and notebooks appear as end nodes at the right edge of the lineage, in both manifest and source mode — and a compiled manifest adds semantic models, metrics, and saved queries there too. The impact report lists each affected exposure with its type and owner, dbt unit tests count toward the `tests:N` badge, and the `Enter` structure view shows governance fields (access, group, contract, version) and the `meta` dict (sorted, nested values as compact JSON) when declared.
 
 </td>
 </tr>
@@ -120,7 +120,7 @@ dbt exposures such as dashboards and notebooks appear as end nodes at the right 
 <td valign="top">
 
 ### Search and select like dbt
-The `/` list search takes a `!`-prefixed dbt selector (`!tag:nightly`, `!+fct_orders`, `!state:modified+` with `--diff`) or a `?`-prefixed full-text query over descriptions, column names, and raw SQL. `--select` accepts the same selectors minus `state:` (it resolves to the first matching model).
+The `/` list search takes a `!`-prefixed dbt selector (`!tag:nightly`, `!+fct_orders`, `!meta:owner=alice`, `!state:modified+` with `--diff`) or a `?`-prefixed full-text query over descriptions, column names, and raw SQL. `--select` accepts the same selectors minus `state:` (it resolves to the first matching model). `meta:key` matches key existence; `meta:key=value` matches the stringified value.
 
 </td>
 </tr>
@@ -143,6 +143,7 @@ $ dbtl --source /path/to/dbt-project
 # model wins; `state:` is unavailable — it resolves before --diff loads)
 $ dbtl --select stg_orders --watch              # --watch: auto-reload on source changes
 $ dbtl --select 'tag:nightly'
+$ dbtl --select 'meta:domain=sales'             # meta:key / meta:key=value selectors
 
 # Hide models installed from dbt packages (manifest mode)
 $ dbtl --project-only
@@ -195,7 +196,7 @@ Two more dbt artifacts are picked up automatically when they sit next to the dat
 
 `dbtl docs --out <DIR>` never starts the TUI, so it runs in CI without a TTY. It writes a Markdown documentation tree that you can commit to a repo and read on GitHub or GitLab:
 
-- **One page per node** — model, source, seed, snapshot, exposure, plus semantic models, metrics, and saved queries from a compiled manifest. Each page has the description, materialization, schema, tags, a column table in dbt definition order, tests, direct and transitive upstream/downstream links, and a Mermaid lineage diagram.
+- **One page per node** — model, source, seed, snapshot, exposure, plus semantic models, metrics, and saved queries from a compiled manifest. Each page has the description, materialization, schema, tags, a sorted `meta` table, a column table in dbt definition order, tests, direct and transitive upstream/downstream links, and a Mermaid lineage diagram.
 - **An index `README.md`** with a project summary enumerating every resource type in the graph (the counts always sum to the total), test coverage %, a list of orphan models, a linked table of every node, and a whole-project Mermaid diagram. Large projects get the diagram split by layer.
 
 The data source is chosen the same way as in the TUI (`--manifest` / `--source` / `--project` / auto-detect). The output is deterministic: regenerating from the same input produces byte-identical files.
@@ -214,10 +215,13 @@ comment can never disagree with the screen.
 
 - **`dbtl impact --diff <BASELINE>`** prints the PR impact pack — the diff
   listings (added / removed / modified / edge changes), the aggregate blast
-  radius, affected marts and exposures, a suggested `dbt build --select …`
+  radius, affected marts, exposures, and owners, a suggested `dbt build --select …`
   command, and the risk flags — as **Markdown** (the exact bytes the `D`→`e`
   export writes; paste or post as a PR comment). `--format json` emits the
-  `DiffReport` payload verbatim for automation.
+  `DiffReport` payload verbatim for automation. The "Affected owners" section
+  collects distinct values of a `meta` key (default `owner`, set
+  `owner_meta_key` in `config.yml`) off the affected downstream nodes —
+  changed nodes themselves are excluded.
 - **`dbtl check`** prints one `PASS`/`FAIL` line per gate and exits 1 when any
   fails. Gates: **`--coverage-min <pct>`** (test coverage below the
   threshold — the same `coverage_gap` counts the status `cov%` shows), and —
@@ -350,7 +354,11 @@ theme: ayu-mirage      # same names as --theme (CLI/env still wins)
 lens: coverage         # off|coverage|degree-heat|layer|layer-violation|diff|run-status|run-time
 density: compact       # comfortable|compact
 sort: downstream       # layer|downstream|tests
+group_by_meta: owner   # group the model list by this meta key's value instead of layer dirs
+owner_meta_key: owner  # the meta key the impact report counts as "affected owners" (default owner)
 ```
+
+`group_by_meta` swaps the left pane's layer grouping for `key=value` groups (alphabetical, models missing the key land in a `(no key)` group last); the `.` sort cycle still orders models *within* each group. Leave it unset for the default layer grouping. `owner_meta_key` changes which `meta` key `dbtl impact` and the `D` modal read for their "Affected owners" list.
 
 Precedence is `config.yml` < saved project state < explicit CLI flags — so `dbtl --theme x` always wins over a configured theme, and a project you already visited restores its saved lens rather than the configured one. A malformed `config.yml` prints a warning and is ignored; a stale state file can reference models that no longer exist — those bookmarks are simply dropped.
 

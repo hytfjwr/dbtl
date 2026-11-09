@@ -291,6 +291,63 @@ fn source_table_metadata_is_carried() {
 }
 
 #[test]
+fn meta_merges_per_dbt_precedence() {
+    // The fixture exercises every `meta` intake; the merges must match real
+    // dbt (the consistency suite pins them byte-for-byte):
+    //   in-file config(meta=…) > schema.yml meta/config.meta > project tree
+    //   (+meta), shallowly per top-level key; source meta cascades to tables.
+    let dag = load_dag_from_source(PROJECT).unwrap();
+    let meta = |uid: &str| {
+        dag.detail(uid)
+            .unwrap_or_else(|| panic!("{uid} detail"))
+            .meta
+            .clone()
+    };
+    // fct_orders: in-file `owner` beats the schema `config.meta` value, the
+    // schema `zone` beats the tree, the tree fills `team`/`domain`, and the
+    // nested dict stringifies to compact JSON.
+    let fct = meta("model.sample.fct_orders");
+    assert_eq!(fct["owner"], "alice");
+    assert_eq!(fct["zone"], "z1");
+    assert_eq!(fct["deep"], r#"{"x":1}"#);
+    assert_eq!(fct["domain"], "finance");
+    assert_eq!(fct["team"], "analytics-eng");
+    // stg_orders: top-level `meta:` on the schema entry + the project tree.
+    let stg = meta("model.sample.stg_orders");
+    assert_eq!(stg["pii"], "true");
+    assert_eq!(stg["team"], "analytics-eng");
+    assert!(
+        !stg.contains_key("domain"),
+        "staging has no marts tree meta"
+    );
+    // dim_customers: schema `config.meta` + tree.
+    assert_eq!(meta("model.sample.dim_customers")["owner"], "bob");
+    // A marts model with no schema/in-file meta inherits the whole tree.
+    let agg = meta("model.sample.agg_country_orders");
+    assert_eq!(agg.len(), 2);
+    // Seed: the `seeds:` properties `config.meta` + the `seeds:` tree.
+    let seed = meta("seed.sample.country_codes");
+    assert_eq!(seed["owner"], "data-eng");
+    assert_eq!(seed["domain"], "reference");
+    // Snapshots: `{% config(meta=) %}` in-file and the snapshots.yml
+    // `config.meta`, each over the `snapshots:` tree.
+    let block_snap = meta("snapshot.sample.orders_snapshot");
+    assert_eq!(block_snap["owner"], "snap-file");
+    assert_eq!(block_snap["domain"], "snapshots");
+    let yml_snap = meta("snapshot.sample.customers_snapshot");
+    assert_eq!(yml_snap["owner"], "snapshot-eng");
+    assert_eq!(yml_snap["domain"], "snapshots");
+    // Sources: source-level meta cascades to every table; a table-level meta
+    // overrides per key.
+    let orders = meta("source.sample.raw.orders");
+    assert_eq!(orders["owner"], "payments-eng");
+    assert_eq!(orders["shared"], "yes");
+    let customers = meta("source.sample.raw.customers");
+    assert_eq!(customers["owner"], "data-eng");
+    assert_eq!(customers["shared"], "yes");
+}
+
+#[test]
 fn doc_blocks_render_in_descriptions() {
     // `{{ doc() }}` refs in schema.yml descriptions expand to the docs block
     // bodies in models/marts/docs.md, the way real dbt renders them (the

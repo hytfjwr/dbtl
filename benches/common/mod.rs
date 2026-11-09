@@ -128,6 +128,7 @@ pub fn synth_manifest(params: &SynthParams) -> RawManifest {
                     contract: None,
                     version: None,
                     latest_version: None,
+                    meta: serde_json::Map::new(),
                 },
             );
             earlier.push(uid);

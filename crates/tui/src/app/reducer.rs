@@ -7,7 +7,7 @@ use crate::action::{
     SearchTarget, SqlView,
 };
 use crate::effect::Effect;
-use crate::{build_model_list, reduce_selection, Focus, LineageLens};
+use crate::{build_model_list_grouped, reduce_selection, Focus, LineageLens};
 
 use super::{App, LineageView, ListFilter, Outcome};
 
@@ -776,7 +776,8 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         Action::SortCycle => {
             app.sort = app.sort.next();
             let current = app.selected_unique_id();
-            app.model_list = build_model_list(&app.dag, app.sort);
+            app.model_list =
+                build_model_list_grouped(&app.dag, app.sort, app.group_by_meta.as_deref());
             // Re-derive the persistent-filter view from the re-sorted list (it
             // refilters the open search itself, so the search view inherits
             // the new order too).

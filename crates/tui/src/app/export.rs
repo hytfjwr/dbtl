@@ -175,6 +175,26 @@ impl App {
         let down = names(self.dag.downstream(uid));
         let up = names(self.dag.upstream(uid));
         let exposures = self.downstream_exposures(uid);
+        // The distinct `meta[owner_meta_key]` values of the downstream
+        // MODELS — the "who to page" set, same population the PR impact
+        // pack's affected-owners section collects.
+        let owners: Vec<String> = {
+            let mut v: Vec<String> = self
+                .dag
+                .downstream(uid)
+                .iter()
+                .filter(|u| self.dag.get(u).is_some_and(|n| n.resource_type == "model"))
+                .filter_map(|u| {
+                    self.dag
+                        .detail(u)
+                        .and_then(|d| d.meta.get(self.owner_meta_key.as_str()))
+                })
+                .cloned()
+                .collect();
+            v.sort();
+            v.dedup();
+            v
+        };
         let mut out = format!("# Impact: {}\n\n", node.name);
         out.push_str(&format!("- unique_id: `{uid}`\n"));
         out.push_str(&format!(
@@ -188,6 +208,9 @@ impl App {
         ));
         if !exposures.is_empty() {
             out.push_str(&format!("- affected exposures: {}\n", exposures.len()));
+        }
+        if !owners.is_empty() {
+            out.push_str(&format!("- affected owners: {}\n", owners.len()));
         }
         for (title, list) in [("Downstream (blast radius)", &down), ("Upstream", &up)] {
             out.push_str(&format!("\n## {title} ({})\n", list.len()));
@@ -203,6 +226,12 @@ impl App {
                     info.name,
                     crate::exposure_note(*payload)
                 ));
+            }
+        }
+        if !owners.is_empty() {
+            out.push_str(&format!("\n## Affected owners ({})\n", owners.len()));
+            for o in &owners {
+                out.push_str(&format!("- {o}\n"));
             }
         }
         Some(out)

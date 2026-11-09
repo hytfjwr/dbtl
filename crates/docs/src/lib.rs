@@ -169,6 +169,23 @@ fn node_markdown(dag: &Dag, uid: &str, files: &BTreeMap<String, String>) -> Stri
     s.push_str(desc.unwrap_or("No description."));
     s.push('\n');
 
+    // Meta — the `meta` dict as a key-value table, sorted by key
+    // (`NodeDetail.meta` is a `BTreeMap`, so iteration IS the sort). Nested
+    // values render their compact-JSON form. Always present (labeled, never
+    // dropped — same convention as the other sections).
+    s.push_str("\n## Meta\n\n");
+    let meta = detail.map(|d| &d.meta);
+    match meta {
+        Some(m) if !m.is_empty() => {
+            s.push_str("| Key | Value |\n");
+            s.push_str("| --- | --- |\n");
+            for (k, v) in m {
+                s.push_str(&format!("| {} | {} |\n", md_cell(k), md_cell(v)));
+            }
+        }
+        _ => s.push_str("No meta.\n"),
+    }
+
     // Columns.
     s.push_str("\n## Columns\n\n");
     let columns = detail.map(|d| d.columns.as_slice()).unwrap_or(&[]);
@@ -850,6 +867,68 @@ mod tests {
         assert!(
             page.contains("## Tests\n\nNo tests."),
             "labeled empty tests"
+        );
+    }
+
+    #[test]
+    fn meta_renders_sorted_key_value_table() {
+        // The Meta section is a `Key|Value` table sorted by key (BTreeMap
+        // iteration); nested values render compact JSON; `|` escapes.
+        use dbtl_core::{RawManifest, RawNode};
+        use std::collections::HashMap;
+        let meta = serde_json::Map::from_iter([
+            (
+                "zone".to_string(),
+                serde_json::json!({"b": 2, "a": 1}), // object → compact JSON
+            ),
+            ("owner".to_string(), serde_json::json!("a|b")), // pipe escapes
+            ("team".to_string(), serde_json::json!("eng")),
+        ]);
+        let nodes = HashMap::from([(
+            "model.p.m".to_string(),
+            RawNode {
+                name: "m".into(),
+                resource_type: "model".into(),
+                path: Some("staging/m.sql".into()),
+                meta,
+                ..Default::default()
+            },
+        )]);
+        let manifest = RawManifest {
+            metadata: Default::default(),
+            nodes,
+            sources: HashMap::new(),
+            exposures: HashMap::new(),
+            semantic_models: HashMap::new(),
+            metrics: HashMap::new(),
+            saved_queries: HashMap::new(),
+            unit_tests: HashMap::new(),
+            parent_map: HashMap::new(),
+            child_map: HashMap::new(),
+            macros: HashMap::new(),
+        };
+        let dag = Dag::build(&manifest);
+        let out = generate_docs(&dag, "p", "src");
+        let files = node_files(&dag);
+        let page = file(&out, &files["model.p.m"]);
+        let section = page
+            .split("## Meta\n\n")
+            .nth(1)
+            .and_then(|s| s.split("\n\n").next())
+            .expect("meta section present");
+        let rows: Vec<&str> = section
+            .lines()
+            .filter(|l| l.starts_with("| "))
+            .skip(2) // header + separator
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                "| owner | a\\|b |",
+                "| team | eng |",
+                "| zone | {\"b\":2,\"a\":1} |",
+            ],
+            "rows sorted by key, nested compact JSON, pipe escaped"
         );
     }
 
