@@ -2,7 +2,9 @@ version: 2
 
 models:
   - name: fct_orders
-    description: "Order facts"
+    # A docs-block ref (multiline block, models/marts/docs.md): dbt renders it
+    # into the description; the source loader must expand it identically.
+    description: "{{ doc('order_facts_doc') }}"
     columns:
       - name: id
         data_tests:
@@ -17,7 +19,8 @@ exposures:
   - name: orders_dashboard
     type: dashboard
     url: https://bi.example.com/dashboards/42
-    description: "Weekly orders overview for finance."
+    # Mixed text + doc(): the ref expands inside the surrounding sentence.
+    description: "Weekly orders overview for finance. {{ doc('finance_note_doc') }}"
     owner:
       name: Finance Team
       email: finance@example.com

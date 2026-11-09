@@ -287,6 +287,137 @@ fn source_table_metadata_is_carried() {
 }
 
 #[test]
+fn doc_blocks_render_in_descriptions() {
+    // `{{ doc() }}` refs in schema.yml descriptions expand to the docs block
+    // bodies in models/marts/docs.md, the way real dbt renders them (the
+    // consistency suite pins byte-parity against a real-dbt manifest).
+    let dag = load_dag_from_source(PROJECT).unwrap();
+    // Model description: multiline block, body trimmed like dbt's
+    // `block_contents.strip()`.
+    assert_eq!(
+        dag.detail("model.sample.fct_orders")
+            .expect("fct_orders detail")
+            .description
+            .as_deref(),
+        Some("One row per order, enriched with the customer's country.\n\nGrain: `order_id`."),
+    );
+    // Model column description: an inline (single-line) block.
+    let stg = dag.detail("model.sample.stg_orders").unwrap();
+    assert_eq!(
+        stg.columns
+            .iter()
+            .find(|c| c.name == "id")
+            .and_then(|c| c.description.as_deref()),
+        Some("Surrogate primary key (unique, not null)."),
+    );
+    // Source-table description: whitespace-controlled `{%- docs -%}` block.
+    let src = dag
+        .detail("source.sample.raw.orders")
+        .expect("raw.orders detail");
+    assert_eq!(
+        src.description.as_deref(),
+        Some("Orders exactly as exported by the operational app."),
+    );
+    // Source-table COLUMN description: 2-arg `doc('sample', 'x')` naming the
+    // project itself resolves locally (verified against real dbt).
+    assert_eq!(
+        src.columns
+            .iter()
+            .find(|c| c.name == "id")
+            .and_then(|c| c.description.as_deref()),
+        Some("Surrogate primary key (unique, not null)."),
+    );
+    // Exposure description: text mixed around the doc() ref.
+    assert_eq!(
+        dag.detail("exposure.sample.orders_dashboard")
+            .expect("orders_dashboard detail")
+            .description
+            .as_deref(),
+        Some("Weekly orders overview for finance. Sourced from order facts."),
+    );
+}
+
+#[test]
+fn undefined_doc_ref_warns_and_keeps_raw_text() {
+    // Real dbt hard-errors on a missing docs block; dbtl degrades: one
+    // warning, the raw `{{ doc() }}` text stays, the load succeeds.
+    use std::fs;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    fs::write(
+        root.join("dbt_project.yml"),
+        "name: d\nversion: \"1.0.0\"\nconfig-version: 2\n",
+    )
+    .unwrap();
+    fs::create_dir(root.join("models")).unwrap();
+    fs::write(root.join("models/m.sql"), "select 1 as id\n").unwrap();
+    fs::write(
+        root.join("models/schema.yml"),
+        "version: 2\nmodels:\n  - name: m\n    description: \"{{ doc('ghost') }}\"\n",
+    )
+    .unwrap();
+
+    let (dag, warnings) = load_dag_from_source_with_warnings(root).expect("project loads");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("ghost"), "{warnings:?}");
+    assert_eq!(
+        dag.detail("model.d.m")
+            .expect("m detail")
+            .description
+            .as_deref(),
+        Some("{{ doc('ghost') }}"),
+        "unresolved doc() keeps the raw text"
+    );
+}
+
+#[test]
+fn docs_paths_config_scans_only_listed_dirs() {
+    // dbt's `docs-paths` restricts the .md scan ("will only look in the
+    // specified directory"); unset it scans every resource path (the sample
+    // project exercises the default via models/marts/docs.md).
+    use std::fs;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    fs::write(
+        root.join("dbt_project.yml"),
+        "name: d\nversion: \"1.0.0\"\nconfig-version: 2\ndocs-paths: [\"docs\"]\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("docs")).unwrap();
+    fs::create_dir_all(root.join("models")).unwrap();
+    fs::write(
+        root.join("docs/d.md"),
+        "{% docs shared %}SHARED{% enddocs %}\n",
+    )
+    .unwrap();
+    // A block OUTSIDE docs-paths is invisible to dbt — left unresolved here.
+    fs::write(
+        root.join("models/hidden.md"),
+        "{% docs hidden %}HIDDEN{% enddocs %}\n",
+    )
+    .unwrap();
+    fs::write(root.join("models/m.sql"), "select 1 as id\n").unwrap();
+    fs::write(
+        root.join("models/schema.yml"),
+        "version: 2\nmodels:\n  - name: m\n    description: \"{{ doc('shared') }}\"\n    columns:\n      - name: id\n        description: \"{{ doc('hidden') }}\"\n",
+    )
+    .unwrap();
+
+    let (dag, warnings) = load_dag_from_source_with_warnings(root).expect("project loads");
+    let detail = dag.detail("model.d.m").expect("m detail");
+    assert_eq!(detail.description.as_deref(), Some("SHARED"));
+    assert_eq!(
+        detail.columns[0].description.as_deref(),
+        Some("{{ doc('hidden') }}"),
+        "a block outside docs-paths stays unresolved"
+    );
+    assert!(
+        warnings.iter().any(|w| w.contains("hidden")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
 fn missing_project_is_err_not_panic() {
     assert!(manifest_from_source(MISSING).is_err(), "missing dir is Err");
     let msg = format!("{:#}", manifest_from_source(MISSING).unwrap_err());

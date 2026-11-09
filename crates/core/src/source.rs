@@ -5,10 +5,12 @@
 //! resource paths, and the `models:`/`seeds:`/`snapshots:` config trees) + the
 //! model `.sql` files (extracting `ref()`/`source()` and
 //! `config(materialized=…/enabled=…)` by regex) + the `schema.yml` files under
-//! the configured resource paths (sources, columns, descriptions, tests),
-//! synthesize a [`RawManifest`] of the exact shape [`Dag::build`] already
-//! consumes, then hand it off. Everything downstream (layout, list, modal,
-//! lineage) is unchanged.
+//! the configured resource paths (sources, columns, descriptions, tests) +
+//! the `.md` files under `docs-paths` (`{% docs %}` blocks, so `{{ doc() }}`
+//! refs in descriptions expand the way dbt renders them), synthesize a
+//! [`RawManifest`] of the exact shape [`Dag::build`] already consumes, then
+//! hand it off. Everything downstream (layout, list, modal, lineage) is
+//! unchanged.
 //!
 //! Consistency contract: the synthesized Dag must match the one built from a
 //! real `dbt parse` manifest of the same project (asserted by
@@ -32,7 +34,7 @@
 //! Recoverable oddities (an unparsable schema.yml, a duplicate resource name)
 //! are reported as warnings, not errors.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
@@ -121,6 +123,41 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
     // caller instead of silently dropped.
     let mut warnings: Vec<String> = Vec::new();
 
+    // --- docs blocks (.md) ---
+    // dbt renders `{{ doc('x') }}` in descriptions from `{% docs x %}…{% enddocs %}`
+    // blocks collected from .md files under `docs-paths` — unset means EVERY
+    // resource path (models/seeds/snapshots/macros/analyses/tests, verified
+    // against real dbt). Collect them up front so every description intake
+    // below renders through the one resolver.
+    let doc_paths: Vec<String> = match project.docs_paths {
+        Some(paths) => contained_resource_paths(paths),
+        None => [
+            model_paths.clone(),
+            seed_paths.clone(),
+            snapshot_paths.clone(),
+            contained_resource_paths(
+                project
+                    .macro_paths
+                    .unwrap_or_else(|| vec!["macros".to_string()]),
+            ),
+            contained_resource_paths(
+                project
+                    .analysis_paths
+                    .unwrap_or_else(|| vec!["analyses".to_string()]),
+            ),
+            contained_resource_paths(
+                project
+                    .test_paths
+                    .unwrap_or_else(|| vec!["tests".to_string()]),
+            ),
+        ]
+        .concat(),
+    };
+    let docs = DocBlocks::new(
+        proj.clone(),
+        collect_doc_blocks(dir, &doc_paths, &pat, &mut warnings),
+    );
+
     // --- models (.sql) ---
     for (file, root) in collect_with_root(dir, &model_paths, "sql") {
         // Keep the pre-strip text for the SQL preview modal (comments intact);
@@ -198,7 +235,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                 config: RawConfig {
                     materialized: Some("seed".to_string()),
                 },
-                columns: csv_header_columns(&file),
+                columns: csv_header_columns(&file, &docs, &mut warnings),
                 ..Default::default()
             },
         );
@@ -405,8 +442,11 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                         resource_type: "source".to_string(),
                         path: Some(yml_path.clone()),
                         original_file_path: Some(yml_path.clone()),
-                        description: tbl.description.clone(),
-                        columns: columns_json(&tbl.columns),
+                        description: tbl
+                            .description
+                            .clone()
+                            .map(|d| docs.render(&d, &mut warnings)),
+                        columns: columns_json(&tbl.columns, &docs, &mut warnings),
                         schema: src.schema.clone(),
                         database: src.database.clone(),
                         // Source mode synthesizes a manifest for the local
@@ -490,7 +530,10 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                         email: exp.owner.email.clone(),
                     },
                     url: exp.url.clone(),
-                    description: exp.description.clone(),
+                    description: exp
+                        .description
+                        .clone()
+                        .map(|d| docs.render(&d, &mut warnings)),
                     path: Some(rel_path(yml_root, file)),
                     original_file_path: Some(yml_path.clone()),
                     depends_on: RawDependsOn {
@@ -501,14 +544,32 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             );
         }
 
-        apply_meta(&mut nodes, &mut test_seq, &proj, "model", &schema.models);
-        apply_meta(&mut nodes, &mut test_seq, &proj, "seed", &schema.seeds);
+        apply_meta(
+            &mut nodes,
+            &mut test_seq,
+            &proj,
+            "model",
+            &schema.models,
+            &docs,
+            &mut warnings,
+        );
+        apply_meta(
+            &mut nodes,
+            &mut test_seq,
+            &proj,
+            "seed",
+            &schema.seeds,
+            &docs,
+            &mut warnings,
+        );
         apply_meta(
             &mut nodes,
             &mut test_seq,
             &proj,
             "snapshot",
             &schema.snapshots,
+            &docs,
+            &mut warnings,
         );
     }
 
@@ -553,6 +614,8 @@ fn apply_meta(
     proj: &str,
     type_prefix: &str,
     entries: &[SchemaModel],
+    docs: &DocBlocks,
+    warnings: &mut Vec<String>,
 ) {
     for entry in entries {
         let uid = format!("{type_prefix}.{proj}.{}", entry.name);
@@ -569,7 +632,7 @@ fn apply_meta(
             continue;
         };
         if node.description.is_none() {
-            node.description = entry.description.clone();
+            node.description = entry.description.clone().map(|d| docs.render(&d, warnings));
         }
         // An explicit schema materialization wins over the `view` default but
         // not over an in-file `config()` (already set, so only fill if None).
@@ -580,7 +643,7 @@ fn apply_meta(
             node.tags = entry.tags.clone();
         }
         if !entry.columns.is_empty() {
-            node.columns = columns_json(&entry.columns);
+            node.columns = columns_json(&entry.columns, docs, warnings);
         }
         // `node`'s borrow ends here; synth_tests re-borrows `nodes` mutably.
         synth_tests(nodes, seq, proj, &uid, &entry.name, None, &entry.tests);
@@ -659,9 +722,113 @@ fn test_kind(v: &serde_norway::Value) -> Option<String> {
     }
 }
 
+/// The `{% docs %}` blocks collected from a project's `.md` files, ready to
+/// expand `{{ doc('name') }}` refs in descriptions.
+struct DocBlocks {
+    /// `name -> trimmed body` (dbt `.strip()`s `block_contents` — matched).
+    blocks: BTreeMap<String, String>,
+    /// The local project name: a 2-arg `doc('proj', 'x')` resolves locally
+    /// (verified against real dbt); a different package segment never resolves
+    /// in source mode, which sees no installed packages.
+    proj: String,
+    /// `{{ doc('x') }}` / `{{ doc('pkg', 'x') }}` — the ONE Jinja call resolved
+    /// in descriptions (verified against real dbt, including `{{- -}}`
+    /// whitespace control and both quote styles).
+    doc_ref_re: Regex,
+}
+
+impl DocBlocks {
+    fn new(proj: String, blocks: BTreeMap<String, String>) -> Self {
+        DocBlocks {
+            blocks,
+            proj,
+            doc_ref_re: Regex::new(
+                r#"\{\{-?\s*doc\s*\(\s*['"]([^'"]+)['"]\s*(?:,\s*['"]([^'"]+)['"]\s*)?\)\s*-?\}\}"#,
+            )
+            .unwrap(),
+        }
+    }
+
+    /// Expand `{{ doc('x') }}` / `{{ doc('pkg', 'x') }}` refs the way dbt
+    /// renders them in descriptions: substitute the block's body. An
+    /// unresolved ref (no such block — where dbt would hard-error, or a
+    /// foreign package source mode can't see) keeps the raw `{{ doc(...) }}`
+    /// text and pushes one dedup'd warning, like the loader's other
+    /// recoverable oddities.
+    fn render(&self, text: &str, warnings: &mut Vec<String>) -> String {
+        self.doc_ref_re
+            .replace_all(text, |c: &regex::Captures| {
+                let (pkg, name) = match c.get(2) {
+                    Some(n) => (Some(c.get(1).unwrap().as_str()), n.as_str()),
+                    None => (None, c.get(1).unwrap().as_str()),
+                };
+                let hit = match pkg {
+                    Some(p) if p != self.proj => None,
+                    _ => self.blocks.get(name),
+                };
+                match hit {
+                    Some(body) => body.clone(),
+                    None => {
+                        let key = match pkg {
+                            Some(p) => format!("{p}.{name}"),
+                            None => name.to_string(),
+                        };
+                        let warn = format!(
+                            "unresolved doc('{key}') in a description — no matching \
+                             {{% docs %}} block; leaving the raw text"
+                        );
+                        if !warnings.contains(&warn) {
+                            warnings.push(warn);
+                        }
+                        c.get(0).unwrap().as_str().to_string()
+                    }
+                }
+            })
+            .into_owned()
+    }
+}
+
+/// Collect `{% docs name %}…{% enddocs %}` blocks from every `.md` file under
+/// `doc_paths` into a `name -> body` map, first-wins on a duplicate name (a
+/// duplicate is a hard error for dbt; the loader warns instead, like its
+/// duplicate model-name handling).
+fn collect_doc_blocks(
+    dir: &Path,
+    doc_paths: &[String],
+    pat: &Patterns,
+    warnings: &mut Vec<String>,
+) -> BTreeMap<String, String> {
+    // Overlapping doc/resource paths can collect the same file twice — dedup
+    // by file (sorted, so equal files are adjacent) or its blocks double-report.
+    let mut files = collect_with_root(dir, doc_paths, "md");
+    files.dedup_by(|a, b| a.0 == b.0);
+    let mut blocks = BTreeMap::new();
+    for (file, _root) in files {
+        // A `{% docs %}` tag inside `{# #}` is invisible to dbt (verified), so
+        // extract from the Jinja-comment-stripped text like the .sql pass.
+        let stripped = strip_jinja_comments(&read(&file));
+        for (name, body) in pat.doc_blocks(&stripped) {
+            if blocks.contains_key(&name) {
+                warnings.push(format!(
+                    "duplicate docs block '{name}': ignoring {}",
+                    rel_path(dir, &file)
+                ));
+                continue;
+            }
+            blocks.insert(name, body);
+        }
+    }
+    blocks
+}
+
 /// Build a manifest-shaped `columns` object (`{name: {name,data_type,description}}`)
 /// preserving definition order (the `Map` is order-preserving via `preserve_order`).
-fn columns_json(cols: &[SchemaColumn]) -> serde_json::Map<String, serde_json::Value> {
+/// Column descriptions render `{{ doc() }}` refs like every other description.
+fn columns_json(
+    cols: &[SchemaColumn],
+    docs: &DocBlocks,
+    warnings: &mut Vec<String>,
+) -> serde_json::Map<String, serde_json::Value> {
     let mut map = serde_json::Map::new();
     for c in cols {
         let mut obj = serde_json::Map::new();
@@ -678,7 +845,7 @@ fn columns_json(cols: &[SchemaColumn]) -> serde_json::Map<String, serde_json::Va
         if let Some(d) = &c.description {
             obj.insert(
                 "description".to_string(),
-                serde_json::Value::String(d.clone()),
+                serde_json::Value::String(docs.render(d, warnings)),
             );
         }
         map.insert(c.name.clone(), serde_json::Value::Object(obj));
@@ -686,8 +853,14 @@ fn columns_json(cols: &[SchemaColumn]) -> serde_json::Map<String, serde_json::Va
     map
 }
 
-/// Column names from a seed CSV header row (no types). Empty if unreadable.
-fn csv_header_columns(file: &Path) -> serde_json::Map<String, serde_json::Value> {
+/// Column names from a seed CSV header row (no types — and no descriptions to
+/// render, but the shared builder keeps the signature uniform). Empty if
+/// unreadable.
+fn csv_header_columns(
+    file: &Path,
+    docs: &DocBlocks,
+    warnings: &mut Vec<String>,
+) -> serde_json::Map<String, serde_json::Value> {
     let contents = read(file);
     let header = contents.lines().next().unwrap_or("");
     let cols: Vec<SchemaColumn> = header
@@ -698,7 +871,7 @@ fn csv_header_columns(file: &Path) -> serde_json::Map<String, serde_json::Value>
         })
         .filter(|c| !c.name.is_empty())
         .collect();
-    columns_json(&cols)
+    columns_json(&cols, docs, warnings)
 }
 
 /// Read a file to a string, or empty on error (a single unreadable model should
@@ -852,6 +1025,7 @@ struct Patterns {
     snapshot_re: Regex,
     materialized_re: Regex,
     disabled_re: Regex,
+    docs_block_re: Regex,
 }
 
 impl Patterns {
@@ -881,6 +1055,14 @@ impl Patterns {
             // `config(enabled=false)` / `enabled=False` — dbt parks the node
             // under `disabled`, off the manifest's `nodes`.
             disabled_re: Regex::new(r"\bconfig\s*\([^)]*\benabled\s*=\s*[Ff]alse\b").unwrap(),
+            // `{% docs name %}…{% enddocs %}` in .md files: Jinja whitespace
+            // control (`{%- -%}`) allowed; non-greedy body up to the first
+            // `{% enddocs %}`. Names follow dbt's rule (alnum + underscore,
+            // never digit-leading).
+            docs_block_re: Regex::new(
+                r"(?s)\{%-?\s*docs\s+([A-Za-z_][A-Za-z0-9_]*)\s*-?%\}(.*?)\{%-?\s*enddocs\s*-?%\}",
+            )
+            .unwrap(),
         }
     }
 
@@ -918,6 +1100,21 @@ impl Patterns {
             .collect()
     }
 
+    /// The `(name, body)` pairs declared by `{% docs name %}…{% enddocs %}`
+    /// blocks. The body is trimmed, matching dbt's `.strip()` on
+    /// `block_contents` (verified: interior whitespace/newlines survive).
+    fn doc_blocks(&self, md: &str) -> Vec<(String, String)> {
+        self.docs_block_re
+            .captures_iter(md)
+            .map(|c| {
+                (
+                    c.get(1).unwrap().as_str().to_string(),
+                    c.get(2).unwrap().as_str().trim().to_string(),
+                )
+            })
+            .collect()
+    }
+
     /// The materialization from a `config(materialized='…')`, if present.
     fn materialized(&self, sql: &str) -> Option<String> {
         self.materialized_re
@@ -945,6 +1142,17 @@ struct DbtProject {
     snapshot_paths: Option<Vec<String>>,
     #[serde(rename = "source-paths", default)]
     source_paths: Option<Vec<String>>,
+    /// `docs-paths` scopes the `.md` docs-block scan; unset -> every resource
+    /// path. The next three are read ONLY for that default union (verified:
+    /// a block in `macros/` resolves with no `docs-paths` set).
+    #[serde(rename = "docs-paths", default)]
+    docs_paths: Option<Vec<String>>,
+    #[serde(rename = "macro-paths", default)]
+    macro_paths: Option<Vec<String>>,
+    #[serde(rename = "analysis-paths", default)]
+    analysis_paths: Option<Vec<String>>,
+    #[serde(rename = "test-paths", default)]
+    test_paths: Option<Vec<String>>,
     /// The directory-hierarchical config trees (`+materialized` / `+enabled`
     /// under nested path keys). Kept as raw YAML and walked by
     /// [`resolve_tree_config`]; `Value::default()` is `Null`, which resolves to
@@ -1092,6 +1300,81 @@ mod tests {
         assert!(!pat.disabled("where enabled = false"));
         assert!(!pat.disabled("-- note: enabled=false someday"));
         assert!(!pat.disabled("{% set enabled=false %}"));
+    }
+
+    #[test]
+    fn doc_blocks_extract_names_and_trim_bodies() {
+        let pat = Patterns::new();
+        // Multiline, inline, and whitespace-controlled (`{%- -%}`) blocks;
+        // bodies are trimmed but interior whitespace survives (dbt's
+        // `block_contents.strip()` — verified against real dbt).
+        let md = "preamble\n\
+                  {% docs a %}\n  Body A.\n  still A\n{% enddocs %}\n\
+                  mid\n\
+                  {% docs b %}Body B.{% enddocs %}\n\
+                  {%- docs c -%}\n Body C. \n{%- enddocs -%}\n";
+        assert_eq!(
+            pat.doc_blocks(md),
+            vec![
+                ("a".to_string(), "Body A.\n  still A".to_string()),
+                ("b".to_string(), "Body B.".to_string()),
+                ("c".to_string(), "Body C.".to_string()),
+            ]
+        );
+        // A `{% docs %}` tag inside `{# #}` is invisible to dbt — extraction
+        // runs on the Jinja-comment-stripped text, so it finds nothing.
+        let hidden = strip_jinja_comments("{# {% docs h %}x{% enddocs %} #}");
+        assert!(pat.doc_blocks(&hidden).is_empty());
+        // A digit-leading name doesn't match dbt's block-name rule.
+        assert!(pat.doc_blocks("{% docs 9bad %}x{% enddocs %}").is_empty());
+    }
+
+    #[test]
+    fn render_doc_refs_substitutes_and_warns() {
+        let docs = DocBlocks::new(
+            "p".to_string(),
+            BTreeMap::from([
+                ("a".to_string(), "Body A.".to_string()),
+                ("b".to_string(), "Body B.".to_string()),
+            ]),
+        );
+        let mut w = Vec::new();
+        // Pure ref, quote/space/whitespace-control variants, mixed text.
+        assert_eq!(docs.render("{{ doc('a') }}", &mut w), "Body A.");
+        assert_eq!(docs.render("{{doc(\"a\")}}", &mut w), "Body A.");
+        assert_eq!(docs.render("{{- doc( 'a' ) -}}", &mut w), "Body A.");
+        assert_eq!(
+            docs.render("pre {{ doc('a') }} post", &mut w),
+            "pre Body A. post"
+        );
+        // 2-arg with the project itself resolves locally (verified vs dbt).
+        assert_eq!(docs.render("{{ doc('p', 'b') }}", &mut w), "Body B.");
+        assert!(w.is_empty(), "resolved refs warn nothing: {w:?}");
+
+        // Missing block: raw `{{ doc() }}` text is kept (dbt would error —
+        // dbtl degrades), with ONE dedup'd warning per ref.
+        assert_eq!(
+            docs.render("pre {{ doc('ghost') }} post", &mut w),
+            "pre {{ doc('ghost') }} post"
+        );
+        assert_eq!(
+            docs.render("{{ doc('ghost') }}", &mut w),
+            "{{ doc('ghost') }}"
+        );
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("ghost"), "{w:?}");
+
+        // A foreign package never resolves — even when the name exists locally.
+        w.clear();
+        assert_eq!(
+            docs.render("{{ doc('other', 'a') }}", &mut w),
+            "{{ doc('other', 'a') }}"
+        );
+        assert_eq!(w.len(), 1, "{w:?}");
+
+        // Text without doc() refs passes through untouched.
+        assert_eq!(docs.render("plain text", &mut w), "plain text");
+        assert_eq!(docs.render("a doc( b", &mut w), "a doc( b");
     }
 
     #[test]
