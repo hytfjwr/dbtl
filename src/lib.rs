@@ -2,51 +2,17 @@
 //! surface is re-exported here so callers (the binary, the integration tests)
 //! keep flat `dbtl::X` paths regardless of where a type lives.
 //!
-//! The data flow: a `manifest.json` ([`manifest`] + [`load_dag`]) or a dbt
-//! project tree ([`source`], which synthesizes a [`RawManifest`]) becomes a
-//! pruned [`Dag`] ([`dag`]), which the [`app`] owns and the [`ui`] renders as
-//! a [`layout`]-built ASCII lineage diagram.
+//! The workspace is split into three member crates:
+//! - [`dbtl_core`] — the dbt domain (manifest/source parsing → [`Dag`], diff,
+//!   layer taxonomy, Mermaid export core); no terminal dependencies.
+//! - [`dbtl_tui`] — the interactive app (keymap, reducer, ratatui rendering).
+//! - [`dbtl_docs`] — the non-interactive `dbtl docs` Markdown generator.
+//!
+//! The data flow: a `manifest.json` or a dbt project tree becomes a pruned
+//! `Dag` (`dbtl-core`), which `dbtl-tui`'s `App` owns and renders as an ASCII
+//! lineage diagram.
 
-pub mod action;
-pub mod app;
-pub mod dag;
-pub mod diff;
-pub mod docs;
-pub mod effect;
-pub mod layout;
-pub mod manifest;
-pub mod model_list;
-pub mod source;
-pub mod ui;
-
-pub use action::{
-    dispatch, help_lines, Action, DiffView, Direction, HelpLine, Mode, ModeKind, PrImpact,
-    SearchTarget, SqlView, StatsView,
-};
-pub use app::{apply_action, layer_violation_edges, App, AppStats, ListFilter, Outcome};
-pub use dag::{
-    coverage_gap, is_exposure, load_dag, ColumnInfo, Dag, Edge, ExposureInfo, NodeDetail, NodeInfo,
-    Subgraph, TestInfo,
-};
-pub use diff::{compute_diff, DagDiff, DiffStatus};
-pub use docs::generate_docs;
-pub use effect::Effect;
-pub use layout::{
-    anchor_offset, blit, clamp_offset, layout, layout_density, layout_mode, CellAttr, CharGrid,
-    Density, GlyphMode, Layout, LensTint, MaterializationClass, NodeRect,
-};
-pub use manifest::{
-    load_manifest, RawConfig, RawDependsOn, RawExposure, RawExposureOwner, RawManifest, RawNode,
-    RawSource, RawTestMetadata,
-};
-pub use model_list::{
-    build_filtered_model_list, build_model_list, match_indices, name_matches_query, DisplayRow,
-    ModelGroup, ModelList, SortMode, LAYER_ORDER,
-};
-pub use source::{
-    load_dag_from_source, load_dag_from_source_with_warnings, manifest_from_source,
-    manifest_from_source_with_warnings,
-};
-pub use ui::{
-    draw, handle_key, reduce_selection, Focus, KeyOutcome, LineageLens, RenderCtx, UiState,
-};
+pub use dbtl_core::*;
+pub use dbtl_docs as docs;
+pub use dbtl_docs::generate_docs;
+pub use dbtl_tui::*;

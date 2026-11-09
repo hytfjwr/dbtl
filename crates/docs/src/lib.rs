@@ -2,7 +2,7 @@
 //!
 //! A pure transform: [`generate_docs`] turns a loaded [`Dag`] into a list of
 //! `(relative path, Markdown contents)` pairs — one node page per node plus an
-//! index `README.md`. The CLI layer ([`crate::main`]) does the IO (create the
+//! index `README.md`. The CLI layer (the `dbtl` binary) does the IO (create the
 //! dir, write each file); this module never touches the filesystem or the
 //! terminal, so it is unit-testable headlessly and reproducible byte-for-byte.
 //!
@@ -15,9 +15,9 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use crate::app::subgraph_mermaid_linked;
-use crate::model_list::{first_dir, layer_rank};
-use crate::{coverage_gap, Dag, NodeInfo, LAYER_ORDER};
+use dbtl_core::layer::{first_dir, layer_rank};
+use dbtl_core::mermaid::subgraph_mermaid_linked;
+use dbtl_core::{coverage_gap, Dag, Edge, NodeInfo, Subgraph, LAYER_ORDER};
 
 /// The subdirectory under `<out>` that holds every node page. The index
 /// `README.md` sits at the root and links into here.
@@ -51,7 +51,7 @@ pub fn generate_docs(dag: &Dag, project_name: &str, source_label: &str) -> Vec<(
 ///
 /// Sanitizing `unique_id` is lossy (`model.p.x_y` and `model.p_x.y` both
 /// flatten to `model_p_x_y`), so two distinct uids could claim the same file
-/// and silently overwrite each other. Mirroring [`crate::app::mermaid_ids`],
+/// and silently overwrite each other. Mirroring [`dbtl_core::mermaid::mermaid_ids`],
 /// uids are visited in sorted order (determinism) and a clashing stem gets the
 /// first free `_2`, `_3`, … numeric suffix. The returned map is a `BTreeMap`,
 /// so iterating it is itself in sorted-uid order.
@@ -256,7 +256,7 @@ fn node_markdown(dag: &Dag, uid: &str, files: &BTreeMap<String, String>) -> Stri
 fn push_linked_diagram(
     s: &mut String,
     dag: &Dag,
-    sg: &crate::Subgraph,
+    sg: &Subgraph,
     files: &BTreeMap<String, String>,
     href_of: impl Fn(&str) -> String,
 ) {
@@ -394,14 +394,14 @@ fn push_readme_lineage(s: &mut String, dag: &Dag, files: &BTreeMap<String, Strin
             .iter()
             .filter_map(|u| dag.get(u).cloned())
             .collect();
-        let mut edges: Vec<crate::Edge> = dag
+        let mut edges: Vec<Edge> = dag
             .edges()
             .into_iter()
             .filter(|(p, c)| member_uids.contains(p.as_str()) && member_uids.contains(c.as_str()))
-            .map(|(parent, child)| crate::Edge { parent, child })
+            .map(|(parent, child)| Edge { parent, child })
             .collect();
         edges.sort_by(|a, b| a.parent.cmp(&b.parent).then_with(|| a.child.cmp(&b.child)));
-        let sg = crate::Subgraph {
+        let sg = Subgraph {
             selected: String::new(),
             nodes,
             edges,
@@ -478,7 +478,7 @@ fn layer_groups(dag: &Dag) -> Vec<LayerGroup> {
 /// segment / stats dashboard:
 /// - coverage % = the share of TESTABLE resources (model/snapshot/seed) that
 ///   carry at least one test — the inverse of [`coverage_gap`], over the SAME
-///   base [`crate::app::App::coverage_summary`] sums;
+///   base `App::coverage_summary` sums;
 /// - orphan models = models with `direct_down == 0` (no downstream consumer),
 ///   the same predicate the stats dashboard's `zero_downstream` count uses.
 ///
@@ -582,7 +582,7 @@ fn model_layer_rank(node: &NodeInfo) -> usize {
     if node.resource_type != "model" {
         return 0;
     }
-    let layer = crate::model_list::first_dir(node).unwrap_or("");
+    let layer = first_dir(node).unwrap_or("");
     layer_rank(layer)
 }
 
@@ -627,9 +627,12 @@ fn md_cell(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::load_dag;
+    use dbtl_core::load_dag;
 
-    const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifest.json");
+    const FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/manifest.json"
+    );
 
     fn fixture_dag() -> Dag {
         load_dag(FIXTURE).expect("fixture manifest must load")
@@ -808,7 +811,7 @@ mod tests {
     fn hostile_names_and_descriptions_do_not_break_markdown_or_mermaid() {
         // A node whose name/description carry a `"`, a `|`, and a newline must
         // not break the Mermaid label, the Markdown table cell, or the fence.
-        use crate::{RawDependsOn, RawManifest, RawNode};
+        use dbtl_core::{RawDependsOn, RawManifest, RawNode};
         use std::collections::HashMap;
         let mut columns = serde_json::Map::new();
         columns.insert(
@@ -1053,7 +1056,7 @@ mod tests {
     /// A synthetic dag of `count` chained models spread across the four logical
     /// layers, used to cross the [`FULL_GRAPH_NODE_LIMIT`] threshold in tests.
     fn large_layered_dag(count: usize) -> Dag {
-        use crate::{RawDependsOn, RawManifest, RawNode};
+        use dbtl_core::{RawDependsOn, RawManifest, RawNode};
         use std::collections::HashMap;
         let layers = ["staging", "intermediate", "marts", "utilities"];
         let mut nodes = HashMap::new();
@@ -1165,7 +1168,7 @@ mod tests {
 
     /// Extract the single fenced `\`\`\`mermaid … \`\`\`` block from a page,
     /// including both fences and the trailing newline — the exact byte shape
-    /// [`subgraph_mermaid_linked`] / [`crate::app::App::lineage_mermaid`] emit.
+    /// [`subgraph_mermaid_linked`] / `App::lineage_mermaid` emit.
     fn fenced_mermaid_block(page: &str) -> String {
         let open = "```mermaid\n";
         let start = page.find(open).expect("page has a mermaid fence");
@@ -1199,7 +1202,7 @@ mod tests {
         // that share a name (e.g. a model AND a source both named `pos_txn`), so a
         // name lookup would be ambiguous (and `nodes()` iteration order is not
         // deterministic). Walk uids in sorted order for a deterministic run.
-        use crate::App;
+        use dbtl_tui::App;
         use std::path::PathBuf;
 
         let dag = fixture_dag();

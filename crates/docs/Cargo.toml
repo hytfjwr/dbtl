@@ -1,0 +1,17 @@
+[package]
+name = "dbtl-docs"
+description = "dbtl's non-interactive Markdown documentation generator (the `dbtl docs` subcommand)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+dbtl-core.workspace = true
+
+[dev-dependencies]
+# The unit tests compare generated pages against `App::lineage_mermaid`'s yank
+# output — a TUI-crate surface — to lock the two Mermaid emitters together.
+dbtl-tui.workspace = true
+serde_json.workspace = true

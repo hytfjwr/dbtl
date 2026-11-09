@@ -39,7 +39,7 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy (warnings are errors)
-        run: cargo clippy --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   build-test:
     name: Build & Test (${{ matrix.os }})
@@ -68,4 +68,4 @@ jobs:
         run: cargo build --release --locked
 
       - name: Test
-        run: cargo test --locked
+        run: cargo test --workspace --locked

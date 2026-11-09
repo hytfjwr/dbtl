@@ -16,7 +16,18 @@ path = "src/lib.rs"
 name = "dbtl"
 path = "src/main.rs"
 
-[dependencies]
+[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.4.1"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/hytfjwr/dbtl"
+
+# Shared dependency versions for the workspace members; member crates pin via
+# `dep.workspace = true` so a bump in this one table moves the whole tree.
+[workspace.dependencies]
 anyhow = "1"
 # `env` lets --theme default from DBTL_THEME.
 clap = { version = "4", features = ["derive", "env"] }
@@ -34,6 +45,19 @@ serde_norway = "0.9"
 # ambiguous-width chrome is banned). A normal dependency so `src/` can use it.
 unicode-width = "0.2"
 
+dbtl-core = { path = "crates/core" }
+dbtl-tui = { path = "crates/tui" }
+dbtl-docs = { path = "crates/docs" }
+
+[dependencies]
+dbtl-core.workspace = true
+dbtl-tui.workspace = true
+dbtl-docs.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+ratatui.workspace = true
+
 [dev-dependencies]
 # Temp dbt projects for the symlink-loop regression test (tests/source_fixture.rs).
 tempfile = "3"
+unicode-width.workspace = true
