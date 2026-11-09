@@ -30,7 +30,8 @@ pub fn default_target_dir(
 }
 
 /// The `target/compiled/` dir for a data source — [`default_target_dir`] plus
-/// the `compiled` subtree dbt fills on `compile`/`build`/`run`/`test`.
+/// the `compiled` subtree dbt fills on `compile`/`build` (`dbt run` writes the
+/// run artifacts under `target/run/` instead — never `compiled/`).
 pub fn default_compiled_dir(
     manifest_path: Option<&Path>,
     project_dir: Option<&Path>,
@@ -81,14 +82,20 @@ pub fn compiled_file_path(
 }
 
 /// Whether the compiled file is older than the node's source — i.e. a
-/// `dbt compile` would rewrite it. The source is looked up at
-/// `<project_root>/<original_file_path>` and, for installed-package nodes,
-/// `<project_root>/dbt_packages/<package>/<original_file_path>`; a source
-/// that isn't on disk (a manifest taken without its project checkout) yields
-/// `false` — undeterminable is not stale.
+/// `dbt compile` would rewrite it. The source location depends on WHO owns
+/// the node (`local`): a local (primary-package or `package_name`-less)
+/// node's `original_file_path` is project-root-relative
+/// (`<project_root>/<ofp>`); an installed package's is PACKAGE-root-relative,
+/// so it can only live under `<project_root>/dbt_packages/<pkg>/` or
+/// `dbt_internal_packages/<pkg>/` (dbt's internal/protected install dir).
+/// The candidate set is EXCLUSIVE — resolving an installed package's ofp
+/// against the project root would hit an unrelated local file and flag a
+/// false stale, inverting the "undeterminable is not stale" contract. A
+/// source that isn't on disk anywhere yields `false`.
 pub fn is_stale(
     compiled_file: &Path,
     project_root: &Path,
+    local: bool,
     package: &str,
     original_file_path: &str,
 ) -> bool {
@@ -96,12 +103,18 @@ pub fn is_stale(
         return false;
     };
     let ofp = Path::new(original_file_path);
-    [
-        project_root.join(ofp),
-        project_root.join("dbt_packages").join(package).join(ofp),
-    ]
-    .iter()
-    .any(|src| {
+    let candidates: Vec<PathBuf> = if local {
+        vec![project_root.join(ofp)]
+    } else {
+        vec![
+            project_root.join("dbt_packages").join(package).join(ofp),
+            project_root
+                .join("dbt_internal_packages")
+                .join(package)
+                .join(ofp),
+        ]
+    };
+    candidates.iter().any(|src| {
         fs::metadata(src)
             .and_then(|m| m.modified())
             .is_ok_and(|src_mtime| src_mtime > compiled_mtime)
@@ -179,15 +192,15 @@ mod tests {
         // Source older than the expansion: fresh.
         set(&source, t0);
         set(&compiled, t1);
-        assert!(!is_stale(&compiled, root, "pkg", "models/m.sql"));
+        assert!(!is_stale(&compiled, root, true, "pkg", "models/m.sql"));
 
         // Source newer than the expansion: stale.
         set(&compiled, t0);
         set(&source, t1);
-        assert!(is_stale(&compiled, root, "pkg", "models/m.sql"));
+        assert!(is_stale(&compiled, root, true, "pkg", "models/m.sql"));
 
         // A missing source cannot be judged stale.
-        assert!(!is_stale(&compiled, root, "pkg", "models/absent.sql"));
+        assert!(!is_stale(&compiled, root, true, "pkg", "models/absent.sql"));
 
         // dbt_packages fallback: an installed-package node's source lives
         // under dbt_packages/<pkg>/, not the project root.
@@ -198,8 +211,60 @@ mod tests {
         fs::write(&pkg_source, "select 2").unwrap();
         set(&pkg_source, t1); // compiled still at t0
         assert!(
-            is_stale(&compiled, root, "pkg", "models/m.sql"),
+            is_stale(&compiled, root, false, "pkg", "models/m.sql"),
             "dbt_packages source newer than expansion is stale"
+        );
+    }
+
+    #[test]
+    fn staleness_installed_package_ignores_the_project_root_file() {
+        // Regression: an installed-package node's original_file_path is
+        // PACKAGE-root-relative — resolving it against the project root
+        // (`root/ofp`) would hit an unrelated local file. That file being
+        // NEWER than the expansion must NOT flag stale; only
+        // dbt_packages/ and dbt_internal_packages/ count.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let t0 = SystemTime::now() - Duration::from_secs(3600);
+        let t1 = SystemTime::now() - Duration::from_secs(60);
+        let set = |p: &Path, t: SystemTime| {
+            fs::File::options()
+                .write(true)
+                .open(p)
+                .unwrap()
+                .set_modified(t)
+                .unwrap();
+        };
+
+        let compiled = root.join("target/compiled/pkg/models/m.sql");
+        fs::create_dir_all(compiled.parent().unwrap()).unwrap();
+        fs::write(&compiled, "select 1").unwrap();
+        set(&compiled, t0);
+
+        // An unrelated LOCAL file sharing the ofp, newer than the expansion:
+        // an installed-package node never looks here.
+        fs::create_dir_all(root.join("models")).unwrap();
+        let local = root.join("models/m.sql");
+        fs::write(&local, "select unrelated").unwrap();
+        set(&local, t1);
+        assert!(
+            !is_stale(&compiled, root, false, "pkg", "models/m.sql"),
+            "the project-root file must not mark an installed package stale"
+        );
+        // …and a local node DOES look there.
+        assert!(
+            is_stale(&compiled, root, true, "pkg", "models/m.sql"),
+            "the same file is the source for a local node"
+        );
+
+        // dbt_internal_packages is the second installed-package location.
+        let internal = root.join("dbt_internal_packages/pkg/models/m.sql");
+        fs::create_dir_all(internal.parent().unwrap()).unwrap();
+        fs::write(&internal, "select 2").unwrap();
+        set(&internal, t1);
+        assert!(
+            is_stale(&compiled, root, false, "pkg", "models/m.sql"),
+            "dbt_internal_packages source newer than expansion is stale"
         );
     }
 }

@@ -1,6 +1,6 @@
 //! The `--watch` poller: a polled (not notified) change detector over the data
 //! source. Manifest mode stamps the single file's mtime; source mode stamps the
-//! MAX `(mtime, file count)` over the project's `.sql`/`.yml`/`.yaml`/`.csv`
+//! MAX `(mtime, file count)` over the project's `.sql`/`.py`/`.yml`/`.yaml`/`.csv`
 //! files (the count catches a deletion, which can only lower the max mtime).
 //! Checks are throttled to one scan per 2s of idle ticks, so the 250ms event
 //! poll never busy-walks a big project tree.
@@ -45,9 +45,9 @@ impl Watch {
 
 /// The on-disk stamp `(max mtime, file count)` for a watch root: the file's own
 /// mtime (count 1) when `recursive` is false, else over every data file
-/// (`.sql`/`.yml`/`.yaml`/`.csv`) under the tree — skipping dot-dirs and
-/// `target/` EXCEPT `target/compiled/` (a recompile's expanded `.sql` SHOULD
-/// refresh the compiled-SQL view; every other artifact — `run/`, logs,
+/// (`.sql`/`.py`/`.yml`/`.yaml`/`.csv`) under the tree — skipping dot-dirs and
+/// `target/` EXCEPT `target/compiled/` (a recompile's expanded `.sql`/`.py`
+/// SHOULD refresh the compiled-SQL view; every other artifact — `run/`, logs,
 /// `manifest.json` — writes on every invocation and would self-trigger).
 /// `None` when the root is unreadable.
 pub fn fs_stamp(root: &std::path::Path, recursive: bool) -> Option<(std::time::SystemTime, usize)> {
@@ -74,7 +74,8 @@ pub fn fs_stamp(root: &std::path::Path, recursive: bool) -> Option<(std::time::S
             }
             let data_file = matches!(
                 path.extension().and_then(|e| e.to_str()),
-                Some("sql" | "yml" | "yaml" | "csv")
+                // `.py` too: Python models' sources + compiled artifacts.
+                Some("sql" | "py" | "yml" | "yaml" | "csv")
             );
             if !data_file {
                 continue;
@@ -112,19 +113,25 @@ mod tests {
         std::fs::write(dir.join("models/a.sql"), "select 1").unwrap();
         std::fs::write(dir.join("dbt_project.yml"), "name: t").unwrap();
         // Artifacts under target/ and non-data files never count — EXCEPT
-        // target/compiled/*.sql, which a recompile refreshes (the SQL modal
-        // shows it, and a stale flag depends on its mtime).
+        // target/compiled/*.sql (and *.py — Python models' compiled artifacts),
+        // which a recompile refreshes (the SQL modal shows it, and a stale
+        // flag depends on its mtime).
         std::fs::write(dir.join("target/manifest.json"), "{}").unwrap();
         std::fs::create_dir_all(dir.join("target/run/t")).unwrap();
         std::fs::write(dir.join("target/run/t/a.sql"), "select 1").unwrap();
         std::fs::create_dir_all(dir.join("target/compiled/t/models")).unwrap();
         std::fs::write(dir.join("target/compiled/t/models/a.sql"), "select 1").unwrap();
+        std::fs::write(
+            dir.join("target/compiled/t/models/m.py"),
+            "def model(dbt, s): ...",
+        )
+        .unwrap();
         std::fs::write(dir.join("README.md"), "x").unwrap();
 
         let (_, count) = fs_stamp(&dir, true).expect("stamp exists");
         assert_eq!(
-            count, 3,
-            "a.sql + dbt_project.yml + the compiled .sql only (run/ + manifest skipped)"
+            count, 4,
+            "a.sql + dbt_project.yml + the compiled .sql + .py (run/ + manifest skipped)"
         );
 
         let mut w = Watch::new(dir.clone(), true);

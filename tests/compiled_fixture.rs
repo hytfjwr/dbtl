@@ -197,3 +197,32 @@ fn absent_compiled_dir_is_none_everywhere() {
     // …but the manifest's own compiled_code still loads.
     assert!(dag.compiled_code("model.compiled_demo.mart_one").is_some());
 }
+
+#[test]
+fn manifest_outside_a_target_dir_reads_compiled_but_skips_staleness() {
+    // `<dir>/manifest.json` + `<dir>/compiled/` still resolves by the sibling
+    // convention regardless of the dir's name — but staleness needs `<dir>`
+    // to literally be `target/` so `..` is the project root. A copied
+    // manifest elsewhere must not compare mtimes against whatever happens to
+    // sit at `dir/..` (a wrong root would happily find a "newer" source).
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    copy_tree(Path::new(PROJECT), &root);
+    fs::rename(root.join("target"), root.join("artifacts")).unwrap();
+    // A newer "source" where a wrong `artifacts/..` derivation would look.
+    let cmp = root.join("artifacts/compiled/compiled_demo/models/staging/stg_one.sql");
+    let src = root.join("models/staging/stg_one.sql");
+    let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+    let new = SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000);
+    stamp(&cmp, old);
+    stamp(&src, new); // newer than the expansion — stale under the wrong root
+    let dag = load_dag(root.join("artifacts/manifest.json")).unwrap();
+    let c = dag
+        .compiled("model.compiled_demo.stg_one")
+        .expect("sibling compiled/ still reads");
+    assert!(c.code.contains("demo.raw.events"));
+    assert!(
+        !c.stale,
+        "manifest not under target/ → staleness undeterminable → not stale"
+    );
+}

@@ -65,7 +65,9 @@ pub fn load_dag_from_source_with_warnings<P: AsRef<Path>>(
     // Same auto-detect as `load_dag`: a project the user already compiled
     // (`dbt compile`/`build`) has Jinja-expanded SQL under target/compiled/ —
     // absent files are simply "no compiled SQL".
-    dag.ingest_compiled(&dir.join("target").join("compiled"), dir);
+    if let Some(compiled_dir) = crate::compiled::default_compiled_dir(None, Some(dir)) {
+        dag.ingest_compiled(&compiled_dir, Some(dir));
+    }
     Ok((dag, warnings))
 }
 

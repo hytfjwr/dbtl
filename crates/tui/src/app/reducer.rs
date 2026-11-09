@@ -518,8 +518,10 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                 .map(|c| (Some(c.code.clone()), c.stale))
                 .unwrap_or((None, false));
             // Open on the compiled text when it is the only real SQL there is
-            // (a placeholder raw + a compiled file — rare, but show something).
-            let show_compiled = raw.is_none() && compiled.is_some();
+            // — `raw_code` absent OR blank/whitespace-only (dbt emits `""` for
+            // e.g. ephemeral config-only nodes, and an empty modal helps nobody).
+            let show_compiled =
+                raw.as_deref().is_none_or(|c| c.trim().is_empty()) && compiled.is_some();
             let path = app
                 .dag
                 .detail(&uid)
