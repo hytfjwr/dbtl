@@ -86,6 +86,11 @@ impl DagDiff {
 /// edges, compared as sets and reported by display NAME (a removed edge's
 /// endpoints may not exist in the current Dag at all).
 pub fn compute_diff(base: &Dag, current: &Dag) -> DagDiff {
+    // Shared-macro impact is computed once for the whole diff (a graph-global
+    // closure, not a per-node surface): node uid -> names of CHANGED macros it
+    // transitively calls.
+    let macro_reasons = macro_change_reasons(base, current);
+
     let mut added: BTreeSet<String> = BTreeSet::new();
     let mut modified: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for uid in current.nodes().keys() {
@@ -94,7 +99,10 @@ pub fn compute_diff(base: &Dag, current: &Dag) -> DagDiff {
                 added.insert(uid.clone());
             }
             Some(_) => {
-                let reasons = modified_reasons(base, current, uid);
+                let mut reasons = modified_reasons(base, current, uid);
+                if let Some(names) = macro_reasons.get(uid) {
+                    reasons.extend(names.iter().map(|n| format!("macro:{n}")));
+                }
                 if !reasons.is_empty() {
                     modified.insert(uid.clone(), reasons);
                 }
@@ -150,6 +158,10 @@ pub fn compute_diff(base: &Dag, current: &Dag) -> DagDiff {
 ///   reordering schema.yml column docs is a tidy, not a model change),
 /// - the tests as a sorted `(kind, column)` multiset,
 /// - the raw SQL — MODELS only, and only when BOTH sides carry code, trimmed.
+///
+/// On top of those per-node surfaces, [`compute_diff`] appends `macro:<name>`
+/// reasons for nodes that transitively call a changed manifest macro (see
+/// [`macro_change_reasons`]) — the one change raw SQL can never show.
 ///
 /// A `--diff` pair routinely spans LOAD MODES (a manifest baseline vs a
 /// source-parsed current, or vice versa), so the surfaces the manifest↔source
@@ -236,10 +248,83 @@ fn modified_reasons(base: &Dag, current: &Dag, uid: &str) -> Vec<String> {
     reasons
 }
 
+/// The shared-macro impact map: for every node present in the CURRENT Dag, the
+/// sorted names of CHANGED macros the node transitively calls — the fix for
+/// "an edit inside a shared macro is invisible in raw SQL".
+///
+/// A macro is *changed* when its `macro_sql` differs across the pair or it
+/// exists on only one side (added or removed). A node is *impacted* when the
+/// changed macro is reachable from the node's `depends_on.macros` through the
+/// CURRENT macro→macro call graph (`depends_on.macros` on macros), so a change
+/// two calls deep still lands on the model. The walk is `seen`-guarded, so a
+/// macro cycle terminates instead of looping.
+///
+/// Empty when either Dag lacks macro data — synthesized source-mode manifests
+/// carry no macros, so a manifest↔source diff reports no phantom `macro:`
+/// reasons (the same cross-mode exclusion the other surfaces get).
+fn macro_change_reasons(base: &Dag, current: &Dag) -> BTreeMap<String, BTreeSet<String>> {
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    if base.macros().is_empty() && current.macros().is_empty() {
+        return out;
+    }
+
+    let mut changed: BTreeSet<String> = BTreeSet::new();
+    for uid in base.macros().keys().chain(current.macros().keys()) {
+        let changed_here = match (base.macros().get(uid), current.macros().get(uid)) {
+            (Some(b), Some(c)) => b.sql != c.sql,
+            // Present on one side only: added or removed — either way the
+            // compiled surface moved for anything still calling it.
+            _ => true,
+        };
+        if changed_here {
+            changed.insert(uid.clone());
+        }
+    }
+    if changed.is_empty() {
+        return out;
+    }
+
+    // A changed macro's display name: prefer the current side's record, fall
+    // back to the baseline's (a removed macro still names the reason), then to
+    // the uid's last segment.
+    let name_of = |uid: &str| -> String {
+        current
+            .macros()
+            .get(uid)
+            .or_else(|| base.macros().get(uid))
+            .map(|m| m.name.clone())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| uid.rsplit('.').next().unwrap_or(uid).to_string())
+    };
+
+    for uid in current.nodes().keys() {
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut queue: Vec<String> = current.node_macros(uid).to_vec();
+        let mut hits: BTreeSet<String> = BTreeSet::new();
+        while let Some(m) = queue.pop() {
+            if !seen.insert(m.clone()) {
+                continue;
+            }
+            if changed.contains(&m) {
+                hits.insert(name_of(&m));
+            }
+            if let Some(info) = current.macros().get(&m) {
+                queue.extend(info.depends_on.iter().cloned());
+            }
+        }
+        if !hits.is_empty() {
+            out.insert(uid.clone(), hits);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{RawConfig, RawManifest, RawNode, RawTestMetadata};
+    use crate::manifest::{
+        RawConfig, RawDependsOn, RawMacro, RawManifest, RawNode, RawTestMetadata,
+    };
     use std::collections::HashMap;
 
     fn model(name: &str, materialized: Option<&str>, sql: &str) -> RawNode {
@@ -278,6 +363,7 @@ mod tests {
             nodes,
             sources: HashMap::new(),
             exposures: HashMap::new(),
+            macros: HashMap::new(),
             parent_map,
             child_map,
         }
@@ -285,6 +371,32 @@ mod tests {
 
     fn base_dag() -> Dag {
         Dag::build(&manifest(model("b", Some("table"), "select 2"), None))
+    }
+
+    /// A manifest macro record: `name`/`macro_sql` plus optional macro→macro
+    /// deps (the `depends_on.macros` call edges).
+    fn mac(name: &str, sql: &str, deps: &[&str]) -> RawMacro {
+        RawMacro {
+            name: name.into(),
+            macro_sql: Some(sql.into()),
+            depends_on: RawDependsOn {
+                nodes: vec![],
+                macros: deps.iter().map(|d| d.to_string()).collect(),
+            },
+        }
+    }
+
+    /// The `a -> b` fixture manifest with a `macros` map attached; `b`'s
+    /// `depends_on.macros` is set to `b_calls` (the direct call list).
+    fn manifest_with_macros(macros: Vec<(&str, RawMacro)>, b_calls: &[&str]) -> RawManifest {
+        let mut m = manifest(model("b", Some("table"), "select 2"), None);
+        m.nodes.get_mut("model.p.b").unwrap().depends_on.macros =
+            b_calls.iter().map(|s| s.to_string()).collect();
+        m.macros = macros
+            .into_iter()
+            .map(|(uid, mac)| (uid.to_string(), mac))
+            .collect();
+        m
     }
 
     #[test]
@@ -425,6 +537,7 @@ mod tests {
                 exposures: HashMap::new(),
                 parent_map: HashMap::new(),
                 child_map: HashMap::new(),
+                macros: HashMap::new(),
             })
         };
         // Base: documented seed columns only + the dbt-style snapshot body.
@@ -489,5 +602,128 @@ mod tests {
             Some(("model.p.c", model("c", None, "select 3"))),
         ));
         assert_eq!(compute_diff(&base, &current), compute_diff(&base, &current));
+    }
+
+    #[test]
+    fn macro_change_marks_callers_while_unaffected_nodes_stay_clean() {
+        // The README's old caveat: a shared macro's edit never shows in a
+        // model's raw SQL, so `SQL changed` can't catch it — `macro:` can.
+        let base = Dag::build(&manifest_with_macros(
+            vec![("macro.p.cents", mac("cents", "v1", &[]))],
+            &["macro.p.cents"],
+        ));
+        let current = Dag::build(&manifest_with_macros(
+            vec![("macro.p.cents", mac("cents", "v2", &[]))],
+            &["macro.p.cents"],
+        ));
+        let diff = compute_diff(&base, &current);
+        assert_eq!(
+            diff.modified["model.p.b"],
+            vec!["macro:cents".to_string()],
+            "b calls the changed macro even though its raw SQL is identical"
+        );
+        assert_eq!(
+            diff.status("model.p.a"),
+            DiffStatus::Unchanged,
+            "a calls no macro"
+        );
+    }
+
+    #[test]
+    fn macro_change_propagates_through_macro_to_macro_deps() {
+        // b -> cents -> surrogate: the deep change still lands on b.
+        let base = Dag::build(&manifest_with_macros(
+            vec![
+                ("macro.p.cents", mac("cents", "v1", &["macro.p.surrogate"])),
+                ("macro.p.surrogate", mac("surrogate", "s1", &[])),
+            ],
+            &["macro.p.cents"],
+        ));
+        let current = Dag::build(&manifest_with_macros(
+            vec![
+                ("macro.p.cents", mac("cents", "v1", &["macro.p.surrogate"])),
+                ("macro.p.surrogate", mac("surrogate", "s2", &[])),
+            ],
+            &["macro.p.cents"],
+        ));
+        let diff = compute_diff(&base, &current);
+        assert_eq!(
+            diff.modified["model.p.b"],
+            vec!["macro:surrogate".to_string()],
+            "transitive macro dep surfaces the changed macro's name"
+        );
+    }
+
+    #[test]
+    fn unchanged_macros_and_macro_cycles_are_handled() {
+        // Same bodies on both sides: no macro reasons, even though b calls one.
+        let mk = |sql: &str| {
+            Dag::build(&manifest_with_macros(
+                vec![
+                    ("macro.p.a", mac("a", sql, &["macro.p.b"])),
+                    ("macro.p.b", mac("b", sql, &["macro.p.a"])), // a<->b cycle
+                ],
+                &["macro.p.a"],
+            ))
+        };
+        let diff = compute_diff(&mk("v1"), &mk("v1"));
+        assert!(diff.is_empty(), "unchanged macros: {diff:?}");
+
+        // A cycle still terminates: changed once, reasoned once.
+        let changed = Dag::build(&manifest_with_macros(
+            vec![
+                ("macro.p.a", mac("a", "v2", &["macro.p.b"])),
+                ("macro.p.b", mac("b", "v1", &["macro.p.a"])),
+            ],
+            &["macro.p.a"],
+        ));
+        let diff = compute_diff(&mk("v1"), &changed);
+        assert_eq!(
+            diff.modified["model.p.b"],
+            vec!["macro:a".to_string()],
+            "a changed once inside the a<->b cycle"
+        );
+    }
+
+    #[test]
+    fn macro_reason_appends_after_the_sql_reason_in_fixed_order() {
+        // A node that changed BOTH its SQL and a called macro lists the macro
+        // reason last — the listing order is fixed, not hit-order.
+        let base = Dag::build(&manifest_with_macros(
+            vec![("macro.p.cents", mac("cents", "v1", &[]))],
+            &["macro.p.cents"],
+        ));
+        let mut m = manifest_with_macros(
+            vec![("macro.p.cents", mac("cents", "v2", &[]))],
+            &["macro.p.cents"],
+        );
+        m.nodes.get_mut("model.p.b").unwrap().raw_code = Some("select 99".into());
+        let current = Dag::build(&m);
+        let diff = compute_diff(&base, &current);
+        assert_eq!(
+            diff.modified["model.p.b"],
+            vec!["SQL changed".to_string(), "macro:cents".to_string()]
+        );
+    }
+
+    #[test]
+    fn source_mode_side_disables_macro_detection() {
+        // A synthesized source-mode manifest carries no macros: the SAME node
+        // set minus macro data must not report phantom macro: reasons (the
+        // cross-mode exclusion, like seed columns).
+        let base = Dag::build(&manifest_with_macros(
+            vec![("macro.p.cents", mac("cents", "v1", &[]))],
+            &["macro.p.cents"],
+        ));
+        let source_like = base_dag(); // no macros map at all
+        let diff = compute_diff(&base, &source_like);
+        assert!(
+            !diff
+                .modified
+                .values()
+                .flatten()
+                .any(|r| r.starts_with("macro:")),
+            "no macro reasons when one side has no macro data: {diff:?}"
+        );
     }
 }

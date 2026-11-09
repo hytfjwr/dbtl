@@ -489,7 +489,10 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                     description: exp.description.clone(),
                     path: Some(rel_path(yml_root, file)),
                     original_file_path: Some(yml_path.clone()),
-                    depends_on: RawDependsOn { nodes: deps },
+                    depends_on: RawDependsOn {
+                        nodes: deps,
+                        macros: vec![],
+                    },
                 },
             );
         }
@@ -524,6 +527,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             exposures,
             parent_map,
             child_map,
+            macros: HashMap::new(),
         },
         warnings,
     ))

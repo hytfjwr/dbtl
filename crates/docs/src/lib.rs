@@ -867,6 +867,7 @@ mod tests {
                     columns,
                     depends_on: RawDependsOn {
                         nodes: vec!["model.p.up".to_string()],
+                        macros: vec![],
                     },
                     ..Default::default()
                 },
@@ -891,6 +892,7 @@ mod tests {
             exposures: HashMap::new(),
             parent_map,
             child_map,
+            macros: HashMap::new(),
         };
         let dag = Dag::build(&manifest);
         let out = generate_docs(&dag, "p", "src");
@@ -1116,7 +1118,10 @@ mod tests {
                     name: format!("m{i:04}"),
                     resource_type: "model".into(),
                     path: Some(format!("{layer}/m{i:04}.sql")),
-                    depends_on: RawDependsOn { nodes: depends },
+                    depends_on: RawDependsOn {
+                        nodes: depends,
+                        macros: vec![],
+                    },
                     ..Default::default()
                 },
             );
@@ -1127,6 +1132,7 @@ mod tests {
             exposures: HashMap::new(),
             parent_map,
             child_map,
+            macros: HashMap::new(),
         })
     }
 
