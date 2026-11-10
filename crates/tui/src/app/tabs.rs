@@ -27,8 +27,13 @@ use super::{App, LineageView};
 pub struct TabState {
     /// The rooted `unique_id` — the tab's identity (dedupe, label,
     /// `last_selected` compat). `None` only for the transient empty tab (a
-    /// project whose list has no models at all).
+    /// project whose list has no models at all) and the home tab.
     pub root: Option<String>,
+    /// The fixed, unclosable home tab (§3/H1): always `tabs[0]`, draws the
+    /// §3 home screen over the whole body while active. Carries no lineage
+    /// state — its fields stay default so a stale cursor/scroll can never
+    /// leak into a model tab.
+    pub home: bool,
     /// The lineage direction/depth filter (`u`/`d`/`[`/`]`/`0`).
     pub lineage_view: LineageView,
     /// The lineage cursor (`None` = home at the root). Validated against the
@@ -61,6 +66,16 @@ impl TabState {
             ..TabState::default()
         }
     }
+
+    /// The home tab — `tabs[0]`, always present (the strip is never empty,
+    /// so `tab()`/`tab_mut()` stay panic-free even when every model tab is
+    /// closed). Unclosable; `close_tab` refuses index 0.
+    pub(crate) fn home() -> Self {
+        TabState {
+            home: true,
+            ..TabState::default()
+        }
+    }
 }
 
 /// A tab label's model name is middle-truncated past this many chars (§2 —
@@ -68,10 +83,38 @@ impl TabState {
 const TAB_NAME_MAX: usize = 24;
 
 impl App {
-    /// The ordered tab list. Always non-empty — `close_tab` refuses to drop
-    /// the last one, and `reload` re-seeds it.
+    /// The ordered tab list. Always non-empty — `tabs[0]` is the unclosable
+    /// home tab, `reload` retains it, and a `close_tab` on the last model
+    /// tab lands on it rather than refusing.
     pub(crate) fn tabs(&self) -> &[TabState] {
         &self.tabs
+    }
+
+    /// Whether the ACTIVE tab is the home tab — the single predicate the
+    /// body-rendering switch (`draw`), the idle-mode resolution
+    /// (`idle_mode`), and the `~`/`1`-`9` key story all read.
+    pub fn home_active(&self) -> bool {
+        self.tabs.get(self.active).is_some_and(|t| t.home)
+    }
+
+    /// `~` / click on `⌂`: activate the home tab. Same switch machinery as
+    /// `activate_tab` — the outgoing model tab's root becomes the home
+    /// screen's `Resume` row.
+    pub fn enter_home(&mut self) {
+        if self.tabs.first().is_some_and(|t| t.home) {
+            self.activate_tab(0);
+        }
+    }
+
+    /// The idle [`Mode`] under the active tab: `Home` while the home tab is
+    /// active, `Selection` otherwise — every "close overlay" site returns to
+    /// this (a modal opened FROM home closes back to home, not the panes).
+    pub(crate) fn idle_mode(&self) -> Mode {
+        if self.home_active() {
+            Mode::Home
+        } else {
+            Mode::Selection
+        }
     }
 
     /// The number of open tabs (the `1`..`9` key bound + the bar's cell count).
@@ -143,9 +186,13 @@ impl App {
     /// view" — pass `false` only when replaying the stored scroll for a
     /// manual-scroll frame or a hit-test.
     pub fn tab_bar_layout_for(&self, strip: Rect, ensure_active: bool) -> crate::ui::TabBarLayout {
+        // `closable` shadows the strip: the home tab (index 0) is the only
+        // unclosable cell — every other tab carries the `×` + close target.
+        let closable: Vec<bool> = self.tabs.iter().map(|t| !t.home).collect();
         crate::ui::tab_bar_layout(
             strip,
             &self.tab_labels(),
+            &closable,
             self.active,
             self.tab_scroll,
             self.stats.project.as_str(),
@@ -153,21 +200,27 @@ impl App {
         )
     }
 
-    /// The tab-bar labels (`{n} {name}` — the number only for positions 1-9,
-    /// the name middle-truncated at [`TAB_NAME_MAX`]). Dag-aware (names live
-    /// on `dag`), so the render layer stays Dag-free.
+    /// The tab-bar labels (`⌂` for the home tab, `{n} {name}` for model
+    /// tabs — the number only on positions 1-9 counting MODEL tabs, so the
+    /// home tab's slot 0 is unnumbered and `1` lands on `tabs[1]`; the name
+    /// middle-truncated at [`TAB_NAME_MAX`]). Dag-aware (names live on
+    /// `dag`), so the render layer stays Dag-free.
     pub fn tab_labels(&self) -> Vec<String> {
+        let home_glyph = crate::ui::chrome(self.glyph_mode).home;
         self.tabs
             .iter()
             .enumerate()
             .map(|(i, t)| {
+                if t.home {
+                    return home_glyph.to_string();
+                }
                 let name = t
                     .root
                     .as_deref()
                     .map(|uid| mid_truncate(&self.node_name_or_uid(uid), TAB_NAME_MAX))
                     .unwrap_or_else(|| "-".to_string());
-                if i < 9 {
-                    format!("{} {}", i + 1, name)
+                if (1..=9).contains(&i) {
+                    format!("{i} {name}")
                 } else {
                     name
                 }
@@ -178,18 +231,31 @@ impl App {
     /// Write the ACTIVE tab's root — the single write site the spec asks for.
     /// The cursor/collapse resets that a root change implies live at the
     /// event loop's selection-change chokepoint (it diffs `root` frames), so
-    /// this accessor only moves the identity.
+    /// this accessor only moves the identity. The home tab refuses: its
+    /// `root` stays `None` forever (every writer is already unbound under
+    /// `Mode::Home`, and a stray caller must not corrupt it).
     pub(super) fn set_root(&mut self, root: Option<String>) {
+        if self.tab().home {
+            return;
+        }
         self.tab_mut().root = root;
     }
 
     /// Record `uid` at the front of the `recent` MRU (Issue 10's home reads
-    /// it — max 10, newest first, deduped). Called wherever a model becomes a
-    /// root: `select_by_unique_id` lands and tab activations.
+    /// it — max 10, newest first, deduped, so it bumps `home_stamp`). Called
+    /// wherever a model becomes a root: `select_by_unique_id` lands and tab
+    /// activations.
     pub(super) fn record_recent(&mut self, uid: &str) {
+        // The home tab never roots — a select that lands there (a cancelled
+        // home search restoring its origin, a bookmark cycle) must not
+        // record the unseen list-cursor model into the MRU.
+        if self.tab().home {
+            return;
+        }
         self.recent.retain(|u| u != uid);
         self.recent.insert(0, uid.to_string());
         self.recent.truncate(10);
+        self.home_stamp += 1;
     }
 
     /// `O` / middle-click / `+` / `--select`: open `uid` as a tab — under the
@@ -235,24 +301,36 @@ impl App {
         if idx == self.active || idx >= self.tabs.len() {
             return;
         }
+        // Leaving for home: the outgoing model tab's root becomes the home
+        // screen's `Resume` row (§3 — "前回のアクティブタブの root").
+        if self.tabs[idx].home {
+            let outgoing = self.tab().root.clone();
+            if outgoing != self.home_resume {
+                self.home_stamp += 1;
+            }
+            self.home_resume = outgoing.or(self.home_resume.take());
+        }
         self.stash_active_scroll();
         self.active = idx;
         self.enter_active_tab();
     }
 
     /// Close tab `idx` (× / middle-click / `X`): the RIGHT neighbour takes
-    /// over, else the LEFT (§2). The last tab refuses to close — toast only.
-    /// Closing a non-active tab just shifts the active index left when needed;
-    /// the live tab's state is untouched.
+    /// over, else the LEFT (§2). The home tab (index 0) refuses — a toast
+    /// only. Closing the LAST model tab lands on home (§2's "最後の 1 個を
+    /// 閉じたらホームへ" — Issue 10's replacement for "last tab refuses").
+    /// Closing a non-active tab just shifts the active index left when
+    /// needed; the live tab's state is untouched.
     pub(crate) fn close_tab(&mut self, idx: usize) {
-        if self.tabs.len() <= 1 {
-            self.set_notice("can't close the last tab");
-            return;
-        }
         if idx >= self.tabs.len() {
             return;
         }
+        if self.tabs[idx].home {
+            self.set_notice("can't close the home tab");
+            return;
+        }
         let was_active = idx == self.active;
+        let closed_root = self.tabs[idx].root.clone();
         self.tabs.remove(idx);
         if self.active > idx {
             // The live tab slid left — follow it (no switch, no restore).
@@ -262,6 +340,15 @@ impl App {
             // idx is already the position the right neighbour slid into; when
             // the closed tab was the last, idx == len → the left neighbour.
             self.active = idx.min(self.tabs.len() - 1);
+            // Landing on home: the closed model's root becomes the Resume
+            // row — a rootless transient tab can't clobber a live resume.
+            if self.tabs[self.active].home
+                && closed_root.is_some()
+                && self.home_resume != closed_root
+            {
+                self.home_stamp += 1;
+                self.home_resume = closed_root;
+            }
             self.enter_active_tab();
         }
     }
@@ -285,14 +372,29 @@ impl App {
     /// close any open search (§2 — a switch mid-search drops it), re-anchor
     /// the list cursor on the incoming root when it resolves (a filtered-out
     /// root leaves the cursor detached at the top, like `--select` on a
-    /// filtered list), and record the root in `recent`.
+    /// filtered list), record the root in `recent`, and settle the idle mode
+    /// (`Home` on the home tab, `Selection` on a model tab — overlays open
+    /// over a forced re-entry keep their mode).
     fn enter_active_tab(&mut self) {
+        if self.home_active() {
+            // The home body owns the whole band — §12's list drawer has no
+            // surface over it (draw never paints it there, and a stale flag
+            // would still feed the hit-test the shadow targets).
+            self.ui_state.set_list_drawer(false);
+        }
         if let Some((x, y)) = self.tab().scroll {
             self.ui_state.set_lineage_scroll(x, y);
         }
         if matches!(self.mode, Mode::Search(_)) {
             self.close_search(None, false);
         }
+        self.mode = match &self.mode {
+            // Switching tabs always resolves the idle layer; an overlay that
+            // survived into a forced re-entry (a `--watch` reload's prune)
+            // stays up — it draws over whichever body is beneath.
+            Mode::Selection | Mode::Home => self.idle_mode(),
+            _ => self.mode.clone(),
+        };
         if let Some(root) = self.tab().root.clone() {
             if let Some(i) = self
                 .active_list()
@@ -326,7 +428,7 @@ impl App {
     /// Re-home the whole app onto tab `i` after a restore or reload replaced
     /// the tab list under it: clamp the index, then `enter_active_tab`.
     pub(crate) fn enter_tab_forced(&mut self) {
-        self.active = self.active.min(self.tabs.len() - 1);
+        self.active = self.active.min(self.tabs.len().saturating_sub(1));
         self.enter_active_tab();
     }
 
@@ -357,14 +459,23 @@ impl App {
 
     /// Swap the whole tab list in — the persistence restore (validated
     /// upstream: every entry's root already resolved against the live `dag`).
-    /// `active` clamps to the new strip; then `enter_tab_forced` re-homes
-    /// the app like any other switch.
-    pub(crate) fn restore_tabs(&mut self, tabs: Vec<TabState>, active: usize) {
+    /// The home tab is re-seeded at index 0 (it is never persisted), so the
+    /// saved `active` (a MODEL-tab index — `None` = the saved strip was
+    /// showing home) shifts by one; then `enter_tab_forced` re-homes the
+    /// app like any other switch.
+    pub(crate) fn restore_tabs(&mut self, mut tabs: Vec<TabState>, active: Option<usize>) {
         if tabs.is_empty() {
             return;
         }
-        self.tabs = tabs;
-        self.active = active.min(self.tabs.len() - 1);
+        // A malformed caller can never inject a second home: the flag is
+        // normalised off every incoming tab — index 0 is THE home cell.
+        for t in &mut tabs {
+            t.home = false;
+        }
+        self.tabs = std::iter::once(TabState::home()).chain(tabs).collect();
+        self.active = active
+            .map(|a| (a + 1).min(self.tabs.len() - 1))
+            .unwrap_or(0);
         self.tab_scroll = 0;
         self.enter_tab_forced();
     }

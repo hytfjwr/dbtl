@@ -239,6 +239,21 @@ pub struct RenderCtx<'a> {
     /// nothing (its rect may not even be allocated). Dag-free, like every
     /// other field.
     pub inspector: Option<&'a crate::InspectorView>,
+    /// The home screen's data snapshot (Issue 10): `as_deref()`'d
+    /// `App::home_data` at the loop seam, `Some` exactly while the fixed
+    /// home tab is active — its presence IS the body switch (the whole
+    /// `list+lineage+inspector` band draws the home view instead). `None`
+    /// (the default) draws the normal panes, so every headless model-tab
+    /// render is untouched.
+    pub home: Option<&'a crate::HomeData>,
+    /// The home body's selected-row index (`App::home_sel`) — the
+    /// selection-bar position; the loop clamps it against the visible rows.
+    /// `0` (the default) in headless renders highlights the first row.
+    pub home_sel: usize,
+    /// The home body's scroll offset (`App::home_scroll`) — the loop's
+    /// size-aware ensure-visible resolves it; `0` (the default) draws from
+    /// the top.
+    pub home_scroll: usize,
 }
 
 /// One visible toast in the top-right stack (Issue 08): the severity drives
@@ -294,6 +309,9 @@ impl<'a> RenderCtx<'a> {
             list_hover: None,
             theme: &theme::DEFAULT,
             inspector: None,
+            home: None,
+            home_sel: 0,
+            home_scroll: 0,
         }
     }
 }
@@ -332,93 +350,104 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         }
         _ => None,
     };
-    // The inline list draws iff `pane_layout` allocated it columns — the
-    // resolved rect, not the raw pref: §12's narrow band zeroes the rect
-    // while `list_visible` stays true (the list then lives as the drawer).
-    // The rect test is the same one `hit_target` reports list targets under,
-    // so "drawn == hit-testable" holds by construction.
-    if rects.list.width > 0 {
-        draw_list(
+    if let Some(home) = ctx.home {
+        // Issue 10: the active home tab swaps the WHOLE body band for the
+        // home view — the list/lineage/inspector panes don't exist here.
+        let body = rects.list.union(rects.lineage).union(rects.inspector);
+        super::home::draw_home(frame, body, home, ctx);
+    } else {
+        // The inline list draws iff `pane_layout` allocated it columns — the
+        // resolved rect, not the raw pref: §12's narrow band zeroes the rect
+        // while `list_visible` stays true (the list then lives as the
+        // drawer). The rect test is the same one `hit_target` reports list
+        // targets under, so "drawn == hit-testable" holds by construction.
+        if rects.list.width > 0 {
+            draw_list(
+                frame,
+                rects.list,
+                ctx.list,
+                ctx.state,
+                list_query,
+                ctx.stats,
+                ctx.glyphs,
+                ctx.bookmarks,
+                ctx.full_model_count,
+                ctx.filter_label,
+                ctx.empty_reason,
+                ctx.folded_groups,
+                ctx.list_hover,
+                ctx.theme,
+            );
+        }
+        super::lineage::draw_lineage_pane(
             frame,
-            rects.list,
+            rects.lineage,
             ctx.list,
             ctx.state,
-            list_query,
-            ctx.stats,
+            ctx.lineage,
+            lineage_query,
+            ctx.search_pos,
+            ctx.lineage_label,
+            ctx.breadcrumb,
+            ctx.overview_title,
             ctx.glyphs,
-            ctx.bookmarks,
-            ctx.full_model_count,
-            ctx.filter_label,
-            ctx.empty_reason,
-            ctx.folded_groups,
-            ctx.list_hover,
+            ctx.minimap,
+            ctx.layer_bands,
+            ctx.col_suffix,
+            ctx.hover_node,
+            ctx.search_matches,
+            ctx.hover,
             ctx.theme,
         );
-    }
-    super::lineage::draw_lineage_pane(
-        frame,
-        rects.lineage,
-        ctx.list,
-        ctx.state,
-        ctx.lineage,
-        lineage_query,
-        ctx.search_pos,
-        ctx.lineage_label,
-        ctx.breadcrumb,
-        ctx.overview_title,
-        ctx.glyphs,
-        ctx.minimap,
-        ctx.layer_bands,
-        ctx.col_suffix,
-        ctx.hover_node,
-        ctx.search_matches,
-        ctx.hover,
-        ctx.theme,
-    );
-    // The right inspector pane (Issue 04): a published snapshot IS the
-    // resolved visibility answer — the loop sets `ctx.inspector` only when
-    // the pane is on screen, has a nonzero rect, and has a node to describe.
-    if let Some(view) = ctx.inspector {
-        super::inspector::draw_inspector_pane(frame, rects.inspector, ctx, view);
-    }
+        // The right inspector pane (Issue 04): a published snapshot IS the
+        // resolved visibility answer — the loop sets `ctx.inspector` only
+        // when the pane is on screen, has a nonzero rect, and has a node to
+        // describe.
+        if let Some(view) = ctx.inspector {
+            super::inspector::draw_inspector_pane(frame, rects.inspector, ctx, view);
+        }
 
-    // §12's narrow-band drawer: the SAME list pane floated over the lineage's
-    // left edge — the same `draw_list` pass (same offset/sticky/fold/chrome)
-    // the inline pane gets, so a row means the same thing on either surface.
-    // Drawn AFTER the panes it covers, before the modal/toast overlays that
-    // must top it — on a `Clear`ed rect, because `draw_list` only writes the
-    // cells its lines produce (header tails and empty interior rows stay
-    // untouched), and without the wipe the lineage below ghosts through them.
-    if let Some(dr) = rects.list_drawer {
-        frame.render_widget(Clear, dr);
-        draw_list(
-            frame,
-            dr,
-            ctx.list,
-            ctx.state,
-            list_query,
-            ctx.stats,
-            ctx.glyphs,
-            ctx.bookmarks,
-            ctx.full_model_count,
-            ctx.filter_label,
-            ctx.empty_reason,
-            ctx.folded_groups,
-            ctx.list_hover,
-            ctx.theme,
-        );
-    }
+        // §12's narrow-band drawer: the SAME list pane floated over the
+        // lineage's left edge — the same `draw_list` pass (same
+        // offset/sticky/fold/chrome) the inline pane gets, so a row means
+        // the same thing on either surface. Drawn AFTER the panes it
+        // covers, before the modal/toast overlays that must top it — on a
+        // `Clear`ed rect, because `draw_list` only writes the cells its
+        // lines produce (header tails and empty interior rows stay
+        // untouched), and without the wipe the lineage below ghosts
+        // through them.
+        if let Some(dr) = rects.list_drawer {
+            frame.render_widget(Clear, dr);
+            draw_list(
+                frame,
+                dr,
+                ctx.list,
+                ctx.state,
+                list_query,
+                ctx.stats,
+                ctx.glyphs,
+                ctx.bookmarks,
+                ctx.full_model_count,
+                ctx.filter_label,
+                ctx.empty_reason,
+                ctx.folded_groups,
+                ctx.list_hover,
+                ctx.theme,
+            );
+        }
 
-    // Restamp the splitter's border columns with the accent while it's
-    // hovered/dragged — cheap chrome-level feedback over both panes' drawn
-    // borders (screen-spec §5). The status row and modals draw on top
-    // regardless (the strip only spans body rows, so nothing overlaps).
-    if let Some(which) = ctx.splitter_highlight {
-        if let Some(strip) = rects.splitter(which) {
-            for col in strip.x..strip.x + strip.width {
-                for row in strip.y..strip.y + strip.height {
-                    if let Some(cell) = frame.buffer_mut().cell_mut((col, row)) {
-                        cell.set_fg(ctx.theme.accent);
+        // Restamp the splitter's border columns with the accent while it's
+        // hovered/dragged — cheap chrome-level feedback over both panes'
+        // drawn borders (screen-spec §5). The status row and modals draw on
+        // top regardless (the strip only spans body rows, so nothing
+        // overlaps).
+        if let Some(which) = ctx.splitter_highlight {
+            if let Some(strip) = rects.splitter(which) {
+                for col in strip.x..strip.x + strip.width {
+                    for row in strip.y..strip.y + strip.height {
+                        if let Some(cell) = frame.buffer_mut().cell_mut((col, row)) {
+                            cell.set_fg(ctx.theme.accent);
+                        }
                     }
                 }
             }
@@ -536,8 +565,8 @@ fn draw_overlay(
             super::overlay::draw_menu(frame, r, ms, ctx.glyphs, ctx.theme)
         }
         // A search's "overlay" is the inline query in the pane titles — the
-        // panes themselves already drew it.
-        Mode::Selection | Mode::Search(_) => {}
+        // panes themselves already drew it; Home draws its own inline bar.
+        Mode::Selection | Mode::Search(_) | Mode::Home => {}
     }
 }
 
@@ -589,9 +618,19 @@ fn draw_tab_bar(
         } else {
             base.patch(Style::default().fg(t.text_faint))
         };
+        // The `×` only exists when the cell carries a close slot (the home
+        // tab doesn't — `close_x: None`); the cell still ends in a space so
+        // both shapes share the band rhythm.
         let text = Line::from(vec![
             Span::styled(format!(" {} ", view.labels[cell.index]), base),
-            Span::styled(chrome.tab_close, close_st),
+            Span::styled(
+                if cell.close_x.is_some() {
+                    chrome.tab_close
+                } else {
+                    " "
+                },
+                close_st,
+            ),
             Span::styled(" ", base),
         ]);
         frame.render_widget(Paragraph::new(text), cell.rect);

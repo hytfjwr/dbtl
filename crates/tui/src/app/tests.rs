@@ -7336,6 +7336,7 @@ fn hit_geom<'a>(a: &'a App, lay: Option<&'a Layout>, area: Rect) -> HitGeometry<
     let panes = pane_layout(area, &a.ui_state.pane_config());
     HitGeometry {
         panes,
+        home: None,
         // The strip resolved like the event loop does: the stored scroll
         // replayed (no ensure-active — the draw already ran it).
         tab_bar: Some(a.tab_bar_layout_for(panes.tab_bar, false)),
@@ -7764,7 +7765,7 @@ fn click_target_middle_click_opens_a_tab() {
     // and activated).
     let row_uid = a.active_list().model_at(1).unwrap().unique_id.clone();
     a.click_target(&HitTarget::ListRow(1), MouseButton::Middle, (5, 3));
-    assert_eq!(a.tab_count(), 2, "a row's middle-click opened a tab");
+    assert_eq!(a.tab_count(), 3, "a row's middle-click opened a tab");
     assert_eq!(
         a.selected_unique_id().as_deref(),
         Some(row_uid.as_str()),
@@ -7775,7 +7776,7 @@ fn click_target_middle_click_opens_a_tab() {
         MouseButton::Middle,
         (5, 3),
     );
-    assert_eq!(a.tab_count(), 3, "a node's middle-click opened a tab");
+    assert_eq!(a.tab_count(), 4, "a node's middle-click opened a tab");
     assert_eq!(
         a.selected_unique_id().as_deref(),
         Some("model.sample.fct_orders"),
@@ -7789,7 +7790,7 @@ fn click_target_middle_click_opens_a_tab() {
     );
     assert_eq!(
         a.tab_count(),
-        3,
+        4,
         "an already-open model dedupes, not appends"
     );
 }
@@ -8547,44 +8548,50 @@ fn three_models(a: &App) -> (String, String, String) {
 #[test]
 fn tab_actions_open_dedupe_close_and_cycle() {
     let mut a = app();
-    let (root0, m1, m2) = three_models(&a);
-    assert_eq!(a.tab_count(), 1, "the app boots with one tab");
+    let (_root0, m1, m2) = three_models(&a);
+    assert_eq!(
+        a.tab_count(),
+        2,
+        "the app boots with home + one seeded model tab"
+    );
 
     // `O` on the list selection: fresh tab right of the active one, activated.
     a.ui_state.set_selected(1);
     apply_action(&mut a, Action::TabOpen);
-    assert_eq!(a.tab_count(), 2);
-    assert_eq!(a.active_tab(), 1);
+    assert_eq!(a.tab_count(), 3);
+    assert_eq!(a.active_tab(), 2);
     assert_eq!(a.selected_unique_id().as_deref(), Some(m1.as_str()));
 
     // `O` on an already-open model dedupes — activates, never appends (T2).
     apply_action(&mut a, Action::TabOpen);
-    assert_eq!(a.tab_count(), 2);
+    assert_eq!(a.tab_count(), 3);
 
     // A different selection grows the strip.
     a.ui_state.set_selected(2);
     apply_action(&mut a, Action::TabOpen);
-    assert_eq!(a.tab_count(), 3);
+    assert_eq!(a.tab_count(), 4);
     assert_eq!(a.selected_unique_id().as_deref(), Some(m2.as_str()));
 
-    // `{`/`}` cycle one tab, wrapping at both ends.
+    // `{`/`}` cycle one tab, wrapping at both ends — home (index 0) is a
+    // tab like any other in the cycle.
     apply_action(&mut a, Action::TabNext);
     assert_eq!(a.active_tab(), 0);
-    assert_eq!(a.selected_unique_id().as_deref(), Some(root0.as_str()));
+    assert!(a.home_active(), "the wrap-around lands on home");
     apply_action(&mut a, Action::TabPrev);
-    assert_eq!(a.active_tab(), 2);
+    assert_eq!(a.active_tab(), 3);
     assert_eq!(a.selected_unique_id().as_deref(), Some(m2.as_str()));
 
-    // `1`..=`9` activate by position; out-of-range is a no-op.
+    // `1`..=`9` activate MODEL tabs by number — `1` is tabs[1] (home is 0);
+    // out-of-range is a no-op.
     apply_action(&mut a, Action::TabActivate(1));
-    assert_eq!(a.active_tab(), 0);
+    assert_eq!(a.active_tab(), 1);
     apply_action(&mut a, Action::TabActivate(9));
-    assert_eq!(a.active_tab(), 0, "position 9 doesn't exist — no-op");
+    assert_eq!(a.active_tab(), 1, "position 9 doesn't exist — no-op");
 
     // `X` on a mid-strip tab: the RIGHT neighbour takes over (§2).
-    a.activate_tab(0);
+    a.activate_tab(1);
     apply_action(&mut a, Action::TabClose);
-    assert_eq!(a.tab_count(), 2);
+    assert_eq!(a.tab_count(), 3);
     assert_eq!(
         a.selected_unique_id().as_deref(),
         Some(m1.as_str()),
@@ -8594,13 +8601,19 @@ fn tab_actions_open_dedupe_close_and_cycle() {
     // `X` on the LAST tab: the LEFT neighbour takes over.
     apply_action(&mut a, Action::TabActivate(2));
     apply_action(&mut a, Action::TabClose);
-    assert_eq!(a.tab_count(), 1);
+    assert_eq!(a.tab_count(), 2);
     assert_eq!(a.selected_unique_id().as_deref(), Some(m1.as_str()));
 
-    // The last tab refuses to close — with a toast.
+    // Closing the LAST model tab lands on home (§2 — Issue 10's
+    // replacement for "the last tab refuses").
     apply_action(&mut a, Action::TabClose);
     assert_eq!(a.tab_count(), 1);
-    assert_eq!(a.take_notice().as_deref(), Some("can't close the last tab"));
+    assert!(a.home_active(), "the last model tab's close lands on home");
+
+    // The home tab itself refuses to close — with a toast.
+    apply_action(&mut a, Action::TabClose);
+    assert_eq!(a.tab_count(), 1);
+    assert_eq!(a.take_notice().as_deref(), Some("can't close the home tab"));
 }
 
 #[test]
@@ -8608,7 +8621,8 @@ fn tab_switch_restores_each_tabs_own_state() {
     let mut a = app();
     let (_root0, m1, _m2) = three_models(&a);
 
-    // Give tab 0 a distinct view, cursor, history, expansion, anchor, column.
+    // Give the seeded tab (index 1 — index 0 is home) a distinct view,
+    // cursor, history, expansion, anchor, column.
     a.tab_mut().lineage_view.upstream = false;
     a.tab_mut().back = vec![m1.clone()];
     a.tab_mut().forward = vec![_root0.clone()];
@@ -8625,9 +8639,12 @@ fn tab_switch_restores_each_tabs_own_state() {
     assert!(a.tab().lineage_cursor.is_none());
     assert_eq!(a.selected_unique_id().as_deref(), Some(m1.as_str()));
 
-    // Switch back: tab 0's state is intact.
-    a.activate_tab(0);
-    assert!(!a.tab().lineage_view.upstream, "tab 0's view survived");
+    // Switch back: the seeded tab's state is intact.
+    a.activate_tab(1);
+    assert!(
+        !a.tab().lineage_view.upstream,
+        "the seeded tab's view survived"
+    );
     assert_eq!(a.tab().back, vec![m1.clone()]);
     assert_eq!(a.tab().forward, vec![_root0]);
     assert!(a.tab().collapse_expanded.contains("group-x"));
@@ -8645,20 +8662,20 @@ fn tab_switch_stashes_and_restores_the_lineage_scroll() {
     a.ui_state.set_lineage_scroll(40, 7);
     a.open_node_as_tab(&m1);
     assert_eq!(
-        a.tabs()[0].scroll,
+        a.tabs()[1].scroll,
         Some((40, 7)),
         "the outgoing tab stashed the viewport"
     );
     assert!(a.tab().scroll.is_none(), "a fresh tab has no stash");
 
     a.ui_state.set_lineage_scroll(3, 3);
-    a.activate_tab(0);
+    a.activate_tab(1);
     assert_eq!(
         (a.ui_state.lineage_scroll_x(), a.ui_state.lineage_scroll_y()),
         (40, 7),
         "the saved viewport restores verbatim"
     );
-    assert_eq!(a.tabs()[1].scroll, Some((3, 3)));
+    assert_eq!(a.tabs()[2].scroll, Some((3, 3)));
 }
 
 #[test]
@@ -8667,7 +8684,7 @@ fn tab_open_on_a_non_model_toasts_instead() {
     // A source uid resolves in the Dag but isn't a list model — `O`/`+`/
     // middle-click can't tab it; the shared gate toasts the resource kind.
     assert!(!a.open_node_as_tab("source.jaffle_finance.dev_lake_jaffle_payment.suppliers"));
-    assert_eq!(a.tab_count(), 1);
+    assert_eq!(a.tab_count(), 2);
     assert_eq!(
         a.take_notice().as_deref(),
         Some("can't open a source as a tab")
@@ -8685,16 +8702,17 @@ fn tab_strip_insertion_places_the_new_tab_right_of_the_active_one() {
     let mut a = app();
     let (root0, m1, m2) = three_models(&a);
     a.open_node_as_tab(&m1);
-    a.activate_tab(0);
+    a.activate_tab(1);
     a.open_node_as_tab(&m2);
-    // [root0, m2, m1] — the new tab lands at active+1, not at the end.
+    // [home, root0, m2, m1] — the new tab lands at active+1, not at the end
+    // (the home tab at index 0 carries no root — the "" cell).
     let roots: Vec<&str> = a
         .tabs()
         .iter()
         .map(|t| t.root.as_deref().unwrap_or(""))
         .collect();
-    assert_eq!(roots, vec![root0.as_str(), m2.as_str(), m1.as_str()]);
-    assert_eq!(a.active_tab(), 1);
+    assert_eq!(roots, vec!["", root0.as_str(), m2.as_str(), m1.as_str()]);
+    assert_eq!(a.active_tab(), 2);
 }
 
 #[test]
@@ -8723,7 +8741,7 @@ fn plus_palette_opens_the_model_search_for_a_new_tab() {
         new_tab: true,
     });
     apply_action(&mut a, Action::SearchConfirm);
-    assert_eq!(a.tab_count(), 2, "the palette pick opened a new tab");
+    assert_eq!(a.tab_count(), 3, "the palette pick opened a new tab");
     assert_eq!(a.selected_unique_id().as_deref(), Some(m1.as_str()));
     assert!(matches!(a.mode, Mode::Selection), "the palette closed");
 }
@@ -8741,7 +8759,7 @@ fn at_query_in_the_plain_palette_still_reroots_the_active_tab() {
         new_tab: false,
     });
     apply_action(&mut a, Action::SearchConfirm);
-    assert_eq!(a.tab_count(), 1);
+    assert_eq!(a.tab_count(), 2, "a re-root never grows the strip");
     assert_eq!(a.selected_unique_id().as_deref(), Some(m1.as_str()));
     assert_eq!(
         a.tab().back,
@@ -8780,7 +8798,7 @@ fn wheel_on_the_tab_strip_scrolls_the_strip_not_the_panes() {
     let (root0, m1, m2) = three_models(&a);
     a.open_node_as_tab(&m1);
     a.open_node_as_tab(&m2);
-    a.activate_tab(0);
+    a.activate_tab(1);
     assert_eq!(a.selected_unique_id().as_deref(), Some(root0.as_str()));
     // Far right, then clamped back left — the scroll index saturates.
     for _ in 0..10 {
@@ -8826,9 +8844,9 @@ fn reload_drops_tabs_whose_roots_vanished() {
                 ..TabState::default()
             },
         ],
-        3,
+        Some(3),
     );
-    assert_eq!(a.tab_count(), 4);
+    assert_eq!(a.tab_count(), 5, "home + the four restored tabs");
 
     a.reload().expect("reload ok");
     let roots: Vec<&str> = a.tabs().iter().filter_map(|t| t.root.as_deref()).collect();
@@ -8837,20 +8855,20 @@ fn reload_drops_tabs_whose_roots_vanished() {
         vec![root0.as_str(), m1.as_str()],
         "the dead-root and non-model tabs dropped; the active index clamped"
     );
-    assert_eq!(a.active_tab(), 1);
+    assert_eq!(a.active_tab(), 2);
 
-    // If EVERY tab's root vanished, the strip reseeds one rootless tab
-    // rather than break the >=1-tab invariant.
+    // If EVERY model tab's root vanished, home carries the strip alone —
+    // landing on the "where do I look next" screen IS the designed answer.
     a.restore_tabs(
         vec![TabState {
             root: Some("model.jaffle_finance.ghost_only".to_string()),
             ..TabState::default()
         }],
-        0,
+        Some(0),
     );
     a.reload().expect("reload ok");
-    assert_eq!(a.tab_count(), 1, "one tab reseeds rather than zero");
-    assert!(a.tab().root.is_none(), "the reseeded tab is rootless");
+    assert_eq!(a.tab_count(), 1, "home alone keeps the >=1-tab invariant");
+    assert!(a.home_active(), "the lone survivor is the home tab");
 }
 
 #[test]
@@ -8876,10 +8894,10 @@ fn reload_follows_the_active_tab_across_left_of_active_prunes() {
                 ..TabState::default()
             },
         ],
-        1,
+        Some(1),
     );
     a.reload().expect("reload ok");
-    assert_eq!(a.active_tab(), 0, "root0 slid into index 0");
+    assert_eq!(a.active_tab(), 1, "root0 slid into index 1 (home is 0)");
     assert_eq!(
         a.selected_unique_id().as_deref(),
         Some(root0.as_str()),
@@ -8906,7 +8924,7 @@ fn reload_prunes_non_model_ids_from_tab_history() {
             forward: vec![source.clone(), m1.clone()],
             ..TabState::default()
         }],
-        0,
+        Some(0),
     );
     a.reload().expect("reload ok");
     assert_eq!(
@@ -8926,19 +8944,23 @@ fn tabs_beyond_nine_open_unnumbered_and_off_the_digit_keys() {
         let uid = a.active_list().model_at(i).unwrap().unique_id.clone();
         a.open_node_as_tab(&uid);
     }
-    assert_eq!(a.tab_count(), 12);
+    assert_eq!(a.tab_count(), 13, "home + the seeded tab + 11 opens");
     let labels = a.tab_labels();
-    assert!(labels[0].starts_with("1 "), "position 1 is numbered");
-    assert!(labels[8].starts_with("9 "), "position 9 is numbered");
-    assert!(
-        !labels[9].starts_with("10 ") && !labels[9].starts_with("0 "),
-        "position 10 carries no number: {:?}",
-        labels[9]
+    assert_eq!(
+        labels[0], "\u{2302}",
+        "index 0 is the home glyph, unnumbered"
     );
-    // The active tab is position 12 — `9` activates position 9, not clamped
-    // to the strip's end.
+    assert!(labels[1].starts_with("1 "), "position 1 is numbered");
+    assert!(labels[9].starts_with("9 "), "position 9 is numbered");
+    assert!(
+        !labels[10].starts_with("10 ") && !labels[10].starts_with("0 "),
+        "position 10 carries no number: {:?}",
+        labels[10]
+    );
+    // The active tab is position 13 — `9` activates the tab numbered 9
+    // (index 9 — the label and the digit share the strip index).
     apply_action(&mut a, Action::TabActivate(9));
-    assert_eq!(a.active_tab(), 8);
+    assert_eq!(a.active_tab(), 9);
 }
 
 #[test]
@@ -8948,7 +8970,7 @@ fn selecting_in_the_list_re_roots_only_the_active_tab() {
     let mut a = app();
     let (_root0, m1, m2) = three_models(&a);
     a.open_node_as_tab(&m1); // tab 2 roots m1
-    a.activate_tab(0); // back to tab 1
+    a.activate_tab(1); // back to the seeded tab
                        // Move the list selection onto m2 (the production click arm's
                        // `reroot_select`; `j`/wheel adopt through the same select).
     a.reroot_select(&m2);
@@ -8958,13 +8980,293 @@ fn selecting_in_the_list_re_roots_only_the_active_tab() {
         "the active tab re-rooted"
     );
     assert_eq!(
-        a.tabs()[1].root.as_deref(),
+        a.tabs()[2].root.as_deref(),
         Some(m1.as_str()),
         "the other tab's root is untouched"
     );
     // Switching to tab 2 shows ITS root — not the selection tab 1 made.
-    a.activate_tab(1);
+    a.activate_tab(2);
     assert_eq!(a.selected_unique_id().as_deref(), Some(m1.as_str()));
+}
+
+// ---- Issue 10: the fixed home tab + home screen ---------------------------------
+
+#[test]
+fn home_tab_is_fixed_unclosable_stateless_and_survives_reload() {
+    let mut a = app();
+    assert!(a.tabs()[0].home, "index 0 is the home tab");
+    assert!(!a.home_active(), "the boot lands on the seeded model tab");
+
+    apply_action(&mut a, Action::HomeGo);
+    assert!(a.home_active());
+    assert!(matches!(a.mode, Mode::Home), "home is the idle layer there");
+    assert!(a.tab().root.is_none(), "home carries no root");
+    assert!(a.selected_unique_id().is_none());
+    assert!(a.tab().back.is_empty() && a.tab().lineage_cursor.is_none());
+
+    // `X` refuses — the home cell can never leave index 0.
+    apply_action(&mut a, Action::TabClose);
+    assert_eq!(a.tab_count(), 2);
+    assert!(a.tabs()[0].home);
+    assert_eq!(a.take_notice().as_deref(), Some("can't close the home tab"));
+
+    // set_root can't be tricked into rooting it either.
+    a.set_root(Some(
+        "model.jaffle_finance.stg_finance__budgets".to_string(),
+    ));
+    assert!(a.tab().root.is_none());
+
+    // A reload keeps it while dropping dead model tabs (home always lives —
+    // the strip can never be empty).
+    a.restore_tabs(
+        vec![TabState {
+            root: Some("model.jaffle_finance.ghost".to_string()),
+            ..TabState::default()
+        }],
+        Some(0),
+    );
+    a.reload().expect("reload ok");
+    assert_eq!(a.tab_count(), 1);
+    assert!(a.tabs()[0].home && a.home_active());
+}
+
+#[test]
+fn restore_strips_a_second_home_flag() {
+    // A malformed restore can't inject a second home tab — the fixed cell is
+    // re-seeded at index 0 and every incoming flag is normalised off.
+    let mut a = app();
+    a.restore_tabs(
+        vec![
+            TabState::home(),
+            TabState {
+                root: Some(a.active_list().model_at(0).unwrap().unique_id.clone()),
+                ..TabState::default()
+            },
+        ],
+        Some(0),
+    );
+    assert_eq!(a.tabs().iter().filter(|t| t.home).count(), 1);
+    assert!(a.tabs()[0].home && !a.tabs()[1].home);
+}
+
+#[test]
+fn tilde_lands_on_home_and_digits_skip_it() {
+    let mut a = app();
+    let (root0, m1, _m2) = three_models(&a);
+    a.open_node_as_tab(&m1);
+
+    apply_action(&mut a, Action::HomeGo);
+    assert!(a.home_active());
+    assert_eq!(
+        a.home_resume.as_deref(),
+        Some(m1.as_str()),
+        "the outgoing model root becomes the Resume row"
+    );
+
+    // The digits address MODEL tabs — `1` is tabs[1], `2` tabs[2]; home is
+    // reachable only through `~` / its cell / cycling.
+    apply_action(&mut a, Action::TabActivate(1));
+    assert_eq!(a.selected_unique_id().as_deref(), Some(root0.as_str()));
+    apply_action(&mut a, Action::HomeGo);
+    apply_action(&mut a, Action::TabActivate(2));
+    assert_eq!(a.selected_unique_id().as_deref(), Some(m1.as_str()));
+    apply_action(&mut a, Action::HomeGo);
+    apply_action(&mut a, Action::TabActivate(9));
+    assert!(a.home_active(), "out-of-range digits are a no-op");
+}
+
+#[test]
+fn home_data_sections_order_and_flat_selectable() {
+    let mut a = app();
+    let (_root0, m1, _m2) = three_models(&a);
+    apply_action(&mut a, Action::BookmarkToggle); // marks the seeded root
+    a.open_node_as_tab(&m1); // recent becomes [m1, root0]
+    a.enter_home();
+
+    let d = a.home_data();
+    let titles: Vec<&str> = d.sections.iter().map(|s| s.title).collect();
+    assert_eq!(titles.first(), Some(&"Resume"), "Resume heads the page");
+    assert_eq!(titles.last(), Some(&"Actions"), "Actions always exists");
+    let pos = |t: &str| titles.iter().position(|x| x == &t);
+    // §3's fixed order: Resume → Recent → Bookmarks → Health → Last run →
+    // Diff → Attention → Actions (Health always renders; Last run / Diff
+    // only with their data sources — absent under this fixture).
+    assert!(
+        pos("Recent").unwrap() < pos("Bookmarks").unwrap(),
+        "fixed order: Recent before Bookmarks: {titles:?}"
+    );
+    let health = pos("Health").expect("Health always renders");
+    assert!(
+        pos("Bookmarks").unwrap() < health && health < pos("Attention").unwrap(),
+        "Health sits between Bookmarks and Attention: {titles:?}"
+    );
+    assert!(
+        pos("Attention").unwrap() < pos("Actions").unwrap(),
+        "Attention before Actions: {titles:?}"
+    );
+    // The info sections are non-selectable: header + info rows only, so a
+    // click/cursor can never land on them.
+    for s in &d.sections {
+        if matches!(s.title, "Health" | "Last run" | "Diff") {
+            assert!(s.rows.is_empty(), "{} carries info, not rows", s.title);
+            assert!(!s.info.is_empty(), "{} renders at least one line", s.title);
+        }
+    }
+    assert_eq!(
+        d.info_flat.len(),
+        d.sections.iter().map(|s| s.info.len()).sum::<usize>(),
+        "info_flat is the sections' info flattened"
+    );
+    // `selectable` IS the sections' rows flattened — the cursor/click
+    // indexing can't drift from what's drawn.
+    let flat: Vec<&HomeItem> = d
+        .sections
+        .iter()
+        .flat_map(|s| s.rows.iter().map(|r| &r.item))
+        .collect();
+    assert_eq!(flat, d.selectable.iter().collect::<Vec<_>>());
+    match &d.selectable[0] {
+        HomeItem::Model { uid } => assert_eq!(uid, &m1, "Resume = the outgoing tab's root"),
+        other => panic!("the Resume row is a model: {other:?}"),
+    }
+}
+
+#[test]
+fn home_move_clamps_never_wraps_and_open_dedupes() {
+    let mut a = app();
+    let (root0, _m1, _m2) = three_models(&a);
+    a.enter_home();
+    let n = a.home_data().selectable.len();
+    assert!(n > 0, "the home always has rows (Actions)");
+
+    for _ in 0..n + 4 {
+        apply_action(&mut a, Action::HomeMove(Direction::Down));
+    }
+    assert_eq!(a.home_sel, n - 1, "j clamps at the last row");
+    for _ in 0..n + 4 {
+        apply_action(&mut a, Action::HomeMove(Direction::Up));
+    }
+    assert_eq!(a.home_sel, 0, "k clamps at the first row");
+
+    // Enter on the Resume row re-activates the already-open seeded tab —
+    // the T2 dedupe, not a fresh tab.
+    apply_action(&mut a, Action::HomeOpen);
+    assert!(!a.home_active());
+    assert_eq!(a.selected_unique_id().as_deref(), Some(root0.as_str()));
+    assert_eq!(a.tab_count(), 2);
+}
+
+#[test]
+fn home_command_rows_run_and_unavailable_ones_are_filtered() {
+    let mut a = app();
+    a.enter_home();
+    let stats_i = a
+        .home_data()
+        .selectable
+        .iter()
+        .position(|it| {
+            matches!(
+                it,
+                HomeItem::Command {
+                    action: Action::StatsOpen,
+                }
+            )
+        })
+        .expect("the stats row is runnable");
+    apply_action(&mut a, Action::HomePick(stats_i));
+    assert!(
+        matches!(a.mode, Mode::Stats(_)),
+        "the command ran over home"
+    );
+    // And the modal closes back to home — the idle-mode rule.
+    apply_action(&mut a, Action::DetailClose);
+    assert!(matches!(a.mode, Mode::Home));
+
+    // §3's 使えない行は出さない: `D` without a baseline is NOT a row at
+    // all — the shared `unavailable_reason` filters it at build time, so a
+    // drawn command can never toast instead of running.
+    assert!(
+        !a.home_data().selectable.iter().any(|it| matches!(
+            it,
+            HomeItem::Command {
+                action: Action::DiffOpen,
+            }
+        )),
+        "the baseline-less diff row is filtered out of Actions"
+    );
+}
+
+#[test]
+fn home_search_filters_and_enter_opens_a_tab() {
+    let mut a = app();
+    a.enter_home();
+    apply_action(&mut a, Action::SearchOpen);
+    let Mode::Search(s) = &a.mode else {
+        panic!("`/` opens a search over home")
+    };
+    assert_eq!(s.target, SearchTarget::Home);
+
+    // An empty query lists every model; typing narrows by fuzzy match.
+    let all = a.home_data().search.as_ref().unwrap().results.len();
+    assert!(all >= 3, "the fixture has models to search");
+    for c in "shoppers".chars() {
+        apply_action(&mut a, Action::SearchType(c));
+    }
+    let d = a.home_data();
+    let results = &d.search.as_ref().unwrap().results;
+    assert!(
+        !results.is_empty() && results.len() < all,
+        "the query narrowed the list"
+    );
+    let top = match &results[0].item {
+        HomeItem::Model { uid } => uid.clone(),
+        other => panic!("results are model rows: {other:?}"),
+    };
+    apply_action(&mut a, Action::SearchConfirm);
+    assert_eq!(
+        a.selected_unique_id().as_deref(),
+        Some(top.as_str()),
+        "Enter opened the highlighted result as a tab"
+    );
+    assert!(!a.home_active());
+
+    // Re-open and Esc: cancel restores nothing and lands back on home.
+    apply_action(&mut a, Action::HomeGo);
+    apply_action(&mut a, Action::SearchOpen);
+    apply_action(&mut a, Action::SearchCancel);
+    assert!(
+        matches!(a.mode, Mode::Home),
+        "Esc returns to home, not Selection"
+    );
+}
+
+#[test]
+fn home_row_clicks_open_like_enter() {
+    let mut a = app();
+    let (_root0, m1, _m2) = three_models(&a);
+    a.open_node_as_tab(&m1);
+    a.enter_home();
+    let area = Rect::new(0, 0, 80, 24);
+    let panes = pane_layout(area, &a.ui_state.pane_config());
+    let body = panes.list.union(panes.lineage).union(panes.inspector);
+    let data = a.home_data();
+    let lines = crate::ui::home_window(&crate::ui::home_lines(&data), body.height as usize, 0);
+    let mut g = hit_geom(&a, None, area);
+    g.home = Some(lines.clone());
+    // Chrome lines are inert — only drawn `Row(i)` cells click.
+    for (i, l) in lines.iter().enumerate() {
+        let t = hit_target(&g, body.x + 2, body.y + i as u16);
+        match l {
+            crate::ui::HomeLine::Row(flat) => {
+                assert_eq!(t, Some(HitTarget::HomeRow(*flat)), "line {i} ({l:?})")
+            }
+            _ => assert_eq!(t, None, "line {i} ({l:?}) is dead chrome"),
+        }
+    }
+    // A row click dispatches HomePick — the seeded root's tab activates.
+    a.click_target(&HitTarget::HomeRow(0), MouseButton::Left, (0, 0));
+    assert_eq!(a.selected_unique_id().as_deref(), Some(m1.as_str()));
+    assert_eq!(a.tab_count(), 3, "dedupe activated, not appended");
 }
 
 // ---- Issue 04: the inspector pane ----------------------------------------------
@@ -9915,7 +10217,7 @@ fn folded_model_still_opens_as_a_tab() {
         a.open_node_as_tab(uid),
         "a folded model opens as a tab — it renders in the lineage"
     );
-    assert_eq!(a.tab_count(), 2);
+    assert_eq!(a.tab_count(), 3);
     assert_eq!(
         a.selected_unique_id().as_deref(),
         Some(uid),

@@ -345,7 +345,7 @@ pub fn event_loop(
             // Built only when the intent AND the carved rect leave it room —
             // a forced `On` on a narrow screen squeezes the region to zero
             // cols, which is NOT a pane.
-            let inspector = if want && panes.inspector.width > 0 {
+            let inspector = if want && !app.home_active() && panes.inspector.width > 0 {
                 app.inspector_view()
             } else {
                 None
@@ -578,6 +578,40 @@ pub fn event_loop(
             // side is the chip order `status_chips` derives from the segments
             // (impact/notify head the drop order).
             let panes = pane_layout(area, &app.ui_state.pane_config());
+            // Issue 10: the home body's draw product — built only while the
+            // fixed home tab is active (a `None` ctx.home keeps the panes).
+            // The size-aware seam then clamps `home_sel`/`match_idx` into
+            // range and scrolls so the cursor's line stays visible — the
+            // same ensure-visible job the list's offset does.
+            let home_data = if app.home_active() {
+                Some(app.home_data())
+            } else {
+                None
+            };
+            if let Some(data) = &home_data {
+                let body = panes.list.union(panes.lineage).union(panes.inspector);
+                let n = data.selectable.len();
+                let cur = match &mut app.mode {
+                    dbtl::Mode::Search(s) if s.target == dbtl::SearchTarget::Home => {
+                        let c = s.match_idx.min(n.saturating_sub(1));
+                        s.match_idx = c;
+                        c
+                    }
+                    _ => {
+                        app.home_sel = app.home_sel.min(n.saturating_sub(1));
+                        app.home_sel
+                    }
+                };
+                let plan = dbtl::ui::home_lines(data);
+                let sel_line = dbtl::ui::home_line_of(&plan, cur);
+                let h = body.height as usize;
+                if sel_line < app.home_scroll {
+                    app.home_scroll = sel_line;
+                } else if sel_line >= app.home_scroll + h.max(1) {
+                    app.home_scroll = sel_line + 1 - h.max(1);
+                }
+                app.home_scroll = app.home_scroll.min(plan.len().saturating_sub(1));
+            }
             let hints_vec: Vec<StatusHint> = match &splitter_hint {
                 Some(text) => vec![StatusHint {
                     key: text.clone(),
@@ -591,7 +625,9 @@ pub fn event_loop(
                 impact: impact_s.as_deref(),
                 notify: notify_s.as_deref(),
                 column: column_s.as_deref(),
-                focus: Some(focus_s),
+                // The `focus:` chip names a pane focus — meaningless on the
+                // home body (it owns the whole band), so it drops there.
+                focus: (!app.home_active()).then_some(focus_s),
                 view: view_seg,
                 position: pos_s.as_deref(),
                 coverage: coverage_s.as_deref(),
@@ -681,6 +717,11 @@ pub fn event_loop(
                     .filter(|h| matches!(h, HitTarget::ListRow(_) | HitTarget::ListHeader(_)));
                 ctx.theme = app.active_theme();
                 ctx.inspector = inspector.as_deref();
+                // Issue 10: `Some` IS the body switch — the home view owns
+                // the whole band while the fixed tab is active.
+                ctx.home = home_data.as_deref();
+                ctx.home_sel = app.home_sel;
+                ctx.home_scroll = app.home_scroll;
                 terminal
                     .draw(|frame| draw(frame, &ctx))
                     .context("failed to draw frame")?;
@@ -1077,12 +1118,18 @@ fn handle_mouse(
             }
             let rects = pane_layout(area, &app.ui_state.pane_config());
             let down = me.kind == MouseEventKind::ScrollDown;
-            if matches!(app.mode, Mode::Selection) {
+            // The panes-owning idle modes own the wheel: `Selection` routes
+            // by pane, `Home` moves the home cursor (the same notch→cursor
+            // semantics the list wheel keeps — j/k in mouse form). A real
+            // covering overlay scrolls its own content instead.
+            if matches!(app.mode, Mode::Selection | Mode::Home) {
                 let shift = me.modifiers.contains(KeyModifiers::SHIFT);
                 // §6: the wheel over the tab strip scrolls the STRIP (one
                 // tab per notch) — the panes below never see it.
                 if within(rects.tab_bar, me.column, me.row) {
                     app.scroll_tab_bar(if down { 1 } else { -1 });
+                } else if app.home_active() {
+                    app.move_home_sel(if down { Direction::Down } else { Direction::Up });
                 } else {
                     wheel(app, &rects, me.column, me.row, down, shift);
                 }
@@ -1107,7 +1154,7 @@ fn handle_mouse(
         // lineage diagram scrolls horizontally — and over the tab strip it
         // scrolls the tabs, like the wheel; overlays ignore it.
         MouseEventKind::ScrollRight | MouseEventKind::ScrollLeft => {
-            if !matches!(app.mode, Mode::Selection) {
+            if !matches!(app.mode, Mode::Selection | Mode::Home) {
                 return MouseHandled {
                     dirty: false,
                     reanchor: false,
@@ -1121,7 +1168,9 @@ fn handle_mouse(
                 } else {
                     -1
                 });
-            } else {
+            } else if !app.home_active() {
+                // Home has no horizontal axis — the strip is the only
+                // horizontally scrollable chrome it keeps.
                 wheel_x(
                     app,
                     &rects,
@@ -1161,6 +1210,11 @@ fn handle_mouse(
             };
             let live = app.mode.mouse_live();
             let sel = matches!(app.mode, Mode::Selection);
+            // The panes-owning idle modes (`Selection` and `Home`) route
+            // clicks to the chrome/body hit-test; covering-overlay modes
+            // take `overlay_click` instead. `Home` shares `click_target` —
+            // its `HomeRow` arm IS the row's Enter (§3: 項目はクリックでも開く).
+            let panes_own = matches!(app.mode, Mode::Selection | Mode::Home);
             // One consume per emitted gesture: a pick that closed a
             // transient overlay flags its follow-up `DoubleClick` inert (see
             // `MouseRouter::suppress_double`); any other gesture in between
@@ -1169,7 +1223,7 @@ fn handle_mouse(
             // The covering overlay's outer rect — the hit-test routes by it
             // (interior rows / frame / exterior), computed from the SAME
             // layout + scroll the frame drew.
-            let overlay = if sel {
+            let overlay = if panes_own {
                 None
             } else {
                 let rects = pane_layout(area, &app.ui_state.pane_config());
@@ -1353,6 +1407,23 @@ fn handle_mouse(
                                     outcome.effects.extend(o.effects);
                                     outcome.reanchor |= o.reanchor;
                                 }
+                            }
+                        } else if matches!(app.mode, Mode::Home) {
+                            // §3's home surface: rows, the `⌂`/`+`/tab
+                            // cells, arrows, status hints and chips all
+                            // resolve through `click_target` — a `HomeRow`
+                            // click is the row's Enter (`HomePick`), chrome
+                            // clicks behave exactly as under `Selection`.
+                            let o = app.click_target(t, *button, (at.x, at.y));
+                            outcome.quit |= o.quit;
+                            outcome.effects.extend(o.effects);
+                            outcome.reanchor |= o.reanchor;
+                            // A row pick that opened a model tab (or a
+                            // command modal) changed the surface under the
+                            // pointer — the follow-up double-click must not
+                            // re-hit-test what it revealed.
+                            if *button == MouseButton::Left && matches!(t, HitTarget::HomeRow(_)) {
+                                mouse.suppress_double();
                             }
                         } else {
                             overlay_click(
@@ -1588,7 +1659,13 @@ fn hit_geometry<'a>(
     status: Option<&'a StatusLayout>,
     title: Option<&'a TitleLayout>,
 ) -> HitGeometry<'a> {
-    let panes = pane_layout(area, &app.ui_state.pane_config());
+    // The drawer's flag is masked while the home body owns the band — a
+    // stale `list_drawer` must never feed the hit-test surface draw never
+    // paints (draw skips it under `ctx.home`; this mirrors that here).
+    let mut cfg = app.ui_state.pane_config();
+    cfg.list_drawer &= !app.home_active();
+    let panes = pane_layout(area, &cfg);
+    let home = home_hit_lines(app, &panes);
     HitGeometry {
         panes,
         // Replay the stored scroll — synced to the RESOLVED scroll after
@@ -1605,6 +1682,7 @@ fn hit_geometry<'a>(
         overlay,
         status,
         title,
+        home,
     }
 }
 
@@ -1624,10 +1702,32 @@ fn drawer_shortcut(app: &mut App, key: event::KeyEvent, action: Action) -> bool 
         return true;
     }
     if matches!(action, Action::ToggleListPane) {
+        // The list isn't part of the home body — `Ctrl-b` has no surface to
+        // toggle there, so the key stays inert rather than flagging a
+        // drawer that never draws.
+        if app.home_active() {
+            return true;
+        }
         app.ui_state.toggle_list_drawer();
         return true;
     }
     false
+}
+
+/// The home body's line window while the home tab is active — the SAME
+/// plan/scroll/height the draw used (the loop resolved `app.home_scroll`
+/// before stashing it), so a click lands on the row the screen painted.
+fn home_hit_lines(app: &App, panes: &dbtl::ui::PaneRects) -> Option<Vec<dbtl::ui::HomeLine>> {
+    if !app.home_active() {
+        return None;
+    }
+    let body = panes.list.union(panes.lineage).union(panes.inspector);
+    let data = app.home_data();
+    Some(dbtl::ui::home_window(
+        &dbtl::ui::home_lines(&data),
+        body.height as usize,
+        app.home_scroll,
+    ))
 }
 
 /// Whether screen cell `(x, y)` is inside `r`.
@@ -1640,6 +1740,11 @@ fn within(r: Rect, x: u16, y: u16) -> bool {
 /// the usual convention for mice without a horizontal wheel; over the list,
 /// Shift changes nothing (the list has no horizontal axis).
 fn wheel(app: &mut App, rects: &PaneRects, col: u16, row: u16, down: bool, shift: bool) {
+    // The home body owns its band (the caller routes home notches to the
+    // home cursor — this arm only guards a stale call).
+    if app.home_active() {
+        return;
+    }
     // §12's drawer owns the wheel while it floats: its interior IS the list
     // surface (the same notch→cursor+adopt the inline pane gets) and its
     // frame is inert chrome. Cells OUTSIDE it keep their pane meaning — the
@@ -1682,6 +1787,9 @@ fn wheel(app: &mut App, rects: &PaneRects, col: u16, row: u16, down: bool, shift
 /// scrollable surface. The saturating pan intent is bounded by the loop's
 /// `clamp_lineage` next frame, same as the vertical wheel.
 fn wheel_x(app: &mut App, rects: &PaneRects, col: u16, row: u16, right: bool) {
+    if app.home_active() {
+        return;
+    }
     // The drawer swallows every wheel kind over its surface — a notch there
     // must never reach the lineage it covers.
     if rects.list_drawer.is_some_and(|dr| within(dr, col, row)) {
@@ -3281,6 +3389,171 @@ mod tests {
             app.ui_state.selected(),
             before,
             "a wheel notch over the drawer interior moves the list cursor"
+        );
+    }
+
+    // ---- Issue 10: the home body is a panes-owning surface -------------
+
+    /// The first cell hit-testing as `HomeRow(i)` under `g` — aimed by the
+    /// test instead of hardcoded, like [`list_row_cell`].
+    fn home_row_cell(app: &App, area: Rect) -> (u16, u16, usize) {
+        let chrome = ChromeGeom::default();
+        let g = chrome.hit_geometry(app, None, area, None);
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                if let Some(HitTarget::HomeRow(i)) = hit_target(&g, x, y) {
+                    return (x, y, i);
+                }
+            }
+        }
+        panic!("no HomeRow cell resolved in the geometry");
+    }
+
+    /// [`click`] at a caller-chosen `area` (the home tests run the wide
+    /// 100x30 layout, not the band).
+    fn click_at(
+        app: &mut App,
+        router: &mut MouseRouter,
+        drag: &mut Option<PaneDrag>,
+        x: u16,
+        y: u16,
+        area: Rect,
+    ) {
+        feed_area(
+            app,
+            router,
+            drag,
+            MouseEventKind::Down(MouseButton::Left),
+            x,
+            y,
+            None,
+            area,
+        );
+        feed_area(
+            app,
+            router,
+            drag,
+            MouseEventKind::Up(MouseButton::Left),
+            x,
+            y,
+            None,
+            area,
+        );
+    }
+
+    /// The wide layout the home tests share (tab strip + body band).
+    const WIDE: Rect = Rect::new(0, 0, 100, 30);
+
+    /// §3's 項目はクリックでも開く: a release-confirmed click through
+    /// `handle_mouse` on a `HomeRow` cell IS the row's Enter — the model
+    /// tab activates (this is the routing the mode gate used to drop).
+    #[test]
+    fn home_row_click_opens_the_model_tab() {
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        let m1 = app.active_list().models[1].unique_id.clone();
+        app.open_node_as_tab(&m1);
+        app.enter_home();
+        assert!(app.home_active(), "the fixture lands on the home tab");
+        let (x, y, _i) = home_row_cell(&app, WIDE);
+        click_at(&mut app, &mut router, &mut drag, x, y, WIDE);
+        assert!(
+            !app.home_active(),
+            "the row click opened a model tab like Enter"
+        );
+        assert!(matches!(app.mode, Mode::Selection));
+    }
+
+    /// A row pick swaps the surface under the pointer — the follow-up
+    /// `DoubleClick` must be inert (a list row under the revealed panes
+    /// would fire `DetailOpen`).
+    #[test]
+    fn home_row_pick_makes_the_follow_up_double_click_inert() {
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        let m1 = app.active_list().models[1].unique_id.clone();
+        app.open_node_as_tab(&m1);
+        app.enter_home();
+        let (x, y, _i) = home_row_cell(&app, WIDE);
+        click_at(&mut app, &mut router, &mut drag, x, y, WIDE);
+        assert!(!app.home_active(), "the pick opened the model tab");
+        // Same cell, inside the double-click window: the router emits a
+        // DoubleClick — suppressed, so it can't fire on the revealed panes.
+        click_at(&mut app, &mut router, &mut drag, x, y, WIDE);
+        assert!(
+            matches!(app.mode, Mode::Selection),
+            "the follow-up double must stay inert — got {:?}",
+            app.mode
+        );
+    }
+
+    /// The wheel over the home body moves the home cursor — the same
+    /// notch→cursor semantics the list wheel keeps; the tab strip still
+    /// scrolls the strip.
+    #[test]
+    fn home_wheel_moves_the_home_cursor() {
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        let m1 = app.active_list().models[1].unique_id.clone();
+        app.open_node_as_tab(&m1);
+        app.enter_home();
+        let (x, y, _) = home_row_cell(&app, WIDE);
+        assert_eq!(app.home_sel, 0);
+        feed_area(
+            &mut app,
+            &mut router,
+            &mut drag,
+            MouseEventKind::ScrollDown,
+            x,
+            y,
+            None,
+            WIDE,
+        );
+        assert_eq!(app.home_sel, 1, "a notch down moved the home cursor");
+        feed_area(
+            &mut app,
+            &mut router,
+            &mut drag,
+            MouseEventKind::ScrollUp,
+            x,
+            y,
+            None,
+            WIDE,
+        );
+        assert_eq!(app.home_sel, 0);
+    }
+
+    /// §12's drawer flag can never shadow the home body: entering home
+    /// clears it, and even a stale flag loses to the home arm's hit order.
+    #[test]
+    fn drawer_flag_cannot_shadow_the_home_body() {
+        let mut app = fixture_app();
+        open_band_drawer(&mut app);
+        app.enter_home();
+        assert!(
+            !app.ui_state.list_drawer(),
+            "entering home clears the drawer flag"
+        );
+        // Even a flag re-set out from under it loses: the home arm owns the
+        // band in `hit_target`, so body cells stay `HomeRow`/inert, never
+        // `ListRow`/`ModalExterior`.
+        app.ui_state.set_list_drawer(true);
+        let targets: Vec<HitTarget> = resolved_targets(&app, None, BAND)
+            .into_iter()
+            .map(|(_, _, t)| t)
+            .collect();
+        assert!(
+            targets.iter().any(|t| matches!(t, HitTarget::HomeRow(_))),
+            "home rows still hit-test under the phantom flag"
+        );
+        assert!(
+            !targets
+                .iter()
+                .any(|t| matches!(t, HitTarget::ModalExterior | HitTarget::ModalInterior)),
+            "no drawer targets leak over the home body: {targets:?}"
         );
     }
 }

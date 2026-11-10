@@ -9,7 +9,7 @@ use crate::action::{
 use crate::effect::Effect;
 use crate::{build_model_list_grouped, reduce_selection, Focus, LineageLens};
 
-use super::{App, LineageView, ListFilter, Outcome};
+use super::{App, HomeItem, LineageView, ListFilter, Outcome};
 
 /// The shared yank arm: record the intent toast and request the clipboard
 /// effect, or no-op when there is nothing to copy (no selection / empty SQL).
@@ -435,11 +435,13 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             // it, the close restores what the overlay stacked over: the yank
             // which-key and the node menu carry their origin mode in `back`
             // (so Structure -> y -> Esc lands back on the structure modal,
-            // not Selection), every other overlay closes to Selection.
+            // not the idle layer), every other overlay closes to the idle
+            // mode (Selection — or Home while the home tab is active).
+            let idle = app.idle_mode();
             app.mode = match std::mem::replace(&mut app.mode, Mode::Selection) {
-                Mode::Yank { back, .. } => back.map(|b| *b).unwrap_or(Mode::Selection),
-                Mode::Menu(ms) => ms.back.map(|b| *b).unwrap_or(Mode::Selection),
-                _ => Mode::Selection,
+                Mode::Yank { back, .. } => back.map(|b| *b).unwrap_or_else(|| idle.clone()),
+                Mode::Menu(ms) => ms.back.map(|b| *b).unwrap_or_else(|| idle.clone()),
+                _ => idle,
             };
             Outcome::cont()
         }
@@ -469,8 +471,8 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                     app.pending_col = None;
                     match m {
                         // A non-overlay origin needs no restore slot: closing
-                        // lands on Selection by default anyway.
-                        Mode::Selection | Mode::Search(_) | Mode::Menu(_) => None,
+                        // lands on the idle mode by default anyway.
+                        Mode::Selection | Mode::Home | Mode::Search(_) | Mode::Menu(_) => None,
                         m => Some(Box::new(m)),
                     }
                 }
@@ -549,7 +551,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             let Some((action, back, target)) = resolved else {
                 return Outcome::cont();
             };
-            app.mode = back.map(|b| *b).unwrap_or(Mode::Selection);
+            app.mode = back.map(|b| *b).unwrap_or_else(|| app.idle_mode());
             app.move_selection_to(&target);
             // Arm the overlay target stash for exactly this dispatch: the
             // selection move above can't land on a non-model node (the list
@@ -721,7 +723,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                                 .is_some_and(|n| n.resource_type == "model") =>
                         {
                             app.jump_to(&uid);
-                            app.mode = Mode::Selection;
+                            app.mode = app.idle_mode();
                         }
                         Some(_) => app.set_notice("cannot re-root to a non-model node"),
                         None => {}
@@ -736,7 +738,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                     .map(|c| crate::ColumnRef::new(&dv.model_id, c)),
                 _ => None,
             };
-            app.mode = Mode::Selection;
+            app.mode = app.idle_mode();
             if let Some(col) = col {
                 app.column_focus_enter(col);
             }
@@ -789,7 +791,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                         .is_some_and(|n| n.resource_type == "model") =>
                 {
                     app.jump_to(&uid);
-                    app.mode = Mode::Selection;
+                    app.mode = app.idle_mode();
                 }
                 Some(_) => app.set_notice("cannot re-root to a non-model node"),
                 None => {}
@@ -814,15 +816,25 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                 h.scroll = 0;
                 return Outcome::cont();
             }
-            let target = if app.ui_state.focus() == Focus::List {
+            let target = if app.home_active() {
+                // Issue 10: `/` on home searches models for a TAB to open —
+                // no list cursor exists, so there is no origin to restore.
+                SearchTarget::Home
+            } else if app.ui_state.focus() == Focus::List {
                 SearchTarget::List
             } else {
                 SearchTarget::Lineage
             };
             // The search's restore point: the list CURSOR (what Esc lands
             // back on), not the root — under a detached root the cursor sits
-            // on a different model.
-            let origin = app.list_sel_uid();
+            // on a different model. A home-target search has NO origin —
+            // restoring one would re-root nothing yet still record the
+            // unseen list-cursor model into the Recent MRU.
+            let origin = if matches!(target, SearchTarget::Home) {
+                None
+            } else {
+                app.list_sel_uid()
+            };
             app.mode = Mode::Search(SearchState {
                 target,
                 query: String::new(),
@@ -980,6 +992,43 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                         app.reveal_current_lineage_match();
                     }
                 }
+                Some((SearchTarget::Home, query, hist)) => {
+                    // Same recall contract as the list target: Up/Down on an
+                    // EMPTY query (or a live browse) walks `search_history`;
+                    // a typed query moves `match_idx` over the result rows
+                    // (`home_data` recomputes them — the reducer and the
+                    // renderer share one source).
+                    let browsing = hist.is_some() || query.is_empty();
+                    let nav = matches!(dir, Direction::Up | Direction::Down);
+                    if browsing && nav && !app.search_history.is_empty() {
+                        let next: Option<usize> = match (dir, hist) {
+                            (Direction::Up, None) => Some(0),
+                            (Direction::Up, Some(i)) => {
+                                Some((i + 1).min(app.search_history.len() - 1))
+                            }
+                            (Direction::Down, Some(0)) | (Direction::Down, None) => None,
+                            (Direction::Down, Some(i)) => Some(i - 1),
+                            _ => hist,
+                        };
+                        let recalled = next.map(|i| app.search_history[i].clone());
+                        if let Mode::Search(s) = &mut app.mode {
+                            s.hist = next;
+                            s.query = recalled.unwrap_or_default();
+                            s.match_idx = 0;
+                        }
+                    } else {
+                        let count = app.home_search_len();
+                        if count > 0 {
+                            if let Mode::Search(s) = &mut app.mode {
+                                s.match_idx = match dir {
+                                    Direction::Down => (s.match_idx + 1).min(count - 1),
+                                    Direction::Up => s.match_idx.saturating_sub(1),
+                                    _ => s.match_idx,
+                                };
+                            }
+                        }
+                    }
+                }
                 None => {}
             }
             Outcome::cont()
@@ -987,7 +1036,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         Action::SearchCancel => {
             // Palette cancel just closes the overlay — no filter/list to restore.
             if matches!(app.mode, Mode::Palette(_)) {
-                app.mode = Mode::Selection;
+                app.mode = app.idle_mode();
                 return Outcome::cont();
             }
             let origin = match &app.mode {
@@ -1045,7 +1094,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                             Outcome::cont()
                         } else {
                             app.record_palette_run(action);
-                            app.mode = Mode::Selection;
+                            app.mode = app.idle_mode();
                             // Close FIRST, then apply the chosen action and
                             // propagate its WHOLE Outcome (so "quit" quits and
                             // "$EDITOR" yields the effect) — same contract the
@@ -1063,7 +1112,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                     // opens the model AS a new tab (dedupes to its tab when
                     // already open — §2/§7).
                     Some(PaletteRow::Model { uid, .. }) => {
-                        app.mode = Mode::Selection;
+                        app.mode = app.idle_mode();
                         if new_tab {
                             app.open_node_as_tab(&uid);
                         } else {
@@ -1072,7 +1121,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                         Outcome::cont()
                     }
                     Some(PaletteRow::Header(_)) | None => {
-                        app.mode = Mode::Selection;
+                        app.mode = app.idle_mode();
                         Outcome::cont()
                     }
                 };
@@ -1086,9 +1135,21 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                     // Jump to the currently-cycled match: if it is a selectable
                     // model, re-root to it (recording history); else just leave.
                     let hit = app.current_lineage_match();
-                    app.mode = Mode::Selection;
+                    app.mode = app.idle_mode();
                     if let Some(uid) = hit {
                         app.jump_to(&uid);
+                    }
+                }
+                Some((SearchTarget::Home, query)) => {
+                    // Home search: Enter opens the highlighted result AS A
+                    // TAB (T2 dedupes) and records the query — the same
+                    // `search_history` the list target's recall browses. The
+                    // close restores nothing (home has no list cursor).
+                    app.record_search_query(&query);
+                    let picked = app.home_search_pick();
+                    app.close_search(None, false);
+                    if let Some(uid) = picked {
+                        app.open_node_as_tab(&uid);
                     }
                 }
                 other => {
@@ -1455,6 +1516,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                     app.bookmarks.remove(&uid);
                     app.set_notice(format!("Removed bookmark: {name}"));
                 }
+                app.home_stamp += 1;
                 // Under the Bookmarked filter the toggle changes the view's
                 // membership — rebuild it so an un-bookmarked row leaves it.
                 if app.list_filter == ListFilter::Bookmarked {
@@ -1538,6 +1600,9 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             if let Some(uid) = &current {
                 app.select_by_unique_id(uid);
             }
+            // The rebuilt order is a home input too (search results follow
+            // `model_list`) — the cache must miss or home shows the old sort.
+            app.home_stamp += 1;
             Outcome::cont()
         }
         // Toggle the lineage minimap (a pure UiState view-pref). Routed DIRECTLY
@@ -1558,6 +1623,12 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         // guaranteed to overflow) and toasts an orientation hint; the loop
         // force-anchors next frame — the grid reshapes completely.
         Action::ToggleOverview => {
+            // The home body has no lineage to overview — toggling here
+            // would leak the flag into the next model tab opened.
+            if app.home_active() {
+                app.set_notice("overview needs a model tab".to_string());
+                return Outcome::cont();
+            }
             app.ui_state.toggle_overview();
             if app.ui_state.overview() {
                 if !app.ui_state.minimap_visible() {
@@ -1620,10 +1691,44 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             app.cycle_tab(matches!(action, Action::TabNext));
             Outcome::cont()
         }
-        // `1`..=`9`: activate the tab at that 1-based position (out-of-range
-        // is a no-op — tabs past 9 carry no number key).
+        // `1`..=`9`: activate the tab at that position — the bar numbers
+        // MODEL tabs 1-9 and home sits at index 0, so the key IS the strip
+        // index (out-of-range is a no-op; `~` reaches home).
         Action::TabActivate(n) => {
-            app.activate_tab(usize::from(n).saturating_sub(1));
+            app.activate_tab(usize::from(n));
+            Outcome::cont()
+        }
+        // ---- home (Issue 10; §3) ----
+        // `~` (or the `⌂` cell): activate the fixed home tab. From home it
+        // is a no-op (idx 0 is already active).
+        Action::HomeGo => {
+            app.enter_home();
+            Outcome::cont()
+        }
+        // `j`/`k` under `Mode::Home`: move the item cursor over the flat
+        // selectable rows (clamped, no wrap — the list-cursor rule).
+        Action::HomeMove(dir) => {
+            app.move_home_sel(dir);
+            Outcome::cont()
+        }
+        // Enter / a row click: open the row's model AS A TAB (T2 dedupes to
+        // the open one), or run its command — §3 drops the unavailable ones
+        // at build, so a drawn command always runs.
+        Action::HomeOpen | Action::HomePick(_) => {
+            let idx = match action {
+                Action::HomePick(i) => i,
+                _ => app.home_sel,
+            };
+            match app.home_data().selectable.get(idx) {
+                Some(HomeItem::Model { uid }) => {
+                    let uid = uid.clone();
+                    app.open_node_as_tab(&uid);
+                }
+                Some(HomeItem::Command { action: a }) => {
+                    return apply_action(app, *a);
+                }
+                None => {}
+            }
             Outcome::cont()
         }
         // `I`: cycle the inspector visibility pref `auto → on → off` — the
@@ -1695,7 +1800,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             if let Some(back) = back.take() {
                 app.mode = *back;
             } else {
-                app.mode = Mode::Selection;
+                app.mode = app.idle_mode();
             }
         }
     }

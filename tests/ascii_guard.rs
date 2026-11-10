@@ -225,6 +225,15 @@ fn render_ctx(
             }
             _ => (Vec::new(), None),
         };
+        // Mirror the loop's home wiring (Issue 10): while the fixed home tab
+        // is active the whole body band draws the home screen — its `~`/`..`
+        // chrome and the health gauge's styled spaces are under the same
+        // all-ASCII scan as every other surface.
+        let home = if app.home_active() {
+            Some(app.home_data())
+        } else {
+            None
+        };
         ctx.hover_node = hover;
         ctx.search_matches = &search_matches;
         ctx.search_pos = search_pos;
@@ -248,6 +257,9 @@ fn render_ctx(
         // snapshot rides `RenderCtx` so the pane's marks/badges/scrollbar
         // are under the same all-ASCII scan.
         ctx.inspector = inspector.as_deref();
+        ctx.home = home.as_deref();
+        ctx.home_sel = app.home_sel;
+        ctx.home_scroll = app.home_scroll;
         terminal
             .draw(|frame| draw(frame, &ctx))
             .expect("draw must not panic");
@@ -941,4 +953,35 @@ fn narrow_band_drawer_is_all_ascii() {
     // (y=1, below the tab strip) with ASCII corners at x=0 and x=33.
     assert_eq!(buffer.cell((0, 1)).unwrap().symbol(), "+");
     assert_eq!(buffer.cell((33, 1)).unwrap().symbol(), "+");
+}
+
+// ---- Issue 10: the home screen ------------------------------------------------
+
+#[test]
+fn home_screen_and_its_search_are_all_ascii() {
+    // The fixed home tab in ASCII mode: the `~` cell (not `⌂`), `..`
+    // truncation (not `…`), the gauge's styled spaces, and every section
+    // header/row detail must stay inside the repertoire — at BOTH spec
+    // sizes.
+    let mut app = ascii_app();
+    app.enter_home();
+    for (w, h) in [(160, 44), (100, 30)] {
+        let buffer = render(&mut app, w, h);
+        assert_all_ascii(&buffer, "home");
+    }
+    // The `/` search surface: bar, results, and the empty-result note.
+    apply_action(&mut app, Action::SearchOpen);
+    for c in "orders".chars() {
+        apply_action(&mut app, Action::SearchType(c));
+    }
+    let buffer = render(&mut app, 100, 30);
+    assert_all_ascii(&buffer, "home search (matched)");
+    let mut app = ascii_app();
+    app.enter_home();
+    apply_action(&mut app, Action::SearchOpen);
+    for c in "zzz_no_match".chars() {
+        apply_action(&mut app, Action::SearchType(c));
+    }
+    let buffer = render(&mut app, 100, 30);
+    assert_all_ascii(&buffer, "home search (no matches)");
 }

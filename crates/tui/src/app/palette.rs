@@ -232,6 +232,9 @@ impl App {
                 .ui_state
                 .overview()
                 .then(|| "off in overview".to_string()),
+            // `w` on the home body has no lineage to overview — the arm
+            // toasts and returns instead of leaking the flag.
+            A::ToggleOverview => self.home_active().then(|| "needs a model tab".to_string()),
             // Node-scoped yanks dead-end at `yank_target_uid` when nothing is
             // selected.
             A::YankId | A::YankName | A::YankImpact | A::YankSelector => {
