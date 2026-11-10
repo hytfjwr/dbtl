@@ -10,14 +10,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
-use dbtl::action::{dispatch, esc_action, reanchors_lineage, Action, Direction, PaletteRow};
+use dbtl::action::{
+    dispatch, esc_action, reanchors_lineage, Action, Direction, PaletteRow, SearchTarget,
+};
 use dbtl::app::{apply_action, App, LineageView, Outcome};
 use dbtl::effect::Effect;
 use dbtl::layout::Layout;
 use dbtl::ui::{
-    draw, hit_target, mouse_dirty, overlay_rect, pane_interior, pane_layout, splitter_drag_width,
-    Focus, HitGeometry, HitTarget, LineageLens, MouseInput, MouseOutcome, MouseRouter, PaneRects,
-    RenderCtx, Splitter, StatusSegments, TabBarView,
+    draw, hit_target, lineage_content_rect, minimap_rect, minimap_scroll_to, mouse_dirty,
+    overlay_rect, pan_offset, pane_interior, pane_layout, splitter_drag_width, Focus, HitGeometry,
+    HitTarget, LineageLens, MouseInput, MouseOutcome, MouseRouter, PaneRects, RenderCtx, Splitter,
+    StatusSegments, TabBarView,
 };
 use dbtl::{Mode, SortMode};
 
@@ -62,10 +65,17 @@ pub fn event_loop(
     // reported hover target — the `Moved` redraw gate. The loop owns the
     // clock; the router only compares `Instant`s it is handed.
     let mut mouse = MouseRouter::new();
-    // The live splitter drag: the grabbed boundary plus the pointer's offset
-    // inside its 2-cell strip at press time. Loop-owned (like the router):
-    // the drag tracks pointer columns, so it is size-aware state by nature.
-    let mut splitter_drag: Option<SplitterDrag> = None;
+    // The live pane drag: splitter resize, lineage pan, or minimap scrub —
+    // one slot covers every drag surface so a superseding press can never
+    // leave two alive. Loop-owned (like the router): a drag tracks pointer
+    // cells, so it is size-aware state by nature.
+    let mut pane_drag: Option<PaneDrag> = None;
+    // The settled-hover tooltip (§9, Issue 05): armed when the resolved
+    // hover rests on a lineage node with no button held, shown after
+    // `TOOLTIP_DELAY` stationary, dropped when the hover leaves or a press
+    // lands. The loop owns the clock — the 250ms idle tick supplies the
+    // flip's redraw, the reducer and renderer stay clock-free.
+    let mut hover_tip: Option<HoverTip> = None;
     // Dirty-flag redraw: the frame work below only runs when something
     // actually changed (first frame, any event, a toast flip, a --watch
     // reload). An idle 250ms tick with none of those skips straight back to
@@ -101,6 +111,15 @@ pub fn event_loop(
         }
         if toasts.retain_fresh(Instant::now()) {
             dirty = true;
+        }
+        // The tooltip's 500ms flip is itself a redraw reason (§9): an idle
+        // tick crosses the delay under a still pointer, and nothing else
+        // would mark the frame for a frame-buffer-only overlay.
+        if let Some(t) = hover_tip.as_mut() {
+            if !t.visible && t.since.elapsed() >= TOOLTIP_DELAY {
+                t.visible = true;
+                dirty = true;
+            }
         }
         if dirty {
             // A tab switch is a root change in every sense but two: the
@@ -169,14 +188,35 @@ pub fn event_loop(
             lineage = app.styled_lineage_layout();
             let (view_w, view_h) = lineage_viewport(terminal, &app.ui_state)?;
             let cursor = app.lineage_cursor_uid();
+            // The lineage-search overlays (§6/M4): every matching node's
+            // frame accents, the title rides `i/N`, and the viewport anchors
+            // on the cycled match — `Some` only while a Lineage-target search
+            // is open, computed ONCE for all three consumers. `match_idx`
+            // cycles mod the count so the position is the same 1-based index
+            // n/N step; `(0, 0)` while the query matches nothing.
+            let (search_matches, current_match, search_pos) = match &app.mode {
+                Mode::Search(s) if s.target == SearchTarget::Lineage => {
+                    let m = app.lineage_matches(&s.query);
+                    let pos = if m.is_empty() {
+                        (0, 0)
+                    } else {
+                        (s.match_idx % m.len() + 1, m.len())
+                    };
+                    let cur = if m.is_empty() {
+                        None
+                    } else {
+                        m.get(s.match_idx % m.len()).cloned()
+                    };
+                    (m, cur, Some(pos))
+                }
+                _ => (Vec::new(), None, None),
+            };
             if let Some(lay) = lineage.as_deref() {
                 // A lineage node-jump search anchors the viewport on the cycled match
                 // (size-aware), overriding the usual selection-based anchor/clamp.
-                // `current_lineage_match` is `None` for an empty query, so opening
+                // `current_match` is `None` for an empty query, so opening
                 // search never jolts the view off the rooted node.
-                let search_rect = app
-                    .current_lineage_match()
-                    .and_then(|uid| lay.rects.get(&uid).copied());
+                let search_rect = current_match.and_then(|uid| lay.rects.get(&uid).copied());
                 if let Some(rect) = search_rect {
                     app.ui_state
                         .anchor_lineage(Some(rect), &lay.grid, view_w, view_h);
@@ -403,10 +443,9 @@ pub fn event_loop(
             // re-root, a wheel pan, a resize, a reload): the cell under the
             // pointer may now sit on a different surface. Re-resolve the
             // remembered hover target against the FRESH geometry so it can't
-            // go stale between `Moved` events.
-            // TODO(05): Issues 05/07 read `mouse.hover()` for the frame-buffer
-            // highlight/tooltip overlay — keep it out of CharGrid and every
-            // cache key (a post-blit overlay input only).
+            // go stale between `Moved` events. The resolved target feeds the
+            // Issue 05 hover accent and the tooltip's arm/drop below — both
+            // frame-buffer overlay inputs, never CharGrid or a cache key.
             if let Some(cell) = mouse.pointer() {
                 let target = if app.mode.mouse_live() {
                     let overlay = if matches!(app.mode, Mode::Selection) {
@@ -429,10 +468,36 @@ pub fn event_loop(
                 };
                 mouse.track_hover(target);
             }
+            // Issue 05's settled-hover reconcile: the tip arms only while the
+            // resolved hover rests on a real lineage NODE with no button held
+            // (a press — a click or the start of a pan — is not a hover), and
+            // drops when the viewport moves under a same-node pointer.
+            let hover_uid = match (mouse.hover(), mouse.press()) {
+                (Some(HitTarget::LineageNode(uid)), None) => Some(uid.clone()),
+                _ => None,
+            };
+            reconcile_hover_tip(
+                &mut hover_tip,
+                mouse.hover(),
+                mouse.press().is_some(),
+                (
+                    app.ui_state.lineage_scroll_x(),
+                    app.ui_state.lineage_scroll_y(),
+                ),
+                &app.dag,
+            );
+            let tip_view = match (&hover_tip, mouse.pointer()) {
+                (Some(t), Some(at)) if t.visible => app.tooltip_view(&t.uid, (at.x, at.y)),
+                _ => None,
+            };
             // §5 splitter feedback: the accent border + a status hint. The
             // hint names the live saved width mid-drag; on hover it teaches
             // the gesture (`·` is ambiguous-width, so ASCII mode swaps it).
-            let (highlight, splitter_hint) = match (splitter_drag, mouse.hover()) {
+            let live_splitter = match pane_drag {
+                Some(PaneDrag::Splitter(d)) => Some(d),
+                _ => None,
+            };
+            let (highlight, splitter_hint) = match (live_splitter, mouse.hover()) {
                 (Some(d), _) => (
                     Some(d.which),
                     Some(format!(
@@ -517,6 +582,15 @@ pub fn event_loop(
                 ctx.toasts = &toast_lines;
                 ctx.palette_rows = palette_rows.as_deref();
                 ctx.empty_reason = empty_reason.as_deref();
+                // Issue 05's pointer overlays — all post-blit frame-buffer
+                // effects (the CharGrid bytes and the layout cache never
+                // see them): the hovered node's accent frame + incident
+                // edge cells, the search-match frames + `i/N` title, and
+                // the settled-hover tooltip.
+                ctx.hover_node = hover_uid.as_deref();
+                ctx.search_matches = &search_matches;
+                ctx.search_pos = search_pos;
+                ctx.tooltip = tip_view.as_ref();
                 ctx.theme = app.active_theme();
                 ctx.inspector = inspector.as_deref();
                 terminal
@@ -606,7 +680,7 @@ pub fn event_loop(
                     let handled = handle_mouse(
                         app,
                         &mut mouse,
-                        &mut splitter_drag,
+                        &mut pane_drag,
                         me,
                         lineage.as_deref(),
                         area,
@@ -638,6 +712,32 @@ pub fn event_loop(
     }
 }
 
+/// The live pane drag: which surface owns the tracking (§5 splitter, §6
+/// lineage pan / minimap scrub). A single slot covers every drag surface —
+/// the press cell picks it once, and mid-drag motion never re-hit-tests, so
+/// a pointer dragged past a bound keeps the grabbed surface's tracking.
+#[derive(Clone, Copy)]
+enum PaneDrag {
+    /// A pane-boundary resize (§5).
+    Splitter(SplitterDrag),
+    /// A lineage pan (§6): the press cell plus the scroll offset at press
+    /// time, replayed through [`pan_offset`] so the diagram tracks the
+    /// pointer 1:1 in both axes. Begins on ANY interior cell — blank or
+    /// node — because the router only reports it once the 1-cell threshold
+    /// already ruled the gesture a drag, never a click (M3).
+    LineagePan {
+        /// The press cell.
+        origin: ratatui::layout::Position,
+        /// `UiState`'s scroll_x when the drag began.
+        scroll_x: usize,
+        /// `UiState`'s scroll_y when the drag began.
+        scroll_y: usize,
+    },
+    /// A minimap scrub: every tracked cell centres the viewport through the
+    /// same [`minimap_scroll_to`] mapping a click uses — no press base.
+    Minimap,
+}
+
 /// The live splitter drag: which boundary was grabbed plus the pointer's
 /// offset inside its 2-column strip at press time (`0` = the left pane's
 /// right-border cell, `1` = the right pane's left-border cell). Carrying the
@@ -649,24 +749,150 @@ struct SplitterDrag {
     grab_off: u16,
 }
 
-/// Resolve a drag press cell to a [`SplitterDrag`] when it lands on a pane
-/// boundary — `None` anywhere else (other drags stay inert until Issue 05
-/// gives the lineage pan a meaning).
-fn begin_splitter_drag(
+/// The settled-hover tooltip's live state (Issue 05): which node's hover
+/// armed it, the lineage viewport at arm time, when the rest began, and
+/// whether the [`TOOLTIP_DELAY`] timer already fired. The loop owns the
+/// clock; both the reducer and the renderer stay clock-free.
+struct HoverTip {
+    uid: String,
+    /// The `(scroll_x, scroll_y)` the arm read — a viewport move since then
+    /// left the anchored box pointing at stale content, so it re-arms.
+    scroll: (usize, usize),
+    since: Instant,
+    visible: bool,
+}
+
+/// The stationary-hover delay before the tooltip shows (§9).
+const TOOLTIP_DELAY: Duration = Duration::from_millis(500);
+
+/// Reconcile the settled-hover state against the freshest inputs (§9's
+/// "消す条件": press / drag / scroll / leave). The tip arms only while the
+/// resolved hover rests on a lineage node that is ALSO a real Dag node —
+/// a `+M more` marker is display chrome: it accents its frame but has no
+/// `dag.get`, so arming would just dirty the 500ms flip for a `tip_view`
+/// that is always `None`. A held button (press or pan), a viewport move
+/// under a same-node pointer (the anchor went stale), or a target change
+/// re-arms/drops; `visible` only ever flips on the idle-tick timer.
+fn reconcile_hover_tip(
+    hover_tip: &mut Option<HoverTip>,
+    hover: Option<&HitTarget>,
+    pressed: bool,
+    scroll: (usize, usize),
+    dag: &dbtl::Dag,
+) {
+    let hover_uid = match (hover, pressed) {
+        (Some(HitTarget::LineageNode(uid)), false) => Some(uid.clone()),
+        _ => None,
+    };
+    match (&mut *hover_tip, &hover_uid) {
+        // Same node AND the same viewport: the rest continues undisturbed.
+        (Some(t), Some(uid)) if t.uid == *uid && t.scroll == scroll => {}
+        (tip, armed) => {
+            *tip = armed
+                .clone()
+                .filter(|uid| dag.get(uid).is_some())
+                .map(|uid| HoverTip {
+                    uid,
+                    scroll,
+                    since: Instant::now(),
+                    visible: false,
+                });
+        }
+    }
+}
+
+/// Resolve a drag's press cell to the [`PaneDrag`] it starts — `None` on a
+/// surface with no drag meaning (the list, the strip, the status bar, pane
+/// chrome). The same resolution runs for `DragStart` and the `DragEnd`
+/// flick-fallback (a terminal that delivered no Drag events still reports
+/// the release's displacement).
+fn begin_pane_drag(
     app: &App,
     lineage: Option<&Layout>,
     area: Rect,
     origin: ratatui::layout::Position,
-) -> Option<SplitterDrag> {
+) -> Option<PaneDrag> {
     let g = hit_geometry(app, lineage, area, None);
-    let HitTarget::PaneBorder(which) = hit_target(&g, origin.x, origin.y)? else {
-        return None;
+    match hit_target(&g, origin.x, origin.y)? {
+        HitTarget::PaneBorder(which) => {
+            let strip = g.panes.splitter(which)?;
+            Some(PaneDrag::Splitter(SplitterDrag {
+                which,
+                grab_off: origin.x.saturating_sub(strip.x),
+            }))
+        }
+        // §6: a drag that began anywhere inside the drawn lineage — blank
+        // space or a node box alike — pans the diagram. `None` while the
+        // pane holds no layout (an empty pane has nothing to pan).
+        HitTarget::LineageNode(_) | HitTarget::LineageBlank if lineage.is_some() => {
+            Some(PaneDrag::LineagePan {
+                origin,
+                scroll_x: app.ui_state.lineage_scroll_x(),
+                scroll_y: app.ui_state.lineage_scroll_y(),
+            })
+        }
+        HitTarget::Minimap => Some(PaneDrag::Minimap),
+        _ => None,
+    }
+}
+
+/// Apply one tracked step of a live [`PaneDrag`]: the splitter writes its
+/// width, the pan replays `pan_offset` 1:1, the minimap centres on the
+/// scrubbed cell. The stored offsets then take the loop's per-frame
+/// `clamp_lineage` like every other scroll writer.
+fn apply_pane_drag(
+    app: &mut App,
+    drag: PaneDrag,
+    lineage: Option<&Layout>,
+    area: Rect,
+    at: ratatui::layout::Position,
+) {
+    match drag {
+        PaneDrag::Splitter(d) => apply_splitter_drag(app, d, at.x, area),
+        PaneDrag::LineagePan {
+            origin,
+            scroll_x,
+            scroll_y,
+        } => app.ui_state.pan_lineage(
+            pan_offset(scroll_x, origin.x, at.x),
+            pan_offset(scroll_y, origin.y, at.y),
+        ),
+        PaneDrag::Minimap => minimap_scroll_at(app, lineage, area, at.x, at.y),
+    }
+}
+
+/// Centre the lineage viewport on the grid block minimap cell `(col, row)`
+/// covers — §6's click-to-centre and each step of a scrub share it. The
+/// pure [`minimap_scroll_to`] maps through the same block division the draw
+/// stamps; `pan_lineage` stores the intent and the loop's `clamp_lineage`
+/// bounds the far edge, the same contract `wheel_lineage` keeps.
+fn minimap_scroll_at(app: &mut App, lineage: Option<&Layout>, area: Rect, col: u16, row: u16) {
+    let Some(lay) = lineage else {
+        return;
     };
-    let strip = g.panes.splitter(which)?;
-    Some(SplitterDrag {
-        which,
-        grab_off: origin.x.saturating_sub(strip.x),
-    })
+    let panes = pane_layout(area, &app.ui_state.pane_config());
+    let inner = pane_interior(panes.lineage);
+    let Some(mm) = minimap_rect(
+        inner,
+        lay.grid.width(),
+        lay.grid.height(),
+        app.ui_state.lineage_scroll_x(),
+        app.ui_state.lineage_scroll_y(),
+        app.ui_state.minimap_visible(),
+    ) else {
+        return;
+    };
+    let content = lineage_content_rect(inner, lay.grid.width(), lay.grid.height());
+    let (x, y) = minimap_scroll_to(
+        mm,
+        col,
+        row,
+        lay.grid.width(),
+        lay.grid.height(),
+        content.width as usize,
+        content.height as usize,
+    );
+    app.ui_state.pan_lineage(x, y);
 }
 
 /// Write the width a live drag asks for: the pointer's column resolved
@@ -721,7 +947,7 @@ fn apply_mouse(app: &mut App, outcome: &mut Outcome, action: Action) {
 fn handle_mouse(
     app: &mut App,
     mouse: &mut MouseRouter,
-    splitter_drag: &mut Option<SplitterDrag>,
+    pane_drag: &mut Option<PaneDrag>,
     me: MouseEvent,
     lineage: Option<&Layout>,
     area: Rect,
@@ -805,9 +1031,17 @@ fn handle_mouse(
                     outcome,
                 };
             };
+            // A press is gesture-less but not state-free: the held button is
+            // an input the hover reconcile reads (a settled tooltip drops on
+            // press — §9's "消す条件"). Without a dirty pass the reconcile
+            // would never observe `mouse.press()` — the router clears it on
+            // release before the Click gesture, so a whole click would slide
+            // under a visible tip. Deduped moves and stray events still cost
+            // nothing.
+            let pressed = matches!(input, MouseInput::Press { .. });
             let Some(gesture) = mouse.feed(input, Instant::now()) else {
                 return MouseHandled {
-                    dirty: false, // press / deduped move / stray event: nothing visible
+                    dirty: pressed,
                     reanchor: false,
                     outcome,
                 };
@@ -832,6 +1066,24 @@ fn handle_mouse(
             };
             let mut target_changed = false;
             let mut reanchor = false;
+            // The stored drag is live ONLY while the gesture continues it:
+            // a press starts a new gesture before the old release arrives
+            // (the router keeps the newest press — the in-flight drag is
+            // abandoned), a mode flip ends pointer routing, and a non-left
+            // drag never resizes/pans. Anything else clears it HERE — the
+            // '_' fallback arm is the last place a stale splitter drag can
+            // hide (the Issue 02 carry-over), so no abandoned drag resizes
+            // or pans on a later unrelated event.
+            let continues_drag = sel
+                && match &gesture {
+                    MouseOutcome::DragStart { button, .. }
+                    | MouseOutcome::DragEnd { button, .. } => *button == MouseButton::Left,
+                    MouseOutcome::DragMove { .. } => true,
+                    _ => false,
+                };
+            if !continues_drag {
+                *pane_drag = None;
+            }
             match &gesture {
                 MouseOutcome::Hover { at } if live => {
                     let target = {
@@ -925,6 +1177,13 @@ fn handle_mouse(
                                 // pointer; Issue 05 gives inspector rows
                                 // theirs).
                                 _ if double_left => {}
+                                // §6: a left click on the minimap centres the
+                                // viewport on the cell's covered grid block —
+                                // the drag scrubs through the same mapping.
+                                // Left only, like every pane gesture.
+                                HitTarget::Minimap if *button == MouseButton::Left => {
+                                    minimap_scroll_at(app, lineage, area, at.x, at.y);
+                                }
                                 _ => app.click_target(t, *button, (at.x, at.y)),
                             }
                         } else {
@@ -940,22 +1199,24 @@ fn handle_mouse(
                         }
                     }
                 }
-                // §5: a drag that began on a pane boundary resizes that pane.
-                // The press cell is hit-tested (only a boundary grab counts);
-                // afterwards the stored `which`+`grab_off` tracks the pointer
-                // — mid-drag motion never re-hit-tests, so a pointer dragged
-                // past a clamp keeps the grabbed border's tracking.
+                // §5/§6: a drag's press cell picks its surface once — pane
+                // boundary (resize), drawn lineage (pan), or minimap (scrub)
+                // — and the stored drag tracks the pointer from then on:
+                // mid-drag motion never re-hit-tests, so a pointer dragged
+                // past a bound keeps the grabbed surface's tracking. The
+                // assignment also clears any drag a superseding press left
+                // (a press on a non-drag surface begins nothing).
                 MouseOutcome::DragStart { button, origin, at } if sel => {
                     if *button == MouseButton::Left {
-                        if let Some(d) = begin_splitter_drag(app, lineage, area, *origin) {
-                            apply_splitter_drag(app, d, at.x, area);
-                            *splitter_drag = Some(d);
+                        *pane_drag = begin_pane_drag(app, lineage, area, *origin);
+                        if let Some(d) = *pane_drag {
+                            apply_pane_drag(app, d, lineage, area, *at);
                         }
                     }
                 }
                 MouseOutcome::DragMove { at, .. } if sel => {
-                    if let Some(d) = *splitter_drag {
-                        apply_splitter_drag(app, d, at.x, area);
+                    if let Some(d) = *pane_drag {
+                        apply_pane_drag(app, d, lineage, area, *at);
                     }
                 }
                 MouseOutcome::DragEnd { button, origin, at }
@@ -965,15 +1226,12 @@ fn handle_mouse(
                     // flick (press → release elsewhere): the router still
                     // reports DragEnd, so resolve the press cell like
                     // DragStart before finishing.
-                    let d = (*splitter_drag)
-                        .or_else(|| begin_splitter_drag(app, lineage, area, *origin));
+                    let d = (*pane_drag).or_else(|| begin_pane_drag(app, lineage, area, *origin));
                     if let Some(d) = d {
-                        apply_splitter_drag(app, d, at.x, area);
+                        apply_pane_drag(app, d, lineage, area, *at);
                     }
-                    *splitter_drag = None;
+                    *pane_drag = None;
                 }
-                // Other drags are recognized by the router but inert until
-                // Issue 05 (lineage pan) gives them meaning.
                 _ => {}
             }
             MouseHandled {
@@ -1841,17 +2099,36 @@ mod tests {
     fn feed(
         app: &mut App,
         router: &mut MouseRouter,
-        drag: &mut Option<SplitterDrag>,
+        drag: &mut Option<PaneDrag>,
         kind: MouseEventKind,
         x: u16,
         y: u16,
+    ) {
+        feed_l(app, router, drag, kind, x, y, None);
+    }
+
+    /// [`feed`] with a real lineage `Layout` — the Issue 05 gestures (lineage
+    /// pan, minimap, node hover) hit-test against the drawn diagram. Geometry
+    /// at 100x30 with the fixture: tab strip row 0, body rows 1..29, list
+    /// 0..34 (splitter cols 33-34), lineage interior 35..99 x 2..28; the
+    /// 114x7 grid centres into a 64x7 content rect at y 11..18 — so (40,12)
+    /// lands the seed box, (50,20) is interior blank, and the enabled
+    /// minimap sits at 83..99 x 2..8.
+    fn feed_l(
+        app: &mut App,
+        router: &mut MouseRouter,
+        drag: &mut Option<PaneDrag>,
+        kind: MouseEventKind,
+        x: u16,
+        y: u16,
+        lineage: Option<&Layout>,
     ) {
         handle_mouse(
             app,
             router,
             drag,
             mouse(kind, x, y),
-            None,
+            lineage,
             Rect::new(0, 0, 100, 30),
         );
     }
@@ -2149,5 +2426,356 @@ mod tests {
             Some(root0.as_str()),
             "`b` walks the wheel's re-root back"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // §6 Issue 05 gestures: lineage pan (blank AND node-origin), the
+    // minimap's click-to-centre + drag-scrub, the hover resolution the
+    // accent frame keys off, and the abandoned-drag carry-over fix.
+    // ------------------------------------------------------------------
+
+    /// §6/M3: a drag that began on lineage blank space pans the diagram 1:1
+    /// in BOTH axes — the release is a DragEnd, so it can never become the
+    /// click that would refocus the pane.
+    #[test]
+    fn lineage_blank_drag_pans_horizontally_and_vertically() {
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        let lineage = app.styled_lineage_layout();
+        use MouseEventKind as K;
+        // Seed the offsets so both directions have room to move.
+        app.ui_state.pan_lineage(10, 4);
+        for (kind, x, y) in [
+            (K::Down(MouseButton::Left), 50, 20),
+            (K::Drag(MouseButton::Left), 45, 17),
+        ] {
+            feed_l(
+                &mut app,
+                &mut router,
+                &mut drag,
+                kind,
+                x,
+                y,
+                lineage.as_deref(),
+            );
+        }
+        // Pointer moved (-5, -3) from the press: the picture follows, so the
+        // scroll offsets grow by the same delta.
+        assert_eq!(app.ui_state.lineage_scroll_x(), 15);
+        assert_eq!(app.ui_state.lineage_scroll_y(), 7);
+        for (kind, x, y) in [
+            (K::Drag(MouseButton::Left), 55, 22),
+            (K::Up(MouseButton::Left), 55, 22),
+        ] {
+            feed_l(
+                &mut app,
+                &mut router,
+                &mut drag,
+                kind,
+                x,
+                y,
+                lineage.as_deref(),
+            );
+        }
+        // +5/+2 from the press: saturating pan leaves the offsets clamped at
+        // zero (the frame's clamp_lineage bounds the far edge).
+        assert_eq!(app.ui_state.lineage_scroll_x(), 5);
+        assert_eq!(app.ui_state.lineage_scroll_y(), 2);
+        assert!(drag.is_none(), "release ends the pan");
+    }
+
+    /// §6/M3: a drag that began ON a node box is a pan — not a click. The
+    /// cursor the click would have committed stays home, and the release
+    /// (a DragEnd) never turns into one either.
+    #[test]
+    fn lineage_node_drag_pans_and_never_clicks() {
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        let lineage = app.styled_lineage_layout();
+        use MouseEventKind as K;
+        // (40,12) is inside the seed box (grid 0..26 x 0..3, content origin
+        // 35,11 at scroll 0).
+        let cursor_before = app.lineage_cursor_uid();
+        for (kind, x, y) in [
+            (K::Down(MouseButton::Left), 40, 12),
+            (K::Drag(MouseButton::Left), 38, 12),
+            (K::Up(MouseButton::Left), 38, 12),
+        ] {
+            feed_l(
+                &mut app,
+                &mut router,
+                &mut drag,
+                kind,
+                x,
+                y,
+                lineage.as_deref(),
+            );
+        }
+        assert_eq!(app.ui_state.lineage_scroll_x(), 2, "the node drag panned");
+        assert_eq!(
+            app.lineage_cursor_uid(),
+            cursor_before,
+            "no click happened: the cursor never committed to the dragged node"
+        );
+    }
+
+    /// §6: a left click on the minimap centres the viewport on the clicked
+    /// cell's grid block — (95,4) is 12 cells into the 16-wide inset.
+    #[test]
+    fn minimap_click_centres_the_viewport() {
+        let mut app = fixture_app();
+        app.ui_state.set_minimap(true);
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        let lineage = app.styled_lineage_layout();
+        use MouseEventKind as K;
+        for kind in [K::Down(MouseButton::Left), K::Up(MouseButton::Left)] {
+            feed_l(
+                &mut app,
+                &mut router,
+                &mut drag,
+                kind,
+                95,
+                4,
+                lineage.as_deref(),
+            );
+        }
+        // mx=12, sx=ceil(114/16)=8 -> 12*8+4-32 = 68 (stored raw; the frame's
+        // clamp_lineage bounds it to the far edge like every scroll writer).
+        assert_eq!(app.ui_state.lineage_scroll_x(), 68);
+    }
+
+    /// §6: a minimap drag scrubs the viewport — every tracked cell recentres
+    /// through the same `minimap_scroll_to` mapping the click uses.
+    #[test]
+    fn minimap_drag_scrubs_the_viewport() {
+        let mut app = fixture_app();
+        app.ui_state.set_minimap(true);
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        let lineage = app.styled_lineage_layout();
+        use MouseEventKind as K;
+        for (kind, x, y) in [
+            (K::Down(MouseButton::Left), 85, 4),
+            (K::Drag(MouseButton::Left), 90, 4),
+            (K::Drag(MouseButton::Left), 95, 4),
+            (K::Up(MouseButton::Left), 95, 4),
+        ] {
+            feed_l(
+                &mut app,
+                &mut router,
+                &mut drag,
+                kind,
+                x,
+                y,
+                lineage.as_deref(),
+            );
+        }
+        assert_eq!(
+            app.ui_state.lineage_scroll_x(),
+            68,
+            "the scrub tracked the release cell's block centre"
+        );
+        assert!(drag.is_none());
+    }
+
+    /// The accent frame's input: a `Moved` event over a node resolves the
+    /// hover target the renderer accents — deduped on the same cell, cleared
+    /// off the node.
+    #[test]
+    fn hover_tracks_the_node_under_the_pointer() {
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        let lineage = app.styled_lineage_layout();
+        use MouseEventKind as K;
+        feed_l(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Moved,
+            40,
+            12,
+            lineage.as_deref(),
+        );
+        assert_eq!(
+            router.hover(),
+            Some(&HitTarget::LineageNode(
+                "seed.jaffle_finance.source_datetime_policy".to_string()
+            ))
+        );
+        // Moving to blank space clears the node target.
+        feed_l(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Moved,
+            50,
+            20,
+            lineage.as_deref(),
+        );
+        assert_eq!(router.hover(), Some(&HitTarget::LineageBlank));
+    }
+
+    /// Issue 02 carry-over: a splitter drag abandoned by a superseding press
+    /// can never resize on the new press's motion. The router keeps the
+    /// newest press, so the in-flight drag is orphaned — the gesture gate
+    /// must clear it, not keep it tracking.
+    #[test]
+    fn abandoned_splitter_drag_clears_on_a_superseding_press() {
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        use MouseEventKind as K;
+        // Arm a splitter drag, then press the RIGHT button mid-drag (a real
+        // multi-button press or a terminal that dropped the left release).
+        for (kind, x) in [
+            (K::Down(MouseButton::Left), 33),
+            (K::Drag(MouseButton::Left), 50),
+        ] {
+            feed(&mut app, &mut router, &mut drag, kind, x, 10);
+        }
+        assert_eq!(app.ui_state.list_width(), 51, "the left drag resized");
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Down(MouseButton::Right),
+            10,
+            5,
+        );
+        for x in [15, 20] {
+            feed(
+                &mut app,
+                &mut router,
+                &mut drag,
+                K::Drag(MouseButton::Right),
+                x,
+                5,
+            );
+        }
+        assert_eq!(
+            app.ui_state.list_width(),
+            51,
+            "the abandoned drag stopped tracking instead of following the right drag"
+        );
+        assert!(drag.is_none());
+    }
+
+    /// Issue 02 carry-over, second half: a mode change mid-drag abandons it
+    /// too — the stored drag is cleared the moment pointer routing leaves
+    /// `Selection`, so a later inert-mode move can't resize either.
+    #[test]
+    fn abandoned_splitter_drag_clears_on_a_mode_change() {
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        use MouseEventKind as K;
+        for (kind, x) in [
+            (K::Down(MouseButton::Left), 33),
+            (K::Drag(MouseButton::Left), 50),
+        ] {
+            feed(&mut app, &mut router, &mut drag, kind, x, 10);
+        }
+        assert_eq!(app.ui_state.list_width(), 51);
+        app.mode = dbtl::Mode::Help(dbtl::HelpView::new(dbtl::Mode::Selection));
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Drag(MouseButton::Left),
+            60,
+            10,
+        );
+        assert_eq!(
+            app.ui_state.list_width(),
+            51,
+            "the modal mode abandoned the drag"
+        );
+        assert!(drag.is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // §9 Issue 05 review: the settled tooltip drops on press / scroll /
+    // leave, and never arms for a `+M more` display-chrome marker.
+    // ------------------------------------------------------------------
+
+    /// The reconcile's press half lives in `handle_mouse`: a Down feeds the
+    /// router no gesture, so the event must itself dirty — otherwise no
+    /// reconcile pass ever observes `mouse.press()` (the router clears it
+    /// on release before the Click gesture) and a click slides under a
+    /// visible tip.
+    #[test]
+    fn a_press_dirties_so_the_reconcile_observes_the_held_button() {
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        let lineage = app.styled_lineage_layout();
+        let handled = handle_mouse(
+            &mut app,
+            &mut router,
+            &mut drag,
+            mouse(MouseEventKind::Down(MouseButton::Left), 40, 12),
+            lineage.as_deref(),
+            Rect::new(0, 0, 100, 30),
+        );
+        assert!(
+            handled.dirty,
+            "a press dirties so the held button drops the tip"
+        );
+        assert!(router.press().is_some(), "the press is now observable");
+    }
+
+    /// §9's "消す条件": the tip drops on a press (even though the same node
+    /// still sits under the pointer) and on a viewport move that leaves the
+    /// SAME node under the pointer — the anchored box went stale.
+    #[test]
+    fn tooltip_clears_on_press_and_on_same_node_scroll() {
+        let app = fixture_app();
+        let node = HitTarget::LineageNode("seed.jaffle_finance.source_datetime_policy".to_string());
+        let mut tip = Some(HoverTip {
+            uid: "seed.jaffle_finance.source_datetime_policy".to_string(),
+            scroll: (0, 0),
+            since: Instant::now(),
+            visible: true,
+        });
+        // A held button: hover_uid would still resolve the node, but the
+        // pressed check drops the tip outright.
+        reconcile_hover_tip(&mut tip, Some(&node), true, (0, 0), &app.dag);
+        assert!(tip.is_none(), "a press drops the tip");
+
+        // Re-arm, settle, then scroll with the same node still hovered: the
+        // visible tip can't ride along at its stale anchor — it re-arms.
+        reconcile_hover_tip(&mut tip, Some(&node), false, (0, 0), &app.dag);
+        tip.as_mut().unwrap().visible = true;
+        reconcile_hover_tip(&mut tip, Some(&node), false, (4, 0), &app.dag);
+        let t = tip.as_ref().expect("a same-node hover re-arms");
+        assert!(
+            !t.visible,
+            "a scroll under the pointer drops the visible tip"
+        );
+        assert_eq!(t.scroll, (4, 0), "the re-arm tracked the new viewport");
+        // Same node AND same viewport: the rest continues undisturbed.
+        tip.as_mut().unwrap().visible = true;
+        reconcile_hover_tip(&mut tip, Some(&node), false, (4, 0), &app.dag);
+        assert!(tip.as_ref().unwrap().visible, "no scroll → the tip stays");
+    }
+
+    /// `+M more` markers hit-test as `LineageNode` but are display chrome —
+    /// `dag.get` has nothing to describe, so the tip must never arm (it
+    /// would only dirty the 500ms flip for a `tip_view` that is `None`).
+    #[test]
+    fn tooltip_never_arms_for_a_collapse_marker() {
+        let app = fixture_app();
+        let marker = HitTarget::LineageNode("model.jaffle_finance.stg_x+more".to_string());
+        let mut tip = None;
+        reconcile_hover_tip(&mut tip, Some(&marker), false, (0, 0), &app.dag);
+        assert!(tip.is_none(), "a marker uid arms no tooltip");
+        // And a REAL node arms normally — the guard doesn't over-filter.
+        let node = HitTarget::LineageNode("seed.jaffle_finance.source_datetime_policy".to_string());
+        reconcile_hover_tip(&mut tip, Some(&node), false, (0, 0), &app.dag);
+        assert!(tip.is_some(), "a real node still arms the tip");
     }
 }
