@@ -241,6 +241,10 @@ pub fn event_loop(
             let diff_s = app.diff_status_label();
             // The run_results chip (coverage + freshness of the loaded artifact).
             let run_s = app.run_status_label();
+            // The package-scope tag — always present: it states which graph the
+            // numbers describe (`scope:root` default / `scope:+pkgs` under
+            // --include-packages). Built per frame from the App's recorded scope.
+            let scope_s = format!("scope:{}", app.scope().tag());
             // Layer bands: the lineage pane's bottom-border column annotations,
             // present exactly while the Layer lens is active (cheap: one pass over
             // the layout's rects, only computed when the lens is on).
@@ -270,6 +274,7 @@ pub fn event_loop(
                     sort: sort_s.as_deref(),
                     diff: diff_s.as_deref(),
                     run: run_s.as_deref(),
+                    scope: Some(&scope_s),
                     filter: app.list_filter_label(),
                 };
                 ctx.minimap = app.ui_state.minimap_visible();

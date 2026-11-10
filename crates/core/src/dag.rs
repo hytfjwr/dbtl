@@ -56,6 +56,72 @@ pub fn is_exposure(n: &NodeInfo) -> bool {
     n.resource_type == "exposure"
 }
 
+/// Which packages a loaded [`Dag`] is presented in — the CLI `--include-packages`
+/// flag's domain meaning, shared by the TUI (`App` carries it so `reload`
+/// re-applies it), `dbtl docs`/`check`/`impact`, and the [`DiffReport`](crate::DiffReport)
+/// payload (which serializes it as `"root"` / `"all"`).
+///
+/// - `Root` (the default): only the root project's own nodes — the package
+///   boundary [`Dag::is_root_project`] defines. Installed-package models
+///   (`dbt deps` / `packages.yml`) are pruned at load, which also makes
+///   manifest mode match source mode (which never parses `dbt_packages/`).
+/// - `All` (`--include-packages`): the manifest's full contents — package
+///   nodes stay in the graph as dependency context for the list, lineage, and
+///   docs pages. Aggregate metrics (coverage / orphans / stats / docs summary
+///   / `dbtl check` / the PR-impact risk flags) still count the root project
+///   only: installed-package nodes are context, never the counted surface.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PackageScope {
+    /// The root project only — installed-package nodes are pruned at load.
+    #[default]
+    Root,
+    /// All packages the manifest carries; metrics still count the root project.
+    All,
+}
+
+impl PackageScope {
+    /// Whether installed-package nodes are kept in the graph (`--include-packages`).
+    pub fn includes_packages(&self) -> bool {
+        matches!(self, Self::All)
+    }
+
+    /// The compact status-bar token after `scope:` (`"root"` / `"+pkgs"`).
+    /// Pure ASCII, so it is safe under [`crate`](crate)'s ascii-guard contract.
+    pub fn tag(&self) -> &'static str {
+        match self {
+            Self::Root => "root",
+            Self::All => "+pkgs",
+        }
+    }
+
+    /// The sentence-form label for docs / CLI output: the summary's `- scope:`
+    /// bullet, the `dbtl check` report line, and the impact report's header.
+    pub fn describe(&self) -> &'static str {
+        match self {
+            Self::Root => "root project only",
+            Self::All => "all packages (metrics count the root project only)",
+        }
+    }
+
+    /// Apply the scope to a just-loaded `Dag`: `Root` prunes to the root
+    /// project's own nodes ([`Dag::root_scoped`]); `All` keeps the graph whole.
+    /// No-ops cheaply when there is nothing to prune (source mode and
+    /// single-package manifests are already root-only).
+    pub fn apply(&self, dag: Dag) -> Dag {
+        match self {
+            Self::All => dag,
+            Self::Root => {
+                if dag.nodes().values().all(|n| dag.is_root_project(n)) {
+                    dag // already root-only — skip the prune + clone entirely
+                } else {
+                    dag.root_scoped()
+                }
+            }
+        }
+    }
+}
+
 /// One column of a model/source, as recorded in the manifest. Kept in dbt
 /// *definition* order (the manifest preserves it once `serde_json`'s
 /// `preserve_order` feature is on).
@@ -873,10 +939,54 @@ impl Dag {
             .map(|(name, _)| name.to_string())
     }
 
+    /// Whether `n` belongs to the ROOT project — the ONE package-scope
+    /// predicate every scope-aware consumer shares (the default load filter,
+    /// the aggregate metrics, `dbtl check`). The node's declaring package is
+    /// its `unique_id`'s second segment (`model.<pkg>.<name>`; a source uid
+    /// `source.<pkg>.<src>.<table>` resolves the same way), compared against
+    /// [`primary_package`](Dag::primary_package) — the recorded root project
+    /// (`metadata.project_name`), else the most frequent segment.
+    ///
+    /// Boundary rules (all bias toward NOT dropping data):
+    /// - a `unique_id` with no non-empty package segment is unattributable →
+    ///   in scope;
+    /// - an unresolvable owning package (an empty or segment-free graph) →
+    ///   every node is in scope.
+    ///
+    /// Per-call cost is O(1) when `metadata.project_name` is recorded (dbt
+    /// ≥1.6, source mode); only pre-1.6 / hand-built manifests fall back to
+    /// the O(nodes) `primary_package` scan — bulk filters therefore go through
+    /// [`root_scoped`](Dag::root_scoped), which resolves the package ONCE.
+    pub fn is_root_project(&self, n: &NodeInfo) -> bool {
+        match self.primary_package() {
+            Some(pkg) => in_package(n, &pkg),
+            None => true,
+        }
+    }
+
+    /// The sub-Dag holding only the root project's own nodes — the `Root`
+    /// [`PackageScope`] applied: installed-package nodes pruned, every edge
+    /// endpoint and side-map entry of theirs dropped via
+    /// [`filtered`](Dag::filtered). This is exactly what `--project-only`
+    /// produced; it is now the default load shape, so a manifest-mode Dag
+    /// carries the same nodes a source-mode parse of the project would.
+    ///
+    /// A root model whose only upstream/downstream was a package node loses
+    /// that edge here — the same "unresolved ref drops" shape source mode
+    /// already produces — so `direct_*` degrees (and thus orphan detection)
+    /// agree across modes under the default scope.
+    pub fn root_scoped(&self) -> Dag {
+        // Resolved ONCE, not per node: the `primary_package` fallback scan is
+        // O(nodes) and `filtered` calls the closure per node.
+        let primary = self.primary_package();
+        self.filtered(|n| primary.as_deref().is_none_or(|pkg| in_package(n, pkg)))
+    }
+
     /// The sub-Dag containing only nodes `keep` accepts — every side map
     /// (`details`/`tests`/`sql`/`exposures`/`node_macros`) and every edge
     /// endpoint pruned to the same uid set, so no dangling reference survives.
-    /// Deterministic (same maps, subset). Powers `--project-only`.
+    /// Deterministic (same maps, subset). Powers [`root_scoped`](Dag::root_scoped)
+    /// (the `Root` package scope, formerly `--project-only`).
     pub fn filtered(&self, keep: impl Fn(&NodeInfo) -> bool) -> Dag {
         let nodes: HashMap<String, NodeInfo> = self
             .nodes
@@ -1170,6 +1280,21 @@ fn meta_strings(map: &serde_json::Map<String, serde_json::Value>) -> BTreeMap<St
             (k.clone(), s)
         })
         .collect()
+}
+
+/// Whether `n`'s `unique_id` package segment equals `pkg`: `model.<pkg>.<name>`
+/// → `pkg`, `source.<pkg>.<src>.<tbl>` → `pkg`, and so on for every
+/// `<resource>.<pkg>.…` uid shape. A uid with no non-empty second segment is
+/// unattributable → counts as in-scope (scope never drops what it cannot
+/// name). The private half of [`Dag::is_root_project`], shared with
+/// [`Dag::root_scoped`] so bulk filtering reuses the same rule without
+/// re-resolving the owning package per node.
+fn in_package(n: &NodeInfo, pkg: &str) -> bool {
+    n.unique_id
+        .split('.')
+        .nth(1)
+        .filter(|s| !s.is_empty())
+        .is_none_or(|seg| seg == pkg)
 }
 
 /// Detail for a model / seed / snapshot node.

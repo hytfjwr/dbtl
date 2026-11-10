@@ -113,6 +113,7 @@ fn render_with_toast(app: &App, width: u16, height: u16, toast: Option<&str>) ->
             diff: diff_s.as_deref(),
             run: None,
             filter: app.list_filter_label(),
+            scope: None,
         };
         // Mirror the loop's filter-tag wiring so the `[untested]`/`[marked]`
         // title tag is scanned whenever a guard scenario toggles a filter.

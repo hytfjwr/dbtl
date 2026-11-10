@@ -65,12 +65,22 @@ pub struct Cli {
     /// source — a missing file just means no run data, never an error.
     #[arg(long)]
     pub run_results: Option<String>,
-    /// Hide models installed from dbt packages (`dbt_utils`, …): keep only the
-    /// project's own nodes. Manifest mode only — a compiled manifest mixes
-    /// `deps`-installed packages into `nodes`; source mode is local-only by
-    /// construction.
-    #[arg(long)]
+    /// Deprecated no-op kept for backwards compatibility: the default scope
+    /// is ALREADY the root project only (installed-package nodes are pruned
+    /// at load). Passing it prints a deprecation warning and changes nothing —
+    /// use `--include-packages` to WIDEN the scope instead. Will be removed in
+    /// a future release.
+    #[arg(long, hide = true)]
     pub project_only: bool,
+    /// Include nodes installed from dbt packages (`dbt deps` / `packages.yml`)
+    /// in the graph: manifest mode's compiled `nodes` map mixes them in. They
+    /// appear in the model list, lineage, and docs pages as dependency
+    /// context — but every aggregate metric (coverage / orphans / stats /
+    /// docs summary / `dbtl check` / the PR-impact risk flags) still counts
+    /// the root project only. Source mode never parses `dbt_packages`, so the
+    /// flag is a no-op there (with a warning).
+    #[arg(long)]
+    pub include_packages: bool,
     /// A non-interactive subcommand. Omitted = launch the TUI (the default,
     /// unchanged behaviour).
     #[command(subcommand)]
@@ -115,6 +125,11 @@ pub enum Commands {
         /// stale marked file. Prints one line per difference for the CI log.
         #[arg(long, conflicts_with = "clean")]
         check: bool,
+        /// Include nodes installed from dbt packages in the generated docs —
+        /// they get their own pages (as dependency context), while the README
+        /// stats summary still counts the root project only.
+        #[arg(long)]
+        include_packages: bool,
     },
     /// Print the PR impact pack for a `--diff` baseline comparison to stdout
     /// and exit — Markdown by default (paste into a PR description), `--format
@@ -138,6 +153,11 @@ pub enum Commands {
         /// else parse source.
         #[arg(long, default_value = ".")]
         project: String,
+        /// Include nodes installed from dbt packages in the compared graphs —
+        /// the diff listings can then name package nodes, while the risk
+        /// metrics still count the root project only.
+        #[arg(long)]
+        include_packages: bool,
     },
     /// Run CI checks over the resolved data source and exit 1 when any fails:
     /// test coverage below `--coverage-min`, newly introduced layer violations,
@@ -165,6 +185,11 @@ pub enum Commands {
         /// Suppress the per-check report on stdout; only the exit code matters.
         #[arg(long)]
         quiet: bool,
+        /// Include nodes installed from dbt packages in the loaded graphs —
+        /// the checked metrics still count the root project only, so the flag
+        /// only widens the `--diff` baseline comparison's node set.
+        #[arg(long)]
+        include_packages: bool,
     },
     /// Print a column's column-level lineage to stdout and exit — the same
     /// `ColumnReport` the TUI's `yl` yank copies (Markdown by default,
@@ -229,10 +254,16 @@ pub struct ResolvedSource {
 /// `project`: a compiled `target/manifest.json` if present (full fidelity), else
 /// parse the project from source. The TUI ([`build_app`]) and docs both go
 /// through here so the precedence can never diverge.
+///
+/// `scope` is applied to the loaded graph on the way out (the default `Root`
+/// scope prunes installed-package nodes — manifest mode's `nodes` map mixes
+/// them in), so every caller sees the same scoped `Dag` and the package
+/// boundary lives in one place.
 pub fn resolve_source(
     manifest: &Option<String>,
     source: &Option<String>,
     project: &str,
+    scope: dbtl::PackageScope,
 ) -> Result<ResolvedSource> {
     if let Some(path) = manifest {
         let (dag, warnings) = load_dag_with_warnings(path)?;
@@ -240,7 +271,7 @@ pub fn resolve_source(
             eprintln!("warning: {w}");
         }
         return Ok(ResolvedSource {
-            dag,
+            dag: apply_package_scope(dag, scope, false),
             label: path.clone(),
             is_source: false,
         });
@@ -251,7 +282,7 @@ pub fn resolve_source(
             eprintln!("warning: {w}");
         }
         return Ok(ResolvedSource {
-            dag,
+            dag: apply_package_scope(dag, scope, true),
             label: dir.clone(),
             is_source: true,
         });
@@ -264,7 +295,7 @@ pub fn resolve_source(
             eprintln!("warning: {w}");
         }
         Ok(ResolvedSource {
-            dag,
+            dag: apply_package_scope(dag, scope, false),
             label: manifest.display().to_string(),
             is_source: false,
         })
@@ -274,7 +305,7 @@ pub fn resolve_source(
             eprintln!("warning: {w}");
         }
         Ok(ResolvedSource {
-            dag,
+            dag: apply_package_scope(dag, scope, true),
             label: project.display().to_string(),
             is_source: true,
         })
@@ -287,57 +318,79 @@ pub fn resolve_source(
     }
 }
 
+/// The package scope the CLI asks for (`--include-packages` ⇒ `All`, else the
+/// default `Root`). `Cli::command` carries its own flag for the subcommands,
+/// so this reads the top-level (TUI) flag.
+impl Cli {
+    pub fn package_scope(&self) -> dbtl::PackageScope {
+        if self.include_packages {
+            dbtl::PackageScope::All
+        } else {
+            dbtl::PackageScope::Root
+        }
+    }
+}
+
+/// Apply the loaded graph's package scope: `All` keeps the manifest's full
+/// contents (installed-package nodes as dependency context); the default
+/// `Root` prunes to the root project — what `--project-only` used to ask for.
+/// Prints a stderr warning when the `Root` scope empties the graph — a
+/// manifest whose recorded root project contributes NO kept nodes (a
+/// deps-only project, or every local node disabled) is a valid if surprising
+/// outcome: the empty graph is honest, whereas silently re-scoping to a
+/// foreign package would show the exact opposite of the scope's intent.
+fn apply_package_scope(dag: dbtl::Dag, scope: dbtl::PackageScope, is_source: bool) -> dbtl::Dag {
+    if scope.includes_packages() {
+        if is_source {
+            // Source mode synthesizes the manifest from the local project
+            // only — there are never package nodes to include.
+            eprintln!(
+                "warning: --include-packages has no effect in source mode \
+                 (installed packages are never parsed)"
+            );
+        }
+        return dag;
+    }
+    let pkg = dag.primary_package();
+    let was_empty = dag.is_empty();
+    let scoped = dag.root_scoped();
+    if scoped.is_empty() && !was_empty {
+        if let Some(pkg) = pkg {
+            eprintln!(
+                "warning (scope): no nodes belong to the root project '{pkg}' — \
+                 the graph is empty (--include-packages keeps installed-package \
+                 nodes in scope)"
+            );
+        }
+    }
+    scoped
+}
+
 /// Resolve the CLI into a loaded [`App`]. Explicit `--manifest` / `--source` win;
 /// otherwise auto-detect under `--project`: a compiled `target/manifest.json` if
-/// present (full fidelity), else parse the project from source.
+/// present (full fidelity), else parse the project from source. The package
+/// scope (`--include-packages`) is applied inside [`resolve_source`] and
+/// recorded on the App so `reload` re-scopes the same way.
 pub fn build_app(cli: &Cli) -> Result<App> {
-    let resolved = resolve_source(&cli.manifest, &cli.source, &cli.project)?;
+    let scope = cli.package_scope();
+    let resolved = resolve_source(&cli.manifest, &cli.source, &cli.project, scope)?;
     let ResolvedSource {
         dag,
         label,
         is_source,
     } = resolved;
-    // --project-only: drop installed-package nodes (uid's package segment ≠
-    // the graph's own package). Source mode resolves to a no-op naturally —
-    // every synthesized uid already names the project.
-    let dag = if cli.project_only {
-        let (dag, warning) = project_only_filter(dag);
-        if let Some(w) = warning {
-            eprintln!("warning (--project-only): {w}");
-        }
-        dag
-    } else {
-        dag
-    };
     let mut app = if is_source {
         App::from_source(dag, PathBuf::from(label))
     } else {
         App::new(dag, PathBuf::from(label))
     };
+    app.set_scope(scope);
     // An explicit --run-results overrides the auto-detected sibling; its load
     // error IS user-facing (unlike the silent auto-detect).
     if let Some(rr) = &cli.run_results {
         app.set_run_results(PathBuf::from(rr))?;
     }
     Ok(app)
-}
-
-/// Apply `--project-only`: keep only nodes whose `unique_id` package segment
-/// is the owning package ([`Dag::primary_package`]). Returns the filtered Dag
-/// plus a warning to surface when the filter emptied the graph — a manifest
-/// whose recorded root project contributes NO kept nodes (a deps-only
-/// project, or every local node disabled) is a valid if surprising outcome:
-/// the empty graph is honest, whereas silently re-scoping to a foreign
-/// package would show the exact opposite of the flag's intent.
-fn project_only_filter(dag: dbtl::Dag) -> (dbtl::Dag, Option<String>) {
-    let Some(pkg) = dag.primary_package() else {
-        return (dag, None);
-    };
-    let filtered = dag.filtered(|n| n.unique_id.split('.').nth(1) == Some(pkg.as_str()));
-    let warning = filtered
-        .is_empty()
-        .then(|| format!("no nodes belong to the project '{pkg}' — the graph is empty"));
-    (filtered, warning)
 }
 
 /// Run the `docs` subcommand: resolve the data source (shared with the TUI),
@@ -349,6 +402,7 @@ fn project_only_filter(dag: dbtl::Dag) -> (dbtl::Dag, Option<String>) {
 /// one-line summary to stdout on success. Every failure (load error, IO error)
 /// returns `Err`, which `main` reports as plain text + a non-zero exit — no
 /// panic, no terminal init.
+#[allow(clippy::too_many_arguments)] // the subcommand's flat flag set
 pub fn run_docs(
     out: &str,
     manifest: &Option<String>,
@@ -357,15 +411,21 @@ pub fn run_docs(
     quiet: bool,
     clean: bool,
     check: bool,
+    include_packages: bool,
 ) -> Result<()> {
-    let resolved = resolve_source(manifest, source, project)?;
+    let scope = if include_packages {
+        dbtl::PackageScope::All
+    } else {
+        dbtl::PackageScope::Root
+    };
+    let resolved = resolve_source(manifest, source, project, scope)?;
     let provenance = if resolved.is_source {
         format!("project source ({})", resolved.label)
     } else {
         format!("manifest ({})", resolved.label)
     };
     let project_name = docs_project_name(&resolved.dag, &resolved.label);
-    let files = dbtl::generate_docs(&resolved.dag, &project_name, &provenance);
+    let files = dbtl::generate_docs(&resolved.dag, &project_name, &provenance, scope);
 
     let out_dir = PathBuf::from(out);
     if check {
@@ -521,11 +581,17 @@ pub fn run_impact(
     manifest: &Option<String>,
     source: &Option<String>,
     project: &str,
+    include_packages: bool,
 ) -> Result<()> {
-    let resolved = resolve_source(manifest, source, project)?;
-    let (base, label) = load_baseline(diff_path)?;
+    let scope = if include_packages {
+        dbtl::PackageScope::All
+    } else {
+        dbtl::PackageScope::Root
+    };
+    let resolved = resolve_source(manifest, source, project, scope)?;
+    let (base, label) = load_baseline(diff_path, scope)?;
     let diff = dbtl::compute_diff(&base, &resolved.dag);
-    let report = dbtl::diff_report(&resolved.dag, Some(&base), &diff, &label, &owner_meta_key());
+    let report = dbtl::diff_report(&resolved.dag, Some(&base), &diff, &label, scope, &owner_meta_key());
     match format {
         ImpactFormat::Markdown => {
             let project = resolved.dag.project_name().unwrap_or("dbt");
@@ -553,12 +619,24 @@ pub fn run_check(
     source: &Option<String>,
     project: &str,
     quiet: bool,
+    include_packages: bool,
 ) -> Result<()> {
-    let resolved = resolve_source(manifest, source, project)?;
+    let scope = if include_packages {
+        dbtl::PackageScope::All
+    } else {
+        dbtl::PackageScope::Root
+    };
+    let resolved = resolve_source(manifest, source, project, scope)?;
     let dag = &resolved.dag;
 
     let mut lines: Vec<String> = Vec::new();
     let mut failures: Vec<String> = Vec::new();
+
+    // The scope line always leads the report: the checked numbers describe
+    // the ROOT project under either scope (installed-package nodes, when
+    // loaded via --include-packages, are dependency context only), and the
+    // line says so verbatim so a pasted CI log can never be misread.
+    lines.push(format!("scope: {}", scope.describe()));
 
     // Coverage — always measured (the shared `coverage_counts` base, the same
     // numbers the TUI's `cov` segment quotes); the gate only engages above 0.
@@ -575,7 +653,7 @@ pub fn run_check(
     }
 
     if let Some(diff_path) = diff_path {
-        let (base, label) = load_baseline(diff_path)?;
+        let (base, label) = load_baseline(diff_path, scope)?;
         let diff = dbtl::compute_diff(&base, dag);
         let pr = dbtl::pr_impact(dag, Some(&base), &diff, &owner_meta_key());
         lines.push(format!("baseline: {label}"));
@@ -744,8 +822,11 @@ fn docs_project_name(dag: &dbtl::Dag, label: &str) -> String {
 /// Resolve the `--diff` baseline into a loaded `Dag` + a display label: a
 /// manifest.json FILE directly, or a dbt project DIR through the same
 /// auto-detect `build_app` uses (compiled `target/manifest.json` first, else
-/// source parse) — so "diff against that other worktree" just works.
-pub fn load_baseline(path: &str) -> Result<(dbtl::Dag, String)> {
+/// source parse) — so "diff against that other worktree" just works. The same
+/// package `scope` as the current graph is applied, so both sides of the diff
+/// agree on the node set (a baseline manifest carrying installed packages is
+/// pruned the same way).
+pub fn load_baseline(path: &str, scope: dbtl::PackageScope) -> Result<(dbtl::Dag, String)> {
     let p = PathBuf::from(path);
     if p.is_file() {
         let (dag, warnings) =
@@ -753,7 +834,7 @@ pub fn load_baseline(path: &str) -> Result<(dbtl::Dag, String)> {
         for w in &warnings {
             eprintln!("warning (--diff baseline): {w}");
         }
-        return Ok((dag, path.to_string()));
+        return Ok((apply_package_scope(dag, scope, false), path.to_string()));
     }
     if p.is_dir() {
         let manifest = p.join("target").join("manifest.json");
@@ -763,7 +844,10 @@ pub fn load_baseline(path: &str) -> Result<(dbtl::Dag, String)> {
             for w in &warnings {
                 eprintln!("warning (--diff baseline): {w}");
             }
-            return Ok((dag, manifest.display().to_string()));
+            return Ok((
+                apply_package_scope(dag, scope, false),
+                manifest.display().to_string(),
+            ));
         }
         if p.join("dbt_project.yml").is_file() {
             let (dag, warnings) = load_dag_from_source_with_warnings(&p)
@@ -771,7 +855,7 @@ pub fn load_baseline(path: &str) -> Result<(dbtl::Dag, String)> {
             for w in &warnings {
                 eprintln!("warning (--diff baseline): {w}");
             }
-            return Ok((dag, path.to_string()));
+            return Ok((apply_package_scope(dag, scope, true), path.to_string()));
         }
     }
     anyhow::bail!(
@@ -822,33 +906,43 @@ mod tests {
     }
 
     #[test]
-    fn project_only_filter_warns_when_the_graph_goes_empty() {
+    fn root_scope_prunes_foreign_package_nodes() {
         // A deps-only project: the recorded root `zzz_proj` contributes NO
-        // nodes — every kept node belongs to an installed package. Strict
-        // scope keeps none of them, so the graph is empty AND a warning
-        // explains it (re-scoping to `aaa_pkg` would show the exact opposite
-        // of the flag's intent).
+        // nodes — every kept node belongs to an installed package. The strict
+        // `Root` scope keeps none of them (it warns on stderr instead of
+        // re-scoping to a foreign package, which would show the exact opposite
+        // of the scope's intent).
         let dag = dag_with(Some("zzz_proj"), &["model.aaa_pkg.a", "model.aaa_pkg.b"]);
-        let (dag, warning) = project_only_filter(dag);
-        assert!(dag.is_empty(), "the filter stays strict — no foreign nodes");
-        let w = warning.expect("an empty result must carry a warning");
+        let scoped = apply_package_scope(dag, dbtl::PackageScope::Root, false);
         assert!(
-            w.contains("zzz_proj"),
-            "the warning names the missing project, got: {w}"
+            scoped.is_empty(),
+            "the scope stays strict — no foreign nodes"
         );
     }
 
     #[test]
-    fn project_only_filter_keeps_root_nodes_silently() {
+    fn root_scope_keeps_root_nodes() {
         // The normal case: the root project's nodes survive, foreign ones are
         // dropped, no warning.
         let dag = dag_with(
             Some("zzz_proj"),
             &["model.zzz_proj.root_model", "model.aaa_pkg.a"],
         );
-        let (dag, warning) = project_only_filter(dag);
-        assert_eq!(dag.len(), 1, "only the root project's model survives");
-        assert!(dag.contains("model.zzz_proj.root_model"));
-        assert!(warning.is_none(), "no warning when the scope is non-empty");
+        let scoped = apply_package_scope(dag, dbtl::PackageScope::Root, false);
+        assert_eq!(scoped.len(), 1, "only the root project's model survives");
+        assert!(scoped.contains("model.zzz_proj.root_model"));
+    }
+
+    #[test]
+    fn all_scope_keeps_every_package_node() {
+        // `--include-packages`: the manifest's full contents stay — installed
+        // package nodes alongside the root project's own.
+        let dag = dag_with(
+            Some("zzz_proj"),
+            &["model.zzz_proj.root_model", "model.aaa_pkg.a"],
+        );
+        let scoped = apply_package_scope(dag, dbtl::PackageScope::All, false);
+        assert_eq!(scoped.len(), 2, "package nodes stay in scope");
+        assert!(scoped.contains("model.aaa_pkg.a"));
     }
 }

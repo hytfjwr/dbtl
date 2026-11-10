@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, HashSet};
 use serde::Serialize;
 
 use crate::layer::{first_dir, layer_rank};
-use crate::{coverage_gap, is_exposure, Dag, DagDiff, ExposureInfo};
+use crate::{coverage_gap, is_exposure, Dag, DagDiff, ExposureInfo, PackageScope};
 
 /// A changed node whose transitive downstream (buildable) closure is at least
 /// this large is flagged as a "hub" risk in the PR impact pack — changing it
@@ -63,6 +63,12 @@ pub struct PrImpact {
 pub struct DiffReport {
     /// Where the baseline came from (the `--diff` argument), for the title.
     pub baseline: String,
+    /// The package scope both graphs were loaded under (`--include-packages`
+    /// keeps installed-package nodes in the graphs; the risk metrics inside
+    /// `pr` still count the root project only under either scope). Serialized
+    /// `"root"` / `"all"` — the first thing the report header prints, so a
+    /// pasted pack can never be misread as project-wide.
+    pub scope: PackageScope,
     /// Added nodes as `(name, resource_type)`, sorted by name.
     pub added: Vec<(String, String)>,
     /// Removed (baseline-only) nodes as `(name, resource_type)`, sorted.
@@ -80,13 +86,16 @@ pub struct DiffReport {
 /// Build the shared [`DiffReport`] payload: names resolved from the CURRENT
 /// `dag`, every listing sorted. `base` is the baseline `Dag` the `diff` was
 /// computed from (needed for the new-layer-violations difference); `baseline`
-/// is its display label (the `--diff` argument). `owner_key` is the `meta`
-/// key the affected-owners set reads (`"owner"` by default).
+/// is its display label (the `--diff` argument). `scope` is the package scope
+/// both graphs were loaded under — carried onto the report verbatim.
+/// `owner_key` is the `meta` key the affected-owners set reads (`"owner"` by
+/// default).
 pub fn diff_report(
     dag: &Dag,
     base: Option<&Dag>,
     diff: &DagDiff,
     baseline: &str,
+    scope: PackageScope,
     owner_key: &str,
 ) -> DiffReport {
     let pair = |uid: &str| {
@@ -104,6 +113,7 @@ pub fn diff_report(
     modified.sort();
     DiffReport {
         baseline: baseline.to_string(),
+        scope,
         added,
         removed: diff.removed.clone(),
         modified,
@@ -149,7 +159,11 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, owner_key: &str)
 
     // The union of every changed node's downstream closure — the aggregate
     // blast radius. Split into affected models (with the marts subset) and
-    // affected exposures; the changed nodes themselves are excluded.
+    // affected exposures; the changed nodes themselves are excluded. Under
+    // the `All` package scope the closures include installed-package nodes,
+    // but the counts below stay scoped to the root project — an installed
+    // package's own consumers are dependency context, never YOUR blast
+    // radius (the same rule `coverage_counts`/`dbtl check` share).
     let mut down_uids: HashSet<String> = HashSet::new();
     for uid in &changed {
         down_uids.extend(dag.downstream(uid));
@@ -163,6 +177,9 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, owner_key: &str)
             continue;
         }
         let Some(n) = dag.get(uid) else { continue };
+        if !dag.is_root_project(n) {
+            continue;
+        }
         if is_exposure(n) {
             exposure_uids.push(uid.clone());
         } else if n.resource_type == "model" {
@@ -204,17 +221,21 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, owner_key: &str)
         Some(format!("dbt build --select {}", selectors.join(" ")))
     };
 
-    // Risk: changed nodes that carry no tests (the coverage_gap predicate).
+    // Risk: changed nodes that carry no tests (the coverage_gap predicate) —
+    // scoped to the root project: an installed package's own test gaps are
+    // its maintainers' problem, not a risk flag in YOUR diff.
     let mut untested_changes: Vec<String> = changed
         .iter()
         .filter_map(|uid| dag.get(uid))
-        .filter(|n| coverage_gap(n))
+        .filter(|n| dag.is_root_project(n) && coverage_gap(n))
         .map(|n| n.name.clone())
         .collect();
     untested_changes.sort();
 
     // Risk: changed hubs (wide downstream fan-out). The buildable-downstream
-    // count (exposures excluded) is the blast radius; flag the big ones.
+    // count (exposures excluded) is the blast radius — kept graph-wide, since
+    // installed-package consumers DO get hit; only the flagged membership is
+    // root-scoped (a changed package node is context, never your hub risk).
     let mut changed_hubs: Vec<(String, usize)> = changed
         .iter()
         .filter_map(|uid| {
@@ -224,7 +245,11 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, owner_key: &str)
                 .filter(|id| dag.get(id).is_some_and(|n| !is_exposure(n)))
                 .count();
             (down >= PR_HUB_MIN_DOWNSTREAM)
-                .then(|| dag.get(uid).map(|n| (n.name.clone(), down)))
+                .then(|| {
+                    dag.get(uid)
+                        .filter(|n| dag.is_root_project(n))
+                        .map(|n| (n.name.clone(), down))
+                })
                 .flatten()
         })
         .collect();
@@ -265,6 +290,9 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, owner_key: &str)
 /// wrong way down the layer taxonomy). Sorted via `Dag::edges()`. The single
 /// violation predicate: the `LayerViolation` lens, the stats worklist, the PR
 /// impact pack's "new violations" risk, and `dbtl check` all read it.
+/// Layer-violation edges are scoped to the root project the same way the
+/// other metrics are: the violating CHILD must be yours. An edge between two
+/// installed-package nodes is dependency context, not your project's health.
 pub fn layer_violation_edges(dag: &Dag) -> Vec<(String, String)> {
     dag.edges()
         .into_iter()
@@ -273,6 +301,9 @@ pub fn layer_violation_edges(dag: &Dag) -> Vec<(String, String)> {
                 return false;
             };
             if p.resource_type != "model" || c.resource_type != "model" {
+                return false;
+            }
+            if !dag.is_root_project(c) {
                 return false;
             }
             let pr = layer_rank(first_dir(p).unwrap_or(""));
@@ -287,10 +318,19 @@ pub fn layer_violation_edges(dag: &Dag) -> Vec<(String, String)> {
 /// with at least one test — the ONE coverage source shared by the status `cov`
 /// segment, the `t` lens, the stats dashboard, `dbtl-docs`' summary, and
 /// `dbtl check --coverage-min`.
+///
+/// Always counted over the ROOT PROJECT ONLY ([`Dag::is_root_project`]): under
+/// the `All` package scope installed-package nodes exist in the graph but are
+/// never part of your project's test coverage. Under the default `Root` scope
+/// (or a single-package manifest) the predicate passes every node, so this is
+/// the exact count it always was.
 pub fn coverage_counts(dag: &Dag) -> (usize, usize) {
     let mut total = 0;
     let mut tested = 0;
     for n in dag.nodes().values() {
+        if !dag.is_root_project(n) {
+            continue;
+        }
         if matches!(n.resource_type.as_str(), "model" | "snapshot" | "seed") {
             total += 1;
             if n.test_count > 0 {
@@ -332,6 +372,7 @@ pub fn pr_impact_markdown(project: &str, report: &DiffReport) -> String {
     let pr = &report.pr;
     let mut out = format!("# PR Impact Report: {project}\n\n");
     out.push_str(&format!("- baseline: `{}`\n", report.baseline));
+    out.push_str(&format!("- scope: {}\n", report.scope.describe()));
     out.push_str(&format!(
         "- changed: +{} added, ~{} modified, -{} removed\n",
         report.added.len(),
@@ -704,11 +745,15 @@ mod tests {
         m.nodes.get_mut("model.p.fct_x").unwrap().raw_code = Some("select 22".into());
         let current = Dag::build(&m);
         let diff = compute_diff(&base, &current);
-        let r1 = diff_report(&current, Some(&base), &diff, "base", "owner");
-        let r2 = diff_report(&current, Some(&base), &diff, "base", "owner");
+        let r1 = diff_report(&current, Some(&base), &diff, "base", PackageScope::Root, "owner");
+        let r2 = diff_report(&current, Some(&base), &diff, "base", PackageScope::Root, "owner");
         assert_eq!(r1, r2);
         let md = pr_impact_markdown("p", &r1);
         assert!(md.contains("# PR Impact Report: p"));
+        assert!(
+            md.contains("- scope: root project only"),
+            "the scope line leads the report, got: {md}"
+        );
         assert!(md.contains("Modified"), "changed node listed");
         assert!(md.contains("fct_x"));
         // JSON shape used by `dbtl impact --format json`.

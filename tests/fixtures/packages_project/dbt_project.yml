@@ -1,0 +1,16 @@
+name: acme_analytics
+version: "1.0.0"
+config-version: 2
+profile: acme_analytics
+
+model-paths: ["models"]
+
+# Directory-hierarchical materializations: staging renders as views, marts as
+# tables — `tests/fixtures/packages_manifest.json` records the same resolved
+# values, so manifest/source mode agree field-for-field.
+models:
+  acme_analytics:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table

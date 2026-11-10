@@ -271,6 +271,15 @@ pub struct App {
     /// highlight runs anchor↔cursor instead of root↔cursor — the two-node
     /// "why does X reach Y" answer. `None` = normal root↔cursor pathing.
     pub(super) path_anchor: Option<String>,
+    /// The package scope the Dag was loaded under (`--include-packages` ⇒
+    /// `All`): [`reload`](App::reload) re-applies it to the freshly loaded
+    /// graph, the status bar prints its tag, and the diff/impact report
+    /// carries it onto the page. The graph itself is already scoped when it
+    /// arrives (the load path calls [`PackageScope::apply`] before `App`
+    /// sees it), so this field is a *record* of the loaded scope + the
+    /// reload-time re-filter — the in-scope test itself always goes through
+    /// [`Dag::is_root_project`], never this flag.
+    scope: crate::PackageScope,
 }
 
 /// Where the `Dag` was loaded from, so `reload` re-reads the same source.
@@ -378,6 +387,7 @@ impl App {
             pending_col: None,
             pending_node: None,
             path_anchor: None,
+            scope: crate::PackageScope::default(),
         }
     }
 
@@ -510,6 +520,22 @@ impl App {
     /// next `diff_report` snapshot, not any cached list.
     pub fn set_owner_meta_key(&mut self, key: impl Into<String>) {
         self.owner_meta_key = key.into();
+    }
+
+    /// The package scope the Dag was loaded under (`--include-packages` ⇒
+    /// [`PackageScope::All`]). [`reload`](App::reload) re-applies it to the
+    /// re-loaded graph and the status bar prints its `scope:` tag.
+    pub fn scope(&self) -> crate::PackageScope {
+        self.scope
+    }
+
+    /// Record the package scope the load path already applied to `dag`
+    /// (`build_app` calls this once, right after `App::new`/`from_source`):
+    /// `reload` re-scopes the freshly parsed graph with it and the status
+    /// bar shows its tag. It does NOT re-filter the live Dag — the loaded
+    /// graph is already scoped by then.
+    pub fn set_scope(&mut self, scope: crate::PackageScope) {
+        self.scope = scope;
     }
 
     /// The status-bar diff chip: `"diff +A ~M -R"` (added / modified / removed
@@ -854,10 +880,14 @@ impl App {
     pub fn reload(&mut self) -> Result<Vec<String>> {
         let current = self.selected_node().map(|n| n.unique_id.clone());
         // Re-read from the same source; returns before mutating on error.
+        // The package scope the load path applied at startup is re-applied
+        // here — a recompiled manifest can gain/drop `dbt_packages/` contents
+        // between reloads, and the default `Root` scope must keep hiding them.
         let (dag, warnings) = match &self.source {
             DataSource::Manifest(path) => load_dag_with_warnings(path)?,
             DataSource::Project(dir) => load_dag_from_source_with_warnings(dir)?,
         };
+        let dag = self.scope.apply(dag);
         self.model_list = build_model_list_grouped(&dag, self.sort, self.group_by_meta.as_deref());
         self.stats = compute_stats(&dag);
         self.dag = dag;

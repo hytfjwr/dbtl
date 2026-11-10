@@ -270,6 +270,7 @@ impl App {
         // scroll offset, so it maps back to DiffReport field-for-field.
         let report = crate::DiffReport {
             baseline: dv.baseline.clone(),
+            scope: self.scope(),
             added: dv.added.clone(),
             removed: dv.removed.clone(),
             modified: dv.modified.clone(),

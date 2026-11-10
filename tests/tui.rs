@@ -1235,6 +1235,7 @@ fn status_bar_keeps_protected_core_and_appends_segments() {
             diff: None,
             run: None,
             filter: None,
+            scope: None,
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
     }
@@ -1274,6 +1275,7 @@ fn status_bar_drops_segments_but_never_the_core_on_a_narrow_line() {
             diff: None,
             run: None,
             filter: None,
+            scope: None,
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
     }
@@ -1320,6 +1322,7 @@ fn status_segments_render_at_80_cols() {
             diff: None,
             run: None,
             filter: None,
+            scope: None,
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
     }
@@ -1369,6 +1372,7 @@ fn status_impact_segment_renders_and_survives_narrowest_droppable_line() {
             diff: None,
             run: None,
             filter: None,
+            scope: None,
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
     }
@@ -1398,6 +1402,7 @@ fn status_impact_segment_renders_and_survives_narrowest_droppable_line() {
             diff: None,
             run: None,
             filter: None,
+            scope: None,
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
     }

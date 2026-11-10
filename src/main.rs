@@ -54,6 +54,19 @@ fn run(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
+    // --project-only is a deprecated no-op: the DEFAULT package scope is
+    // already the root project (installed-package nodes are pruned at load).
+    // Warn on every invocation rather than silently swallowing — an old
+    // script's author should learn the flag is dead and that
+    // --include-packages is the widen knob.
+    if cli.project_only {
+        eprintln!(
+            "warning: --project-only is deprecated and has no effect: the \
+             default scope is already the root project only (use \
+             --include-packages to widen it)"
+        );
+    }
+
     // Non-interactive subcommands run and return BEFORE any terminal init /
     // probe (same as --list-themes), so they work in a non-TTY / CI environment.
     match &cli.command {
@@ -65,14 +78,29 @@ fn run(cli: &Cli) -> Result<()> {
             quiet,
             clean,
             check,
-        }) => return run_docs(out, manifest, source, project, *quiet, *clean, *check),
+            include_packages,
+        }) => {
+            return run_docs(
+                out,
+                manifest,
+                source,
+                project,
+                *quiet,
+                *clean,
+                *check,
+                *include_packages,
+            );
+        }
         Some(Commands::Impact {
             diff,
             format,
             manifest,
             source,
             project,
-        }) => return run_impact(diff, *format, manifest, source, project),
+            include_packages,
+        }) => {
+            return run_impact(diff, *format, manifest, source, project, *include_packages);
+        }
         Some(Commands::Check {
             diff,
             coverage_min,
@@ -80,8 +108,17 @@ fn run(cli: &Cli) -> Result<()> {
             source,
             project,
             quiet,
+            include_packages,
         }) => {
-            return run_check(diff, *coverage_min, manifest, source, project, *quiet);
+            return run_check(
+                diff,
+                *coverage_min,
+                manifest,
+                source,
+                project,
+                *quiet,
+                *include_packages,
+            );
         }
         Some(Commands::Columns {
             target,
@@ -138,9 +175,10 @@ fn run(cli: &Cli) -> Result<()> {
 
     // Load the --diff baseline (a second Dag) and open on the Diff lens so the
     // differences are visible immediately. A bad baseline fails as plain text
-    // pre-TTY, like every other load error.
+    // pre-TTY, like every other load error. The baseline is pruned under the
+    // same package scope as the current graph, so both sides agree.
     if let Some(base) = &cli.diff {
-        let (dag, label) = load_baseline(base)?;
+        let (dag, label) = load_baseline(base, cli.package_scope())?;
         app.set_diff_base(dag, label);
         app.ui_state.set_lens(LineageLens::Diff);
     }

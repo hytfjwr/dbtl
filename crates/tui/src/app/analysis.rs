@@ -24,6 +24,7 @@ impl App {
             self.diff_base.as_ref(),
             diff,
             self.diff_label(),
+            self.scope(),
             &self.owner_meta_key,
         );
         Some(DiffView {
@@ -48,15 +49,25 @@ impl App {
         let mut zero_down = 0;
         let mut no_desc = 0;
         let mut hubs: Vec<(String, String, usize)> = Vec::new();
-        // Transitive blast-radius hubs over ALL nodes (same base as `hubs`), and
-        // orphan models (zero kept parents AND zero kept children).
+        // Transitive blast-radius hubs (root-project membership like `hubs`;
+        // the count itself is the graph-wide closure so the number matches the
+        // DegreeHeat/impact readouts), and orphan models (zero kept parents
+        // AND zero kept children).
         let mut transitive: Vec<(String, String, usize)> = Vec::new();
         let mut orphans: Vec<String> = Vec::new();
         // Coverage comes from the ONE shared source (`coverage_summary`, the
         // `coverage_gap` base) so the dashboard, the `t` lens, and the status
         // `cov` segment always quote the same numbers.
         let (testable_tested, testable_total) = self.coverage_summary();
+        // Every count/list the dashboard reports describes the ROOT project —
+        // the same [`Dag::is_root_project`] scope `coverage_counts` and
+        // `dbtl check` share. Under the `All` package scope installed-package
+        // nodes sit in the graph as dependency context but are never part of
+        // your project's type/materialization/orphan/hub numbers.
         for (uid, n) in self.dag.nodes() {
+            if !self.dag.is_root_project(n) {
+                continue;
+            }
             *by_rt.entry(n.resource_type.clone()).or_default() += 1;
             let degree = n.direct_up + n.direct_down;
             hubs.push((uid.clone(), n.name.clone(), degree));
