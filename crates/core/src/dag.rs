@@ -297,6 +297,12 @@ pub struct NodeDetail {
     /// objects/arrays as compact JSON. `BTreeMap` so every surface (modal,
     /// docs, selectors, grouping) iterates in sorted-key order.
     pub meta: BTreeMap<String, String>,
+    /// The node's effective warehouse relation name when it DIFFERS from
+    /// `name` — `alias` for models/snapshots/seeds, `identifier` for source
+    /// tables (`Some` only on a real override). CLL matches compiled-SQL
+    /// `FROM "db"."schema"."<relation>"` against it; `None` means the
+    /// `name`/`unique_id` segment is the relation.
+    pub relation_name: Option<String>,
 }
 
 /// A directed dependency edge `parent -> child` inside a subgraph (both
@@ -392,6 +398,11 @@ pub struct Dag {
     /// propagated by [`filtered`](Dag::filtered) so a `--project-only` view
     /// keeps naming itself after the root project.
     root_project: Option<String>,
+    /// The adapter the manifest was compiled against (`metadata.adapter_type`
+    /// — `duckdb`, `redshift`, …). `None` in source mode and for hand-built
+    /// manifests; CLL uses it to pick the SQL dialect. One scalar, propagated
+    /// by [`filtered`](Dag::filtered) like [`root_project`](Dag::project_name).
+    adapter_type: Option<String>,
 }
 
 /// A manifest macro's diff-relevant payload. The [`Dag`] stores these keyed by
@@ -883,6 +894,11 @@ impl Dag {
                 .project_name
                 .clone()
                 .filter(|s| !s.trim().is_empty()),
+            adapter_type: manifest
+                .metadata
+                .adapter_type
+                .clone()
+                .filter(|s| !s.trim().is_empty()),
         }
     }
 
@@ -1034,6 +1050,15 @@ impl Dag {
                 .filter(|seg| !seg.is_empty())
                 .min()
         })
+    }
+
+    /// The adapter the manifest was compiled against (`metadata.adapter_type`
+    /// — `duckdb`, `redshift`, `snowflake`, …), or `None` when the manifest
+    /// does not record one (source mode never guesses: it does not read
+    /// `profiles.yml`). CLL's dialect selection and the `--sql-dialect`
+    /// override consult it.
+    pub fn adapter_type(&self) -> Option<&str> {
+        self.adapter_type.as_deref()
     }
 
     /// The detail payload (materialized / schema / columns / …) for a node, or
@@ -1255,6 +1280,7 @@ impl Dag {
             // The root identity is a property of the source manifest, not of
             // the kept uid set — a `--project-only` view is still that project.
             root_project: self.root_project.clone(),
+            adapter_type: self.adapter_type.clone(),
             nodes,
         }
     }
@@ -1506,6 +1532,12 @@ fn detail_from_node(node: &RawNode) -> NodeDetail {
         version: node.version.clone(),
         latest_version: node.latest_version.clone(),
         meta: meta_strings(&node.meta),
+        // `alias` IS the relation name in real manifests — record only the
+        // meaningful case (an actual override) so `None` stays the fast path.
+        relation_name: node
+            .alias
+            .clone()
+            .filter(|a| !a.trim().is_empty() && a != &node.name),
     }
 }
 
@@ -1540,6 +1572,10 @@ fn detail_from_source(source: &RawSource) -> NodeDetail {
         original_file_path: source.original_file_path.clone(),
         package_name: source.package_name.clone(),
         meta: meta_strings(&source.meta),
+        relation_name: source
+            .identifier
+            .clone()
+            .filter(|i| !i.trim().is_empty() && i != &source.name),
         ..Default::default() // sources carry no governance fields
     }
 }
@@ -2186,6 +2222,7 @@ mod tests {
         RawManifest {
             metadata: crate::manifest::RawMetadata {
                 project_name: root_project.map(str::to_string),
+                ..Default::default()
             },
             nodes,
             sources: HashMap::new(),

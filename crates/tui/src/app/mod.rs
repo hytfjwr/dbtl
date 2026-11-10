@@ -40,7 +40,7 @@ use crate::{
     build_filtered_model_list, build_model_list, build_model_list_grouped, compute_diff,
     coverage_gap, default_catalog_path, default_run_results_path,
     load_dag_from_source_with_warnings, load_dag_with_warnings, ColumnRef, Dag, DagDiff, ModelList,
-    NameMatchResolver, NodeDetail, NodeInfo, RunResults, SortMode, UiState,
+    NodeDetail, NodeInfo, RunResults, SortMode, SqlDialect, SqlParseResolver, UiState,
 };
 
 mod analysis;
@@ -268,12 +268,16 @@ pub struct App {
     catalog: Option<Rc<crate::Catalog>>,
     /// Where `catalog` was auto-detected — `reload` re-reads it.
     catalog_path: Option<PathBuf>,
-    /// The column-level-lineage resolver (Issue 07's name-match
-    /// approximation). Owns its own per-uid memos, so it must be rebuilt
-    /// whenever the Dag/catalog can change — `reload` does that. The
-    /// `ColumnResolver` trait is the consumer-facing boundary: the Issue 08
-    /// exact parser swaps in here without touching callers.
-    pub(super) cll: NameMatchResolver,
+    /// The column-level-lineage resolver (Issue 08's `sqlparser`-backed
+    /// resolver, falling back to Issue 07's name-match approximation per
+    /// model). Owns its own per-uid memos, so it must be rebuilt whenever the
+    /// Dag/catalog can change — `reload` does that. The `ColumnResolver`
+    /// trait is the consumer-facing boundary, so callers never see which
+    /// resolver ran.
+    pub(super) cll: SqlParseResolver,
+    /// An explicit `--sql-dialect` override; `None` = auto from the Dag's
+    /// adapter_type (recomputed on `reload` in case the manifest changed).
+    sql_dialect: Option<SqlDialect>,
     /// The project-local lint configuration (`.dbtl.yml`'s `lint:` section;
     /// [`crate::LintConfig::default`] when absent). Every surface reads the
     /// SAME computed findings — the `Lint` lens, the stats worklist, and
@@ -398,7 +402,7 @@ impl App {
             .filter(|p| p.is_file())
             .and_then(|p| crate::Catalog::load(p).ok())
             .map(Rc::new);
-        let cll = NameMatchResolver::new(catalog.clone());
+        let cll = SqlParseResolver::for_dag(catalog.clone(), &dag);
         // Same auto-detect for `.dbtl.yml`: the project-local lint config.
         // A malformed file is a warning + shipped defaults (the TUI's policy —
         // `check`/`docs` make the same error fatal; the screen never blocks on
@@ -456,6 +460,7 @@ impl App {
             catalog,
             catalog_path,
             cll,
+            sql_dialect: None,
             lint_config,
             lint_findings,
             lint_config_path,
@@ -655,6 +660,14 @@ impl App {
     /// graph is already scoped by then.
     pub fn set_scope(&mut self, scope: crate::PackageScope) {
         self.scope = scope;
+    }
+
+    /// Pin the column-lineage SQL dialect (`--sql-dialect`); rebuilds the
+    /// resolver on the spot. `reload` re-derives the auto dialect when none
+    /// was pinned.
+    pub fn set_sql_dialect(&mut self, dialect: SqlDialect) {
+        self.sql_dialect = Some(dialect);
+        self.cll = SqlParseResolver::new(self.catalog.clone(), dialect);
     }
 
     /// The status-bar diff chip: `"diff +A ~M -R"` (added / modified / removed
@@ -1092,7 +1105,10 @@ impl App {
         // The CLL resolver memoizes column lists/SQL parses PER UID — over a
         // replaced Dag those memos are poison, so rebuild (memos inside the
         // engine are per-call and die with it anyway).
-        self.cll = NameMatchResolver::new(self.catalog.clone());
+        let dialect = self
+            .sql_dialect
+            .unwrap_or_else(|| SqlDialect::from_dag(&self.dag));
+        self.cll = SqlParseResolver::new(self.catalog.clone(), dialect);
         // `.dbtl.yml` reloads alongside the graph like the other side maps —
         // an edit mid-session applies on the next reload, and a file created
         // or deleted mid-session is picked up/dropped too (the path is

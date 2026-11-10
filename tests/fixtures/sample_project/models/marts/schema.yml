@@ -25,6 +25,18 @@ models:
       materialized: table
       meta:
         owner: bob
+  - name: cll_syntax
+    description: "CLL v1 coverage: every parser-resolved syntax in one model."
+    columns:
+      - name: order_id
+        data_tests:
+          - not_null
+      - name: status
+      - name: status_upper
+      - name: country
+      - name: jp_id
+      - name: rn
+      - name: order_id_next
 
 exposures:
   - name: orders_dashboard

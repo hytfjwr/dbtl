@@ -52,6 +52,9 @@ fn detail_view_for(app: &App, uid: String) -> DetailView {
         crate::resolution_sql(&app.dag, &uid),
         Some((_, crate::Confidence::Stale))
     );
+    // `column_counts_for` just resolved this uid, so the fallback
+    // flag is settled: `[name-match]` marks the Issue 07 path.
+    let name_match = app.cll.is_fallback(&uid);
     DetailView {
         model_id: uid,
         name,
@@ -65,6 +68,7 @@ fn detail_view_for(app: &App, uid: String) -> DetailView {
         test_index: usize::MAX,
         col_counts,
         stale,
+        name_match,
         scroll: 0,
     }
 }

@@ -320,6 +320,9 @@ fn detail_column_lines(
     if dv.stale {
         header.push_str(" [stale]");
     }
+    if dv.name_match {
+        header.push_str(" [name-match]");
+    }
     header.push(':');
     let mut out = vec![Line::styled(header, header_style(t))];
     for (i, (name, ty, desc)) in rows.iter().enumerate() {
@@ -1065,6 +1068,12 @@ fn stats_display_lines(sv: &StatsView, t: &theme::Theme) -> Vec<Line<'static>> {
         "  models with no description:     {}",
         sv.no_description_models
     )));
+    // Same number `dbtl columns` reports on stderr; the detail modal flags the
+    // individual models with `[name-match]`.
+    out.push(Line::from(format!(
+        "  models resolved by name-match:  {}",
+        sv.cll_fallbacks
+    )));
 
     out
 }
@@ -1671,6 +1680,7 @@ mod tests {
             test_index: usize::MAX,
             col_counts: Default::default(),
             stale: false,
+            name_match: false,
             scroll: 0,
         };
         let lines = detail_display_lines(&dv, crate::GlyphMode::Unicode, &theme::DEFAULT);
@@ -1727,6 +1737,7 @@ mod tests {
             test_index: usize::MAX,
             col_counts: Default::default(),
             stale: false,
+            name_match: false,
             scroll: 0,
         };
         let lines = detail_display_lines(&dv, crate::GlyphMode::Unicode, &theme::DEFAULT);

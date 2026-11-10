@@ -52,6 +52,11 @@ yaml-rust2 = "0.9"
 # (data cells that are unambiguously WIDE render fine everywhere; only
 # ambiguous-width chrome is banned). A normal dependency so `src/` can use it.
 unicode-width = "0.2"
+# The real SQL parser behind column-level lineage v1 (CLL): dialect-aware
+# AST + hand-rolled scope resolution in dbtl-core. Default features — the
+# optional `visitor` is NOT required (the resolver walks the AST itself so a
+# feature flip can't silently change traversal).
+sqlparser = "0.64"
 
 dbtl-core = { path = "crates/core" }
 dbtl-tui = { path = "crates/tui" }

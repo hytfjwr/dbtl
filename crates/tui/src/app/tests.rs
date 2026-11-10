@@ -1029,6 +1029,31 @@ fn critical_path_is_a_deterministic_source_rooted_chain() {
 }
 
 #[test]
+fn stats_dashboard_counts_name_match_fallbacks() {
+    // One parseable model and one with unparseable raw_code: the dashboard's
+    // aggregate count must line up with the resolver's per-model flag (the
+    // detail modal's `[name-match]` tag and `dbtl columns`'s stderr count).
+    let dag = pr_dag(
+        vec![
+            ("model.p.good", pr_model("good", "marts", "select 1 as id")),
+            (
+                "model.p.bad",
+                pr_model("bad", "marts", "select from where (((broken"),
+            ),
+        ],
+        &[],
+        vec![],
+    );
+    let a = App::new(dag, PathBuf::from("/x/manifest.json"));
+    let sv = a.compute_stats_view();
+    assert_eq!(sv.cll_fallbacks, 1);
+    assert!(a.cll.is_fallback("model.p.bad"));
+    assert!(!a.cll.is_fallback("model.p.good"));
+    // The sweep is memoized: a second computation is identical and cheap.
+    assert_eq!(a.compute_stats_view().cll_fallbacks, 1);
+}
+
+#[test]
 fn longest_chain_terminates_on_a_cyclic_manifest() {
     // A malformed manifest.json can carry a model-level cycle that survives
     // the prune (only test/operation nodes are dropped): a ⇄ b, plus a clean
@@ -4676,7 +4701,9 @@ fn yank_column_lineage_copies_the_selected_columns_downstream_closure() {
         text.contains("# Column lineage: `stg_orders.id` (downstream)"),
         "same ColumnReport markdown as the CLI, got: {text:?}"
     );
-    assert!(text.contains("## Downstream columns (5)"));
+    // v1: the parser's FOJ fans reach all four cll_demo outputs and every
+    // cll_syntax output — 14 rows.
+    assert!(text.contains("## Downstream columns (14)"));
     assert!(text.contains("`fct_orders.id`"));
     assert_eq!(a.take_notice().as_deref(), Some("Copied column lineage"));
     assert_eq!(a.mode, Mode::Selection, "the which-key is one-shot");

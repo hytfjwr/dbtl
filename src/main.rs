@@ -159,6 +159,7 @@ fn run(cli: &Cli) -> Result<()> {
                 source,
                 project,
                 cli.include_packages,
+                cli.sql_dialect,
             );
         }
         None => {}

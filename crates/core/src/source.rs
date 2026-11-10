@@ -235,6 +235,10 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                 // schema.yml and the project tree merge under it per key.
                 meta: config_meta(&stripped).unwrap_or_default(),
                 raw_code: Some(raw),
+                // In-file `config(alias=…)` is the highest-precedence relation
+                // name — schema.yml `config.alias` can only fill it when
+                // unset (same precedence chain as `materialized`).
+                alias: config_alias(&stripped),
                 ..Default::default()
             },
         );
@@ -338,6 +342,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                     // The whole (multi-block) file is stored per block; raw_code
                     // is never compared, and snapshots are rare, so this is fine.
                     raw_code: Some(raw.clone()),
+                    alias: config_alias(&stripped),
                     ..Default::default()
                 },
             );
@@ -543,6 +548,9 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                         columns: columns_json(&tbl.columns, &docs, &mut warnings),
                         schema: src.schema.clone(),
                         database: src.database.clone(),
+                        // schema.yml's `identifier:` — the source table's real
+                        // warehouse name when it differs from `name`.
+                        identifier: tbl.identifier.clone(),
                         // Source mode synthesizes a manifest for the local
                         // project only — no foreign package can appear, so
                         // package identity is vacuous here.
@@ -691,6 +699,10 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             // both load modes (the consistency suite asserts that).
             metadata: RawMetadata {
                 project_name: Some(proj),
+                // Source mode deliberately does NOT read profiles.yml, so the
+                // adapter is unknown here — CLL falls back to its default
+                // dialect (`--sql-dialect` is the override knob).
+                adapter_type: None,
             },
             nodes,
             sources,
@@ -754,6 +766,11 @@ fn apply_meta(
         // not over an in-file `config()` (already set, so only fill if None).
         if node.config.materialized.is_none() {
             node.config.materialized = entry.config.materialized.clone();
+        }
+        // Same precedence for `config.alias`: schema.yml fills only an unset
+        // in-file alias (in-file `config(alias=…)` wins, like materialized).
+        if node.alias.is_none() {
+            node.alias = entry.config.alias.clone();
         }
         if !entry.tags.is_empty() {
             node.tags = entry.tags.clone();
@@ -1910,6 +1927,20 @@ fn config_meta(sql: &str) -> Option<serde_json::Map<String, serde_json::Value>> 
     found.then_some(out)
 }
 
+/// The relation-name override from `config(alias='…')`, if a string literal —
+/// the LAST `alias=` across the file's config() calls wins, the same ordered
+/// application `materialized`/`enabled` follow. An unresolvable expression
+/// (`var()`, an identifier) can't override an earlier literal.
+fn config_alias(sql: &str) -> Option<String> {
+    config_kwarg_exprs(sql, "alias")
+        .into_iter()
+        .filter_map(|expr| match lit_value(expr) {
+            Some(serde_json::Value::String(s)) => Some(s),
+            _ => None,
+        })
+        .next_back()
+}
+
 /// The argument text of EVERY `config(…)` call in `sql`, in order — each
 /// string is the text between that call's parens, found by a balanced-
 /// paren/quote scan so nested `(`/`)` inside dicts or macro calls can't end
@@ -2328,6 +2359,9 @@ struct SchemaConfig {
     /// `config: meta:` — merges over a top-level `meta:` per key.
     #[serde(default)]
     meta: serde_json::Value,
+    /// `config: alias:` — the relation-name override (dbt's `alias` config).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    alias: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -2394,6 +2428,10 @@ struct SchemaSourceTable {
     name: String,
     #[serde(default, deserialize_with = "de_opt_string")]
     description: Option<String>,
+    /// schema.yml's `identifier:` — the table's real warehouse name when it
+    /// differs from `name` (dbt renders `source()` to it in compiled SQL).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    identifier: Option<String>,
     /// `meta:` at the table level — overrides the source's `meta:` per key.
     #[serde(default)]
     meta: serde_json::Value,

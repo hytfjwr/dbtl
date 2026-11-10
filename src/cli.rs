@@ -11,6 +11,19 @@ use clap::{Parser, Subcommand};
 use dbtl::app::App;
 use dbtl::{load_dag_from_source_with_warnings, load_dag_with_warnings, ColumnResolver};
 
+/// The `--sql-dialect` value parser: clap-friendly `Err(String)` wrapper over
+/// [`dbtl::SqlDialect::parse_name`], so a typo fails at parse time with the
+/// accepted names spelled out.
+fn parse_sql_dialect(s: &str) -> std::result::Result<dbtl::SqlDialect, String> {
+    dbtl::SqlDialect::parse_name(s).ok_or_else(|| {
+        format!(
+            "unknown SQL dialect '{s}' (accepted: auto, generic, postgres, redshift, snowflake, \
+             bigquery, mysql, sqlite, duckdb, spark, hive, mssql, oracle, teradata, clickhouse, \
+             databricks)"
+        )
+    })
+}
+
 /// dbtl: browse dbt models and their lineage — from a compiled manifest.json
 /// or straight from project source (no `dbt compile`).
 #[derive(Parser, Debug)]
@@ -86,6 +99,13 @@ pub struct Cli {
     /// `dbtl check --include-packages`).
     #[arg(long, global = true)]
     pub include_packages: bool,
+    /// SQL dialect for parser-based column lineage: `auto` reads the manifest's
+    /// adapter_type (source mode has none → generic); any other value pins the
+    /// dialect for every model (`generic`, `postgres`, `snowflake`, `bigquery`,
+    /// `mysql`, `sqlite`, `duckdb`, `spark`, …). `global` so `dbtl columns`
+    /// accepts it too.
+    #[arg(long, global = true, value_name = "DIALECT", value_parser = parse_sql_dialect)]
+    pub sql_dialect: Option<dbtl::SqlDialect>,
     /// A non-interactive subcommand. Omitted = launch the TUI (the default,
     /// unchanged behaviour).
     #[command(subcommand)]
@@ -385,6 +405,11 @@ pub fn build_app(cli: &Cli) -> Result<App> {
         App::new(dag, PathBuf::from(label))
     };
     app.set_scope(scope);
+    // An explicit --sql-dialect pins the column-lineage parser dialect;
+    // otherwise the resolver auto-selects from the manifest's adapter_type.
+    if let Some(dialect) = cli.sql_dialect {
+        app.set_sql_dialect(dialect);
+    }
     // An explicit --run-results overrides the auto-detected sibling; its load
     // error IS user-facing (unlike the silent auto-detect).
     if let Some(rr) = &cli.run_results {
@@ -958,6 +983,7 @@ fn load_lint_config(resolved: &ResolvedSource, rules: &[String]) -> Result<dbtl:
 /// the `yl` yank writes), `--format json` for automation. Everything is
 /// `Err`-shaped like the other subcommands: a bad model or column name
 /// reports as plain text with a non-zero exit, never a panic or a TTY probe.
+#[allow(clippy::too_many_arguments)]
 pub fn run_columns(
     target: &str,
     upstream: bool,
@@ -966,6 +992,7 @@ pub fn run_columns(
     source: &Option<String>,
     project: &str,
     include_packages: bool,
+    sql_dialect: Option<dbtl::SqlDialect>,
 ) -> Result<()> {
     let (model, column) = target
         .rsplit_once('.')
@@ -1006,7 +1033,10 @@ pub fn run_columns(
     };
 
     // The CLL resolver, built exactly like the app's: the auto-detected
-    // `target/catalog.json` (when present) is the top column-list tier.
+    // `target/catalog.json` (when present) is the top column-list tier. The
+    // parser-backed resolver resolves per model and falls back to the
+    // name-match approximation whenever that model's SQL is missing or
+    // unparseable — the count is reported on stderr below.
     let catalog_path = if resolved.is_source {
         dbtl::default_catalog_path(None, Some(std::path::Path::new(&resolved.label)))
     } else {
@@ -1016,7 +1046,8 @@ pub fn run_columns(
         .filter(|p| p.is_file())
         .and_then(|p| dbtl::Catalog::load(&p).ok())
         .map(std::rc::Rc::new);
-    let resolver = dbtl::NameMatchResolver::new(catalog);
+    let dialect = sql_dialect.unwrap_or_else(|| dbtl::SqlDialect::from_dag(dag));
+    let resolver = dbtl::SqlParseResolver::new(catalog, dialect);
 
     let col = dbtl::ColumnRef::new(&uid, column);
     let known = resolver.columns(dag, &uid);
@@ -1039,6 +1070,16 @@ pub fn run_columns(
     match format {
         ImpactFormat::Markdown => print!("{report}"),
         ImpactFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+    }
+    // Parser coverage transparency: how many models ended up on the Issue 07
+    // name-match approximation (missing/unparseable SQL). Status goes to
+    // stderr so stdout stays machine-clean for both formats.
+    let fallbacks = resolver.fallback_count();
+    if fallbacks > 0 {
+        eprintln!(
+            "columns: {fallbacks} model{} resolved by name-match fallback (missing/unparseable SQL)",
+            if fallbacks == 1 { "" } else { "s" }
+        );
     }
     Ok(())
 }
@@ -1143,6 +1184,7 @@ mod tests {
         Dag::build(&RawManifest {
             metadata: RawMetadata {
                 project_name: project_name.map(str::to_string),
+                ..Default::default()
             },
             nodes,
             sources: HashMap::new(),

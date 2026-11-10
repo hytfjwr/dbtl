@@ -122,6 +122,13 @@ pub struct RawNode {
     /// kept raw here and stringified for display by [`Dag::build`].
     #[serde(default)]
     pub meta: serde_json::Map<String, serde_json::Value>,
+    /// The node's warehouse relation name — dbt's effective `alias` (the
+    /// `config(alias=…)` override or `generate_alias_name` result; `name`
+    /// when unconfigured). Real manifests always record it; CLL uses it to
+    /// match `FROM "db"."schema"."<alias>"` in compiled SQL — matching `name`
+    /// alone misses roughly a third of relations on alias-heavy projects.
+    #[serde(default)]
+    pub alias: Option<String>,
 }
 
 /// `contract` sub-object: whether `enforced` is on (the declared column list
@@ -157,6 +164,11 @@ pub struct RawSource {
     /// every table; a table-level `meta:` overrides it per key).
     #[serde(default)]
     pub meta: serde_json::Map<String, serde_json::Value>,
+    /// The source TABLE's warehouse name — schema.yml's `identifier:`
+    /// override (`name` when unconfigured). CLL matches `FROM <identifier>`
+    /// against it the same way [`RawNode::alias`] covers models.
+    #[serde(default)]
+    pub identifier: Option<String>,
 }
 
 /// `owner` sub-object of an exposure. dbt requires at least one of name/email,
@@ -273,6 +285,12 @@ pub struct RawMacro {
 pub struct RawMetadata {
     #[serde(default)]
     pub project_name: Option<String>,
+    /// The adapter the manifest was compiled against (`duckdb`, `redshift`,
+    /// `snowflake`, …) — `metadata.adapter_type` in real manifests. CLL picks
+    /// its SQL dialect from it; source mode leaves it `None` (profiles.yml is
+    /// deliberately out of scope) and the `--sql-dialect` override fills in.
+    #[serde(default)]
+    pub adapter_type: Option<String>,
 }
 
 /// Minimal subset of the dbt manifest we care about.

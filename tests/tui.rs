@@ -634,6 +634,7 @@ fn stats_view_with(n_orphans: usize, n_viol: usize, n_lint: usize) -> dbtl::Stat
         untested_testable: 1,
         zero_downstream_models: 2,
         no_description_models: 4,
+        cll_fallbacks: 0,
         scroll: 0,
     }
 }
