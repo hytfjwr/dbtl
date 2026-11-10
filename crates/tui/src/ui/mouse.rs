@@ -144,7 +144,8 @@ struct Press {
 
 /// Gesture state between raw events: the live press (and whether it has
 /// crossed the drag threshold), the last click (the double-click window
-/// reference), and the last reported hover target (the redraw gate).
+/// reference), the last reported hover target (the redraw gate), and the
+/// pointer's last seen cell (the stale-hover repair seam).
 #[derive(Debug, Default)]
 pub struct MouseRouter {
     /// The button currently held (`Some` between `Down` and `Up`). A second
@@ -156,14 +157,21 @@ pub struct MouseRouter {
     /// dragged cell (`Some` doubles as the "dragging" flag, cleared on
     /// release); with no press it is the last hovered cell (dedupes hover).
     last_pointer: Option<Position>,
-    /// The last completed click's cell + release time — what a second click
-    /// is measured against for the double-click window.
-    last_click: Option<(Position, Instant)>,
+    /// The last completed click's button + cell + release time — what a
+    /// second click is measured against for the double-click window. The
+    /// BUTTON is part of the key: a right-then-left pair on the same cell is
+    /// two clicks, not a double.
+    last_click: Option<(MouseButton, Position, Instant)>,
     /// The last hover target reported to the UI via [`track_hover`]. Held so
     /// hover moves can gate redraws on actual target CHANGES.
     ///
     /// [`track_hover`]: MouseRouter::track_hover
     hover: Option<HitTarget>,
+    /// The cell the pointer was last seen at — every raw kind updates it
+    /// (press / release / drag / move), so the loop can re-resolve the hover
+    /// target after a frame that changed without a `Moved` (a click re-root,
+    /// a wheel pan, a resize, a reload).
+    pointer: Option<Position>,
 }
 
 impl MouseRouter {
@@ -180,19 +188,22 @@ impl MouseRouter {
                 // A press is not yet anything: clicks confirm on RELEASE, so a
                 // Down alone produces no outcome. (It does arm the drag
                 // threshold and clear stale hover-dedup state implicitly.)
+                let at = Position { x: col, y: row };
+                self.pointer = Some(at);
                 self.press = Some(Press {
                     button,
-                    at: Position { x: col, y: row },
+                    at,
                     when: now,
                 });
                 self.last_pointer = None;
                 None
             }
             MouseInput::Drag { col, row } => {
+                let at = Position { x: col, y: row };
+                self.pointer = Some(at);
                 let Some(press) = self.press else {
                     return None; // held move without a tracked press — ignore
                 };
-                let at = Position { x: col, y: row };
                 match self.last_pointer {
                     // First cell outside the press cell: the drag begins.
                     None if at != press.at => {
@@ -216,45 +227,45 @@ impl MouseRouter {
                 }
             }
             MouseInput::Release { button, col, row } => {
-                let Some(press) = self.press.take() else {
+                let at = Position { x: col, y: row };
+                self.pointer = Some(at);
+                let Some(press) = self.press else {
                     return None; // release without a press — ignore
                 };
-                let at = Position { x: col, y: row };
-                if self.last_pointer.take().is_some() {
+                if button != press.button {
+                    // A different button's release does not touch this press —
+                    // it neither clicks nor ends a drag.
+                    return None;
+                }
+                self.press = None;
+                if self.last_pointer.take().is_some() || at != press.at {
+                    // The drag ends with the release: either the pointer had
+                    // already crossed the 1-cell threshold (Drag reports seen)
+                    // or the button simply came up on a different cell — a
+                    // ≥1-cell displacement is a drag even when the terminal
+                    // reported no Drag motion in between.
                     return Some(MouseOutcome::DragEnd {
                         button: press.button,
                         origin: press.at,
                         at,
                     });
                 }
-                if at != press.at || button != press.button {
-                    // Off-cell release with no drag events seen (a slipped
-                    // click — terminals always report held motion as Drag, so
-                    // this is defensive) or a different button released:
-                    // neither a click nor a drag. Report nothing.
-                    return None;
-                }
-                let double = self.last_click.is_some_and(|(cell, when)| {
-                    cell == at && now.saturating_duration_since(when) <= DOUBLE_CLICK
+                let double = self.last_click.is_some_and(|(b, cell, when)| {
+                    b == button && cell == at && now.saturating_duration_since(when) <= DOUBLE_CLICK
                 });
-                self.last_click = Some((at, now));
+                self.last_click = Some((button, at, now));
                 Some(if double {
-                    MouseOutcome::DoubleClick {
-                        button: press.button,
-                        at,
-                    }
+                    MouseOutcome::DoubleClick { button, at }
                 } else {
-                    MouseOutcome::Click {
-                        button: press.button,
-                        at,
-                    }
+                    MouseOutcome::Click { button, at }
                 })
             }
             MouseInput::Move { col, row } => {
+                let at = Position { x: col, y: row };
+                self.pointer = Some(at);
                 if self.press.is_some() {
                     return None; // a button is held: Drag owns the motion
                 }
-                let at = Position { x: col, y: row };
                 if self.last_pointer == Some(at) {
                     return None; // same hover cell as last reported — dedup
                 }
@@ -271,6 +282,14 @@ impl MouseRouter {
         self.press.map(|p| (p.button, p.at, p.when))
     }
 
+    /// The cell the pointer was last seen at, if any event has reported one.
+    /// The loop re-resolves the hover target against this cell whenever a
+    /// frame changes for a non-`Moved` reason (click re-root, wheel pan,
+    /// resize, reload) so the remembered target can't go stale.
+    pub fn pointer(&self) -> Option<Position> {
+        self.pointer
+    }
+
     /// Record the hover target a `Hover` outcome resolved to. Returns whether
     /// it CHANGED — the redraw gate (`Moved` events dirty the frame only when
     /// the cell under the pointer is a different [`HitTarget`]).
@@ -285,6 +304,36 @@ impl MouseRouter {
     /// its cache key).
     pub fn hover(&self) -> Option<&HitTarget> {
         self.hover.as_ref()
+    }
+}
+
+/// Whether one router outcome should dirty the frame — the single place the
+/// `Moved`-throttle decision lives (table-tested).
+///
+/// - `None` (a press, a dedup'd move, a stray release) never dirties.
+/// - `Hover` dirties iff the resolved target changed (`target_changed` is
+///   [`track_hover`](MouseRouter::track_hover)'s return) — even outside
+///   `Selection`, so a stale hover is allowed to clear exactly once.
+/// - Click / DoubleClick / Drag* dirty iff the panes are live
+///   (`selection_mode`); overlay modes ignore them entirely.
+///
+/// Unclassified raw kinds never reach the router — the loop dirties
+/// conservatively for those without calling this.
+pub fn mouse_dirty(
+    outcome: Option<&MouseOutcome>,
+    selection_mode: bool,
+    target_changed: bool,
+) -> bool {
+    match outcome {
+        None => false,
+        Some(MouseOutcome::Hover { .. }) => target_changed,
+        Some(
+            MouseOutcome::Click { .. }
+            | MouseOutcome::DoubleClick { .. }
+            | MouseOutcome::DragStart { .. }
+            | MouseOutcome::DragMove { .. }
+            | MouseOutcome::DragEnd { .. },
+        ) => selection_mode,
     }
 }
 
@@ -489,9 +538,15 @@ mod tests {
             r.feed(release(MouseButton::Middle, 2, 2), t0),
             Some(click(MouseButton::Middle, 2, 2))
         );
-        // A release of a DIFFERENT button than the press is not a click.
+        // A release of a DIFFERENT button than the press is not a click — and
+        // the held press is untouched by it.
         r.feed(press(MouseButton::Left, 1, 1), t0);
         assert_eq!(r.feed(release(MouseButton::Right, 1, 1), t0), None);
+        assert_eq!(
+            r.feed(release(MouseButton::Left, 1, 1), t0),
+            Some(click(MouseButton::Left, 1, 1)),
+            "the surviving press still completes"
+        );
     }
 
     #[test]
@@ -503,11 +558,106 @@ mod tests {
     }
 
     #[test]
-    fn off_cell_release_without_drag_is_not_a_click() {
+    fn off_cell_release_ends_a_drag_even_without_drag_reports() {
         let t0 = t0();
         let mut r = MouseRouter::new();
         r.feed(press(MouseButton::Left, 5, 3), t0);
-        assert_eq!(r.feed(release(MouseButton::Left, 6, 3), t0), None);
+        // No Drag events between press and release — the ≥1-cell displacement
+        // still makes it a drag (spec §6), never a click.
+        assert_eq!(
+            r.feed(release(MouseButton::Left, 8, 3), t0),
+            Some(MouseOutcome::DragEnd {
+                button: MouseButton::Left,
+                origin: at(5, 3),
+                at: at(8, 3),
+            })
+        );
+        // And it must not have armed the double-click window.
+        r.feed(press(MouseButton::Left, 8, 3), t0);
+        assert_eq!(
+            r.feed(release(MouseButton::Left, 8, 3), t0),
+            Some(click(MouseButton::Left, 8, 3)),
+            "a fresh click after a drag is a plain click"
+        );
+    }
+
+    #[test]
+    fn double_click_requires_the_same_button() {
+        let t0 = t0();
+        // Click{Right}@X then Click{Left}@X inside the window: the second is a
+        // plain left click — the double-click window is per-button.
+        for (b1, b2) in [
+            (MouseButton::Right, MouseButton::Left),
+            (MouseButton::Left, MouseButton::Right),
+            (MouseButton::Middle, MouseButton::Left),
+        ] {
+            let mut r = MouseRouter::new();
+            r.feed(press(b1, 5, 3), t0);
+            r.feed(release(b1, 5, 3), t0);
+            r.feed(press(b2, 5, 3), t0 + Duration::from_millis(100));
+            assert_eq!(
+                r.feed(release(b2, 5, 3), t0 + Duration::from_millis(100)),
+                Some(click(b2, 5, 3)),
+                "{b1:?} -> {b2:?} on the same cell must not double"
+            );
+            // A second click with the SAME button still doubles.
+            r.feed(press(b2, 5, 3), t0 + Duration::from_millis(200));
+            assert_eq!(
+                r.feed(release(b2, 5, 3), t0 + Duration::from_millis(200)),
+                Some(MouseOutcome::DoubleClick {
+                    button: b2,
+                    at: at(5, 3)
+                }),
+                "{b2:?} twice on the same cell must double"
+            );
+        }
+    }
+
+    #[test]
+    fn dirty_decision_table() {
+        // Nothing emitted → never dirty, in any mode.
+        assert!(!mouse_dirty(None, true, false));
+        assert!(!mouse_dirty(None, false, true));
+
+        // Hover dirties iff the resolved target changed — even with a modal
+        // up, so a stale hover is allowed to clear exactly once.
+        let hover = Some(MouseOutcome::Hover { at: at(1, 1) });
+        assert!(mouse_dirty(hover.as_ref(), true, true));
+        assert!(!mouse_dirty(hover.as_ref(), true, false));
+        assert!(mouse_dirty(hover.as_ref(), false, true));
+        assert!(!mouse_dirty(hover.as_ref(), false, false));
+
+        // Clicks and drags only dirty while the panes are live.
+        for o in [
+            click(MouseButton::Left, 1, 1),
+            MouseOutcome::DoubleClick {
+                button: MouseButton::Left,
+                at: at(1, 1),
+            },
+            MouseOutcome::DragStart {
+                button: MouseButton::Left,
+                origin: at(1, 1),
+                at: at(2, 1),
+            },
+            MouseOutcome::DragMove {
+                origin: at(1, 1),
+                at: at(3, 1),
+            },
+            MouseOutcome::DragEnd {
+                button: MouseButton::Left,
+                origin: at(1, 1),
+                at: at(3, 1),
+            },
+        ] {
+            assert!(
+                mouse_dirty(Some(&o), true, false),
+                "{o:?} dirties in Selection"
+            );
+            assert!(
+                !mouse_dirty(Some(&o), false, false),
+                "{o:?} stays clean over an overlay"
+            );
+        }
     }
 
     #[test]

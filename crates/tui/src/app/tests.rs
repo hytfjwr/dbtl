@@ -6513,6 +6513,82 @@ fn click_target_left_click_behaves_like_the_old_down_click() {
 }
 
 #[test]
+fn hit_target_with_list_hidden_gives_everything_to_the_lineage() {
+    let mut a = sample_app();
+    a.select_by_unique_id("model.sample.fct_orders");
+    let lay = a.styled_lineage_layout().expect("a layout exists");
+    let area = Rect::new(0, 0, 160, 44);
+    // `list_visible = false`: the list rect collapses to zero width and the
+    // lineage pane takes the whole body — no divider exists.
+    let g = HitGeometry {
+        panes: pane_rects(area, false),
+        ..hit_geom(&a, Some(&lay), area)
+    };
+    // A cell inside the (former) list region is lineage interior now —
+    // never a list target, and never the absent boundary. (x=0 is the
+    // lineage pane's own border, so start at 5.)
+    for x in [5, 30, 60] {
+        let t = hit_target(&g, x, 5);
+        assert!(
+            matches!(
+                t,
+                Some(HitTarget::LineageNode(_)) | Some(HitTarget::LineageBlank)
+            ),
+            "x={x} should be lineage surface, got {t:?}"
+        );
+    }
+    assert_eq!(
+        hit_target(&g, area.width / 2, area.height - 1),
+        Some(HitTarget::StatusBar),
+        "the status line is unaffected"
+    );
+}
+
+#[test]
+fn hit_target_with_no_layout_reports_lineage_blank() {
+    let a = sample_app();
+    let area = Rect::new(0, 0, 160, 44);
+    let g = hit_geom(&a, None, area);
+    let inner = pane_interior(g.panes.lineage);
+    // An undrawn diagram: every interior cell is LineageBlank, never a node.
+    assert_eq!(
+        hit_target(&g, inner.x + 5, inner.y + 5),
+        Some(HitTarget::LineageBlank)
+    );
+}
+
+#[test]
+fn click_target_blank_surfaces_only_focus_and_modals_are_inert() {
+    let mut a = sample_app();
+    let sel = a.selected_unique_id();
+    a.ui_state.set_focus(Focus::RightPane);
+
+    a.click_target(&HitTarget::ListBlank, MouseButton::Left);
+    assert_eq!(
+        a.ui_state.focus(),
+        Focus::List,
+        "list blank takes list focus"
+    );
+    assert_eq!(a.selected_unique_id(), sel, "no selection change");
+
+    a.click_target(&HitTarget::LineageBlank, MouseButton::Left);
+    assert_eq!(
+        a.ui_state.focus(),
+        Focus::RightPane,
+        "lineage blank takes lineage focus"
+    );
+    assert_eq!(a.selected_unique_id(), sel, "no selection change");
+
+    // The reserved modal targets are unreachable today (Selection gating runs
+    // first) and must be inert regardless — not even a focus change.
+    for t in [HitTarget::ModalInterior, HitTarget::ModalExterior] {
+        a.click_target(&t, MouseButton::Left);
+        assert_eq!(a.ui_state.focus(), Focus::RightPane, "{t:?} must be inert");
+        assert_eq!(a.selected_unique_id(), sel, "{t:?} selects nothing");
+    }
+}
+
+#[test]
 fn click_target_right_and_middle_click_do_nothing() {
     let mut a = sample_app();
     let initial = a.selected_unique_id();

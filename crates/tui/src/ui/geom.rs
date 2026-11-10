@@ -212,8 +212,9 @@ pub enum HitTarget {
     ListRow(usize),
     /// A group header row in the list pane: the layer key (e.g. `"staging"`).
     ListHeader(String),
-    /// List pane interior with no row under the point (below the last row,
-    /// or the padding right of short rows).
+    /// List pane interior below the last display row. The lookup is per-row —
+    /// a point anywhere left or right of a drawn row still reports THAT row's
+    /// target, so blank space only exists under the rows.
     ListBlank,
     /// A lineage node box: its `unique_id` (or a `+M more` marker's).
     LineageNode(String),

@@ -15,8 +15,8 @@ use dbtl::app::{apply_action, App, LineageView};
 use dbtl::effect::Effect;
 use dbtl::layout::Layout;
 use dbtl::ui::{
-    draw, hit_target, pane_interior, pane_rects, Focus, HitGeometry, LineageLens, MouseInput,
-    MouseOutcome, MouseRouter, RenderCtx, StatusSegments,
+    draw, hit_target, mouse_dirty, pane_interior, pane_rects, Focus, HitGeometry, LineageLens,
+    MouseInput, MouseOutcome, MouseRouter, RenderCtx, StatusSegments,
 };
 use dbtl::{Mode, SortMode};
 
@@ -274,6 +274,23 @@ pub fn event_loop(
                 (Some(lay), LineageLens::Layer) => Some(app.layer_bands(lay)),
                 _ => None,
             };
+            // The frame is being redrawn for a non-hover reason (a click
+            // re-root, a wheel pan, a resize, a reload): the cell under the
+            // pointer may now sit on a different surface. Re-resolve the
+            // remembered hover target against the FRESH geometry so it can't
+            // go stale between `Moved` events.
+            // TODO(05): Issues 05/07 read `mouse.hover()` for the frame-buffer
+            // highlight/tooltip overlay — keep it out of CharGrid and every
+            // cache key (a post-blit overlay input only).
+            if let Some(cell) = mouse.pointer() {
+                let target = if matches!(app.mode, Mode::Selection) {
+                    let g = hit_geometry(app, lineage.as_deref(), area);
+                    hit_target(&g, cell.x, cell.y)
+                } else {
+                    None
+                };
+                mouse.track_hover(target);
+            }
             {
                 let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, lineage.as_deref());
                 ctx.mode = &app.mode;
@@ -460,22 +477,23 @@ fn handle_mouse(
             let Some(outcome) = mouse.feed(input, Instant::now()) else {
                 return false; // press / deduped move / stray event: nothing visible
             };
-            match outcome {
+            let sel = matches!(app.mode, Mode::Selection);
+            let mut target_changed = false;
+            match &outcome {
                 MouseOutcome::Hover { at } => {
                     // Non-Selection modes own the screen: the panes report no
                     // hover target (modal hit-testing is Issue 06).
-                    let target = if matches!(app.mode, Mode::Selection) {
+                    let target = if sel {
                         let g = hit_geometry(app, lineage, area);
                         hit_target(&g, at.x, at.y)
                     } else {
                         None
                     };
-                    mouse.track_hover(target)
+                    target_changed = mouse.track_hover(target);
                 }
-                MouseOutcome::Click { button, at } | MouseOutcome::DoubleClick { button, at } => {
-                    if !matches!(app.mode, Mode::Selection) {
-                        return false;
-                    }
+                MouseOutcome::Click { button, at } | MouseOutcome::DoubleClick { button, at }
+                    if sel =>
+                {
                     let target = {
                         let g = hit_geometry(app, lineage, area);
                         hit_target(&g, at.x, at.y)
@@ -486,17 +504,14 @@ fn handle_mouse(
                         // same node, re-selecting the same row), so the effect
                         // matches the old two-clicks-in-a-row behaviour until
                         // Issue 05 gives double-click its own meaning.
-                        app.click_target(t, button);
+                        app.click_target(t, *button);
                     }
-                    true
                 }
                 // Drags are recognized by the router but inert until Issues 02
-                // (pane-resize) and 05 (lineage pan) give them meaning; they
-                // redraw freely like every non-Moved kind.
-                MouseOutcome::DragStart { .. }
-                | MouseOutcome::DragMove { .. }
-                | MouseOutcome::DragEnd { .. } => matches!(app.mode, Mode::Selection),
+                // (pane-resize) and 05 (lineage pan) give them meaning.
+                _ => {}
             }
+            mouse_dirty(Some(&outcome), sel, target_changed)
         }
     }
 }

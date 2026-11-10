@@ -25,7 +25,7 @@ pub use geom::{
     pane_rects, ClipEdges, HitGeometry, HitTarget, PaneRects,
 };
 pub use lineage::LayerBand;
-pub use mouse::{MouseInput, MouseOutcome, MouseRouter};
+pub use mouse::{mouse_dirty, MouseInput, MouseOutcome, MouseRouter};
 pub use overlay::{
     clamp_columns_scroll, clamp_detail_scroll, clamp_diff_scroll, clamp_help_scroll,
     clamp_sql_scroll, clamp_stats_scroll,
