@@ -78,15 +78,34 @@ impl App {
         Some(out)
     }
 
-    /// Render the yank-target lineage subgraph as plain text — the exact
-    /// diagram the lineage pane draws (same `layout_mode` + glyph repertoire),
-    /// minus colours. Pasteable into tickets/docs as a monospace block. `None`
-    /// when nothing is selected / the subgraph is empty.
+    /// Render the yank-target lineage as plain text — the exact diagram the
+    /// lineage pane draws (same `layout_mode` + glyph repertoire AND the same
+    /// sibling-collapse view: `+M more` markers and all), minus colours.
+    /// Pasteable into tickets/docs as a monospace block. `None` when nothing
+    /// is selected / the subgraph is empty.
+    ///
+    /// Policy (Issue 13): the ASCII export is SCREEN-EQUIVALENT — the existing
+    /// "the yank IS the pane's diagram" rule — so collapse markers appear in
+    /// the text exactly as on screen (expand first, then yank, to capture the
+    /// members). The structured exports ([`lineage_mermaid`]/[`lineage_dot`])
+    /// keep the SEMANTIC graph: every real node, no markers.
+    ///
+    /// When the yank targets the structure modal's node (`pending_node`), the
+    /// base is rooted elsewhere: the keep-alive set must be that root's
+    /// subject alone — the cursor/path/bookmark keeps belong to the CURRENT
+    /// root's view and would otherwise draw nodes the screen hides.
     pub fn lineage_ascii(&self) -> Option<String> {
-        let sg = self.yank_subgraph();
-        if sg.nodes.is_empty() {
+        let base = self.yank_subgraph();
+        if base.nodes.is_empty() {
             return None;
         }
+        let same_root = base.selected == self.selected_unique_id().unwrap_or_default();
+        let sg = if same_root {
+            self.collapse_view_of(&base)
+        } else {
+            self.collapse_view_bare(&base)
+        }
+        .subgraph;
         Some(
             crate::layout_density(&sg, self.glyph_mode, self.effective_density())
                 .grid

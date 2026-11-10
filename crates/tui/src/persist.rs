@@ -58,6 +58,11 @@ pub struct Config {
     /// (default `owner`) — read by the `D` modal, its `e` export, and
     /// `dbtl impact`/`check`.
     pub owner_meta_key: Option<String>,
+    /// The sibling-collapse threshold: a lineage column stacking more than
+    /// this many same-parent siblings contracts the tail into one `+M more`
+    /// marker (default 8; `0` = never collapse). Config-only — it is a
+    /// display policy, not a per-project pref, so the state file ignores it.
+    pub lineage_collapse: Option<usize>,
 }
 
 impl Config {
@@ -222,7 +227,11 @@ mod tests {
 
     fn fixture_app() -> App {
         let dag = crate::load_dag(FIXTURE).expect("fixture loads");
-        App::new(dag, PathBuf::from(FIXTURE))
+        let mut a = App::new(dag, PathBuf::from(FIXTURE));
+        // Same pin as `app::tests::app` — the fixture's hubs exceed the
+        // collapse default, and these tests predate the display transform.
+        a.set_collapse_threshold(0);
+        a
     }
 
     #[test]

@@ -187,6 +187,11 @@ fn run(cli: &Cli) -> Result<()> {
     if let Some(key) = &config.owner_meta_key {
         app.set_owner_meta_key(key.clone());
     }
+    // `lineage_collapse`: the sibling-collapse threshold (also config-only —
+    // a display policy like the meta keys, not a saved pref).
+    if let Some(threshold) = config.lineage_collapse {
+        app.set_collapse_threshold(threshold);
+    }
     // Layered prefs: config defaults under the per-project saved state (the
     // state's `Some` fields win); --select/--diff below still override both.
     app.apply_prefs(&config.as_prefs());

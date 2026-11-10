@@ -64,10 +64,22 @@ impl App {
             .keys()
             .map(|uid| {
                 let node = self.dag.get(uid);
-                let rt = node.map(|n| n.resource_type.as_str()).unwrap_or("");
-                let mat = self.dag.detail(uid).and_then(|d| d.materialized.as_deref());
+                // A layout node with no Dag entry is a `+M more` / `-M less`
+                // collapse marker — chrome, not a resource — so it gets the
+                // dedicated `Collapsed` class (the muted gray) instead of
+                // falling through `classify` on an empty resource_type.
+                let class = match node {
+                    Some(n) => {
+                        let mat = self.dag.detail(uid).and_then(|d| d.materialized.as_deref());
+                        MaterializationClass::classify(&n.resource_type, mat)
+                    }
+                    None => MaterializationClass::Collapsed,
+                };
                 let attr = CellAttr {
-                    class: MaterializationClass::classify(rt, mat),
+                    class,
+                    // Markers tint `None` under every lens: each lens_tint arm
+                    // either reads `node` (`None` → `None`) or a Dag side-map
+                    // keyed by real uids only.
                     lens: self.lens_tint(lens, uid, node, &violation_nodes, &lint_nodes),
                     // Off-path nodes dim only while a path exists (cursor off-root).
                     dimmed: dimming && !path.contains(uid),

@@ -156,6 +156,13 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             let Some(uid) = app.focus_target() else {
                 return Outcome::cont();
             };
+            // A `+M more` / `-M less` marker under the cursor TOGGLES its
+            // sibling group instead of opening the structure modal (the marker
+            // is chrome, not a Dag node — there is nothing to detail).
+            if let Some(group) = app.collapse_group(&uid) {
+                app.toggle_collapse(&group.key);
+                return Outcome::cont();
+            }
             if Some(&uid) != root.as_ref()
                 && app
                     .dag
@@ -389,7 +396,13 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                 Mode::Search(s) => {
                     s.query.push(c);
                     s.match_idx = 0; // query changed → matches changed
+                    let lineage = s.target == SearchTarget::Lineage;
                     app.refilter();
+                    // A hidden (collapsed-away) match auto-expands its group so
+                    // the loop's anchor has a rect to land on.
+                    if lineage {
+                        app.reveal_current_lineage_match();
+                    }
                 }
                 Mode::Palette(p) => {
                     p.query.push(c);
@@ -404,7 +417,11 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                 Mode::Search(s) => {
                     s.query.pop();
                     s.match_idx = 0;
+                    let lineage = s.target == SearchTarget::Lineage;
                     app.refilter();
+                    if lineage {
+                        app.reveal_current_lineage_match();
+                    }
                 }
                 Mode::Palette(p) => {
                     p.query.pop();
@@ -456,6 +473,9 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                                 _ => s.match_idx,
                             };
                         }
+                        // Cycling to a hidden match expands its group — the
+                        // anchor needs the match drawn to land on it.
+                        app.reveal_current_lineage_match();
                     }
                 }
                 None => {}
@@ -678,6 +698,11 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             let Some(uid) = app.focus_target() else {
                 return Outcome::cont();
             };
+            // A collapse marker has no SQL — `s` previews nodes, not chrome.
+            if app.collapse_group(&uid).is_some() {
+                app.set_notice("no SQL for a collapse marker (Enter toggles it)");
+                return Outcome::cont();
+            }
             let name = app.node_name_or_uid(&uid);
             // Sources/seeds (and manifests omitting raw_code) get a placeholder —
             // there is no transient-status channel in this app.

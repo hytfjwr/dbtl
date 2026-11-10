@@ -11,6 +11,10 @@ pub use dbtl_core::*;
 
 pub mod action;
 pub mod app;
+// Crate-internal: the lineage-pane sibling-collapse stage (Subgraph -> the
+// Subgraph layout draws, plus the marker index). Not part of the public API —
+// interaction goes through `App`.
+mod collapse;
 pub mod effect;
 pub mod layout;
 pub mod model_list;

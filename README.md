@@ -80,6 +80,10 @@ A manifest (including a dbt Fusion–written one) that carries resource types `d
 ### Navigate the graph itself
 Move a cursor between lineage nodes and re-root on any model. You can filter by direction and depth, and go back and forward through your re-root history. A mouse click on a node re-roots too.
 
+When one column stacks more than `lineage_collapse` same-parent siblings (default 8, see [State and config](#state-and-config)), the tail folds into a single `+N more` box so giant hubs stay navigable. `Enter` — or a click — on it expands the group into all its members behind a `-N less` box, and `Enter` again collapses it back. Which siblings stay visible is deterministic: the cursor, the root↔cursor path, and bookmarks always show, the rest fill in `unique_id` order. A `/` lineage search that lands on a hidden member expands its group automatically, and expansions reset when you re-root.
+
+Collapsing is a display concern: the Mermaid (`m`/`ym`) and DOT (`x`/`yx`) exports always emit every real node. The ASCII copy (`c`/`yc`) and the `e` diagram export keep their long-standing "exactly what the pane draws" contract — markers included, so expand a group first if you want its members in the text.
+
 </td>
 </tr>
 <tr>
@@ -386,7 +390,7 @@ Press `?` inside the app for the full list. The most useful ones:
 | `H` `L` | Send the lineage cursor to the first / last column |
 | `Tab` | Switch focus between list ⇄ lineage |
 | `Ctrl-b` `Cmd-b` | Show / hide the model list pane |
-| `Enter` | Structure view (columns / tests / description); on a lineage model, re-root to it |
+| `Enter` | Structure view (columns / tests / description); on a lineage model, re-root to it; on a `+N more` / `-N less` box, expand / collapse the sibling group |
 | `/` | Fuzzy search (list filter / lineage jump) — in the list, a `!` prefix is a dbt selector and a `?` prefix full-text |
 | `p` | Anchor / clear a two-node path (the highlight runs anchor↔cursor) |
 | `u` `d` `[` `]` `0` | Filter the lineage view (direction / depth / reset) |
@@ -418,7 +422,7 @@ Press `?` inside the app for the full list. The most useful ones:
 
 Inside a scrollable modal, `j`/`k` scroll, `d`/`u`/`Ctrl-d`/`Ctrl-u`/`PgDn`/`PgUp` page, `g`/`G` jump to the top / bottom, and `Esc`/`Enter`/`q` (`?` too, for the help overlay) closes. In the structure view, `h`/`l` move a cursor across the column rows (each shows its `↑`/`↓` one-hop column-edge count) — the target of `y l` — and `Enter`/`c` commits the cursored column to the **column trace view**: the lineage filters to the column's related models, each box lists its related columns (`>` marks the traced one, the other marks name the edge kind), a `column:model.col ↑u ↓d` status chip (one-hop counts, like the modal) replaces the `[view]` label, and the title gains ` [col:name]`. While tracing, `h`/`l` step the traced column upstream/downstream, `K` opens the column modal, `t` reaches the column-impact lens (gold = the downstream closure), the rooted view filters `u`/`d`/`[`/`]`/`0` are gated (they would only apply after the trace), and `Esc` exits the trace. Pressing `y` over the structure view aims every `y<key>` yank at *the modal's node*, not the list selection — `y l` yanks the column under its cursor (or, mid-trace with no modal open, the traced column). Known limitation: the yank menu is one-shot and closes to the list — `Esc`/`q` from it does NOT return to the modal (re-open with `Enter`); restoring the modal on cancel is a tracked follow-up. In a `/` search, `Up`/`Down` move between matches.
 
-The mouse works too: click a lineage node to re-root, and use the wheel to scroll. The lineage pane pans in both directions. A horizontal wheel notch (trackpad swipe or tilt wheel) or `Shift`+wheel scrolls it sideways.
+The mouse works too: click a lineage node to re-root (a `+N more` box expands instead), and use the wheel to scroll. The lineage pane pans in both directions. A horizontal wheel notch (trackpad swipe or tilt wheel) or `Shift`+wheel scrolls it sideways.
 
 ## Color themes
 
@@ -450,6 +454,7 @@ density: compact       # comfortable|compact
 sort: downstream       # layer|downstream|tests
 group_by_meta: owner   # group the model list by this meta key's value instead of layer dirs
 owner_meta_key: owner  # the meta key the impact report counts as "affected owners" (default owner)
+lineage_collapse: 8    # fold a column's same-parent sibling tail into a +N more box past N (0 = never)
 ```
 
 `group_by_meta` swaps the left pane's layer grouping for `key=value` groups (alphabetical, models missing the key land in a `(no <key>)` group last — e.g. `(no owner)` when grouping by `owner`); the `.` sort cycle still orders models *within* each group. Leave it unset for the default layer grouping. `owner_meta_key` changes which `meta` key `dbtl impact` and the `D` modal read for their "Affected owners" list; `dbtl check --diff` prints them as an informational `affected owners:` line (never a gate).
