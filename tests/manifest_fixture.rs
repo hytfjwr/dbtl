@@ -166,9 +166,12 @@ fn closure_deep_multihop_fct_subscription_process() {
 // their own `pos_*` model plus the assignment model (source_fanout), the
 // assignment model joins 4 sources and feeds 16 leaf pos_* models
 // (multiple_sources_joined / model_fanout), and
-// `fct_delivery_shopper_monthly_visits` is a redundant hop between
-// `dim_fiscal_years` and `rpt_delivery_shopper_monthly_visits`
-// (rejoining_upstream). The two `int_*__combined` models carry no
+// `fct_delivery_shopper_monthly_visits`,
+// `fct_delivery_monthly_snapshot` and `fct_subscription_process` are
+// redundant hops — each's only data-node child is a marts model also fed
+// directly by the hop's own parents (their other "children" are exposures /
+// non-model consumers that don't count as a use — rejoining_upstream).
+// The two `int_*__combined` models carry no
 // unique+not_null pair. Everything else scores 0: all models are documented,
 // none declare access/contract, every model has a parent, no marts or
 // intermediate model reads a source, no backward edge exists, and
@@ -187,14 +190,14 @@ fn lint_findings_match_frozen_fixture_counts() {
         ("multiple_sources_joined", 1),
         ("source_fanout", 4),
         ("model_fanout", 1),
-        ("rejoining_upstream", 1),
+        ("rejoining_upstream", 3),
         ("missing_primary_key_tests", 2),
     ]);
     assert_eq!(
         counts, expected,
         "per-rule finding counts drifted from the frozen fixture values"
     );
-    assert_eq!(findings.len(), 25, "total findings");
+    assert_eq!(findings.len(), 27, "total findings");
     // Zero-count rules still produce no findings at all.
     for rule in [
         LintRule::RootModels,

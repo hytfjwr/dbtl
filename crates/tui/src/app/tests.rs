@@ -3026,11 +3026,11 @@ fn violation_lens_tints_both_incident_nodes_and_spares_the_rest() {
 
 #[test]
 fn lint_findings_are_computed_once_from_the_shared_rules() {
-    // The fixture has 25 findings under the shipped defaults (frozen counts in
+    // The fixture has 27 findings under the shipped defaults (frozen counts in
     // tests/manifest_fixture.rs) — the App computes them once at construction
     // and every surface (lens, stats worklist) reads that one vector.
     let a = app();
-    assert_eq!(a.lint_findings().len(), 25, "the frozen fixture count");
+    assert_eq!(a.lint_findings().len(), 27, "the frozen fixture count");
     assert!(
         a.lint_findings()
             .iter()
@@ -3123,6 +3123,44 @@ fn stats_view_carries_the_lint_worklist_from_the_shared_findings() {
         sorted.sort();
         assert_eq!(*names, sorted, "{rule} names are sorted");
     }
+}
+
+#[test]
+fn malformed_dbtl_yml_warns_via_notice_in_both_modes() {
+    // The TUI's malformed-config policy: warn + shipped defaults, never block
+    // the screen. Manifest mode finds `.dbtl.yml` at the project root above
+    // `target/`; source mode finds it in the project dir itself.
+    let root = tempfile::tempdir().unwrap();
+    let manifest_path = root.path().join("target").join("manifest.json");
+    std::fs::create_dir_all(manifest_path.parent().unwrap()).unwrap();
+    std::fs::copy(FIXTURE, &manifest_path).unwrap();
+    std::fs::write(
+        root.path().join(".dbtl.yml"),
+        "lint: [not, valid]\n", // malformed: lint must be a map
+    )
+    .unwrap();
+    let dag = load_dag(&manifest_path).unwrap();
+    let mut a = App::new(dag, manifest_path);
+    let note = a.take_notice().expect("manifest mode warns once");
+    assert!(
+        note.contains(".dbtl.yml"),
+        "manifest-mode notice names the bad file, got: {note}"
+    );
+    assert_eq!(a.take_notice(), None, "the toast is one-shot");
+
+    // Source mode: same warning queued by with_source — and main.rs's
+    // source-mode hint must APPEND (append_notice), not overwrite it.
+    let proj = tempfile::tempdir().unwrap();
+    std::fs::write(proj.path().join(".dbtl.yml"), "lint: [nope]\n").unwrap();
+    let dag = load_dag(FIXTURE).unwrap();
+    let mut a = App::from_source(dag, proj.path().to_path_buf());
+    a.append_notice("Source mode: lineage is inferred");
+    let note = a.take_notice().expect("source mode warns once");
+    assert!(note.contains(".dbtl.yml"), "lint warning kept: {note}");
+    assert!(
+        note.contains("Source mode"),
+        "the source-mode hint rides along: {note}"
+    );
 }
 
 #[test]

@@ -280,19 +280,22 @@ The initial rule set (all enabled by default):
 | `source_fanout` | a source directly feeds ≥ `source_fanout_threshold` models (default 2) |
 | `model_fanout` | a model directly feeds ≥ `model_fanout_threshold` leaf models (default 5, the hub threshold) |
 | `root_models` | a model has no parents |
-| `rejoining_upstream` | a redundant hop: A→B→C while A→C also exists and B is otherwise unused |
-| `marts_depend_on_source` | a marts/intermediate model directly depends on a source |
+| `rejoining_upstream` | a redundant hop: A→B→C while A→C also exists and B has no other data-node child (endpoint resources like exposures don't count as a use) |
+| `marts_depend_on_source` | a marts/intermediate model directly depends on a source (layer resolved prefix-first — `staging/fct_x` counts as marts) |
 | `missing_primary_key_tests` | a model lacks `unique`+`not_null` on the same column or `unique_combination_of_columns` |
 | `public_models_without_contract` | `access: public` without `contract: enforced` |
 | `undocumented_models` | a model has no description |
-| `naming_conventions` | a model's name misses its layer's prefix (`stg_`, `int_`, `fct_`/`dim_`/`rpt_`) |
+| `naming_conventions` | a model's name misses its resolved layer's prefix (`stg_`, `int_`, `fct_`/`dim_`/`rpt_`) |
 | `layer_violation` | a backward edge between logical layers — the shared `layer_violation_edges` predicate |
 
-Rule policy lives in the **project-local `.dbtl.yml`** (next to
-`dbt_project.yml`, or the project root above `target/` in manifest mode) —
-deliberately *not* `~/.config/dbtl/config.yml`, because a CI gate must not
-depend on the developer's machine. A malformed file is an error for `check`
-and `docs` (the TUI warns and falls back to defaults).
+Rule policy lives in the **project-local `.dbtl.yml`** — deliberately *not*
+`~/.config/dbtl/config.yml`, because a CI gate must not depend on the
+developer's machine. In source mode the project dir is searched; in manifest
+mode a `<root>/target/manifest.json` layout looks at the project root first,
+then `target/` itself (a manifest anywhere else only consults its own
+directory — no unrelated parent `.dbtl.yml` is picked up). A malformed file
+is an error for `check` and `docs` (the TUI warns and falls back to
+defaults).
 
 ```yaml
 # .dbtl.yml — every key optional; absent rules stay enabled
@@ -305,6 +308,7 @@ lint:
   naming_prefixes:             # per-layer merge over the defaults
     staging: [stg_, base_]     # staging/ also accepts base_
     marts: []                  # marts/ is unchecked
+    other: [rpt_]              # flag unclassified models without rpt_ (evaluator parity)
 ```
 
 `dbtl check --lint --diff <BASELINE>` compares finding *keys* against the
@@ -315,10 +319,15 @@ fail only on the violations they add.
 
 Differences from `dbt_project_evaluator`: dbtl evaluates the pruned in-scope
 graph (root project by default — installed-package neighbours still count as
-dependency context but are never flagged), `model_fanout` defaults to ≥5
-aligned with dbtl's hub threshold (the evaluator uses >3) and `source_fanout`
-to ≥2 (the evaluator's >1), and SQL-content rules the evaluator ships
-(hard-coded references, etc.) are out of scope — they need compiled SQL.
+dependency context but are never flagged). Layer resolution for
+`naming_conventions` / `marts_depend_on_source` follows the evaluator's
+`model_type` — **prefix first, then folder, else `other`** — but `other` is
+prefix-free by default where the evaluator expects `rpt_` (opt in with
+`naming_prefixes.other: [rpt_]`). `model_fanout` defaults to ≥5 aligned with
+dbtl's hub threshold (the evaluator's default is ≥3 — the operator is the
+same, only the default differs) and `source_fanout` to ≥2 (the evaluator's
+>1). SQL-content rules the evaluator ships (hard-coded references, etc.) are
+out of scope — they need compiled SQL.
 
 ### Column lineage (`dbtl columns`)
 

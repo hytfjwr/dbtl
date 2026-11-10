@@ -130,8 +130,8 @@ impl LintRule {
 }
 
 /// One rule violation on one node: the violating node, the related nodes for
-/// context (a layer violation's parent, a rejoin's A/C endpoints — sorted),
-/// and a human-readable explanation.
+/// context (a layer violation's parent, a rejoin's C+A endpoints, a fanout's
+/// children — sorted), and a human-readable explanation.
 ///
 /// `check --lint` gates on these, the `Lint` lens tints `node_uid`, the stats
 /// worklist lists them per rule, and docs pages quote `message` verbatim.
@@ -141,9 +141,12 @@ pub struct Finding {
     pub rule: LintRule,
     /// The violating node.
     pub node_uid: String,
-    /// Other uids implicated by the violation (sorted). Empty for node-scoped
-    /// rules — their implicated neighbours ride the `message` instead, so the
-    /// finding's identity stays the node itself.
+    /// Other uids implicated by the violation (sorted uid sets, not
+    /// positional — for `rejoining_upstream` the merged {C}∪{A…} set, for
+    /// `direct_join_to_source` sources-then-models; the `message` carries the
+    /// per-endpoint semantics). Empty for node-scoped rules — their
+    /// implicated neighbours ride the `message` instead, so the finding's
+    /// identity stays the node itself.
     pub related: Vec<String>,
     /// The stable human-readable explanation shown in check output and docs.
     pub message: String,
@@ -178,15 +181,19 @@ pub struct LintConfig {
     /// `model_fanout`: a model with AT-OR-ABOVE this many direct leaf-model
     /// children is flagged. Defaults to [`crate::PR_HUB_MIN_DOWNSTREAM`] so
     /// the "hub" notion matches the PR-impact hub risk flag. (The evaluator
-    /// uses `> 3`; we flag `>=` per the proposal's 閾値以上 wording.)
+    /// compares `>=` too — its default threshold is 3, ours 5; the operator
+    /// is the same, only the default differs.)
     pub model_fanout_threshold: usize,
     /// `source_fanout`: a source with AT-OR-ABOVE this many direct model
     /// children is flagged. Default 2 (the evaluator's ">1").
     pub source_fanout_threshold: usize,
-    /// `naming_conventions`: layer dir → allowed name prefixes. A model whose
-    /// [`first_dir`] layer is listed must start with one of its prefixes; a
-    /// layer absent from the map (or mapped to `[]`) is unchecked — the
-    /// project's own directory taxonomy is its own business.
+    /// `naming_conventions`: model TYPE → allowed name prefixes, where the
+    /// type is resolved by [`lint_model_type`] (prefix-first, then
+    /// [`first_dir`] folder, else `other`). A model whose resolved type is
+    /// listed must start with one of its prefixes; a type absent from the
+    /// map (or mapped to `[]`) is unchecked. `other` is a valid key: mapping
+    /// it to e.g. `["rpt_"]` opts into the evaluator's default behaviour of
+    /// flagging unclassified models without that prefix.
     pub naming_prefixes: BTreeMap<String, Vec<String>>,
 }
 
@@ -303,29 +310,36 @@ impl LintConfig {
     }
 }
 
-/// The `.dbtl.yml` candidates for a data source, in priority order: the
-/// source's own directory first (source mode's project dir; for a manifest,
-/// its containing dir — `<root>/target` under the standard layout), then the
-/// parent dir (the project root above `target/`). A manifest or project not
-/// under the standard layout still gets a sensible 2-level search. The first
-/// EXISTING file wins ([`lint_config_path`]); when none exists the first
-/// candidate is still the conventional place to write one.
+/// The `.dbtl.yml` candidates for a data source, in priority order:
+///
+/// - **Source mode** (`project_dir`): the project dir itself — it IS the
+///   project root.
+/// - **Manifest mode**: when the manifest sits at the standard
+///   `<root>/target/manifest.json` layout (same heuristic
+///   [`dag.rs`](crate::dag) uses for the staleness project-root), the
+///   PROJECT ROOT wins first, then `target/` itself as an escape hatch. A
+///   manifest anywhere else (`--manifest /tmp/x/manifest.json`) gets ONLY its
+///   own directory — climbing to an unrelated parent's `.dbtl.yml` would lint
+///   a copied artifact against a foreign config.
+///
+/// The first EXISTING file wins ([`lint_config_path`]); when none exists the
+/// first candidate is still the conventional place to write one.
 pub fn lint_config_candidates(
     manifest_path: Option<&Path>,
     project_dir: Option<&Path>,
 ) -> Vec<PathBuf> {
-    let Some(base) = manifest_path
-        .and_then(Path::parent)
-        .or(project_dir)
-        .map(Path::to_path_buf)
-    else {
-        return Vec::new();
-    };
-    let mut out = vec![base.join(LINT_CONFIG_NAME)];
-    if let Some(parent) = base.parent() {
-        out.push(parent.join(LINT_CONFIG_NAME));
+    if let Some(dir) = manifest_path.and_then(Path::parent) {
+        let mut out = Vec::new();
+        // Standard layout: <root>/target/manifest.json → root first.
+        if dir.file_name().is_some_and(|n| n == "target") {
+            if let Some(root) = dir.parent() {
+                out.push(root.join(LINT_CONFIG_NAME));
+            }
+        }
+        out.push(dir.join(LINT_CONFIG_NAME));
+        return out;
     }
-    out
+    project_dir.map_or_else(Vec::new, |d| vec![d.join(LINT_CONFIG_NAME)])
 }
 
 /// The `.dbtl.yml` actually in effect for a data source: the first candidate
@@ -371,7 +385,7 @@ pub fn run_rules(dag: &Dag, config: &LintConfig) -> Vec<Finding> {
             LintRule::RootModels => root_models(dag, &uids, &in_scope, &mut out),
             LintRule::RejoiningUpstream => rejoining_upstream(dag, &uids, &in_scope, &mut out),
             LintRule::MartsDependOnSource => {
-                marts_depend_on_source(dag, &uids, &in_scope, &mut out)
+                marts_depend_on_source(dag, &uids, &in_scope, config, &mut out)
             }
             LintRule::MissingPrimaryKeyTests => {
                 missing_primary_key_tests(dag, &uids, &in_scope, &mut out)
@@ -567,9 +581,25 @@ fn root_models(
     }
 }
 
-/// `rejoining_upstream`: model B whose ONLY child is model C, while one of
-/// B's model parents A also feeds C directly (A→B→C plus A→C — B is a
-/// redundant hop). One finding per (A,B,C) triple, `related` = `[A, C]`.
+/// The resource types that count as "used" for [`rejoining_upstream`]'s
+/// child test and as endpoints of the rejoin — the evaluator's
+/// `single_use_resources` notion: data-carrying nodes only. Endpoint
+/// resources (exposures, metrics, semantic models, saved queries) ride the
+/// same `direct_children`/`direct_parents` lists but are NOT a "use" — a
+/// model consumed only by an exposure is still single-use.
+fn is_data_resource(resource_type: &str) -> bool {
+    matches!(resource_type, "model" | "seed" | "snapshot" | "source")
+}
+
+/// `rejoining_upstream`: node B whose ONLY data-node child is C, while some
+/// data-node parent A of B also feeds C directly (A→B→C plus A→C — B is a
+/// redundant hop). Matches the evaluator's `single_use_resources`: the child
+/// count ignores endpoint resources, and A/C aren't model-only (a source→B→C
+/// + source→C or a snapshot relay rejoin counts too).
+///
+/// One finding per B — `related` is the sorted set `{C} ∪ {A₁, A₂, …}` and
+/// `message` names the offenders, so a B bypassed by several parents shows
+/// once in worklists.
 fn rejoining_upstream(
     dag: &Dag,
     uids: &[&String],
@@ -578,45 +608,106 @@ fn rejoining_upstream(
 ) {
     for uid in uids {
         let Some(n) = dag.get(uid) else { continue };
-        if n.resource_type != "model" || !in_scope(n) {
+        if !is_data_resource(&n.resource_type) || !in_scope(n) {
             continue;
         }
-        let children = dag.direct_children(uid);
-        // "Otherwise unused": exactly one child, and it's a model.
-        let [c_uid] = children else { continue };
-        if dag.get(c_uid).is_none_or(|c| c.resource_type != "model") {
+        // "Otherwise unused": exactly ONE data-node child. Endpoint resources
+        // (an exposure reading B, say) don't count as a second use.
+        let mut children = dag.direct_children(uid).iter().filter(|c| {
+            dag.get(c)
+                .is_some_and(|c| is_data_resource(&c.resource_type))
+        });
+        let (Some(c_uid), None) = (children.next(), children.next()) else {
+            continue;
+        };
+        let c_uid = c_uid.clone();
+        // Every data-node parent of B that ALSO feeds C directly. A/C carry
+        // no scope check — under --include-packages a package neighbour is
+        // dependency context, never the flagged node (B always is).
+        let mut a_uids: Vec<String> = dag
+            .direct_parents(uid)
+            .iter()
+            .filter(|a| {
+                dag.get(a)
+                    .is_some_and(|a| is_data_resource(&a.resource_type))
+            })
+            .filter(|a| dag.direct_parents(&c_uid).contains(*a))
+            .cloned()
+            .collect();
+        if a_uids.is_empty() {
             continue;
         }
-        for a_uid in dag.direct_parents(uid) {
-            if dag.get(a_uid).is_none_or(|a| a.resource_type != "model") {
-                continue;
-            }
-            if !dag.direct_parents(c_uid).contains(a_uid) {
-                continue;
-            }
-            let aname = dag.get(a_uid).map_or(a_uid.as_str(), |a| &a.name);
-            let cname = dag.get(c_uid).map_or(c_uid.as_str(), |c| &c.name);
-            out.push(Finding {
-                rule: LintRule::RejoiningUpstream,
-                node_uid: (*uid).clone(),
-                related: vec![a_uid.clone(), (*c_uid).clone()],
-                message: format!(
-                    "{} is a redundant hop: {aname} already feeds {cname} directly",
-                    n.name
-                ),
-            });
-        }
+        a_uids.sort();
+        a_uids.dedup();
+        let cname = dag
+            .get(&c_uid)
+            .map_or_else(|| c_uid.clone(), |c| c.name.clone());
+        let anames = a_uids
+            .iter()
+            .map(|a| dag.get(a).map_or(a.as_str(), |a| a.name.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut related = vec![c_uid];
+        related.extend(a_uids.iter().cloned());
+        related.sort();
+        related.dedup();
+        out.push(Finding {
+            rule: LintRule::RejoiningUpstream,
+            node_uid: (*uid).clone(),
+            related,
+            message: format!(
+                "{} is a redundant hop: {anames} already feed(s) {cname} directly",
+                n.name
+            ),
+        });
     }
 }
 
+/// Resolve a model's lint layer the way dbt_project_evaluator resolves
+/// `model_type` — **prefix first**, then folder, else `"other"`:
+///
+/// 1. a [`naming_prefixes`](LintConfig::naming_prefixes) layer whose
+///    configured prefix the model name starts with (prefix-derived type);
+/// 2. the [`first_dir`] folder, when it is itself a configured layer
+///    (folder-derived type — an unmapped dir contributes nothing);
+/// 3. `"other"`, the evaluator's catch-all.
+///
+/// Returning the CONFIG KEY (not the dir) keeps the result comparable across
+/// consumers: `marts_depend_on_source` matches it against `marts` /
+/// `intermediate`, and `naming_conventions` looks the expected prefixes back
+/// up in the same map. The `"other"` type only carries prefixes when the
+/// config defines an `other:` layer (evaluator-parity `rpt_` enforcement is
+/// opt-in — see the README's Differences section).
+fn lint_model_type<'a>(n: &NodeInfo, config: &'a LintConfig) -> &'a str {
+    // Prefix-derived type: BTreeMap order makes a name matching two layers'
+    // prefixes resolve to the alphabetically-first layer — deterministic.
+    for (layer, prefixes) in &config.naming_prefixes {
+        if prefixes.iter().any(|p| n.name.starts_with(p.as_str())) {
+            return layer.as_str();
+        }
+    }
+    // Folder-derived type: only when the first dir is a configured layer (an
+    // unmapped dir is not a type — the evaluator maps it to 'other', not to
+    // an implicit layer).
+    if let Some(dir) = first_dir(n) {
+        if let Some((layer, _)) = config.naming_prefixes.get_key_value(dir) {
+            return layer.as_str();
+        }
+    }
+    "other"
+}
+
 /// `marts_depend_on_source`: a marts/intermediate model directly depends on a
-/// source (raw-source reads belong in staging). Any marts-layer model with a
+/// source (raw-source reads belong in staging). Layer resolution is
+/// [`lint_model_type`] (prefix-first like the evaluator — `staging/fct_x` is
+/// a marts model, `reports/x` is 'other'). Any marts-layer model with a
 /// source parent fires — unlike `direct_join_to_source`, no model parent is
 /// required.
 fn marts_depend_on_source(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
+    config: &LintConfig,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -624,7 +715,7 @@ fn marts_depend_on_source(
         if n.resource_type != "model" || !in_scope(n) {
             continue;
         }
-        let Some(layer) = first_dir(n) else { continue };
+        let layer = lint_model_type(n, config);
         if !matches!(layer, "marts" | "intermediate") {
             continue;
         }
@@ -751,9 +842,11 @@ fn undocumented_models(
     }
 }
 
-/// `naming_conventions`: a model whose `first_dir` layer is listed in
-/// `naming_prefixes` must start with one of the listed prefixes. Layers
-/// absent from the map are unchecked.
+/// `naming_conventions`: a model whose [`lint_model_type`] is listed in
+/// `naming_prefixes` must start with one of that type's prefixes. The type is
+/// resolved prefix-first like the evaluator — `staging/fct_x` is a *marts*
+/// model (not a misnamed staging one) and `reports/x` is `other`, which is
+/// prefix-free unless the config defines an `other:` layer.
 fn naming_conventions(
     dag: &Dag,
     uids: &[&String],
@@ -766,7 +859,7 @@ fn naming_conventions(
         if n.resource_type != "model" || !in_scope(n) {
             continue;
         }
-        let Some(layer) = first_dir(n) else { continue };
+        let layer = lint_model_type(n, config);
         let Some(prefixes) = config.naming_prefixes.get(layer) else {
             continue;
         };
@@ -1067,10 +1160,88 @@ mod tests {
             .collect();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].node_uid, "model.p.int_b");
+        // related is the sorted {C} ∪ {A…} set, not positional.
         assert_eq!(
             hits[0].related,
-            vec!["model.p.stg_a".to_string(), "model.p.fct_c".to_string()]
+            vec!["model.p.fct_c".to_string(), "model.p.stg_a".to_string()]
         );
+    }
+
+    #[test]
+    fn rejoining_upstream_counts_only_data_node_children_and_endpoints() {
+        // evaluator's single_use_resources semantics:
+        //  - source→B→C + source→C: B flags (A need not be a model).
+        //  - an exposure child of B does NOT break "single use" (endpoints
+        //    don't count as a use).
+        //  - two bypassing parents still produce ONE finding (dedup per B).
+        let mut m = manifest(
+            vec![
+                model("int_b", "intermediate/int_b.sql"),
+                model("fct_c", "marts/fct_c.sql"),
+                model("stg_a", "staging/stg_a.sql"),
+            ],
+            vec![source("s.raw")],
+            &[
+                ("source.p.s.raw", "model.p.int_b"),
+                ("model.p.int_b", "model.p.fct_c"),
+                ("source.p.s.raw", "model.p.fct_c"),
+                ("model.p.stg_a", "model.p.int_b"),
+                ("model.p.stg_a", "model.p.fct_c"),
+                ("model.p.int_b", "exposure.p.exp"),
+            ],
+        );
+        m.exposures.insert(
+            "exposure.p.exp".to_string(),
+            crate::manifest::RawExposure {
+                name: "exp".into(),
+                ..Default::default()
+            },
+        );
+        let findings = findings_of(&m, &LintConfig::default());
+        let hits: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| f.rule == LintRule::RejoiningUpstream)
+            .collect();
+        assert_eq!(hits.len(), 1, "exposure child + two A's → one finding");
+        assert_eq!(hits[0].node_uid, "model.p.int_b");
+        assert_eq!(
+            hits[0].related,
+            vec![
+                "model.p.fct_c".to_string(),
+                "model.p.stg_a".to_string(),
+                "source.p.s.raw".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn rejoining_upstream_flags_a_snapshot_relay() {
+        // A→B→C + A→C where the redundant hop B is a snapshot (evaluator
+        // resource kinds aren't model-only).
+        let mut m = manifest(
+            vec![
+                model("stg_a", "staging/stg_a.sql"),
+                model("fct_c", "marts/fct_c.sql"),
+            ],
+            vec![],
+            &[
+                ("model.p.stg_a", "snapshot.p.snap_b"),
+                ("snapshot.p.snap_b", "model.p.fct_c"),
+                ("model.p.stg_a", "model.p.fct_c"),
+            ],
+        );
+        m.nodes.insert(
+            "snapshot.p.snap_b".to_string(),
+            RawNode {
+                name: "snap_b".into(),
+                resource_type: "snapshot".into(),
+                path: Some("snapshots/snap_b.sql".into()),
+                ..Default::default()
+            },
+        );
+        let findings = findings_of(&m, &LintConfig::default());
+        let hits = flagged(&findings, LintRule::RejoiningUpstream);
+        assert_eq!(hits, vec!["snapshot.p.snap_b"]);
     }
 
     #[test]
@@ -1094,6 +1265,35 @@ mod tests {
         let mut got = flagged(&f, LintRule::MartsDependOnSource);
         got.sort_unstable();
         assert_eq!(got, vec!["model.p.fct_bad", "model.p.int_bad"]);
+    }
+
+    #[test]
+    fn marts_depend_on_source_resolves_the_layer_prefix_first() {
+        // evaluator model_type semantics: staging/fct_x IS a marts model
+        // (prefix beats folder) — under-flag fix; reports/x is 'other'.
+        let m = manifest(
+            vec![
+                model("fct_x", "staging/fct_x.sql"),
+                model("plain", "marts/plain.sql"),
+                model("rep_x", "reports/rep_x.sql"),
+                model("stg_ok", "staging/stg_ok.sql"),
+            ],
+            vec![source("s.raw")],
+            &[
+                ("source.p.s.raw", "model.p.fct_x"),
+                ("source.p.s.raw", "model.p.plain"),
+                ("source.p.s.raw", "model.p.rep_x"),
+                ("source.p.s.raw", "model.p.stg_ok"),
+            ],
+        );
+        let f = findings_of(&m, &LintConfig::default());
+        let mut got = flagged(&f, LintRule::MartsDependOnSource);
+        got.sort_unstable();
+        assert_eq!(
+            got,
+            vec!["model.p.fct_x", "model.p.plain"],
+            "fct_ in staging/ is marts (prefix-first); reports/ is 'other'"
+        );
     }
 
     #[test]
@@ -1168,13 +1368,20 @@ mod tests {
     }
 
     #[test]
-    fn naming_conventions_checks_listed_layers_only() {
-        // stg_-named marts model violates; unknown-layer dirs are unchecked.
+    fn naming_conventions_resolves_the_type_prefix_first() {
+        // evaluator's coalesce(model_type_prefix, model_type_folder, 'other'):
+        //  - staging/fct_x → marts type, fct_ is appropriate → NOT flagged
+        //    (over-flag fix; the folder mismatch is a different evaluator rule
+        //    — model_directories — which dbtl doesn't have).
+        //  - marts/plain → folder type, no prefix → flagged.
+        //  - reports/x → 'other', which is prefix-free by default (deliberate
+        //    divergence: the evaluator expects rpt_ out of the box).
         let m = manifest(
             vec![
-                model("fct_ok", "marts/fct_ok.sql"),
-                model("stg_wrong", "marts/stg_wrong.sql"),
-                model("anything", "audit/anything.sql"),
+                model("fct_x", "staging/fct_x.sql"),
+                model("plain", "marts/plain.sql"),
+                model("rep", "reports/rep.sql"),
+                model("stg_ok", "staging/stg_ok.sql"),
             ],
             vec![],
             &[],
@@ -1182,8 +1389,32 @@ mod tests {
         let f = findings_of(&m, &LintConfig::default());
         assert_eq!(
             flagged(&f, LintRule::NamingConventions),
-            vec!["model.p.stg_wrong"]
+            vec!["model.p.plain"],
+            "prefix-first: staging/fct_x and reports/rep pass, marts/plain fails"
         );
+    }
+
+    #[test]
+    fn naming_conventions_other_layer_is_opt_in_via_config() {
+        // Under-flag fix, opt-in: mapping `other:` makes unclassified models
+        // need a prefix — evaluator-parity `rpt_` enforcement.
+        let m = manifest(
+            vec![
+                model("rpt_ok", "reports/rpt_ok.sql"),
+                model("plain", "reports/plain.sql"),
+                model("util_x", "base/util_x.sql"),
+            ],
+            vec![],
+            &[],
+        );
+        let cfg = LintConfig::from_yaml("lint:\n  naming_prefixes:\n    other: [rpt_]\n").unwrap();
+        let f = findings_of(&m, &cfg);
+        let mut got = flagged(&f, LintRule::NamingConventions);
+        got.sort_unstable();
+        // rpt_ok carries rpt_ (a default marts prefix — it resolves to the
+        // marts type and passes there); the prefix-less reports/ and base/
+        // models resolve to 'other' and flag.
+        assert_eq!(got, vec!["model.p.plain", "model.p.util_x"]);
     }
 
     #[test]
@@ -1317,20 +1548,51 @@ mod tests {
     }
 
     #[test]
-    fn lint_config_path_prefers_the_datasources_own_dir() {
+    fn lint_config_path_prefers_the_project_root_then_target() {
         let dir = tempfile::tempdir().unwrap();
         let manifest = dir.path().join("target").join("manifest.json");
         std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
         // No .dbtl.yml anywhere → None.
         assert_eq!(lint_config_path(Some(&manifest), None), None);
-        // `<root>/.dbtl.yml` (parent of target/) is found through the 2-level walk.
+        // Standard layout `<root>/target/manifest.json`: the PROJECT ROOT's
+        // file wins (it is the conventional config home)…
         let root_cfg = dir.path().join(LINT_CONFIG_NAME);
         std::fs::write(&root_cfg, "lint: {}\n").unwrap();
-        assert_eq!(lint_config_path(Some(&manifest), None), Some(root_cfg));
-        // Source mode looks in the project dir itself.
+        let target_cfg = dir.path().join("target").join(LINT_CONFIG_NAME);
+        std::fs::write(&target_cfg, "lint: {}\n").unwrap();
+        assert_eq!(
+            lint_config_path(Some(&manifest), None),
+            Some(root_cfg.clone()),
+            "project root outranks target/ under the standard layout"
+        );
+        // …and target/ is only an escape hatch when the root has none.
+        std::fs::remove_file(&root_cfg).unwrap();
+        assert_eq!(lint_config_path(Some(&manifest), None), Some(target_cfg));
+        // Source mode looks in the project dir itself (it IS the root).
         let proj = tempfile::tempdir().unwrap();
         let cfg = proj.path().join(LINT_CONFIG_NAME);
         std::fs::write(&cfg, "lint: {}\n").unwrap();
         assert_eq!(lint_config_path(None, Some(proj.path())), Some(cfg));
+    }
+
+    #[test]
+    fn lint_config_path_never_climbs_past_a_nonstandard_manifest_dir() {
+        // `--manifest /tmp/x/manifest.json` must NOT see /tmp/.dbtl.yml —
+        // the parent hop exists only for the `<root>/target/` layout.
+        let parent = tempfile::tempdir().unwrap();
+        let x = parent.path().join("x");
+        std::fs::create_dir_all(&x).unwrap();
+        let manifest = x.join("manifest.json");
+        let foreign = parent.path().join(LINT_CONFIG_NAME);
+        std::fs::write(&foreign, "lint: {}\n").unwrap();
+        assert_eq!(
+            lint_config_path(Some(&manifest), None),
+            None,
+            "a parent's .dbtl.yml must not leak into a non-target manifest dir"
+        );
+        // Its own dir still works.
+        let own = x.join(LINT_CONFIG_NAME);
+        std::fs::write(&own, "lint: {}\n").unwrap();
+        assert_eq!(lint_config_path(Some(&manifest), None), Some(own));
     }
 }

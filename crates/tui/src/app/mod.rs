@@ -658,6 +658,18 @@ impl App {
         self.notice = Some(text.into());
     }
 
+    /// Append to a PENDING notice instead of replacing it (`" | "` joined) —
+    /// for startup-time writers that must not clobber a warning already
+    /// queued by `with_source` (e.g. a malformed `.dbtl.yml` notice followed
+    /// by the source-mode hint: both show in the one toast).
+    pub fn append_notice(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        self.notice = Some(match self.notice.take() {
+            Some(prev) => format!("{prev} | {text}"),
+            None => text,
+        });
+    }
+
     /// Drain the pending notice (one-shot). The event loop calls this once per
     /// frame and stamps the wall-clock there, keeping time out of the reducer.
     pub fn take_notice(&mut self) -> Option<String> {

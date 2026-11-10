@@ -1598,7 +1598,7 @@ mod tests {
             );
         }
         assert!(
-            readme.contains("25 finding(s) across 6 rule(s)."),
+            readme.contains("27 finding(s) across 6 rule(s)."),
             "the frozen total, got README:\n{readme}"
         );
         // Every violating node is listed under its rule with a working link.
