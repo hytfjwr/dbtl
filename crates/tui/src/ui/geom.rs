@@ -570,6 +570,200 @@ pub fn scrollbar_thumb(
     Some((track_y0 + thumb_top as u16, thumb_len as u16))
 }
 
+/// One tab's on-screen cells inside the bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TabCell {
+    /// The tab's index in the open-tab list (its IDENTITY — not its drawn
+    /// slot), so a hit lands on the right tab even while the strip scrolls.
+    pub index: usize,
+    /// The whole ` {n} {name} × ` span — left-click switches, middle-click
+    /// closes.
+    pub rect: Rect,
+    /// The `×` glyph's column inside `rect` — the close sub-target.
+    pub close_x: u16,
+}
+
+/// The resolved tab-strip layout for one frame: every interactive cell's
+/// screen rect. Computed by [`tab_bar_layout`] — the ONE source the renderer
+/// and [`hit_target`] share (computed window == drawn window).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TabBarLayout {
+    /// The drawn tabs (the scroll window), in tab order.
+    pub tabs: Vec<TabCell>,
+    /// The first VISIBLE tab index — the resolved scroll (the input scroll
+    /// after the active-visibility and bounds clamps ran).
+    pub scroll: usize,
+    /// The `‹` scroll-back cell, present iff tabs hide on the left.
+    pub left_arrow: Option<Rect>,
+    /// The `›` scroll-forward cell, present iff tabs hide on the right.
+    pub right_arrow: Option<Rect>,
+    /// The ` + ` new-tab cell — pinned at the scrollable strip's right end,
+    /// so it never scrolls away with the tab run (§2).
+    pub plus: Rect,
+    /// The right-aligned project-name zone (draw-only — no hit target).
+    /// `None` when the strip left no room for it.
+    pub project: Option<Rect>,
+    /// The bar's full rect — the region a wheel event counts as "over the
+    /// tab bar" (blank strip included).
+    pub area: Rect,
+}
+
+/// The ` + ` new-tab cell's width in columns.
+const PLUS_W: u16 = 3;
+
+/// Resolve the tab strip inside `area`: where each visible tab's cell sits,
+/// the `‹`/`›` overflow arrows, the pinned `+`, and the right-edge project
+/// zone. The bar draws at most what fits: consecutive whole tab cells from
+/// `scroll`'s first-visible index, arrows on whichever side still hides
+/// tabs, `+` fixed at the strip's right end.
+///
+/// `labels` are the precomputed per-tab texts (`{n} {name}` — the event
+/// loop's Dag-aware product; `labels.len()` IS the tab count). `scroll` is
+/// the intended first-visible index (the stored wheel/arrow offset); with
+/// `ensure_active` the resolved scroll also keeps the ACTIVE tab inside the
+/// window — the §2 "アクティブタブは常に見える位置までスクロールする" —
+/// applied when a switch/structure change could leave it hidden (a manual
+/// `‹`/`›`/wheel scroll passes `false`: the user may look around the strip).
+///
+/// Pure and size-unaware — the caller hands it the already-computed strip
+/// rect, same rule as [`pane_layout`].
+pub fn tab_bar_layout(
+    area: Rect,
+    labels: &[String],
+    active: usize,
+    scroll: usize,
+    project: &str,
+    ensure_active: bool,
+) -> TabBarLayout {
+    let mut out = TabBarLayout {
+        tabs: Vec::new(),
+        scroll: 0,
+        left_arrow: None,
+        right_arrow: None,
+        plus: Rect::default(),
+        project: None,
+        area,
+    };
+    let count = labels.len();
+    if area.width == 0 || area.height == 0 || count == 0 {
+        return out;
+    }
+    // Cell widths in DISPLAY columns: ` ` + label + ` × ` = label + 4. The
+    // labels are pre-truncated single-width text (model names + digits —
+    // ambiguous-width glyphs are stripped at source or `..`-elided), so
+    // chars == cells here.
+    let widths: Vec<usize> = labels.iter().map(|l| l.chars().count() + 4).collect();
+    // The strip's right-end reservations: ` + ` pinned, then the project
+    // name — kept only while the scrollable zone keeps ≥10 columns for tabs
+    // (a narrower bar sheds the name first, never the `+`).
+    let project_w = {
+        let want = project.chars().count() + 1;
+        (want > 1 && area.width as usize >= want + PLUS_W as usize + 10).then_some(want)
+    };
+    if let Some(w) = project_w {
+        out.project = Some(Rect {
+            x: area.x + area.width - w as u16,
+            width: w as u16,
+            ..area
+        });
+    }
+    let strip_r = area.x + area.width - project_w.unwrap_or(0) as u16;
+    out.plus = Rect {
+        x: strip_r.saturating_sub(PLUS_W).max(area.x),
+        width: PLUS_W.min(strip_r.saturating_sub(area.x)),
+        ..area
+    };
+    // The scrollable zone between the bar's left edge and the `+`.
+    let zone_l = area.x;
+    let zone_r = out.plus.x;
+    let zone_w = zone_r.saturating_sub(zone_l) as usize;
+
+    // First visible index: the stored intent clamped to the strip — and, on
+    // an ensure pass, never right of the active tab.
+    let mut first = scroll.min(count - 1);
+    if ensure_active && active < first {
+        first = active;
+    }
+    // How many consecutive whole tabs fit from `first` under a given arrow
+    // state: each arrow lives inside the zone, so it shrinks the budget.
+    let fits = |first: usize, left: bool, right: bool| -> usize {
+        let mut x = usize::from(left);
+        let budget = zone_w.saturating_sub(usize::from(right));
+        let mut n = 0;
+        for w in &widths[first..] {
+            if x + w > budget {
+                break;
+            }
+            x += w;
+            n += 1;
+        }
+        n
+    };
+    // The window: pack whole cells; a right arrow is needed iff the rest
+    // don't all fit (and eats a column itself). `ensure_active` then bumps
+    // `first` right until the window contains the active tab (or `first ==
+    // active` — a lone too-wide tab draws clipped to the zone).
+    let (shown, right) = loop {
+        let left = first > 0;
+        let (shown, right) = if first + fits(first, left, false) >= count {
+            (fits(first, left, false), false)
+        } else {
+            (fits(first, left, true), true)
+        };
+        if !ensure_active || (first..first + shown).contains(&active) || first == active {
+            break (shown, right);
+        }
+        first += 1;
+    };
+    out.scroll = first;
+    if first > 0 {
+        out.left_arrow = Some(Rect {
+            x: zone_l,
+            width: 1,
+            ..area
+        });
+    }
+    if right {
+        out.right_arrow = Some(Rect {
+            x: zone_r.saturating_sub(1).max(zone_l),
+            width: 1,
+            ..area
+        });
+    }
+    let mut x = zone_l + u16::from(first > 0);
+    for (i, w) in widths.iter().enumerate().skip(first).take(shown) {
+        let w = *w as u16;
+        out.tabs.push(TabCell {
+            index: i,
+            rect: Rect {
+                x,
+                width: w,
+                ..area
+            },
+            // ` {label} × `: the × sits 2 columns in from the cell's right edge.
+            close_x: x + w.saturating_sub(2),
+        });
+        x += w;
+    }
+    if shown == 0 && zone_w > usize::from(first > 0) + usize::from(right) {
+        // A lone tab wider than the whole zone: draw it clipped to the zone
+        // (the alternative — no tab at all — leaves the bar looking empty
+        // while a tab is open).
+        let x0 = zone_l + u16::from(first > 0);
+        let x1 = zone_r.saturating_sub(u16::from(right));
+        out.tabs.push(TabCell {
+            index: first,
+            rect: Rect {
+                x: x0,
+                width: x1 - x0,
+                ..area
+            },
+            close_x: x1.saturating_sub(1).max(x0),
+        });
+    }
+    out
+}
+
 /// Pure lineage hit-test: map a screen click `(click_x, click_y)` to the
 /// `unique_id` of the node whose label rect it lands on, or `None`.
 ///
@@ -605,6 +799,18 @@ pub fn hit_test(
 /// a target via [`hit_target`] and then decides what a click there means.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HitTarget {
+    /// A tab in the tab bar: its index in `App`'s tab list (the identity —
+    /// the strip's drawn slot order is resolved by [`tab_bar_layout`]).
+    /// Left-click activates it, middle-click closes it (§2/§6).
+    Tab(usize),
+    /// The `×` close cell inside tab `usize` — left-click closes.
+    TabClose(usize),
+    /// The `+` new-tab cell — opens the model-search palette.
+    TabNew,
+    /// The `‹` overflow arrow — scrolls the strip one tab left.
+    TabScrollLeft,
+    /// The `›` overflow arrow — scrolls the strip one tab right.
+    TabScrollRight,
     /// A model row in the list pane: the model's selection-space index into
     /// `ModelList::models` (re-resolved to a `unique_id` at click time).
     ListRow(usize),
@@ -651,6 +857,10 @@ pub enum HitTarget {
 pub struct HitGeometry<'a> {
     /// The frame's pane rects (`pane_layout(area, &pane_config)`).
     pub panes: PaneRects,
+    /// The resolved tab-strip cells (`tab_bar_layout` on `panes.tab_bar` —
+    /// OWNED: the loop computes it per event from the stored scroll, the
+    /// same value the last draw used). `None` = no tab bar this frame.
+    pub tab_bar: Option<TabBarLayout>,
     /// The active model list (its `rows` interleave group headers).
     pub list: &'a ModelList,
     /// First visible display row (`UiState::offset`).
@@ -686,7 +896,9 @@ pub fn hit_target(g: &HitGeometry, col: u16, row: u16) -> Option<HitTarget> {
     let at = Position { x: col, y: row };
     // A covering overlay owns the whole screen: its interior rows route as
     // `OverlayRow`, its frame as `ModalInterior`, and EVERYTHING else — the
-    // panes, the status line, the dimmed backdrop — as `ModalExterior`.
+    // panes, the tab strip, the status line, the dimmed backdrop — as
+    // `ModalExterior` (the click-outside-to-dismiss surface; the tab bar
+    // does not switch under a modal).
     if let Some(or) = g.overlay {
         let inner = pane_interior(or);
         return Some(if inner.contains(at) {
@@ -696,6 +908,34 @@ pub fn hit_target(g: &HitGeometry, col: u16, row: u16) -> Option<HitTarget> {
         } else {
             HitTarget::ModalExterior
         });
+    }
+    // The tab strip claims row 0 — checked before the panes (its cells never
+    // overlap a pane, but the early-out keeps the priority readable: chrome
+    // above content, like the splitters over pane interiors below).
+    if let Some(tb) = &g.tab_bar {
+        if tb.area.contains(at) {
+            if tb.plus.contains(at) {
+                return Some(HitTarget::TabNew);
+            }
+            if tb.left_arrow.is_some_and(|r| r.contains(at)) {
+                return Some(HitTarget::TabScrollLeft);
+            }
+            if tb.right_arrow.is_some_and(|r| r.contains(at)) {
+                return Some(HitTarget::TabScrollRight);
+            }
+            for cell in &tb.tabs {
+                if cell.rect.contains(at) {
+                    return Some(if col == cell.close_x {
+                        HitTarget::TabClose(cell.index)
+                    } else {
+                        HitTarget::Tab(cell.index)
+                    });
+                }
+            }
+            // Blank strip / project zone: a dead surface (no target), same
+            // as pane chrome below.
+            return None;
+        }
     }
     if p.status.contains(at) {
         return Some(HitTarget::StatusBar);
@@ -936,6 +1176,138 @@ mod tests {
         assert_eq!(p.list.height, 28);
         assert_eq!(p.status, Rect::new(0, 29, 100, 1));
         assert_eq!(p.list_splitter, Some(Rect::new(33, 1, 2, 28)));
+    }
+
+    /// A strip label set `tab_bar_layout` can pack predictably: cell width =
+    /// ` {label} × ` = chars + 4.
+    fn labels(ns: &[&str]) -> Vec<String> {
+        ns.iter().map(|s| s.to_string()).collect()
+    }
+
+    const HIT_FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/manifest.json"
+    );
+
+    #[test]
+    fn tab_bar_layout_packs_whole_cells_then_plus_then_project() {
+        // 100 cols, 3 short tabs, project name pinned right: zone_w = 100 -
+        // 3 (plus) - 7 (project) = 90; cells "1 aa"=8, "2 bbb"=9, "3 c"=7.
+        let strip = Rect::new(0, 0, 100, 1);
+        let lay = tab_bar_layout(
+            strip,
+            &labels(&["1 aa", "2 bbb", "3 c"]),
+            1,
+            0,
+            "myproj",
+            true,
+        );
+        assert_eq!(lay.scroll, 0);
+        assert!(lay.left_arrow.is_none() && lay.right_arrow.is_none());
+        assert_eq!(lay.tabs.len(), 3);
+        assert_eq!(lay.tabs[0].rect, Rect::new(0, 0, 8, 1));
+        assert_eq!(lay.tabs[0].close_x, 6, "the x sits 2 in from the right");
+        assert_eq!(lay.tabs[1].rect, Rect::new(8, 0, 9, 1));
+        assert_eq!(lay.tabs[2].rect, Rect::new(17, 0, 7, 1));
+        assert_eq!(lay.plus, Rect::new(90, 0, 3, 1), "+ pinned at strip end");
+        assert_eq!(lay.project, Some(Rect::new(93, 0, 7, 1)));
+        assert_eq!(lay.area, strip);
+    }
+
+    #[test]
+    fn tab_bar_layout_overflow_shows_arrows_and_whole_cells_only() {
+        // 30 cols, no project (zone_w = 27): cells "1 alpha"=11, "2 beta"=10,
+        // "3 gamma"=11, "4 delta"=11 — 11+10=21 fits under the `›`-adjusted
+        // budget (26), +11 doesn't → `›`.
+        let strip = Rect::new(0, 0, 30, 1);
+        let all = labels(&["1 alpha", "2 beta", "3 gamma", "4 delta"]);
+        let lay = tab_bar_layout(strip, &all, 0, 0, "", true);
+        assert!(lay.left_arrow.is_none(), "scrolled to the left edge");
+        let arrow = lay.right_arrow.expect("tabs hide on the right");
+        assert_eq!(arrow, Rect::new(26, 0, 1, 1), "› at the zone's last col");
+        // Whole-cell packing under the arrow-adjusted budget.
+        let drawn: Vec<usize> = lay.tabs.iter().map(|c| c.index).collect();
+        assert_eq!(drawn, vec![0, 1]);
+        let mut x = 0;
+        for c in &lay.tabs {
+            assert_eq!(c.rect.x, x);
+            x += c.rect.width;
+        }
+        assert!(x <= 26, "cells stay left of the arrow");
+    }
+
+    #[test]
+    fn tab_bar_layout_ensure_active_pulls_the_active_tab_into_view() {
+        let strip = Rect::new(0, 0, 30, 1);
+        let all = labels(&["1 alpha", "2 beta", "3 gamma", "4 delta"]);
+        // Without ensure, a stored scroll just replays — the active tab may
+        // be out of the window (manual scrolls may look around).
+        let lay = tab_bar_layout(strip, &all, 3, 0, "", false);
+        assert!(!lay.tabs.iter().any(|c| c.index == 3));
+        // With ensure (a switch/structure change) the window bumps right
+        // until the active tab is inside — and `‹` appears.
+        let lay = tab_bar_layout(strip, &all, 3, 0, "", true);
+        assert!(lay.tabs.iter().any(|c| c.index == 3));
+        assert!(lay.left_arrow.is_some(), "scrolled in from the left");
+        assert_eq!(
+            lay.left_arrow.unwrap(),
+            Rect::new(0, 0, 1, 1),
+            "‹ at the zone's first col"
+        );
+        assert_eq!(
+            lay.tabs.last().unwrap().index,
+            3,
+            "the active tab is the window's tail"
+        );
+    }
+
+    #[test]
+    fn tab_bar_layout_narrow_strip_sheds_project_before_plus() {
+        // 20 cols: project can't coexist with 10 cols of tab zone — the name
+        // drops, ` + ` stays pinned.
+        let strip = Rect::new(0, 0, 20, 1);
+        let lay = tab_bar_layout(strip, &labels(&["1 aa"]), 0, 0, "longprojectname", true);
+        assert!(lay.project.is_none(), "the name sheds first");
+        assert_eq!(lay.plus, Rect::new(17, 0, 3, 1));
+        // An empty strip is a no-op (the bar hides below the size floor).
+        let lay = tab_bar_layout(Rect::new(0, 0, 0, 1), &labels(&["1 aa"]), 0, 0, "p", true);
+        assert!(lay.tabs.is_empty() && lay.plus.width == 0);
+    }
+
+    #[test]
+    fn hit_target_resolves_tab_cells_arrows_close_and_plus() {
+        // 30 cols, four tabs → the same overflow scene as the layout test:
+        // `›` at x=26, cells for tabs 0-2, ` + ` at x=27..30.
+        let strip = Rect::new(0, 0, 30, 1);
+        let all = labels(&["1 alpha", "2 beta", "3 gamma", "4 delta"]);
+        let tb = tab_bar_layout(strip, &all, 0, 0, "", true);
+        let dag = crate::load_dag(HIT_FIXTURE).expect("fixture loads");
+        let list = crate::model_list::build_model_list(&dag, crate::SortMode::Layer);
+        let g = HitGeometry {
+            panes: pane_layout(
+                Rect::new(0, 0, 30, 10),
+                &PaneConfig {
+                    tab_bar: true,
+                    ..cfg()
+                },
+            ),
+            tab_bar: Some(tb),
+            list: &list,
+            list_offset: 0,
+            layout: None,
+            scroll_x: 0,
+            scroll_y: 0,
+            minimap: false,
+            overlay: None,
+        };
+        assert_eq!(hit_target(&g, 1, 0), Some(HitTarget::Tab(0)));
+        // The x cell: tab 0's close_x is rect.x + w - 2 = 9.
+        assert_eq!(hit_target(&g, 9, 0), Some(HitTarget::TabClose(0)));
+        assert_eq!(hit_target(&g, 15, 0), Some(HitTarget::Tab(1)));
+        assert_eq!(hit_target(&g, 26, 0), Some(HitTarget::TabScrollRight));
+        assert_eq!(hit_target(&g, 28, 0), Some(HitTarget::TabNew));
+        // A point below the strip doesn't report a tab target.
+        assert_ne!(hit_target(&g, 1, 3), Some(HitTarget::Tab(0)));
     }
 
     #[test]

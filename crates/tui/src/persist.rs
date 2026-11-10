@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::App;
+use crate::app::{App, LineageView, TabState};
 use crate::{build_model_list_grouped, Action, Density, LineageLens, SortMode};
 
 /// The `App` state that survives a restart (saved per project).
@@ -30,8 +30,20 @@ pub struct PersistedState {
     pub density: Option<String>,
     /// Model-list sort name (see [`sort_name`]); `None` = unset.
     pub sort: Option<String>,
-    /// The `unique_id` selected when the app exited; `None` = unset.
+    /// The `unique_id` selected when the app exited; `None` = unset. Kept
+    /// writing even after `tabs`/`active_tab` arrived — an older dbtl still
+    /// reads it (the backward-compat field, §13).
     pub last_selected: Option<String>,
+    /// The open tab strip (§13 `tabs`): ordered roots + per-tab view filters.
+    /// Empty on files written before tabs existed — `apply_prefs` then falls
+    /// back to `last_selected`, so an old state file restores unchanged.
+    pub tabs: Vec<PersistedTab>,
+    /// The active tab's index into `tabs`; `None` = unset (or — reserved for
+    /// Issue 10 — the home tab). Clamped into range on apply.
+    pub active_tab: Option<usize>,
+    /// Recently-rooted models, newest-first, max 10 — Issue 10's home reads
+    /// it; restored per project like the strip itself.
+    pub recent: Vec<String>,
     /// The list pane's saved width in columns (screen-spec §5 — columns, not
     /// ratios). `None` = unset.
     pub list_width: Option<u16>,
@@ -57,6 +69,20 @@ pub struct PersistedState {
     /// (max 5). Names gone from `BINDINGS` are dropped on apply.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub palette_recent: Option<Vec<String>>,
+}
+
+/// One persisted tab: its root and the rooted-view filter. Per §13 the tab's
+/// VIEW state persists (`view`) while its session state — cursor, back /
+/// forward history, collapse expansions, scroll — deliberately does not: a
+/// restored tab opens homed on its root, which is what "restore the tabs I
+/// had" means across a restart.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PersistedTab {
+    /// The tab's rooted `unique_id`.
+    pub root: String,
+    /// The tab's lineage direction/depth filter (`u`/`d`/`[`/`]`/`0`).
+    pub view: LineageView,
 }
 
 /// User defaults from `~/.config/dbtl/config.yml` — every field optional, so a
@@ -200,7 +226,21 @@ impl App {
             lens: Some(lens_name(self.ui_state.lens()).to_string()),
             density: Some(density_name(self.ui_state.density()).to_string()),
             sort: Some(sort_name(self.sort).to_string()),
+            // `last_selected` keeps being written — the compat field an older
+            // dbtl reads (`tabs`/`active_tab` are the same truth, newer shape).
             last_selected: self.selected_unique_id(),
+            tabs: self
+                .tabs()
+                .iter()
+                .filter_map(|t| {
+                    t.root.as_deref().map(|root| PersistedTab {
+                        root: root.to_string(),
+                        view: t.lineage_view.clone(),
+                    })
+                })
+                .collect(),
+            active_tab: Some(self.active_tab()),
+            recent: self.recent.clone(),
             list_width: Some(self.ui_state.list_width()),
             inspector_width: Some(self.ui_state.inspector_width()),
             list_visible: Some(self.ui_state.list_visible()),
@@ -243,9 +283,35 @@ impl App {
                 }
             }
         }
-        if let Some(uid) = &prefs.last_selected {
+        // Issue 03's strip: saved tabs restore roots + view filters — a root
+        // that vanished (or is no longer a model) drops its whole tab. When
+        // every saved tab is dead — or the state file predates tabs — the
+        // compat `last_selected` applies like before. `active_tab` clamps to
+        // the surviving strip (`restore_tabs` enters the tab it lands on).
+        let saved: Vec<TabState> = prefs
+            .tabs
+            .iter()
+            .filter(|t| self.is_rootable(&t.root))
+            .map(|t| TabState {
+                root: Some(t.root.clone()),
+                lineage_view: t.view.clone(),
+                ..TabState::default()
+            })
+            .collect();
+        if !saved.is_empty() {
+            self.restore_tabs(saved, prefs.active_tab.unwrap_or(0));
+        } else if let Some(uid) = &prefs.last_selected {
             self.select_by_unique_id(uid);
         }
+        // The recent-roots MRU (Issue 10's home, restored early): prune ids
+        // that no longer resolve — same rule as bookmarks/tabs.
+        self.recent = prefs
+            .recent
+            .iter()
+            .filter(|uid| self.dag.get(uid).is_some())
+            .cloned()
+            .collect();
+        self.recent.truncate(10);
         // Pane/display prefs (Issue 02): same Option-layering as the rest —
         // `None` keeps the current (or config-defaulted) value. Out-of-range
         // widths are NOT rejected here: `pane_layout` clamps them for display,
@@ -499,6 +565,124 @@ mod tests {
     }
 
     #[test]
+    fn prefs_snapshot_then_apply_restores_tabs() {
+        // §13: the strip round-trips — roots + per-tab view filters +
+        // active index + the recent-roots MRU — while the compat
+        // `last_selected` keeps mirroring the ACTIVE tab's root.
+        let mut a = fixture_app();
+        let m1 = "model.jaffle_finance.rpt_delivery_base_metrics".to_string();
+        a.tab_mut().lineage_view.upstream = false; // tab 0 carries a non-default view
+        a.open_node_as_tab(&m1);
+        let snap = a.prefs_snapshot();
+        assert_eq!(snap.tabs.len(), 2);
+        assert_eq!(snap.active_tab, Some(1));
+        assert_eq!(
+            snap.last_selected.as_deref(),
+            Some(m1.as_str()),
+            "last_selected mirrors the active tab for older dbtl"
+        );
+        assert_eq!(snap.recent.first().map(String::as_str), Some(m1.as_str()));
+
+        let mut b = fixture_app();
+        b.apply_prefs(&snap);
+        assert_eq!(b.tab_count(), 2);
+        assert_eq!(b.active_tab(), 1);
+        assert_eq!(b.selected_unique_id().as_deref(), Some(m1.as_str()));
+        assert!(!b.tabs()[0].lineage_view.upstream, "tab 0's view restored");
+        assert!(b.tabs()[1].lineage_view.upstream, "tab 1 kept the default");
+        assert_eq!(b.recent.first().map(String::as_str), Some(m1.as_str()));
+        // Session state deliberately does NOT restore — the tab re-homes on
+        // its root (§13: cursor/history/scroll start fresh).
+        assert!(b.tabs()[0].back.is_empty() && b.tabs()[0].lineage_cursor.is_none());
+    }
+
+    #[test]
+    fn apply_prefs_drops_dead_tab_roots_and_clamps_active() {
+        let mut a = fixture_app();
+        let prefs = PersistedState {
+            tabs: vec![
+                PersistedTab {
+                    root: "model.gone.nope".to_string(), // not in the Dag
+                    ..PersistedTab::default()
+                },
+                PersistedTab {
+                    root: "source.jaffle_finance.dev_lake_jaffle_payment.suppliers".to_string(), // in the Dag but not a model
+                    ..PersistedTab::default()
+                },
+                PersistedTab {
+                    root: "model.jaffle_finance.rpt_delivery_base_metrics".to_string(),
+                    ..PersistedTab::default()
+                },
+            ],
+            active_tab: Some(9), // out of range even before the drop
+            ..PersistedState::default()
+        };
+        a.apply_prefs(&prefs);
+        assert_eq!(a.tab_count(), 1, "dead roots drop their whole tab");
+        assert_eq!(a.active_tab(), 0, "active clamps to the survivors");
+        assert_eq!(
+            a.selected_unique_id().as_deref(),
+            Some("model.jaffle_finance.rpt_delivery_base_metrics")
+        );
+    }
+
+    #[test]
+    fn apply_prefs_falls_back_to_last_selected_when_no_tabs_survive() {
+        let mut a = fixture_app();
+        // A pre-03 state file (empty `tabs`) — or a strip whose roots all
+        // died — restores through the compat `last_selected` like before.
+        let prefs = PersistedState {
+            last_selected: Some("model.jaffle_finance.rpt_delivery_base_metrics".to_string()),
+            ..PersistedState::default()
+        };
+        a.apply_prefs(&prefs);
+        assert_eq!(a.tab_count(), 1);
+        assert_eq!(
+            a.selected_unique_id().as_deref(),
+            Some("model.jaffle_finance.rpt_delivery_base_metrics")
+        );
+        // Every-saved-tab-dead takes the same fallback.
+        let prefs = PersistedState {
+            tabs: vec![PersistedTab {
+                root: "model.gone.nope".to_string(),
+                ..PersistedTab::default()
+            }],
+            last_selected: Some("model.jaffle_finance.rpt_delivery_base_metrics".to_string()),
+            ..PersistedState::default()
+        };
+        let mut b = fixture_app();
+        b.apply_prefs(&prefs);
+        assert_eq!(b.tab_count(), 1);
+        assert_eq!(
+            b.selected_unique_id().as_deref(),
+            Some("model.jaffle_finance.rpt_delivery_base_metrics")
+        );
+    }
+
+    #[test]
+    fn apply_prefs_prunes_recent_to_resolvable_models() {
+        let mut a = fixture_app();
+        let prefs = PersistedState {
+            recent: (0..15)
+                .map(|i| {
+                    if i == 0 {
+                        "model.jaffle_finance.rpt_delivery_base_metrics".to_string()
+                    } else {
+                        format!("model.gone.m{i}")
+                    }
+                })
+                .collect(),
+            ..PersistedState::default()
+        };
+        a.apply_prefs(&prefs);
+        assert_eq!(
+            a.recent,
+            vec!["model.jaffle_finance.rpt_delivery_base_metrics".to_string()],
+            "dead ids prune from the MRU"
+        );
+    }
+
+    #[test]
     fn persisted_state_json_round_trips() {
         let p = PersistedState {
             bookmarks: ["model.a.x"].iter().map(ToString::to_string).collect(),
@@ -506,6 +690,15 @@ mod tests {
             density: None,
             sort: Some("tests".to_string()),
             last_selected: None,
+            tabs: vec![PersistedTab {
+                root: "model.a.x".to_string(),
+                view: crate::app::LineageView {
+                    upstream: false,
+                    ..crate::app::LineageView::default()
+                },
+            }],
+            active_tab: Some(0),
+            recent: vec!["model.a.x".to_string()],
             list_width: Some(50),
             inspector_width: Some(60),
             list_visible: Some(false),

@@ -83,7 +83,7 @@ impl App {
         if self.ui_state.overview() {
             None
         } else {
-            self.column_focus.as_ref()
+            self.tab().column_focus.as_ref()
         }
     }
 
@@ -186,8 +186,8 @@ impl App {
     /// [`column_focus_step`]: App::column_focus_step
     pub(super) fn column_focus_enter(&mut self, col: ColumnRef) {
         let name = self.node_name_or_uid(&col.node);
-        self.column_focus = Some(self.compute_column_focus(&col));
-        self.lineage_cursor = None;
+        self.tab_mut().column_focus = Some(self.compute_column_focus(&col));
+        self.tab_mut().lineage_cursor = None;
         self.ui_state.set_focus(Focus::RightPane);
         // ASCII-only hint text — the toast renders in both glyph modes.
         self.set_notice(format!(
@@ -201,7 +201,7 @@ impl App {
     /// model. Deterministic via [`pick_column_step`]. No-op unfocused or at
     /// a trace end (the h/l arm already gated to the lineage pane).
     pub(super) fn column_focus_step(&mut self, dir: Direction) {
-        let Some(focus) = &self.column_focus else {
+        let Some(focus) = &self.tab().column_focus else {
             return;
         };
         let engine = ColumnLineage::new(&self.dag, &self.cll);

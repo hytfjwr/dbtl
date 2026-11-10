@@ -46,7 +46,7 @@ impl App {
     /// selection, so existing behaviour is unchanged.
     pub fn lineage_cursor_uid(&self) -> Option<String> {
         let sg = self.subgraph_rc();
-        if let Some(cur) = &self.lineage_cursor {
+        if let Some(cur) = &self.tab().lineage_cursor {
             if self.collapsed_view().subgraph.contains(cur) {
                 return Some(cur.clone());
             }
@@ -61,19 +61,26 @@ impl App {
     /// Send the lineage cursor home (back to the rooted selection). Called by
     /// the event loop whenever the selection changes, and by `z` (recenter).
     pub fn reset_lineage_cursor(&mut self) {
-        self.lineage_cursor = None;
+        self.tab_mut().lineage_cursor = None;
     }
 
     /// Apply a release-confirmed click on the [`HitTarget`] the event loop
-    /// resolved: a list row re-root-selects (via the row's `unique_id`, the
-    /// same `reroot_select` contract every selection change follows), a
-    /// lineage node runs [`click_lineage_node`](App::click_lineage_node), a
-    /// list header / blank interior / lineage blank just takes that pane's
-    /// focus (what clicking those cells did before), and the minimap and
-    /// reserved targets do literally nothing. `MouseButton::Right` on a node
-    /// opens its context menu at `at` (Issue 06); middle clicks do nothing
-    /// yet (Issue 05 gives them meaning). The size-aware half (point →
-    /// target) is `ui::hit_target`.
+    /// resolved (§6's click table):
+    ///
+    /// - **Left** on a list row re-root-selects (via the row's `unique_id`,
+    ///   the same `reroot_select` contract every selection change follows);
+    ///   on a lineage node it only MOVES THE CURSOR there — the re-root /
+    ///   modal / marker-toggle commit is the double-click's job, identical to
+    ///   `Enter` (`commit_lineage_node` + `DetailOpen`). List header / blank
+    ///   interiors / lineage blank just take that pane's focus; tab-strip
+    ///   cells switch / close / scroll / open the `+` palette.
+    /// - **Right** on a list row or lineage node opens its context menu at
+    ///   `at` (Issue 06).
+    /// - **Middle** on a list row or a lineage node opens that model in a
+    ///   NEW tab; on a tab it closes it.
+    /// - The minimap, pane borders, status bar, and the reserved modal
+    ///   targets stay inert (Issues 05/07 own them). The size-aware half
+    ///   (point → target) is `ui::hit_target`.
     pub fn click_target(&mut self, target: &HitTarget, button: MouseButton, at: (u16, u16)) {
         if button == MouseButton::Right {
             match target {
@@ -95,31 +102,56 @@ impl App {
             }
             return;
         }
-        if button != MouseButton::Left {
-            return;
-        }
-        match target {
-            HitTarget::ListRow(index) => {
+        match (button, target) {
+            (MouseButton::Middle, HitTarget::ListRow(index)) => {
+                let uid = self
+                    .active_list()
+                    .model_at(*index)
+                    .map(|m| m.unique_id.clone());
+                if let Some(uid) = uid {
+                    self.open_node_as_tab(&uid);
+                }
+            }
+            (MouseButton::Middle, HitTarget::LineageNode(uid)) => {
+                self.open_node_as_tab(uid);
+            }
+            // §6: the `×` closes on left-click; the WHOLE tab cell (× column
+            // included) closes on middle-click.
+            (MouseButton::Middle, HitTarget::Tab(i) | HitTarget::TabClose(i))
+            | (MouseButton::Left, HitTarget::TabClose(i)) => self.close_tab(*i),
+            (MouseButton::Left, HitTarget::Tab(i)) => self.activate_tab(*i),
+            (MouseButton::Left, HitTarget::TabNew) => self.open_tab_palette(),
+            (MouseButton::Left, HitTarget::TabScrollLeft) => self.scroll_tab_bar(-1),
+            (MouseButton::Left, HitTarget::TabScrollRight) => self.scroll_tab_bar(1),
+            (MouseButton::Left, HitTarget::ListRow(index)) => {
                 self.ui_state.set_focus(Focus::List);
                 let uid = self
                     .active_list()
                     .model_at(*index)
                     .map(|m| m.unique_id.clone());
                 if let Some(uid) = uid {
-                    // A list click landing on a different model is a re-root,
-                    // so it runs the same "leave the column trace" rule as a
-                    // lineage click (`reroot_select` owns the contract).
-                    self.reroot_select(&uid);
+                    // §2 T1: a click picks the row's model exactly like a
+                    // key-driven selection — re-root WITH the history push
+                    // (and the column-trace / overview rules `jump_to`
+                    // owns). A same-model click no-ops inside `jump_to`.
+                    self.jump_to(&uid);
                 }
             }
-            HitTarget::ListHeader(_) | HitTarget::ListBlank => {
+            (MouseButton::Left, HitTarget::ListHeader(_))
+            | (MouseButton::Left, HitTarget::ListBlank) => {
                 self.ui_state.set_focus(Focus::List);
             }
-            HitTarget::LineageNode(uid) => {
+            (MouseButton::Left, HitTarget::LineageNode(uid)) => {
+                // M1: a single left click MOVES THE CURSOR only — re-root /
+                // modal / marker-toggle is the double-click commit (§6). A
+                // `+M more` marker is a valid cursor position (its uid lives
+                // in the collapsed view, same rule as the keyboard cursor).
                 self.ui_state.set_focus(Focus::RightPane);
-                self.click_lineage_node(uid);
+                if self.collapsed_view().subgraph.contains(uid) {
+                    self.tab_mut().lineage_cursor = Some(uid.clone());
+                }
             }
-            HitTarget::LineageBlank => {
+            (MouseButton::Left, HitTarget::LineageBlank) => {
                 self.ui_state.set_focus(Focus::RightPane);
             }
             // Inert surfaces do nothing at all — the minimap literally
@@ -128,37 +160,30 @@ impl App {
             // 07 (status chips). A pane boundary's single click is also
             // inert: only its DRAG and DOUBLE-CLICK carry meaning (§5) — the
             // loop handles both without routing here.
-            HitTarget::Minimap
-            | HitTarget::PaneBorder(_)
-            | HitTarget::StatusBar
-            | HitTarget::OverlayRow(_)
-            | HitTarget::ModalInterior
-            | HitTarget::ModalExterior => {}
+            (
+                MouseButton::Left,
+                HitTarget::Minimap
+                | HitTarget::PaneBorder(_)
+                | HitTarget::StatusBar
+                | HitTarget::OverlayRow(_)
+                | HitTarget::ModalInterior
+                | HitTarget::ModalExterior,
+            ) => {}
+            // Right-clicks return early above; every other button/target
+            // pairing not named above carries no meaning.
+            _ => {}
         }
     }
 
-    /// Handle a lineage-pane click on `uid`: a `+M more` / `-M less` marker
-    /// TOGGLES its sibling group AND takes the cursor (same focus-the-click
-    /// as a source/seed/snapshot — the marker uid is keep-set stable, so it
-    /// stays a live position across the toggle); a model RE-ROOTS to it
-    /// (recording history, and the cursor goes home with it — also when
-    /// clicking the current root); a non-selectable node just MOVES THE
-    /// CURSOR there, so Enter can open its structure modal. The domain half
-    /// of the mouse path (`main::handle_mouse` does the size-aware hit-test).
-    pub fn click_lineage_node(&mut self, uid: &str) {
-        if let Some(group) = self.collapse_group(uid) {
-            self.lineage_cursor = Some(uid.to_string());
-            self.toggle_collapse(&group.key);
-            return;
-        }
-        self.jump_to(uid); // no-op for non-models
-        if self.selected_unique_id().as_deref() == Some(uid) {
-            // Clicked the (possibly just re-rooted) root: cursor home. The
-            // loop's chokepoint only fires when the selected id CHANGES, so
-            // clicking the current root must reset here.
-            self.lineage_cursor = None;
-        } else if self.subgraph_rc().contains(uid) {
-            self.lineage_cursor = Some(uid.to_string());
+    /// The cursor half of a lineage node's DOUBLE-click commit (§6's "double
+    /// = Enter"): take the lineage focus and park the cursor on `uid`, after
+    /// which the caller applies `Action::DetailOpen` — so a marker toggles,
+    /// a model re-roots, and the root/other node opens its structure modal,
+    /// all through Enter's exact arm rather than a second implementation.
+    pub fn commit_lineage_node(&mut self, uid: &str) {
+        self.ui_state.set_focus(Focus::RightPane);
+        if self.collapsed_view().subgraph.contains(uid) {
+            self.tab_mut().lineage_cursor = Some(uid.to_string());
         }
     }
 
@@ -190,7 +215,7 @@ impl App {
         collapse_siblings(
             base,
             self.collapse_threshold,
-            &self.collapse_expanded,
+            &self.tab().collapse_expanded,
             &self.collapse_keep_set(base),
         )
     }
@@ -204,16 +229,22 @@ impl App {
     fn collapse_keep_set(&self, base: &Subgraph) -> HashSet<String> {
         let mut priority: HashSet<String> = HashSet::new();
         priority.insert(base.selected.clone());
-        if let Some(anchor) = &self.path_anchor {
+        if let Some(anchor) = &self.tab().path_anchor {
             priority.insert(anchor.clone());
         }
-        if let Some(cur) = self.lineage_cursor.as_deref().filter(|c| base.contains(c)) {
+        if let Some(cur) = self
+            .tab()
+            .lineage_cursor
+            .as_deref()
+            .filter(|c| base.contains(c))
+        {
             priority.insert(cur.to_string());
             // The path highlight is a rooted-view concept (a whole-graph BFS
             // per frame would be wasted work on the overview, like the styles
             // path already treats it).
             if !self.ui_state.overview() {
                 let start = self
+                    .tab()
                     .path_anchor
                     .clone()
                     .unwrap_or_else(|| base.selected.clone());
@@ -237,7 +268,7 @@ impl App {
         collapse_siblings(
             base,
             self.collapse_threshold,
-            &self.collapse_expanded,
+            &self.tab().collapse_expanded,
             &HashSet::from([base.selected.clone()]),
         )
     }
@@ -253,8 +284,8 @@ impl App {
     /// `unique_id`) under the current root: collapsed → expanded shows every
     /// member behind a `-M less` marker; expanded → collapsed puts them back.
     pub(super) fn toggle_collapse(&mut self, key: &str) {
-        if !self.collapse_expanded.remove(key) {
-            self.collapse_expanded.insert(key.to_string());
+        if !self.tab_mut().collapse_expanded.remove(key) {
+            self.tab_mut().collapse_expanded.insert(key.to_string());
         }
     }
 
@@ -272,7 +303,7 @@ impl App {
             .find(|g| g.members.iter().any(|m| m == uid))
             .map(|g| g.key.clone());
         if let Some(key) = key {
-            self.collapse_expanded.insert(key);
+            self.tab_mut().collapse_expanded.insert(key);
         }
     }
 
@@ -348,7 +379,7 @@ impl App {
             }
         };
         if let Some(uid) = next {
-            self.lineage_cursor = Some(uid);
+            self.tab_mut().lineage_cursor = Some(uid);
         }
     }
 
@@ -381,7 +412,7 @@ impl App {
             .min_by_key(|(uid, r)| (cur_mid.abs_diff(r.y + r.height / 2), r.y, (*uid).clone()))
             .map(|(uid, _)| uid.clone());
         if let Some(uid) = next {
-            self.lineage_cursor = Some(uid);
+            self.tab_mut().lineage_cursor = Some(uid);
         }
     }
 
@@ -390,7 +421,7 @@ impl App {
     /// glyph mode — left=upstream like the diagram) and depth (`≤N` / `<=N`
     /// when limited).
     pub fn lineage_view_label(&self) -> String {
-        let v = &self.lineage_view;
+        let v = &self.tab().lineage_view;
         let (dir, leq) = match self.glyph_mode {
             crate::GlyphMode::Unicode => (
                 match (v.upstream, v.downstream) {
@@ -426,7 +457,7 @@ impl App {
         if self.ui_state.focus() == Focus::RightPane {
             self.lineage_cursor_uid()
         } else {
-            self.selected_unique_id()
+            self.list_sel_uid()
         }
     }
 
@@ -502,7 +533,7 @@ impl App {
         // A `p`-anchored path start overrides the root: the highlight then
         // answers "how does ANCHOR reach the cursor" (two arbitrary nodes —
         // dbt's `A+,+B`), not "how does the root reach the cursor".
-        let start = self.path_anchor.clone().unwrap_or(root);
+        let start = self.tab().path_anchor.clone().unwrap_or(root);
         if start == cursor {
             return Vec::new();
         }
@@ -625,13 +656,14 @@ impl App {
         if self.ui_state.overview() {
             return None;
         }
-        if self.back.is_empty() {
+        if self.tab().back.is_empty() {
             return None;
         }
         let root = self.selected_unique_id()?;
         // The last up-to-3 history uids (oldest→newest), then the current root;
         // uids that no longer resolve are skipped (so a vanished node drops out).
         let mut entries: Vec<String> = self
+            .tab()
             .back
             .iter()
             .rev()

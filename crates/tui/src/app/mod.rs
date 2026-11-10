@@ -56,6 +56,7 @@ mod lineage;
 pub(crate) mod palette;
 mod reducer;
 mod styles;
+mod tabs;
 #[cfg(test)]
 mod tests;
 
@@ -68,10 +69,10 @@ pub use crate::layer_violation_edges;
 // without depending on this crate.
 pub(crate) use lineage::fit_breadcrumb;
 pub use reducer::apply_action;
+pub use tabs::TabState;
 
 use analysis::compute_stats;
 use cache::LineageCaches;
-use column::ColumnFocus;
 
 /// What the event loop should do after an action: keep running (and run any
 /// recorded effects) or quit. Effects are data; the loop performs them.
@@ -109,8 +110,10 @@ impl Outcome {
 }
 
 /// The lineage view filter: which directions to show and an optional hop-depth
-/// limit. Default = the full lineage (both directions, unlimited).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// limit. Default = the full lineage (both directions, unlimited). Persisted
+/// per tab (§13): `#[serde(default)]` keeps an old/partial state file loading.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct LineageView {
     pub upstream: bool,
     pub downstream: bool,
@@ -185,15 +188,6 @@ pub struct App {
     /// Mermaid/DOT exports, and lineage search keep every real node; only the
     /// pane (and the screen-equivalent ASCII export) sees the markers.
     pub collapse_threshold: usize,
-    /// The sibling-collapse groups the user expanded, keyed to the CURRENT
-    /// root — the issue's "kept per root, initialised on re-root". A plain
-    /// `BTreeSet` of group keys (hub parent uids), cleared by every path that
-    /// lands on a different selected model:
-    /// [`select_by_unique_id`](App::select_by_unique_id)'s change check, the
-    /// event loop's selection-change chokepoint, and
-    /// [`reload`](App::reload) (a new graph re-initialises everything). Never
-    /// read for a stale root — it is empty by then.
-    collapse_expanded: BTreeSet<String>,
     /// Bookmarked model `unique_id`s (Space toggles, `'` cycles). A `BTreeSet`
     /// for deterministic iteration; lives on `App` (not the list) so toggling a
     /// bookmark never rebuilds the list and it survives a refilter untouched.
@@ -203,21 +197,10 @@ pub struct App {
     pub mode: Mode,
     /// Project name + resource counts, for the title bar.
     pub stats: AppStats,
-    /// The lineage direction/depth filter.
-    pub lineage_view: LineageView,
     /// Which glyph repertoire the lineage grid + chrome draw with. Defaults to
     /// Unicode; `main` overwrites it from the CLI flags / the startup
     /// ambiguous-width terminal probe.
     pub glyph_mode: crate::GlyphMode,
-    /// The lineage cursor: which node of the CURRENT subgraph the movement keys
-    /// highlight (`None` = the rooted selection). The event loop resets it at
-    /// its selection-change chokepoint (uid-tracked, so every id-changing path —
-    /// keys, mouse re-root, search confirm, history — re-homes it); the two
-    /// id-PRESERVING paths reset explicitly ([`reload`](App::reload), and
-    /// [`click_lineage_node`](App::click_lineage_node) on the current root).
-    /// Every read goes through [`lineage_cursor_uid`](App::lineage_cursor_uid),
-    /// which validates against the live subgraph, so a stale id can never escape.
-    lineage_cursor: Option<String>,
     /// The transient-notice channel: a one-shot (level, message) describing the
     /// latest user-visible outcome (copied / bookmarked / exported / reloaded).
     /// Writers: the reducer arms (intent) and `main::run_effect` (which
@@ -242,9 +225,24 @@ pub struct App {
     /// could not, since evicting an unread entry must decrement it while
     /// evicting a read one must not underflow it.
     unread_from: usize,
-    /// Re-root history (back/forward stacks of `unique_id`s).
-    back: Vec<String>,
-    forward: Vec<String>,
+    /// The open tabs (≥1 — [`close_tab`](App::close_tab) refuses the last).
+    /// Each keeps its own root + per-root view state (see [`TabState`]); every
+    /// access goes through [`tab`](App::tab)/[`tab_mut`](App::tab_mut).
+    tabs: Vec<TabState>,
+    /// The active tab's index into `tabs`.
+    active: usize,
+    /// One-shot flag the event loop's selection-change chokepoint drains via
+    /// [`take_tab_switch`](App::take_tab_switch): set by `activate_tab` /
+    /// `close_tab` / restore so the loop knows an id-changing selection is a
+    /// TAB SWITCH (skip the re-home/collapse-clear; restore the tab's own).
+    tab_switched: bool,
+    /// The tab strip's first-visible index — the scroll intent the wheel and
+    /// the `‹`/`›` cells write; resolved (clamped + active-ensured) by
+    /// [`tab_bar_layout`](crate::ui::tab_bar_layout) per frame. Session-only.
+    tab_scroll: usize,
+    /// Recently-rooted models (newest first, max 10) — Issue 10's home reads
+    /// it; persisted per project like the tab list itself.
+    pub recent: Vec<String>,
     /// Where the `Dag` came from, so reload re-reads the same source.
     source: DataSource,
     /// dbt project root (`<root>/target/manifest.json` → `<root>`, or the project
@@ -342,19 +340,6 @@ pub struct App {
     /// *selected* node's data, not the target's. See
     /// [`pending_or_selection`](App::pending_or_selection).
     pub(super) pending_node: Option<String>,
-    /// The `p`-anchored path start (`unique_id`): while set, the lineage path
-    /// highlight runs anchor↔cursor instead of root↔cursor — the two-node
-    /// "why does X reach Y" answer. `None` = normal root↔cursor pathing.
-    pub(super) path_anchor: Option<String>,
-    /// The traced-column state (Issue 09's column focus — see [`column`]).
-    /// `Some` filters the lineage subgraph to the column's related models and
-    /// draws the related columns inside each box; `None` = the normal rooted
-    /// view. Every reader goes through [`active_column_focus`]
-    /// (App::active_column_focus), which suppresses it while the overview is
-    /// up. Cleared by `Esc` (`ColumnFocusExit`), by [`jump_to`](App::jump_to)
-    /// (a re-root means "leave the trace"), and by `reload` (the rebuilt Dag
-    /// may not carry the column).
-    pub(super) column_focus: Option<ColumnFocus>,
     /// Confirmed list-search queries, most-recent-first, deduped, capped at
     /// [`palette::SEARCH_HISTORY_MAX`] — what the `/`-mode Up/Down recall
     /// browses. Persisted as `search_history` (recorded by
@@ -469,6 +454,9 @@ impl App {
             None => (crate::LintConfig::default(), None),
         };
         let lint_findings = crate::run_rules(&dag, &lint_config);
+        // The first tab roots on the list head — the same model `selected` 0
+        // pointed at before tabs existed.
+        let first_root = model_list.models.first().map(|n| n.unique_id.clone());
         App {
             dag,
             model_list,
@@ -479,14 +467,11 @@ impl App {
             group_by_meta: None,
             owner_meta_key: "owner".to_string(),
             collapse_threshold: crate::collapse::DEFAULT_COLLAPSE_THRESHOLD,
-            collapse_expanded: BTreeSet::new(),
             bookmarks: BTreeSet::new(),
             ui_state,
             mode: Mode::Selection,
             stats,
-            lineage_view: LineageView::default(),
             glyph_mode: crate::GlyphMode::default(),
-            lineage_cursor: None,
             // A malformed `.dbtl.yml` surfaces as a startup toast (one-shot
             // WARNING notice) — the same channel main.rs uses for the
             // source-mode hint (an info append joins it without dropping the
@@ -494,8 +479,14 @@ impl App {
             notice: lint_notice.map(|t| (NoticeLevel::Warning, t)),
             notifications: VecDeque::new(),
             unread_from: 0,
-            back: Vec::new(),
-            forward: Vec::new(),
+            tabs: vec![TabState {
+                root: first_root.clone(),
+                ..TabState::default()
+            }],
+            active: 0,
+            tab_switched: false,
+            tab_scroll: 0,
+            recent: first_root.into_iter().collect(),
             source,
             project_root,
             generation: 0,
@@ -520,8 +511,6 @@ impl App {
             lint_config_path,
             pending_col: None,
             pending_node: None,
-            path_anchor: None,
-            column_focus: None,
             search_history: Vec::new(),
             palette_recent: Vec::new(),
             // CONTRACT: every App starts recorded as `Root` — the scope is a
@@ -708,7 +697,7 @@ impl App {
     /// selection-identity change is detected; `reload` calls it on the new
     /// graph's behalf.
     pub fn clear_collapse_expansions(&mut self) {
-        self.collapse_expanded.clear();
+        self.tab_mut().collapse_expanded.clear();
     }
 
     /// The package scope the Dag was loaded under (`--include-packages` ⇒
@@ -891,11 +880,13 @@ impl App {
         self.unread_from = self.notifications.len();
     }
 
-    /// Re-root the lineage to `unique_id`, recording the move in the back stack
-    /// (and clearing the forward stack) — the browser-style history for clicks /
-    /// lineage-search jumps. No-op if the target isn't a selectable model. A
-    /// re-root also ends any column focus: "jump to that model" means land on
-    /// the model's own lineage, not keep the trace's filtered view.
+    /// Re-root the lineage to `unique_id`, recording the move in the active
+    /// tab's back stack (and clearing its forward stack) — the browser-style
+    /// history for every selection change (§2 T1: picking a model in the list,
+    /// clicking, searching, cycling bookmarks all land here). No-op if the
+    /// target isn't a selectable model. A re-root also ends any column focus:
+    /// "jump to that model" means land on the model's own lineage, not keep
+    /// the trace's filtered view.
     pub fn jump_to(&mut self, unique_id: &str) {
         let current = self.selected_unique_id();
         if self.reroot_select(unique_id) {
@@ -906,8 +897,8 @@ impl App {
             }
             if let Some(cur) = current {
                 if cur != unique_id {
-                    self.back.push(cur);
-                    self.forward.clear();
+                    self.tab_mut().back.push(cur);
+                    self.tab_mut().forward.clear();
                 }
             }
         }
@@ -924,46 +915,74 @@ impl App {
     ///
     /// [`jump_to`]: App::jump_to
     pub fn reroot_select(&mut self, unique_id: &str) -> bool {
-        let trace_root = self.column_focus.as_ref().map(|f| f.col.node.clone());
+        let trace_root = self.tab().column_focus.as_ref().map(|f| f.col.node.clone());
         if !self.select_by_unique_id(unique_id) {
             return false;
         }
         if trace_root.as_deref() != Some(unique_id) {
-            self.column_focus = None;
+            self.tab_mut().column_focus = None;
         }
         true
     }
 
-    /// Go back one step in the re-root history (pushes the current onto forward).
+    /// Go back one step in the active tab's re-root history (pushes the current
+    /// onto its forward stack).
     pub fn history_back(&mut self) {
-        if let Some(prev) = self.back.pop() {
+        if let Some(prev) = self.tab_mut().back.pop() {
             if let Some(cur) = self.selected_unique_id() {
-                self.forward.push(cur);
+                self.tab_mut().forward.push(cur);
             }
             self.reroot_select(&prev);
         }
     }
 
-    /// Go forward one step in the re-root history (pushes the current onto back).
+    /// Go forward one step in the active tab's re-root history (pushes the
+    /// current onto its back stack).
     pub fn history_forward(&mut self) {
-        if let Some(next) = self.forward.pop() {
+        if let Some(next) = self.tab_mut().forward.pop() {
             if let Some(cur) = self.selected_unique_id() {
-                self.back.push(cur);
+                self.tab_mut().back.push(cur);
             }
             self.reroot_select(&next);
         }
     }
 
-    /// The currently selected node in the active list, if any. The single
-    /// accessor for "the selected node"; every `selected_*` projection derives
-    /// from it, so the (which-list, no-guard) definition lives in one place.
+    /// The active tab's root node (any resource kind — resolved on `dag`,
+    /// never the list), `None` for a root-less tab. The single accessor for
+    /// "the rooted selection"; every `selected_*` projection derives from it.
+    /// Distinct from [`list_sel_uid`](App::list_sel_uid) when the root is
+    /// filtered out of the active list (the §2 detach).
     pub fn selected_node(&self) -> Option<&NodeInfo> {
-        self.active_list().model_at(self.ui_state.selected())
+        self.tab().root.as_deref().and_then(|uid| self.dag.get(uid))
     }
 
-    /// The selected node's `unique_id`, if any.
+    /// The active tab's root `unique_id`, if any — what the lineage roots on
+    /// and the tab label names.
     pub fn selected_unique_id(&self) -> Option<String> {
-        self.selected_node().map(|n| n.unique_id.clone())
+        self.tab().root.clone()
+    }
+
+    /// The `unique_id` under the list cursor (the model the row highlight
+    /// sits on in the ACTIVE list) — what list-driven actions act on: the
+    /// list-focus arm of [`focus_target`](App::focus_target), `o`, the
+    /// bookmark toggle, a list-search confirm. `None` on an empty list.
+    /// Distinct from [`selected_unique_id`](App::selected_unique_id) only
+    /// while the root is filtered out of the list.
+    pub fn list_sel_uid(&self) -> Option<String> {
+        self.active_list()
+            .model_at(self.ui_state.selected())
+            .map(|n| n.unique_id.clone())
+    }
+
+    /// §2 T1: adopt the list cursor's model as the active tab's root — the
+    /// browser-link rule that lands every list selection on the tab's own
+    /// history. Called after every list-move arm (and by the event loop's
+    /// wheel over the list pane); a same-uid landing is a no-op inside
+    /// [`jump_to`](App::jump_to).
+    pub fn adopt_list_selection(&mut self) {
+        if let Some(uid) = self.list_sel_uid() {
+            self.jump_to(&uid);
+        }
     }
 
     /// The armed overlay target (`pending_node`) preferred over the list
@@ -976,9 +995,7 @@ impl App {
     /// instead. It can never be read stale: `Mode::Yank`'s close clears it
     /// and `MenuInvoke` clears it right after the apply.
     pub(super) fn pending_or_selection(&self) -> Option<String> {
-        self.pending_node
-            .clone()
-            .or_else(|| self.selected_unique_id())
+        self.pending_node.clone().or_else(|| self.list_sel_uid())
     }
 
     /// The `unique_id` a `y`-menu yank should act on: the structure modal's
@@ -1133,7 +1150,7 @@ impl App {
         if self.ui_state.focus() == crate::ui::Focus::RightPane
             && self.lineage_display_subgraph().contains(uid)
         {
-            self.click_lineage_node(uid);
+            self.commit_lineage_node(uid);
         } else {
             self.reroot_select(uid);
         }
@@ -1194,11 +1211,11 @@ impl App {
         Some(self.project_root.join(rel).to_string_lossy().into_owned())
     }
 
-    /// The selected model's SQL file path — [`file_path_for`] on the
-    /// selection. `None` if nothing is selected.
+    /// The list-cursor model's SQL file path — [`file_path_for`] on the
+    /// list selection (`o` opens the model the row highlight sits on). `None`
+    /// if the list is empty.
     pub fn selected_file_path(&self) -> Option<String> {
-        self.selected_unique_id()
-            .and_then(|uid| self.file_path_for(&uid))
+        self.list_sel_uid().and_then(|uid| self.file_path_for(&uid))
     }
 
     /// The list currently driving the left pane: the search view if a search
@@ -1232,7 +1249,7 @@ impl App {
     /// live. With a list search open it defers selection to `refilter`, which
     /// narrows from the new base.
     pub fn apply_list_filter(&mut self) {
-        let current = self.selected_node().map(|n| n.unique_id.clone());
+        let current = self.selected_unique_id();
         self.filtered_base = match self.list_filter {
             ListFilter::All => None,
             ListFilter::Untested => Some(crate::model_list::filter_model_list(
@@ -1319,9 +1336,15 @@ impl App {
         }
     }
 
-    /// Move the selection to the model with this `unique_id` in the active list,
-    /// if present. Returns whether it was found. The selection-by-identity
+    /// Move the selection to the model with this `unique_id` in the active
+    /// list, if present. The selection IS the active tab's root (§2): a
+    /// successful select moves the list cursor onto the match, writes the
+    /// tab's `root`, and records the model in `recent` — while landing on a
+    /// different uid clears the tab's sibling-collapse expansions (the
+    /// "initialised on re-root" side of keeping them per root; a same-uid
+    /// re-resolve keeps them — it is not a re-root). The selection-by-identity
     /// primitive used by reload-restore, mouse re-root, and lineage search.
+    /// Returns whether the id was found.
     pub fn select_by_unique_id(&mut self, unique_id: &str) -> bool {
         let idx = self
             .active_list()
@@ -1330,25 +1353,23 @@ impl App {
             .position(|n| n.unique_id == unique_id);
         match idx {
             Some(i) => {
-                // Landing on a different uid is a re-root: the sibling-collapse
-                // expansions are per-root state, so they re-initialise here.
-                // A same-uid re-resolve (filter toggle, sort rebuild) keeps
-                // them — it is not a re-root.
                 if self.selected_unique_id().as_deref() != Some(unique_id) {
-                    self.collapse_expanded.clear();
+                    self.tab_mut().collapse_expanded.clear();
                 }
                 self.ui_state.set_selected(i);
+                self.set_root(Some(unique_id.to_string()));
+                self.record_recent(unique_id);
                 true
             }
             None => false,
         }
     }
 
-    /// A one-line summary of the selected node for the status bar:
+    /// A one-line summary of the list-cursor model for the status bar:
     /// `"<materialized>, tests: N"` (materialization omitted for sources).
-    /// `None` when nothing is selected.
+    /// `None` when the list is empty.
     pub fn selected_status_note(&self) -> Option<String> {
-        let uid = &self.selected_node()?.unique_id;
+        let uid = &self.list_sel_uid()?;
         let mat = self.dag.detail(uid).and_then(|d| d.materialized.clone());
         let tests = self.dag.tests(uid).len();
         let mut parts: Vec<String> = Vec::new();
@@ -1375,7 +1396,6 @@ impl App {
     /// ([`PackageScope::apply_with_warnings`] — e.g. an ambiguously-rooted or
     /// emptied graph); an unremarkable reload returns an empty vec.
     pub fn reload(&mut self) -> Result<Vec<String>> {
-        let current = self.selected_node().map(|n| n.unique_id.clone());
         // Re-read from the same source; returns before mutating on error.
         // The package scope the load path applied at startup is re-applied
         // here — a recompiled manifest can gain/drop `dbt_packages/` contents
@@ -1397,16 +1417,25 @@ impl App {
         self.generation += 1;
         // Drop bookmarks whose model vanished; surviving ids persist (ids stable).
         self.bookmarks.retain(|id| self.dag.get(id).is_some());
-        // Same prune for the re-root history: a stale id would make
+        self.recent.retain(|id| self.dag.get(id).is_some());
+        // Same prune for every tab's re-root history: a stale id would make
         // history_back/forward pop the entry, push the current node onto the
         // opposite stack, and then fail to select — consuming the step and
         // accumulating bogus duplicates instead of landing on a survivor.
-        self.back.retain(|id| self.dag.get(id).is_some());
-        self.forward.retain(|id| self.dag.get(id).is_some());
-        // Pruning can leave adjacent equal entries (A → vanished → A);
-        // collapse them so a history step never "moves" to the same node.
-        self.back.dedup();
-        self.forward.dedup();
+        // The `is_rootable` rule (not mere survival): a node still in the
+        // graph but no longer a `model` can never be a history landing —
+        // inlined here (not the `App::is_rootable` method) so the retain
+        // closures borrow `dag` disjoint from `tabs`.
+        for t in &mut self.tabs {
+            t.back
+                .retain(|id| self.dag.get(id).is_some_and(|n| n.resource_type == "model"));
+            t.forward
+                .retain(|id| self.dag.get(id).is_some_and(|n| n.resource_type == "model"));
+            // Pruning can leave adjacent equal entries (A → vanished → A);
+            // collapse them so a history step never "moves" to the same node.
+            t.back.dedup();
+            t.forward.dedup();
+        }
         // Same source, fresh outcomes: re-read the run_results the lenses and
         // the weighted critical path read (a `dbt run` between reloads shows up
         // without a restart). A vanished file → no run data, never an error.
@@ -1461,17 +1490,50 @@ impl App {
         // Any yank-menu context stashed against the OLD graph dies here too.
         self.pending_col = None;
         self.pending_node = None;
-        // And so does a column trace: the rebuilt Dag may not carry the
-        // column (or resolve different edges for it) — drop the focus rather
-        // than render a stale trace over a new graph.
-        self.column_focus = None;
-        // Cursor home: selection is restored BY ID, so the loop's
-        // selection-change chokepoint won't fire — reset here or a pre-reload
-        // cursor would survive into the rebuilt graph.
-        self.lineage_cursor = None;
-        // Same for the sibling-collapse expansions: the group keys index into
-        // the OLD graph's columns, so a fresh graph re-initialises them.
-        self.collapse_expanded.clear();
+        // Every tab's graph-indexed state dies the same way: a column trace
+        // (the rebuilt Dag may not carry the column, or resolve different
+        // edges for it), the lineage cursor (selection is restored BY ID so
+        // the loop's selection-change chokepoint won't fire — reset here or a
+        // pre-reload cursor survives into the rebuilt graph), the
+        // sibling-collapse expansions (group keys index into the OLD graph's
+        // columns), and the stashed lineage viewport (its CharGrid offsets
+        // index into the OLD layout). The path anchor prunes by id rather
+        // than dropping — a surviving anchor keeps its path view.
+        for t in &mut self.tabs {
+            t.column_focus = None;
+            t.lineage_cursor = None;
+            t.collapse_expanded.clear();
+            t.path_anchor = t.path_anchor.take().filter(|id| self.dag.get(id).is_some());
+            t.scroll = None;
+        }
+        // Drop the tabs whose root vanished from the rebuilt graph — a root
+        // that survives but is no longer a `model` can't be re-rooted either
+        // (§2: 消えたモデルのタブは捨てる). If every tab died, keep ONE
+        // rootless tab rather than break the ≥1-tab invariant.
+        // The `is_rootable` rule, inlined (not `App::is_rootable`) so the
+        // predicate borrows `dag` disjoint from the `tabs` iteration below.
+        let live = |t: &TabState| {
+            t.root
+                .as_deref()
+                .is_some_and(|r| self.dag.get(r).is_some_and(|n| n.resource_type == "model"))
+        };
+        // `retain` slides survivors left — the active tab follows across
+        // left-of-active prunes the same way `close_tab` shifts `active`:
+        // its new index is the count of SURVIVORS below the old index.
+        let survivors_below = self
+            .tabs
+            .iter()
+            .take(self.active)
+            .filter(|t| live(t))
+            .count();
+        self.tabs.retain(|t| live(t));
+        if self.tabs.is_empty() {
+            self.tabs.push(TabState::default());
+        }
+        // Seat NOW: `apply_list_filter` below resolves the selection through
+        // the active tab, so `active` can't point past the shrunk strip —
+        // and must not sit on a DIFFERENT tab than the one that was live.
+        self.active = survivors_below.min(self.tabs.len() - 1);
         // Re-diff the rebuilt Dag against the (unchanged) --diff baseline, so
         // the Diff lens / chip / modal always describe the CURRENT graph.
         // The baseline resolver's per-uid memos stay valid (the baseline never
@@ -1496,10 +1558,20 @@ impl App {
         // Recompute the persistent-filter view over the rebuilt list (it also
         // sets the model count to the active list's length).
         self.apply_list_filter();
-        if let Some(uid) = current {
-            self.select_by_unique_id(&uid);
-        }
+        // Seat the (possibly shifted) active tab: clamp the index past any
+        // dropped tabs, re-anchor the list cursor on its root, and flag the
+        // switch so the loop re-anchors the lineage viewport.
+        self.enter_tab_forced();
         Ok(warnings)
+    }
+
+    /// Whether `uid` can anchor a tab's root — the same rule `reload`'s
+    /// tab-prune and the persisted-state restore share: the node must exist
+    /// AND still be a `model` (the only kind the list can re-root onto).
+    pub(crate) fn is_rootable(&self, uid: &str) -> bool {
+        self.dag
+            .get(uid)
+            .is_some_and(|n| n.resource_type == "model")
     }
 
     /// Rebuild the filtered list view for the current list-search query and

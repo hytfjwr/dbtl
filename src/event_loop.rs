@@ -17,7 +17,7 @@ use dbtl::layout::Layout;
 use dbtl::ui::{
     draw, hit_target, mouse_dirty, overlay_rect, pane_interior, pane_layout, splitter_drag_width,
     Focus, HitGeometry, HitTarget, LineageLens, MouseInput, MouseOutcome, MouseRouter, RenderCtx,
-    Splitter, StatusSegments,
+    Splitter, StatusSegments, TabBarView,
 };
 use dbtl::{Mode, SortMode};
 
@@ -77,6 +77,10 @@ pub fn event_loop(
     // hit-testing against a stale layout would misattribute clicks.
     let mut lineage: Option<std::rc::Rc<dbtl::Layout>> = None;
     let mut area = ratatui::layout::Rect::default();
+    // The tab count the last resolved strip saw — its change (an open/close)
+    // is one of the two events that re-ensure the active tab's visibility,
+    // the other being an actual switch (`take_tab_switch`).
+    let mut last_tab_count = 0usize;
 
     loop {
         // Drain the pending notice WITH its level: it becomes BOTH a toast and
@@ -99,10 +103,15 @@ pub fn event_loop(
             dirty = true;
         }
         if dirty {
+            // A tab switch is a root change in every sense but two: the
+            // incoming tab's own cursor and collapse expansions restore (§2),
+            // so the chokepoint resets below skip it. Drained once per dirty
+            // pass — the flag also feeds the strip's ensure-active decision.
+            let tab_switch = app.take_tab_switch();
             let sel = app.ui_state.selected();
             let sel_uid = app.selected_unique_id();
             let selection_changed = last_selection != sel_uid;
-            if selection_changed {
+            if selection_changed && !tab_switch {
                 // The single cursor-reset chokepoint: EVERY selection change (keys,
                 // mouse click, search confirm, history, reload-restore) funnels
                 // through here before the next draw, so the cursor always re-homes
@@ -125,7 +134,7 @@ pub fn event_loop(
                     list.row_count(),
                 )
             };
-            let list_height = list_pane_height(terminal)?;
+            let list_height = list_pane_height(terminal, &app.ui_state)?;
             app.ui_state
                 .ensure_visible(list_height, reveal_row, model_row, row_count);
 
@@ -150,9 +159,16 @@ pub fn event_loop(
                 if let Some(rect) = search_rect {
                     app.ui_state
                         .anchor_lineage(Some(rect), &lay.grid, view_w, view_h);
-                } else if selection_changed || force_anchor {
-                    // New root / reshaped view: centre on the display-selected node
-                    // (the cursor, which a selection change just re-homed to the root).
+                } else if tab_switch && app.tab_scroll_saved() {
+                    // §2's verbatim restore: the switch already swapped the
+                    // stashed viewport into UiState — only re-clamp it, since
+                    // a resize may have shrunk the window since the stash.
+                    app.ui_state
+                        .clamp_lineage(lay.grid.width(), lay.grid.height(), view_w, view_h);
+                } else if tab_switch || selection_changed || force_anchor {
+                    // New root / reshaped view / fresh tab: centre on the
+                    // display-selected node (the cursor, which a selection
+                    // change just re-homed to the root).
                     app.ui_state
                         .anchor_lineage(lay.selected_rect, &lay.grid, view_w, view_h);
                 } else if last_cursor != cursor {
@@ -180,6 +196,21 @@ pub fn event_loop(
             // Overlay scroll clamp (size-aware), same seam as the lineage clamp: the
             // pure reducer records scroll intent, the loop bounds it to the screen.
             area = full_area(terminal)?;
+            // The tab strip's resolved cells — the same `pane_layout` +
+            // `tab_bar_layout` the hit-test replays. `ensure_active` fires on
+            // a switch or a strip-size change (open/close) — never on a
+            // manual scroll, so `‹`/`›`/wheel can actually look around (§2's
+            // "アクティブタブは常に見える" is a switch-time guarantee). The
+            // RESOLVED first-visible index is written back, so a hit-test
+            // always sees what the last frame drew.
+            let panes = pane_layout(area, &app.ui_state.pane_config());
+            let tab_labels = app.tab_labels();
+            let tab_layout = app.tab_bar_layout_for(
+                panes.tab_bar,
+                tab_switch || app.tab_count() != last_tab_count,
+            );
+            app.set_tab_scroll(tab_layout.scroll);
+            last_tab_count = app.tab_count();
             match &mut app.mode {
                 dbtl::Mode::Help(h) => {
                     h.scroll = dbtl::ui::clamp_help_scroll(area, h);
@@ -247,7 +278,7 @@ pub fn event_loop(
             let col_suffix = app.column_focus_label();
             let view_seg = if app.ui_state.overview() {
                 Some("overview")
-            } else if column_s.is_none() && app.lineage_view != LineageView::default() {
+            } else if column_s.is_none() && app.tab().lineage_view != LineageView::default() {
                 Some(view_label.as_str())
             } else {
                 None
@@ -408,6 +439,13 @@ pub fn event_loop(
                 };
                 ctx.minimap = app.ui_state.minimap_visible();
                 ctx.filter_label = app.list_filter_label();
+                ctx.tab_bar = Some(TabBarView {
+                    labels: &tab_labels,
+                    layout: &tab_layout,
+                    active: app.active_tab(),
+                    project: Some(app.stats.project.as_str()),
+                    hover: mouse.hover(),
+                });
                 ctx.layer_bands = layer_bands.as_deref();
                 ctx.toasts = &toast_lines;
                 ctx.palette_rows = palette_rows.as_deref();
@@ -611,6 +649,7 @@ fn apply_mouse(app: &mut App, outcome: &mut Outcome, action: Action) {
 /// [`App::click_target`]); every other mouse-live mode routes through the
 /// covering overlay's rect — its interior rows, its inert frame, and the
 /// click-outside dismissal ([`overlay_click`]). `Search` stays pointer-inert.
+/// Over the tab strip the wheel scrolls the STRIP, not the panes (§6).
 fn handle_mouse(
     app: &mut App,
     mouse: &mut MouseRouter,
@@ -633,15 +672,21 @@ fn handle_mouse(
             let down = me.kind == MouseEventKind::ScrollDown;
             if matches!(app.mode, Mode::Selection) {
                 let shift = me.modifiers.contains(KeyModifiers::SHIFT);
-                wheel(
-                    app,
-                    pane_interior(rects.list),
-                    pane_interior(rects.lineage),
-                    me.column,
-                    me.row,
-                    down,
-                    shift,
-                );
+                // §6: the wheel over the tab strip scrolls the STRIP (one
+                // tab per notch) — the panes below never see it.
+                if within(rects.tab_bar, me.column, me.row) {
+                    app.scroll_tab_bar(if down { 1 } else { -1 });
+                } else {
+                    wheel(
+                        app,
+                        pane_interior(rects.list),
+                        pane_interior(rects.lineage),
+                        me.column,
+                        me.row,
+                        down,
+                        shift,
+                    );
+                }
             } else {
                 // A covering overlay owns the screen, so the wheel scrolls
                 // the modal's own content regardless of the pointer cell —
@@ -660,7 +705,8 @@ fn handle_mouse(
             }
         }
         // A native horizontal notch (trackpad swipe / tilt wheel). Only the
-        // lineage diagram scrolls horizontally; overlays ignore it.
+        // lineage diagram scrolls horizontally — and over the tab strip it
+        // scrolls the tabs, like the wheel; overlays ignore it.
         MouseEventKind::ScrollRight | MouseEventKind::ScrollLeft => {
             if !matches!(app.mode, Mode::Selection) {
                 return MouseHandled {
@@ -670,13 +716,21 @@ fn handle_mouse(
                 };
             }
             let rects = pane_layout(area, &app.ui_state.pane_config());
-            wheel_x(
-                app,
-                pane_interior(rects.lineage),
-                me.column,
-                me.row,
-                me.kind == MouseEventKind::ScrollRight,
-            );
+            if within(rects.tab_bar, me.column, me.row) {
+                app.scroll_tab_bar(if me.kind == MouseEventKind::ScrollRight {
+                    1
+                } else {
+                    -1
+                });
+            } else {
+                wheel_x(
+                    app,
+                    pane_interior(rects.lineage),
+                    me.column,
+                    me.row,
+                    me.kind == MouseEventKind::ScrollRight,
+                );
+            }
             MouseHandled {
                 dirty: true,
                 reanchor: false,
@@ -742,23 +796,41 @@ fn handle_mouse(
                     };
                     if let Some(t) = target.as_ref() {
                         if sel {
+                            // §6's M1 table: a double-click is NOT the click
+                            // action twice — a node double IS Enter, a list
+                            // row's double opens the structure modal, and
+                            // every other target takes no second action.
+                            let double_left = matches!(gesture, MouseOutcome::DoubleClick { .. })
+                                && *button == MouseButton::Left;
                             match t {
                                 // §5: a splitter double-click resets that
-                                // pane's saved width to default — it is NOT
-                                // the click action twice.
-                                HitTarget::PaneBorder(which)
-                                    if matches!(gesture, MouseOutcome::DoubleClick { .. })
-                                        && *button == MouseButton::Left =>
-                                {
+                                // pane's saved width to default.
+                                HitTarget::PaneBorder(which) if double_left => {
                                     app.ui_state.reset_pane_width(*which);
                                 }
-                                // Everywhere else a double-click performs the
-                                // click action again — today's click actions
-                                // are idempotent (re-rooting the same node,
-                                // re-selecting the same row), so the effect
-                                // matches the old two-clicks-in-a-row
-                                // behaviour until Issue 05 gives double-click
-                                // its own meaning.
+                                // §6/M1: a lineage node's double-click IS
+                                // Enter — park the cursor on it, then run the
+                                // Enter arm itself (a model re-roots, a
+                                // `+M more` marker expands, anything else
+                                // opens the structure modal).
+                                HitTarget::LineageNode(uid) if double_left => {
+                                    app.commit_lineage_node(uid);
+                                    apply_mouse(app, &mut outcome, Action::DetailOpen);
+                                }
+                                // §6: a list row's double-click opens the
+                                // structure modal — the first Click already
+                                // re-rooted and took list focus, so
+                                // `DetailOpen` resolves the row's model
+                                // through `focus_target`.
+                                HitTarget::ListRow(_) if double_left => {
+                                    apply_mouse(app, &mut outcome, Action::DetailOpen);
+                                }
+                                // §6 marks double-click "—" everywhere else:
+                                // tabs, `×`, `+`, arrows, blanks, the minimap
+                                // and the status bar take no second action (a
+                                // `×` double-click must NOT close the tab
+                                // that slid under the pointer).
+                                _ if double_left => {}
                                 _ => app.click_target(t, *button, (at.x, at.y)),
                             }
                         } else {
@@ -960,8 +1032,13 @@ fn hit_geometry<'a>(
     area: Rect,
     overlay: Option<Rect>,
 ) -> HitGeometry<'a> {
+    let panes = pane_layout(area, &app.ui_state.pane_config());
     HitGeometry {
-        panes: pane_layout(area, &app.ui_state.pane_config()),
+        panes,
+        // Replay the stored scroll — synced to the RESOLVED scroll after
+        // every draw, so the hit-test sees the cells the frame painted
+        // (`ensure_active: false`: the ensure already ran at draw time).
+        tab_bar: Some(app.tab_bar_layout_for(panes.tab_bar, false)),
         list: app.active_list(),
         list_offset: app.ui_state.offset(),
         layout: lineage,
@@ -991,7 +1068,15 @@ fn wheel(
     shift: bool,
 ) {
     if within(list_inner, col, row) {
+        // §2 T1: a wheel notch over the list moves the CURSOR — adopt it as
+        // the active tab's root exactly like a j/k move (guarded on the
+        // index actually changing, so a clamped notch at the boundary
+        // never re-roots a detached tab).
+        let before = app.ui_state.selected();
         app.ui_state.wheel_list(down);
+        if app.ui_state.selected() != before {
+            app.adopt_list_selection();
+        }
     } else if within(lin_inner, col, row) {
         if shift {
             app.ui_state.wheel_lineage_x(down);
@@ -1418,15 +1503,14 @@ fn feed_and_reap(mut child: std::process::Child, program: &str, text: &str) -> R
     Ok(())
 }
 
-/// Compute the number of visible *display rows* in the list pane, mirroring the
-/// draw layout: total height minus the status line (1) minus the pane's top and
-/// bottom borders (2). `max(1)` guards tiny terminals so we never produce a
+/// Compute the number of visible *display rows* in the list pane — through the
+/// SAME `pane_layout`/`pane_interior` the draw and the hit-test share, so the
+/// tab-bar row (and any future chrome) can't silently diverge from what the
+/// list actually gets. `max(1)` guards tiny terminals so we never produce a
 /// zero-height window.
-fn list_pane_height(terminal: &DefaultTerminal) -> Result<usize> {
-    let size = terminal.size().context("failed to read terminal size")?;
-    let body = size.height.saturating_sub(1); // status line
-    let inner = body.saturating_sub(2); // top + bottom border
-    Ok(inner.max(1) as usize)
+fn list_pane_height(terminal: &DefaultTerminal, ui: &dbtl::ui::UiState) -> Result<usize> {
+    let inner = pane_interior(pane_layout(full_area(terminal)?, &ui.pane_config()).list);
+    Ok((inner.height as usize).max(1))
 }
 
 /// The lineage pane's interior size `(width, height)` for the current terminal,
@@ -1940,5 +2024,42 @@ mod tests {
         );
         assert_eq!(app.ui_state.list_width(), dbtl::ui::DEFAULT_LIST_WIDTH);
         assert!(drag.is_none());
+    }
+
+    #[test]
+    fn wheel_over_the_list_adopts_the_cursor_model_as_tab_root() {
+        // §2 T1 review: a wheel notch over the list moves the CURSOR, and
+        // like a j/k move the cursor's model becomes the active tab's root
+        // (with the history push) — root≠cursor must not detach here.
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        let root0 = app.selected_unique_id().unwrap();
+        // (10,10) at 100x30 sits inside the list pane's interior.
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            MouseEventKind::ScrollDown,
+            10,
+            10,
+        );
+        let landed = app.active_list().model_at(3).unwrap().unique_id.clone();
+        assert_eq!(
+            app.selected_unique_id().as_deref(),
+            Some(landed.as_str()),
+            "the wheeled cursor's model became the active tab's root"
+        );
+        assert_eq!(
+            app.tab().back,
+            vec![root0.clone()],
+            "the wheel re-root pushed the old root onto back"
+        );
+        app.history_back();
+        assert_eq!(
+            app.selected_unique_id().as_deref(),
+            Some(root0.as_str()),
+            "`b` walks the wheel's re-root back"
+        );
     }
 }

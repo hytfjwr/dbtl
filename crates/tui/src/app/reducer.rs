@@ -163,17 +163,30 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                     app.move_lineage_cursor(dir);
                 }
             } else {
+                // §2 T1: a list-cursor move IS the selection — adopt it as the
+                // tab's root (with history). Guarded on the index actually
+                // changing, so a boundary-clamped keypress (or an h/l no-op on
+                // the list) never re-roots a detached tab onto the cursor.
+                let before = app.ui_state.selected();
                 reduce_selection(&mut app.ui_state, action);
+                if app.ui_state.selected() != before {
+                    app.adopt_list_selection();
+                }
             }
             Outcome::cont()
         }
-        // UiState-only arms: forward to the sub-reducer.
-        Action::JumpTop
-        | Action::JumpBottom
-        | Action::PageDown
-        | Action::PageUp
-        | Action::ToggleFocus
-        | Action::ToggleListPane => {
+        // UiState-only arms: forward to the sub-reducer. The paging/jump arms
+        // adopt on the same changed-index rule as the move keys; the focus and
+        // visibility toggles never move the cursor, so they never adopt.
+        Action::JumpTop | Action::JumpBottom | Action::PageDown | Action::PageUp => {
+            let before = app.ui_state.selected();
+            reduce_selection(&mut app.ui_state, action);
+            if app.ui_state.selected() != before {
+                app.adopt_list_selection();
+            }
+            Outcome::cont()
+        }
+        Action::ToggleFocus | Action::ToggleListPane => {
             reduce_selection(&mut app.ui_state, action);
             Outcome::cont()
         }
@@ -221,7 +234,8 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                 app.toggle_collapse(&group.key);
                 return Outcome::cont();
             }
-            if Some(&uid) != root.as_ref()
+            if app.ui_state.focus() == Focus::RightPane
+                && Some(&uid) != root.as_ref()
                 && app
                     .dag
                     .get(&uid)
@@ -544,7 +558,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         Action::ColumnFocusExit => {
             // Esc exits the trace view — the lineage returns to the normal
             // rooted subgraph of whatever is selected.
-            app.column_focus = None;
+            app.tab_mut().column_focus = None;
             Outcome::cont()
         }
         Action::ColumnsOpen => {
@@ -555,7 +569,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                     .col_names
                     .get(dv.col_index)
                     .map(|c| crate::ColumnRef::new(&dv.model_id, c)),
-                _ => app.column_focus.as_ref().map(|f| f.col.clone()),
+                _ => app.tab().column_focus.as_ref().map(|f| f.col.clone()),
             };
             match col {
                 Some(col) => app.mode = Mode::Columns(app.columns_view_for(&col)),
@@ -618,7 +632,10 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             } else {
                 SearchTarget::Lineage
             };
-            let origin = app.selected_node().map(|n| n.unique_id.clone());
+            // The search's restore point: the list CURSOR (what Esc lands
+            // back on), not the root — under a detached root the cursor sits
+            // on a different model.
+            let origin = app.list_sel_uid();
             app.mode = Mode::Search(SearchState {
                 target,
                 query: String::new(),
@@ -697,7 +714,9 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         Action::SearchMove(dir) => {
             // Command palette: move `selected` over the SELECTABLE rows (the
             // section headers are display-only, never a target), clamped at
-            // both ends (no wrap), mirroring a list cursor.
+            // both ends (no wrap), mirroring a list cursor. An `@`-prefixed
+            // query lists MODELS (`palette_selectable_rows` routes to the
+            // model rows) — commands otherwise.
             if let Mode::Palette(p) = &app.mode {
                 let count = app.palette_selectable_rows(&p.query).len();
                 let next = match dir {
@@ -744,12 +763,18 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                         }
                         app.refilter();
                     } else {
+                        // Browsing IS selecting (§2 T1): a moved cursor adopts
+                        // its model — same changed-index guard as move keys.
+                        let before = app.ui_state.selected();
                         match dir {
                             Direction::Down => {
                                 reduce_selection(&mut app.ui_state, Action::MoveDown)
                             }
                             Direction::Up => reduce_selection(&mut app.ui_state, Action::MoveUp),
                             _ => {}
+                        }
+                        if app.ui_state.selected() != before {
+                            app.adopt_list_selection();
                         }
                     }
                 }
@@ -808,6 +833,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             // last row rather than treating it as "no candidates".
             // `PaletteRow` is owned, so the mode borrow ends before mutation.
             if let Mode::Palette(p) = &app.mode {
+                let new_tab = p.new_tab;
                 let rows = app.palette_selectable_rows(&p.query);
                 let chosen = if rows.is_empty() {
                     None
@@ -842,12 +868,18 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                             out
                         }
                     }
-                    // `@` model search: Enter re-roots to the model (the
-                    // spec's "active tab root" — the selection, until tabs
-                    // land). `jump_to` records history like a click does.
+                    // `@` model search: Enter re-roots to the model — the
+                    // spec's "active tab root" (`jump_to` records history like
+                    // a click does). The `+` cell's `new_tab` palette instead
+                    // opens the model AS a new tab (dedupes to its tab when
+                    // already open — §2/§7).
                     Some(PaletteRow::Model { uid, .. }) => {
                         app.mode = Mode::Selection;
-                        app.jump_to(&uid);
+                        if new_tab {
+                            app.open_node_as_tab(&uid);
+                        } else {
+                            app.jump_to(&uid);
+                        }
                         Outcome::cont()
                     }
                     Some(PaletteRow::Header(_)) | None => {
@@ -871,13 +903,14 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                     }
                 }
                 other => {
-                    // List search: keep the highlighted match (resolve by id in
-                    // the full list) and record the confirmed query — the
-                    // `/`-mode Up/Down recall browses this history.
+                    // List search: keep the highlighted match — the list
+                    // CURSOR's model (resolve by id in the full list) — and
+                    // record the confirmed query: the `/`-mode Up/Down recall
+                    // browses this history.
                     if let Some((SearchTarget::List, query)) = &other {
                         app.record_search_query(query);
                     }
-                    let chosen = app.selected_node().map(|n| n.unique_id.clone());
+                    let chosen = app.list_sel_uid();
                     app.close_search(chosen);
                 }
             }
@@ -947,7 +980,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             match app
                 .pending_col
                 .take()
-                .or_else(|| app.column_focus.as_ref().map(|f| f.col.clone()))
+                .or_else(|| app.tab().column_focus.as_ref().map(|f| f.col.clone()))
             {
                 Some(col) => {
                     let text =
@@ -1007,22 +1040,26 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             Outcome::cont()
         }
         Action::ToggleUpstream => {
-            app.lineage_view.upstream = !app.lineage_view.upstream;
+            let v = &mut app.tab_mut().lineage_view;
+            v.upstream = !v.upstream;
             Outcome::cont()
         }
         Action::ToggleDownstream => {
-            app.lineage_view.downstream = !app.lineage_view.downstream;
+            let v = &mut app.tab_mut().lineage_view;
+            v.downstream = !v.downstream;
             Outcome::cont()
         }
         Action::DepthDecrease => {
-            app.lineage_view.depth = match app.lineage_view.depth {
+            let v = &mut app.tab_mut().lineage_view;
+            v.depth = match v.depth {
                 None => Some(3),
                 Some(n) => Some(n.saturating_sub(1).max(1)),
             };
             Outcome::cont()
         }
         Action::DepthIncrease => {
-            app.lineage_view.depth = match app.lineage_view.depth {
+            let v = &mut app.tab_mut().lineage_view;
+            v.depth = match v.depth {
                 None => None,
                 Some(n) if n >= 8 => None, // widen past 8 hops → unlimited
                 Some(n) => Some(n + 1),
@@ -1030,7 +1067,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             Outcome::cont()
         }
         Action::ResetView => {
-            app.lineage_view = LineageView::default();
+            app.tab_mut().lineage_view = LineageView::default();
             Outcome::cont()
         }
         Action::HistoryBack => {
@@ -1262,13 +1299,14 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             let target = cycle_to(app.active_list(), app.ui_state.selected(), forward, |m| {
                 app.bookmarks.contains(&m.unique_id)
             });
-            // A cycle landing on a different model is a re-root — it ends the
-            // column trace like jump_to does (`reroot_select` owns that rule).
+            // A cycle landing on a different model is a re-root — §2 T1 makes
+            // it history like any other selection (`jump_to` owns the push;
+            // `reroot_select` inside it ends the column trace).
             if let Some(uid) = target
                 .and_then(|i| app.active_list().model_at(i))
                 .map(|m| m.unique_id.clone())
             {
-                app.reroot_select(&uid);
+                app.jump_to(&uid);
             }
             Outcome::cont()
         }
@@ -1284,7 +1322,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                 .and_then(|i| app.active_list().model_at(i))
                 .map(|m| m.unique_id.clone())
             {
-                app.reroot_select(&uid);
+                app.jump_to(&uid);
             }
             Outcome::cont()
         }
@@ -1360,18 +1398,46 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                 .reset_pane_width(crate::ui::Splitter::Inspector);
             Outcome::cont()
         }
+        // ---- tabs (Issue 03; §2) ----
+        // `O`: the focus target's model opens in a NEW tab right of the
+        // active one — the lineage cursor's node when the lineage pane is
+        // focused, else the list cursor's (a non-model / filtered-out node
+        // toasts its kind instead). Already-open roots just activate (T2).
+        Action::TabOpen => {
+            if let Some(uid) = app.focus_target() {
+                app.open_node_as_tab(&uid);
+            }
+            Outcome::cont()
+        }
+        // `X`/`Ctrl-w`: close the ACTIVE tab (the right neighbour, else the
+        // left, takes over; the last tab refuses with a toast inside).
+        Action::TabClose => {
+            app.close_tab(app.active_tab());
+            Outcome::cont()
+        }
+        // `{`/`}`: cycle one tab, wrapping at both ends.
+        Action::TabPrev | Action::TabNext => {
+            app.cycle_tab(matches!(action, Action::TabNext));
+            Outcome::cont()
+        }
+        // `1`..=`9`: activate the tab at that 1-based position (out-of-range
+        // is a no-op — tabs past 9 carry no number key).
+        Action::TabActivate(n) => {
+            app.activate_tab(usize::from(n).saturating_sub(1));
+            Outcome::cont()
+        }
         // `p` two-node path: first press anchors the path start at the
         // selection (the highlight then runs anchor↔cursor), second press
         // clears it back to root↔cursor. Pure state + a toast; the
         // path-set BFS reads `path_anchor` next frame — no cache reset needed
         // (styles are recomputed per draw anyway).
         Action::PathToggle => {
-            if let Some(uid) = app.path_anchor.take() {
+            if let Some(uid) = app.tab_mut().path_anchor.take() {
                 let name = app.node_name_or_uid(&uid);
                 app.set_notice(format!("path anchor cleared ({name})"));
             } else if let Some(uid) = app.pending_or_selection() {
                 let name = app.node_name_or_uid(&uid);
-                app.path_anchor = Some(uid);
+                app.tab_mut().path_anchor = Some(uid);
                 app.set_notice(format!(
                     "path anchor: {name} — move cursor to target (p clears)"
                 ));

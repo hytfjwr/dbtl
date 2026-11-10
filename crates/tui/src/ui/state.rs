@@ -371,15 +371,15 @@ impl UiState {
 
     /// The `geom::PaneConfig` for the current view prefs — the ONE derivation
     /// every `pane_layout` caller (draw, hit-test, viewport math) shares. The
-    /// inspector and tab bar stay off here: Issues 04/03 flip them once those
-    /// panes exist.
+    /// tab bar claims its row (Issue 03); the inspector stays off until
+    /// Issue 04.
     pub fn pane_config(&self) -> super::geom::PaneConfig {
         super::geom::PaneConfig {
             list_visible: self.list_visible,
             list_width: self.list_width,
             inspector_visible: false,
             inspector_width: self.inspector_width,
-            tab_bar: false,
+            tab_bar: true,
         }
     }
 
@@ -404,6 +404,18 @@ impl UiState {
     /// The lineage pane's vertical scroll offset (CharGrid y).
     pub fn lineage_scroll_y(&self) -> usize {
         self.lineage_scroll_y
+    }
+
+    /// Write both lineage scroll offsets verbatim — the tab-switch restore
+    /// half of the per-tab scroll snapshot ([`App`](crate::App) swaps them
+    /// through its active tab's `scroll_x`/`scroll_y`). Values are treated as
+    /// unvalidated intent exactly like the wheel setters: the loop's
+    /// [`clamp_lineage`](UiState::clamp_lineage) bounds them next frame, so a
+    /// restored offset that no longer fits the grid can never draw out of
+    /// range. `pub(crate)` — the only caller is `App::enter_active_tab`.
+    pub(crate) fn set_lineage_scroll(&mut self, x: usize, y: usize) {
+        self.lineage_scroll_x = x;
+        self.lineage_scroll_y = y;
     }
 
     /// Set the selected model index, clamped to the current model count.

@@ -451,17 +451,23 @@ fn detail_modal_impact_line_targets_the_cursored_node_not_the_root() {
     // non-root SOURCE, opening the structure modal must count THAT source's blast
     // radius, not the root's. The shoppers source has 2 downstream / 0 upstream.
     use dbtl::app::{apply_action, App};
+    use dbtl::ui::HitTarget;
     use dbtl::{Action, Focus, Mode};
+    use ratatui::crossterm::event::MouseButton;
 
     let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
     // Root a model whose upstream INCLUDES the shoppers source.
     app.select_by_unique_id("model.jaffle_finance.int_shoppers__combined");
     app.ui_state.set_focus(Focus::RightPane);
     // Put the lineage cursor onto the shoppers source (the deterministic path the
-    // event loop uses for a click on a non-selectable node — it moves the cursor
-    // there rather than re-rooting).
+    // event loop uses for a click on a non-selectable node — M1's single click
+    // moves the cursor there rather than re-rooting).
     let src = "source.jaffle_finance.dev_lake_jaffle_payment.shoppers";
-    app.click_lineage_node(src);
+    app.click_target(
+        &HitTarget::LineageNode(src.to_string()),
+        MouseButton::Left,
+        (10, 10),
+    );
     assert_eq!(
         app.lineage_cursor_uid().as_deref(),
         Some(src),
@@ -864,6 +870,38 @@ fn palette_modal_echoes_query_highlights_selection_and_shows_key_labels() {
         }
     }
     assert!(reversed > 0, "the selected palette row is REVERSED");
+}
+
+#[test]
+fn new_tab_palette_titles_open_in_new_tab() {
+    // The tab strip's `+` palette (`PaletteState::new_tab`) is titled for the
+    // tab-open intent — not "commands" (a plain `@` query re-roots, keeping
+    // the models title).
+    use dbtl::app::App;
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    app.mode = dbtl::Mode::Palette(dbtl::action::PaletteState {
+        query: "@".to_string(),
+        selected: 0,
+        new_tab: true,
+    });
+    let buffer = render_app(&app, 100, 40);
+    let text = buffer_to_string(&buffer);
+    assert!(
+        text.contains("open in new tab"),
+        "the + palette is titled for the tab-open intent:\n{text}"
+    );
+
+    app.mode = dbtl::Mode::Palette(dbtl::action::PaletteState {
+        query: "@stg".to_string(),
+        selected: 0,
+        new_tab: false,
+    });
+    let buffer = render_app(&app, 100, 40);
+    let text = buffer_to_string(&buffer);
+    assert!(
+        text.contains(" models "),
+        "a plain @ query keeps the models title:\n{text}"
+    );
 }
 
 #[test]
@@ -1716,11 +1754,74 @@ fn render_app(app: &dbtl::app::App, width: u16, height: u16) -> Buffer {
             column: column_s.as_deref(),
             ..Default::default()
         };
+        // The tab strip exactly as the event loop wires it: the app's own
+        // labels/scroll resolve the strip rect `pane_layout` carved out.
+        let tab_labels = app.tab_labels();
+        let panes = dbtl::ui::pane_layout(
+            ratatui::layout::Rect::new(0, 0, width, height),
+            &app.ui_state.pane_config(),
+        );
+        let tab_layout = app.tab_bar_layout_for(panes.tab_bar, true);
+        ctx.tab_bar = Some(dbtl::ui::TabBarView {
+            labels: &tab_labels,
+            layout: &tab_layout,
+            active: app.active_tab(),
+            project: Some(app.stats.project.as_str()),
+            hover: None,
+        });
         terminal
             .draw(|frame| draw(frame, &ctx))
             .expect("draw must not panic");
     }
     terminal.backend().buffer().clone()
+}
+
+#[test]
+fn tab_bar_renders_cells_plus_and_project_on_row_zero() {
+    // Issue 03's strip: row 0 carries `{n} {name}` cells (numbered to 9,
+    // names middle-truncated at 24 with `..`), the ` + ` cell, and the
+    // right-pinned project name — pane content starts a row lower.
+    use dbtl::app::App;
+    use dbtl::GlyphMode;
+
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    app.select_by_unique_id("model.jaffle_finance.fct_subscription_process");
+    app.open_node_as_tab("model.jaffle_finance.rpt_delivery_base_metrics");
+
+    // The spec's probe sizes — the strip reads identically at both.
+    for (w, h) in [(80u16, 24u16), (160, 44)] {
+        let buf = render_app(&app, w, h);
+        let row0 = row_text(&buf, 0);
+        assert!(
+            row0.contains("1 fct_subscription_process"),
+            "{w}x{h} tab 1 cell on the strip: {row0}"
+        );
+        assert!(
+            row0.contains("2 rpt_deliver..ase_metrics"),
+            "{w}x{h} tab 2's name middle-truncates at 24: {row0}"
+        );
+        assert!(row0.contains("+"), "{w}x{h} the new-tab cell: {row0}");
+        assert!(
+            row0.trim_end().ends_with("jaffle_finance"),
+            "{w}x{h} the project name pins to the strip's right edge: {row0}"
+        );
+        // The strip claims row 0 — the panes start at row 1.
+        assert!(
+            row_text(&buf, 1).contains("Lineage:"),
+            "{w}x{h} the lineage title moved off row 0"
+        );
+        assert!(!row0.contains("Lineage:"));
+    }
+
+    // ASCII mode swaps the close/scroll chrome for `x`/`<`/`>` — the cell
+    // layout is geometrically identical (the guard's identity invariant).
+    app.glyph_mode = GlyphMode::Ascii;
+    let buf = render_app(&app, 80, 24);
+    let row0 = row_text(&buf, 0);
+    assert!(
+        row0.contains("1 fct_subscription_process x"),
+        "ASCII mode draws `x`, same cell: {row0}"
+    );
 }
 
 #[test]

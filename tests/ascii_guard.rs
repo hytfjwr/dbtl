@@ -148,6 +148,21 @@ fn render_with_toasts(app: &App, width: u16, height: u16, toasts: &[ToastLine]) 
         ctx.minimap = app.ui_state.minimap_visible();
         ctx.layer_bands = layer_bands.as_deref();
         ctx.toasts = toasts;
+        // Mirror the loop's tab-strip wiring so the bar's `x`/`<`/`>`/`+`/`..`
+        // chrome is under the guard in every scenario (all pure ASCII).
+        let tab_labels = app.tab_labels();
+        let panes = dbtl::ui::pane_layout(
+            ratatui::layout::Rect::new(0, 0, width, height),
+            &app.ui_state.pane_config(),
+        );
+        let tab_layout = app.tab_bar_layout_for(panes.tab_bar, true);
+        ctx.tab_bar = Some(dbtl::ui::TabBarView {
+            labels: &tab_labels,
+            layout: &tab_layout,
+            active: app.active_tab(),
+            project: Some(app.stats.project.as_str()),
+            hover: None,
+        });
         terminal
             .draw(|frame| draw(frame, &ctx))
             .expect("draw must not panic");
@@ -581,6 +596,7 @@ fn issue09_surfaces_are_all_ascii() {
     app.mode = dbtl::Mode::Palette(dbtl::action::PaletteState {
         query: "@pos".to_string(),
         selected: 0,
+        new_tab: false,
     });
     assert_all_ascii(&render(&app, 110, 40), "palette @-model rows");
     app.mode = dbtl::Mode::Selection;
