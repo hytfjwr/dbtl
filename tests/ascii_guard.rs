@@ -77,14 +77,15 @@ fn render_ctx(
         (Some(lay), dbtl::ui::LineageLens::Layer) => Some(app.layer_bands(lay)),
         _ => None,
     };
+    // Mirror the loop's narrow-band publish (§12): below 80 columns the list
+    // exists only as the drawer overlay, so a guard scenario exercises the
+    // drawer whenever the loop would.
+    app.ui_state
+        .set_list_auto_hidden(width < dbtl::ui::LIST_AUTO_HIDE_W);
     // Mirror the loop's inspector visibility seam (Issue 04): `auto` resolves
-    // against the rendered width, `on`/`off` always/never show — so a guard
-    // scenario exercises the pane whenever the loop would.
-    let want = match app.ui_state.inspector_policy() {
-        dbtl::ui::InspectorPolicy::On => true,
-        dbtl::ui::InspectorPolicy::Off => false,
-        dbtl::ui::InspectorPolicy::Auto => width >= 160,
-    };
+    // against the rendered width (§12's >=160 rule), `on`/`off` always/never
+    // show — so a guard scenario exercises the pane whenever the loop would.
+    let want = app.ui_state.inspector_policy().shown_at(width);
     app.ui_state.set_inspector_shown(want);
     if let Some(uid) = app.inspector_target() {
         app.ui_state.set_inspector_target(&uid);
@@ -896,4 +897,48 @@ fn folded_groups_and_row_truncation_are_all_ascii() {
     }
     let buffer = render(&mut app, 80, 24);
     assert_all_ascii(&buffer, "all folded 80x24");
+}
+
+#[test]
+fn too_small_screen_is_all_ascii() {
+    // §12's gate screen in ASCII mode: the `×` in `WxH` / `50×12` degrades to
+    // `x` — the whole frame is the one message, nothing else draws.
+    let app = ascii_app();
+    let backend = TestBackend::new(48, 11);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| {
+            dbtl::ui::draw_too_small(frame, app.glyph_mode, app.active_theme());
+        })
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    assert_all_ascii(&buffer, "too-small 48x11");
+    let text = {
+        let area = buffer.area;
+        let mut s = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                s.push_str(buffer.cell((x, y)).unwrap().symbol());
+            }
+        }
+        s
+    };
+    assert!(
+        text.contains("terminal too small: 48x11 (need 50x12)"),
+        "ASCII mode reports the size with plain x: {text:?}"
+    );
+}
+
+#[test]
+fn narrow_band_drawer_is_all_ascii() {
+    // §12's <80 band: the inline list is gone and the open drawer floats the
+    // same bordered list over the lineage — pure ASCII chrome in ASCII mode.
+    let mut app = ascii_app();
+    app.ui_state.set_list_drawer(true);
+    let buffer = render(&mut app, 70, 24);
+    assert_all_ascii(&buffer, "narrow-band drawer 70x24");
+    // The drawer actually drew: its top border sits on the body's first row
+    // (y=1, below the tab strip) with ASCII corners at x=0 and x=33.
+    assert_eq!(buffer.cell((0, 1)).unwrap().symbol(), "+");
+    assert_eq!(buffer.cell((33, 1)).unwrap().symbol(), "+");
 }
