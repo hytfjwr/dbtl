@@ -1549,12 +1549,20 @@ pub(crate) fn draw_palette(
     let rect = centered_rect(60, 60, area).intersection(area);
     let chrome = super::chrome(glyphs);
     frame.render_widget(Clear, rect);
+    // The `@` model-search mode (Issue 03's `+` / `@` prefix) re-titles the
+    // box — Enter lands a model (a new tab via `new_tab`, else a re-root),
+    // not a command.
+    let title = if state.query.starts_with('@') {
+        " models  (Esc to close, Enter to open) "
+    } else {
+        " commands  (Esc to close, Enter to run) "
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_set(chrome.border)
         .border_style(Style::default().fg(t.accent).add_modifier(Modifier::BOLD))
         .title(Line::styled(
-            " commands  (Esc to close, Enter to run) ",
+            title,
             Style::default()
                 .fg(t.text_bright)
                 .add_modifier(Modifier::BOLD),

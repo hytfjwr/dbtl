@@ -23,9 +23,10 @@ pub mod theme;
 pub use geom::{
     clamp_inspector_width, clamp_list_width, clip_edges, hit_target, hit_test,
     lineage_content_rect, menu_rect, minimap_rect, modal_rect, overlay_rect, pane_interior,
-    pane_layout, splitter_drag_width, underlay_mode, yank_menu_rect, ClipEdges, HitGeometry,
-    HitTarget, PaneConfig, PaneRects, Splitter, DEFAULT_INSPECTOR_WIDTH, DEFAULT_LIST_WIDTH,
-    MIN_INSPECTOR_WIDTH, MIN_LINEAGE_WIDTH, MIN_LIST_WIDTH,
+    pane_layout, splitter_drag_width, tab_bar_layout, underlay_mode, yank_menu_rect, ClipEdges,
+    HitGeometry, HitTarget, PaneConfig, PaneRects, Splitter, TabBarLayout, TabCell,
+    DEFAULT_INSPECTOR_WIDTH, DEFAULT_LIST_WIDTH, MIN_INSPECTOR_WIDTH, MIN_LINEAGE_WIDTH,
+    MIN_LIST_WIDTH,
 };
 pub use lineage::LayerBand;
 pub use mouse::{mouse_dirty, MouseInput, MouseOutcome, MouseRouter};
@@ -33,7 +34,7 @@ pub use overlay::{
     clamp_columns_scroll, clamp_detail_scroll, clamp_diff_scroll, clamp_help_scroll,
     clamp_notifications_scroll, clamp_sql_scroll, clamp_stats_scroll,
 };
-pub use render::{draw, RenderCtx, StatusSegments, ToastLine};
+pub use render::{draw, RenderCtx, StatusSegments, TabBarView, ToastLine};
 pub use state::{handle_key, reduce_selection, Focus, KeyOutcome, LineageLens, UiState};
 
 // ---- shared render styles (used across the list / lineage / overlay panes) ----
@@ -90,6 +91,12 @@ pub(crate) struct Chrome {
     /// The em dash inside prose chrome (empty-state / no-match lines):
     /// `—` Unicode / `-` ASCII.
     pub dash: &'static str,
+    /// The tab cell's close glyph (`×` Unicode / `x` ASCII — §15).
+    pub tab_close: &'static str,
+    /// The tab bar's scroll-back overflow arrow (`‹` Unicode / `<` ASCII).
+    pub tab_prev: &'static str,
+    /// The tab bar's scroll-forward overflow arrow (`›` Unicode / `>` ASCII).
+    pub tab_next: &'static str,
 }
 
 /// The chrome for a [`GlyphMode`](crate::GlyphMode).
@@ -119,6 +126,11 @@ static UNICODE_CHROME: Chrome = Chrome {
     mm_empty: ".",
     mm_view: "+",
     dash: "—",
+    // §15: `×` and `‹`/`›` are East-Asian-Ambiguous — ASCII mode swaps to
+    // `x` / `<` / `>` so the cells stay one column on CJK terminals.
+    tab_close: "×",
+    tab_prev: "‹",
+    tab_next: "›",
 };
 
 static ASCII_CHROME: Chrome = Chrome {
@@ -137,6 +149,9 @@ static ASCII_CHROME: Chrome = Chrome {
     mm_empty: ".",
     mm_view: "+",
     dash: "-",
+    tab_close: "x",
+    tab_prev: "<",
+    tab_next: ">",
 };
 
 /// Highlight style for the selected row / emphasized lineage label: an

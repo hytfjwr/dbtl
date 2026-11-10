@@ -208,11 +208,13 @@ fn run(cli: &Cli) -> Result<()> {
         // Fail as plain text before the terminal is touched, like a load error.
         // Plain model name first; on a miss, try it as a dbt selector spec
         // (`--select 'tag:nightly'` → the first matching model, sorted).
-        let found = app.select_by_name(name)
+        // Issue 03: `--select` starts on the model's TAB — activating it when
+        // it is already open, appending one when it is not (§2/§13 H2).
+        let found = app.open_tab_by_name(name)
             || dbtl::select(&app.dag, app.diff(), name)
                 .iter()
                 .next()
-                .is_some_and(|uid| app.select_by_unique_id(uid));
+                .is_some_and(|uid| app.open_node_as_tab(uid));
         // A miss under the default scope might just be a pruned installed
         // package — name the escape hatch instead of leaving the user guessing
         // (--include-packages removes the hiding place, so no hint needed then).

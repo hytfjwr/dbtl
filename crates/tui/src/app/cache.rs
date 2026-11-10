@@ -115,7 +115,7 @@ impl App {
         let root = self.selected_unique_id().unwrap_or_default();
         let key = SubgraphKey {
             root,
-            view: self.lineage_view.clone(),
+            view: self.tab().lineage_view.clone(),
             col: self.column_focus_key(),
             overview: self.ui_state.overview(),
             generation: self.generation,
@@ -145,9 +145,9 @@ impl App {
         } else {
             self.dag.subgraph_view(
                 &key.root,
-                self.lineage_view.upstream,
-                self.lineage_view.downstream,
-                self.lineage_view.depth,
+                key.view.upstream,
+                key.view.downstream,
+                key.view.depth,
             )
         });
         *self.caches.subgraph.borrow_mut() = Some((key, Rc::clone(&sg)));
@@ -168,14 +168,14 @@ impl App {
         let base = self.subgraph_rc();
         let key = CollapsedKey {
             root: self.selected_unique_id().unwrap_or_default(),
-            cursor: self.lineage_cursor.clone(),
-            view: self.lineage_view.clone(),
+            cursor: self.tab().lineage_cursor.clone(),
+            view: self.tab().lineage_view.clone(),
             col: self.column_focus_key(),
             overview: self.ui_state.overview(),
             generation: self.generation,
-            expanded: self.collapse_expanded.clone(),
+            expanded: self.tab().collapse_expanded.clone(),
             bookmarks: self.bookmarks.clone(),
-            path_anchor: self.path_anchor.clone(),
+            path_anchor: self.tab().path_anchor.clone(),
             threshold: self.collapse_threshold,
         };
         if let Some((k, c)) = self.caches.collapsed.borrow().as_ref() {
@@ -189,6 +189,7 @@ impl App {
         // always highlighted, now applied after the collapse so a marker under
         // the cursor emphasises too.
         c.subgraph.selected = self
+            .tab()
             .lineage_cursor
             .as_ref()
             .filter(|u| c.subgraph.contains(u))
@@ -220,16 +221,16 @@ impl App {
             // cursor or an explicit home both key identically to "at the root".
             cursor: self.lineage_cursor_uid(),
             root,
-            view: self.lineage_view.clone(),
+            view: self.tab().lineage_view.clone(),
             col: self.column_focus_key(),
             lens: self.ui_state.lens(),
             glyphs: self.glyph_mode,
             density,
             overview,
             generation: self.generation,
-            expanded: self.collapse_expanded.clone(),
+            expanded: self.tab().collapse_expanded.clone(),
             bookmarks: self.bookmarks.clone(),
-            path_anchor: self.path_anchor.clone(),
+            path_anchor: self.tab().path_anchor.clone(),
             threshold: self.collapse_threshold,
         };
         if let Some((k, lay)) = self.caches.layout.borrow().as_ref() {

@@ -260,6 +260,19 @@ pub enum Action {
     /// Move the columns modal's row cursor to `i` (a row click; double-click
     /// then fires the existing [`ColumnJump`](Action::ColumnJump)).
     ColumnPick(usize),
+    // --- tabs (Issue 03; screen-spec §2) ---
+    /// `O`: open the focus target's model in a NEW tab right of the active
+    /// one (already-open roots just activate their tab — T2 dedupe).
+    TabOpen,
+    /// `X` / `Ctrl-w`: close the ACTIVE tab — the right neighbour (else the
+    /// left) takes over; the last tab refuses with a toast.
+    TabClose,
+    /// `{` / `}`: previous / next tab, wrapping at both ends.
+    TabPrev,
+    TabNext,
+    /// `1`..=`9`: activate the tab at that 1-based position (tabs from
+    /// position 10 carry no number and are unreachable by digit).
+    TabActivate(u8),
 }
 
 /// Which pane a search targets (decided from focus when search opens).
@@ -504,9 +517,10 @@ pub struct DiffView {
 
 /// The command-palette state: the live query and the selected candidate index.
 /// The candidate LIST is derived on demand ([`App::palette_rows`], keyed off
-/// [`BINDINGS`]), never stored — so the palette can't drift from the keymap. No
-/// scroll field: the render layer derives the scroll window from `selected`, so
-/// there is nothing for the event loop to clamp (it falls through unchanged).
+/// [`BINDINGS`] — or the model list when the query is `@`-prefixed, §7), never
+/// stored — so the palette can't drift from the keymap. No scroll field: the
+/// render layer derives the scroll window from `selected`, so there is nothing
+/// for the event loop to clamp (it falls through unchanged).
 ///
 /// `selected` indexes the SELECTABLE rows only — section headers are
 /// display-only chrome and never a target (the same rule the list pane's
@@ -515,6 +529,10 @@ pub struct DiffView {
 pub struct PaletteState {
     pub query: String,
     pub selected: usize,
+    /// The `+` cell's variant: Enter on an `@`-query match opens the model as
+    /// a NEW tab instead of re-rooting the active one (§2 — a plain Ctrl-p
+    /// palette's `@` search keeps the re-root semantics).
+    pub new_tab: bool,
 }
 
 /// One row of the command palette's candidate list, computed by
@@ -1070,6 +1088,21 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('>'))], action: A::PaneWiden, help: "widen pane 4 cols" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('='))], action: A::PaneWidthsReset, help: "reset pane widths" },
     KeyBinding { mode: M::Selection, triggers: &[Ctrl('n')], action: A::NotificationsOpen, help: "notification center" },
+    // ---- tabs (Issue 03; §2): `O` opens the cursor's model in a new tab,
+    // `X`/Ctrl-w closes, `{`/`}` cycle, `1`-`9` jump straight to a tab. ----
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('O'))], action: A::TabOpen, help: "open node in new tab" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('X')), Ctrl('w')], action: A::TabClose, help: "close tab" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('{'))], action: A::TabPrev, help: "previous tab" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('}'))], action: A::TabNext, help: "next tab" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('1'))], action: A::TabActivate(1), help: "go to tab 1" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('2'))], action: A::TabActivate(2), help: "go to tab 2" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('3'))], action: A::TabActivate(3), help: "go to tab 3" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('4'))], action: A::TabActivate(4), help: "go to tab 4" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('5'))], action: A::TabActivate(5), help: "go to tab 5" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('6'))], action: A::TabActivate(6), help: "go to tab 6" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('7'))], action: A::TabActivate(7), help: "go to tab 7" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('8'))], action: A::TabActivate(8), help: "go to tab 8" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('9'))], action: A::TabActivate(9), help: "go to tab 9" },
     // ---- Yank prefix mode (`y` + one key): the second key is the SAME letter
     // the single-key binding always used, so muscle memory carries over as
     // `ym`/`yC`/…; `yy` copies the unique_id (what bare `y` used to do). ----
@@ -1798,7 +1831,12 @@ mod tests {
             | Action::NotificationsOpen
             | Action::MenuOpen
             | Action::MenuMove(_)
-            | Action::MenuConfirm => true,
+            | Action::MenuConfirm
+            | Action::TabOpen
+            | Action::TabClose
+            | Action::TabPrev
+            | Action::TabNext
+            | Action::TabActivate(_) => true,
             // Dynamic: produced without a fixed key binding (text input, a
             // resolved menu item, mouse row picks/invokes). Mouse is handled
             // in the event loop (size-aware), not via the keymap.
@@ -2023,6 +2061,39 @@ mod tests {
         let sel = Mode::Selection;
         assert_eq!(dispatch(&sel, ctrl('p')), Some(Action::PaletteOpen));
         assert_eq!(dispatch(&sel, cmd('p')), Some(Action::PaletteOpen));
+    }
+
+    #[test]
+    fn tab_keys_dispatch_in_selection_mode() {
+        // O/X/Ctrl-w/{/}/1-9 — the §3 tab keymap (uppercase for open/close so
+        // the lowercase row stays free; digits are direct tab activation).
+        let sel = Mode::Selection;
+        assert_eq!(dispatch(&sel, press(Char('O'))), Some(Action::TabOpen));
+        assert_eq!(dispatch(&sel, press(Char('X'))), Some(Action::TabClose));
+        assert_eq!(dispatch(&sel, ctrl('w')), Some(Action::TabClose));
+        assert_eq!(dispatch(&sel, press(Char('{'))), Some(Action::TabPrev));
+        assert_eq!(dispatch(&sel, press(Char('}'))), Some(Action::TabNext));
+        for n in 1..=9u8 {
+            let c = char::from(b'0' + n);
+            assert_eq!(
+                dispatch(&sel, press(Char(c))),
+                Some(Action::TabActivate(n)),
+                "'{c}' must activate tab {n}"
+            );
+        }
+        // `0` is not a tab key — it keeps its ResetView binding.
+        assert_eq!(dispatch(&sel, press(Char('0'))), Some(Action::ResetView));
+        // Tab keys are Selection-mode commands, not text — inside the palette
+        // they filter the query instead.
+        let m = palette_mode();
+        assert_eq!(
+            dispatch(&m, press(Char('O'))),
+            Some(Action::SearchType('O'))
+        );
+        assert_eq!(
+            dispatch(&m, press(Char('1'))),
+            Some(Action::SearchType('1'))
+        );
     }
 
     #[test]

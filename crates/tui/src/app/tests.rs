@@ -54,6 +54,25 @@ fn empty_app() -> App {
     App::new(dag, PathBuf::from(FIXTURE))
 }
 
+/// Simulate a lineage node's DOUBLE-click (M1's commit): park the cursor on
+/// `uid`, then run the Enter arm — a model re-roots, a `+M more` marker
+/// toggles, anything else opens the structure modal — the same two calls the
+/// event loop's `DoubleClick` arm makes.
+fn node_commit(a: &mut App, uid: &str) {
+    a.commit_lineage_node(uid);
+    apply_action(a, Action::DetailOpen);
+}
+
+/// Simulate a lineage node's SINGLE left click (M1): cursor-move only — the
+/// production [`App::click_target`] path the event loop takes.
+fn node_click(a: &mut App, uid: &str) {
+    a.click_target(
+        &HitTarget::LineageNode(uid.to_string()),
+        MouseButton::Left,
+        (10, 10),
+    );
+}
+
 #[test]
 fn yank_and_bookmark_record_oneshot_notices() {
     let mut a = app();
@@ -474,7 +493,7 @@ fn impact_splits_exposures_out_of_the_counts_and_chips_them() {
 fn breadcrumb_is_none_with_empty_history() {
     let mut a = app();
     a.select_by_unique_id("model.jaffle_finance.fct_subscription_process");
-    assert!(a.back.is_empty());
+    assert!(a.tab().back.is_empty());
     assert_eq!(a.breadcrumb(200), None, "no history → no breadcrumb");
 }
 
@@ -500,7 +519,7 @@ fn breadcrumb_caps_at_three_history_entries_plus_root() {
     // A four-deep back stack: only the LAST 3 history entries show + the root,
     // so the oldest (a > ) drops even before truncation.
     let mut a = app();
-    a.back = vec![
+    a.tab_mut().back = vec![
         "model.jaffle_finance.pos_txn".into(),
         "model.jaffle_finance.pos_pay".into(),
         "model.jaffle_finance.stg_payment__shoppers".into(),
@@ -545,7 +564,7 @@ fn fit_breadcrumb_is_strict_and_drops_to_none() {
 #[test]
 fn breadcrumb_truncates_whole_entries_from_the_left_with_dotdot() {
     let mut a = app();
-    a.back = vec!["model.jaffle_finance.stg_payment__shoppers".into()];
+    a.tab_mut().back = vec!["model.jaffle_finance.stg_payment__shoppers".into()];
     a.select_by_unique_id("model.jaffle_finance.fct_subscription_process");
     let full = "stg_payment__shoppers > fct_subscription_process";
     // A width that cannot hold the full trail but can hold ".. > root".
@@ -565,7 +584,7 @@ fn breadcrumb_skips_uids_that_no_longer_resolve() {
     // A vanished history uid is unconstructable via jump_to (it refuses an
     // unresolvable id), so set `back` directly — the breadcrumb must skip it.
     let mut a = app();
-    a.back = vec![
+    a.tab_mut().back = vec![
         "model.jaffle_finance.ghost_does_not_exist".into(),
         "model.jaffle_finance.stg_payment__shoppers".into(),
     ];
@@ -896,7 +915,7 @@ fn exposures_are_cursor_reachable_but_never_re_rootable() {
         "exposures never join the selectable model list"
     );
     // A lineage click on the exposure moves the CURSOR there, root unchanged.
-    a.click_lineage_node(exp);
+    node_click(&mut a, exp);
     assert_eq!(a.selected_unique_id().as_deref(), Some(fct), "no re-root");
     assert_eq!(a.lineage_cursor_uid().as_deref(), Some(exp), "cursor moved");
     // Enter on it opens the structure modal with ITS blast radius (a leaf:
@@ -1415,20 +1434,20 @@ fn reload_prunes_vanished_ids_from_history_and_back_lands_on_a_survivor() {
     // ghosts directly — the fixture re-read won't contain them. The back
     // stack sandwiches a ghost between equal survivors (A → ghost → A), the
     // post-prune adjacent-duplicate case.
-    a.back = vec![
+    a.tab_mut().back = vec![
         survivor.into(),
         "model.jaffle_finance.ghost_does_not_exist".into(),
         survivor.into(),
     ];
-    a.forward = vec!["model.jaffle_finance.ghost_ahead".into()];
+    a.tab_mut().forward = vec!["model.jaffle_finance.ghost_ahead".into()];
     a.reload().expect("reload ok");
     assert_eq!(
-        a.back,
+        a.tab().back,
         vec![survivor.to_string()],
         "back keeps survivors only, adjacent duplicates collapsed"
     );
     assert!(
-        a.forward.is_empty(),
+        a.tab().forward.is_empty(),
         "the vanished forward entry is dropped"
     );
     a.history_back();
@@ -1438,7 +1457,7 @@ fn reload_prunes_vanished_ids_from_history_and_back_lands_on_a_survivor() {
         "back lands on the most recent surviving entry, not a no-op"
     );
     assert_eq!(
-        a.forward,
+        a.tab().forward,
         vec![current.to_string()],
         "forward holds exactly the node back navigated away from"
     );
@@ -1474,7 +1493,7 @@ fn lineage_view_toggles_and_depth_filter_the_subgraph() {
     apply_action(&mut a, Action::DepthDecrease);
     apply_action(&mut a, Action::DepthDecrease);
     apply_action(&mut a, Action::DepthDecrease);
-    assert_eq!(a.lineage_view.depth, Some(1));
+    assert_eq!(a.tab().lineage_view.depth, Some(1));
     let d1 = a.lineage_subgraph().nodes.len();
     assert!(
         d1 > 1 && d1 < full,
@@ -1485,7 +1504,8 @@ fn lineage_view_toggles_and_depth_filter_the_subgraph() {
         apply_action(&mut a, Action::DepthIncrease);
     }
     assert_eq!(
-        a.lineage_view.depth, None,
+        a.tab().lineage_view.depth,
+        None,
         "widening past 8 hops → unlimited"
     );
     assert_eq!(a.lineage_subgraph().nodes.len(), full);
@@ -2035,7 +2055,7 @@ fn click_reroots_models_moves_cursor_for_sources_and_rehomes_on_root() {
         .min()
         .cloned()
         .unwrap();
-    a.click_lineage_node(&up_model);
+    node_commit(&mut a, &up_model);
     assert_eq!(a.selected_unique_id().as_deref(), Some(up_model.as_str()));
     assert_eq!(
         a.lineage_cursor_uid().as_deref(),
@@ -2053,7 +2073,7 @@ fn click_reroots_models_moves_cursor_for_sources_and_rehomes_on_root() {
         .min()
         .cloned()
         .unwrap();
-    a.click_lineage_node(&src);
+    node_click(&mut a, &src);
     assert_eq!(
         a.selected_unique_id().as_deref(),
         Some(FCT),
@@ -2065,9 +2085,9 @@ fn click_reroots_models_moves_cursor_for_sources_and_rehomes_on_root() {
         "the cursor moved to the clicked source"
     );
 
-    // Click the CURRENT ROOT: id-preserving, so the loop's chokepoint won't
-    // fire — the click itself must send the cursor home.
-    a.click_lineage_node(FCT);
+    // Click the CURRENT ROOT: the cursor homes onto it (the same uid —
+    // `lineage_cursor_uid` reads the root whether parked or `None`).
+    node_click(&mut a, FCT);
     assert_eq!(a.selected_unique_id().as_deref(), Some(FCT));
     assert_eq!(
         a.lineage_cursor_uid().as_deref(),
@@ -2100,7 +2120,7 @@ fn enter_commits_cursor_reroot_for_models_structure_for_sources() {
         .min()
         .cloned()
         .expect("fct has an upstream model");
-    a.lineage_cursor = Some(up_model.clone());
+    a.tab_mut().lineage_cursor = Some(up_model.clone());
     apply_action(&mut a, Action::DetailOpen);
     assert!(
         matches!(a.mode, Mode::Selection),
@@ -2125,7 +2145,7 @@ fn enter_commits_cursor_reroot_for_models_structure_for_sources() {
         .min()
         .cloned()
         .expect("fct has an upstream source");
-    a.lineage_cursor = Some(src.clone());
+    a.tab_mut().lineage_cursor = Some(src.clone());
     apply_action(&mut a, Action::DetailOpen);
     match &a.mode {
         Mode::Detail(dv) => {
@@ -2225,7 +2245,7 @@ fn sql_open_source_shows_placeholder() {
         .min()
         .cloned()
         .expect("fct has an upstream source");
-    a.lineage_cursor = Some(src.clone());
+    a.tab_mut().lineage_cursor = Some(src.clone());
     apply_action(&mut a, Action::SqlOpen);
     match &a.mode {
         Mode::Sql(sv) => {
@@ -2254,7 +2274,7 @@ fn sql_open_respects_focus() {
         .min()
         .cloned()
         .expect("fct has an upstream model");
-    a.lineage_cursor = Some(up_model.clone());
+    a.tab_mut().lineage_cursor = Some(up_model.clone());
     apply_action(&mut a, Action::SqlOpen);
     match &a.mode {
         Mode::Sql(sv) => assert_eq!(sv.model_id, up_model, "lineage focus previews the cursor"),
@@ -2993,7 +3013,7 @@ fn lineage_path_set_is_undirected_for_a_downstream_cursor() {
         a.lineage_subgraph().contains(down_model),
         "the downstream model is in the rooted subgraph"
     );
-    a.lineage_cursor = Some(down_model.to_string());
+    a.tab_mut().lineage_cursor = Some(down_model.to_string());
     let path = a.lineage_path_set();
     assert!(path.contains(root), "undirected path includes the root");
     assert!(
@@ -3628,7 +3648,7 @@ fn bookmark_toggle_is_a_noop_when_nothing_selected() {
         hist: None,
     });
     a.refilter();
-    assert!(a.selected_node().is_none(), "filter matched nothing");
+    assert!(a.list_sel_uid().is_none(), "filter matched nothing");
     apply_action(&mut a, Action::BookmarkToggle);
     assert!(
         a.bookmarks.is_empty(),
@@ -5274,7 +5294,7 @@ fn overview_gates_view_and_density_toggles() {
     apply_action(&mut a, Action::ToggleOverview);
     a.take_notice(); // drain the entry toast
 
-    let view_before = a.lineage_view.clone();
+    let view_before = a.tab().lineage_view.clone();
     let density_before = a.ui_state.density();
     for action in [
         Action::ToggleUpstream,
@@ -5283,7 +5303,8 @@ fn overview_gates_view_and_density_toggles() {
     ] {
         apply_action(&mut a, action);
         assert_eq!(
-            a.lineage_view, view_before,
+            a.tab().lineage_view,
+            view_before,
             "the view filters never change in overview"
         );
         assert_eq!(
@@ -5593,7 +5614,7 @@ fn path_anchor_reroots_the_path_highlight() {
     let mut a = app();
     assert!(a.select_by_unique_id("model.jaffle_finance.stg_finance__fiscal_years"));
     apply_action(&mut a, Action::PathToggle);
-    assert!(a.path_anchor.is_some(), "p anchors the path start");
+    assert!(a.tab().path_anchor.is_some(), "p anchors the path start");
     let _ = a.take_notice();
     // Navigate to the downstream end: cursor re-homes to the new root.
     assert!(a.select_by_unique_id("model.jaffle_finance.dim_fiscal_years"));
@@ -5611,7 +5632,7 @@ fn path_anchor_reroots_the_path_highlight() {
         "target in path"
     );
     apply_action(&mut a, Action::PathToggle);
-    assert!(a.path_anchor.is_none(), "p again clears the anchor");
+    assert!(a.tab().path_anchor.is_none(), "p again clears the anchor");
 }
 
 #[test]
@@ -5713,7 +5734,7 @@ fn detail_column_move_noops_when_the_node_has_no_columns() {
     // so a lineage click homes the cursor there.)
     a.select_by_unique_id("model.sample.fct_orders");
     a.ui_state.set_focus(Focus::RightPane);
-    a.click_lineage_node("seed.sample.country_codes");
+    node_click(&mut a, "seed.sample.country_codes");
     apply_action(&mut a, Action::DetailOpen);
     match &a.mode {
         Mode::Detail(dv) => {
@@ -6045,7 +6066,11 @@ fn column_focus_enter_filters_the_subgraph_to_the_trace() {
 
     apply_action(&mut a, Action::ColumnFocusEnter);
     assert!(matches!(a.mode, Mode::Selection), "the modal closes");
-    let focus = a.column_focus.as_ref().expect("column focus is active");
+    let focus = a
+        .tab()
+        .column_focus
+        .as_ref()
+        .expect("column focus is active");
     assert_eq!(focus.col.node, DEMO);
     assert_eq!(focus.col.column, "order_id");
     // The trace's related models = the three models + the raw source + the
@@ -6110,18 +6135,18 @@ fn column_focus_step_walks_the_column_along_its_lineage() {
     let mut a = sample_app();
     a.column_focus_enter(ColumnRef::new(DEMO, "status"));
     apply_action(&mut a, Action::MoveLeft);
-    let f = a.column_focus.as_ref().unwrap();
+    let f = a.tab().column_focus.as_ref().unwrap();
     assert_eq!(f.col.node, STG, "h steps upstream to the real source");
     assert_eq!(f.col.column, "status");
     apply_action(&mut a, Action::MoveLeft);
-    let f = a.column_focus.as_ref().unwrap();
+    let f = a.tab().column_focus.as_ref().unwrap();
     assert_eq!(f.col.node, RAW_ORDERS, "the chain reaches the raw source");
     apply_action(&mut a, Action::MoveLeft);
-    let f = a.column_focus.as_ref().unwrap();
+    let f = a.tab().column_focus.as_ref().unwrap();
     assert_eq!(f.col.node, RAW_ORDERS, "a source column is a dead end");
     // Back downstream — deterministic (smallest uid column-ref).
     apply_action(&mut a, Action::MoveRight);
-    let f = a.column_focus.as_ref().unwrap();
+    let f = a.tab().column_focus.as_ref().unwrap();
     assert_eq!(f.col.node, STG, "l steps back downstream");
 }
 
@@ -6130,9 +6155,9 @@ fn column_focus_exit_restores_the_rooted_view() {
     let mut a = sample_app();
     a.select_by_unique_id(DEMO);
     a.column_focus_enter(ColumnRef::new(DEMO, "order_id"));
-    assert!(a.column_focus.is_some());
+    assert!(a.tab().column_focus.is_some());
     apply_action(&mut a, Action::ColumnFocusExit);
-    assert!(a.column_focus.is_none(), "Esc exits the trace");
+    assert!(a.tab().column_focus.is_none(), "Esc exits the trace");
     assert!(a.column_status().is_none());
     let sg = a.lineage_subgraph();
     assert_eq!(sg.selected, DEMO, "the rooted subgraph returns");
@@ -6197,9 +6222,9 @@ fn columns_modal_lists_the_tree_and_enter_jumps_to_the_model() {
         Some(jumped_uid.as_str()),
         "Enter re-roots to the row's model"
     );
-    assert_eq!(a.back.len(), 1, "the jump records history");
+    assert_eq!(a.tab().back.len(), 1, "the jump records history");
     assert!(
-        a.column_focus.is_none(),
+        a.tab().column_focus.is_none(),
         "a re-root leaves the column trace"
     );
 }
@@ -6223,7 +6248,10 @@ fn columns_modal_jump_to_a_non_model_notices_instead() {
         "the modal stays open on a non-model row"
     );
     assert!(a.take_notice().is_some(), "a notice explains the no-op");
-    assert!(a.column_focus.is_some(), "focus survives a failed jump");
+    assert!(
+        a.tab().column_focus.is_some(),
+        "focus survives a failed jump"
+    );
 }
 
 #[test]
@@ -6241,7 +6269,7 @@ fn column_focus_exit_and_reload_clear_the_trace() {
     a.column_focus_enter(ColumnRef::new(STG, "id"));
     assert!(a.reload().is_ok());
     assert!(
-        a.column_focus.is_none(),
+        a.tab().column_focus.is_none(),
         "a reload drops the trace (the new Dag may not carry the column)"
     );
 }
@@ -6288,7 +6316,10 @@ fn column_focus_survives_an_overview_round_trip() {
     apply_action(&mut a, Action::ToggleOverview);
     assert!(a.ui_state.overview());
     assert!(a.column_status().is_none(), "the focus is suppressed");
-    assert!(a.column_focus.is_some(), "but the state itself survives");
+    assert!(
+        a.tab().column_focus.is_some(),
+        "but the state itself survives"
+    );
     apply_action(&mut a, Action::ToggleOverview);
     assert!(a.column_status().is_some(), "the focus returns on exit");
 }
@@ -6303,7 +6334,7 @@ fn detail_enter_on_a_columnless_modal_keeps_the_classic_close() {
     let mut a = sample_app();
     a.select_by_unique_id(FCT_S);
     a.ui_state.set_focus(Focus::RightPane);
-    a.lineage_cursor = Some("seed.sample.country_codes".to_string());
+    a.tab_mut().lineage_cursor = Some("seed.sample.country_codes".to_string());
     apply_action(&mut a, Action::DetailOpen);
     let dv = match &a.mode {
         Mode::Detail(dv) => dv,
@@ -6316,7 +6347,7 @@ fn detail_enter_on_a_columnless_modal_keeps_the_classic_close() {
     );
     apply_action(&mut a, Action::ColumnFocusEnter);
     assert_eq!(a.mode, Mode::Selection, "Enter still closes the modal");
-    assert!(a.column_focus.is_none(), "no focus without a column");
+    assert!(a.tab().column_focus.is_none(), "no focus without a column");
 }
 
 #[test]
@@ -6329,25 +6360,25 @@ fn column_focus_survives_clicks_on_the_trace_root_and_non_models() {
     a.select_by_unique_id(DEMO);
     a.column_focus_enter(ColumnRef::new(DEMO, "order_id"));
 
-    a.click_lineage_node(DEMO);
+    node_click(&mut a, DEMO);
     assert!(
-        a.column_focus.is_some(),
+        a.tab().column_focus.is_some(),
         "clicking the trace's root keeps the focus"
     );
-    a.click_lineage_node(RAW_ORDERS);
+    node_click(&mut a, RAW_ORDERS);
     assert!(
-        a.column_focus.is_some(),
+        a.tab().column_focus.is_some(),
         "a non-model click moves the cursor, not the root"
     );
     assert_eq!(
-        a.lineage_cursor.as_deref(),
+        a.tab().lineage_cursor.as_deref(),
         Some(RAW_ORDERS),
         "the cursor landed on the clicked source"
     );
 
-    a.click_lineage_node(FCT_S);
+    node_commit(&mut a, FCT_S);
     assert!(
-        a.column_focus.is_none(),
+        a.tab().column_focus.is_none(),
         "re-rooting to another model leaves the trace"
     );
     assert_eq!(a.selected_unique_id().as_deref(), Some(FCT_S));
@@ -6363,11 +6394,14 @@ fn column_focus_survives_when_the_trace_root_is_not_the_selection() {
     a.select_by_unique_id(DEMO);
     a.column_focus_enter(ColumnRef::new(STG, "id"));
     a.jump_to(STG);
-    assert!(a.column_focus.is_some(), "landing on the trace's own model");
+    assert!(
+        a.tab().column_focus.is_some(),
+        "landing on the trace's own model"
+    );
     assert_eq!(a.selected_unique_id().as_deref(), Some(STG));
     // From there, jumping elsewhere still leaves the trace.
     a.jump_to(DEMO);
-    assert!(a.column_focus.is_none());
+    assert!(a.tab().column_focus.is_none());
 }
 
 #[test]
@@ -6382,7 +6416,7 @@ fn column_focus_ends_on_history_and_cycle_re_roots() {
     apply_action(&mut a, Action::HistoryBack);
     assert_eq!(a.selected_unique_id().as_deref(), Some(FCT_S));
     assert!(
-        a.column_focus.is_none(),
+        a.tab().column_focus.is_none(),
         "history back re-rooted off the trace"
     );
 
@@ -6392,7 +6426,7 @@ fn column_focus_ends_on_history_and_cycle_re_roots() {
     apply_action(&mut a, Action::HistoryForward);
     assert_eq!(a.selected_unique_id().as_deref(), Some(STG));
     assert!(
-        a.column_focus.is_some(),
+        a.tab().column_focus.is_some(),
         "history forward lands on the trace's own model"
     );
 
@@ -6405,7 +6439,10 @@ fn column_focus_ends_on_history_and_cycle_re_roots() {
         Some(STG),
         "the cycle moved to another bookmark"
     );
-    assert!(a.column_focus.is_none(), "the cycle re-root ends the trace");
+    assert!(
+        a.tab().column_focus.is_none(),
+        "the cycle re-root ends the trace"
+    );
 }
 
 #[test]
@@ -6415,7 +6452,7 @@ fn column_focus_gates_view_filters_with_a_notice() {
     // density stays live (Compact legitimately hides the column rows).
     let mut a = sample_app();
     a.column_focus_enter(ColumnRef::new(DEMO, "order_id"));
-    let before = a.lineage_view.clone();
+    let before = a.tab().lineage_view.clone();
     for action in [
         Action::ToggleUpstream,
         Action::ToggleDownstream,
@@ -6425,7 +6462,8 @@ fn column_focus_gates_view_filters_with_a_notice() {
     ] {
         apply_action(&mut a, action);
         assert_eq!(
-            a.lineage_view, before,
+            a.tab().lineage_view,
+            before,
             "{action:?} must not mutate the view under a trace"
         );
         assert_eq!(
@@ -6595,7 +6633,7 @@ fn enter_on_marker_toggles_expand_and_recollapse() {
     let mut a = collapse_app(20, 8);
     a.ui_state.set_focus(Focus::RightPane);
     let marker = the_marker(&a);
-    a.lineage_cursor = Some(marker.clone());
+    a.tab_mut().lineage_cursor = Some(marker.clone());
     assert_eq!(
         a.lineage_cursor_uid().as_deref(),
         Some(marker.as_str()),
@@ -6642,11 +6680,11 @@ fn marker_cursor_survives_walking_off_a_revealed_member() {
     let mut a = collapse_app(20, 8);
     a.ui_state.set_focus(Focus::RightPane);
     let marker = the_marker(&a);
-    a.lineage_cursor = Some(marker.clone());
+    a.tab_mut().lineage_cursor = Some(marker.clone());
     apply_action(&mut a, Action::DetailOpen); // expand the group
 
     // Park on a revealed member deep in the tail.
-    a.lineage_cursor = Some("model.p.c15".to_string());
+    a.tab_mut().lineage_cursor = Some("model.p.c15".to_string());
     assert_eq!(
         the_marker(&a),
         marker,
@@ -6706,7 +6744,7 @@ fn cursor_moves_onto_the_marker_like_any_node() {
     a.ui_state.set_focus(Focus::RightPane);
     // Column 1 stacks c00..c07 then the marker (uid order): Down from the last
     // kept sibling lands on the marker; Down again stays (column bottom).
-    a.lineage_cursor = Some("model.p.c07".to_string());
+    a.tab_mut().lineage_cursor = Some("model.p.c07".to_string());
     a.move_lineage_cursor(Direction::Down);
     assert_eq!(
         a.lineage_cursor_uid().as_deref(),
@@ -6783,7 +6821,7 @@ fn keep_priority_bookmarks_and_path_nodes() {
     // under c15, and the path hub → c15 → leaf keeps c15 drawn.
     let mut a = collapse_app_with_leaf(20, 8, Some("model.p.c15"));
     a.ui_state.set_focus(Focus::RightPane);
-    a.lineage_cursor = Some("model.p.leaf".to_string());
+    a.tab_mut().lineage_cursor = Some("model.p.leaf".to_string());
     let lay = a.styled_lineage_layout().expect("layout");
     assert!(
         lay.rects.contains_key("model.p.c15"),
@@ -6796,7 +6834,7 @@ fn keep_priority_bookmarks_and_path_nodes() {
 fn expansion_resets_on_re_root_and_survives_same_root() {
     let mut a = collapse_app(20, 8);
     a.ui_state.set_focus(Focus::RightPane);
-    a.lineage_cursor = Some(the_marker(&a));
+    a.tab_mut().lineage_cursor = Some(the_marker(&a));
     apply_action(&mut a, Action::DetailOpen); // expand
     assert_eq!(a.styled_lineage_layout().unwrap().rects.len(), 22);
 
@@ -6909,7 +6947,7 @@ fn expanded_nested_marker_stays_wired_through_the_hidden_parents_marker() {
     );
 
     // Enter on the nested marker expands it in place.
-    a.lineage_cursor = Some("model.p.d08+more".to_string());
+    a.tab_mut().lineage_cursor = Some("model.p.d08+more".to_string());
     apply_action(&mut a, Action::DetailOpen);
     let lay = a.styled_lineage_layout().expect("expanded layout");
     assert!(
@@ -6995,7 +7033,7 @@ fn modal_yank_ascii_does_not_inherit_the_current_roots_keep_set() {
     assert!(a.select_by_unique_id("model.p.hub"));
     a.ui_state.set_focus(Focus::RightPane);
     // Under the CURRENT root (hub) the cursor keeps the tail member drawn.
-    a.lineage_cursor = Some("model.p.m15".to_string());
+    a.tab_mut().lineage_cursor = Some("model.p.m15".to_string());
     assert!(a
         .styled_lineage_layout()
         .unwrap()
@@ -7023,9 +7061,9 @@ fn click_marker_toggles_and_parks_the_cursor_and_s_notices() {
     let mut a = collapse_app(20, 8);
     a.ui_state.set_focus(Focus::RightPane);
     let marker = the_marker(&a);
-    // A click toggles the group AND parks the cursor on the marker — the same
-    // focus-the-click behaviour a source/seed/snapshot node gets.
-    a.click_lineage_node(&marker);
+    // A double-click (M1's commit) toggles the group AND parks the cursor on
+    // the marker — the same focus-the-click behaviour a node commit gets.
+    node_commit(&mut a, &marker);
     assert_eq!(
         a.lineage_cursor_uid().as_deref(),
         Some(marker.as_str()),
@@ -7046,8 +7084,8 @@ fn click_marker_toggles_and_parks_the_cursor_and_s_notices() {
         a.take_notice().as_deref(),
         Some("no SQL for a collapse marker (Enter toggles it)")
     );
-    // A second click collapses back.
-    a.click_lineage_node(&marker);
+    // A second commit collapses back.
+    node_commit(&mut a, &marker);
     assert_eq!(
         a.styled_lineage_layout().unwrap().rects.len(),
         1 + 8 + 1,
@@ -7310,8 +7348,12 @@ fn detail_tab_notices_when_no_jumpable_test_exists() {
 /// The same bundle the event loop assembles per mouse event — the tests share
 /// it so the headless hit-tests exercise the real wiring, not parallel math.
 fn hit_geom<'a>(a: &'a App, lay: Option<&'a Layout>, area: Rect) -> HitGeometry<'a> {
+    let panes = pane_layout(area, &a.ui_state.pane_config());
     HitGeometry {
-        panes: pane_layout(area, &a.ui_state.pane_config()),
+        panes,
+        // The strip resolved like the event loop does: the stored scroll
+        // replayed (no ensure-active — the draw already ran it).
+        tab_bar: Some(a.tab_bar_layout_for(panes.tab_bar, false)),
         list: a.active_list(),
         list_offset: a.ui_state.offset(),
         layout: lay,
@@ -7455,7 +7497,7 @@ fn hit_target_minimap_swallows_the_diagram_below_it() {
     let lay = a.styled_lineage_layout().expect("a layout exists");
     // A small frame: the diagram overflows the pane, so the minimap draws.
     let area = Rect::new(0, 0, 80, 24);
-    let inner = pane_interior(pane_layout(area, &PaneConfig::default()).lineage);
+    let inner = pane_interior(pane_layout(area, &a.ui_state.pane_config()).lineage);
     let content = lineage_content_rect(inner, lay.grid.width(), lay.grid.height());
     let mm = minimap_rect(inner, lay.grid.width(), lay.grid.height(), 0, 0, true)
         .expect("an overflowing diagram draws the minimap");
@@ -7503,7 +7545,7 @@ fn hit_target_minimap_swallows_the_diagram_below_it() {
 }
 
 #[test]
-fn click_target_left_click_behaves_like_the_old_down_click() {
+fn click_target_left_click_moves_the_cursor_only() {
     let mut a = sample_app();
     let second = a.active_list().model_at(1).unwrap().unique_id.clone();
 
@@ -7512,7 +7554,9 @@ fn click_target_left_click_behaves_like_the_old_down_click() {
     assert_eq!(a.selected_unique_id().as_deref(), Some(second.as_str()));
     assert_eq!(a.ui_state.focus(), Focus::List);
 
-    // A lineage node: the old click_lineage_node semantics (model → re-root).
+    // A lineage node: §6 M1 — a single left click moves the CURSOR only;
+    // the re-root is the double-click's commit (`commit_lineage_node` +
+    // `DetailOpen`, which `node_commit` simulates).
     a.select_by_unique_id("model.sample.fct_orders");
     a.click_target(
         &HitTarget::LineageNode("model.sample.stg_orders".to_string()),
@@ -7521,8 +7565,13 @@ fn click_target_left_click_behaves_like_the_old_down_click() {
     );
     assert_eq!(
         a.selected_unique_id().as_deref(),
+        Some("model.sample.fct_orders"),
+        "a single click never re-roots (M1)"
+    );
+    assert_eq!(
+        a.lineage_cursor_uid().as_deref(),
         Some("model.sample.stg_orders"),
-        "a model node re-roots"
+        "the cursor moved onto the node"
     );
     assert_eq!(a.ui_state.focus(), Focus::RightPane);
 
@@ -7643,8 +7692,8 @@ fn click_target_blank_surfaces_only_focus_and_modals_are_inert() {
 #[test]
 fn click_target_right_click_opens_the_node_menu_at_the_pointer() {
     // Issue 06: a right-click on a list row or a lineage node opens the
-    // node context menu anchored at the POINTER cell; middle-clicks and
-    // right-clicks elsewhere stay inert.
+    // node context menu anchored at the POINTER cell; right-clicks
+    // elsewhere stay inert (middle-clicks open tabs — covered below).
     let mut a = sample_app();
     let uid = a.active_list().model_at(1).unwrap().unique_id.clone();
 
@@ -7686,7 +7735,8 @@ fn click_target_right_click_opens_the_node_menu_at_the_pointer() {
     assert_eq!(a.ui_state.focus(), Focus::RightPane);
     apply_action(&mut a, Action::DetailClose);
 
-    // Right-clicks on chrome/blank surfaces and ANY middle click are inert.
+    // Right-clicks on chrome/blank surfaces stay inert (middle-clicks are
+    // not inert — they open tabs, covered by the test below).
     let initial = a.selected_unique_id();
     let initial_focus = a.ui_state.focus();
     a.click_target(
@@ -7696,12 +7746,6 @@ fn click_target_right_click_opens_the_node_menu_at_the_pointer() {
     );
     a.click_target(&HitTarget::Minimap, MouseButton::Right, (5, 3));
     a.click_target(&HitTarget::StatusBar, MouseButton::Right, (5, 3));
-    a.click_target(&HitTarget::ListRow(1), MouseButton::Middle, (5, 3));
-    a.click_target(
-        &HitTarget::LineageNode("model.sample.stg_orders".to_string()),
-        MouseButton::Middle,
-        (5, 3),
-    );
     assert_eq!(
         a.selected_unique_id(),
         initial,
@@ -7713,6 +7757,44 @@ fn click_target_right_click_opens_the_node_menu_at_the_pointer() {
         "inert clicks don't even re-focus a pane"
     );
     assert_eq!(a.mode, Mode::Selection, "no menu from inert targets");
+}
+
+#[test]
+fn click_target_middle_click_opens_a_tab() {
+    let mut a = sample_app();
+    // §6 M4: middle-click on a list row or a lineage node opens that model
+    // in a NEW tab (the `O` semantics — inserted right of the active tab
+    // and activated).
+    let row_uid = a.active_list().model_at(1).unwrap().unique_id.clone();
+    a.click_target(&HitTarget::ListRow(1), MouseButton::Middle, (5, 3));
+    assert_eq!(a.tab_count(), 2, "a row's middle-click opened a tab");
+    assert_eq!(
+        a.selected_unique_id().as_deref(),
+        Some(row_uid.as_str()),
+        "the new tab roots on the clicked model"
+    );
+    a.click_target(
+        &HitTarget::LineageNode("model.sample.fct_orders".to_string()),
+        MouseButton::Middle,
+        (5, 3),
+    );
+    assert_eq!(a.tab_count(), 3, "a node's middle-click opened a tab");
+    assert_eq!(
+        a.selected_unique_id().as_deref(),
+        Some("model.sample.fct_orders"),
+    );
+    // Middle-clicking an already-open model just activates its tab (T2
+    // dedupe — the strip never grows a duplicate).
+    a.click_target(
+        &HitTarget::LineageNode("model.sample.fct_orders".to_string()),
+        MouseButton::Middle,
+        (5, 3),
+    );
+    assert_eq!(
+        a.tab_count(),
+        3,
+        "an already-open model dedupes, not appends"
+    );
 }
 
 // ---- Issue 06: node context menu + nested overlay returns -------------------
@@ -8310,6 +8392,221 @@ fn menu_invoke_on_a_model_still_reroots_then_acts() {
     );
 }
 
+// ---- Issue 03: tabs -------------------------------------------------------
+
+/// Three model uids off the fixture list (distinct from each other and from
+/// the seeded first tab's root).
+fn three_models(a: &App) -> (String, String, String) {
+    let m = |i| a.active_list().model_at(i).unwrap().unique_id.clone();
+    (m(0), m(1), m(2))
+}
+
+#[test]
+fn tab_actions_open_dedupe_close_and_cycle() {
+    let mut a = app();
+    let (root0, m1, m2) = three_models(&a);
+    assert_eq!(a.tab_count(), 1, "the app boots with one tab");
+
+    // `O` on the list selection: fresh tab right of the active one, activated.
+    a.ui_state.set_selected(1);
+    apply_action(&mut a, Action::TabOpen);
+    assert_eq!(a.tab_count(), 2);
+    assert_eq!(a.active_tab(), 1);
+    assert_eq!(a.selected_unique_id().as_deref(), Some(m1.as_str()));
+
+    // `O` on an already-open model dedupes — activates, never appends (T2).
+    apply_action(&mut a, Action::TabOpen);
+    assert_eq!(a.tab_count(), 2);
+
+    // A different selection grows the strip.
+    a.ui_state.set_selected(2);
+    apply_action(&mut a, Action::TabOpen);
+    assert_eq!(a.tab_count(), 3);
+    assert_eq!(a.selected_unique_id().as_deref(), Some(m2.as_str()));
+
+    // `{`/`}` cycle one tab, wrapping at both ends.
+    apply_action(&mut a, Action::TabNext);
+    assert_eq!(a.active_tab(), 0);
+    assert_eq!(a.selected_unique_id().as_deref(), Some(root0.as_str()));
+    apply_action(&mut a, Action::TabPrev);
+    assert_eq!(a.active_tab(), 2);
+    assert_eq!(a.selected_unique_id().as_deref(), Some(m2.as_str()));
+
+    // `1`..=`9` activate by position; out-of-range is a no-op.
+    apply_action(&mut a, Action::TabActivate(1));
+    assert_eq!(a.active_tab(), 0);
+    apply_action(&mut a, Action::TabActivate(9));
+    assert_eq!(a.active_tab(), 0, "position 9 doesn't exist — no-op");
+
+    // `X` on a mid-strip tab: the RIGHT neighbour takes over (§2).
+    a.activate_tab(0);
+    apply_action(&mut a, Action::TabClose);
+    assert_eq!(a.tab_count(), 2);
+    assert_eq!(
+        a.selected_unique_id().as_deref(),
+        Some(m1.as_str()),
+        "the right neighbour takes over a mid-strip close"
+    );
+
+    // `X` on the LAST tab: the LEFT neighbour takes over.
+    apply_action(&mut a, Action::TabActivate(2));
+    apply_action(&mut a, Action::TabClose);
+    assert_eq!(a.tab_count(), 1);
+    assert_eq!(a.selected_unique_id().as_deref(), Some(m1.as_str()));
+
+    // The last tab refuses to close — with a toast.
+    apply_action(&mut a, Action::TabClose);
+    assert_eq!(a.tab_count(), 1);
+    assert_eq!(a.take_notice().as_deref(), Some("can't close the last tab"));
+}
+
+#[test]
+fn tab_switch_restores_each_tabs_own_state() {
+    let mut a = app();
+    let (_root0, m1, _m2) = three_models(&a);
+
+    // Give tab 0 a distinct view, cursor, history, expansion, anchor, column.
+    a.tab_mut().lineage_view.upstream = false;
+    a.tab_mut().back = vec![m1.clone()];
+    a.tab_mut().forward = vec![_root0.clone()];
+    a.tab_mut().collapse_expanded.insert("group-x".to_string());
+    a.tab_mut().path_anchor = Some(m1.clone());
+    a.tab_mut().lineage_cursor = Some(m1.clone());
+
+    // Opening a second tab gets the FRESH defaults, not tab 0's state.
+    a.open_node_as_tab(&m1);
+    assert!(a.tab().lineage_view.upstream, "fresh tab: default view");
+    assert!(a.tab().back.is_empty() && a.tab().forward.is_empty());
+    assert!(a.tab().collapse_expanded.is_empty());
+    assert!(a.tab().path_anchor.is_none());
+    assert!(a.tab().lineage_cursor.is_none());
+    assert_eq!(a.selected_unique_id().as_deref(), Some(m1.as_str()));
+
+    // Switch back: tab 0's state is intact.
+    a.activate_tab(0);
+    assert!(!a.tab().lineage_view.upstream, "tab 0's view survived");
+    assert_eq!(a.tab().back, vec![m1.clone()]);
+    assert_eq!(a.tab().forward, vec![_root0]);
+    assert!(a.tab().collapse_expanded.contains("group-x"));
+    assert_eq!(a.tab().path_anchor.as_deref(), Some(m1.as_str()));
+    assert_eq!(a.tab().lineage_cursor.as_deref(), Some(m1.as_str()));
+    assert!(a.take_tab_switch(), "the switch flags the chokepoint");
+    assert!(!a.take_tab_switch(), "the flag is one-shot");
+}
+
+#[test]
+fn tab_switch_stashes_and_restores_the_lineage_scroll() {
+    let mut a = app();
+    let (_root0, m1, _m2) = three_models(&a);
+
+    a.ui_state.set_lineage_scroll(40, 7);
+    a.open_node_as_tab(&m1);
+    assert_eq!(
+        a.tabs()[0].scroll,
+        Some((40, 7)),
+        "the outgoing tab stashed the viewport"
+    );
+    assert!(a.tab().scroll.is_none(), "a fresh tab has no stash");
+
+    a.ui_state.set_lineage_scroll(3, 3);
+    a.activate_tab(0);
+    assert_eq!(
+        (a.ui_state.lineage_scroll_x(), a.ui_state.lineage_scroll_y()),
+        (40, 7),
+        "the saved viewport restores verbatim"
+    );
+    assert_eq!(a.tabs()[1].scroll, Some((3, 3)));
+}
+
+#[test]
+fn tab_open_on_a_non_model_toasts_instead() {
+    let mut a = app();
+    // A source uid resolves in the Dag but isn't a list model — `O`/`+`/
+    // middle-click can't tab it; the shared gate toasts the resource kind.
+    assert!(!a.open_node_as_tab("source.jaffle_finance.dev_lake_jaffle_payment.suppliers"));
+    assert_eq!(a.tab_count(), 1);
+    assert_eq!(
+        a.take_notice().as_deref(),
+        Some("can't open a source as a tab")
+    );
+    // An unknown uid toasts the generic kind.
+    assert!(!a.open_node_as_tab("model.jaffle_finance.does_not_exist"));
+    assert_eq!(
+        a.take_notice().as_deref(),
+        Some("can't open a node as a tab")
+    );
+}
+
+#[test]
+fn tab_strip_insertion_places_the_new_tab_right_of_the_active_one() {
+    let mut a = app();
+    let (root0, m1, m2) = three_models(&a);
+    a.open_node_as_tab(&m1);
+    a.activate_tab(0);
+    a.open_node_as_tab(&m2);
+    // [root0, m2, m1] — the new tab lands at active+1, not at the end.
+    let roots: Vec<&str> = a
+        .tabs()
+        .iter()
+        .map(|t| t.root.as_deref().unwrap_or(""))
+        .collect();
+    assert_eq!(roots, vec![root0.as_str(), m2.as_str(), m1.as_str()]);
+    assert_eq!(a.active_tab(), 1);
+}
+
+#[test]
+fn plus_palette_opens_the_model_search_for_a_new_tab() {
+    let mut a = app();
+    let (_root0, m1, _m2) = three_models(&a);
+    // `+` on the strip is the loop's open_tab_palette: Palette mode, `@`
+    // pre-seeded, new_tab armed.
+    a.open_tab_palette();
+    let Mode::Palette(p) = &a.mode else {
+        panic!("+ must open the palette")
+    };
+    assert_eq!(p.query, "@");
+    assert!(p.new_tab, "+ searches for a NEW tab's model");
+    // Pick a candidate and confirm — the model opens in a new tab.
+    let name = m1.rsplit('.').next().unwrap().to_string();
+    let cand = a
+        .palette_rows(&format!("@{name}"))
+        .into_iter()
+        .find(|row| matches!(row, crate::PaletteRow::Model { uid, .. } if uid == &m1))
+        .expect("m1 is a candidate");
+    assert!(matches!(cand, crate::PaletteRow::Model { name: n, .. } if n == name));
+    a.mode = Mode::Palette(crate::action::PaletteState {
+        query: format!("@{name}"),
+        selected: 0,
+        new_tab: true,
+    });
+    apply_action(&mut a, Action::SearchConfirm);
+    assert_eq!(a.tab_count(), 2, "the palette pick opened a new tab");
+    assert_eq!(a.selected_unique_id().as_deref(), Some(m1.as_str()));
+    assert!(matches!(a.mode, Mode::Selection), "the palette closed");
+}
+
+#[test]
+fn at_query_in_the_plain_palette_still_reroots_the_active_tab() {
+    let mut a = app();
+    let (root0, m1, _m2) = three_models(&a);
+    let name = m1.rsplit('.').next().unwrap();
+    // Ctrl-p + `@<name>` Enter — a plain palette search (new_tab off): the
+    // ACTIVE tab re-roots, no tab is created.
+    a.mode = Mode::Palette(crate::action::PaletteState {
+        query: format!("@{name}"),
+        selected: 0,
+        new_tab: false,
+    });
+    apply_action(&mut a, Action::SearchConfirm);
+    assert_eq!(a.tab_count(), 1);
+    assert_eq!(a.selected_unique_id().as_deref(), Some(m1.as_str()));
+    assert_eq!(
+        a.tab().back,
+        vec![root0],
+        "the re-root pushed history on the active tab"
+    );
+}
+
 #[test]
 fn wheel_over_the_whichkey_does_not_close_it() {
     // Review: a wheel scroll dispatched Action::DetailScroll into the which-key
@@ -8330,4 +8627,135 @@ fn wheel_over_the_whichkey_does_not_close_it() {
             "{act:?} must not close the which-key"
         );
     }
+}
+
+#[test]
+fn wheel_on_the_tab_strip_scrolls_the_strip_not_the_panes() {
+    // The loop's wheel-on-strip arm calls `scroll_tab_bar` — the FIRST-VISIBLE
+    // index moves and the active tab doesn't change.
+    let mut a = app();
+    let (root0, m1, m2) = three_models(&a);
+    a.open_node_as_tab(&m1);
+    a.open_node_as_tab(&m2);
+    a.activate_tab(0);
+    assert_eq!(a.selected_unique_id().as_deref(), Some(root0.as_str()));
+    // Far right, then clamped back left — the scroll index saturates.
+    for _ in 0..10 {
+        a.scroll_tab_bar(1);
+    }
+    let maxed = a.tab_scroll();
+    assert!(maxed <= a.tab_count());
+    for _ in 0..10 {
+        a.scroll_tab_bar(-1);
+    }
+    assert_eq!(a.tab_scroll(), 0);
+    assert_eq!(
+        a.selected_unique_id().as_deref(),
+        Some(root0.as_str()),
+        "scrolling the strip never switches tabs"
+    );
+}
+
+#[test]
+fn reload_drops_tabs_whose_roots_vanished() {
+    let mut a = app();
+    let (root0, m1, _m2) = three_models(&a);
+    a.open_node_as_tab(&m1);
+    // Plant a ghost-rooted tab — a root the manifest re-read won't carry
+    // (same simulation style as the history/bookmark prune tests), plus a
+    // source-rooted one: a surviving-but-non-model root can't re-root either.
+    a.restore_tabs(
+        vec![
+            TabState {
+                root: Some(root0.clone()),
+                ..TabState::default()
+            },
+            TabState {
+                root: Some(m1.clone()),
+                ..TabState::default()
+            },
+            TabState {
+                root: Some("model.jaffle_finance.ghost_root".to_string()),
+                ..TabState::default()
+            },
+            TabState {
+                root: Some("source.jaffle_finance.dev_lake_jaffle_payment.suppliers".to_string()),
+                ..TabState::default()
+            },
+        ],
+        3,
+    );
+    assert_eq!(a.tab_count(), 4);
+
+    a.reload().expect("reload ok");
+    let roots: Vec<&str> = a.tabs().iter().filter_map(|t| t.root.as_deref()).collect();
+    assert_eq!(
+        roots,
+        vec![root0.as_str(), m1.as_str()],
+        "the dead-root and non-model tabs dropped; the active index clamped"
+    );
+    assert_eq!(a.active_tab(), 1);
+
+    // If EVERY tab's root vanished, the strip reseeds one rootless tab
+    // rather than break the >=1-tab invariant.
+    a.restore_tabs(
+        vec![TabState {
+            root: Some("model.jaffle_finance.ghost_only".to_string()),
+            ..TabState::default()
+        }],
+        0,
+    );
+    a.reload().expect("reload ok");
+    assert_eq!(a.tab_count(), 1, "one tab reseeds rather than zero");
+    assert!(a.tab().root.is_none(), "the reseeded tab is rootless");
+}
+
+#[test]
+fn tabs_beyond_nine_open_unnumbered_and_off_the_digit_keys() {
+    // §2: no cap — positions 10+ draw without a `{n} ` prefix and sit outside
+    // the `1`..=`9` key map (the BINDINGS rows stop at 9).
+    let mut a = app();
+    for i in 1..12 {
+        let uid = a.active_list().model_at(i).unwrap().unique_id.clone();
+        a.open_node_as_tab(&uid);
+    }
+    assert_eq!(a.tab_count(), 12);
+    let labels = a.tab_labels();
+    assert!(labels[0].starts_with("1 "), "position 1 is numbered");
+    assert!(labels[8].starts_with("9 "), "position 9 is numbered");
+    assert!(
+        !labels[9].starts_with("10 ") && !labels[9].starts_with("0 "),
+        "position 10 carries no number: {:?}",
+        labels[9]
+    );
+    // The active tab is position 12 — `9` activates position 9, not clamped
+    // to the strip's end.
+    apply_action(&mut a, Action::TabActivate(9));
+    assert_eq!(a.active_tab(), 8);
+}
+
+#[test]
+fn selecting_in_the_list_re_roots_only_the_active_tab() {
+    // Spec: 一覧でモデルを選ぶとアクティブタブの root だけが変わる — the
+    // other tabs' roots are untouched by list navigation.
+    let mut a = app();
+    let (_root0, m1, m2) = three_models(&a);
+    a.open_node_as_tab(&m1); // tab 2 roots m1
+    a.activate_tab(0); // back to tab 1
+                       // Move the list selection onto m2 (the production click arm's
+                       // `reroot_select`; `j`/wheel adopt through the same select).
+    a.reroot_select(&m2);
+    assert_eq!(
+        a.selected_unique_id().as_deref(),
+        Some(m2.as_str()),
+        "the active tab re-rooted"
+    );
+    assert_eq!(
+        a.tabs()[1].root.as_deref(),
+        Some(m1.as_str()),
+        "the other tab's root is untouched"
+    );
+    // Switching to tab 2 shows ITS root — not the selection tab 1 made.
+    a.activate_tab(1);
+    assert_eq!(a.selected_unique_id().as_deref(), Some(m1.as_str()));
 }

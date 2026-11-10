@@ -141,10 +141,11 @@ impl App {
                 .then(|| "no model selected".to_string()),
             // `K` needs a traced column — or the structure modal's column
             // cursor, which the palette (a Selection surface) can't see.
-            A::ColumnsOpen => (self.column_focus.is_none()
+            A::ColumnsOpen => (self.tab().column_focus.is_none()
                 && !matches!(self.mode, Mode::Detail(_)))
             .then(|| "no traced column".to_string()),
             A::ColumnFocusExit => self
+                .tab()
                 .column_focus
                 .is_none()
                 .then(|| "not tracing a column".to_string()),
@@ -152,7 +153,7 @@ impl App {
             // `z` always homes the cursor — the arm is unconditional.
             // `p` CLEARS a live anchor even with no selection (the arm's first
             // branch), so it is only dead when both are absent.
-            A::PathToggle => (self.path_anchor.is_none() && no_selection)
+            A::PathToggle => (self.tab().path_anchor.is_none() && no_selection)
                 .then(|| "no model selected".to_string()),
             // The cycle targets bookmarks in the ACTIVE (filtered) list — a
             // bookmark filtered out by the persistent filter can't be cycled
@@ -165,8 +166,13 @@ impl App {
             .then(|| "no bookmarks in the list".to_string()),
             A::GapNext | A::GapPrev => (!self.active_list().models.iter().any(coverage_gap))
                 .then(|| "no untested models".to_string()),
-            A::HistoryBack => self.back.is_empty().then(|| "no earlier model".to_string()),
+            A::HistoryBack => self
+                .tab()
+                .back
+                .is_empty()
+                .then(|| "no earlier model".to_string()),
             A::HistoryForward => self
+                .tab()
                 .forward
                 .is_empty()
                 .then(|| "no later model".to_string()),

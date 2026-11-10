@@ -13,9 +13,30 @@ use crate::model_list::{DisplayRow, ModelList};
 
 use super::geom::pane_layout;
 use super::{
-    focus_border, selected_style, theme, title_style, Focus, LineageLens, Splitter, UiState,
-    SELECTED_MARKER, UNSELECTED_MARKER,
+    focus_border, selected_style, theme, title_style, Focus, HitTarget, LineageLens, Splitter,
+    TabBarLayout, UiState, SELECTED_MARKER, UNSELECTED_MARKER,
 };
+
+/// The precomputed tab-strip view the event loop hands [`draw`] — labels,
+/// the resolved cell layout, the active index, the project name, and the
+/// hovered target. Everything Dag-aware (tab labels, strip geometry inputs)
+/// is already resolved, so the painter stays Dag-free like the rest of
+/// [`RenderCtx`].
+pub struct TabBarView<'a> {
+    /// Per-tab label text (`{n} {name}` — the number only on positions 1-9),
+    /// the loop's `App::tab_labels` product.
+    pub labels: &'a [String],
+    /// The resolved cell layout for the bar's rect — the SAME
+    /// [`tab_bar_layout`](super::tab_bar_layout) result the hit-test reuses.
+    pub layout: &'a TabBarLayout,
+    /// The active tab's index into `labels`.
+    pub active: usize,
+    /// The strip's right-edge project name (`None` = the zone didn't fit).
+    pub project: Option<&'a str>,
+    /// The strip cell the pointer currently hovers — the `×`-emphasis /
+    /// `danger` / `+` accent cues. `None` elsewhere (or un-hovered).
+    pub hover: Option<&'a HitTarget>,
+}
 
 /// The optional, colored, droppable segments appended to the status bar AFTER its
 /// protected core (`[j/k] move` hint + `sel:{name}`). Each field is `Option<&str>`:
@@ -141,6 +162,11 @@ pub struct RenderCtx<'a> {
     /// via `App::layer_bands`). `None` (the default) draws nothing, so every
     /// non-Layer render is untouched. Dag-free: plain precomputed data.
     pub layer_bands: Option<&'a [super::LayerBand]>,
+    /// The tab strip (Issue 03): `Some` draws the one-row bar at the top and
+    /// claims its row in `pane_layout`; `None` (the default — every headless
+    /// render) leaves the row unclaimed, so pre-tab frames are byte-identical.
+    /// Dag-free: labels + cell geometry arrive precomputed.
+    pub tab_bar: Option<TabBarView<'a>>,
     /// The column-focus title suffix (`" [col:name]"`, pure ASCII), appended
     /// to the lineage pane title after the lens tag while a column is being
     /// traced (Issue 09). `None` (the default) leaves every title unchanged.
@@ -213,6 +239,7 @@ impl<'a> RenderCtx<'a> {
             minimap: false,
             filter_label: None,
             layer_bands: None,
+            tab_bar: None,
             col_suffix: None,
             toasts: &[],
             palette_rows: None,
@@ -231,8 +258,15 @@ impl<'a> RenderCtx<'a> {
 pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
     let area = frame.area();
     // One shared geometry call: the same PaneConfig the hit-test/viewport math
-    // resolve, so drawn rects == hit-tested rects == measured rects.
-    let rects = pane_layout(area, &ctx.state.pane_config());
+    // resolve, so drawn rects == hit-tested rects == measured rects. The tab
+    // bar's row is claimed iff the ctx carries one — a `None` bar keeps the
+    // pre-tab layout every headless render asserts on.
+    let mut pane_cfg = ctx.state.pane_config();
+    pane_cfg.tab_bar = ctx.tab_bar.is_some();
+    let rects = pane_layout(area, &pane_cfg);
+    if let Some(tb) = &ctx.tab_bar {
+        draw_tab_bar(frame, rects.tab_bar, tb, ctx.glyphs, ctx.theme);
+    }
 
     // A list-target search shows its query live in the list title (non-covering,
     // so the filtered results stay visible while typing).
@@ -311,7 +345,9 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
     // a modal) draws its origin's overlay UNDER itself first, then the whole
     // screen minus the top box is dimmed to `text_faint` (screen-spec §9),
     // then the top overlay paints. `overlay_rect` is the single rect
-    // authority — the hit-test routes clicks by the same box.
+    // authority — the hit-test routes clicks by the same box. The tab strip
+    // already drew above, so a covering overlay dims/covers it too (the
+    // hit-test reports it `ModalExterior` under an overlay — same contract).
     let lin_inner = super::geom::pane_interior(rects.lineage);
     if let Some(under) = super::geom::underlay_mode(ctx.mode) {
         draw_overlay(frame, area, lin_inner, under, ctx);
@@ -380,6 +416,101 @@ fn draw_overlay(
         // A search's "overlay" is the inline query in the pane titles — the
         // panes themselves already drew it.
         Mode::Selection | Mode::Search(_) => {}
+    }
+}
+
+/// Paint the one-row tab strip (Issue 03, §2): ` {n} {name} × ` cells over a
+/// `surface` band — the active tab `surface_hi`+`accent` bold, the others dim —
+/// `‹`/`›` overflow arrows on whichever side hides tabs, ` + ` pinned at the
+/// strip's right end, and the project name dim at the bar's right edge. The
+/// hover cues come from §6: a hovered tab emphasises its `×`, a hovered `×`
+/// turns `danger`, and `+`/arrows take the accent.
+///
+/// Everything positional arrives resolved in `view.layout` (the same
+/// `tab_bar_layout` the hit-test ran — no re-measuring here), and every text
+/// arrives pre-truncated in `view.labels`, so this function is pure painting.
+fn draw_tab_bar(
+    frame: &mut Frame,
+    area: Rect,
+    view: &TabBarView,
+    glyphs: crate::GlyphMode,
+    t: &theme::Theme,
+) {
+    if area.height == 0 {
+        return;
+    }
+    let chrome = super::chrome(glyphs);
+    let hover = view.hover;
+    // The whole strip is a `surface` band — the panes' `bg` would read as one
+    // more content row instead of chrome.
+    frame.render_widget(
+        Paragraph::new("").style(Style::default().bg(t.surface)),
+        area,
+    );
+
+    for cell in &view.layout.tabs {
+        let active = cell.index == view.active;
+        let base = if active {
+            Style::default()
+                .bg(t.surface_hi)
+                .fg(t.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().bg(t.surface).fg(t.text_dim)
+        };
+        // The `×` restyle ladder: hovered close → danger (§6); hovered tab
+        // body → accent emphasis; otherwise the quiet `text_faint`.
+        let close_st = if matches!(hover, Some(HitTarget::TabClose(i)) if *i == cell.index) {
+            base.patch(Style::default().fg(t.danger))
+        } else if matches!(hover, Some(HitTarget::Tab(i)) if *i == cell.index) {
+            base.patch(Style::default().fg(t.accent))
+        } else {
+            base.patch(Style::default().fg(t.text_faint))
+        };
+        let text = Line::from(vec![
+            Span::styled(format!(" {} ", view.labels[cell.index]), base),
+            Span::styled(chrome.tab_close, close_st),
+            Span::styled(" ", base),
+        ]);
+        frame.render_widget(Paragraph::new(text), cell.rect);
+    }
+
+    let dim = Style::default().bg(t.surface).fg(t.text_dim);
+    let hot = Style::default()
+        .bg(t.surface)
+        .fg(t.accent)
+        .add_modifier(Modifier::BOLD);
+    if let Some(r) = view.layout.left_arrow {
+        let st = if matches!(hover, Some(HitTarget::TabScrollLeft)) {
+            hot
+        } else {
+            dim
+        };
+        frame.render_widget(Paragraph::new(chrome.tab_prev).style(st), r);
+    }
+    if let Some(r) = view.layout.right_arrow {
+        let st = if matches!(hover, Some(HitTarget::TabScrollRight)) {
+            hot
+        } else {
+            dim
+        };
+        frame.render_widget(Paragraph::new(chrome.tab_next).style(st), r);
+    }
+    {
+        let st = if matches!(hover, Some(HitTarget::TabNew)) {
+            hot
+        } else {
+            dim
+        };
+        frame.render_widget(Paragraph::new(" + ").style(st), view.layout.plus);
+    }
+    if let (Some(name), Some(r)) = (view.project, view.layout.project) {
+        frame.render_widget(
+            Paragraph::new(format!(" {name}"))
+                .style(Style::default().bg(t.surface).fg(t.text_faint))
+                .alignment(ratatui::layout::Alignment::Right),
+            r,
+        );
     }
 }
 

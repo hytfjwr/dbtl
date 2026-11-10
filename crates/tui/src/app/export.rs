@@ -18,7 +18,7 @@ impl App {
     fn yank_subgraph(&self) -> Subgraph {
         if matches!(self.mode, Mode::Yank { .. }) {
             if let Some(uid) = &self.pending_node {
-                let v = &self.lineage_view;
+                let v = &self.tab().lineage_view;
                 return self
                     .dag
                     .subgraph_view(uid, v.upstream, v.downstream, v.depth);
@@ -150,7 +150,7 @@ impl App {
     /// nearest name form v0 emits. `None` for an unknown uid.
     pub fn dbt_selector_command_for(&self, uid: &str) -> Option<String> {
         let base = &self.dag.get(uid)?.name;
-        let view = &self.lineage_view;
+        let view = &self.tab().lineage_view;
         let prefix = match (view.upstream, view.depth) {
             (false, _) => String::new(),
             (true, None) => "+".to_string(),
