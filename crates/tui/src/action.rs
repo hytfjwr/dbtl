@@ -219,6 +219,11 @@ pub enum Action {
     /// (records re-root history, like a lineage click). A non-model row
     /// notices instead of jumping.
     ColumnJump,
+    /// Open the notification centre (`Ctrl-n`): the scrollable log of recent
+    /// notifications (`HH:MM:SS  level  text`, newest first — Issue 08).
+    /// Opening it is the read gesture that zeroes the `!N` unread-warning
+    /// count.
+    NotificationsOpen,
 }
 
 /// Which pane a search targets (decided from focus when search opens).
@@ -541,6 +546,48 @@ impl ColumnView {
     }
 }
 
+/// A notification's severity (Issue 08): drives the toast's TTL/border
+/// colour, the centre's `level` column, and the `!N` unread-warning count
+/// (only warnings count). `Info` is the default channel level; `Warning`
+/// marks failures and load warnings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeLevel {
+    Info,
+    Warning,
+}
+
+impl NoticeLevel {
+    /// The level column's label in the notification centre.
+    pub fn label(self) -> &'static str {
+        match self {
+            NoticeLevel::Info => "info",
+            NoticeLevel::Warning => "warn",
+        }
+    }
+}
+
+/// One logged notification (Issue 08): the wall-clock `HH:MM:SS` stamp applied
+/// by the event loop — `App` and the reducer keep no clock — the severity, and
+/// the text. Logged newest-last in `App::notifications` (capped at
+/// [`App::NOTIFICATION_CAP`](crate::App::NOTIFICATION_CAP)) and snapshotted
+/// into [`NotificationsView`] when the centre opens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotificationEntry {
+    pub stamp: String,
+    pub level: NoticeLevel,
+    pub text: String,
+}
+
+/// The notification-centre modal payload (Issue 08), snapshotted at open like
+/// every other modal so the render layer never needs a [`Dag`](crate::Dag).
+/// MUST be `Eq` (`Mode` derives `Eq`). `rows` are newest-first (the centre's
+/// display order).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotificationsView {
+    pub rows: Vec<NotificationEntry>,
+    pub scroll: usize,
+}
+
 /// The interaction mode. Overlays are plain enum variants (not boxed trait
 /// objects): adding one is a variant + a render arm.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -558,6 +605,9 @@ pub enum Mode {
     /// Column-lineage tree for one column (scrollable, Enter jumps to the
     /// row's model — Issue 09 C).
     Columns(ColumnView),
+    /// Notification centre (`Ctrl-n`, Issue 08): the recent-notification log,
+    /// scrollable, newest first.
+    Notifications(NotificationsView),
     /// Command palette: a fuzzy finder over every Selection-mode command.
     Palette(PaletteState),
     /// The `y` yank-prefix which-key menu: any key dispatched here runs its
@@ -579,6 +629,7 @@ pub enum ModeKind {
     Stats,
     Diff,
     Columns,
+    Notifications,
     Palette,
     Yank,
     Help,
@@ -594,6 +645,7 @@ impl Mode {
             Mode::Stats(_) => ModeKind::Stats,
             Mode::Diff(_) => ModeKind::Diff,
             Mode::Columns(_) => ModeKind::Columns,
+            Mode::Notifications(_) => ModeKind::Notifications,
             Mode::Palette(_) => ModeKind::Palette,
             Mode::Yank => ModeKind::Yank,
             Mode::Help { .. } => ModeKind::Help,
@@ -754,6 +806,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('p'))], action: A::PathToggle, help: "anchor/clear two-node path" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('K'))], action: A::ColumnsOpen, help: "column lineage modal (traced column)" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Esc)], action: A::ColumnFocusExit, help: "exit column focus" },
+    KeyBinding { mode: M::Selection, triggers: &[Ctrl('n')], action: A::NotificationsOpen, help: "notification center" },
     // ---- Yank prefix mode (`y` + one key): the second key is the SAME letter
     // the single-key binding always used, so muscle memory carries over as
     // `ym`/`yC`/…; `yy` copies the unique_id (what bare `y` used to do). ----
@@ -838,6 +891,15 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Columns, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up" },
     KeyBinding { mode: M::Columns, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top" },
     KeyBinding { mode: M::Columns, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom" },
+    // ---- Notification centre (Issue 08; reuses DetailClose + DetailScroll) ----
+    // `Ctrl-n` opens it from Selection and toggles it closed while open.
+    KeyBinding { mode: M::Notifications, triggers: &[Key(Esc), Key(Enter), Key(Char('q')), Ctrl('n')], action: A::DetailClose, help: "close" },
+    KeyBinding { mode: M::Notifications, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down" },
+    KeyBinding { mode: M::Notifications, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up" },
+    KeyBinding { mode: M::Notifications, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down" },
+    KeyBinding { mode: M::Notifications, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up" },
+    KeyBinding { mode: M::Notifications, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top" },
+    KeyBinding { mode: M::Notifications, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom" },
     // ---- Help overlay ----
     KeyBinding { mode: M::Help, triggers: &[Key(Esc), Key(Char('?')), Key(Char('q'))], action: A::HelpToggle, help: "close help" },
     KeyBinding { mode: M::Help, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down" },
@@ -1014,6 +1076,12 @@ mod tests {
             title: "m.c".into(),
             rows: vec![],
             cursor: usize::MAX,
+            scroll: 0,
+        })
+    }
+    fn notifications_mode() -> Mode {
+        Mode::Notifications(NotificationsView {
+            rows: vec![],
             scroll: 0,
         })
     }
@@ -1265,7 +1333,8 @@ mod tests {
             | Action::ColumnsOpen
             | Action::ColumnRowMove(_)
             | Action::ColumnJump
-            | Action::DetailSectionToggle => true,
+            | Action::DetailSectionToggle
+            | Action::NotificationsOpen => true,
             // Dynamic: produced without a fixed key binding (text input). Mouse
             // is handled in the event loop (size-aware), not via the keymap.
             Action::SearchType(_) => false,
@@ -1289,6 +1358,7 @@ mod tests {
                 ModeKind::Stats => stats_mode(),
                 ModeKind::Diff => diff_mode(),
                 ModeKind::Columns => columns_mode(),
+                ModeKind::Notifications => notifications_mode(),
                 ModeKind::Palette => palette_mode(),
                 ModeKind::Yank => Mode::Yank,
                 ModeKind::Help => Mode::Help { scroll: 0 },
@@ -1391,6 +1461,7 @@ mod tests {
             Action::ColumnsOpen,
             Action::ColumnRowMove(Direction::Down),
             Action::ColumnJump,
+            Action::NotificationsOpen,
         ];
         for a in samples {
             assert!(

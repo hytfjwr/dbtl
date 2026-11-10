@@ -61,9 +61,14 @@ pub struct StatusSegments<'a> {
     pub filter: Option<&'a str>,
     /// The active column-focus readout (Issue 09), e.g.
     /// `"column:fct_orders.total_amount ↑3 ↓7"` — the traced column's identity
-    /// plus its transitive column-closure sizes. Sits right after `impact`:
+    /// plus its transitive column-closure sizes. Sits right after `notify`:
     /// while a column is being traced it IS the headline readout.
     pub column: Option<&'a str>,
+    /// The unread-warning count (Issue 08), e.g. `"!3"` — the notification
+    /// centre's badge. Sits right after `impact` (before `column`): pending
+    /// warnings outrank every other droppable readout. `None` when nothing
+    /// is unread — the chip is absent, not `!0`.
+    pub notify: Option<&'a str>,
 }
 
 /// The Dag-free bundle of render inputs; future render features add a FIELD, not
@@ -129,18 +134,28 @@ pub struct RenderCtx<'a> {
     /// traced (Issue 09). `None` (the default) leaves every title unchanged.
     /// Precomputed at the loop seam (`App::column_focus_label`) — Dag-free.
     pub col_suffix: Option<&'a str>,
-    /// The transient toast text (copy/bookmark/export/reload feedback), drawn
-    /// as a small floating box at the TOP-RIGHT, above every pane and modal.
-    /// The event loop owns its ~2.5s lifetime ([`App::take_notice`]
-    /// (crate::App::take_notice) + a stamp); `None` (the default) draws
+    /// The visible toast stack (Issue 08): up to 3 [`ToastLine`]s, newest
+    /// FIRST (drawn top-most at the upper-right, above every pane and modal).
+    /// The event loop owns their per-level lifetimes — info ~2.5s, warning
+    /// ~5s — stamping each as it drains [`App::take_notice_leveled`]
+    /// (crate::App::take_notice_leveled); an empty slice (the default) draws
     /// nothing, so headless renders are untouched.
-    pub toast: Option<&'a str>,
+    pub toasts: &'a [ToastLine<'a>],
     /// The active colour [`Theme`](theme::Theme) every surface paints with.
     /// Defaults to [`theme::DEFAULT`] (so headless renders and the
     /// style-asserting tests keep the legacy palette); the event loop sets the
     /// App's active theme (`--theme` / Ctrl-t). A borrow, like every other
     /// field — themes are data, never a global.
     pub theme: &'a theme::Theme,
+}
+
+/// One visible toast in the top-right stack (Issue 08): the severity drives
+/// the border colour (info → accent, warning → warn) and, on the loop side,
+/// the on-screen TTL. `toasts[0]` is the newest — drawn on top.
+#[derive(Debug, Clone, Copy)]
+pub struct ToastLine<'a> {
+    pub level: crate::action::NoticeLevel,
+    pub text: &'a str,
 }
 
 /// Default mode for [`RenderCtx::new`] (so tests don't supply one). A `static`
@@ -173,7 +188,7 @@ impl<'a> RenderCtx<'a> {
             filter_label: None,
             layer_bands: None,
             col_suffix: None,
-            toast: None,
+            toasts: &[],
             theme: &theme::DEFAULT,
         }
     }
@@ -264,6 +279,9 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         crate::action::Mode::Columns(cv) => {
             super::overlay::draw_columns(frame, area, cv, ctx.glyphs, ctx.theme)
         }
+        crate::action::Mode::Notifications(nv) => {
+            super::overlay::draw_notifications(frame, area, nv, ctx.glyphs, ctx.theme)
+        }
         crate::action::Mode::Palette(p) => {
             super::overlay::draw_palette(frame, area, p, ctx.glyphs, ctx.theme)
         }
@@ -273,10 +291,10 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         crate::action::Mode::Selection | crate::action::Mode::Search(_) => {}
     }
 
-    // The transient toast floats above EVERYTHING (panes and modals alike), so
-    // a yank fired from inside the SQL modal is acknowledged too — drawn last.
-    if let Some(text) = ctx.toast {
-        super::overlay::draw_toast(frame, area, text, ctx.glyphs, ctx.theme);
+    // The toast stack floats above EVERYTHING (panes and modals alike), so a
+    // yank fired from inside the SQL modal is acknowledged too — drawn last.
+    if !ctx.toasts.is_empty() {
+        super::overlay::draw_toasts(frame, area, ctx.toasts, ctx.glyphs, ctx.theme);
     }
 }
 
@@ -532,8 +550,10 @@ fn draw_status(
     // Each rendered as a bracketed ` [txt]`. Priority:
     //   1. impact — the every-frame blast radius, the headline readout, right
     //      after the protected core so it survives narrow widths longest —
-    //      and, while a column is traced, its column-closure chip right beside
-    //      it (the focus IS the headline then).
+    //      and `!N` (the unread-warning badge, Issue 08) right beside it:
+    //      pending warnings outrank everything but the blast radius. While a
+    //      column is traced, its column-closure chip slots in next (the focus
+    //      IS the headline then).
     //   2. the diff chip (present only when a --diff baseline is loaded — the
     //      at-a-glance readout that mode exists for), then the run artifact
     //      readout and the package-scope tag (emitted every frame — a
@@ -545,8 +565,9 @@ fn draw_status(
     //   5. focus / view LAST (focus is already the accent pane border, and the
     //      view label is echoed in the lineage pane title — redundant cues that
     //      should drop first on a narrow terminal).
-    let candidates: [(Option<&str>, Color); 12] = [
+    let candidates: [(Option<&str>, Color); 13] = [
         (segments.impact, t.danger),
+        (segments.notify, t.danger),
         (segments.column, t.gold),
         (segments.diff, t.diff_mod),
         (segments.run, t.warn),

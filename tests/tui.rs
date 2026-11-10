@@ -3,8 +3,8 @@
 //! assertions plus `TestBackend` renders of `draw`.
 
 use dbtl::model_list::{build_model_list, ModelList, SortMode};
-use dbtl::ui::{draw, handle_key, RenderCtx, UiState};
-use dbtl::{load_dag, Dag};
+use dbtl::ui::{draw, handle_key, RenderCtx, StatusSegments, ToastLine, UiState};
+use dbtl::{load_dag, Dag, NoticeLevel};
 
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -1319,6 +1319,7 @@ fn status_bar_keeps_protected_core_and_appends_segments() {
         ctx.mode = &app.mode;
         ctx.segments = StatusSegments {
             impact: None,
+            notify: None,
             column: None,
             focus: Some("list"),
             view: None,
@@ -1360,6 +1361,7 @@ fn status_bar_drops_segments_but_never_the_core_on_a_narrow_line() {
         let mut ctx = RenderCtx::new(&list, &state, None);
         ctx.segments = StatusSegments {
             impact: None,
+            notify: None,
             column: None,
             focus: Some("list"),
             view: None,
@@ -1408,6 +1410,7 @@ fn status_segments_render_at_80_cols() {
         ctx.status = status_note.as_deref();
         ctx.segments = StatusSegments {
             impact: None,
+            notify: None,
             column: None,
             focus: Some("list"),
             view: None,
@@ -1459,6 +1462,7 @@ fn status_impact_segment_renders_and_survives_narrowest_droppable_line() {
         let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, None);
         ctx.segments = StatusSegments {
             impact: Some(impact.as_str()),
+            notify: None,
             column: None,
             focus: Some("list"),
             view: Some("↑"),
@@ -1490,6 +1494,7 @@ fn status_impact_segment_renders_and_survives_narrowest_droppable_line() {
         let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, None);
         ctx.segments = StatusSegments {
             impact: Some(impact.as_str()),
+            notify: None,
             column: None,
             focus: Some("list"),
             view: Some("↑"),
@@ -1537,6 +1542,7 @@ fn status_impact_segment_uses_ascii_badges_in_ascii_mode() {
         ctx.glyphs = GlyphMode::Ascii;
         ctx.segments = StatusSegments {
             impact: Some(impact.as_str()),
+            notify: None,
             column: None,
             ..StatusSegments::default()
         };
@@ -1995,7 +2001,10 @@ fn toast_renders_top_right_with_its_text() {
     let list = fixture_list();
     let state = UiState::new(list.len());
     let mut ctx = RenderCtx::new(&list, &state, None);
-    ctx.toast = Some("Copied unique_id");
+    ctx.toasts = &[ToastLine {
+        level: NoticeLevel::Info,
+        text: "Copied unique_id",
+    }];
     terminal
         .draw(|frame| draw(frame, &ctx))
         .expect("draw must not panic");
@@ -2042,7 +2051,11 @@ fn toast_truncates_to_the_screen_with_ascii_marker() {
     let state = UiState::new(list.len());
     let mut ctx = RenderCtx::new(&list, &state, None);
     let long = "Removed bookmark: some_extremely_long_model_name";
-    ctx.toast = Some(long);
+    let toasts = [ToastLine {
+        level: NoticeLevel::Info,
+        text: long,
+    }];
+    ctx.toasts = &toasts;
     terminal
         .draw(|frame| draw(frame, &ctx))
         .expect("draw must not panic");
@@ -2070,7 +2083,10 @@ fn toast_floats_above_modal_overlays() {
     let mut ctx = RenderCtx::new(&list, &state, None);
     let mode = dbtl::Mode::Help { scroll: 0 };
     ctx.mode = &mode;
-    ctx.toast = Some("Copied raw SQL");
+    ctx.toasts = &[ToastLine {
+        level: NoticeLevel::Info,
+        text: "Copied raw SQL",
+    }];
     terminal
         .draw(|frame| draw(frame, &ctx))
         .expect("draw must not panic");
@@ -2079,6 +2095,196 @@ fn toast_floats_above_modal_overlays() {
         row_text(&buffer, 2).contains("Copied raw SQL"),
         "toast text wins over the modal's cells on its row"
     );
+}
+
+/// Issue 08: toasts stack up to 3, `toasts[0]` (the newest) on TOP — each box
+/// sized to its own text, 3 rows apart starting at y=1.
+#[test]
+fn toast_stack_renders_up_to_three_newest_on_top() {
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    let list = fixture_list();
+    let state = UiState::new(list.len());
+    let mut ctx = RenderCtx::new(&list, &state, None);
+    ctx.toasts = &[
+        ToastLine {
+            level: NoticeLevel::Info,
+            text: "toast_newest",
+        },
+        ToastLine {
+            level: NoticeLevel::Warning,
+            text: "toast_middle",
+        },
+        ToastLine {
+            level: NoticeLevel::Info,
+            text: "toast_oldest",
+        },
+    ];
+    terminal
+        .draw(|frame| draw(frame, &ctx))
+        .expect("draw must not panic");
+    let buffer = terminal.backend().buffer().clone();
+    let text = buffer_to_string(&buffer);
+    let y_of = |needle: &str| -> u16 {
+        (0..buffer.area.height)
+            .find(|&y| row_text(&buffer, y).contains(needle))
+            .unwrap_or_else(|| panic!("{needle} rendered"))
+    };
+    let (y_new, y_mid, y_old) = (
+        y_of("toast_newest"),
+        y_of("toast_middle"),
+        y_of("toast_oldest"),
+    );
+    assert_eq!(
+        (y_mid - y_new, y_old - y_mid),
+        (3, 3),
+        "each box 3 rows apart"
+    );
+    assert_eq!(y_new, 2, "newest toast's text on the top box's middle row");
+    assert!(
+        !text.contains("toast_fourth"),
+        "only the provided three exist"
+    );
+}
+
+/// A warning toast wears the `warn` border color while info keeps `accent` —
+/// severity is visible without reading the text.
+#[test]
+fn warning_toast_border_differs_from_info() {
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    let list = fixture_list();
+    let state = UiState::new(list.len());
+    let mut ctx = RenderCtx::new(&list, &state, None);
+    ctx.toasts = &[
+        ToastLine {
+            level: NoticeLevel::Info,
+            text: "info toast",
+        },
+        ToastLine {
+            level: NoticeLevel::Warning,
+            text: "warn toast",
+        },
+    ];
+    terminal
+        .draw(|frame| draw(frame, &ctx))
+        .expect("draw must not panic");
+    let buffer = terminal.backend().buffer().clone();
+    let theme = &dbtl::ui::theme::DEFAULT;
+    // Border cells: info box top-left at y=1, warning box at y=4 (3 rows down).
+    // Both are right-aligned, so the left border x differs by text width —
+    // compare against the theme roles rather than coordinates.
+    let find_border_color = |needle: &str| {
+        (0..buffer.area.height)
+            .find_map(|y| {
+                let row = row_text(&buffer, y);
+                row.find(needle).map(|_pos| {
+                    // The border corner of the box is one row up, leftmost non-space.
+                    let by = y - 1;
+                    (0..buffer.area.width)
+                        .filter_map(|x| buffer.cell((x, by)))
+                        .find(|c| c.symbol() == "╭" || c.symbol() == "+")
+                        .map(|c| c.fg)
+                })
+            })
+            .flatten()
+            .expect("border cell found")
+    };
+    let info_fg = find_border_color("info toast");
+    let warn_fg = find_border_color("warn toast");
+    assert_eq!(info_fg, theme.accent, "info border = accent");
+    assert_eq!(warn_fg, theme.warn, "warning border = warn");
+}
+
+/// Issue 08: the `Ctrl-n` centre renders `HH:MM:SS  level  text` rows
+/// newest-first inside the shared scrollable-modal chrome.
+#[test]
+fn notification_center_renders_rows_newest_first() {
+    let backend = TestBackend::new(100, 40);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    let list = fixture_list();
+    let state = UiState::new(list.len());
+    let mut ctx = RenderCtx::new(&list, &state, None);
+    let mode = dbtl::Mode::Notifications(dbtl::NotificationsView {
+        rows: vec![
+            dbtl::NotificationEntry {
+                stamp: "10:20:31".into(),
+                level: NoticeLevel::Warning,
+                text: "Reload failed".into(),
+            },
+            dbtl::NotificationEntry {
+                stamp: "10:20:30".into(),
+                level: NoticeLevel::Info,
+                text: "Copied unique_id".into(),
+            },
+        ],
+        scroll: 0,
+    });
+    ctx.mode = &mode;
+    terminal
+        .draw(|frame| draw(frame, &ctx))
+        .expect("draw must not panic");
+    let buffer = terminal.backend().buffer().clone();
+    let text = buffer_to_string(&buffer);
+    assert!(text.contains("notifications"), "modal title");
+    let warn_row = (0..buffer.area.height)
+        .find(|&y| row_text(&buffer, y).contains("Reload failed"))
+        .expect("warning row");
+    let info_row = (0..buffer.area.height)
+        .find(|&y| row_text(&buffer, y).contains("Copied unique_id"))
+        .expect("info row");
+    assert!(warn_row < info_row, "newest row renders first");
+    assert!(
+        row_text(&buffer, warn_row).contains("10:20:31")
+            && row_text(&buffer, warn_row).contains("warn"),
+        "row shape HH:MM:SS  level  text: {:?}",
+        row_text(&buffer, warn_row)
+    );
+}
+
+/// The unread-warning badge `!N` sits right after `impact` and drops with the
+/// rest of the droppable chips on a narrow line — never the protected core.
+#[test]
+fn notify_chip_renders_and_drops_on_narrow() {
+    let backend = TestBackend::new(120, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    let list = fixture_list();
+    let state = UiState::new(list.len());
+    {
+        let mut ctx = RenderCtx::new(&list, &state, None);
+        ctx.segments = StatusSegments {
+            impact: Some("v1 ^2"),
+            notify: Some("!3"),
+            ..StatusSegments::default()
+        };
+        terminal.draw(|frame| draw(frame, &ctx)).expect("render");
+    }
+    let text = buffer_to_string(&terminal.backend().buffer().clone());
+    assert!(
+        text.contains("[!3]"),
+        "!N chip renders after impact: {text}"
+    );
+    assert!(
+        text.find("[!3]").unwrap() > text.find("[v1 ^2]").unwrap(),
+        "!N sits right after impact"
+    );
+
+    // Narrow: 40 cols — the chip drops like any droppable segment, the
+    // protected core (`[j/k] move  [?] help`) must survive.
+    let backend = TestBackend::new(40, 12);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    {
+        let mut ctx = RenderCtx::new(&list, &state, None);
+        ctx.segments = StatusSegments {
+            impact: Some("v1 ^2"),
+            notify: Some("!3"),
+            ..StatusSegments::default()
+        };
+        terminal.draw(|frame| draw(frame, &ctx)).expect("render");
+    }
+    let buffer = terminal.backend().buffer().clone();
+    let last = row_text(&buffer, buffer.area.height - 1);
+    assert!(last.contains("[j/k]"), "protected core survives at 40 cols");
 }
 
 /// On a terminal too short to float the box above the status bar (the 3-row
@@ -2091,7 +2297,10 @@ fn toast_skips_tiny_terminals_and_never_covers_the_status_bar() {
     let list = fixture_list();
     let state = UiState::new(list.len());
     let mut ctx = RenderCtx::new(&list, &state, None);
-    ctx.toast = Some("Copied unique_id");
+    ctx.toasts = &[ToastLine {
+        level: NoticeLevel::Info,
+        text: "Copied unique_id",
+    }];
     terminal
         .draw(|frame| draw(frame, &ctx))
         .expect("draw must not panic");

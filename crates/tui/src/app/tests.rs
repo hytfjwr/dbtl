@@ -1,6 +1,7 @@
 use super::*;
 use crate::action::{
-    palette_candidates, Action, DetailView, DiffView, Direction, Mode, SearchTarget,
+    palette_candidates, Action, DetailView, DiffView, Direction, Mode, NoticeLevel,
+    NotificationEntry, SearchTarget,
 };
 use crate::effect::Effect;
 use crate::{
@@ -44,6 +45,121 @@ fn yank_and_bookmark_record_oneshot_notices() {
     apply_action(&mut a, Action::BookmarkToggle);
     let note = a.take_notice().expect("un-bookmark notices");
     assert!(note.starts_with("Removed bookmark: "), "got {note:?}");
+}
+
+// ---- Issue 08: notification log, unread chip, Ctrl-n centre ---------------
+
+fn entry(level: NoticeLevel, text: &str) -> NotificationEntry {
+    NotificationEntry {
+        stamp: "00:00:00".into(),
+        level,
+        text: text.into(),
+    }
+}
+
+#[test]
+fn leveled_notice_drains_level_and_keeps_text_compat() {
+    let mut a = app();
+    a.set_notice_level(NoticeLevel::Warning, "Reload failed");
+    let (level, text) = a.take_notice_leveled().expect("leveled notice");
+    assert_eq!(level, NoticeLevel::Warning);
+    assert_eq!(text, "Reload failed");
+    // The text-only drain stays for callers/tests that don't care about level.
+    a.set_notice("Copied unique_id");
+    let (level, _) = a.take_notice_leveled().expect("info defaults");
+    assert_eq!(level, NoticeLevel::Info);
+    a.set_notice("Copied unique_id");
+    assert_eq!(a.take_notice().as_deref(), Some("Copied unique_id"));
+    // append joins text but never downgrades a queued warning's level.
+    a.set_notice_level(NoticeLevel::Warning, "bad .dbtl.yml");
+    a.append_notice("hint: source mode");
+    let (level, text) = a.take_notice_leveled().expect("appended");
+    assert_eq!(level, NoticeLevel::Warning);
+    assert_eq!(text, "bad .dbtl.yml | hint: source mode");
+}
+
+#[test]
+fn notification_log_caps_at_100_and_evicts_oldest() {
+    let mut a = app();
+    for i in 0..App::NOTIFICATION_CAP + 5 {
+        a.record_notification(entry(NoticeLevel::Info, &format!("n{i}")));
+    }
+    let view = a.notifications_snapshot();
+    assert_eq!(view.rows.len(), App::NOTIFICATION_CAP, "log capped at 100");
+    assert_eq!(view.rows[0].text, "n104", "newest first");
+    assert_eq!(
+        view.rows.last().unwrap().text,
+        "n5",
+        "the five oldest evicted"
+    );
+}
+
+#[test]
+fn unread_chip_counts_warnings_only_and_open_clears_it() {
+    let mut a = app();
+    a.record_notification(entry(NoticeLevel::Warning, "w1"));
+    a.record_notification(entry(NoticeLevel::Info, "i1"));
+    a.record_notification(entry(NoticeLevel::Warning, "w2"));
+    assert_eq!(a.unread_warnings(), 2, "only warnings count");
+    apply_action(&mut a, Action::NotificationsOpen);
+    assert!(
+        matches!(a.mode, Mode::Notifications(_)),
+        "Ctrl-n opens the centre"
+    );
+    assert_eq!(a.unread_warnings(), 0, "opening is the read gesture");
+    // Warnings arriving after the open count again.
+    a.record_notification(entry(NoticeLevel::Warning, "w3"));
+    assert_eq!(a.unread_warnings(), 1);
+}
+
+#[test]
+fn notification_center_snapshots_newest_first_and_scrolls() {
+    let mut a = app();
+    a.record_notification(entry(NoticeLevel::Info, "first"));
+    a.record_notification(entry(NoticeLevel::Warning, "second"));
+    apply_action(&mut a, Action::NotificationsOpen);
+    let scroll = |m: &Mode| match m {
+        Mode::Notifications(nv) => {
+            assert_eq!(nv.rows[0].text, "second", "newest row on top");
+            assert_eq!(nv.rows[1].text, "first");
+            nv.scroll
+        }
+        other => panic!("expected Notifications mode, got {other:?}"),
+    };
+    assert_eq!(scroll(&a.mode), 0);
+    // The shared modal-scroll arms hit the centre's slot like any other modal.
+    apply_action(&mut a, Action::DetailScrollPage(Direction::Down));
+    assert_eq!(scroll(&a.mode), 10, "page = 10 lines");
+    apply_action(&mut a, Action::DetailScroll(Direction::Down));
+    assert_eq!(scroll(&a.mode), 11);
+    apply_action(&mut a, Action::DetailScrollEnd);
+    assert_eq!(scroll(&a.mode), usize::MAX, "End records MAX for clamp");
+    apply_action(&mut a, Action::DetailScrollHome);
+    assert_eq!(scroll(&a.mode), 0);
+    apply_action(&mut a, Action::DetailClose);
+    assert_eq!(a.mode, Mode::Selection, "close returns to selection");
+}
+
+#[test]
+fn startup_warnings_join_the_log_as_unread_warnings() {
+    let mut a = app();
+    a.record_startup_warnings(
+        &[
+            "bad resource type".to_string(),
+            "(scope) ambiguous root".to_string(),
+        ],
+        || "01:02:03".to_string(),
+    );
+    assert_eq!(a.unread_warnings(), 2);
+    let view = a.notifications_snapshot();
+    assert!(
+        view.rows
+            .iter()
+            .all(|r| r.level == NoticeLevel::Warning && r.stamp == "01:02:03"),
+        "every startup warning stamped + leveled: {:?}",
+        view.rows
+    );
+    assert_eq!(view.rows[0].text, "(scope) ambiguous root", "newest first");
 }
 
 #[test]

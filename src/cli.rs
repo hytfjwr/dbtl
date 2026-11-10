@@ -278,12 +278,19 @@ pub enum ImpactFormat {
 }
 
 /// A resolved data source: the loaded `Dag`, a human-readable label of where it
-/// came from (a manifest path or a project dir, for docs provenance), and
-/// whether it was parsed from source (vs a compiled manifest).
+/// came from (a manifest path or a project dir, for docs provenance), whether
+/// it was parsed from source (vs a compiled manifest), and every warning the
+/// load produced (loader + package scope — each already printed to stderr
+/// exactly as before).
 pub struct ResolvedSource {
     pub dag: dbtl::Dag,
     pub label: String,
     pub is_source: bool,
+    /// The collected warnings (loader first, then scope). `build_app` feeds
+    /// them to the App's notification log as unread WARNING entries (Issue
+    /// 08) so they stay visible after the TUI opens; non-TUI callers ignore
+    /// them — stderr output is unchanged.
+    pub warnings: Vec<String>,
 }
 
 /// The shared data-source resolution, identical for the TUI and the `docs`
@@ -303,48 +310,60 @@ pub fn resolve_source(
     scope: dbtl::PackageScope,
 ) -> Result<ResolvedSource> {
     if let Some(path) = manifest {
-        let (dag, warnings) = load_dag_with_warnings(path)?;
+        let (dag, mut warnings) = load_dag_with_warnings(path)?;
         for w in &warnings {
             eprintln!("warning: {w}");
         }
+        let (dag, scope_w) = apply_package_scope(dag, scope, false);
+        warnings.extend(scope_w);
         return Ok(ResolvedSource {
-            dag: apply_package_scope(dag, scope, false),
+            dag,
             label: path.clone(),
             is_source: false,
+            warnings,
         });
     }
     if let Some(dir) = source {
-        let (dag, warnings) = load_dag_from_source_with_warnings(dir)?;
+        let (dag, mut warnings) = load_dag_from_source_with_warnings(dir)?;
         for w in &warnings {
             eprintln!("warning: {w}");
         }
+        let (dag, scope_w) = apply_package_scope(dag, scope, true);
+        warnings.extend(scope_w);
         return Ok(ResolvedSource {
-            dag: apply_package_scope(dag, scope, true),
+            dag,
             label: dir.clone(),
             is_source: true,
+            warnings,
         });
     }
     let project = PathBuf::from(project);
     let manifest = project.join("target").join("manifest.json");
     if manifest.is_file() {
-        let (dag, warnings) = load_dag_with_warnings(&manifest)?;
+        let (dag, mut warnings) = load_dag_with_warnings(&manifest)?;
         for w in &warnings {
             eprintln!("warning: {w}");
         }
+        let (dag, scope_w) = apply_package_scope(dag, scope, false);
+        warnings.extend(scope_w);
         Ok(ResolvedSource {
-            dag: apply_package_scope(dag, scope, false),
+            dag,
             label: manifest.display().to_string(),
             is_source: false,
+            warnings,
         })
     } else if project.join("dbt_project.yml").is_file() {
-        let (dag, warnings) = load_dag_from_source_with_warnings(&project)?;
+        let (dag, mut warnings) = load_dag_from_source_with_warnings(&project)?;
         for w in &warnings {
             eprintln!("warning: {w}");
         }
+        let (dag, scope_w) = apply_package_scope(dag, scope, true);
+        warnings.extend(scope_w);
         Ok(ResolvedSource {
-            dag: apply_package_scope(dag, scope, true),
+            dag,
             label: project.display().to_string(),
             is_source: true,
+            warnings,
         })
     } else {
         anyhow::bail!(
@@ -376,23 +395,32 @@ impl Cli {
 /// an emptied graph, or an ambiguous root guess when `metadata.project_name`
 /// is absent) lives in [`dbtl::PackageScope::apply_with_warnings`], so the
 /// TUI's `reload` re-running the same scope reports the same outcomes. This
-/// wrapper only prints them to stderr; the one CLI-side warning left is the
+/// wrapper prints them to stderr exactly as before AND returns them (the
+/// `(scope)` tag mirroring the stderr prefix) so `resolve_source` can hand
+/// them to the notification log; the one CLI-side warning left is the
 /// `--include-packages`-in-source-mode no-op, which is about the flag, not
 /// the graph.
-fn apply_package_scope(dag: dbtl::Dag, scope: dbtl::PackageScope, is_source: bool) -> dbtl::Dag {
+fn apply_package_scope(
+    dag: dbtl::Dag,
+    scope: dbtl::PackageScope,
+    is_source: bool,
+) -> (dbtl::Dag, Vec<String>) {
+    let mut collected = Vec::new();
     if scope.includes_packages() && is_source {
         // Source mode synthesizes the manifest from the local project
         // only — there are never package nodes to include.
-        eprintln!(
-            "warning: --include-packages has no effect in source mode \
-             (installed packages are never parsed)"
-        );
+        let w = "--include-packages has no effect in source mode \
+                 (installed packages are never parsed)"
+            .to_string();
+        eprintln!("warning: {w}");
+        collected.push(w);
     }
     let (dag, warnings) = scope.apply_with_warnings(dag);
     for w in &warnings {
         eprintln!("warning (scope): {w}");
+        collected.push(format!("(scope) {w}"));
     }
-    dag
+    (dag, collected)
 }
 
 /// Resolve the CLI into a loaded [`App`]. Explicit `--manifest` / `--source` win;
@@ -407,6 +435,7 @@ pub fn build_app(cli: &Cli) -> Result<App> {
         dag,
         label,
         is_source,
+        warnings,
     } = resolved;
     let mut app = if is_source {
         App::from_source(dag, PathBuf::from(label))
@@ -414,16 +443,22 @@ pub fn build_app(cli: &Cli) -> Result<App> {
         App::new(dag, PathBuf::from(label))
     };
     app.set_scope(scope);
+    // Issue 08: the load/scope warnings that already went to stderr also join
+    // the notification log as unread WARNING entries — opening `Ctrl-n`
+    // replays what scrolled past before the TUI came up.
+    app.record_startup_warnings(&warnings, crate::event_loop::now_hhmmss);
     // An explicit --sql-dialect pins the column-lineage parser dialect;
     // otherwise the resolver auto-selects from the manifest's adapter_type.
     // An adapter_type we don't know lands on the generic dialect — say so
-    // as the startup toast (the override suppresses it).
+    // as the startup toast (the override suppresses it), at WARNING level so
+    // it also counts toward `!N`.
     if let Some(dialect) = cli.sql_dialect {
         app.set_sql_dialect(dialect);
     } else if let Some(a) = dbtl::SqlDialect::unrecognized_adapter(&app.dag) {
-        app.set_notice(format!(
-            "column lineage: unknown adapter '{a}' — using the generic SQL dialect"
-        ));
+        app.set_notice_level(
+            dbtl::NoticeLevel::Warning,
+            format!("column lineage: unknown adapter '{a}' — using the generic SQL dialect"),
+        );
     }
     // An explicit --run-results overrides the auto-detected sibling; its load
     // error IS user-facing (unlike the silent auto-detect).
@@ -1242,7 +1277,7 @@ pub fn load_baseline(path: &str, scope: dbtl::PackageScope) -> Result<(dbtl::Dag
         for w in &warnings {
             eprintln!("warning (--diff baseline): {w}");
         }
-        return Ok((apply_package_scope(dag, scope, false), path.to_string()));
+        return Ok((apply_package_scope(dag, scope, false).0, path.to_string()));
     }
     if p.is_dir() {
         let manifest = p.join("target").join("manifest.json");
@@ -1253,7 +1288,7 @@ pub fn load_baseline(path: &str, scope: dbtl::PackageScope) -> Result<(dbtl::Dag
                 eprintln!("warning (--diff baseline): {w}");
             }
             return Ok((
-                apply_package_scope(dag, scope, false),
+                apply_package_scope(dag, scope, false).0,
                 manifest.display().to_string(),
             ));
         }
@@ -1263,7 +1298,7 @@ pub fn load_baseline(path: &str, scope: dbtl::PackageScope) -> Result<(dbtl::Dag
             for w in &warnings {
                 eprintln!("warning (--diff baseline): {w}");
             }
-            return Ok((apply_package_scope(dag, scope, true), path.to_string()));
+            return Ok((apply_package_scope(dag, scope, true).0, path.to_string()));
         }
     }
     anyhow::bail!(
@@ -1322,7 +1357,7 @@ mod tests {
         // re-scoping to a foreign package, which would show the exact opposite
         // of the scope's intent).
         let dag = dag_with(Some("zzz_proj"), &["model.aaa_pkg.a", "model.aaa_pkg.b"]);
-        let scoped = apply_package_scope(dag, dbtl::PackageScope::Root, false);
+        let (scoped, _) = apply_package_scope(dag, dbtl::PackageScope::Root, false);
         assert!(
             scoped.is_empty(),
             "the scope stays strict — no foreign nodes"
@@ -1337,7 +1372,7 @@ mod tests {
             Some("zzz_proj"),
             &["model.zzz_proj.root_model", "model.aaa_pkg.a"],
         );
-        let scoped = apply_package_scope(dag, dbtl::PackageScope::Root, false);
+        let (scoped, _) = apply_package_scope(dag, dbtl::PackageScope::Root, false);
         assert_eq!(scoped.len(), 1, "only the root project's model survives");
         assert!(scoped.contains("model.zzz_proj.root_model"));
     }
@@ -1350,8 +1385,41 @@ mod tests {
             Some("zzz_proj"),
             &["model.zzz_proj.root_model", "model.aaa_pkg.a"],
         );
-        let scoped = apply_package_scope(dag, dbtl::PackageScope::All, false);
+        let (scoped, _) = apply_package_scope(dag, dbtl::PackageScope::All, false);
         assert_eq!(scoped.len(), 2, "package nodes stay in scope");
         assert!(scoped.contains("model.aaa_pkg.a"));
+    }
+
+    /// Issue 08: the load warnings the fusion fixture produces (unsupported
+    /// resource types) already printed to stderr must ALSO land in the
+    /// App's notification log as unread WARNING rows — `Ctrl-n` replays them
+    /// after the TUI opens, and `!N` counts them.
+    #[test]
+    fn build_app_routes_startup_warnings_into_the_notification_log() {
+        let fusion = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/fusion_manifest.json"
+        );
+        let cli = Cli::parse_from(["dbtl", "--manifest", fusion]);
+        let app = build_app(&cli).expect("build_app over the fusion fixture");
+        assert!(
+            app.unread_warnings() > 0,
+            "startup load warnings count toward !N"
+        );
+        let view = app.notifications_snapshot();
+        assert_eq!(
+            view.rows.len(),
+            app.unread_warnings(),
+            "every recorded row is an unread warning here"
+        );
+        assert!(
+            view.rows
+                .iter()
+                .all(|r| r.level == dbtl::NoticeLevel::Warning
+                    && r.stamp.len() == 8
+                    && r.stamp.contains(':')),
+            "each row is a stamped warning: {:?}",
+            view.rows
+        );
     }
 }
