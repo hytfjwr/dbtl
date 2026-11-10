@@ -6,8 +6,11 @@
 
 use std::collections::HashSet;
 
+use ratatui::crossterm::event::MouseButton;
+
 use crate::action::{Direction, Mode, SearchTarget};
 use crate::collapse::{collapse_siblings, CollapseGroup, Collapsed};
+use crate::ui::HitTarget;
 use crate::{Focus, Subgraph};
 
 use super::App;
@@ -59,6 +62,55 @@ impl App {
     /// the event loop whenever the selection changes, and by `z` (recenter).
     pub fn reset_lineage_cursor(&mut self) {
         self.lineage_cursor = None;
+    }
+
+    /// Apply a release-confirmed click on the [`HitTarget`] the event loop
+    /// resolved: a list row re-root-selects (via the row's `unique_id`, the
+    /// same `reroot_select` contract every selection change follows), a
+    /// lineage node runs [`click_lineage_node`](App::click_lineage_node), a
+    /// list header / blank interior / lineage blank just takes that pane's
+    /// focus (what clicking those cells did before), and the minimap and
+    /// reserved targets do literally nothing. Only `MouseButton::Left` acts —
+    /// right and middle clicks do nothing yet (Issues 05/06 give them
+    /// meaning). The size-aware half (point → target) is `ui::hit_target`.
+    pub fn click_target(&mut self, target: &HitTarget, button: MouseButton) {
+        if button != MouseButton::Left {
+            return;
+        }
+        match target {
+            HitTarget::ListRow(index) => {
+                self.ui_state.set_focus(Focus::List);
+                let uid = self
+                    .active_list()
+                    .model_at(*index)
+                    .map(|m| m.unique_id.clone());
+                if let Some(uid) = uid {
+                    // A list click landing on a different model is a re-root,
+                    // so it runs the same "leave the column trace" rule as a
+                    // lineage click (`reroot_select` owns the contract).
+                    self.reroot_select(&uid);
+                }
+            }
+            HitTarget::ListHeader(_) | HitTarget::ListBlank => {
+                self.ui_state.set_focus(Focus::List);
+            }
+            HitTarget::LineageNode(uid) => {
+                self.ui_state.set_focus(Focus::RightPane);
+                self.click_lineage_node(uid);
+            }
+            HitTarget::LineageBlank => {
+                self.ui_state.set_focus(Focus::RightPane);
+            }
+            // Inert surfaces do nothing at all — the minimap literally
+            // swallows its click (Issue 05 gives it a pan meaning), and the
+            // reserved targets wait on Issues 02 (boundary drag), 06 (modal
+            // chrome), and 07 (status chips).
+            HitTarget::Minimap
+            | HitTarget::PaneBorder
+            | HitTarget::StatusBar
+            | HitTarget::ModalInterior
+            | HitTarget::ModalExterior => {}
+        }
     }
 
     /// Handle a lineage-pane click on `uid`: a `+M more` / `-M less` marker

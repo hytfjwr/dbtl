@@ -4,10 +4,11 @@
 
 use std::collections::HashMap;
 
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::widgets::{Block, Borders};
 
-use crate::NodeRect;
+use crate::model_list::DisplayRow;
+use crate::{ModelList, NodeRect};
 
 /// The three screen regions: left list pane, right lineage pane, bottom status
 /// line (each with its border, except the status line).
@@ -186,11 +187,10 @@ pub fn hit_test(
     click_x: u16,
     click_y: u16,
 ) -> Option<String> {
-    if click_x < interior.x
-        || click_y < interior.y
-        || click_x >= interior.x + interior.width
-        || click_y >= interior.y + interior.height
-    {
+    if !interior.contains(Position {
+        x: click_x,
+        y: click_y,
+    }) {
         return None; // outside the lineage pane interior
     }
     let gx = scroll_x + (click_x - interior.x) as usize;
@@ -199,6 +199,172 @@ pub fn hit_test(
         .iter()
         .find(|(_, r)| gx >= r.x && gx < r.x + r.width && gy >= r.y && gy < r.y + r.height)
         .map(|(uid, _)| uid.clone())
+}
+
+/// What a screen cell sits on — the answer the mouse router routes clicks,
+/// drags, and hover through. New interactive surfaces (tabs, the inspector,
+/// menus, status chips) extend this enum; the event loop resolves a point to
+/// a target via [`hit_target`] and then decides what a click there means.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HitTarget {
+    /// A model row in the list pane: the model's selection-space index into
+    /// `ModelList::models` (re-resolved to a `unique_id` at click time).
+    ListRow(usize),
+    /// A group header row in the list pane: the layer key (e.g. `"staging"`).
+    ListHeader(String),
+    /// List pane interior with no row under the point (below the last row,
+    /// or the padding right of short rows).
+    ListBlank,
+    /// A lineage node box: its `unique_id` (or a `+M more` marker's).
+    LineageNode(String),
+    /// Lineage pane interior with no node under the point (includes the
+    /// centering pad around a fully-fitting diagram).
+    LineageBlank,
+    /// The lineage minimap inset. It overlays real nodes, so a point inside it
+    /// reports `Minimap` and never the node below.
+    Minimap,
+    /// A shared boundary between adjacent panes — the two border columns where
+    /// the panes' edges meet (screen-spec §5's drag-to-resize target).
+    PaneBorder,
+    /// The bottom status line.
+    StatusBar,
+    /// Inside a modal overlay. Reserved for Issue 06 (mouse inside modals) —
+    /// nothing resolves it yet because `Mode::Selection` gating runs first.
+    ModalInterior,
+    /// Outside a modal overlay while it owns the screen. Reserved for Issue
+    /// 06's click-outside-to-dismiss.
+    ModalExterior,
+}
+
+/// The pure inputs [`hit_target`] needs, resolved once per mouse event by the
+/// (only) size-aware layer, the event loop. New surfaces extend this bundle
+/// rather than growing the signature — the loop already computes every field
+/// for drawing, so the hit-test always sees what the frame drew.
+pub struct HitGeometry<'a> {
+    /// The frame's pane rects (`pane_rects(area, list_visible)`).
+    pub panes: PaneRects,
+    /// The active model list (its `rows` interleave group headers).
+    pub list: &'a ModelList,
+    /// First visible display row (`UiState::offset`).
+    pub list_offset: usize,
+    /// The styled layout the lineage pane draws (`None` = empty diagram).
+    pub layout: Option<&'a crate::Layout>,
+    /// Lineage scroll offsets (CharGrid space).
+    pub scroll_x: usize,
+    /// Ditto, vertical.
+    pub scroll_y: usize,
+    /// Whether the minimap inset is on — its cells never reach nodes below.
+    pub minimap: bool,
+}
+
+/// Map a screen cell `(col, row)` to its [`HitTarget`], or `None` when it hits
+/// no interactive surface (pane chrome, or a dead zone between targets).
+///
+/// Every region is measured through the SAME pure geometry the renderer uses —
+/// `pane_rects`/`pane_interior` for the panes, [`lineage_content_rect`] for the
+/// diagram, [`minimap_rect`] for the inset — so "computed window == drawn
+/// window" holds for hit-testing too. The minimap is checked BEFORE the node
+/// hit-test: it is drawn over the diagram, so its cells must not fall through.
+pub fn hit_target(g: &HitGeometry, col: u16, row: u16) -> Option<HitTarget> {
+    let p = g.panes;
+    let at = Position { x: col, y: row };
+    if p.status.contains(at) {
+        return Some(HitTarget::StatusBar);
+    }
+    if pane_boundary(&p, col, row) {
+        return Some(HitTarget::PaneBorder);
+    }
+    let list_inner = pane_interior(p.list);
+    if list_inner.contains(at) {
+        let r = g.list_offset + (row - list_inner.y) as usize;
+        return Some(match g.list.rows.get(r) {
+            Some(DisplayRow::Model { model_index, .. }) => HitTarget::ListRow(*model_index),
+            Some(DisplayRow::Header { layer, .. }) => HitTarget::ListHeader(layer.clone()),
+            None => HitTarget::ListBlank,
+        });
+    }
+    let lin_inner = pane_interior(p.lineage);
+    if lin_inner.contains(at) {
+        if let Some(lay) = g.layout {
+            if let Some(mm) = minimap_rect(
+                lin_inner,
+                lay.grid.width(),
+                lay.grid.height(),
+                g.scroll_x,
+                g.scroll_y,
+                g.minimap,
+            ) {
+                if mm.contains(at) {
+                    return Some(HitTarget::Minimap);
+                }
+            }
+            let content = lineage_content_rect(lin_inner, lay.grid.width(), lay.grid.height());
+            if let Some(uid) = hit_test(&lay.rects, g.scroll_x, g.scroll_y, content, col, row) {
+                return Some(HitTarget::LineageNode(uid));
+            }
+        }
+        return Some(HitTarget::LineageBlank);
+    }
+    None
+}
+
+/// Whether `(col, row)` sits on a pane boundary: the two adjacent border
+/// columns where the list pane's right edge and the lineage pane's left edge
+/// meet, spanning the whole body height (the status line is not part of it).
+/// No boundary exists while the list pane is hidden (`list.width == 0`), which
+/// also guards the `width - 1` subtraction.
+fn pane_boundary(p: &PaneRects, col: u16, row: u16) -> bool {
+    if p.list.width == 0 || row >= p.status.y {
+        return false;
+    }
+    row >= p.list.y
+        && row < p.list.y + p.list.height
+        && (col == p.list.x + p.list.width - 1 || col == p.lineage.x)
+}
+
+/// Minimap inset dimensions (cells). A fixed small sketch in the top-right of
+/// the lineage interior — the SAME constants [`draw_minimap`] stamps with, so
+/// the drawn rect and the hit-tested rect can never drift apart.
+///
+/// [`draw_minimap`]: super::lineage
+pub(crate) const MM_W: u16 = 16;
+pub(crate) const MM_H: u16 = 6;
+
+/// The screen rect the minimap occupies inside the lineage `interior`, or
+/// `None` when it is not drawn: disabled, the diagram fully fits (a minimap of
+/// a visible-all diagram is noise), or the interior is too small to host the
+/// inset without smothering the content. This is the single source of the
+/// draw guard — `draw_lineage_pane` and [`hit_target`] share it, so clicks can
+/// never disagree with what is on screen.
+pub fn minimap_rect(
+    interior: Rect,
+    grid_w: usize,
+    grid_h: usize,
+    scroll_x: usize,
+    scroll_y: usize,
+    enabled: bool,
+) -> Option<Rect> {
+    if !enabled {
+        return None;
+    }
+    let content = lineage_content_rect(interior, grid_w, grid_h);
+    let edges = clip_edges(
+        grid_w,
+        grid_h,
+        scroll_x,
+        scroll_y,
+        content.width as usize,
+        content.height as usize,
+    );
+    if !edges.any() || interior.width < MM_W + 2 || interior.height < MM_H + 2 {
+        return None;
+    }
+    Some(Rect {
+        x: interior.x + interior.width - MM_W,
+        y: interior.y,
+        width: MM_W,
+        height: MM_H,
+    })
 }
 
 #[cfg(test)]
