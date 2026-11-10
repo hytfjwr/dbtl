@@ -157,6 +157,59 @@ impl ModelList {
             row
         }
     }
+
+    /// The key of the group owning `model_index`, plus that group's FIRST
+    /// model index — the slot a fold empties into (after folding, the next
+    /// surviving model slides into it — §10's "next visible model" seat).
+    /// `None` when the index is out of range. Works on ANY view (full,
+    /// filtered, folded): `groups` always enumerates the list's own visible
+    /// members, so a folded list answers about the models it still holds.
+    pub fn group_of_model(&self, model_index: usize) -> Option<(&str, usize)> {
+        let mut start = 0;
+        for g in &self.groups {
+            if model_index < start + g.models.len() {
+                return Some((g.layer.as_str(), start));
+            }
+            start += g.models.len();
+        }
+        None
+    }
+
+    /// The display-row index of group `key`'s header row (`None` when the key
+    /// names no group in this list). Derived from the groups/rows lockstep
+    /// order — every group emits its header before its model rows, so the
+    /// header position is the cumulative `1 + models.len()` of the groups
+    /// before it (a folded group's empty `models` correctly leaves it a
+    /// single header row).
+    pub fn row_of_group(&self, key: &str) -> Option<usize> {
+        let mut row = 0;
+        for g in &self.groups {
+            if g.layer == key {
+                return Some(row);
+            }
+            row += 1 + g.models.len();
+        }
+        None
+    }
+
+    /// The group header to pin at the pane's first interior row while the
+    /// scroll offset lands mid-group (§10's sticky header). `Some` exactly
+    /// when the window's first display row is a MODEL row — its owning
+    /// header scrolled off above — AND that row is not the selected one
+    /// (the pin would hide the selection marker). An accessor over `rows`
+    /// only — pinning is rendering/hit-test chrome, never a model-space or
+    /// display-row-space mutation (the issue's rendering-only rule).
+    pub fn sticky_header(&self, offset: usize, selected: usize) -> Option<&DisplayRow> {
+        match self.rows.get(offset) {
+            Some(DisplayRow::Model { model_index, .. }) if *model_index != selected => self
+                .rows
+                .iter()
+                .take(offset)
+                .rev()
+                .find(|r| matches!(r, DisplayRow::Header { .. })),
+            _ => None,
+        }
+    }
 }
 
 /// Build the model list from a [`Dag`] — the default layer grouping (see
@@ -365,6 +418,113 @@ pub fn filter_model_list(full: &ModelList, keep: impl Fn(&NodeInfo) -> bool) -> 
         matched_groups.push((group.layer.clone(), matched));
     }
     assemble_model_list(matched_groups)
+}
+
+/// Apply the folded-group set to `full` (screen-spec §10): every group keeps
+/// its HEADER row — the `▸ Name (N)` fold toggle + click target — but a
+/// folded group's models leave BOTH `models` and `rows`. Model space itself
+/// shrinks, so a folded group is skipped by `j`/`k` and can't take the
+/// selection (the issue's pipeline-stage rule — display-row hiding alone
+/// would desync the two coordinate spaces). `groups[i].models` carries only
+/// the VISIBLE members (a folded group's is empty), preserving the
+/// `models == concat(groups.models)` invariant every consumer of `groups`
+/// relies on; the header's `count` still reports the FULL membership
+/// (`▸ Staging (11)` keeps "11" while folded).
+pub fn fold_model_list(full: &ModelList, folded: &std::collections::BTreeSet<String>) -> ModelList {
+    let by_group: Vec<(String, Vec<NodeInfo>)> = full
+        .groups
+        .iter()
+        .map(|g| {
+            let kept = if folded.contains(&g.layer) {
+                Vec::new()
+            } else {
+                g.models.clone()
+            };
+            (g.layer.clone(), kept)
+        })
+        .collect();
+    let mut list = assemble_model_list(by_group);
+    // `assemble_model_list` wrote `count = kept.len()`; a folded group shows
+    // its FULL membership instead (the count is the reason the header
+    // survives folding at all — "N models hidden here").
+    let mut gi = 0;
+    for row in &mut list.rows {
+        if let DisplayRow::Header { count, .. } = row {
+            *count = full.groups[gi].models.len();
+            gi += 1;
+        }
+    }
+    list
+}
+
+/// Middle-elide `name` to at most `budget` display CELLS, keeping head and
+/// tail (`stg_payment__…_departments` — §10's rule: dbt names share
+/// prefixes, so the tail distinguishes them). Width is measured by
+/// `unicode-width`, so a CJK name's 2-cell chars budget correctly — never
+/// byte- or char-count-slicing. `marker` is the mode's ellipsis (`…` /
+/// `..`, via `ui::chrome`) and its width is part of the budget.
+///
+/// Returns the text plus, for each OUTPUT char, its char index in `name`
+/// (`usize::MAX` for the marker's chars) — the search-highlight path maps
+/// its `match_indices` hit set through these indices so a truncated name
+/// still highlights exactly the accepted chars. Biased to the tail, like
+/// the tab-bar's own middle-truncate.
+pub fn mid_truncate_indexed(name: &str, budget: usize, marker: &str) -> (String, Vec<usize>) {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if UnicodeWidthStr::width(name) <= budget {
+        return (name.to_string(), (0..name.chars().count()).collect());
+    }
+    let marker_w = UnicodeWidthStr::width(marker);
+    let cell = |c: char| UnicodeWidthChar::width(c).unwrap_or(0);
+    if budget <= marker_w {
+        // Degenerate budget (no room for head+marker+tail): keep the TAIL
+        // alone — the distinguishing end — clipped to `budget` cells.
+        let chars: Vec<char> = name.chars().collect();
+        let mut w = 0;
+        let mut taken = 0;
+        for (i, &ch) in chars.iter().enumerate().rev() {
+            if w + cell(ch) > budget {
+                break;
+            }
+            w += cell(ch);
+            taken = i;
+        }
+        let out: String = chars[taken..].iter().collect();
+        return (out, (taken..chars.len()).collect());
+    }
+    // Tail takes the larger share (the distinguishing end); the head gets
+    // whatever the tail leaves of `avail`.
+    let avail = budget - marker_w;
+    let chars: Vec<char> = name.chars().collect();
+    let tail_cap = avail - avail / 2;
+    let mut tw = 0;
+    let mut tail_start = chars.len();
+    for (i, &ch) in chars.iter().enumerate().rev() {
+        if tw + cell(ch) > tail_cap {
+            break;
+        }
+        tw += cell(ch);
+        tail_start = i;
+    }
+    let head_cap = avail - tw;
+    let mut hw = 0;
+    let mut head_len = 0;
+    for &ch in chars.iter().take(tail_start) {
+        if hw + cell(ch) > head_cap {
+            break;
+        }
+        hw += cell(ch);
+        head_len += 1;
+    }
+    let mut out = String::new();
+    let mut idx = Vec::new();
+    out.extend(&chars[..head_len]);
+    idx.extend(0..head_len);
+    out.push_str(marker);
+    idx.extend(std::iter::repeat_n(usize::MAX, marker.chars().count()));
+    out.extend(&chars[tail_start..]);
+    idx.extend(tail_start..chars.len());
+    (out, idx)
 }
 
 #[cfg(test)]
@@ -867,5 +1027,150 @@ mod tests {
             assert!(!name_matches_query(name, query));
             assert!(match_indices(name, query).is_empty(), "{name} !~ {query}");
         }
+    }
+
+    // ---- Issue 11: folding, sticky header, middle truncation ----
+
+    #[test]
+    fn fold_keeps_headers_with_full_counts_and_empties_model_space() {
+        let full = build_model_list(&synthetic(), SortMode::Layer);
+        let folded: std::collections::BTreeSet<String> = ["intermediate".to_string()].into();
+        let list = fold_model_list(&full, &folded);
+        // All four groups stay — a folded group keeps its header row, its
+        // models leave model space entirely (the `▸` click target survives).
+        assert_eq!(list.groups.len(), 4);
+        assert_eq!(
+            list.len(),
+            6,
+            "the two intermediate models leave selection space"
+        );
+        let ig = list
+            .groups
+            .iter()
+            .find(|g| g.layer == "intermediate")
+            .unwrap();
+        assert!(ig.models.is_empty(), "a folded group's model set is empty");
+        // The header still reports the FULL count (`▸ Intermediate (2)`).
+        let header = list
+            .rows
+            .iter()
+            .find(|r| matches!(r, DisplayRow::Header { layer, .. } if layer == "intermediate"))
+            .expect("the folded group's header row survives");
+        assert_eq!(
+            *header,
+            DisplayRow::Header {
+                layer: "intermediate".into(),
+                count: 2
+            }
+        );
+        // The bridge stays coherent: every surviving model row maps back.
+        for i in 0..list.len() {
+            let r = list.row_of_model(i);
+            match &list.rows[r] {
+                DisplayRow::Model { model_index, .. } => assert_eq!(*model_index, i),
+                other => panic!("row_of_model({i}) -> {other:?}"),
+            }
+        }
+        // No display row names a folded group's model.
+        let names: Vec<&str> = list.models.iter().map(|m| m.name.as_str()).collect();
+        assert!(!names.contains(&"int_a") && !names.contains(&"int_b"));
+    }
+
+    #[test]
+    fn group_of_model_returns_key_and_group_start() {
+        let list = build_model_list(&synthetic(), SortMode::Layer);
+        // [stg_a stg_b][int_a int_b][marts_a marts_b][util_a util_b]
+        assert_eq!(list.group_of_model(0), Some(("staging", 0)));
+        assert_eq!(list.group_of_model(1), Some(("staging", 0)));
+        assert_eq!(list.group_of_model(3), Some(("intermediate", 2)));
+        assert_eq!(list.group_of_model(7), Some(("utilities", 6)));
+        assert_eq!(list.group_of_model(99), None, "out of range is safe");
+        // A folded list answers about the models it still holds.
+        let folded: std::collections::BTreeSet<String> = ["staging".to_string()].into();
+        let fl = fold_model_list(&list, &folded);
+        assert_eq!(fl.group_of_model(0), Some(("intermediate", 0)));
+    }
+
+    #[test]
+    fn row_of_group_finds_each_header_row() {
+        let list = build_model_list(&synthetic(), SortMode::Layer);
+        assert_eq!(list.row_of_group("staging"), Some(0));
+        assert_eq!(list.row_of_group("intermediate"), Some(3));
+        assert_eq!(list.row_of_group("marts"), Some(6));
+        assert_eq!(list.row_of_group("utilities"), Some(9));
+        assert_eq!(list.row_of_group("nope"), None);
+        // Folded: the header still claims one row — later groups slide up.
+        let folded: std::collections::BTreeSet<String> = ["staging".to_string()].into();
+        let fl = fold_model_list(&list, &folded);
+        assert_eq!(fl.row_of_group("staging"), Some(0));
+        assert_eq!(fl.row_of_group("intermediate"), Some(1));
+    }
+
+    #[test]
+    fn sticky_header_pins_only_mid_group_and_not_over_the_selection() {
+        let list = build_model_list(&synthetic(), SortMode::Layer);
+        // Offset at a header → no pin (the real header is already row 0).
+        assert!(list.sticky_header(0, 5).is_none());
+        // Offset mid-group → the owning header pins.
+        let pinned = list.sticky_header(2, 5); // row 2 = stg_b (staging)
+        assert_eq!(
+            pinned,
+            Some(&DisplayRow::Header {
+                layer: "staging".into(),
+                count: 2
+            })
+        );
+        // …unless that first row IS the selected model — the pin must never
+        // cover the selection marker.
+        let row_model = match list.rows[2] {
+            DisplayRow::Model { model_index, .. } => model_index,
+            _ => unreachable!(),
+        };
+        assert!(list.sticky_header(2, row_model).is_none());
+        // An offset past the end is safe.
+        assert!(list.sticky_header(9999, 0).is_none());
+    }
+
+    #[test]
+    fn mid_truncate_keeps_head_marker_and_tail_within_budget() {
+        use unicode_width::UnicodeWidthStr;
+        // Fits → unchanged, identity map.
+        let (t, m) = mid_truncate_indexed("stg_a", 10, "…");
+        assert_eq!(t, "stg_a");
+        assert_eq!(m, vec![0, 1, 2, 3, 4]);
+        // 20 cells into 10: head + `…` + tail, tail kept (it distinguishes
+        // dbt names). avail=9 → tail 5 ("dgets"), head 4 ("stg_"). Cell-exact:
+        // the output never exceeds the budget.
+        let (t, m) = mid_truncate_indexed("stg_finance__budgets", 10, "…");
+        assert_eq!(t, "stg_…dgets");
+        assert!(UnicodeWidthStr::width(t.as_str()) <= 10);
+        assert_eq!(&m[..4], &[0, 1, 2, 3], "head maps to chars 0..4");
+        assert_eq!(m[4], usize::MAX, "the marker is not a source char");
+        assert_eq!(&m[5..], &[15, 16, 17, 18, 19]);
+        // ASCII mode's two-cell marker: `..` budgets like any other glyph
+        // (avail=8 → tail 4 "gets", head 4 "stg_").
+        let (t, _) = mid_truncate_indexed("stg_finance__budgets", 10, "..");
+        assert_eq!(t, "stg_..gets");
+        // Tiny budgets degrade gracefully: marker + as much tail as fits,
+        // and below the marker's own width the tail alone (clipped to cells).
+        let (t, _) = mid_truncate_indexed("stg_finance__budgets", 2, "…");
+        assert_eq!(t, "…s");
+        let (t, _) = mid_truncate_indexed("stg_finance__budgets", 1, "…");
+        assert_eq!(t, "s");
+    }
+
+    #[test]
+    fn mid_truncate_budgets_cjk_by_cells_not_chars() {
+        use unicode_width::UnicodeWidthStr;
+        // あいうえお = 10 cells (2/char). Budget 7 → head+`…`+tail ≤ 7
+        // (avail 6 → tail お / head あい), tail preserved, chars stay whole.
+        let (t, _) = mid_truncate_indexed("あいうえお", 7, "…");
+        assert_eq!(t, "あい…お");
+        assert!(UnicodeWidthStr::width(t.as_str()) <= 7);
+        // The tail favours the distinguishing end even at odd budgets.
+        let (t, _) = mid_truncate_indexed("orders_テーブル_2024", 9, "…");
+        assert!(t.ends_with('4'), "the tail (year) survives");
+        assert!(t.contains('…'));
+        assert!(UnicodeWidthStr::width(t.as_str()) <= 9);
     }
 }

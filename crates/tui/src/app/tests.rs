@@ -7356,6 +7356,7 @@ fn hit_geom<'a>(a: &'a App, lay: Option<&'a Layout>, area: Rect) -> HitGeometry<
         tab_bar: Some(a.tab_bar_layout_for(panes.tab_bar, false)),
         list: a.active_list(),
         list_offset: a.ui_state.offset(),
+        list_selected: a.ui_state.selected(),
         layout: lay,
         scroll_x: a.ui_state.lineage_scroll_x(),
         scroll_y: a.ui_state.lineage_scroll_y(),
@@ -9316,4 +9317,286 @@ fn inspector_policy_persists() {
         ..PersistedState::default()
     });
     assert_eq!(b.ui_state.inspector_policy(), InspectorPolicy::Off);
+}
+
+// ---- Issue 11: group folding (list pipeline stage) -------------------------
+
+#[test]
+fn dash_binding_dispatches_toggle_group_fold() {
+    // `-` in Selection mode must resolve to the fold action — the keyboard
+    // twin of the group-header click.
+    use crate::action::dispatch;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    assert_eq!(
+        dispatch(
+            &Mode::Selection,
+            KeyEvent::new(KeyCode::Char('-'), KeyModifiers::NONE)
+        ),
+        Some(Action::ToggleGroupFold),
+        "the `-` row in BINDINGS routes to ToggleGroupFold"
+    );
+}
+
+#[test]
+fn fold_removes_models_but_keeps_the_header_and_full_count() {
+    let mut a = app();
+    // Selection starts on staging's first model (index 0): `-` folds staging.
+    apply_action(&mut a, Action::ToggleGroupFold);
+    assert!(
+        a.folded_groups.contains("staging"),
+        "the fold state records the group key"
+    );
+    let list = a.active_list();
+    // 45 - 11 staging models = 34 selectable models; the group still emits
+    // its header (count = FULL membership, not the visible 0).
+    assert_eq!(list.len(), 34, "folded models leave selection space");
+    assert!(
+        list.models.iter().all(|m| !m.name.starts_with("stg_")),
+        "no staging model is selectable"
+    );
+    match &list.rows[0] {
+        DisplayRow::Header { layer, count } => {
+            assert_eq!(layer, "staging");
+            assert_eq!(*count, 11, "a folded header reports FULL membership");
+        }
+        other => panic!("row 0 must stay the staging header, got {other:?}"),
+    }
+    // Display-row space shrank by the folded members (headers survive).
+    assert_eq!(list.row_count(), 45 + 4 - 11, "rows = models + headers");
+}
+
+#[test]
+fn fold_hiding_the_selection_moves_the_cursor_to_the_next_visible_model() {
+    let mut a = app();
+    // Park the selection mid-staging (index 5), then fold: the cursor's model
+    // leaves the list, so the cursor lands where staging's models vacated —
+    // the next group's first model (intermediate index 0 post-fold). The
+    // ROOT stays on the hidden model (the §2 detach — same rule as a
+    // filtered-out root).
+    let hidden = a.active_list().models[5].unique_id.clone();
+    a.select_by_unique_id(&hidden);
+    apply_action(&mut a, Action::ToggleGroupFold);
+    let cursor_uid = a.list_sel_uid().expect("a survivor is selected");
+    assert_ne!(
+        Some(cursor_uid.as_str()),
+        Some(hidden.as_str()),
+        "the hidden model can't hold the cursor"
+    );
+    assert_eq!(
+        a.active_list().models[a.ui_state.selected()].name,
+        "int_delivery_lanes__combined",
+        "the cursor re-seats on the next group's first model"
+    );
+    assert_eq!(
+        a.selected_unique_id().as_deref(),
+        Some(hidden.as_str()),
+        "the root detaches — the lineage keeps the folded model"
+    );
+}
+
+#[test]
+fn unfold_restores_the_groups_models() {
+    let mut a = app();
+    apply_action(&mut a, Action::ToggleGroupFold);
+    assert_eq!(a.active_list().len(), 34);
+    // Unfold staging through the same key-path (the header click's twin).
+    a.toggle_group_fold("staging");
+    assert!(!a.folded_groups.contains("staging"), "re-toggle unfolds");
+    assert_eq!(a.active_list().len(), 45, "staging's models return");
+    assert!(
+        a.active_list()
+            .models
+            .iter()
+            .any(|m| m.name == "stg_finance__budgets"),
+        "staging models are selectable again"
+    );
+}
+
+#[test]
+fn list_search_ignores_folds_and_restores_them_on_close() {
+    let mut a = app();
+    a.toggle_group_fold("staging");
+    assert_eq!(a.active_list().len(), 34);
+    // Search: the fold is ignored — a staging member still matches and is
+    // selectable while the query narrows.
+    apply_action(&mut a, Action::SearchOpen);
+    for c in "stg_finance__fiscal".chars() {
+        apply_action(&mut a, Action::SearchType(c));
+    }
+    assert!(
+        a.active_list()
+            .models
+            .iter()
+            .any(|m| m.name == "stg_finance__fiscal_years"),
+        "a folded group's member still surfaces in search"
+    );
+    assert!(
+        a.select_by_unique_id("model.jaffle_finance.stg_finance__fiscal_years"),
+        "a folded member is selectable while searching"
+    );
+    // Closing the search restores the fold view.
+    apply_action(&mut a, Action::SearchCancel);
+    assert_eq!(
+        a.active_list().len(),
+        34,
+        "the fold view restores when search closes"
+    );
+    assert!(a.folded_groups.contains("staging"));
+}
+
+#[test]
+fn search_confirm_inside_a_folded_group_unfolds_just_that_group() {
+    let mut a = app();
+    a.toggle_group_fold("staging");
+    a.toggle_group_fold("marts");
+    // Search surfaces the folded staging member; confirming it lands the
+    // pick — the explicit selection beats the fold pref: STAGING unfolds,
+    // the unrelated marts fold survives.
+    apply_action(&mut a, Action::SearchOpen);
+    for c in "stg_finance__budgets".chars() {
+        apply_action(&mut a, Action::SearchType(c));
+    }
+    apply_action(&mut a, Action::SearchConfirm);
+    assert!(
+        !a.folded_groups.contains("staging"),
+        "the confirmed match's group unfolded"
+    );
+    assert!(
+        a.folded_groups.contains("marts"),
+        "the fold the user did NOT pick stays folded"
+    );
+    assert_eq!(
+        a.selected_unique_id().as_deref(),
+        Some("model.jaffle_finance.stg_finance__budgets"),
+        "the confirmed match is rooted"
+    );
+}
+
+#[test]
+fn search_cancel_keeps_the_origins_fold() {
+    let mut a = app();
+    a.toggle_group_fold("staging");
+    // Root is inside folded staging (detached). A search CANCEL must put
+    // everything back — never unfold the origin's group.
+    apply_action(&mut a, Action::SearchOpen);
+    for c in "zz_nomatch".chars() {
+        apply_action(&mut a, Action::SearchType(c));
+    }
+    apply_action(&mut a, Action::SearchCancel);
+    assert!(
+        a.folded_groups.contains("staging"),
+        "cancel mutates no fold state"
+    );
+}
+
+#[test]
+fn header_click_toggles_the_fold_not_the_selection() {
+    let mut a = app();
+    a.click_target(
+        &HitTarget::ListHeader("marts".to_string()),
+        MouseButton::Left,
+        (5, 5),
+    );
+    assert!(
+        a.folded_groups.contains("marts"),
+        "a header click folds its group"
+    );
+    assert!(
+        a.active_list().models.iter().all(|m| {
+            let g = a
+                .active_list()
+                .group_of_model(
+                    a.active_list()
+                        .models
+                        .iter()
+                        .position(|n| n.unique_id == m.unique_id)
+                        .unwrap(),
+                )
+                .map(|(k, _)| k != "marts")
+                .unwrap_or(true);
+            g
+        }),
+        "marts members left the list"
+    );
+    // A second click on the (still present) header unfolds.
+    a.click_target(
+        &HitTarget::ListHeader("marts".to_string()),
+        MouseButton::Left,
+        (5, 5),
+    );
+    assert!(!a.folded_groups.contains("marts"), "re-click unfolds");
+    assert_eq!(a.active_list().len(), 45);
+}
+
+#[test]
+fn folding_every_group_empties_the_list_and_names_the_fold() {
+    let mut a = app();
+    for layer in ["staging", "intermediate", "marts", "utilities"] {
+        a.toggle_group_fold(layer);
+    }
+    assert!(a.active_list().is_empty(), "every group folded → no models");
+    // The headers survive — row space is all headers now.
+    assert_eq!(a.active_list().row_count(), 4);
+    assert_eq!(
+        a.list_empty_reason().as_deref(),
+        Some("all groups folded — press - to expand"),
+        "the stamp names the fold, not a phantom filter"
+    );
+}
+
+#[test]
+fn apply_prefs_restores_folded_groups_and_prunes_dead_keys() {
+    let mut a = app();
+    let prefs = crate::persist::PersistedState {
+        folded_groups: ["staging", "no_such_layer"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        ..Default::default()
+    };
+    a.apply_prefs(&prefs);
+    assert!(
+        a.folded_groups.contains("staging"),
+        "a live fold key restores"
+    );
+    assert!(
+        !a.folded_groups.contains("no_such_layer"),
+        "a stale fold key is pruned (no phantom fold)"
+    );
+    assert_eq!(a.active_list().len(), 34);
+}
+
+#[test]
+fn restored_all_fold_then_dash_reopens_the_roots_group() {
+    // Persisted all-groups-folded restore, then `-`: the cursor has no model
+    // under it (the list is empty), so `-` falls back to the ROOT's group —
+    // the only `-` path that can re-OPEN a fold (§10's 畳む / 開く).
+    let mut a = app();
+    let prefs = crate::persist::PersistedState {
+        folded_groups: ["staging", "intermediate", "marts", "utilities"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        last_selected: Some("model.jaffle_finance.pos_txn".to_string()),
+        tabs: vec![crate::persist::PersistedTab {
+            root: "model.jaffle_finance.pos_txn".to_string(),
+            view: LineageView::default(),
+        }],
+        active_tab: Some(0),
+        ..Default::default()
+    };
+    a.apply_prefs(&prefs);
+    assert_eq!(a.folded_groups.len(), 4, "all folds restored");
+    assert_eq!(a.active_list().len(), 0, "folded view is empty");
+    apply_action(&mut a, Action::ToggleGroupFold);
+    assert!(
+        !a.folded_groups.contains("utilities"),
+        "`-` re-opened the root's folded group"
+    );
+    assert_eq!(a.folded_groups.len(), 3);
+    assert_eq!(
+        a.list_sel_uid().as_deref(),
+        Some("model.jaffle_finance.pos_txn"),
+        "the cursor re-seats on the now-visible root"
+    );
 }

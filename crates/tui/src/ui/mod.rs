@@ -110,6 +110,14 @@ pub(crate) struct Chrome {
     pub run_ok: &'static str,
     pub run_warn: &'static str,
     pub run_fail: &'static str,
+    /// The list group header's OPEN fold marker (`▾` Unicode / `v` ASCII — §15).
+    pub group_open: &'static str,
+    /// The list group header's FOLDED marker (`▸` Unicode / `>` ASCII — §15).
+    pub group_folded: &'static str,
+    /// The list row's middle-elision marker (`…` Unicode / `..` ASCII — §10).
+    /// `…` is East-Asian-Ambiguous — ASCII mode uses the two-cell `..` so the
+    /// truncation budget stays cell-exact on ambiguous-width terminals.
+    pub ellipsis: &'static str,
 }
 
 /// The chrome for a [`GlyphMode`](crate::GlyphMode).
@@ -147,6 +155,9 @@ static UNICODE_CHROME: Chrome = Chrome {
     run_ok: "✓",
     run_warn: "!",
     run_fail: "✗",
+    group_open: "▾",
+    group_folded: "▸",
+    ellipsis: "…",
 };
 
 static ASCII_CHROME: Chrome = Chrome {
@@ -171,6 +182,9 @@ static ASCII_CHROME: Chrome = Chrome {
     run_ok: "v",
     run_warn: "!",
     run_fail: "x",
+    group_open: "v",
+    group_folded: ">",
+    ellipsis: "..",
 };
 
 /// Highlight style for the selected row / emphasized lineage label: an

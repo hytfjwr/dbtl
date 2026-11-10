@@ -305,12 +305,22 @@ impl App {
             let dash = crate::ui::chrome(self.glyph_mode).dash;
             return Some(format!("no models in scope {dash} try --include-packages"));
         }
-        Some(match self.list_filter {
-            ListFilter::Untested => "no untested models".to_string(),
-            ListFilter::Bookmarked => "no bookmarked models".to_string(),
-            // `All` ⇒ active_list == model_list — an empty list already took
-            // the scope reason above; kept only as the defensive fallback.
-            ListFilter::All => "no models".to_string(),
-        })
+        // The persistent filter narrows BEFORE the fold stage, so when the
+        // fold-free base is already empty the filter is the real miss.
+        if self.unfolded_base().is_empty() {
+            return Some(match self.list_filter {
+                ListFilter::Untested => "no untested models".to_string(),
+                ListFilter::Bookmarked => "no bookmarked models".to_string(),
+                // `All` ⇒ unfolded_base == model_list — an empty list already
+                // took the scope reason above; kept only as the defensive
+                // fallback.
+                ListFilter::All => "no models".to_string(),
+            });
+        }
+        // The only stage left that can empty the pane: every group folded.
+        // The headers still render — this line lands between them, so it
+        // names the fold (with `-`'s twin) rather than a phantom filter miss.
+        let dash = crate::ui::chrome(self.glyph_mode).dash;
+        Some(format!("all groups folded {dash} press - to expand"))
     }
 }

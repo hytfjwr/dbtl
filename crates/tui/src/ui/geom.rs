@@ -871,6 +871,10 @@ pub struct HitGeometry<'a> {
     pub list: &'a ModelList,
     /// First visible display row (`UiState::offset`).
     pub list_offset: usize,
+    /// The selected model index (`UiState::selected`) — the sticky header's
+    /// suppression rule needs it: the pin never covers the selection's own
+    /// row, so the row the pin CLAIMS depends on where the selection sits.
+    pub list_selected: usize,
     /// The styled layout the lineage pane draws (`None` = empty diagram).
     pub layout: Option<&'a crate::Layout>,
     /// Lineage scroll offsets (CharGrid space).
@@ -953,6 +957,17 @@ pub fn hit_target(g: &HitGeometry, col: u16, row: u16) -> Option<HitTarget> {
     }
     let list_inner = pane_interior(p.list);
     if list_inner.contains(at) {
+        // The sticky header (§10) is drawn OVER the first interior row while
+        // scrolling mid-group — that row reports the PINNED header's target,
+        // not the model row the pin covers: the pointer sees a header, so a
+        // click must fold it. Everything below row 0 resolves normally.
+        if row == list_inner.y {
+            if let Some(DisplayRow::Header { layer, .. }) =
+                g.list.sticky_header(g.list_offset, g.list_selected)
+            {
+                return Some(HitTarget::ListHeader(layer.clone()));
+            }
+        }
         let r = g.list_offset + (row - list_inner.y) as usize;
         return Some(match g.list.rows.get(r) {
             Some(DisplayRow::Model { model_index, .. }) => HitTarget::ListRow(*model_index),
@@ -990,6 +1005,39 @@ pub fn hit_target(g: &HitGeometry, col: u16, row: u16) -> Option<HitTarget> {
         return Some(HitTarget::InspectorRow((row - ins_inner.y) as usize));
     }
     None
+}
+
+/// The screen row (0-based inside the list interior) a list `HitTarget`
+/// currently occupies — the reverse of [`hit_target`]'s row resolution, so
+/// the renderer's hover tint lands on exactly the row the pointer sees.
+/// `None` when the target scrolled out of the window, or the sticky pin
+/// covers it: a covered model row is never hoverable (the pinned header
+/// reports `ListHeader` there instead), mirroring the hit-test's rule.
+pub fn list_target_row(
+    list: &ModelList,
+    offset: usize,
+    selected: usize,
+    target: &HitTarget,
+    inner_height: usize,
+) -> Option<usize> {
+    let sticky = match list.sticky_header(offset, selected) {
+        Some(DisplayRow::Header { layer, .. }) => Some(layer.as_str()),
+        _ => None,
+    };
+    let row = match target {
+        // The pinned header claims interior row 0; any other header sits at
+        // its own display row.
+        HitTarget::ListHeader(layer) if sticky == Some(layer.as_str()) => Some(0),
+        HitTarget::ListHeader(layer) => {
+            list.row_of_group(layer).and_then(|r| r.checked_sub(offset))
+        }
+        HitTarget::ListRow(i) => list
+            .row_of_model(*i)
+            .checked_sub(offset)
+            .filter(|&y| !(y == 0 && sticky.is_some())),
+        _ => None,
+    };
+    row.filter(|&y| y < inner_height)
 }
 
 /// Minimap inset dimensions (cells). A fixed small sketch in the top-right of
@@ -1382,6 +1430,7 @@ mod tests {
             tab_bar: Some(tb),
             list: &list,
             list_offset: 0,
+            list_selected: 0,
             layout: None,
             scroll_x: 0,
             scroll_y: 0,

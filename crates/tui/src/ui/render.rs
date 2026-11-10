@@ -212,6 +212,16 @@ pub struct RenderCtx<'a> {
     /// via [`App::list_empty_reason`](crate::App::list_empty_reason). `None`
     /// in headless renders (or whenever the list has models).
     pub empty_reason: Option<&'a str>,
+    /// The folded group keys (`App::folded_groups`) — the group headers'
+    /// `▾`/`▸` marker (§10). `None` (the default) treats every group as open,
+    /// so headless renders without folds are untouched.
+    pub folded_groups: Option<&'a std::collections::BTreeSet<String>>,
+    /// The list-pane hit target the pointer hovers (`HitTarget::ListRow` /
+    /// `ListHeader` — §6's hover tint: the row paints `theme.surface`). `None`
+    /// (the default) draws no tint. The loop fills it from the same
+    /// [`hit_target`](super::geom::hit_target) the click path uses — the
+    /// tinted row is exactly the row a click would hit.
+    pub list_hover: Option<&'a HitTarget>,
     /// The active colour [`Theme`](theme::Theme) every surface paints with.
     /// Defaults to [`theme::DEFAULT`] (so headless renders and the
     /// style-asserting tests keep the legacy palette); the event loop sets the
@@ -275,6 +285,8 @@ impl<'a> RenderCtx<'a> {
             toasts: &[],
             palette_rows: None,
             empty_reason: None,
+            folded_groups: None,
+            list_hover: None,
             theme: &theme::DEFAULT,
             inspector: None,
         }
@@ -328,6 +340,8 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
             ctx.full_model_count,
             ctx.filter_label,
             ctx.empty_reason,
+            ctx.folded_groups,
+            ctx.list_hover,
             ctx.theme,
         );
     }
@@ -563,14 +577,17 @@ fn draw_tab_bar(
     }
 }
 
-/// Draw the left model-list pane: a bordered block with interleaved group headers
-/// and model rows, scrolled by `state.offset()` (display-row space), the selected
-/// model row highlighted by both a marker and reversed style.
+/// Draw the left model-list pane: a bordered block with interleaved group
+/// headers and model rows, scrolled by `state.offset()` (display-row space),
+/// the selected model row highlighted by both a marker and reversed style.
 ///
 /// The visible window is exactly `list.rows[offset .. offset + inner_height]` —
 /// the *same* row sequence `UiState::ensure_visible` measures against, which is
-/// what guarantees the selected model's row is never clipped. No sticky-header
-/// injection (it would consume a line the scroll math doesn't know about).
+/// what guarantees the selected model's row is never clipped. The §10 sticky
+/// header then overwrites the FIRST window line (never inserts one) — a
+/// rendering-only overlay that leaves model-space and display-row-space
+/// untouched (`hit_target` resolves the covered row through the same
+/// `ModelList::sticky_header`, so "computed row == drawn row" still holds).
 #[allow(clippy::too_many_arguments)]
 fn draw_list(
     frame: &mut Frame,
@@ -584,6 +601,8 @@ fn draw_list(
     full_count: Option<usize>,
     filter_label: Option<&str>,
     empty_reason: Option<&str>,
+    folded: Option<&std::collections::BTreeSet<String>>,
+    hover: Option<&HitTarget>,
     t: &theme::Theme,
 ) {
     let chrome = super::chrome(glyphs);
@@ -626,103 +645,71 @@ fn draw_list(
     frame.render_widget(block, area);
 
     let inner_height = inner.height as usize;
+    let is_folded = |layer: &str| folded.is_some_and(|f| f.contains(layer));
     let mut lines: Vec<Line> = Vec::with_capacity(inner_height);
     for row in list.rows.iter().skip(state.offset()).take(inner_height) {
         match row {
             DisplayRow::Header { layer, count } => {
-                // Accented header: a per-layer color + rule glyphs + a display-only
-                // capitalized label. The shared `header_style()` (used by overlay
-                // section headers) is deliberately NOT recolored here — this is a
-                // separate accent path applied only in the list pane. The lowercase
-                // `layer` grouping key is never mutated (title_case is display-only).
-                let rule = chrome.rule.repeat(2);
-                let label = format!("{rule} {} ({count})", title_case(layer));
-                let accent = Style::default()
-                    .fg(layer_accent(layer, t))
-                    .add_modifier(Modifier::BOLD);
-                lines.push(Line::styled(label, accent));
+                lines.push(list_header_line(layer, *count, is_folded(layer), chrome, t));
             }
             DisplayRow::Model { model_index, name } => {
-                let selected = *model_index == state.selected();
-                let marker = if selected {
-                    SELECTED_MARKER
-                } else {
-                    UNSELECTED_MARKER
-                };
-                let node = list.model_at(*model_index);
-                let (up, down) = node.map_or((0, 0), |n| (n.direct_up, n.direct_down));
-                // A model with no downstream is a leaf ("orphan") — flag it.
-                let orphan = node.is_some_and(|n| n.resource_type == "model" && n.direct_down == 0);
-                // Coverage lens (only the Coverage lens, not the others): a
-                // testable node with zero tests gets a warning name. The lens wins
-                // over the orphan red (the user opted into it), and selection still
-                // wins over both.
-                let gap = state.lens() == LineageLens::Coverage && node.is_some_and(coverage_gap);
-                let name_style = if selected {
-                    selected_style(t)
-                } else if gap {
-                    Style::default().fg(t.danger)
-                } else if orphan {
-                    Style::default().fg(t.orphan)
-                } else {
-                    Style::default()
-                };
-                // The model name: a single span normally, but char-by-char
-                // (matched chars patched yellow+bold) while a non-empty list
-                // search is active, so the highlight marks exactly the chars the
-                // filter accepted. Style-only — the rendered TEXT is unchanged.
-                let name_spans: Vec<Span> = match search {
-                    Some(q) if !q.trim().is_empty() => {
-                        let hits = crate::model_list::match_indices(name, q);
-                        let hi = Style::default().fg(t.gold).add_modifier(Modifier::BOLD);
-                        name.chars()
-                            .enumerate()
-                            .map(|(i, ch)| {
-                                let st = if hits.contains(&i) {
-                                    name_style.patch(hi)
-                                } else {
-                                    name_style
-                                };
-                                Span::styled(ch.to_string(), st)
-                            })
-                            .collect()
-                    }
-                    _ => vec![Span::styled(name.to_string(), name_style)],
-                };
-                let bookmarked =
-                    bookmarks.is_some_and(|b| node.is_some_and(|n| b.contains(&n.unique_id)));
-                let mut spans = vec![
-                    Span::raw("  "),                              // indent under header
-                    Span::styled(marker.to_string(), name_style), // selection marker
-                ];
-                spans.extend(name_spans);
-                // Direct parents/children badges (`↑2 ↓3` / `^2 v3`).
-                spans.push(Span::styled(
-                    format!("  {}{up} {}{down}", chrome.badge_up, chrome.badge_down),
-                    Style::default().fg(t.text_faint),
+                lines.push(list_model_line(
+                    list,
+                    state,
+                    search,
+                    chrome,
+                    bookmarks,
+                    *model_index,
+                    name,
+                    inner.width as usize,
+                    t,
                 ));
-                // Under the Coverage lens, surface the metric the red tint is
-                // judging: the per-model test count (pure ASCII — guard-safe).
-                if state.lens() == LineageLens::Coverage {
-                    if let Some(n) = node {
-                        spans.push(Span::styled(
-                            format!(" t:{}", n.test_count),
-                            Style::default().fg(t.text_faint),
-                        ));
-                    }
-                }
-                if bookmarked {
-                    spans.push(Span::styled(
-                        format!(" {}", chrome.bookmark),
-                        Style::default().fg(t.gold),
-                    ));
-                }
-                lines.push(Line::from(spans));
             }
+        }
+    }
+    // §10's sticky header: while the window's first display row is a model
+    // mid-group, pin its owning header over that first line (an overwrite —
+    // never an inserted row — so display-row-space stays exact). The pin is
+    // suppressed while the selected model IS that row (it must keep its
+    // marker — `sticky_header` owns the whole rule, shared with hit_target).
+    if let Some(DisplayRow::Header { layer, count }) =
+        list.sticky_header(state.offset(), state.selected())
+    {
+        if !lines.is_empty() {
+            lines[0] = list_header_line(layer, *count, is_folded(layer), chrome, t);
         }
     }
 
     frame.render_widget(Paragraph::new(lines), inner);
+
+    // §6's hover cue: the row under the pointer paints `theme.surface` (a
+    // one-row bg band over the drawn text — `set_style`-like: it tints every
+    // cell of the row, glyphs untouched). The SELECTED row skips it (the
+    // reversed marker is already the stronger affordance), and the row is
+    // resolved through `list_target_row` — the hit-test's own sticky-pin
+    // map — so the tint lands exactly where a click would.
+    if let Some(target) = hover {
+        let covered = matches!(target, HitTarget::ListRow(i) if *i == state.selected());
+        if !covered {
+            if let Some(y) = super::geom::list_target_row(
+                list,
+                state.offset(),
+                state.selected(),
+                target,
+                inner_height,
+            ) {
+                let row = Rect {
+                    y: inner.y + y as u16,
+                    height: 1,
+                    ..inner
+                };
+                frame.render_widget(
+                    Paragraph::new("").style(Style::default().bg(t.surface)),
+                    row,
+                );
+            }
+        }
+    }
 
     // The empty-state / search-hint line: display-only chrome stamped onto the
     // FIRST interior row AFTER the rows render — never an injected DisplayRow,
@@ -743,7 +730,18 @@ fn draw_list(
     };
     if let Some(text) = stamp {
         if inner.height > 0 {
-            let row = Rect { height: 1, ..inner };
+            // Folded headers still draw: an all-folded pane (models empty but
+            // display rows live) takes the row BELOW the last header instead
+            // of covering the first one.
+            let y = list
+                .row_count()
+                .saturating_sub(state.offset())
+                .min(inner_height - 1);
+            let row = Rect {
+                y: inner.y + y as u16,
+                height: 1,
+                ..inner
+            };
             frame.render_widget(ratatui::widgets::Clear, row);
             frame.render_widget(
                 Paragraph::new(Line::styled(
@@ -767,6 +765,151 @@ fn draw_list(
         glyphs,
         t,
     );
+}
+
+/// One list group-header line: `▾ Title (N)` while open, `▸ Title (N)` while
+/// folded — the §15 fold marker via the shared [`Chrome`], the layer's own
+/// accent + bold, the count reporting the FULL membership even folded. Used
+/// both for real header rows and the §10 sticky pin (one shape, one style).
+fn list_header_line(
+    layer: &str,
+    count: usize,
+    folded: bool,
+    chrome: &super::Chrome,
+    t: &theme::Theme,
+) -> Line<'static> {
+    let mark = if folded {
+        chrome.group_folded
+    } else {
+        chrome.group_open
+    };
+    // The `layer` grouping key is never mutated — `title_case` is display-only.
+    let label = format!("{mark} {} ({count})", title_case(layer));
+    let accent = Style::default()
+        .fg(layer_accent(layer, t))
+        .add_modifier(Modifier::BOLD);
+    Line::styled(label, accent)
+}
+
+/// One list model row — §10's width-tiered columns on the pane's INNER width:
+/// `< 30` name only; `30..=43` name + the direct `↑u ↓d` badges (plus the
+/// Coverage lens's `t:N` and the `★` bookmark, the pre-tier suffixes); `>= 44`
+/// adds the materialization tag + `t:N` to the suffix
+/// (`Table t:3 ↑2 ↓4`). The suffix RIGHT-ALIGNS to the pane's inner edge so
+/// the badges read as real columns; the name middle-elides into the space
+/// left of it ([`crate::model_list::mid_truncate_indexed`] — `…`/`..` from
+/// `chrome`, `unicode-width` measured, tail preserved).
+///
+/// While a non-empty list search is active the name draws char-by-char
+/// (matched chars patched gold+bold — the same `match_indices` the filter
+/// accepted, mapped through the elision so a truncated name still highlights
+/// exactly the right cells). Style-only — the rendered TEXT is unchanged.
+#[allow(clippy::too_many_arguments)]
+fn list_model_line(
+    list: &ModelList,
+    state: &UiState,
+    search: Option<&str>,
+    chrome: &super::Chrome,
+    bookmarks: Option<&std::collections::BTreeSet<String>>,
+    model_index: usize,
+    name: &str,
+    inner_w: usize,
+    t: &theme::Theme,
+) -> Line<'static> {
+    use unicode_width::UnicodeWidthStr;
+    let selected = model_index == state.selected();
+    let marker = if selected {
+        SELECTED_MARKER
+    } else {
+        UNSELECTED_MARKER
+    };
+    let node = list.model_at(model_index);
+    let (up, down) = node.map_or((0, 0), |n| (n.direct_up, n.direct_down));
+    // A model with no downstream is a leaf ("orphan") — flag it.
+    let orphan = node.is_some_and(|n| n.resource_type == "model" && n.direct_down == 0);
+    // Coverage lens (only the Coverage lens, not the others): a testable node
+    // with zero tests gets a warning name. The lens wins over the orphan red
+    // (the user opted into it), and selection still wins over both.
+    let gap = state.lens() == LineageLens::Coverage && node.is_some_and(coverage_gap);
+    let name_style = if selected {
+        selected_style(t)
+    } else if gap {
+        Style::default().fg(t.danger)
+    } else if orphan {
+        Style::default().fg(t.orphan)
+    } else {
+        Style::default()
+    };
+    let bookmarked = bookmarks.is_some_and(|b| node.is_some_and(|n| b.contains(&n.unique_id)));
+    let coverage = state.lens() == LineageLens::Coverage;
+
+    // The right-aligned suffix column(s) — everything after the name field.
+    // Tier order inside the wide suffix is the spec's: tag, then `t:N`, then
+    // the direct-edge badges; `★` always tails.
+    let mut suffix = String::new();
+    if inner_w >= 44 {
+        let tag = node
+            .map(|n| {
+                crate::MaterializationClass::classify(&n.resource_type, n.materialized.as_deref())
+                    .tag()
+            })
+            .unwrap_or("Node");
+        let tests = node.map_or(0, |n| n.test_count);
+        suffix = format!(
+            " {tag} t:{tests} {}{up} {}{down}",
+            chrome.badge_up, chrome.badge_down
+        );
+    } else if inner_w >= 30 {
+        suffix = format!("  {}{up} {}{down}", chrome.badge_up, chrome.badge_down);
+        // Under the Coverage lens, surface the metric the red tint is
+        // judging: the per-model test count (pure ASCII — guard-safe).
+        if coverage {
+            if let Some(n) = node {
+                suffix.push_str(&format!(" t:{}", n.test_count));
+            }
+        }
+    }
+    if inner_w >= 30 && bookmarked {
+        suffix.push_str(&format!(" {}", chrome.bookmark));
+    }
+
+    // `  ` + marker = a 4-cell lead-in; the name field is what remains before
+    // the right-aligned suffix (≥1 cell short circuits to the empty field).
+    let name_w = inner_w.saturating_sub(4 + UnicodeWidthStr::width(suffix.as_str()));
+    let (text, cmap) = crate::model_list::mid_truncate_indexed(name, name_w, chrome.ellipsis);
+    let pad = name_w.saturating_sub(UnicodeWidthStr::width(text.as_str()));
+
+    let name_spans: Vec<Span> = match search {
+        Some(q) if !q.trim().is_empty() => {
+            let hits = crate::model_list::match_indices(name, q);
+            let hi = Style::default().fg(t.gold).add_modifier(Modifier::BOLD);
+            text.chars()
+                .zip(cmap.iter())
+                .map(|(ch, &src)| {
+                    let st = if src != usize::MAX && hits.contains(&src) {
+                        name_style.patch(hi)
+                    } else {
+                        name_style
+                    };
+                    Span::styled(ch.to_string(), st)
+                })
+                .collect()
+        }
+        _ => vec![Span::styled(text, name_style)],
+    };
+
+    let mut spans = vec![
+        Span::raw("  "),                              // indent under header
+        Span::styled(marker.to_string(), name_style), // selection marker
+    ];
+    spans.extend(name_spans);
+    if pad > 0 {
+        spans.push(Span::raw(" ".repeat(pad)));
+    }
+    if !suffix.is_empty() {
+        spans.push(Span::styled(suffix, Style::default().fg(t.text_faint)));
+    }
+    Line::from(spans)
 }
 
 /// The accent color for a layer-header row (list pane only; a SEPARATE path from

@@ -71,8 +71,9 @@ impl App {
     ///   the same `reroot_select` contract every selection change follows);
     ///   on a lineage node it only MOVES THE CURSOR there — the re-root /
     ///   modal / marker-toggle commit is the double-click's job, identical to
-    ///   `Enter` (`commit_lineage_node` + `DetailOpen`). List header / blank
-    ///   interiors / lineage blank just take that pane's focus; tab-strip
+    ///   `Enter` (`commit_lineage_node` + `DetailOpen`). A list group header
+    ///   folds/unfolds its group (the `-` key's mouse twin, §10); a blank
+    ///   interior / lineage blank just takes that pane's focus; tab-strip
     ///   cells switch / close / scroll / open the `+` palette.
     /// - **Right** on a list row or lineage node opens its context menu at
     ///   `at` (Issue 06).
@@ -137,8 +138,13 @@ impl App {
                     self.jump_to(&uid);
                 }
             }
-            (MouseButton::Left, HitTarget::ListHeader(_))
-            | (MouseButton::Left, HitTarget::ListBlank) => {
+            (MouseButton::Left, HitTarget::ListHeader(layer)) => {
+                self.ui_state.set_focus(Focus::List);
+                // §10: a header click is the fold toggle (`-`'s twin), never
+                // a selection — the row names a group, not a model.
+                self.toggle_group_fold(layer);
+            }
+            (MouseButton::Left, HitTarget::ListBlank) => {
                 self.ui_state.set_focus(Focus::List);
             }
             (MouseButton::Left, HitTarget::LineageNode(uid)) => {

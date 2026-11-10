@@ -169,6 +169,9 @@ pub enum Action {
     /// Toggle the persistent untested-only / bookmarked-only list filter.
     ToggleUntestedFilter,
     ToggleBookmarkFilter,
+    /// Fold/unfold the list group the cursor sits in (`-`; the group-header
+    /// click's keyboard twin — screen-spec §10).
+    ToggleGroupFold,
     /// Run `dbt parse` in the project root and adopt the regenerated
     /// `target/manifest.json` (upgrade source-mode's inferred lineage to the
     /// compiled manifest's full fidelity; in manifest mode it refreshes).
@@ -1127,6 +1130,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('L'))], action: A::LineageRightmost, help: "lineage cursor to last column" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('T'))], action: A::ToggleUntestedFilter, help: "filter list: untested only" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('*'))], action: A::ToggleBookmarkFilter, help: "filter list: bookmarked only" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('-'))], action: A::ToggleGroupFold, help: "fold/unfold model group" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('P'))], action: A::DbtParse, help: "run dbt parse (build manifest)" },
     KeyBinding { mode: M::Selection, triggers: &[Ctrl('t')], action: A::ThemeCycle, help: "cycle color theme" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('D'))], action: A::DiffOpen, help: "diff vs baseline (--diff)" },
@@ -1868,6 +1872,7 @@ mod tests {
             | Action::LineageRightmost
             | Action::ToggleUntestedFilter
             | Action::ToggleBookmarkFilter
+            | Action::ToggleGroupFold
             | Action::DbtParse
             | Action::ThemeCycle
             | Action::DiffOpen
@@ -2017,6 +2022,7 @@ mod tests {
             Action::LineageRightmost,
             Action::ToggleUntestedFilter,
             Action::ToggleBookmarkFilter,
+            Action::ToggleGroupFold,
             Action::DbtParse,
             Action::ThemeCycle,
             Action::DiffOpen,

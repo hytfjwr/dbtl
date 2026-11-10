@@ -290,7 +290,7 @@ impl App {
             self.ui_state.set_lineage_scroll(x, y);
         }
         if matches!(self.mode, Mode::Search(_)) {
-            self.close_search(None);
+            self.close_search(None, false);
         }
         if let Some(root) = self.tab().root.clone() {
             if let Some(i) = self
