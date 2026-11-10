@@ -240,7 +240,7 @@ pub(crate) fn draw_home(frame: &mut Frame, area: Rect, data: &crate::HomeData, c
             HomeLine::Note => {
                 frame.render_widget(
                     Paragraph::new(Line::from(Span::styled(
-                        &format!("   no matches{sep}Esc to clear"),
+                        format!("   no matches{sep}Esc to clear"),
                         Style::default().fg(t.text_faint),
                     ))),
                     row,
@@ -259,7 +259,7 @@ pub(crate) fn draw_home(frame: &mut Frame, area: Rect, data: &crate::HomeData, c
                 // §3's fixed closing line — ASCII-safe in both glyph modes.
                 frame.render_widget(
                     Paragraph::new(Line::from(Span::styled(
-                        &format!(
+                        format!(
                             " Tip: right-click a node for actions{sep}drag a pane border to resize"
                         ),
                         Style::default().fg(t.text_faint),
