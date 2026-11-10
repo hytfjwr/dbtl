@@ -583,8 +583,14 @@ fn impact_markdown_renders_the_column_changes_section() {
     for needle in [
         "## Column changes (1)",
         "- `stg_orders.status`: removed - **breaking**",
-        "  - downstream cols (6): `cll_demo.status`, `cll_demo.status_upper`, \
-         `cll_syntax.order_id_next`, `cll_syntax.status`, `cll_syntax.status_upper`, \
+        // cll_demo + cll_syntax still WRITE `status` refs — the queries can't
+        // compile, so every column they emit dies. fct_orders only loses
+        // `status` itself (declared, but the `o.*` that fed it shrank) — its
+        // other columns live on.
+        "  - downstream cols (12): `cll_demo.n_orders`, `cll_demo.order_id`, \
+         `cll_demo.status`, `cll_demo.status_upper`, `cll_syntax.country`, \
+         `cll_syntax.jp_id`, `cll_syntax.order_id`, `cll_syntax.order_id_next`, \
+         `cll_syntax.rn`, `cll_syntax.status`, `cll_syntax.status_upper`, \
          `fct_orders.status`",
         "  - affected models: cll_demo, cll_syntax, fct_orders",
         "  - exposures: orders_dashboard",
@@ -620,7 +626,7 @@ fn impact_json_carries_column_changes_and_the_narrow_selector() {
     assert_eq!(row["column"], "status");
     assert_eq!(row["kind"], "removed");
     assert_eq!(row["class"], "breaking");
-    assert_eq!(row["affected_columns"].as_array().unwrap().len(), 6);
+    assert_eq!(row["affected_columns"].as_array().unwrap().len(), 12);
     assert_eq!(
         row["affected_columns"].as_array().unwrap().last().unwrap(),
         "fct_orders.status"
@@ -636,6 +642,40 @@ fn impact_json_carries_column_changes_and_the_narrow_selector() {
     assert_eq!(
         v["pr"]["ci_command_columns"].as_str().unwrap(),
         "dbt build --select cll_demo cll_syntax fct_orders stg_orders"
+    );
+}
+
+#[test]
+fn impact_narrow_selector_keeps_fanout_for_column_invisible_sql() {
+    // A WHERE-clause edit produces `SQL changed` with ZERO column rows —
+    // the change escapes the column surface entirely, so the narrowed
+    // selector must keep the `+` fan-out: `dbt build --select stg_orders`
+    // alone would leave fct_orders (and everything downstream) stale.
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = tmp.path().join("proj");
+    copy_dir(&sample_project(), &proj);
+    let sql = proj.join("models/staging/stg_orders.sql");
+    let text = std::fs::read_to_string(&sql).unwrap();
+    std::fs::write(&sql, format!("{text}\nwhere disabled_flag = true\n")).unwrap();
+    let out = run(&[
+        "impact",
+        "--source",
+        proj.to_str().unwrap(),
+        "--diff",
+        sample_project().to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert!(
+        out.status.success(),
+        "impact exits 0, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
+    assert_eq!(
+        v["pr"]["ci_command_columns"].as_str().unwrap(),
+        "dbt build --select stg_orders+",
+        "a column-invisible SQL change keeps the fan-out: {v}"
     );
 }
 

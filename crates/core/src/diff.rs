@@ -20,7 +20,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use crate::cll::{ColumnEdgeKind, ColumnLineage, ColumnRef, ColumnResolver, SqlParseResolver};
+use crate::cll::{
+    ColumnEdgeKind, ColumnLineage, ColumnRef, ColumnResolver, SqlDialect, SqlParseResolver,
+};
 use crate::impact::exposure_note;
 use crate::layer::first_dir;
 use crate::{in_package, is_exposure, Dag, NodeDetail, NodeInfo};
@@ -220,14 +222,16 @@ impl DagDiff {
 /// endpoints may not exist in the current Dag at all).
 ///
 /// The column-level analysis resolves each side with a fresh, catalog-less
-/// [`SqlParseResolver`] (dialect read from each Dag's own adapter metadata) —
-/// callers holding richer resolvers (a loaded `catalog.json`, an explicit
-/// `--sql-dialect`, a shared memoized instance) should call
-/// [`compute_diff_with`] instead so the diff and their other surfaces resolve
-/// identically.
+/// [`SqlParseResolver`] — the current side on its own adapter dialect, the
+/// baseline pinned to the same dialect when the current Dag names one
+/// ([`SqlDialect::for_diff_baseline`]; one dialect per diff or normalized
+/// expressions can't compare). Callers holding richer resolvers (a loaded
+/// `catalog.json`, an explicit `--sql-dialect`, a shared memoized instance)
+/// should call [`compute_diff_with`] instead so the diff and their other
+/// surfaces resolve identically.
 pub fn compute_diff(base: &Dag, current: &Dag) -> DagDiff {
-    let base_res = SqlParseResolver::for_dag(None, base);
     let cur_res = SqlParseResolver::for_dag(None, current);
+    let base_res = SqlParseResolver::new(None, SqlDialect::for_diff_baseline(current, base));
     compute_diff_with(base, current, &base_res, &cur_res)
 }
 
@@ -346,13 +350,12 @@ pub fn compute_diff_with(
 /// that also changes type or expression gets additional rows on the new
 /// name.
 ///
-/// The "still referenced" test for breaking changes is deliberately strict:
-/// a baseline downstream column counts as dangling only when it exists
-/// current-side AND its current upstream closure still reaches this node —
-/// or resolves to NOTHING, the `select m.gone` shape a dropped column
-/// leaves behind (a consumer rewritten to draw from elsewhere is migrated,
-/// not broken). For renames, columns already re-pointed at the new name are
-/// excluded.
+/// The "still referenced" test for breaking changes is deliberately strict
+/// — see [`dead_columns`]: a baseline downstream column counts as dangling
+/// only when the CURRENT side proves it can't be produced (a still-written
+/// reference to the dead name, or starvation through a dead intermediate).
+/// A consumer rewritten to draw from a sibling/foreign column — including
+/// the rename's new name — is migrated, not broken.
 fn column_changes(
     base: &Dag,
     current: &Dag,
@@ -367,21 +370,6 @@ fn column_changes(
     let cur_lin = ColumnLineage::new(current, cur_res);
     let primary = current.primary_package();
     let in_scope = |n: &NodeInfo| primary.as_deref().is_none_or(|p| in_package(n, p));
-
-    // uid → every column the CURRENT side produces: the resolver's column
-    // list PLUS the `to` side of its in-edges (a wildcard-carried column that
-    // was never declared still materializes downstream). Memoized per uid.
-    let mut cur_outs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut exists_cur = |node: &str, col: &str| -> bool {
-        cur_outs
-            .entry(node.to_string())
-            .or_insert_with(|| {
-                let mut s: BTreeSet<String> = cur_res.columns(current, node).into_iter().collect();
-                s.extend(cur_lin.in_edges(node).iter().map(|e| e.to.column.clone()));
-                s
-            })
-            .contains(col)
-    };
 
     let mut out: BTreeMap<String, Vec<ColumnChange>> = BTreeMap::new();
     let mut analyzed: BTreeSet<String> = BTreeSet::new();
@@ -433,40 +421,23 @@ fn column_changes(
         let base_exprs = base_res.column_exprs(base, uid);
         let cur_exprs = cur_res.column_exprs(current, uid);
 
-        // The dangling-consumer set for a baseline column: its baseline
-        // downstream closure, kept to columns that exist current-side AND
-        // still link to `uid` upstream — minus `exclude` (the rename's
-        // already-migrated consumers). "Upstream" means VALUE edges only
-        // (Passthrough/Rename/Transform): a `FilterOrJoin` fan shapes the
-        // row set but produces no value — a column whose only upstream is
-        // FOJ (`o.*` shrunk past the name, or `select m.gone` against a
-        // known column list) IS the dangling shape the gate exists to
-        // catch; a consumer rewired to another node's column (non-empty
-        // value upstream that never reaches `uid`) is genuinely migrated.
-        let value_up = |cr: &ColumnRef| -> BTreeSet<ColumnRef> {
-            let mut seen = BTreeSet::new();
-            let mut stack = vec![cr.clone()];
-            while let Some(c) = stack.pop() {
-                for e in cur_lin.upstream(&c) {
-                    if e.kind == ColumnEdgeKind::FilterOrJoin {
-                        continue;
-                    }
-                    if seen.insert(e.from.clone()) {
-                        stack.push(e.from);
-                    }
-                }
-            }
-            seen
-        };
-        let mut dangling = |col: &str, exclude: &BTreeSet<ColumnRef>| {
-            let closure = base_lin.closure_down(&ColumnRef::new(uid.clone(), col));
-            affected_lists(&closure, current, uid, &in_scope, |cr| {
-                if !exists_cur(&cr.node, &cr.column) || exclude.contains(cr) {
-                    return false;
-                }
-                let up = value_up(cr);
-                up.is_empty() || up.iter().any(|u| u.node == *uid)
-            })
+        // The dangling-consumer set for a baseline column: the dead-column
+        // closure `dead_columns` computes — baseline consumers of `col`
+        // that are provably unproducible current-side (the reference they
+        // carried is still written but now names nothing, or every value
+        // source they had is itself dead). A consumer rewired to a sibling
+        // or foreign column keeps a live value source and stays out —
+        // migrated, not broken.
+        let dangling = |col: &str| {
+            let dead = dead_columns(
+                &base_lin,
+                &cur_lin,
+                cur_res,
+                current,
+                modified,
+                &ColumnRef::new(uid.clone(), col),
+            );
+            affected_lists(&dead, current, uid, &in_scope, |_| true)
         };
         // The current-side spread of a column — for `type`/`expression`/
         // `added` rows.
@@ -503,7 +474,7 @@ fn column_changes(
             if renamed_old.contains(old) {
                 continue;
             }
-            let impact = dangling(old, &BTreeSet::new());
+            let impact = dangling(old);
             let class = if impact.cols.is_empty() {
                 ColumnChangeClass::NonBreaking
             } else {
@@ -521,11 +492,10 @@ fn column_changes(
             );
         }
         for (old, new) in &pairs {
-            // Columns the new name already feeds current-side have migrated
-            // to it — they are consumers of the rename, not casualties.
-            let migrated: BTreeSet<ColumnRef> =
-                cur_lin.closure_down(&ColumnRef::new(uid.clone(), new));
-            let impact = dangling(old, &migrated);
+            // Consumers migrated to the new name keep a live value source
+            // (`uid.new`), so `dead_columns` already leaves them out — no
+            // exclusion list needed.
+            let impact = dangling(old);
             // A fully-migrated rename is informational, like `added`: the
             // old name is gone but nothing in the graph still reads it
             // (the gate's Breaking ⟺ dangling-nonempty invariant relies on
@@ -705,11 +675,140 @@ fn affected_lists(
     }
 }
 
+/// The dead-column closure of a removed/renamed-away baseline column
+/// `seed`: the baseline consumers of `seed` that provably cannot be
+/// produced by the CURRENT Dag — the dangling references the `Breaking`
+/// class exists to name.
+///
+/// The scan is bounded by the BASELINE downstream closure (only a column
+/// that depended on `seed` can be orphaned by its removal) but judged on
+/// the CURRENT side, so a consumer rewritten in the same PR reads as
+/// migrated rather than broken. Two signals mark a column dead:
+///
+/// - its model still NAMES a dead column — [`ColumnResolver::unresolved_refs`]
+///   reports a `(parent, col)` ref the parent's known column list doesn't
+///   contain (a `select m.gone`, `join ... on m.gone = ...`, or
+///   `where m.gone` left behind). The query can't compile, so EVERY column
+///   the model still emits dies — a dead WHERE/JOIN ref sinks the whole
+///   model, not just one projection.
+/// - a current value edge into the column draws from a dead source (the
+///   dead column's name still emits — e.g. a `select *` passthrough — but
+///   the model that would produce it is dead). `FilterOrJoin` edges are
+///   excluded from this check: they shape the row set without carrying the
+///   value, so a surviving join edge alone can't keep a column alive. (A
+///   dead FOJ *reference* is already caught by the unresolved check —
+///   against a known column list it records a miss instead of an edge.)
+/// - the column is a GHOST: the consumer's own definition is unchanged
+///   (absent from `modified` — nobody rewrote it on purpose) yet nothing
+///   current feeds it a value — the `select o.*` that carried it baseline
+///   now expands past the dead name, leaving a declared column the model
+///   silently stops producing. A consumer that DID change — `select m.id`
+///   after dropping its `where m.status`, or `select 1 as a` — escapes
+///   this rule entirely: a rewritten model's edgeless columns are
+///   deliberate, migrated rather than broken.
+///
+/// Starvation propagates to a fixpoint: a dead intermediate column starves
+/// the columns downstream of it in turn. Conversely a consumer whose
+/// current in-edges reach only LIVE sources — a sibling column, another
+/// node — is migrated and never enters the set. Deterministic: `BTree`
+/// sets throughout, iteration to a bounded fixpoint over a finite domain.
+fn dead_columns(
+    base_lin: &ColumnLineage<'_, dyn ColumnResolver + '_>,
+    cur_lin: &ColumnLineage<'_, dyn ColumnResolver + '_>,
+    cur_res: &dyn ColumnResolver,
+    current: &Dag,
+    modified: &BTreeMap<String, Vec<String>>,
+    seed: &ColumnRef,
+) -> BTreeSet<ColumnRef> {
+    // Baseline consumers of the seed — the only places a stale reference
+    // can live — and the nodes that hold them.
+    let candidates = base_lin.closure_down(seed);
+    let candidate_nodes: BTreeSet<String> = candidates.iter().map(|c| c.node.clone()).collect();
+
+    // Per candidate node: the refs it still writes that resolve to nothing
+    // (the dangling-reference signal) and the columns it still emits (the
+    // resolver's list plus the `to` side of its in-edges — a
+    // wildcard-carried column never declared still materializes).
+    let unresolved: BTreeMap<String, BTreeSet<ColumnRef>> = candidate_nodes
+        .iter()
+        .map(|n| {
+            (
+                n.clone(),
+                cur_res
+                    .unresolved_refs(current, n)
+                    .into_iter()
+                    .map(|(u, c)| ColumnRef::new(u, &c))
+                    .collect(),
+            )
+        })
+        .collect();
+    let emitted: BTreeMap<String, BTreeSet<String>> = candidate_nodes
+        .iter()
+        .map(|n| {
+            let mut s: BTreeSet<String> = cur_res.columns(current, n).into_iter().collect();
+            s.extend(cur_lin.in_edges(n).iter().map(|e| e.to.column.clone()));
+            (n.clone(), s)
+        })
+        .collect();
+
+    let mut dead: BTreeSet<ColumnRef> = BTreeSet::from([seed.clone()]);
+    loop {
+        let mut grew = false;
+        for n in &candidate_nodes {
+            // The model names a dead column → its query can't compile →
+            // every still-emitted column dies.
+            let named_dead = unresolved[n].iter().any(|r| dead.contains(r));
+            // An UNCHANGED node's definitions are all deliberate: a
+            // still-emitted column no current edge feeds is a ghost — the
+            // wildcard that produced it shrank past its name.
+            let node_unchanged = !modified.contains_key(n);
+            for col in &emitted[n] {
+                let cr = ColumnRef::new(n.clone(), col);
+                if dead.contains(&cr) {
+                    continue;
+                }
+                let mut fed_by_dead = false;
+                let mut has_value_source = false;
+                for e in cur_lin.in_edges(n).iter() {
+                    if e.to.column != *col || e.kind == ColumnEdgeKind::FilterOrJoin {
+                        continue;
+                    }
+                    has_value_source = true;
+                    if dead.contains(&e.from) {
+                        fed_by_dead = true;
+                    }
+                }
+                // The ghost rule needs baseline proof the seed fed this
+                // column — an always-sourceless col (`select 1 as k`) in an
+                // unchanged consumer was never the seed's to kill.
+                let ghost = node_unchanged && !has_value_source && candidates.contains(&cr);
+                if named_dead || fed_by_dead || ghost {
+                    dead.insert(cr);
+                    grew = true;
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    // The seed itself is gone current-side, not "affected" — drop it.
+    dead.remove(seed);
+    dead
+}
+
 /// Pair removed output names with added ones as `old -> new` renames: a
 /// candidate needs ≥1 shared direct upstream column (`upstream_baseline(old)`
 /// ∩ `upstream_current(new)` over `(parent uid, column)`), scored by the
 /// shared count, matched greedily in (score desc, old, new) order with each
-/// side used at most once — deterministic under any fan shape.
+/// side used at most once — deterministic under any fan shape. Ties are
+/// broken ALPHABETICALLY on both names: when several removed/added columns
+/// share the same provenance (a `select *` fan, sibling renames off one
+/// source), the higher-scored pairings win first and equal-scored
+/// candidates pair in name order — so `a,c removed + b,d added` pairs
+/// `a->b, c->d` rather than by manifest or SQL order. The alphabetical
+/// rule is documented, not semantic: either pairing is a defensible
+/// rename guess, the value is that it never varies.
 fn rename_pairs(
     removed: &[String],
     added: &[String],
@@ -1514,7 +1613,13 @@ mod tests {
         );
         let r = row(&diff, "model.t.mid", "status", ColumnChangeKind::Removed);
         assert_eq!(r.class, ColumnChangeClass::Breaking);
-        assert_eq!(r.affected_columns, vec!["down.status".to_string()]);
+        assert_eq!(
+            r.affected_columns,
+            vec!["down.id".to_string(), "down.status".to_string()],
+            "the still-written `m.status` ref means down's query can't \
+             compile — every column it emits dies, not just the one that \
+             named the dead column"
+        );
         assert_eq!(r.affected_models, vec!["down".to_string()]);
         assert_eq!(r.affected_marts, vec!["down".to_string()]);
         assert_eq!(
@@ -1620,6 +1725,274 @@ mod tests {
     }
 
     #[test]
+    fn column_removed_referenced_in_join_predicate_is_breaking() {
+        // The under-flag shape: down references `m.status` ONLY in the JOIN
+        // condition — a FilterOrJoin dependency that never carried the
+        // column's value. `mid.status` disappears; down's SQL is unchanged,
+        // so the join still names a column that doesn't exist — the query
+        // can't run and `down.id` (which never read `status` as a value)
+        // is broken with it.
+        let base = Dag::build(&col_manifest(
+            vec![
+                (
+                    "model.t.up",
+                    col_model(
+                        "up",
+                        "staging",
+                        "select 1",
+                        &[("id", "int"), ("status", "text")],
+                    ),
+                ),
+                (
+                    "model.t.other",
+                    col_model(
+                        "other",
+                        "staging",
+                        "select 1",
+                        &[("id", "int"), ("s", "text")],
+                    ),
+                ),
+                (
+                    "model.t.mid",
+                    col_model(
+                        "mid",
+                        "staging",
+                        "select u.id, u.status from \"up\" u",
+                        &[("id", "int"), ("status", "text")],
+                    ),
+                ),
+                (
+                    "model.t.down",
+                    col_model(
+                        "down",
+                        "marts",
+                        "select o.id from \"other\" o join \"mid\" m on m.status = o.s",
+                        &[("id", "int")],
+                    ),
+                ),
+            ],
+            &[
+                ("model.t.up", "model.t.mid"),
+                ("model.t.mid", "model.t.down"),
+                ("model.t.other", "model.t.down"),
+            ],
+            vec![],
+        ));
+        // Current: mid drops `status`; down's join predicate is untouched —
+        // `m.status` still written, now resolving to nothing.
+        let current = Dag::build(&col_manifest(
+            vec![
+                (
+                    "model.t.up",
+                    col_model(
+                        "up",
+                        "staging",
+                        "select 1",
+                        &[("id", "int"), ("status", "text")],
+                    ),
+                ),
+                (
+                    "model.t.other",
+                    col_model(
+                        "other",
+                        "staging",
+                        "select 1",
+                        &[("id", "int"), ("s", "text")],
+                    ),
+                ),
+                (
+                    "model.t.mid",
+                    col_model(
+                        "mid",
+                        "staging",
+                        "select u.id from \"up\" u",
+                        &[("id", "int")],
+                    ),
+                ),
+                (
+                    "model.t.down",
+                    col_model(
+                        "down",
+                        "marts",
+                        "select o.id from \"other\" o join \"mid\" m on m.status = o.s",
+                        &[("id", "int")],
+                    ),
+                ),
+            ],
+            &[
+                ("model.t.up", "model.t.mid"),
+                ("model.t.mid", "model.t.down"),
+                ("model.t.other", "model.t.down"),
+            ],
+            vec![],
+        ));
+        let diff = compute_diff(&base, &current);
+        let r = row(&diff, "model.t.mid", "status", ColumnChangeKind::Removed);
+        assert_eq!(
+            r.class,
+            ColumnChangeClass::Breaking,
+            "a FOJ-only reference still dangling must gate: {r:?}"
+        );
+        assert_eq!(r.affected_columns, vec!["down.id".to_string()]);
+    }
+
+    #[test]
+    fn column_removed_referenced_in_where_clause_is_breaking() {
+        // Same shape through a WHERE predicate (`stg_orders … where
+        // u.disabled_flag = false` then the flag goes away): the filter
+        // still names the dead column, the model can't compile, and its
+        // lone output dies with it.
+        let base = col_dag(
+            "select u.id, u.status from \"up\" u",
+            &[("id", "int"), ("status", "text")],
+            "select m.id from \"mid\" m where m.status = 'x'",
+            &[("id", "int")],
+            false,
+        );
+        let current = col_dag(
+            "select u.id from \"up\" u",
+            &[("id", "int")],
+            "select m.id from \"mid\" m where m.status = 'x'",
+            &[("id", "int")],
+            false,
+        );
+        let diff = compute_diff(&base, &current);
+        let r = row(&diff, "model.t.mid", "status", ColumnChangeKind::Removed);
+        assert_eq!(
+            r.class,
+            ColumnChangeClass::Breaking,
+            "the WHERE still names the dead column: {r:?}"
+        );
+        assert_eq!(r.affected_columns, vec!["down.id".to_string()]);
+    }
+
+    #[test]
+    fn column_removed_where_clause_deleted_is_migrated() {
+        // The over-flag shape: mid drops `status` AND down drops the WHERE
+        // that referenced it in the same change. The baseline FOJ edge is
+        // gone current-side — but so is the reference itself; down.id
+        // keeps a live value source (`m.id`) and reads as migrated, not
+        // dangling.
+        let base = col_dag(
+            "select u.id, u.status from \"up\" u",
+            &[("id", "int"), ("status", "text")],
+            "select m.id from \"mid\" m where m.status = 'x'",
+            &[("id", "int")],
+            false,
+        );
+        let current = col_dag(
+            "select u.id from \"up\" u",
+            &[("id", "int")],
+            "select m.id from \"mid\" m",
+            &[("id", "int")],
+            false,
+        );
+        let diff = compute_diff(&base, &current);
+        let r = row(&diff, "model.t.mid", "status", ColumnChangeKind::Removed);
+        assert_eq!(
+            r.class,
+            ColumnChangeClass::NonBreaking,
+            "down deleted the reference — migrated, not broken: {r:?}"
+        );
+        assert!(r.affected_columns.is_empty());
+        assert!(diff.breaking_referenced().is_empty());
+    }
+
+    #[test]
+    fn column_removed_consumer_repointed_at_sibling_is_migrated() {
+        // Over-flag, sibling-column variant: down repointed `status` from
+        // `m.status` to `m.id` in the same change that dropped it. The old
+        // column is gone but the consumer's wiring is live — migrated.
+        let base = col_dag(
+            "select u.id, u.status from \"up\" u",
+            &[("id", "int"), ("status", "text")],
+            "select m.id, m.status from \"mid\" m",
+            &[("id", "int"), ("status", "text")],
+            false,
+        );
+        let current = col_dag(
+            "select u.id from \"up\" u",
+            &[("id", "int")],
+            "select m.id, m.id as status from \"mid\" m",
+            &[("id", "int"), ("status", "text")],
+            false,
+        );
+        let diff = compute_diff(&base, &current);
+        let r = row(&diff, "model.t.mid", "status", ColumnChangeKind::Removed);
+        assert_eq!(
+            r.class,
+            ColumnChangeClass::NonBreaking,
+            "down.status now draws from m.id — a live sibling: {r:?}"
+        );
+        assert!(r.affected_columns.is_empty());
+    }
+
+    #[test]
+    fn column_removed_consumer_output_renamed_still_dangles() {
+        // The consumer-side rename shape: down renamed its OUTPUT `a` ->
+        // `b` but the expression still reads `m.status`. The old output
+        // name is gone current-side, but the REFERENCE is still written —
+        // the query can't compile, so `down.b` is the dangling casualty.
+        let base = col_dag(
+            "select u.id, u.status from \"up\" u",
+            &[("id", "int"), ("status", "text")],
+            "select m.status as a from \"mid\" m",
+            &[("a", "text")],
+            false,
+        );
+        let current = col_dag(
+            "select u.id from \"up\" u",
+            &[("id", "int")],
+            "select m.status as b from \"mid\" m",
+            &[("b", "text")],
+            false,
+        );
+        let diff = compute_diff(&base, &current);
+        let r = row(&diff, "model.t.mid", "status", ColumnChangeKind::Removed);
+        assert_eq!(
+            r.class,
+            ColumnChangeClass::Breaking,
+            "renaming the output doesn't migrate the reference: {r:?}"
+        );
+        assert_eq!(r.affected_columns, vec!["down.b".to_string()]);
+    }
+
+    #[test]
+    fn column_rename_with_type_change_emits_both_rows() {
+        // A rename that also retypes: `status` -> `order_status` with the
+        // declared type moving int -> text. The rename consumes the
+        // removed+added names; the type move still earns its own
+        // TypeChanged row through the (old -> new) compare pair.
+        let base = col_dag(
+            "select u.id, u.status from \"up\" u",
+            &[("id", "int"), ("status", "int")],
+            "select m.id, m.status from \"mid\" m",
+            &[("id", "int"), ("status", "int")],
+            false,
+        );
+        let current = col_dag(
+            "select u.id, u.status as order_status from \"up\" u",
+            &[("id", "int"), ("order_status", "text")],
+            "select m.id, m.order_status from \"mid\" m",
+            &[("id", "int"), ("order_status", "text")],
+            false,
+        );
+        let diff = compute_diff(&base, &current);
+        let rows = &diff.columns["model.t.mid"];
+        let renamed = rows
+            .iter()
+            .find(|r| r.column == "order_status" && r.kind == ColumnChangeKind::Renamed)
+            .expect("the rename row exists");
+        assert_eq!(renamed.renamed_from.as_deref(), Some("status"));
+        let typed = rows
+            .iter()
+            .find(|r| r.column == "order_status" && r.kind == ColumnChangeKind::TypeChanged)
+            .expect("the composite type-change row exists");
+        assert_eq!(typed.type_from.as_deref(), Some("int"));
+        assert_eq!(typed.type_to.as_deref(), Some("text"));
+    }
+
+    #[test]
     fn column_rename_pairs_by_shared_upstream_and_flags_unmigrated() {
         // mid: `status` -> `order_status` (same u.status source); down still
         // reads `m.status` → the old name dangles → breaking, and the pair
@@ -1647,7 +2020,12 @@ mod tests {
         );
         assert_eq!(r.renamed_from.as_deref(), Some("status"));
         assert_eq!(r.class, ColumnChangeClass::Breaking);
-        assert_eq!(r.affected_columns, vec!["down.status".to_string()]);
+        assert_eq!(
+            r.affected_columns,
+            vec!["down.id".to_string(), "down.status".to_string()],
+            "down's query still names `m.status` → unresolvable → the whole \
+             model's outputs are casualties"
+        );
         let rows = &diff.columns["model.t.mid"];
         assert!(
             !rows

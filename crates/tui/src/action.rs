@@ -185,8 +185,16 @@ pub enum Action {
     ExportPrImpact,
     /// Copy the suggested `dbt build --select …` command for the changed-node set
     /// to the clipboard. Bound INSIDE the Diff modal; reads the open
-    /// [`DiffView`]'s [`PrImpact::ci_command`].
+    /// [`DiffView`]'s [`PrImpact`]. Copies the column-narrowed
+    /// [`PrImpact::ci_command_columns`] when the analysis produced one —
+    /// the most precise buildable set — falling back to the wide
+    /// [`PrImpact::ci_command`]. `Y` ([`YankPrSelectorWide`]) takes the wide
+    /// command unconditionally.
     YankPrSelector,
+    /// The wide counterpart of [`YankPrSelector`]: always copies
+    /// [`PrImpact::ci_command`] (every changed node with `+` fan-out),
+    /// ignoring the column narrowing.
+    YankPrSelectorWide,
     // --- column-level lineage focus (Issue 09) ---
     /// Enter column focus on the structure modal's cursored column: the
     /// lineage pane filters to the column's related models and draws the
@@ -811,7 +819,8 @@ pub static BINDINGS: &[KeyBinding] = &[
     // ---- Diff summary modal (reuses DetailClose + DetailScroll) ----
     KeyBinding { mode: M::Diff, triggers: &[Key(Esc), Key(Enter), Key(Char('q'))], action: A::DetailClose, help: "close" },
     KeyBinding { mode: M::Diff, triggers: &[Key(Char('e'))], action: A::ExportPrImpact, help: "export PR impact report (Markdown)" },
-    KeyBinding { mode: M::Diff, triggers: &[Key(Char('y'))], action: A::YankPrSelector, help: "copy dbt build --select command" },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('y'))], action: A::YankPrSelector, help: "copy dbt build --select (column-narrowed)" },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('Y'))], action: A::YankPrSelectorWide, help: "copy dbt build --select (wide)" },
     KeyBinding { mode: M::Diff, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down" },
     KeyBinding { mode: M::Diff, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up" },
     KeyBinding { mode: M::Diff, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down" },
@@ -1250,6 +1259,7 @@ mod tests {
             | Action::DiffOpen
             | Action::ExportPrImpact
             | Action::YankPrSelector
+            | Action::YankPrSelectorWide
             | Action::ColumnFocusEnter
             | Action::ColumnFocusExit
             | Action::ColumnsOpen
@@ -1375,6 +1385,7 @@ mod tests {
             Action::DiffOpen,
             Action::ExportPrImpact,
             Action::YankPrSelector,
+            Action::YankPrSelectorWide,
             Action::ColumnFocusEnter,
             Action::ColumnFocusExit,
             Action::ColumnsOpen,

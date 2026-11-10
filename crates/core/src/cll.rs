@@ -227,6 +227,23 @@ pub trait ColumnResolver {
         let _ = (dag, node);
         None
     }
+
+    /// The node's column references that provably resolve to NOTHING:
+    /// `(parent uid, normalized column)` pairs the SQL names but the bound
+    /// parent does not emit — a qualified `t.c` where `t` binds a parent
+    /// whose KNOWN column list lacks `c`, or an unqualified `c` absent from
+    /// every bound parent's known list. The `--diff` column analysis uses
+    /// this to separate a consumer that still *references* a removed column
+    /// (its query can't run — breaking) from one that dropped the reference
+    /// deliberately (migrated): the two produce the same current edge set —
+    /// the edge simply doesn't form — so only this signal tells them apart.
+    /// Default: empty — a resolver without binding-level scope knowledge
+    /// (the name-match approximation) can't prove a miss and must not
+    /// guess.
+    fn unresolved_refs(&self, dag: &Dag, node: &str) -> Vec<(String, String)> {
+        let _ = (dag, node);
+        Vec::new()
+    }
 }
 
 /// Lazy, memoized column lineage over a [`Dag`] + [`ColumnResolver`]: resolves

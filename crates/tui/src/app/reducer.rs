@@ -864,17 +864,29 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             }
         }
         // Copy the suggested `dbt build --select …` command from the open Diff
-        // modal. A blank command (nothing buildable changed) notices instead of
-        // silently clobbering the clipboard. The `&app.mode` borrow is released
-        // (the command is cloned) before the mutating notice/yank.
-        Action::YankPrSelector => {
+        // modal. `y` takes the column-narrowed selector when the analysis
+        // produced one (the most precise buildable set), falling back to the
+        // wide `ci_command`; `Y` forces the wide command. A blank command
+        // (nothing buildable changed) notices instead of silently clobbering
+        // the clipboard. The `&app.mode` borrow is released (the command is
+        // cloned) before the mutating notice/yank.
+        Action::YankPrSelector | Action::YankPrSelectorWide => {
+            let wide = matches!(action, Action::YankPrSelectorWide);
             let cmd = match &app.mode {
-                Mode::Diff(dv) => Some(dv.pr.ci_command.clone()),
+                Mode::Diff(dv) => Some(if wide {
+                    (dv.pr.ci_command.clone(), "Copied dbt build command")
+                } else {
+                    match &dv.pr.ci_command_columns {
+                        // The narrowed selector exists — prefer it.
+                        Some(c) => (Some(c.clone()), "Copied column-level dbt build command"),
+                        None => (dv.pr.ci_command.clone(), "Copied dbt build command"),
+                    }
+                }),
                 _ => None,
             };
             match cmd {
-                Some(Some(c)) => yank_with_notice(app, Some(c), "Copied dbt build command"),
-                Some(None) => {
+                Some((Some(c), notice)) => yank_with_notice(app, Some(c), notice),
+                Some((None, _)) => {
                     app.set_notice("No changed models to build");
                     Outcome::cont()
                 }

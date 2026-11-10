@@ -271,15 +271,29 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, owner_key: &str)
     let ci_command_columns = if changed.is_empty() {
         None
     } else {
-        // A changed node keeps its `+` when the column analysis never saw it
-        // (no columns nameable on either side — `columns_analyzed` absent):
-        // "unproven" stays wide; a proven column-clean node narrows to just
-        // itself plus exactly what its columns reach.
+        // A changed node narrows to just its name only when the column
+        // analysis SAW it (`columns_analyzed`) AND every reason it changed
+        // is accounted for by column-level rows. The opaque reasons —
+        // `SQL changed`, `macro:*`, `upstream deps changed` — can alter a
+        // model's whole downstream reach without producing a single column
+        // row: a WHERE/JOIN/GROUP BY edit, a set operation, a macro body
+        // swap, a new parent. When such a reason produced no rows the
+        // change escaped the column surface, so the `+` fan-out stays —
+        // `stg_orders+` after a `where u.disabled_flag = false -> true`
+        // edit keeps `fct_orders` building instead of going stale.
+        let column_accounted = |uid: &str| -> bool {
+            let reasons = diff.modified.get(uid).map(Vec::as_slice).unwrap_or(&[]);
+            let opaque = reasons.iter().any(|r| {
+                r == "SQL changed" || r.starts_with("macro:") || r == "upstream deps changed"
+            });
+            let rows = diff.columns.get(uid).is_some_and(|v| !v.is_empty());
+            diff.columns_analyzed.contains(uid) && (!opaque || rows)
+        };
         let mut selectors: BTreeSet<String> = changed
             .iter()
             .filter_map(|uid| {
                 dag.get(uid).map(|n| {
-                    if diff.columns_analyzed.contains(uid) {
+                    if column_accounted(uid) {
                         n.name.clone()
                     } else {
                         format!("{}+", n.name)

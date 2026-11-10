@@ -179,6 +179,23 @@ impl SqlDialect {
         dag.adapter_type().map_or(Self::Generic, Self::from_adapter)
     }
 
+    /// The BASELINE side's dialect in a `--diff` pair, when nothing is
+    /// pinned explicitly. Both sides must parse under ONE dialect:
+    /// `normalized_expr` text is dialect-idiosyncratic, so a snowflake
+    /// baseline vs a bigquery current would fabricate `expression changed`
+    /// rows on identical SQL. The CURRENT side's adapter wins when it names
+    /// a known dialect — the reviewer's working project sets the parse
+    /// semantics; the baseline's own adapter is the fallback when the
+    /// current side can't name one (a source-mode load carries none), and
+    /// `Generic` when neither can. Deterministic: the choice reads only
+    /// the two manifests' metadata, never filesystem or env state.
+    pub fn for_diff_baseline(current: &Dag, base: &Dag) -> Self {
+        current
+            .adapter_type()
+            .and_then(Self::parse_name)
+            .unwrap_or_else(|| Self::from_dag(base))
+    }
+
     /// The manifest's `adapter_type` when it doesn't name a known dialect —
     /// [`from_dag`](Self::from_dag) maps it to `Generic` and the caller
     /// decides how to surface the warning (a notice/toast in the TUI,
@@ -618,6 +635,12 @@ struct Analyzed {
     /// Without one, every output is explicitly named and probing an
     /// unproduced declared name can only fabricate edges.
     unbounded_wildcard: bool,
+    /// `(parent uid, column)` refs that bound a parent with a KNOWN column
+    /// list and missed it — the model names a column that doesn't exist.
+    /// Recorded, not resolved: the `--diff` dangling-consumer scan reads it
+    /// (a still-named dead column means the query can't run); everywhere
+    /// else an unresolved ref contributes no edge, same as before.
+    unresolved: ColSources,
 }
 
 /// Per-query context: the `Dag`, the model's direct-parent matcher table,
@@ -626,6 +649,11 @@ struct Ctx<'a> {
     dag: &'a Dag,
     parents: &'a [Parent],
     depth: Cell<usize>,
+    /// Dead references collected while resolving this model — see
+    /// [`Analyzed::unresolved`]. Interior mutability so every `&Ctx` walker
+    /// records into the same set; [`compute_analyzed`](Self::compute_analyzed)
+    /// drains it into the memoized result.
+    unresolved: RefCell<ColSources>,
 }
 
 /// The [`RefScope`] for expressions in `env` resolved against `scope`
@@ -876,6 +904,7 @@ impl SqlParseResolver {
                 dag,
                 parents: &parents,
                 depth: Cell::new(0),
+                unresolved: RefCell::new(ColSources::new()),
             };
             let ctes = HashMap::new();
             let env = Env {
@@ -889,6 +918,7 @@ impl SqlParseResolver {
                 out: res.out,
                 foj: res.foj,
                 unbounded_wildcard: query_has_output_wildcard(query),
+                unresolved: ctx.unresolved.into_inner(),
             }))
         })();
         self.analyzing.borrow_mut().remove(node);
@@ -2788,6 +2818,9 @@ impl SqlParseResolver {
     /// `t.col` against a bound `t`: the parent uid + col (trusting the
     /// qualification when the parent's list is unknown), the derived
     /// output's transitive sources, or nothing for External bindings.
+    /// A qualified miss against a KNOWN parent list is recorded into
+    /// `ctx.unresolved` — the SQL still names a column the parent provably
+    /// doesn't emit (the `--diff` dangling-reference signal).
     fn resolve_in_binding(&self, ctx: &Ctx<'_>, b: &Binding, col: &str) -> ColSources {
         let mut s = ColSources::new();
         match &b.src {
@@ -2795,9 +2828,14 @@ impl SqlParseResolver {
                 Some(cols) => {
                     if cols.iter().any(|c| c == col) {
                         s.insert((uid.clone(), col.to_string()));
+                    } else {
+                        // A KNOWN column list without `col` → no edge (the
+                        // precision win over v0's blind name-match) — but
+                        // the ref WAS written, so record the provable miss.
+                        ctx.unresolved
+                            .borrow_mut()
+                            .insert((uid.clone(), col.to_string()));
                     }
-                    // A KNOWN column list without `col` → no edge (the
-                    // precision win over v0's blind name-match).
                 }
                 // Unknown column list → trust the qualification.
                 None => {
@@ -2864,8 +2902,10 @@ impl SqlParseResolver {
     /// own level — or any level OUTER of it — resolves the ref. (An inner
     /// unknown can't poison a provable outer hit, and vice versa.)
     fn resolve_unqualified(&self, ctx: &Ctx<'_>, scope: &Scope<'_>, col: &str) -> ColSources {
-        // Collect per-level (known hits, unknown uids), innermost first.
+        // Collect per-level (known hits, unknown uids), innermost first —
+        // and every KNOWN-list parent the ref was checked against.
         let mut levels: Vec<(ColSources, BTreeSet<String>)> = Vec::new();
+        let mut checked: BTreeSet<String> = BTreeSet::new();
         let mut sc = Some(scope);
         while let Some(s) = sc {
             let mut found = ColSources::new();
@@ -2874,6 +2914,7 @@ impl SqlParseResolver {
                 match &b.src {
                     TableSrc::Parent(uid) => match self.col_set(ctx.dag, uid) {
                         Some(cols) => {
+                            checked.insert(uid.clone());
                             if cols.iter().any(|c| c == col) {
                                 found.insert((uid.clone(), col.to_string()));
                             }
@@ -2916,6 +2957,19 @@ impl SqlParseResolver {
                 for (_, unknown) in &levels {
                     for uid in unknown {
                         result.insert((uid.clone(), col.to_string()));
+                    }
+                }
+                if result.is_empty() {
+                    // A bare `col` absent from EVERY bound parent's known
+                    // column list — an unresolvable name (like `t.gone`,
+                    // just unqualified). Record it against every checked
+                    // parent — any of them could have been the intended
+                    // home; the --diff scan intersects with actually-dead
+                    // columns, so a wrong guess can't misfire.
+                    for uid in &checked {
+                        ctx.unresolved
+                            .borrow_mut()
+                            .insert((uid.clone(), col.to_string()));
                     }
                 }
                 result
@@ -3170,6 +3224,7 @@ impl SqlParseResolver {
             dag,
             parents: &parents,
             depth: Cell::new(0),
+            unresolved: RefCell::new(ColSources::new()),
         };
 
         for o in &an.out {
@@ -3293,6 +3348,15 @@ impl ColumnResolver for SqlParseResolver {
     /// "no expression data" apart from "no named expressions".
     fn column_exprs(&self, dag: &Dag, node: &str) -> Option<BTreeMap<String, String>> {
         self.expr_map(dag, node).map(|rc| (*rc).clone())
+    }
+
+    /// Dead references the analysis provably recorded — sorted for
+    /// deterministic downstream iteration. `None`/unparseable SQL → empty
+    /// (nothing proven), same contract as `resolve`.
+    fn unresolved_refs(&self, dag: &Dag, node: &str) -> Vec<(String, String)> {
+        self.analyzed(dag, node)
+            .map(|a| a.unresolved.iter().cloned().collect())
+            .unwrap_or_default()
     }
 }
 
@@ -4119,6 +4183,53 @@ mod tests {
         // No metadata → Generic (source mode never guesses).
         let m2 = manifest(vec![model("model.t.m", "select 1", &[])], &[]);
         assert_eq!(SqlDialect::from_dag(&Dag::build(&m2)), SqlDialect::Generic);
+    }
+
+    #[test]
+    fn for_diff_baseline_shares_the_current_dialect() {
+        // The one-dialect-per-diff rule: the BASELINE side parses under the
+        // CURRENT side's dialect, or `normalized_expr` differences between
+        // dialects fabricate `expression changed` rows on identical SQL.
+        let dag_with = |adapter: Option<&str>| {
+            let mut m = manifest(vec![model("model.t.m", "select 1", &[])], &[]);
+            m.metadata.adapter_type = adapter.map(str::to_string);
+            Dag::build(&m)
+        };
+        let snow = dag_with(Some("snowflake"));
+        let bq = dag_with(Some("bigquery"));
+        let no_adapter = dag_with(None);
+        let unknown_adapter = dag_with(Some("not_a_dialect"));
+
+        // Current's recognized adapter wins — even when the baseline names
+        // a DIFFERENT recognized one (snowflake current, bigquery baseline
+        // → both sides parse as snowflake).
+        assert_eq!(
+            SqlDialect::for_diff_baseline(&snow, &bq),
+            SqlDialect::Snowflake
+        );
+        // Current can't name one (source-mode load / unrecognized adapter)
+        // → the BASELINE's recognized adapter fills in.
+        for current in [&no_adapter, &unknown_adapter] {
+            assert_eq!(
+                SqlDialect::for_diff_baseline(current, &bq),
+                SqlDialect::BigQuery
+            );
+            assert_eq!(
+                SqlDialect::for_diff_baseline(current, &snow),
+                SqlDialect::Snowflake
+            );
+        }
+        // Neither side names a known dialect → Generic, deterministically.
+        for current in [&no_adapter, &unknown_adapter] {
+            assert_eq!(
+                SqlDialect::for_diff_baseline(current, &no_adapter),
+                SqlDialect::Generic
+            );
+            assert_eq!(
+                SqlDialect::for_diff_baseline(current, &unknown_adapter),
+                SqlDialect::Generic
+            );
+        }
     }
 
     // -- determinism --------------------------------------------------------------

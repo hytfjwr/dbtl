@@ -199,7 +199,9 @@ pub enum Commands {
         /// whose baseline consumers did not migrate (detected through
         /// column-level lineage). Needs `--diff`. Partial-breaking changes
         /// (data-type / expression moves) report in the impact pack but
-        /// never trip this gate.
+        /// never trip this gate. Without `--diff` the gate is skipped and a
+        /// note is printed — under `--format json` the note lands in `info`
+        /// (not `checks`, since no check ran).
         #[arg(long)]
         no_breaking: bool,
         /// Restrict linting to these rules (comma-separated rule names;
@@ -654,12 +656,15 @@ fn cll_resolver(
 /// The baseline side's diff resolver: no catalog (the baseline's warehouse
 /// record isn't loaded — its declared + CLL-inferred columns still resolve
 /// through the same priority chain); `--sql-dialect` pins BOTH sides'
-/// dialects, else the baseline's own adapter metadata picks its own.
+/// dialects, else [`dbtl::SqlDialect::for_diff_baseline`] shares the current
+/// side's dialect — one parse dialect per diff, or normalized expressions
+/// can't compare.
 fn baseline_resolver(
+    current: &dbtl::Dag,
     base: &dbtl::Dag,
     sql_dialect: Option<dbtl::SqlDialect>,
 ) -> dbtl::SqlParseResolver {
-    let dialect = sql_dialect.unwrap_or_else(|| dbtl::SqlDialect::from_dag(base));
+    let dialect = sql_dialect.unwrap_or_else(|| dbtl::SqlDialect::for_diff_baseline(current, base));
     dbtl::SqlParseResolver::new(None, dialect)
 }
 
@@ -688,7 +693,7 @@ pub fn run_impact(
     // catalog-less baseline) so the report's column analysis matches the
     // `D` modal byte-for-byte.
     let cur_res = cll_resolver(&resolved, sql_dialect);
-    let base_res = baseline_resolver(&base, sql_dialect);
+    let base_res = baseline_resolver(&resolved.dag, &base, sql_dialect);
     let diff = dbtl::compute_diff_with(&base, &resolved.dag, &base_res, &cur_res);
     let report = dbtl::diff_report(
         &resolved.dag,
@@ -827,7 +832,7 @@ pub fn run_check(
         // modal use — so `--no-breaking` gates on the identical column
         // analysis the reviewer reads.
         let cur_res = cll_resolver(&resolved, sql_dialect);
-        let base_res = baseline_resolver(base, sql_dialect);
+        let base_res = baseline_resolver(dag, base, sql_dialect);
         let diff = dbtl::compute_diff_with(base, dag, &base_res, &cur_res);
         let pr = dbtl::pr_impact(dag, Some(base), &diff, &owner_meta_key());
         lines.push(format!("baseline: {label}"));
@@ -933,6 +938,8 @@ pub fn run_check(
     }
     // `--no-breaking` is a diff gate — without a baseline there is nothing
     // to classify. A silent no-op gate is the worst CI pattern, so say so.
+    // The note goes to `info`, not `checks`: no check ran, and a
+    // skipped-gate entry would look like a result to a CI parser.
     if no_breaking && base_ctx.is_none() {
         let note = "note: --no-breaking needs --diff; skipped".to_string();
         lines.push(note.clone());
