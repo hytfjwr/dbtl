@@ -203,6 +203,9 @@ fn render_ctx(
         // Mirror the loop's minimap wiring so the ASCII guard scans the inset's
         // `#`/`.`/`+` glyphs whenever the lens is toggled on (all pure ASCII).
         ctx.minimap = app.ui_state.minimap_visible();
+        // Mirror the loop's fold wiring so a scenario that folds groups scans
+        // the `v`/`>` header markers (pure ASCII — `▾`/`▸` never leak).
+        ctx.folded_groups = Some(&app.folded_groups);
         ctx.layer_bands = layer_bands.as_deref();
         ctx.toasts = toasts;
         // The Issue-05 pointer overlays, computed exactly like the loop does:
@@ -823,4 +826,73 @@ fn issue05_pointer_surfaces_are_all_ascii() {
         &render_mouse(&mut app, 100, 30, None, None),
         "lineage search title + match accents 100x30",
     );
+}
+
+#[test]
+fn folded_groups_and_row_truncation_are_all_ascii() {
+    // Issue 11's list surfaces under the guard: the `v` open / `>` folded
+    // group markers, the `..` middle-elision, and the all-folded empty reason
+    // — `▾`/`▸`/`…` must never reach an ASCII frame.
+    let mut app = ascii_app();
+    let fold = |app: &mut App, layer: &str| {
+        app.click_target(
+            &dbtl::ui::HitTarget::ListHeader(layer.to_string()),
+            ratatui::crossterm::event::MouseButton::Left,
+            (5, 5),
+        );
+    };
+    fold(&mut app, "staging");
+    let buffer = render(&mut app, 100, 40);
+    assert_all_ascii(&buffer, "folded staging 100x40");
+    let text = {
+        let area = buffer.area;
+        let mut s = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                if let Some(c) = buffer.cell((x, y)) {
+                    s.push_str(c.symbol());
+                }
+            }
+            s.push('\n');
+        }
+        s
+    };
+    assert!(
+        text.contains("> Staging (11)"),
+        "the folded header is the ASCII `>` marker: {text}"
+    );
+    assert!(text.contains("v Intermediate"), "open groups keep `v`");
+    // A narrow list PANE (not terminal — that hides the list outright)
+    // forces the `..` middle-elision on the long names.
+    app.ui_state
+        .set_pane_width(dbtl::ui::Splitter::List, 36, 100);
+    let buffer = render(&mut app, 100, 40);
+    assert_all_ascii(&buffer, "folded + narrow list pane");
+    let text = {
+        let area = buffer.area;
+        let mut s = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                if let Some(c) = buffer.cell((x, y)) {
+                    s.push_str(c.symbol());
+                }
+            }
+            s.push('\n');
+        }
+        s
+    };
+    assert!(
+        text.contains(".."),
+        "a truncated name renders the `..` marker: {text}"
+    );
+    assert!(
+        !text.contains('…'),
+        "the Unicode ellipsis never reaches ASCII mode"
+    );
+    // Every group folded: the empty-list reason stays ASCII too.
+    for layer in ["intermediate", "marts", "utilities"] {
+        fold(&mut app, layer);
+    }
+    let buffer = render(&mut app, 80, 24);
+    assert_all_ascii(&buffer, "all folded 80x24");
 }

@@ -44,6 +44,11 @@ pub struct PersistedState {
     /// Recently-rooted models, newest-first, max 10 — Issue 10's home reads
     /// it; restored per project like the strip itself.
     pub recent: Vec<String>,
+    /// The list pane's folded group keys (§13 `folded_groups`): the `-` /
+    /// header-click set. A set field like `bookmarks`, not an Option —
+    /// absent = nothing folded, same as an empty set. Keys that no longer
+    /// name a live group are dropped on apply (same rule as `reload`).
+    pub folded_groups: BTreeSet<String>,
     /// The list pane's saved width in columns (screen-spec §5 — columns, not
     /// ratios). `None` = unset.
     pub list_width: Option<u16>,
@@ -250,6 +255,7 @@ impl App {
                 .collect(),
             active_tab: Some(self.active_tab()),
             recent: self.recent.clone(),
+            folded_groups: self.folded_groups.clone(),
             list_width: Some(self.ui_state.list_width()),
             inspector_width: Some(self.ui_state.inspector_width()),
             inspector: Some(self.ui_state.inspector_policy().name().to_string()),
@@ -322,6 +328,23 @@ impl App {
             .cloned()
             .collect();
         self.recent.truncate(10);
+        // §13's folded groups — same set-field layering as bookmarks: keys
+        // that no longer name a live group drop (a restored fold against a
+        // renamed/emptied group would pin a phantom), then
+        // `apply_list_filter` materializes the fold view (the single writer
+        // — the restore can't build `folded_base` by hand). A restored fold
+        // holding the tab's root detaches the cursor the same way a live
+        // `-` fold does.
+        if !prefs.folded_groups.is_empty() {
+            self.folded_groups.extend(
+                prefs
+                    .folded_groups
+                    .iter()
+                    .filter(|k| self.model_list.groups.iter().any(|g| &g.layer == *k))
+                    .cloned(),
+            );
+            self.apply_list_filter();
+        }
         // Pane/display prefs (Issue 02): same Option-layering as the rest —
         // `None` keeps the current (or config-defaulted) value. Out-of-range
         // widths are NOT rejected here: `pane_layout` clamps them for display,
@@ -716,6 +739,7 @@ mod tests {
             }],
             active_tab: Some(0),
             recent: vec!["model.a.x".to_string()],
+            folded_groups: ["staging"].iter().map(ToString::to_string).collect(),
             list_width: Some(50),
             inspector_width: Some(60),
             inspector: Some("on".to_string()),

@@ -192,13 +192,14 @@ impl App {
         self.recent.truncate(10);
     }
 
-    /// `O` / middle-click / `+` / `--select`: open `uid` as a tab — under
-    /// `jump_to`'s openability rule (the model must resolve in the ACTIVE
-    /// list, the same gate a lineage Enter applies), a non-model /
-    /// filtered-out node toasts `can't open a <kind> as a tab` instead and
-    /// nothing moves.
+    /// `O` / middle-click / `+` / `--select`: open `uid` as a tab — under the
+    /// `is_rootable` rule (the node must exist and be a `model`): a folded or
+    /// filtered-out model still EXISTS in the dag — it renders in the
+    /// lineage — so it opens and detaches (§2), the same way a folded root
+    /// does. Only a genuinely non-model node toasts
+    /// `can't open a <kind> as a tab` and nothing moves.
     pub fn open_node_as_tab(&mut self, uid: &str) -> bool {
-        if self.active_list().models.iter().any(|n| n.unique_id == uid) {
+        if self.is_rootable(uid) {
             self.open_in_new_tab(uid);
             true
         } else {
@@ -290,7 +291,7 @@ impl App {
             self.ui_state.set_lineage_scroll(x, y);
         }
         if matches!(self.mode, Mode::Search(_)) {
-            self.close_search(None);
+            self.close_search(None, false);
         }
         if let Some(root) = self.tab().root.clone() {
             if let Some(i) = self

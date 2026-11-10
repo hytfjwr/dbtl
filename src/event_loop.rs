@@ -591,6 +591,12 @@ pub fn event_loop(
                 ctx.search_matches = &search_matches;
                 ctx.search_pos = search_pos;
                 ctx.tooltip = tip_view.as_ref();
+                ctx.folded_groups = Some(&app.folded_groups);
+                // §6's row hover — only list targets tint (a tab-strip hover
+                // already feeds `tab_bar.hover`; a lineage hover is issue-05's).
+                ctx.list_hover = mouse
+                    .hover()
+                    .filter(|h| matches!(h, HitTarget::ListRow(_) | HitTarget::ListHeader(_)));
                 ctx.theme = app.active_theme();
                 ctx.inspector = inspector.as_deref();
                 terminal
@@ -1393,6 +1399,7 @@ fn hit_geometry<'a>(
         tab_bar: Some(app.tab_bar_layout_for(panes.tab_bar, false)),
         list: app.active_list(),
         list_offset: app.ui_state.offset(),
+        list_selected: app.ui_state.selected(),
         layout: lineage,
         scroll_x: app.ui_state.lineage_scroll_x(),
         scroll_y: app.ui_state.lineage_scroll_y(),

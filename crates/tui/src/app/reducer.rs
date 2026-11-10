@@ -990,7 +990,9 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                 Mode::Search(s) => s.origin_uid.clone(),
                 _ => None,
             };
-            app.close_search(origin);
+            // Cancel restores the pre-search root — folds untouched (the
+            // unfold-on-confirm policy is the CONFIRM arm's alone).
+            app.close_search(origin, false);
             Outcome::cont()
         }
         Action::SearchConfirm => {
@@ -1094,7 +1096,9 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                         app.record_search_query(query);
                     }
                     let chosen = app.list_sel_uid();
-                    app.close_search(chosen);
+                    // A confirmed match may live in a folded group (search
+                    // ignores folds): unfold its group so the pick lands.
+                    app.close_search(chosen, true);
                 }
             }
             Outcome::cont()
@@ -1460,6 +1464,14 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                 target
             };
             app.apply_list_filter();
+            Outcome::cont()
+        }
+        // `-`: fold/unfold the group under the cursor through the SAME
+        // apply_list_filter rebuild the `T`/`*` toggles use — a folded group
+        // keeps its header row but sheds its models from selection space
+        // (§10; the fold state is the persisted `folded_groups` set, §13).
+        Action::ToggleGroupFold => {
+            app.toggle_selected_group_fold();
             Outcome::cont()
         }
         // Jump to the next bookmarked model in the ACTIVE list's visible order
