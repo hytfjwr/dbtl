@@ -13,11 +13,15 @@
 //! touches them and memoises the result, so a one-column closure walks only the
 //! nodes it reaches — never the whole graph.
 
+mod sql_parse;
+
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use serde::Serialize;
+
+pub use sql_parse::{SqlDialect, SqlParseResolver};
 
 use crate::catalog::Catalog;
 use crate::dag::Dag;
@@ -1526,7 +1530,9 @@ pub fn closure_report(
             .iter()
             .map(|e| e.confidence)
             .max()
-            .unwrap_or(Confidence::NameMatch);
+            // An isolated column has no edges — its row inherits the
+            // report-level default (Exact = "v1 ran", not the v0 label).
+            .unwrap_or(Confidence::Exact);
         columns.push(ColumnRow {
             column: addr(t),
             via,
@@ -1539,7 +1545,7 @@ pub fn closure_report(
         .iter()
         .map(|r| r.confidence)
         .max()
-        .unwrap_or(Confidence::NameMatch);
+        .unwrap_or(Confidence::Exact);
     ColumnReport {
         target: addr(target),
         unique_id: target.node.clone(),
@@ -1562,11 +1568,12 @@ impl std::fmt::Display for ColumnReport {
             "# Column lineage: `{}` ({})\n",
             self.target, self.direction
         )?;
-        writeln!(
-            f,
-            "Confidence: `{}` (column-level lineage v0: name-match approximation)\n",
-            self.confidence
-        )?;
+        let method = match self.confidence {
+            Confidence::Exact => "column-level lineage v1: SQL parser",
+            Confidence::Stale => "column-level lineage v1: SQL parser, stale compiled SQL",
+            Confidence::NameMatch => "column-level lineage v0: name-match approximation",
+        };
+        writeln!(f, "Confidence: `{}` ({method})\n", self.confidence)?;
         writeln!(f, "## {title} columns ({})\n", self.columns.len())?;
         writeln!(f, "| column | via | kind | confidence |")?;
         writeln!(f, "| --- | --- | --- | --- |")?;

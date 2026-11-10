@@ -24,7 +24,7 @@ pub use catalog::{default_catalog_path, Catalog, CatalogColumn, CatalogNode, Cat
 pub use cll::{
     closure_report, normalize_column, resolution_sql, ClosureDirection, ColumnEdge, ColumnEdgeKind,
     ColumnLineage, ColumnRef, ColumnReport, ColumnResolver, ColumnRow, Confidence,
-    NameMatchResolver,
+    NameMatchResolver, SqlDialect, SqlParseResolver,
 };
 pub use compiled::{default_compiled_dir, default_target_dir, CompiledSql};
 pub use dag::{

@@ -56,6 +56,11 @@ impl App {
         // AND zero kept children).
         let mut transitive: Vec<(String, String, usize)> = Vec::new();
         let mut orphans: Vec<String> = Vec::new();
+        // CLL v1: models that could not be parsed fell back to the Issue 07
+        // name-match approximation. Resolving here records each model's
+        // fallback flag (the resolutions stay memoized for later browsing), so
+        // the dashboard can report the same count `dbtl columns` prints.
+        let mut cll_fallbacks = 0usize;
         // Coverage comes from the ONE shared source (`coverage_summary`, the
         // `coverage_gap` base) so the dashboard, the `t` lens, and the status
         // `cov` segment always quote the same numbers.
@@ -97,6 +102,10 @@ impl App {
                     .is_some();
                 if !has_desc {
                     no_desc += 1;
+                }
+                crate::ColumnResolver::resolve(&self.cll, &self.dag, uid);
+                if self.cll.is_fallback(uid) {
+                    cll_fallbacks += 1;
                 }
             }
         }
@@ -170,6 +179,7 @@ impl App {
             untested_testable: testable_total - testable_tested,
             zero_downstream_models: zero_down,
             no_description_models: no_desc,
+            cll_fallbacks,
             scroll: 0,
         }
     }
@@ -202,7 +212,7 @@ impl App {
     /// The per-column `(upstream, downstream)` ONE-HOP column-edge counts for
     /// a node — the structure modal's `↑u ↓d` counts beside each column row
     /// (direct parents in / direct children out, per the Issue 07 spec).
-    /// Drives the app-owned [`NameMatchResolver`](crate::NameMatchResolver)
+    /// Drives the app-owned [`SqlParseResolver`](crate::SqlParseResolver)
     /// through a fresh lazy [`ColumnLineage`](crate::ColumnLineage) (the
     /// resolver's own per-uid memos persist; the engine's per-node memo is
     /// one-shot by design). Keyed by normalized column name; deterministic.

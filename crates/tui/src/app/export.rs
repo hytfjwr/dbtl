@@ -260,7 +260,7 @@ impl App {
     /// deterministic Markdown table — literally
     /// [`closure_report`](crate::closure_report)'s `Display`, so the yank and
     /// `dbtl columns` print the same bytes for the same target. Drives the
-    /// app-owned [`NameMatchResolver`](crate::NameMatchResolver); the report
+    /// app-owned [`SqlParseResolver`](crate::SqlParseResolver); the report
     /// labels columns `model.column` (display names).
     pub fn column_lineage_markdown(
         &self,

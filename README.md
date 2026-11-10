@@ -335,16 +335,20 @@ out of scope — they need compiled SQL.
 
 ### Column lineage (`dbtl columns`)
 
-`dbtl` also resolves *column*-level lineage (v0): which upstream columns feed a
+`dbtl` also resolves *column*-level lineage: which upstream columns feed a
 model's output columns, and which downstream columns an input feeds. It works
-in both modes with **no compile and no Python** — the resolver reads the model
-SQL the `s` preview shows (compiled SQL preferred, flagged `[stale]` when the
-source file is newer).
+in both modes with **no compile and no Python** — each model's SQL is parsed
+with a real SQL parser (`sqlparser`) and column references are resolved
+through the actual FROM/JOIN scope: table aliases, CTEs, derived and
+correlated subqueries, wildcards (`*`/`t.*`), and set operations. Compiled
+SQL is preferred (flagged `[stale]` when the source file is newer); raw model
+SQL is used after rendering `{{ ref() }}`/`{{ source() }}`/`{% %}`/`{# #}`.
 
 ```console
 $ dbtl columns stg_orders.id                # downstream closure (the blast radius)
 $ dbtl columns cll_demo.order_id --upstream # provenance
 $ dbtl columns stg_orders.id --format json  # machine-readable report
+$ dbtl --sql-dialect snowflake columns m.id # pin the parser dialect
 ```
 
 The default output is a deterministic Markdown table (`column | via | kind |
@@ -356,24 +360,30 @@ out — not the transitive closure) — `h`/`l` move a cursor between them,
 and `Enter`/`c` **traces the column** in the lineage pane (see the
 `K` keybinding row below for the interactive surfaces).
 
-v0 matches columns **by name**, so it intentionally over-connects: `o.id`
-contributes every parent's `id`, and join keys / `WHERE` / `GROUP BY` columns
-attach to *all* output columns (`filter_or_join` edges) rather than the ones
-they semantically shape. The `confidence` field marks the resolution basis —
-`name_match` for the approximation, `stale` for out-of-date compiled SQL. An
-exact parser (AST-level, tracking a column through projections) can replace
-the resolver behind the same interface without touching the TUI or CLI.
+Edge `kind` is `passthrough` (same name, same value), `rename`, `transform`
+(computed expression), or `filter_or_join` (row-shaping references — join
+keys, `WHERE`/`GROUP BY`/`QUALIFY` columns — attached to every output). The
+`confidence` field marks the resolution basis: `exact` when the parser ran,
+`stale` for out-of-date compiled SQL, `name_match` when the model fell back
+to the v0 name-matching approximation.
 
-Known v0 approximations (the exact-parser swap is the tracked follow-up):
+The fallback is **per model**: a model whose SQL is missing or unparseable
+resolves by matching column *names* (the v0 behaviour — `o.id` can bind every
+parent's `id`). `dbtl columns` reports the fallback count on stderr and the
+structure modal tags such models `[name-match]`. `--sql-dialect` overrides
+the auto-detected dialect (the manifest's `adapter_type`; `generic` in source
+mode or when unset).
 
-- The scanner reads the OUTERMOST `SELECT` list only — CTE bodies and
-  subqueries are opaque (their outputs resolve through the parent models
-  `dbtl` already knows, not through the inner text).
-- `select *` expands to the direct parents' column union — an intervening
-  `WHERE`-only column still lands on every output (`filter_or_join`).
-- Unquoted identifiers are matched case-insensitively (the warehouse's
-  folding); a *quoted* `"WeIrD"` column keeps its exact spelling, so it
-  only matches identically-quoted names downstream.
+Known approximations in v1:
+
+- `select *` / `t.*` expands over the parent's *known* columns (catalog →
+  documented columns → the parent's own resolved outputs). An entirely
+  unknown parent contributes nothing — no invented names.
+- An unqualified column matching several bindings keeps *all* candidates
+  (documented over-connection for genuine ambiguity); a binding with an
+  unknown column list can't disprove a ref, so it joins the candidates too.
+- `{% if %}`/`{% for %}` bodies all resolve (every branch's refs count);
+  `{{ macro(...) }}` calls render as `NULL` — macro-emitted SQL is opaque.
 - `dbtl columns` addresses a column as `<node>.<column>` — a column name
   that itself contains a `.` (a quoted `"a.b"` identifier) cannot be
   expressed in that position today.

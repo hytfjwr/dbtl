@@ -15,6 +15,7 @@ use std::process::Command;
 use dbtl::{
     closure_report, load_dag, load_dag_from_source, ClosureDirection, ColumnEdgeKind,
     ColumnLineage, ColumnRef, ColumnResolver, Dag, NameMatchResolver, RawManifest, RawNode,
+    SqlParseResolver,
 };
 
 const MANIFEST: &str = concat!(
@@ -190,6 +191,15 @@ fn downstream_closure_of_stg_id_is_the_blast_radius() {
         (model("fct_orders"), "id"),
         (model("cll_demo"), "order_id"),
         (model("cll_demo"), "n_orders"),
+        // cll_syntax name-matches `s.id`/`l.order_id` flat — the v0
+        // approximation fans stg.id into every output it can name.
+        (model("cll_syntax"), "country"),
+        (model("cll_syntax"), "jp_id"),
+        (model("cll_syntax"), "order_id"),
+        (model("cll_syntax"), "order_id_next"),
+        (model("cll_syntax"), "rn"),
+        (model("cll_syntax"), "status"),
+        (model("cll_syntax"), "status_upper"),
         ("snapshot.sample.orders_snapshot".to_string(), "id"),
         ("snapshot.sample.extra_snapshot".to_string(), "id"),
     ]
@@ -270,6 +280,167 @@ fn source_and_manifest_modes_agree_where_columns_are_declared() {
     }
 }
 
+// ---- Issue 08: the parser-backed resolver -------------------------------------
+
+/// `cll_demo`'s in-edges under `SqlParseResolver`: the SAME topology the v0
+/// set sketches but without the over-connection — qualified `o.`/`f.` refs
+/// bind only their aliased parent, and group-by columns that also project
+/// (`o.id`, `o.status`) are value sources, not FOJ fans.
+fn cll_demo_parsed_edges() -> BTreeSet<(String, String, ColumnEdgeKind)> {
+    let mut set = BTreeSet::new();
+    let m = model("cll_demo");
+    let stg = model("stg_orders");
+    let fct = model("fct_orders");
+    set.insert((
+        format!("{stg}.id"),
+        format!("{m}.order_id"),
+        ColumnEdgeKind::Rename,
+    ));
+    set.insert((
+        format!("{stg}.status"),
+        format!("{m}.status"),
+        ColumnEdgeKind::Passthrough,
+    ));
+    set.insert((
+        format!("{stg}.status"),
+        format!("{m}.status_upper"),
+        ColumnEdgeKind::Transform,
+    ));
+    set.insert((
+        format!("{stg}.id"),
+        format!("{m}.n_orders"),
+        ColumnEdgeKind::Transform,
+    ));
+    // FOJ: join `f.id` + where `o.disabled_flag`/`f.country` — stg.id and
+    // stg.status are already value sources, so they drop out of the fans.
+    for out in ["order_id", "status", "status_upper", "n_orders"] {
+        for src in [
+            format!("{fct}.id"),
+            format!("{stg}.disabled_flag"),
+            format!("{fct}.country"),
+        ] {
+            set.insert((src, format!("{m}.{out}"), ColumnEdgeKind::FilterOrJoin));
+        }
+    }
+    set
+}
+
+#[test]
+fn parsed_edges_drop_the_name_match_over_connection() {
+    let dag = load_dag(MANIFEST).expect("sample manifest loads");
+    let resolver = SqlParseResolver::for_dag(None, &dag);
+    assert_eq!(
+        edge_set(&dag, &resolver, &model("cll_demo")),
+        cll_demo_parsed_edges(),
+        "cll_demo parsed in-edges"
+    );
+    // Nothing fell back: every fixture model's SQL parses.
+    assert_eq!(resolver.fallback_count(), 0);
+}
+
+/// `cll_syntax`'s in-edges — the fixture's per-syntax expected set. Value
+/// edges first (per output), then the filter_or_join fans that attach to
+/// every output: `stg.disabled_flag` (the CTE's WHERE, propagated outward),
+/// `fct.id` (join-only), `fct.country` (WHERE-only).
+fn cll_syntax_parsed_edges() -> BTreeSet<(String, String, ColumnEdgeKind)> {
+    let mut set = BTreeSet::new();
+    let m = model("cll_syntax");
+    let stg = model("stg_orders");
+    let fct = model("fct_orders");
+    let seed = "seed.sample.country_codes".to_string();
+    let mut v = |from: &str, to: &str, kind| {
+        set.insert((from.to_string(), format!("{m}.{to}"), kind));
+    };
+    v(&format!("{stg}.id"), "order_id", ColumnEdgeKind::Rename);
+    v(
+        &format!("{stg}.status"),
+        "status",
+        ColumnEdgeKind::Passthrough,
+    );
+    v(
+        &format!("{stg}.status"),
+        "status_upper",
+        ColumnEdgeKind::Transform,
+    );
+    for src in [
+        format!("{seed}.country"),
+        format!("{seed}.code"),
+        format!("{stg}.country_code"),
+    ] {
+        v(&src, "country", ColumnEdgeKind::Transform);
+    }
+    for src in [format!("{stg}.country_code"), format!("{stg}.id")] {
+        v(&src, "jp_id", ColumnEdgeKind::Transform);
+        v(&src, "rn", ColumnEdgeKind::Transform);
+    }
+    v(
+        &format!("{stg}.id"),
+        "order_id_next",
+        ColumnEdgeKind::Transform,
+    );
+    v(
+        &format!("{fct}.status"),
+        "order_id_next",
+        ColumnEdgeKind::Transform,
+    );
+    for out in [
+        "order_id",
+        "status",
+        "status_upper",
+        "country",
+        "jp_id",
+        "rn",
+        "order_id_next",
+    ] {
+        for src in [
+            format!("{stg}.disabled_flag"),
+            format!("{fct}.id"),
+            format!("{fct}.country"),
+        ] {
+            set.insert((src, format!("{m}.{out}"), ColumnEdgeKind::FilterOrJoin));
+        }
+    }
+    set
+}
+
+#[test]
+fn cll_syntax_covers_every_resolved_syntax() {
+    let dag = load_dag(MANIFEST).expect("sample manifest loads");
+    let resolver = SqlParseResolver::for_dag(None, &dag);
+    assert_eq!(
+        edge_set(&dag, &resolver, &model("cll_syntax")),
+        cll_syntax_parsed_edges(),
+        "cll_syntax parsed in-edges"
+    );
+}
+
+#[test]
+fn parsed_edges_agree_between_source_and_manifest_modes() {
+    // The parser resolves the manifest's raw_code (the fixture is parse-only)
+    // and the source loader's rendered Jinja identically — `ref()` renders to
+    // the same relation names either way. fct_orders is included: in manifest
+    // mode its seed column list is unknown (manifest `columns` are only what
+    // docs declare), while source mode reads the seed's CSV headers — so the
+    // column list is KNOWN there. Either mode yields the same
+    // "trust the qualification" edges for the columns the model selects.
+    let m = load_dag(MANIFEST).expect("sample manifest loads");
+    let s = load_dag_from_source(PROJECT).expect("sample project parses");
+    let rm = SqlParseResolver::for_dag(None, &m);
+    let rs = SqlParseResolver::for_dag(None, &s);
+    for node in [
+        model("stg_orders"),
+        model("fct_orders"),
+        model("cll_demo"),
+        model("cll_syntax"),
+    ] {
+        assert_eq!(
+            edge_set(&m, &rm, &node),
+            edge_set(&s, &rs, &node),
+            "{node} parsed in-edges diverge between modes"
+        );
+    }
+}
+
 // ---- `dbtl columns` CLI surface -------------------------------------------
 
 #[test]
@@ -291,7 +462,10 @@ fn columns_prints_the_downstream_markdown_report() {
         stdout.contains("# Column lineage: `stg_orders.id` (downstream)"),
         "report header, got: {stdout:?}"
     );
-    assert!(stdout.contains("## Downstream columns (5)"), "row count");
+    // v1: the FOJ fans of `o.id = f.id` reach EVERY cll_demo output and
+    // cll_syntax's own fans reach its seven outputs — the parser's precise
+    // blast radius is 14 (name-match reported 5).
+    assert!(stdout.contains("## Downstream columns (14)"), "row count");
     for row in [
         "`fct_orders.id` | `stg_orders.id` | passthrough",
         "`cll_demo.order_id`",
@@ -317,7 +491,9 @@ fn columns_upstream_lists_provenance() {
         stdout.contains("# Column lineage: `cll_demo.order_id` (upstream)"),
         "upstream header, got: {stdout:?}"
     );
-    assert!(stdout.contains("## Upstream columns (6)"), "row count");
+    // v1: the precise chain adds the country_codes seed columns reachable
+    // through fct_orders' join — 8 where name-match reported 6.
+    assert!(stdout.contains("## Upstream columns (8)"), "row count");
     assert!(stdout.contains("`orders.id`"), "reaches the raw source");
     assert!(stdout.contains("filter_or_join"), "the FOJ edges are named");
 }
@@ -338,10 +514,11 @@ fn columns_json_is_a_serializable_report() {
     let v: serde_json::Value = serde_json::from_str(&stdout).expect("json parses");
     assert_eq!(v["target"], "stg_orders.id");
     assert_eq!(v["direction"], "downstream");
-    assert_eq!(v["confidence"], "name_match");
+    // The fixture parses cleanly → the v1 confidence surfaces end to end.
+    assert_eq!(v["confidence"], "exact");
     assert_eq!(v["unique_id"], model("stg_orders"));
     let cols = v["columns"].as_array().expect("columns array");
-    assert_eq!(cols.len(), 5);
+    assert_eq!(cols.len(), 14);
     assert!(
         cols.iter()
             .any(|r| r["column"] == "fct_orders.id"
@@ -396,7 +573,7 @@ fn columns_works_in_source_mode() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("## Downstream columns (5)"), "{stdout:?}");
+    assert!(stdout.contains("## Downstream columns (14)"), "{stdout:?}");
 }
 
 // ---- performance ------------------------------------------------------------

@@ -99,6 +99,7 @@ pub fn synth_manifest(params: &SynthParams) -> RawManifest {
                 RawNode {
                     name: name.clone(),
                     resource_type: "model".to_string(),
+                    alias: None,
                     path: Some(format!("{dir}/{name}.sql")),
                     original_file_path: Some(format!("models/{dir}/{name}.sql")),
                     description: Some(format!("synthetic {dir} model {k}")),

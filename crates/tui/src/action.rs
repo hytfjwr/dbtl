@@ -282,6 +282,10 @@ pub struct DetailView {
     /// Any of this node's column edges was resolved against compiled SQL
     /// older than its source — the columns header gets a `[stale]` tag.
     pub stale: bool,
+    /// This node's column edges fell back to the Issue 07 name-match
+    /// approximation (unparsed or missing SQL) — the columns header gets a
+    /// `[name-match]` tag.
+    pub name_match: bool,
     pub scroll: usize,
 }
 
@@ -395,6 +399,12 @@ pub struct StatsView {
     pub untested_testable: usize,
     pub zero_downstream_models: usize,
     pub no_description_models: usize,
+    /// Root-project models whose column lineage resolved through the Issue 07
+    /// name-match fallback (SQL missing or unparseable) — the aggregate of the
+    /// detail modal's per-model `[name-match]` tag. Computed by resolving every
+    /// model once when the dashboard opens; the resolutions stay memoized, so
+    /// later column browsing reuses them for free.
+    pub cll_fallbacks: usize,
     pub scroll: usize,
 }
 
@@ -964,6 +974,7 @@ mod tests {
             test_index: usize::MAX,
             col_counts: std::collections::BTreeMap::new(),
             stale: false,
+            name_match: false,
             scroll: 0,
         })
     }
@@ -1012,6 +1023,7 @@ mod tests {
             untested_testable: 0,
             zero_downstream_models: 0,
             no_description_models: 0,
+            cll_fallbacks: 0,
             scroll: 0,
         })
     }
