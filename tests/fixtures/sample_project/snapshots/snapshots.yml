@@ -7,3 +7,15 @@ snapshots:
       unique_key: id
       strategy: check
       check_cols: all
+      meta:
+        owner: snapshot-eng
+  # Bare top-level `meta:` on a SNAPSHOT — accepted by dbt exactly like
+  # `config.meta` (verified on 1.12.6), same as models and seeds.
+  - name: extra_snapshot
+    relation: ref('stg_orders')
+    meta:
+      bare_snap_meta: "LANDED"
+    config:
+      unique_key: id
+      strategy: timestamp
+      updated_at: updated_at

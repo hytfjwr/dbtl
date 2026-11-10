@@ -116,6 +116,11 @@ pub struct NodeDetail {
     pub version: Option<String>,
     /// The newest version's name, when the model is versioned.
     pub latest_version: Option<String>,
+    /// The node's `meta` dictionary as stringified key-value pairs (owner /
+    /// domain / arbitrary annotations): scalar values unquoted, nested
+    /// objects/arrays as compact JSON. `BTreeMap` so every surface (modal,
+    /// docs, selectors, grouping) iterates in sorted-key order.
+    pub meta: BTreeMap<String, String>,
 }
 
 /// A directed dependency edge `parent -> child` inside a subgraph (both
@@ -1151,6 +1156,22 @@ fn columns_from(map: &serde_json::Map<String, serde_json::Value>) -> Vec<ColumnI
         .collect()
 }
 
+/// Stringify a `meta` dictionary for display/selection: scalars keep their
+/// plain form (`"alice"` → `alice`, `1` → `1`, `true` → `true`, `null` →
+/// `null`); objects/arrays become compact JSON (`{"a":1}`). Sorted into a
+/// `BTreeMap` so output is deterministic regardless of manifest order.
+fn meta_strings(map: &serde_json::Map<String, serde_json::Value>) -> BTreeMap<String, String> {
+    map.iter()
+        .map(|(k, v)| {
+            let s = match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            (k.clone(), s)
+        })
+        .collect()
+}
+
 /// Detail for a model / seed / snapshot node.
 fn detail_from_node(node: &RawNode) -> NodeDetail {
     NodeDetail {
@@ -1167,6 +1188,7 @@ fn detail_from_node(node: &RawNode) -> NodeDetail {
         contract_enforced: node.contract.as_ref().is_some_and(|c| c.enforced),
         version: node.version.clone(),
         latest_version: node.latest_version.clone(),
+        meta: meta_strings(&node.meta),
     }
 }
 
@@ -1200,6 +1222,7 @@ fn detail_from_source(source: &RawSource) -> NodeDetail {
         columns: columns_from(&source.columns),
         original_file_path: source.original_file_path.clone(),
         package_name: source.package_name.clone(),
+        meta: meta_strings(&source.meta),
         ..Default::default() // sources carry no governance fields
     }
 }

@@ -28,8 +28,8 @@ pub use layout::{
     Density, GlyphMode, Layout, LensTint, MaterializationClass, NodeRect,
 };
 pub use model_list::{
-    build_filtered_model_list, build_model_list, match_indices, name_matches_query, DisplayRow,
-    ModelGroup, ModelList, SortMode, LAYER_ORDER,
+    build_filtered_model_list, build_model_list, build_model_list_grouped, match_indices,
+    name_matches_query, DisplayRow, ModelGroup, ModelList, SortMode, LAYER_ORDER,
 };
 pub use persist::{Config, PersistedState};
 pub use ui::{

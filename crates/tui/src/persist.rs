@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::app::App;
-use crate::{build_model_list, Density, LineageLens, SortMode};
+use crate::{build_model_list_grouped, Density, LineageLens, SortMode};
 
 /// The `App` state that survives a restart (saved per project).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +49,15 @@ pub struct Config {
     pub density: Option<String>,
     /// Default model-list sort name.
     pub sort: Option<String>,
+    /// Group the model list by this `meta` key's VALUE instead of the layer
+    /// dirs (`group_by_meta: owner` → `owner=alice` groups, `(no owner)`
+    /// last; unset = the default layer grouping). The `.` sort cycle still
+    /// orders within each group.
+    pub group_by_meta: Option<String>,
+    /// The `meta` key the PR-impact pack collects as "affected owners"
+    /// (default `owner`) — read by the `D` modal, its `e` export, and
+    /// `dbtl impact`/`check`.
+    pub owner_meta_key: Option<String>,
 }
 
 impl Config {
@@ -183,7 +192,8 @@ impl App {
                 // Same rebuild-then-reselect dance as the SortCycle arm.
                 self.sort = sort;
                 let current = self.selected_unique_id();
-                self.model_list = build_model_list(&self.dag, sort);
+                self.model_list =
+                    build_model_list_grouped(&self.dag, sort, self.group_by_meta.as_deref());
                 self.apply_list_filter();
                 if let Some(uid) = &current {
                     self.select_by_unique_id(uid);
@@ -244,7 +254,7 @@ mod tests {
         a.ui_state.set_lens(LineageLens::Coverage);
         a.ui_state.set_density(Density::Compact);
         a.sort = SortMode::Tests;
-        a.model_list = build_model_list(&a.dag, a.sort);
+        a.model_list = build_model_list_grouped(&a.dag, a.sort, None);
         a.select_by_unique_id("model.jaffle_finance.rpt_delivery_base_metrics");
 
         let snap = a.prefs_snapshot();
@@ -292,6 +302,12 @@ mod tests {
         assert_eq!(c.theme.as_deref(), Some("midnight"));
         assert_eq!(c.lens.as_deref(), Some("coverage"));
         assert_eq!(c.density, None);
+        assert_eq!(c.group_by_meta, None);
+        assert_eq!(c.owner_meta_key, None);
+        // The meta prefs parse as plain strings.
+        let m = Config::from_yaml("group_by_meta: owner\nowner_meta_key: team\n").unwrap();
+        assert_eq!(m.group_by_meta.as_deref(), Some("owner"));
+        assert_eq!(m.owner_meta_key.as_deref(), Some("team"));
         assert_eq!(Config::from_yaml("").unwrap(), Config::default());
         assert!(Config::from_yaml("lens: [unclosed").is_err());
     }

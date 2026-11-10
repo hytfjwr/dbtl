@@ -770,8 +770,24 @@ fn mask_sql(sql: &str) -> Vec<u8> {
                     b'%' => b"%}",
                     _ => b"#}",
                 };
+                // `{{ }}` tracks `(`/`[`/`{` depth: a `}}` inside a nested
+                // literal — `config(meta={'a': {'b': 1}})` — does NOT close
+                // the expression. `{%`/`{#` blocks close at the first `%}`/`#}`.
+                let tracked = b[i + 1] == b'{';
+                let mut depth = 0usize;
                 i += 2;
-                while i + 1 < b.len() && !(b[i] == close[0] && b[i + 1] == close[1]) {
+                while i + 1 < b.len() {
+                    match b[i] {
+                        _ if b[i] == close[0]
+                            && b[i + 1] == close[1]
+                            && (!tracked || depth == 0) =>
+                        {
+                            break
+                        }
+                        b'(' | b'[' | b'{' if tracked => depth += 1,
+                        b')' | b']' | b'}' if tracked => depth = depth.saturating_sub(1),
+                        _ => {}
+                    }
                     i += 1;
                 }
                 i = (i + 2).min(b.len());

@@ -111,6 +111,10 @@ fn details_are_identical_modulo_profile_data() {
         if info.resource_type != "seed" {
             assert_eq!(md.columns, sd.columns, "{uid} columns");
         }
+        // `meta` has no documented exclusion: the synthesized merge (project
+        // tree < schema.yml < in-file config; source → table cascade) must
+        // equal real dbt's for every node type.
+        assert_eq!(md.meta, sd.meta, "{uid} meta");
     }
 }
 

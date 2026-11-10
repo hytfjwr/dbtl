@@ -4,8 +4,15 @@ sources:
   - name: raw
     database: analytics
     schema: raw_data
+    # Source-level `meta:` cascades to every table; a table's own `meta:`
+    # overrides it per key (dbt's shallow merge).
+    meta:
+      owner: data-eng
+      shared: "yes"
     tables:
       - name: orders
+        meta:
+          owner: payments-eng
         # Whitespace-controlled docs block ({%- docs -%}).
         description: "{{ doc('raw_orders_doc') }}"
         columns:
@@ -28,6 +35,10 @@ models:
     config:
       enabled: false
   - name: stg_orders
+    # Top-level `meta:` — the non-`config:` spelling dbt also accepts (it is
+    # equivalent to `config.meta`; both together would be a dbt error).
+    meta:
+      pii: true
     # `{{-` eats the preceding whitespace (Jinja whitespace control), so
     # this renders as "Staged orders.<body>" — the source loader must
     # reproduce that exactly.
@@ -48,3 +59,25 @@ models:
               values: ["new", "shipped"]
       - name: country_code
       - name: disabled_flag
+
+# A `seeds:` properties entry — schema-level `config.meta` on a seed (no
+# `columns:` declared, so the manifest keeps the CSV-derived column shape the
+# source-mode-superset contract asserts).
+seeds:
+  - name: country_codes
+    config:
+      meta:
+        owner: data-eng
+  # Bare top-level `meta:` on a SEED (no `config:` wrapper) — dbt accepts it
+  # exactly like `config.meta` (verified on 1.12.6), so the loader must too.
+  # The values also pin YAML-1.1 scalar resolution: real dbt (PyYAML) lands
+  # `seed_flag: yes` / `on_key: on` / `off_key: off` as BOOLEANS while `y`/`n`
+  # stay STRINGS — serde_norway (YAML 1.2) would keep them all strings.
+  - name: extra_seed
+    meta:
+      bare_seed_meta: "LANDED"
+      seed_flag: yes
+      y_key: y
+      n_key: n
+      on_key: on
+      off_key: off

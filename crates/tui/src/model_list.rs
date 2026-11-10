@@ -159,40 +159,67 @@ impl ModelList {
     }
 }
 
+/// Build the model list from a [`Dag`] — the default layer grouping (see
+/// [`build_model_list_grouped`] for the optional meta grouping).
+pub fn build_model_list(dag: &Dag, sort: SortMode) -> ModelList {
+    build_model_list_grouped(dag, sort, None)
+}
+
 /// Build the model list from a [`Dag`].
 ///
 /// - Collects only `resource_type == "model"` nodes (sources/seeds/snapshots
 ///   are not primary list entries; they appear only in lineage).
-/// - Groups by the first directory of `path`.
-/// - Orders groups by [`LAYER_ORDER`] (unknown layers appended, by name).
+/// - Groups by the first directory of `path` — OR, when `group_key` names a
+///   `meta` key (`group_by_meta` in `config.yml`), by that meta VALUE, which
+///   REPLACES the layer grouping outright (a reviewer's "who owns this"
+///   view). Meta groups are labelled `key=value`, sort alphabetically, and a
+///   `(no <key>)` bucket sorts last for models missing the key.
+/// - Orders groups by [`LAYER_ORDER`] (unknown layers appended, by name) —
+///   meta groups alphabetically instead.
 /// - Sorts each group's models per `sort` ([`SortMode`]): always a name/unique_id
 ///   tie-break, optionally preceded by a descending field key. `SortMode::Layer`
 ///   is byte-identical to the original name-then-unique_id ordering.
 /// - Produces the flat selectable list and interleaved display rows.
-pub fn build_model_list(dag: &Dag, sort: SortMode) -> ModelList {
-    // Collect models grouped by layer key.
-    let mut by_layer: Vec<(String, Vec<NodeInfo>)> = Vec::new();
+pub fn build_model_list_grouped(dag: &Dag, sort: SortMode, group_key: Option<&str>) -> ModelList {
+    // Collect models grouped by the layer key or the meta value.
+    let mut by_group: Vec<(String, Vec<NodeInfo>)> = Vec::new();
+    let missing_label = group_key.map(|k| format!("(no {k})"));
     for node in dag.nodes().values() {
         if node.resource_type != "model" {
             continue;
         }
-        // Models without a path would be unexpected; bucket them under "" so we
-        // neither drop nor panic on them.
-        let layer = first_dir(node).unwrap_or("").to_string();
-        match by_layer.iter_mut().find(|(l, _)| *l == layer) {
+        let group = match group_key {
+            Some(k) => dag
+                .detail(&node.unique_id)
+                .and_then(|d| d.meta.get(k))
+                .map(|v| format!("{k}={v}"))
+                .unwrap_or_else(|| missing_label.clone().unwrap()),
+            // Models without a path would be unexpected; bucket them under ""
+            // so we neither drop nor panic on them.
+            None => first_dir(node).unwrap_or("").to_string(),
+        };
+        match by_group.iter_mut().find(|(g, _)| *g == group) {
             Some((_, models)) => models.push(node.clone()),
-            None => by_layer.push((layer, vec![node.clone()])),
+            None => by_group.push((group, vec![node.clone()])),
         }
     }
 
-    // Order groups by fixed logical layer order; unknown layers after, by name.
-    by_layer.sort_by(|(a, _), (b, _)| layer_rank(a).cmp(&layer_rank(b)).then_with(|| a.cmp(b)));
+    match group_key {
+        // Meta groups: alphabetical by `key=value` label, `(no <key>)` last.
+        Some(_) => by_group.sort_by(|(a, _), (b, _)| {
+            let missing = |g: &String| Some(g) == missing_label.as_ref();
+            missing(a).cmp(&missing(b)).then_with(|| a.cmp(b))
+        }),
+        // Layer groups: fixed logical order; unknown layers after, by name.
+        None => by_group
+            .sort_by(|(a, _), (b, _)| layer_rank(a).cmp(&layer_rank(b)).then_with(|| a.cmp(b))),
+    }
 
     // Sort within each group per `sort`. The primary key is mode-specific (and
     // descending for the field modes); the name/unique_id tie-break is shared, so
     // `SortMode::Layer` (primary == Equal) collapses to the original ordering and
     // every mode stays deterministic.
-    for (_, models) in &mut by_layer {
+    for (_, models) in &mut by_group {
         models.sort_by(|a, b| {
             let primary = match sort {
                 SortMode::Layer => std::cmp::Ordering::Equal,
@@ -205,7 +232,7 @@ pub fn build_model_list(dag: &Dag, sort: SortMode) -> ModelList {
         });
     }
 
-    assemble_model_list(by_layer)
+    assemble_model_list(by_group)
 }
 
 /// Materialize a [`ModelList`] from layer-ordered groups: build the flat `models`
@@ -391,6 +418,7 @@ mod tests {
             saved_queries: HashMap::new(),
             unit_tests: HashMap::new(),
             functions: HashMap::new(),
+
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
             macros: HashMap::new(),
@@ -509,6 +537,86 @@ mod tests {
         assert_eq!(list.row_of_model(999), 0, "out-of-range index is safe");
     }
 
+    /// A manifest whose models carry `meta.owner` values — the
+    /// `build_model_list_grouped` grouping testbed.
+    fn meta_synthetic() -> Dag {
+        let mut nodes = HashMap::new();
+        let mut add = |id: &str, name: &str, path: &str, owner: Option<&str>| {
+            let meta = owner
+                .map(|o| {
+                    serde_json::Map::from_iter([("owner".to_string(), serde_json::Value::from(o))])
+                })
+                .unwrap_or_default();
+            nodes.insert(
+                id.to_string(),
+                RawNode {
+                    name: name.into(),
+                    resource_type: "model".into(),
+                    path: Some(path.into()),
+                    meta,
+                    ..Default::default()
+                },
+            );
+        };
+        // Scrambled layer dirs: meta grouping must ignore them entirely.
+        add("model.p.m_b", "marts_b", "marts/m_b.sql", Some("alice"));
+        add("model.p.s_a", "stg_a", "staging/s_a.sql", Some("bob"));
+        add("model.p.m_a", "marts_a", "marts/m_a.sql", None);
+        add("model.p.s_b", "stg_b", "staging/s_b.sql", Some("alice"));
+        let manifest = RawManifest {
+            metadata: Default::default(),
+            nodes,
+            sources: HashMap::new(),
+            exposures: HashMap::new(),
+            semantic_models: HashMap::new(),
+            metrics: HashMap::new(),
+            saved_queries: HashMap::new(),
+            unit_tests: HashMap::new(),
+            functions: HashMap::new(),
+            parent_map: HashMap::new(),
+            child_map: HashMap::new(),
+            macros: HashMap::new(),
+        };
+        Dag::build(&manifest)
+    }
+
+    #[test]
+    fn meta_grouping_replaces_layers_alphabetically_missing_last() {
+        let list = build_model_list_grouped(&meta_synthetic(), SortMode::Layer, Some("owner"));
+        let groups: Vec<(&str, Vec<&str>)> = list
+            .groups
+            .iter()
+            .map(|g| {
+                (
+                    g.layer.as_str(),
+                    g.models.iter().map(|m| m.name.as_str()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            groups,
+            vec![
+                ("owner=alice", vec!["marts_b", "stg_b"]),
+                ("owner=bob", vec!["stg_a"]),
+                ("(no owner)", vec!["marts_a"]),
+            ],
+            "meta values group alphabetically, key=value labels, missing last"
+        );
+        // The flat selectable list + row bridge stay consistent (headers skip).
+        for i in 0..list.len() {
+            match &list.rows[list.row_of_model(i)] {
+                DisplayRow::Model { model_index, .. } => assert_eq!(*model_index, i),
+                other => panic!("row_of_model({i}) -> {other:?}"),
+            }
+        }
+        // `None` = the layer grouping — same helper, byte-identical behaviour.
+        let layered = build_model_list_grouped(&meta_synthetic(), SortMode::Layer, None);
+        assert_eq!(
+            layered,
+            build_model_list(&meta_synthetic(), SortMode::Layer)
+        );
+    }
+
     #[test]
     fn filter_keeps_matches_drops_empty_groups_and_rebuilds_rows() {
         let full = build_model_list(&synthetic(), SortMode::Layer);
@@ -583,6 +691,7 @@ mod tests {
             saved_queries: HashMap::new(),
             unit_tests: HashMap::new(),
             functions: HashMap::new(),
+
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
             macros: HashMap::new(),
@@ -655,6 +764,7 @@ mod tests {
             saved_queries: HashMap::new(),
             unit_tests: HashMap::new(),
             functions: HashMap::new(),
+
             parent_map,
             child_map,
             macros: HashMap::new(),

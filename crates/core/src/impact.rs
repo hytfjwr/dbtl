@@ -36,6 +36,9 @@ pub struct PrImpact {
     /// Downstream exposures of the changed set as display strings
     /// (`"name (kind, owner: …)"`), sorted, deduped — the "who cares" line.
     pub affected_exposures: Vec<String>,
+    /// The distinct `meta` values (default key `owner`) of the affected
+    /// downstream MODELS — "who to page" for the blast radius, sorted.
+    pub affected_owners: Vec<String>,
     /// The suggested `dbt build --select a+ b+ …` command over the changed
     /// buildable set, or `None` when nothing buildable changed.
     pub ci_command: Option<String>,
@@ -77,8 +80,15 @@ pub struct DiffReport {
 /// Build the shared [`DiffReport`] payload: names resolved from the CURRENT
 /// `dag`, every listing sorted. `base` is the baseline `Dag` the `diff` was
 /// computed from (needed for the new-layer-violations difference); `baseline`
-/// is its display label (the `--diff` argument).
-pub fn diff_report(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, baseline: &str) -> DiffReport {
+/// is its display label (the `--diff` argument). `owner_key` is the `meta`
+/// key the affected-owners set reads (`"owner"` by default).
+pub fn diff_report(
+    dag: &Dag,
+    base: Option<&Dag>,
+    diff: &DagDiff,
+    baseline: &str,
+    owner_key: &str,
+) -> DiffReport {
     let pair = |uid: &str| {
         dag.get(uid)
             .map(|n| (n.name.clone(), n.resource_type.clone()))
@@ -99,7 +109,7 @@ pub fn diff_report(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, baseline: &str
         modified,
         edges_added: diff.edges_added.clone(),
         edges_removed: diff.edges_removed.clone(),
-        pr: pr_impact(dag, base, diff),
+        pr: pr_impact(dag, base, diff, owner_key),
     }
 }
 
@@ -111,11 +121,14 @@ pub fn diff_report(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, baseline: &str
 ///   "newly introduced" layer-violation difference; `None` → every current
 ///   violation counts as new.
 /// - `diff`: the changed set (added ∪ modified; identity = `unique_id`).
+/// - `owner_key`: the `meta` key read for [`PrImpact::affected_owners`]
+///   (`"owner"` by default; made explicit so the TUI's `config.yml` and the
+///   CLI can't disagree).
 ///
 /// Deterministic: the changed set is sorted; closures come from `HashSet`s
 /// but every emitted listing is sorted; the new-violation set is a `BTreeSet`
 /// difference.
-pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff) -> PrImpact {
+pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, owner_key: &str) -> PrImpact {
     // The changed BUILDABLE set: added ∪ modified, restricted to nodes that
     // still exist in the current Dag and that `dbt build` can target
     // (model / seed / snapshot). Removed nodes are gone — not buildable, not
@@ -143,6 +156,7 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff) -> PrImpact {
     }
     let mut affected_models = 0usize;
     let mut affected_marts: Vec<String> = Vec::new();
+    let mut affected_owners: BTreeSet<String> = BTreeSet::new();
     let mut exposure_uids: Vec<String> = Vec::new();
     for uid in &down_uids {
         if changed_set.contains(uid.as_str()) {
@@ -155,6 +169,12 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff) -> PrImpact {
             affected_models += 1;
             if first_dir(n) == Some("marts") {
                 affected_marts.push(n.name.clone());
+            }
+            // The affected-owner set collects the SAME model population
+            // `affected_models` counts — downstream models only, the changed
+            // set excluded.
+            if let Some(owner) = dag.detail(uid).and_then(|d| d.meta.get(owner_key)) {
+                affected_owners.insert(owner.clone());
             }
         }
     }
@@ -231,6 +251,7 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff) -> PrImpact {
         affected_models,
         affected_marts,
         affected_exposures,
+        affected_owners: affected_owners.into_iter().collect(),
         ci_command,
         untested_changes,
         changed_hubs,
@@ -332,6 +353,12 @@ pub fn pr_impact_markdown(project: &str, report: &DiffReport) -> String {
             pr.affected_exposures.len()
         ));
     }
+    if !pr.affected_owners.is_empty() {
+        out.push_str(&format!(
+            "- affected owners: {}\n",
+            pr.affected_owners.len()
+        ));
+    }
 
     // The changed-node listings, mirroring the `D` modal sections. A list of
     // `(title, rows)`; empty sections are skipped (a clean diff prints none).
@@ -410,6 +437,16 @@ pub fn pr_impact_markdown(project: &str, report: &DiffReport) -> String {
         ));
         for e in &pr.affected_exposures {
             out.push_str(&format!("- {e}\n"));
+        }
+    }
+
+    if !pr.affected_owners.is_empty() {
+        out.push_str(&format!(
+            "\n## Affected owners ({})\n",
+            pr.affected_owners.len()
+        ));
+        for o in &pr.affected_owners {
+            out.push_str(&format!("- {o}\n"));
         }
     }
 
@@ -499,6 +536,7 @@ mod tests {
             saved_queries: HashMap::new(),
             unit_tests: HashMap::new(),
             functions: HashMap::new(),
+
             parent_map: HashMap::from([(
                 "model.p.fct_x".to_string(),
                 vec!["model.p.stg_x".to_string()],
@@ -510,6 +548,98 @@ mod tests {
         }
     }
 
+    /// `stg_x` (owner=carol, CHANGED) feeding two downstream models owned by
+    /// alice and bob — the affected-owners population.
+    fn owner_manifest() -> RawManifest {
+        let model = |name: &str, path: &str, owner: Option<&str>| {
+            (
+                format!("model.p.{name}"),
+                RawNode {
+                    name: name.into(),
+                    resource_type: "model".into(),
+                    path: Some(path.into()),
+                    raw_code: Some("select 1".into()),
+                    meta: owner
+                        .map(|o| {
+                            serde_json::Map::from_iter([(
+                                "owner".to_string(),
+                                serde_json::Value::from(o),
+                            )])
+                        })
+                        .unwrap_or_default(),
+                    ..Default::default()
+                },
+            )
+        };
+        let mut nodes = HashMap::from([
+            model("stg_x", "staging/stg_x.sql", Some("carol")),
+            model("fct_x", "marts/fct_x.sql", Some("alice")),
+            model("mart_b", "marts/mart_b.sql", Some("bob")),
+            model("orphan", "marts/orphan.sql", Some("mallory")),
+        ]);
+        // stg_x → fct_x → mart_b; orphan is downstream of nothing.
+        nodes.get_mut("model.p.fct_x").unwrap().depends_on.nodes =
+            vec!["model.p.stg_x".to_string()];
+        nodes.get_mut("model.p.mart_b").unwrap().depends_on.nodes =
+            vec!["model.p.fct_x".to_string()];
+        RawManifest {
+            metadata: Default::default(),
+            nodes,
+            sources: HashMap::new(),
+            exposures: HashMap::new(),
+            macros: HashMap::new(),
+            semantic_models: HashMap::new(),
+            metrics: HashMap::new(),
+            saved_queries: HashMap::new(),
+            unit_tests: HashMap::new(),
+            functions: HashMap::new(),
+            parent_map: HashMap::from([
+                (
+                    "model.p.fct_x".to_string(),
+                    vec!["model.p.stg_x".to_string()],
+                ),
+                (
+                    "model.p.mart_b".to_string(),
+                    vec!["model.p.fct_x".to_string()],
+                ),
+            ]),
+            child_map: HashMap::from([
+                (
+                    "model.p.stg_x".to_string(),
+                    vec!["model.p.fct_x".to_string()],
+                ),
+                (
+                    "model.p.fct_x".to_string(),
+                    vec!["model.p.mart_b".to_string()],
+                ),
+            ]),
+        }
+    }
+
+    #[test]
+    fn affected_owners_collects_distinct_downstream_owners() {
+        let base = Dag::build(&owner_manifest());
+        // Change stg_x's SQL → modified; fct_x + mart_b are its downstream.
+        let mut m = owner_manifest();
+        m.nodes.get_mut("model.p.stg_x").unwrap().raw_code = Some("select 2".into());
+        let current = Dag::build(&m);
+        let diff = compute_diff(&base, &current);
+        let pr = pr_impact(&current, Some(&base), &diff, "owner");
+        assert_eq!(
+            pr.affected_owners,
+            vec!["alice".to_string(), "bob".to_string()],
+            "distinct downstream owners, sorted — the changed node's own owner \
+             (carol) and the untouched orphan's (mallory) are both excluded"
+        );
+        // A different `owner_key` reads a different meta key (here: nothing).
+        let pr = pr_impact(&current, Some(&base), &diff, "team");
+        assert!(pr.affected_owners.is_empty());
+        // The markdown section lists them.
+        let report = diff_report(&current, Some(&base), &diff, "b", "owner");
+        let md = pr_impact_markdown("p", &report);
+        assert!(md.contains("## Affected owners (2)\n- alice\n- bob\n"));
+    }
+
     #[test]
     fn pr_impact_reports_blast_radius_ci_and_untested_changes() {
         let base = Dag::build(&two_model_manifest());
@@ -519,7 +649,7 @@ mod tests {
         m.nodes.get_mut("model.p.fct_x").unwrap().raw_code = Some("select 22".into());
         let current = Dag::build(&m);
         let diff = compute_diff(&base, &current);
-        let pr = pr_impact(&current, Some(&base), &diff);
+        let pr = pr_impact(&current, Some(&base), &diff, "owner");
 
         assert_eq!(pr.untested_changes, vec!["fct_x".to_string()]);
         assert_eq!(pr.ci_command.as_deref(), Some("dbt build --select fct_x+"));
@@ -545,14 +675,19 @@ mod tests {
         m.nodes.get_mut("model.p.fct_x").unwrap().depends_on.nodes = vec![];
         let current = Dag::build(&m);
         let diff = compute_diff(&base, &current);
-        let pr = pr_impact(&current, Some(&base), &diff);
+        let pr = pr_impact(&current, Some(&base), &diff, "owner");
         assert_eq!(
             pr.new_layer_violations,
             vec![("fct_x".to_string(), "stg_x".to_string())],
             "the flipped edge is a NEW violation vs the legal baseline"
         );
         // And the same violation present in BOTH sides is not "new".
-        let pr = pr_impact(&current, Some(&current), &compute_diff(&current, &current));
+        let pr = pr_impact(
+            &current,
+            Some(&current),
+            &compute_diff(&current, &current),
+            "owner",
+        );
         assert!(pr.new_layer_violations.is_empty());
     }
 
@@ -569,8 +704,8 @@ mod tests {
         m.nodes.get_mut("model.p.fct_x").unwrap().raw_code = Some("select 22".into());
         let current = Dag::build(&m);
         let diff = compute_diff(&base, &current);
-        let r1 = diff_report(&current, Some(&base), &diff, "base");
-        let r2 = diff_report(&current, Some(&base), &diff, "base");
+        let r1 = diff_report(&current, Some(&base), &diff, "base", "owner");
+        let r2 = diff_report(&current, Some(&base), &diff, "base", "owner");
         assert_eq!(r1, r2);
         let md = pr_impact_markdown("p", &r1);
         assert!(md.contains("# PR Impact Report: p"));

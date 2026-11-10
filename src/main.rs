@@ -112,6 +112,14 @@ fn run(cli: &Cli) -> Result<()> {
     // touch the terminal.
     let mut app = build_app(cli)?;
 
+    // The meta-driven options are config-only (no CLI/state layer): the model
+    // list's `group_by_meta` grouping axis and the impact pack's
+    // `owner_meta_key`. Applied BEFORE prefs so a saved sort change rebuilds
+    // the already-grouped list rather than building twice.
+    app.set_group_by_meta(config.group_by_meta.clone());
+    if let Some(key) = &config.owner_meta_key {
+        app.set_owner_meta_key(key.clone());
+    }
     // Layered prefs: config defaults under the per-project saved state (the
     // state's `Some` fields win); --select/--diff below still override both.
     app.apply_prefs(&config.as_prefs());

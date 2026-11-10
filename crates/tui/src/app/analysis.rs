@@ -19,8 +19,13 @@ impl App {
     /// a hint instead of opening.
     pub fn compute_diff_view(&self) -> Option<DiffView> {
         let diff = self.diff()?;
-        let report =
-            crate::diff_report(&self.dag, self.diff_base.as_ref(), diff, self.diff_label());
+        let report = crate::diff_report(
+            &self.dag,
+            self.diff_base.as_ref(),
+            diff,
+            self.diff_label(),
+            &self.owner_meta_key,
+        );
         Some(DiffView {
             baseline: report.baseline,
             added: report.added,

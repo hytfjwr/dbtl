@@ -188,6 +188,7 @@ fn downstream_closure_of_stg_id_is_the_blast_radius() {
         (model("cll_demo"), "order_id"),
         (model("cll_demo"), "n_orders"),
         ("snapshot.sample.orders_snapshot".to_string(), "id"),
+        ("snapshot.sample.extra_snapshot".to_string(), "id"),
     ]
     .into_iter()
     .map(|(n, c)| format!("{n}.{c}"))
@@ -287,7 +288,7 @@ fn columns_prints_the_downstream_markdown_report() {
         stdout.contains("# Column lineage: `stg_orders.id` (downstream)"),
         "report header, got: {stdout:?}"
     );
-    assert!(stdout.contains("## Downstream columns (4)"), "row count");
+    assert!(stdout.contains("## Downstream columns (5)"), "row count");
     for row in [
         "`fct_orders.id` | `stg_orders.id` | passthrough",
         "`cll_demo.order_id`",
@@ -337,7 +338,7 @@ fn columns_json_is_a_serializable_report() {
     assert_eq!(v["confidence"], "name_match");
     assert_eq!(v["unique_id"], model("stg_orders"));
     let cols = v["columns"].as_array().expect("columns array");
-    assert_eq!(cols.len(), 4);
+    assert_eq!(cols.len(), 5);
     assert!(
         cols.iter()
             .any(|r| r["column"] == "fct_orders.id"
@@ -392,7 +393,7 @@ fn columns_works_in_source_mode() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("## Downstream columns (4)"), "{stdout:?}");
+    assert!(stdout.contains("## Downstream columns (5)"), "{stdout:?}");
 }
 
 // ---- performance ------------------------------------------------------------

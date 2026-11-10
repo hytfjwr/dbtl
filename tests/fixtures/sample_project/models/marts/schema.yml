@@ -5,6 +5,12 @@ models:
     # A docs-block ref (multiline block, models/marts/docs.md): dbt renders it
     # into the description; the source loader must expand it identically.
     description: "{{ doc('order_facts_doc') }}"
+    config:
+      meta:
+        # The in-file `config(meta=…)` `owner` wins over this per key; `zone`
+        # survives (schema level beats the project tree, loses to the file).
+        owner: schema-writer
+        zone: z1
     columns:
       - name: id
         data_tests:
@@ -17,6 +23,8 @@ models:
     config:
       # The in-file config (incremental) must win over this schema value.
       materialized: table
+      meta:
+        owner: bob
 
 exposures:
   - name: orders_dashboard

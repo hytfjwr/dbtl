@@ -109,6 +109,12 @@ pub struct RawNode {
     /// The newest version's name when this node is versioned.
     #[serde(default)]
     pub latest_version: Option<String>,
+    /// The node's `meta` dictionary (owner / domain / arbitrary key-values).
+    /// Real manifests mirror the merged result at the node top level (it equals
+    /// `config.meta`), so only this field is read. Values are arbitrary JSON —
+    /// kept raw here and stringified for display by [`Dag::build`].
+    #[serde(default)]
+    pub meta: serde_json::Map<String, serde_json::Value>,
 }
 
 /// `contract` sub-object: whether `enforced` is on (the declared column list
@@ -140,6 +146,10 @@ pub struct RawSource {
     /// manifest; `None` for synthesized source-mode nodes).
     #[serde(default)]
     pub package_name: Option<String>,
+    /// The source's merged `meta` dictionary (source-level `meta:` cascades to
+    /// every table; a table-level `meta:` overrides it per key).
+    #[serde(default)]
+    pub meta: serde_json::Map<String, serde_json::Value>,
 }
 
 /// `owner` sub-object of an exposure. dbt requires at least one of name/email,
