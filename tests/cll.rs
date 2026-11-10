@@ -457,6 +457,7 @@ fn perf_closure_walk_is_fast_enough() {
         metrics: HashMap::new(),
         saved_queries: HashMap::new(),
         unit_tests: HashMap::new(),
+        functions: HashMap::new(),
         metadata: Default::default(),
     });
     let resolver = NameMatchResolver::new(None);

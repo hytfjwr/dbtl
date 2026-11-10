@@ -750,8 +750,9 @@ impl App {
     /// the app — same never-corrupt contract as [`reload`](App::reload). On
     /// success the project root is re-derived from the manifest path, keeping
     /// the `$EDITOR` jump correct even for a manifest under a different root.
-    /// Returns the manifest's load warnings (unknown `resource_type`s) like
-    /// [`reload`](App::reload) does, so the caller can toast them.
+    /// Returns the manifest's load warnings (unhandled `resource_type`s /
+    /// `functions`) like [`reload`](App::reload) does, so the caller can
+    /// toast them.
     pub fn adopt_manifest(&mut self, path: PathBuf) -> Result<Vec<String>> {
         let new_root = derive_project_root(&path);
         let prev = std::mem::replace(&mut self.source, DataSource::Manifest(path));
@@ -807,10 +808,11 @@ impl App {
     /// Re-read the manifest from disk and rebuild, preserving the current
     /// selection by `unique_id` when possible. On a load error the app is left
     /// unchanged (the `?` returns before any mutation), so reload never corrupts
-    /// state — the caller can keep running on the old data. Returns the
-    /// load warnings: source-mode parse warnings (unparsable schema.yml,
-    /// duplicate resource names) or manifest-mode unknown `resource_type`s
-    /// (usually empty — a synthesized source manifest never carries them).
+    /// state — the caller can keep running on the old data. Returns the load
+    /// warnings for whichever source is active: source mode's parse warnings
+    /// (unparsable schema.yml, duplicate resource names), or manifest mode's
+    /// unhandled `resource_type`/`functions` warnings (a synthesized source
+    /// manifest never produces the latter — that channel is manifest-only).
     pub fn reload(&mut self) -> Result<Vec<String>> {
         let current = self.selected_node().map(|n| n.unique_id.clone());
         // Re-read from the same source; returns before mutating on error.

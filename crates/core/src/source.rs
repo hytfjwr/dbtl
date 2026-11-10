@@ -614,6 +614,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             metrics: HashMap::new(),
             saved_queries: HashMap::new(),
             unit_tests: HashMap::new(),
+            functions: HashMap::new(),
         },
         warnings,
     ))

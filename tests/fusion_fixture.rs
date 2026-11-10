@@ -1,9 +1,14 @@
 //! Integration tests against the committed hand-written dbt Fusion fixture
 //! (`tests/fixtures/fusion_manifest.json`): a v12 manifest carrying
 //! `resource_type: "check"` validation nodes (excluded like `test` —
-//! payload dropped entirely) and resource types dbtl does not classify
-//! (`notebook`, `rpc` — kept as generic graph nodes, reported as one
-//! stderr warning per kind).
+//! payload dropped entirely), real dbt types dbtl does not classify
+//! (`rpc`, `sql_operation`, `function`, `fixture` — kept as generic graph
+//! nodes, reported as `unsupported` warnings), a type outside the schema
+//! entirely (`notebook` — kept, `unknown` warning), a Fusion-shaped
+//! `unit_tests` entry (folded into the tests side map), a non-empty
+//! top-level `functions` map (warned, never drawn), and the Fusion-only
+//! top-level maps (`docs`/`groups`/`group_map`/`selectors`/`classifiers`/
+//! `disabled` — ignored by construction).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -28,7 +33,7 @@ fn fixture_dag() -> Dag {
 // ---- frozen graph composition: check excluded, unknown kept ----
 
 #[test]
-fn merged_map_excludes_check_and_test_but_keeps_unknown_types() {
+fn merged_map_excludes_check_and_test_but_keeps_unhandled_types() {
     let dag = fixture_dag();
     // Buildable + surface resources.
     assert_eq!(dag.count_by_resource_type("model"), 3, "model count");
@@ -40,13 +45,22 @@ fn merged_map_excludes_check_and_test_but_keeps_unknown_types() {
         "semantic_model count"
     );
     assert_eq!(dag.count_by_resource_type("metric"), 1, "metric count");
-    // Unknown resource types stay in the graph as generic nodes.
+    // Unhandled resource types stay in the graph as generic nodes — real
+    // dbt types (rpc/sql_operation/function/fixture) exactly like a truly
+    // unknown one (notebook).
     assert_eq!(dag.count_by_resource_type("notebook"), 1, "notebook count");
     assert_eq!(dag.count_by_resource_type("rpc"), 2, "rpc count");
+    assert_eq!(
+        dag.count_by_resource_type("sql_operation"),
+        1,
+        "sql_operation count"
+    );
+    assert_eq!(dag.count_by_resource_type("function"), 1, "function count");
+    assert_eq!(dag.count_by_resource_type("fixture"), 1, "fixture count");
     // check + test are excluded entirely.
     assert_eq!(dag.count_by_resource_type("check"), 0, "no check nodes");
     assert_eq!(dag.count_by_resource_type("test"), 0, "no test nodes");
-    assert_eq!(dag.len(), 11, "total merged entries");
+    assert_eq!(dag.len(), 14, "total merged entries");
 }
 
 #[test]
@@ -72,12 +86,17 @@ fn check_payload_is_dropped_no_node_no_side_map_no_edge() {
         );
     }
     // A check does NOT inflate the tests side map either: fct_orders carries
-    // exactly the one generic not_null test, never a "check" kind.
+    // the generic not_null test plus the `unit_tests`-map unit test — never
+    // a "check" kind.
     let tests = dag.tests("model.fusion_shop.fct_orders");
-    assert_eq!(tests.len(), 1, "only the generic test is captured");
-    assert_eq!(tests[0].kind, "not_null");
+    assert_eq!(tests.len(), 2, "generic + unit tests are captured");
+    assert_eq!(tests[0].kind, "not_null", "generic test sorts first");
+    assert_eq!(
+        tests[1].kind, "unit",
+        "the unit_tests-map entry is folded in"
+    );
     let fct = dag.get("model.fusion_shop.fct_orders").expect("fct node");
-    assert_eq!(fct.test_count, 1, "test_count counts the generic test only");
+    assert_eq!(fct.test_count, 2, "test_count counts generic + unit tests");
     // And it never appears in a lineage subgraph.
     let sg = dag.subgraph("model.fusion_shop.fct_orders");
     assert!(
@@ -178,31 +197,42 @@ fn check_never_reaches_the_diff() {
     }
 }
 
-// ---- unknown resource types: kept + one warning per kind ----
+// ---- unhandled resource types: kept + one warning per kind ----
 
 #[test]
-fn unknown_resource_types_warn_once_per_kind_and_say_how_they_are_handled() {
+fn unhandled_types_warn_once_per_kind_split_by_schema_membership() {
     let (dag, warnings) = load_dag_with_warnings(FIXTURE).expect("fixture loads");
-    // Exactly two kinds — sorted (`notebook` < `rpc`); `check` is a KNOWN
-    // excluded type, so it must NOT warn.
+    // Sorted by kind (fixture < function < notebook < rpc < sql_operation):
+    // real dbt types report `unsupported`, a type outside the schema
+    // (`notebook`) reports `unknown`, and `check` is a KNOWN excluded type
+    // so it must NOT warn. The `functions`-map line rides last.
     assert_eq!(
         warnings,
         vec![
+            "unsupported resource_type 'fixture' (1 node): kept as generic graph nodes".to_string(),
+            "unsupported resource_type 'function' (1 node): kept as generic graph nodes"
+                .to_string(),
             "unknown resource_type 'notebook' (1 node): kept as generic graph nodes".to_string(),
-            "unknown resource_type 'rpc' (2 nodes): kept as generic graph nodes".to_string(),
+            "unsupported resource_type 'rpc' (2 nodes): kept as generic graph nodes".to_string(),
+            "unsupported resource_type 'sql_operation' (1 node): kept as generic graph nodes"
+                .to_string(),
+            "'functions' map (1 function): not displayed".to_string(),
         ],
-        "one warning per unknown kind, pluralized"
+        "one warning per unhandled kind + the functions map, pluralized"
     );
     // The plain loader still works (warnings are discarded there).
-    assert_eq!(dag.len(), 11);
+    assert_eq!(dag.len(), 14);
 }
 
 #[test]
-fn unknown_types_stay_in_the_graph_with_their_edges() {
+fn unhandled_types_stay_in_the_graph_with_their_edges() {
     let dag = fixture_dag();
     assert!(dag.contains("notebook.fusion_shop.weekly_report"));
     assert!(dag.contains("rpc.fusion_shop.rebuild_mart"));
     assert!(dag.contains("rpc.fusion_shop.noop"));
+    assert!(dag.contains("sql_operation.fusion_shop.rebuild_index"));
+    assert!(dag.contains("function.fusion_shop.order_total"));
+    assert!(dag.contains("fixture.fusion_shop.orders_input"));
     let edges = dag.edges();
     for (parent, child) in [
         (
@@ -213,16 +243,21 @@ fn unknown_types_stay_in_the_graph_with_their_edges() {
             "model.fusion_shop.fct_orders",
             "rpc.fusion_shop.rebuild_mart",
         ),
+        (
+            "model.fusion_shop.fct_orders",
+            "sql_operation.fusion_shop.rebuild_index",
+        ),
     ] {
         assert!(
             edges.iter().any(|e| e.0 == parent && e.1 == child),
-            "kept unknown node lost its edge {parent} -> {child}"
+            "kept unhandled node lost its edge {parent} -> {child}"
         );
     }
-    // fct_orders' kept children: notebook + rpc + semantic_model + exposure —
-    // the check and test children were pruned, so the badge reads 4.
+    // fct_orders' kept children: notebook + rpc + sql_operation +
+    // semantic_model + exposure — the check/test/unit_test children were
+    // pruned, so the badge reads 5.
     let fct = dag.get("model.fusion_shop.fct_orders").expect("fct node");
-    assert_eq!(fct.direct_down, 4, "fct_orders kept-child count");
+    assert_eq!(fct.direct_down, 5, "fct_orders kept-child count");
 }
 
 // ---- docs README breakdown: enumerate every type, sum == total ----
@@ -237,17 +272,21 @@ fn readme_breakdown_enumerates_every_resource_type_and_sums_to_total() {
         .expect("README")
         .1;
     // Every kept resource_type appears as a `- <kind>: <n>` line — the
-    // unlisted kinds (semantic_model/metric/notebook/rpc) are no longer
-    // missing from the breakdown.
+    // unlisted kinds (semantic_model/metric/notebook/rpc plus the newly
+    // classified sql_operation/function/fixture) are no longer missing
+    // from the breakdown.
     for line in [
-        "- total nodes: 11",
+        "- total nodes: 14",
         "- model: 3",
         "- source: 2",
         "- exposure: 1",
-        "- semantic_model: 1",
+        "- fixture: 1",
+        "- function: 1",
         "- metric: 1",
         "- notebook: 1",
         "- rpc: 2",
+        "- semantic_model: 1",
+        "- sql_operation: 1",
     ] {
         assert!(readme.contains(line), "README breakdown missing {line:?}");
     }
@@ -275,7 +314,7 @@ fn readme_breakdown_enumerates_every_resource_type_and_sums_to_total() {
 // ---- stderr plumbing: the `dbtl docs` path prints the warnings ----
 
 #[test]
-fn docs_cli_prints_one_warning_per_unknown_kind_to_stderr() {
+fn docs_cli_prints_one_warning_per_unhandled_kind_to_stderr() {
     let out_dir = std::env::temp_dir().join(format!("dbtl_fusion_docs_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&out_dir);
     let result = Command::new(env!("CARGO_BIN_EXE_dbtl"))
@@ -293,10 +332,17 @@ fn docs_cli_prints_one_warning_per_unknown_kind_to_stderr() {
         String::from_utf8_lossy(&result.stderr)
     );
     let stderr = String::from_utf8_lossy(&result.stderr);
-    for kind in ["'notebook' (1 node)", "'rpc' (2 nodes)"] {
+    for warning in [
+        "warning: unsupported resource_type 'fixture' (1 node)",
+        "warning: unsupported resource_type 'function' (1 node)",
+        "warning: unknown resource_type 'notebook' (1 node)",
+        "warning: unsupported resource_type 'rpc' (2 nodes)",
+        "warning: unsupported resource_type 'sql_operation' (1 node)",
+        "warning: 'functions' map (1 function): not displayed",
+    ] {
         assert!(
-            stderr.contains(&format!("warning: unknown resource_type {kind}")),
-            "stderr missing the {kind} warning, got: {stderr:?}"
+            stderr.contains(warning),
+            "stderr missing {warning:?}, got: {stderr:?}"
         );
     }
     assert!(
@@ -304,4 +350,73 @@ fn docs_cli_prints_one_warning_per_unknown_kind_to_stderr() {
         "the excluded check type must not warn, got: {stderr:?}"
     );
     let _ = std::fs::remove_dir_all(&out_dir);
+}
+
+// ---- Fusion shape tolerance: extra maps/fields parse and are ignored ----
+
+#[test]
+fn fusion_only_maps_and_node_extras_are_tolerated() {
+    // The fixture carries the Fusion-only top-level maps (`docs`/`groups`/
+    // `group_map`/`selectors`/`classifiers`/`disabled`), the
+    // `depends_on.nodes_with_ref_location` extra key, and a non-empty
+    // `functions` map — `fixture_dag()` loading at all is the parse proof.
+    let dag = fixture_dag();
+    for uid in [
+        "doc.fusion_shop.orders_overview",
+        "group.fusion_shop.finance",
+        // The `disabled`-map model is parked by dbt — never a graph node.
+        "model.fusion_shop.legacy_orders",
+        // `functions`-map UDFs are not graph nodes (they never were).
+        "function.fusion_shop.safe_divide",
+    ] {
+        assert!(!dag.contains(uid), "{uid} must not be a graph node");
+    }
+    // The Fusion-shaped `unit_tests` entry (given/expect/overrides/
+    // tested_node_unique_id/…) lands in the tests side map keyed by its
+    // `unit_test.<pkg>.<model>.<name>` uid.
+    let tests = dag.tests("model.fusion_shop.fct_orders");
+    assert!(
+        tests
+            .iter()
+            .any(|t| t.kind == "unit" && t.name == "order_amounts_positive"),
+        "the unit_tests entry should fold into the tests side map: {tests:?}"
+    );
+}
+
+#[test]
+fn functions_map_is_warned_not_drawn() {
+    let (dag, warnings) = load_dag_with_warnings(FIXTURE).expect("fixture loads");
+    // Exactly one line for the whole map — the UDF is not drawn, and the
+    // warning says so rather than dropping it silently.
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w == "'functions' map (1 function): not displayed"),
+        "functions warning missing: {warnings:?}"
+    );
+    assert!(!dag.contains("function.fusion_shop.safe_divide"));
+    // … while a `function` entry inside `nodes` (the Core v12 union member)
+    // IS kept as a generic node — map-path vs nodes-path is deliberate.
+    assert!(dag.contains("function.fusion_shop.order_total"));
+}
+
+#[test]
+fn nameless_unit_test_entry_still_parses() {
+    // `RawUnitTest.name` is defaulted, not required: a unit_tests entry
+    // missing it (a shape divergence like dbt-core #15900's) must not fail
+    // the whole manifest parse.
+    let json = r#"{
+        "nodes": {},
+        "sources": {},
+        "unit_tests": {
+            "unit_test.p.m.t": {"model": "m"}
+        },
+        "parent_map": {},
+        "child_map": {}
+    }"#;
+    let manifest: dbtl::RawManifest =
+        serde_json::from_str(json).expect("a nameless unit_tests entry parses");
+    let ut = &manifest.unit_tests["unit_test.p.m.t"];
+    assert_eq!(ut.name, "", "missing name defaults");
+    assert_eq!(ut.model.as_deref(), Some("m"));
 }

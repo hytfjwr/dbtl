@@ -526,6 +526,7 @@ fn export_labels_neutralize_untrusted_kind() {
         metrics: HashMap::new(),
         saved_queries: HashMap::new(),
         unit_tests: HashMap::new(),
+        functions: HashMap::new(),
     };
     let mut a = App::new(Dag::build(&manifest), PathBuf::from("manifest.json"));
     assert!(a.select_by_unique_id("model.p.evil"));
@@ -775,6 +776,7 @@ fn export_sanitizes_untrusted_node_names_into_a_safe_relative_path() {
         metrics: HashMap::new(),
         saved_queries: HashMap::new(),
         unit_tests: HashMap::new(),
+        functions: HashMap::new(),
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
         macros: HashMap::new(),
@@ -1063,6 +1065,7 @@ fn longest_chain_terminates_on_a_cyclic_manifest() {
         metrics: HashMap::new(),
         saved_queries: HashMap::new(),
         unit_tests: HashMap::new(),
+        functions: HashMap::new(),
         parent_map,
         child_map,
         macros: HashMap::new(),
@@ -1412,6 +1415,7 @@ fn selected_file_path_stays_under_the_project_root() {
         metrics: HashMap::new(),
         saved_queries: HashMap::new(),
         unit_tests: HashMap::new(),
+        functions: HashMap::new(),
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
         macros: HashMap::new(),
@@ -2882,6 +2886,7 @@ fn violation_dag() -> Dag {
         metrics: HashMap::new(),
         saved_queries: HashMap::new(),
         unit_tests: HashMap::new(),
+        functions: HashMap::new(),
         parent_map,
         child_map,
         macros: HashMap::new(),
@@ -3386,6 +3391,7 @@ fn diff_base_dag() -> Dag {
         metrics: HashMap::new(),
         saved_queries: HashMap::new(),
         unit_tests: HashMap::new(),
+        functions: HashMap::new(),
         parent_map: HashMap::from([("model.p.b".to_string(), vec!["model.p.a".to_string()])]),
         child_map: HashMap::from([("model.p.a".to_string(), vec!["model.p.b".to_string()])]),
         macros: HashMap::new(),
@@ -3422,6 +3428,7 @@ fn diff_current_dag() -> Dag {
         metrics: HashMap::new(),
         saved_queries: HashMap::new(),
         unit_tests: HashMap::new(),
+        functions: HashMap::new(),
         parent_map: HashMap::from([
             ("model.p.b".to_string(), vec!["model.p.a".to_string()]),
             ("model.p.c".to_string(), vec!["model.p.b".to_string()]),
@@ -3678,6 +3685,7 @@ fn pr_dag(
         metrics: HashMap::new(),
         saved_queries: HashMap::new(),
         unit_tests: HashMap::new(),
+        functions: HashMap::new(),
         parent_map,
         child_map,
         macros: HashMap::new(),

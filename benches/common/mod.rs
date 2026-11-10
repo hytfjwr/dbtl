@@ -145,6 +145,7 @@ pub fn synth_manifest(params: &SynthParams) -> RawManifest {
         metrics: HashMap::new(),
         saved_queries: HashMap::new(),
         unit_tests: HashMap::new(),
+        functions: HashMap::new(),
         parent_map,
         child_map,
     }

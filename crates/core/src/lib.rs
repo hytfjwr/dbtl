@@ -27,8 +27,9 @@ pub use cll::{
 };
 pub use compiled::{default_compiled_dir, default_target_dir, CompiledSql};
 pub use dag::{
-    coverage_gap, is_exposure, load_dag, load_dag_with_warnings, unknown_resource_types,
-    ColumnInfo, Dag, Edge, ExposureInfo, MacroInfo, NodeDetail, NodeInfo, Subgraph, TestInfo,
+    coverage_gap, is_exposure, load_dag, load_dag_with_warnings, unhandled_resource_types,
+    ColumnInfo, Dag, Edge, ExposureInfo, MacroInfo, NodeDetail, NodeInfo, ResourceTypeSupport,
+    Subgraph, TestInfo,
 };
 pub use diff::{compute_diff, DagDiff, DiffStatus};
 pub use impact::{

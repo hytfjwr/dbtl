@@ -201,6 +201,11 @@ pub struct RawSemanticResource {
 /// its `model` field (the manifest key's last uid segment).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct RawUnitTest {
+    /// `#[serde(default)]`: real manifests always carry `name`, but it is the
+    /// only required field on a map whose shape already diverged once between
+    /// engines (dbt-core #15900) — a missing name must not fail the whole
+    /// manifest parse, it just yields a nameless `TestInfo`.
+    #[serde(default)]
     pub name: String,
     /// The model name this unit test is declared on.
     #[serde(default)]
@@ -266,6 +271,13 @@ pub struct RawManifest {
     /// into the per-model `tests` side map instead.
     #[serde(default)]
     pub unit_tests: HashMap<String, RawUnitTest>,
+    /// dbt Fusion UDFs (`function.<pkg>.<name>`, a top-level `functions` map
+    /// distinct from `nodes`). Read only to COUNT them — a non-empty map
+    /// yields a "not displayed" load warning
+    /// ([`load_dag_with_warnings`](crate::load_dag_with_warnings)) so UDFs
+    /// never drop silently; `Value` keeps the parse shape-tolerant.
+    #[serde(default)]
+    pub functions: HashMap<String, serde_json::Value>,
     pub parent_map: HashMap<String, Vec<String>>,
     pub child_map: HashMap<String, Vec<String>>,
 }

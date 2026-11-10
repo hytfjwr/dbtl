@@ -36,6 +36,17 @@
     "macros": [],
     "nodes": [
      "source.fusion_shop.lake.raw_orders"
+    ],
+    "nodes_with_ref_location": [
+     {
+      "name": "raw_orders",
+      "package": "lake",
+      "version": null,
+      "location": {
+       "line": 1,
+       "column": 26
+      }
+     }
     ]
    },
    "raw_code": "select * from {{ source('lake', 'raw_orders') }}",
@@ -94,6 +105,26 @@
     "nodes": [
      "model.fusion_shop.stg_orders",
      "model.fusion_shop.stg_payments"
+    ],
+    "nodes_with_ref_location": [
+     {
+      "name": "stg_orders",
+      "package": null,
+      "version": null,
+      "location": {
+       "line": 1,
+       "column": 34
+      }
+     },
+     {
+      "name": "stg_payments",
+      "package": null,
+      "version": null,
+      "location": {
+       "line": 1,
+       "column": 66
+      }
+     }
     ]
    },
    "raw_code": "select o.id, p.amount from {{ ref('stg_orders') }} o join {{ ref('stg_payments') }} p on o.id = p.order_id"
@@ -243,6 +274,68 @@
     "macros": [],
     "nodes": []
    }
+  },
+  "sql_operation.fusion_shop.rebuild_index": {
+   "name": "rebuild_index",
+   "resource_type": "sql_operation",
+   "package_name": "fusion_shop",
+   "path": "run/rebuild_index.sql",
+   "original_file_path": "run/rebuild_index.sql",
+   "unique_id": "sql_operation.fusion_shop.rebuild_index",
+   "description": "Ad-hoc SQL operation (a `dbt run-operation` node — a real v12 `nodes` member).",
+   "depends_on": {
+    "macros": [],
+    "nodes": [
+     "model.fusion_shop.fct_orders"
+    ],
+    "nodes_with_ref_location": [
+     {
+      "name": "fct_orders",
+      "package": null,
+      "version": null,
+      "location": {
+       "line": 1,
+       "column": 20
+      }
+     }
+    ]
+   }
+  },
+  "function.fusion_shop.order_total": {
+   "name": "order_total",
+   "resource_type": "function",
+   "package_name": "fusion_shop",
+   "path": "functions/order_total.sql",
+   "original_file_path": "functions/order_total.sql",
+   "unique_id": "function.fusion_shop.order_total",
+   "description": "A UDF resource in `nodes` (Core v12's Function union member).",
+   "returns": {
+    "data_type": "numeric"
+   },
+   "arguments": [
+    {
+     "name": "subtotal",
+     "data_type": "numeric"
+    }
+   ],
+   "depends_on": {
+    "macros": [],
+    "nodes": [],
+    "nodes_with_ref_location": []
+   }
+  },
+  "fixture.fusion_shop.orders_input": {
+   "name": "orders_input",
+   "resource_type": "fixture",
+   "package_name": "fusion_shop",
+   "path": "fixtures/orders_input.csv",
+   "original_file_path": "fixtures/orders_input.csv",
+   "unique_id": "fixture.fusion_shop.orders_input",
+   "description": "Unit-test input fixture (a Fusion `resource_type` enum member).",
+   "depends_on": {
+    "macros": [],
+    "nodes": []
+   }
   }
  },
  "sources": {
@@ -332,10 +425,143 @@
   }
  },
  "saved_queries": {},
- "unit_tests": {},
+ "unit_tests": {
+  "unit_test.fusion_shop.fct_orders.order_amounts_positive": {
+   "name": "order_amounts_positive",
+   "resource_type": "unit_test",
+   "package_name": "fusion_shop",
+   "path": "marts/_unit_tests.yml",
+   "original_file_path": "models/marts/_unit_tests.yml",
+   "unique_id": "unit_test.fusion_shop.fct_orders.order_amounts_positive",
+   "model": "fct_orders",
+   "given": [
+    {
+     "input": "ref('stg_orders')",
+     "format": "csv",
+     "rows": "id,amount\n1,10"
+    }
+   ],
+   "expect": {
+    "format": "csv",
+    "rows": "total\n10"
+   },
+   "versions": null,
+   "version": null,
+   "overrides": null,
+   "tested_node_unique_id": "model.fusion_shop.fct_orders",
+   "this_input_node_unique_id": null,
+   "depends_on": {
+    "macros": [],
+    "nodes": [
+     "model.fusion_shop.fct_orders"
+    ],
+    "nodes_with_ref_location": [
+     {
+      "name": "fct_orders",
+      "package": null,
+      "version": null,
+      "location": {
+       "line": 3,
+       "column": 14
+      }
+     }
+    ]
+   },
+   "classifiers": [],
+   "config": {
+    "tags": []
+   },
+   "description": ""
+  }
+ },
  "macros": {},
- "functions": {},
- "disabled": {},
+ "functions": {
+  "function.fusion_shop.safe_divide": {
+   "name": "safe_divide",
+   "resource_type": "function",
+   "package_name": "fusion_shop",
+   "path": "functions/safe_divide.sql",
+   "original_file_path": "functions/safe_divide.sql",
+   "unique_id": "function.fusion_shop.safe_divide",
+   "description": "Null-safe division UDF (the Fusion top-level `functions` map).",
+   "returns": {
+    "data_type": "numeric"
+   },
+   "arguments": [
+    {
+     "name": "numerator",
+     "data_type": "numeric"
+    },
+    {
+     "name": "denominator",
+     "data_type": "numeric"
+    }
+   ],
+   "config": {},
+   "depends_on": {
+    "macros": [],
+    "nodes": [],
+    "nodes_with_ref_location": []
+   }
+  }
+ },
+ "docs": {
+  "doc.fusion_shop.orders_overview": {
+   "name": "orders_overview",
+   "package_name": "fusion_shop",
+   "path": "docs.md",
+   "original_file_path": "models/docs.md",
+   "unique_id": "doc.fusion_shop.orders_overview",
+   "block_contents": "Order-domain documentation."
+  }
+ },
+ "groups": {
+  "group.fusion_shop.finance": {
+   "name": "finance",
+   "package_name": "fusion_shop",
+   "unique_id": "group.fusion_shop.finance",
+   "owner": {
+    "name": "Finance",
+    "email": "fin@example.com"
+   }
+  }
+ },
+ "group_map": {
+  "group.fusion_shop.finance": [
+   "model.fusion_shop.fct_orders"
+  ]
+ },
+ "selectors": {
+  "nightly": {
+   "description": "Nightly build selection",
+   "definition": "fct_orders",
+   "default": false,
+   "items": [
+    {
+     "definition": "fct_orders"
+    }
+   ]
+  }
+ },
+ "classifiers": {
+  "row_count": {
+   "description": "Row-count sanity class"
+  },
+  "freshness": {
+   "description": "Freshness class"
+  }
+ },
+ "disabled": {
+  "model.fusion_shop.legacy_orders": [
+   {
+    "name": "legacy_orders",
+    "resource_type": "model",
+    "config": {
+     "enabled": false
+    }
+   }
+  ]
+ },
  "parent_map": {
   "model.fusion_shop.stg_orders": [
    "source.fusion_shop.lake.raw_orders"
@@ -360,6 +586,12 @@
    "model.fusion_shop.fct_orders"
   ],
   "rpc.fusion_shop.rebuild_mart": [
+   "model.fusion_shop.fct_orders"
+  ],
+  "sql_operation.fusion_shop.rebuild_index": [
+   "model.fusion_shop.fct_orders"
+  ],
+  "unit_test.fusion_shop.fct_orders.order_amounts_positive": [
    "model.fusion_shop.fct_orders"
   ],
   "semantic_model.fusion_shop.orders": [
@@ -391,6 +623,8 @@
    "test.fusion_shop.not_null_fct_orders_id.a1b2c3d4e5",
    "notebook.fusion_shop.weekly_report",
    "rpc.fusion_shop.rebuild_mart",
+   "sql_operation.fusion_shop.rebuild_index",
+   "unit_test.fusion_shop.fct_orders.order_amounts_positive",
    "semantic_model.fusion_shop.orders",
    "exposure.fusion_shop.ops_dashboard"
   ],
