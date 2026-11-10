@@ -95,7 +95,7 @@ pub fn event_loop(
             });
             dirty = true;
         }
-        if toasts.retain_fresh() {
+        if toasts.retain_fresh(Instant::now()) {
             dirty = true;
         }
         if dirty {
@@ -897,11 +897,14 @@ impl ToastStack {
         self.items.truncate(Self::MAX);
     }
 
-    /// Drop every toast past its per-level TTL; true when anything expired
-    /// (the caller marks the frame dirty).
-    fn retain_fresh(&mut self) -> bool {
+    /// Drop every toast past its per-level TTL at `now`; true when anything
+    /// expired (the caller marks the frame dirty). Takes `now` so expiry
+    /// compares against a fixed instant — `saturating_duration_since` treats
+    /// a future `at` as fresh instead of panicking.
+    fn retain_fresh(&mut self, now: Instant) -> bool {
         let before = self.items.len();
-        self.items.retain(|t| t.at.elapsed() < toast_ttl(t.level));
+        self.items
+            .retain(|t| now.saturating_duration_since(t.at) < toast_ttl(t.level));
         self.items.len() != before
     }
 
@@ -930,7 +933,8 @@ fn toast_ttl(level: dbtl::NoticeLevel) -> Duration {
 /// Local wall-clock `HH:MM:SS` for notification stamps. `std` has no local
 /// time API and adding `time`/`chrono` would trip the orchestration's
 /// dependency stop-condition — so the platform `date` answers "what time is
-/// it here", with std UTC math as the fallback if `date` is somehow absent.
+/// it here". The fallback when `date` is absent is UTC, NOT local time — the
+/// stamp degrades to a fixed-offset clock rather than guessing the zone.
 /// `pub(crate)` because `cli::build_app` stamps startup warnings through the
 /// same clock.
 pub(crate) fn now_hhmmss() -> String {
@@ -1293,21 +1297,30 @@ mod tests {
             Duration::from_millis(5000)
         );
         let mut s = ToastStack::default();
-        // An info toast stamped 3s ago is dead; a warning of the same age is not.
+        // An info toast stamped at t0 is dead 3s later; a warning of the same
+        // age is not. (Forwards-in-time `now` — no `Instant - Duration`
+        // backdating, which can underflow-panic on some platforms.)
+        let t0 = Instant::now();
         s.push(ToastItem {
             level: dbtl::NoticeLevel::Info,
             text: "old info".into(),
-            at: Instant::now() - Duration::from_secs(3),
+            at: t0,
         });
         s.push(ToastItem {
             level: dbtl::NoticeLevel::Warning,
             text: "same-age warning".into(),
-            at: Instant::now() - Duration::from_secs(3),
+            at: t0,
         });
-        assert!(s.retain_fresh(), "the expired info dropped");
+        assert!(
+            s.retain_fresh(t0 + Duration::from_secs(3)),
+            "the expired info dropped"
+        );
         let texts: Vec<&str> = s.lines().iter().map(|l| l.text).collect();
         assert_eq!(texts, vec!["same-age warning"]);
-        assert!(!s.retain_fresh(), "nothing left to expire");
+        assert!(
+            !s.retain_fresh(t0 + Duration::from_secs(3)),
+            "nothing left to expire"
+        );
     }
 
     /// The notification stamp is a parseable `HH:MM:SS` from the platform

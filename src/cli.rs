@@ -445,8 +445,9 @@ pub fn build_app(cli: &Cli) -> Result<App> {
     app.set_scope(scope);
     // Issue 08: the load/scope warnings that already went to stderr also join
     // the notification log as unread WARNING entries — opening `Ctrl-n`
-    // replays what scrolled past before the TUI came up.
-    app.record_startup_warnings(&warnings, crate::event_loop::now_hhmmss);
+    // replays what scrolled past before the TUI came up. One stamp per batch
+    // (now_hhmmss spawns `date`; per-line stamping would fork per warning).
+    app.record_startup_warnings(&warnings, &crate::event_loop::now_hhmmss());
     // An explicit --sql-dialect pins the column-lineage parser dialect;
     // otherwise the resolver auto-selects from the manifest's adapter_type.
     // An adapter_type we don't know lands on the generic dialect — say so

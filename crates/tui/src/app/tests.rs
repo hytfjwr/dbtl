@@ -155,7 +155,7 @@ fn startup_warnings_join_the_log_as_unread_warnings() {
             "bad resource type".to_string(),
             "(scope) ambiguous root".to_string(),
         ],
-        || "01:02:03".to_string(),
+        "01:02:03",
     );
     assert_eq!(a.unread_warnings(), 2);
     let view = a.notifications_snapshot();
@@ -167,6 +167,63 @@ fn startup_warnings_join_the_log_as_unread_warnings() {
         view.rows
     );
     assert_eq!(view.rows[0].text, "(scope) ambiguous root", "newest first");
+}
+
+/// Effect-failure overwrite (Issue 08 acceptance): a failed effect must not
+/// leave its optimistic success notice behind — the pending channel is
+/// last-write-wins, so the drain surfaces ONLY the failure (no success toast,
+/// no success log entry).
+#[test]
+fn failed_effect_notice_overwrites_the_optimistic_success() {
+    let mut a = app();
+    a.set_notice("Copied unique_id");
+    a.set_notice_level(NoticeLevel::Warning, "copy failed: clipboard error");
+    let (level, text) = a.take_notice_leveled().expect("one drained notice");
+    assert_eq!(level, NoticeLevel::Warning);
+    assert_eq!(text, "copy failed: clipboard error");
+    assert!(
+        a.take_notice_leveled().is_none(),
+        "the success notice is gone — nothing else drains"
+    );
+}
+
+/// The `!N` chip counts warnings in the LOG, so an unread warning evicted by
+/// the 100-cap stops counting — the chip can never point at a notification
+/// the centre can no longer show.
+#[test]
+fn unread_chip_drops_warnings_the_cap_evicted() {
+    let mut a = app();
+    for i in 0..App::NOTIFICATION_CAP + 5 {
+        a.record_notification(entry(NoticeLevel::Warning, &format!("w{i}")));
+    }
+    assert_eq!(
+        a.unread_warnings(),
+        App::NOTIFICATION_CAP,
+        "all 100 logged warnings are unread — the 5 evicted ones are gone"
+    );
+}
+
+/// Reading then evicting must not underflow the chip: after the centre marks
+/// the log read, cap evictions take out READ entries — the unread count stays
+/// exactly the warnings pushed since the open.
+#[test]
+fn unread_chip_survives_eviction_of_read_entries() {
+    let mut a = app();
+    for i in 0..App::NOTIFICATION_CAP {
+        a.record_notification(entry(NoticeLevel::Warning, &format!("old{i}")));
+    }
+    apply_action(&mut a, Action::NotificationsOpen);
+    assert_eq!(a.unread_warnings(), 0, "open marks all 100 read");
+    for i in 0..5 {
+        a.record_notification(entry(NoticeLevel::Warning, &format!("new{i}")));
+    }
+    assert_eq!(
+        a.unread_warnings(),
+        5,
+        "only the post-open warnings count; evicted read entries can't underflow"
+    );
+    apply_action(&mut a, Action::NotificationsOpen);
+    assert_eq!(a.unread_warnings(), 0, "re-read keeps the chip at zero");
 }
 
 #[test]

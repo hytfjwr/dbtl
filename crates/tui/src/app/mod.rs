@@ -221,11 +221,15 @@ pub struct App {
     /// `build_app` (startup load warnings) — never by the reducer, so
     /// timestamps always come from the outside. Memory-only: never persisted.
     notifications: VecDeque<NotificationEntry>,
-    /// Unread WARNING count — the `!N` status chip. Bumped by
-    /// [`record_notification`](App::record_notification) for warning entries,
-    /// zeroed by [`mark_notifications_read`](App::mark_notifications_read)
-    /// (opening the centre is the read gesture).
-    unread_warnings: usize,
+    /// Read watermark into `notifications`: entries before this index (the
+    /// oldest end) are read; everything at or after is unread. Set to
+    /// `notifications.len()` by
+    /// [`mark_notifications_read`](App::mark_notifications_read) (opening the
+    /// centre is the read gesture) and shifted down when a front evicts, so
+    /// the `!N` chip always counts warnings still in the log — a raw counter
+    /// could not, since evicting an unread entry must decrement it while
+    /// evicting a read one must not underflow it.
+    unread_from: usize,
     /// Re-root history (back/forward stacks of `unique_id`s).
     back: Vec<String>,
     forward: Vec<String>,
@@ -462,7 +466,7 @@ impl App {
             // warning level).
             notice: lint_notice.map(|t| (NoticeLevel::Warning, t)),
             notifications: VecDeque::new(),
-            unread_warnings: 0,
+            unread_from: 0,
             back: Vec::new(),
             forward: Vec::new(),
             source,
@@ -802,15 +806,16 @@ impl App {
     }
 
     /// Append `entry` to the notification log (newest last; the oldest drops
-    /// at [`NOTIFICATION_CAP`](App::NOTIFICATION_CAP)). Warning entries bump
-    /// the unread count behind the `!N` chip. The `stamp` is the caller's —
-    /// the event loop / CLI format the wall-clock; `App` keeps no clock.
+    /// at [`NOTIFICATION_CAP`](App::NOTIFICATION_CAP)). Warning entries count
+    /// toward the unread `!N` chip until the centre is opened. The `stamp` is
+    /// the caller's — the event loop / CLI format the wall-clock; `App` keeps
+    /// no clock.
     pub fn record_notification(&mut self, entry: NotificationEntry) {
-        if entry.level == NoticeLevel::Warning {
-            self.unread_warnings += 1;
-        }
         if self.notifications.len() >= Self::NOTIFICATION_CAP {
             self.notifications.pop_front();
+            // The evicted front shifts every index down — the read watermark
+            // shifts with it, whether that entry was read or unread.
+            self.unread_from = self.unread_from.saturating_sub(1);
         }
         self.notifications.push_back(entry);
     }
@@ -818,20 +823,28 @@ impl App {
     /// Record every startup load warning in the notification log (warning
     /// level, unread) — `build_app` feeds it the `ResolvedSource.warnings`
     /// vec after printing them to stderr as before. `stamp` is the caller's
-    /// wall-clock formatter (the loop's clock).
-    pub fn record_startup_warnings(&mut self, warnings: &[String], stamp: impl Fn() -> String) {
+    /// wall-clock reading, taken ONCE per batch: stamping per line would
+    /// spawn one `date` per warning (and could split a batch across a
+    /// second boundary anyway).
+    pub fn record_startup_warnings(&mut self, warnings: &[String], stamp: &str) {
         for w in warnings {
             self.record_notification(NotificationEntry {
-                stamp: stamp(),
+                stamp: stamp.to_string(),
                 level: NoticeLevel::Warning,
                 text: w.clone(),
             });
         }
     }
 
-    /// The number of unread WARNING notifications (drives the `!N` chip).
+    /// The number of unread WARNING notifications (drives the `!N` chip) —
+    /// counted from the log itself each call, so the chip can never count a
+    /// warning the cap has already evicted.
     pub fn unread_warnings(&self) -> usize {
-        self.unread_warnings
+        self.notifications
+            .iter()
+            .skip(self.unread_from)
+            .filter(|n| n.level == NoticeLevel::Warning)
+            .count()
     }
 
     /// The notification log's rows newest-first, snapshotted for the
@@ -843,10 +856,10 @@ impl App {
         }
     }
 
-    /// Mark every warning read — opening the notification centre is the read
-    /// gesture that zeroes the `!N` chip.
+    /// Mark every logged entry read — opening the notification centre is the
+    /// read gesture that zeroes the `!N` chip. Later entries stay unread.
     pub fn mark_notifications_read(&mut self) {
-        self.unread_warnings = 0;
+        self.unread_from = self.notifications.len();
     }
 
     /// Re-root the lineage to `unique_id`, recording the move in the back stack
