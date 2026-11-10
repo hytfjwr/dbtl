@@ -1170,9 +1170,10 @@ pub struct StatusHint {
 /// [`KeyBinding::key_label`]'s primary trigger, actions are the rows' own),
 /// so the status line can never teach a key that doesn't work. Emission is
 /// priority-sorted; bindings sharing `(ctx, prio, desc)` merge into one hint
-/// (the `j`/`k` pair → `j/k move`), the merged action being the first member
-/// in table order. Only the hint's OWN row is listed — the event loop may
-/// REPLACE this list with a transient readout (splitter hover/drag).
+/// (the `j`/`k` pair → `j/k move`) whose click action survives only while
+/// every member agrees on it (a direction family dispatches nothing). Only
+/// the hint's OWN row is listed — the event loop may REPLACE this list with
+/// a transient readout (splitter hover/drag).
 pub fn status_hints(mode: ModeKind, focus: Focus, traced: bool, overview: bool) -> Vec<StatusHint> {
     // Which contexts emit. Modal modes are context-free (`Any` only). In
     // Selection the focused pane's ctx emits — except a live column trace or
@@ -1195,10 +1196,16 @@ pub fn status_hints(mode: ModeKind, focus: Focus, traced: bool, overview: bool) 
     } else {
         &[HintCtx::Any]
     };
-    // Group rows by (ctx, prio, desc) — first-match order decides the merged
-    // action. `BTreeMap` iteration IS the priority sort.
-    let mut groups: std::collections::BTreeMap<(u8, HintCtx, &'static str), (usize, Vec<String>)> =
-        std::collections::BTreeMap::new();
+    // Group rows by (ctx, prio, desc). `BTreeMap` iteration IS the priority
+    // sort. A group's click action survives only while every member agrees
+    // on it — a merged family (`j/k move`, `h/l step column`, `1-9 tabs`)
+    // names no single command, so it goes inert rather than firing an
+    // arbitrary member (`1-9` jumping to tab 1 would be a quiet surprise).
+    type Groups = std::collections::BTreeMap<
+        (u8, HintCtx, &'static str),
+        (usize, Vec<String>, Option<Action>),
+    >;
+    let mut groups: Groups = Groups::new();
     for (i, b) in BINDINGS.iter().enumerate() {
         if b.mode != mode {
             continue;
@@ -1210,14 +1217,17 @@ pub fn status_hints(mode: ModeKind, focus: Focus, traced: bool, overview: bool) 
             let key = b.triggers.first().map(|t| t.label()).unwrap_or_default();
             let e = groups
                 .entry((h.prio, h.ctx, h.desc))
-                .or_insert_with(|| (i, Vec::new()));
+                .or_insert_with(|| (i, Vec::new(), Some(b.action)));
             e.0 = e.0.min(i);
             e.1.push(key);
+            if e.2 != Some(b.action) {
+                e.2 = None;
+            }
         }
     }
     groups
         .into_iter()
-        .map(|((prio, _ctx, desc), (first, mut keys))| {
+        .map(|((prio, _ctx, desc), (_first, mut keys, action))| {
             keys.sort();
             keys.dedup();
             StatusHint {
@@ -1226,7 +1236,7 @@ pub fn status_hints(mode: ModeKind, focus: Focus, traced: bool, overview: bool) 
                 // pairs keep the `/` convention, mixed shapes join `/`.
                 key: compact_keys(&keys),
                 desc: desc.to_string(),
-                action: Some(BINDINGS[first].action),
+                action,
                 prio,
             }
         })
@@ -2716,21 +2726,60 @@ mod tests {
             ],
             "the overview row (no Any hints either)"
         );
+        assert_eq!(
+            hint_pairs(ModeKind::Selection, Focus::Inspector, false, false),
+            vec![
+                ("j/k".into(), "scroll".into()),
+                ("Enter".into(), "trace column".into()),
+                ("Tab".into(), "list".into()),
+                ("?".into(), "help".into()),
+            ],
+            "the inspector-focus row"
+        );
+        // A modal mode emits its Any-context rows — Detail is the
+        // representative scrollable modal.
+        assert_eq!(
+            hint_pairs(ModeKind::Detail, Focus::List, false, false),
+            vec![
+                ("j/k".into(), "scroll".into()),
+                ("d/u".into(), "page".into()),
+                ("G/g".into(), "jump".into()),
+                ("h/l".into(), "column".into()),
+                ("Tab".into(), "sections".into()),
+                ("Enter".into(), "trace".into()),
+                ("K".into(), "column modal".into()),
+                ("y".into(), "yank".into()),
+                ("a".into(), "actions".into()),
+                ("Esc".into(), "close".into()),
+                ("?".into(), "help".into()),
+            ],
+            "the Detail-modal Any row"
+        );
     }
 
     #[test]
     fn status_hints_sort_by_prio_and_carry_bound_actions() {
         // Every generated hint's action is bound in the mode it was emitted
         // for — the drift guard: a status-hint click can never name an action
-        // the keymap doesn't offer there.
+        // the keymap doesn't offer there. A merged family (`j/k move`) names
+        // no single command and is click-inert (`action: None`).
         for (mode, focus, traced, overview) in [
             (ModeKind::Selection, Focus::List, false, false),
             (ModeKind::Selection, Focus::RightPane, false, false),
+            (ModeKind::Selection, Focus::Inspector, false, false),
             (ModeKind::Selection, Focus::List, true, false),
             (ModeKind::Selection, Focus::List, false, true),
             (ModeKind::Detail, Focus::List, false, false),
             (ModeKind::Search, Focus::List, false, false),
             (ModeKind::Palette, Focus::List, false, false),
+            (ModeKind::Yank, Focus::List, false, false),
+            (ModeKind::Menu, Focus::List, false, false),
+            (ModeKind::Help, Focus::List, false, false),
+            (ModeKind::Sql, Focus::List, false, false),
+            (ModeKind::Stats, Focus::List, false, false),
+            (ModeKind::Diff, Focus::List, false, false),
+            (ModeKind::Columns, Focus::List, false, false),
+            (ModeKind::Notifications, Focus::List, false, false),
         ] {
             let hints = status_hints(mode, focus, traced, overview);
             assert!(
@@ -2738,13 +2787,47 @@ mod tests {
                 "hints arrive priority-sorted in {mode:?}"
             );
             for h in &hints {
-                let a = h.action.expect("generated hints always carry an action");
-                assert!(
-                    BINDINGS.iter().any(|b| b.mode == mode && b.action == a),
-                    "hint action {a:?} must be bound in {mode:?}"
-                );
+                if let Some(a) = h.action {
+                    assert!(
+                        BINDINGS.iter().any(|b| b.mode == mode && b.action == a),
+                        "hint action {a:?} must be bound in {mode:?}"
+                    );
+                }
             }
         }
+    }
+
+    #[test]
+    fn merged_hint_families_are_click_inert() {
+        // A group whose members disagree on the action (a direction pair, a
+        // tab-number range) dispatches nothing on click — firing an
+        // arbitrary member would be a quiet surprise.
+        let list = status_hints(ModeKind::Selection, Focus::List, false, false);
+        let by_desc =
+            |hints: &[StatusHint], d: &str| hints.iter().find(|h| h.desc == d).unwrap().action;
+        assert_eq!(
+            by_desc(&list, "move"),
+            None,
+            "j/k is a family, not a command"
+        );
+        assert_eq!(
+            by_desc(&list, "open"),
+            Some(Action::DetailOpen),
+            "single-command hints keep their dispatch"
+        );
+        let overview = status_hints(ModeKind::Selection, Focus::List, false, true);
+        assert_eq!(
+            by_desc(&overview, "tabs"),
+            None,
+            "1-9 must not pick a tab number"
+        );
+        let detail = status_hints(ModeKind::Detail, Focus::List, false, false);
+        assert_eq!(by_desc(&detail, "scroll"), None, "j/k scroll is a family");
+        assert_eq!(
+            by_desc(&detail, "close"),
+            Some(Action::DetailClose),
+            "Esc/q share one action — the hint stays live"
+        );
     }
 
     #[test]

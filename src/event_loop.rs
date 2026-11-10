@@ -755,7 +755,7 @@ pub fn event_loop(
                     if handled.outcome.quit {
                         return Ok(());
                     }
-                    if handled.reanchor {
+                    if handled.reanchor || handled.outcome.reanchor {
                         force_anchor = true;
                     }
                 }
@@ -986,7 +986,10 @@ fn apply_mouse(app: &mut App, outcome: &mut Outcome, action: Action) {
     let o = apply_action(app, action);
     outcome.quit |= o.quit;
     outcome.effects.extend(o.effects);
-    outcome.reanchor |= o.reanchor;
+    // The flag a reducer-set reanchor already carries OR the same
+    // dispatched-action check the key path runs — a mouse-fired ResetView
+    // recentres identically to `0`.
+    outcome.reanchor |= o.reanchor || reanchors_lineage(action);
 }
 
 /// Handle a mouse event (size-aware, so it lives in the loop, not the reducer).

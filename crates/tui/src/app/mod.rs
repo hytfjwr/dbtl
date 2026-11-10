@@ -1479,25 +1479,6 @@ impl App {
         }
     }
 
-    /// A one-line summary of the list-cursor model for the status bar:
-    /// `"<materialized>, tests: N"` (materialization omitted for sources).
-    /// `None` when the list is empty.
-    pub fn selected_status_note(&self) -> Option<String> {
-        let uid = &self.list_sel_uid()?;
-        let mat = self.dag.detail(uid).and_then(|d| d.materialized.clone());
-        let tests = self.dag.tests(uid).len();
-        let mut parts: Vec<String> = Vec::new();
-        if let Some(m) = mat {
-            parts.push(m);
-        }
-        parts.push(format!("tests: {tests}"));
-        let sep = match self.glyph_mode {
-            crate::GlyphMode::Unicode => " · ",
-            crate::GlyphMode::Ascii => ", ",
-        };
-        Some(parts.join(sep))
-    }
-
     /// Re-read the manifest from disk and rebuild, preserving the current
     /// selection by `unique_id` when possible. On a load error the app is left
     /// unchanged (the `?` returns before any mutation), so reload never corrupts

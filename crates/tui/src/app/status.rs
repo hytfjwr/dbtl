@@ -47,7 +47,14 @@ impl App {
             StatusChip::Bookmarks => Some(Action::BookmarkCycle),
             StatusChip::Sort => Some(Action::SortCycle),
             StatusChip::Focus => Some(Action::ToggleFocus),
-            StatusChip::View => Some(Action::ResetView),
+            // In the overview the `view` chip reads `[overview]` and ResetView
+            // is gated to a toast — the useful affordance there is leaving
+            // the overview, same shape as `w`.
+            StatusChip::View => Some(if self.ui_state.overview() {
+                Action::ToggleOverview
+            } else {
+                Action::ResetView
+            }),
             StatusChip::Impact | StatusChip::Scope | StatusChip::Position | StatusChip::Filter => {
                 None
             }

@@ -558,8 +558,12 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             // must see the MENU's target instead or the item would act on
             // whatever happened to be selected.
             app.pending_node = Some(target);
-            let out = apply_action(app, action);
+            let mut out = apply_action(app, action);
             app.pending_node = None;
+            // Same re-anchor contract as the palette confirm below: the loop
+            // can't see the menu-resolved action, so the flag travels on the
+            // Outcome.
+            out.reanchor |= crate::action::reanchors_lineage(action);
             return out;
         }
         // ---- pointer row actions (Issue 06 mouse) ----

@@ -794,7 +794,8 @@ pub enum StatusChip {
     Coverage,
     /// Bookmark count (`bm:N`) — jumps to the next bookmark.
     Bookmarks,
-    /// The persistent list filter (`marked`/`untested`) — clears it.
+    /// The persistent list filter (`marked`/`untested`) — inert readout
+    /// (§8's chip table gives it no click action; `T`/`*` untoggle it).
     Filter,
     /// Non-default list sort (`sort:tests`) — cycles the sort.
     Sort,
@@ -802,7 +803,8 @@ pub enum StatusChip {
     Position,
     /// The focused pane (`list`/`lineage`) — toggles focus.
     Focus,
-    /// The rooted-view tag (`↑↓ ≤3`/`overview`) — resets the view.
+    /// The rooted-view tag (`↑↓ ≤3`/`overview`) — resets the view, or leaves
+    /// the overview when that is the current view.
     View,
 }
 

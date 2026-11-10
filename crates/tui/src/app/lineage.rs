@@ -142,12 +142,12 @@ impl App {
             // action is inert by contract). A chip resolves through the §8
             // table ([`status_chip_action`](App::status_chip_action)).
             (MouseButton::Left, HitTarget::StatusHint(Some(action))) => {
-                return crate::app::apply_action(self, *action);
+                return self.chrome_dispatch(*action);
             }
             (MouseButton::Left, HitTarget::StatusHint(None)) => {}
             (MouseButton::Left, HitTarget::StatusChip(chip)) => {
                 if let Some(action) = self.status_chip_action(*chip) {
-                    return crate::app::apply_action(self, action);
+                    return self.chrome_dispatch(action);
                 }
             }
             // §6: a breadcrumb entry replays `history_back` its step count —
@@ -158,10 +158,10 @@ impl App {
                 }
             }
             (MouseButton::Left, HitTarget::TitleView) => {
-                return crate::app::apply_action(self, Action::ResetView);
+                return self.chrome_dispatch(Action::ResetView);
             }
             (MouseButton::Left, HitTarget::TitleLens) => {
-                return crate::app::apply_action(self, Action::CycleLens);
+                return self.chrome_dispatch(Action::CycleLens);
             }
             (MouseButton::Left, HitTarget::ListRow(index)) => {
                 self.ui_state.set_focus(Focus::List);
@@ -227,6 +227,17 @@ impl App {
             _ => {}
         }
         crate::app::Outcome::cont()
+    }
+
+    /// Dispatch a status/title chrome click's resolved action exactly like
+    /// its key press — including the `Outcome.reanchor` flag the loop's
+    /// dispatched-key path computes via [`crate::action::reanchors_lineage`]:
+    /// a clicked ` [{v}]` tag or `Esc exit trace` hint recentres the lineage
+    /// viewport identically to `0`/`Esc`.
+    fn chrome_dispatch(&mut self, action: Action) -> crate::app::Outcome {
+        let mut out = crate::app::apply_action(self, action);
+        out.reanchor |= crate::action::reanchors_lineage(action);
+        out
     }
 
     /// The cursor half of a lineage node's DOUBLE-click commit (§6's "double

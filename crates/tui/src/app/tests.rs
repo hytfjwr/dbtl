@@ -2189,21 +2189,6 @@ fn detail_open_snapshots_payload_from_side_maps() {
     );
 }
 
-#[test]
-fn selected_status_note_reports_materialization_and_tests() {
-    let mut a = app();
-    a.select_by_unique_id("model.jaffle_finance.pos_txn");
-    let note = a.selected_status_note().expect("a model is selected");
-    assert!(
-        note.contains("table"),
-        "status note names the materialization: {note}"
-    );
-    assert!(
-        note.contains("tests:"),
-        "status note includes a tests count: {note}"
-    );
-}
-
 // ---- SQL preview / stats dashboard modals ----
 
 #[test]
