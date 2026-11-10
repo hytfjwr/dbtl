@@ -15,7 +15,13 @@ const FIXTURE: &str = concat!(
 
 fn app() -> App {
     let dag = load_dag(FIXTURE).expect("fixture loads");
-    App::new(dag, PathBuf::from(FIXTURE))
+    let mut a = App::new(dag, PathBuf::from(FIXTURE));
+    // The fixture carries sibling groups of 11-24 — far over the collapse
+    // default — and every expectation in this file was written pre-collapse.
+    // Pin the threshold to 0 (disabled) so they assert the uncollapsed layout;
+    // the sibling-collapse tests build their own synthetic dags instead.
+    a.set_collapse_threshold(0);
+    a
 }
 
 #[test]
@@ -558,8 +564,9 @@ fn yank_ascii_emits_the_lineage_text_diagram() {
         [Effect::Yank(t)] => t.clone(),
         other => panic!("expected one Yank effect, got {other:?}"),
     };
-    // The yank IS the pane's diagram: same layout, same glyphs.
-    let expected = crate::layout_mode(&a.lineage_subgraph(), a.glyph_mode)
+    // The yank IS the pane's diagram: same (collapsed) display subgraph, same
+    // glyphs — under this app's pinned `0` threshold the two are identical.
+    let expected = crate::layout_mode(&a.lineage_display_subgraph(), a.glyph_mode)
         .grid
         .to_text();
     assert_eq!(text, expected, "yank matches the rendered grid");
@@ -5298,6 +5305,216 @@ fn column_impact_lens_skips_under_an_overview_suppressed_focus() {
         a.ui_state.lens(),
         LineageLens::Off,
         "ColumnImpact is skipped while the overview suppresses the focus"
+// ---- sibling collapse (`+N more`) ----
+
+/// The Issue-13 acceptance fixture: `hub -> c00..c{kids-1}`, all models, plus an
+/// optional `leaf -> leaf` edge under one child (the path-visibility case).
+/// Built as a `RawManifest` so the collapse tests exercise the real
+/// `Dag`/`Subgraph` plumbing, not a hand-rolled subgraph.
+fn collapse_dag(kids: usize, leaf_parent: Option<&str>) -> Dag {
+    use std::collections::HashMap;
+    let mut node_map = HashMap::new();
+    let mut parent_map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut child_map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut edge = |p: &str, c: &str| {
+        child_map
+            .entry(p.to_string())
+            .or_default()
+            .push(c.to_string());
+        parent_map
+            .entry(c.to_string())
+            .or_default()
+            .push(p.to_string());
+    };
+    node_map.insert(
+        "model.p.hub".to_string(),
+        pr_model("hub", "marts", "select 0"),
+    );
+    for i in 0..kids {
+        let uid = format!("model.p.c{i:02}");
+        node_map.insert(
+            uid.clone(),
+            pr_model(&format!("c{i:02}"), "marts", "select 1"),
+        );
+        edge("model.p.hub", &uid);
+    }
+    if let Some(parent) = leaf_parent {
+        node_map.insert(
+            "model.p.leaf".to_string(),
+            pr_model("leaf", "marts", "select 2"),
+        );
+        edge(parent, "model.p.leaf");
+    }
+    Dag::build(&crate::RawManifest {
+        metadata: Default::default(),
+        nodes: node_map,
+        sources: HashMap::new(),
+        exposures: HashMap::new(),
+        semantic_models: HashMap::new(),
+        metrics: HashMap::new(),
+        saved_queries: HashMap::new(),
+        unit_tests: HashMap::new(),
+        functions: HashMap::new(),
+        parent_map,
+        child_map,
+        macros: HashMap::new(),
+    })
+}
+
+/// The collapse-acceptance `App`: the 20-sibling hub rooted, at an explicit
+/// threshold (the fixture `app()` pins 0 — these tests are the opposite).
+fn collapse_app(kids: usize, threshold: usize) -> App {
+    collapse_app_with_leaf(kids, threshold, None)
+}
+
+fn collapse_app_with_leaf(kids: usize, threshold: usize, leaf_parent: Option<&str>) -> App {
+    let mut a = App::new(
+        collapse_dag(kids, leaf_parent),
+        PathBuf::from("/p/target/manifest.json"),
+    );
+    a.set_collapse_threshold(threshold);
+    assert!(a.select_by_unique_id("model.p.hub"), "hub is a list member");
+    a
+}
+
+/// The single `+more` marker uid a collapsed hub view draws (fails the test
+/// when zero or several markers exist — the hub shape guarantees exactly one).
+fn the_marker(a: &App) -> String {
+    let cv = a.collapsed_view();
+    let markers: Vec<&String> = cv.groups.keys().collect();
+    assert_eq!(markers.len(), 1, "exactly one marker group: {markers:?}");
+    markers[0].clone()
+}
+
+#[test]
+fn collapse_contracts_oversized_siblings_into_one_marker() {
+    // Structural-map assertion (columns/rects), per the repo convention.
+    let a = collapse_app(20, 8);
+    let lay = a.styled_lineage_layout().expect("hub view lays out");
+    assert_eq!(
+        lay.rects.len(),
+        1 + 8 + 1,
+        "hub + 8 kept siblings + the marker"
+    );
+    assert_eq!(lay.columns["model.p.hub"], 0);
+    for i in 0..8 {
+        let uid = format!("model.p.c{i:02}");
+        assert_eq!(
+            lay.columns.get(&uid).copied(),
+            Some(1),
+            "kept sibling {uid} in the children column"
+        );
+    }
+    for i in 8..20 {
+        let uid = format!("model.p.c{i:02}");
+        assert!(!lay.rects.contains_key(&uid), "hidden sibling {uid}");
+    }
+    let marker = the_marker(&a);
+    assert_eq!(
+        marker, "model.p.c08+more",
+        "marker derives from the default run's lead member (members[threshold])"
+    );
+    assert_eq!(
+        lay.columns.get(&marker).copied(),
+        Some(1),
+        "marker occupies the column it collapsed"
+    );
+    // The marker stacks AFTER the last kept sibling (uid order in-column).
+    assert!(lay.rects[&marker].y > lay.rects["model.p.c07"].y);
+    // Its box label is the pseudo-node's name — real geometry input.
+    let cv = a.collapsed_view();
+    let marker_node = cv
+        .subgraph
+        .nodes
+        .iter()
+        .find(|n| n.unique_id == marker)
+        .expect("marker is a node");
+    assert_eq!(marker_node.name, "+12 more");
+    // Semantic surfaces are untouched: the rooted subgraph keeps all 20.
+    assert_eq!(a.lineage_subgraph().nodes.len(), 21);
+}
+
+#[test]
+fn enter_on_marker_toggles_expand_and_recollapse() {
+    let mut a = collapse_app(20, 8);
+    a.ui_state.set_focus(Focus::RightPane);
+    let marker = the_marker(&a);
+    a.lineage_cursor = Some(marker.clone());
+    assert_eq!(
+        a.lineage_cursor_uid().as_deref(),
+        Some(marker.as_str()),
+        "the marker is a valid cursor position"
+    );
+
+    // Enter: expands the group — every member drawn, behind a `-12 less`.
+    let out = apply_action(&mut a, Action::DetailOpen);
+    assert!(out.effects.is_empty());
+    assert!(
+        matches!(a.mode, Mode::Selection),
+        "a marker Enter toggles, never opens the modal"
+    );
+    let lay = a.styled_lineage_layout().expect("expanded layout");
+    assert_eq!(lay.rects.len(), 1 + 20 + 1, "hub + 20 members + the toggle");
+    for i in 0..20 {
+        let uid = format!("model.p.c{i:02}");
+        assert!(lay.rects.contains_key(&uid), "expanded shows {uid}");
+    }
+    // Same marker uid (the keep-set is unchanged), now labelled `-M less`.
+    let cv = a.collapsed_view();
+    let less = cv
+        .subgraph
+        .nodes
+        .iter()
+        .find(|n| n.unique_id == marker)
+        .expect("the toggle marker stays");
+    assert_eq!(less.name, "-12 less");
+
+    // Enter on `-12 less`: collapses back to 8 kept + `+12 more`.
+    apply_action(&mut a, Action::DetailOpen);
+    let lay = a.styled_lineage_layout().expect("re-collapsed layout");
+    assert_eq!(lay.rects.len(), 1 + 8 + 1, "collapsed again");
+    assert!(!lay.rects.contains_key("model.p.c15"));
+}
+
+#[test]
+fn marker_cursor_survives_walking_off_a_revealed_member() {
+    // Regression: the marker uid derives from the group's default run lead
+    // (`members[threshold]`), so parking the cursor on a revealed member (a
+    // priority-keep that reshuffles the hidden tail) then walking onto the
+    // marker must keep the cursor there — before the fix, the marker's uid
+    // changed and the cursor silently snapped back to the root.
+    let mut a = collapse_app(20, 8);
+    a.ui_state.set_focus(Focus::RightPane);
+    let marker = the_marker(&a);
+    a.lineage_cursor = Some(marker.clone());
+    apply_action(&mut a, Action::DetailOpen); // expand the group
+
+    // Park on a revealed member deep in the tail.
+    a.lineage_cursor = Some("model.p.c15".to_string());
+    assert_eq!(
+        the_marker(&a),
+        marker,
+        "a priority member reshuffles the hidden run but never the marker uid"
+    );
+
+    // Walk Up until the marker: the cursor must stay on it (the uid is still
+    // a live node of the recomputed view — no snap-back to the root).
+    for _ in 0..20 {
+        if a.lineage_cursor_uid().as_deref() == Some(marker.as_str()) {
+            break;
+        }
+        let before = a.lineage_cursor_uid();
+        a.move_lineage_cursor(Direction::Up);
+        assert_ne!(
+            a.lineage_cursor_uid(),
+            before,
+            "walked past the marker or stalled at {before:?}"
+        );
+    }
+    assert_eq!(
+        a.lineage_cursor_uid().as_deref(),
+        Some(marker.as_str()),
+        "cursor parked on the marker survives the keep-set flip"
     );
 }
 
@@ -5325,4 +5542,138 @@ fn yank_column_lineage_falls_back_to_the_traced_column() {
     let out = apply_action(&mut a, Action::YankColumnLineage);
     assert!(out.effects.is_empty());
     assert!(a.take_notice().is_some(), "the no-column notice survives");
+fn cursor_moves_onto_the_marker_like_any_node() {
+    let mut a = collapse_app(20, 8);
+    a.ui_state.set_focus(Focus::RightPane);
+    // Column 1 stacks c00..c07 then the marker (uid order): Down from the last
+    // kept sibling lands on the marker; Down again stays (column bottom).
+    a.lineage_cursor = Some("model.p.c07".to_string());
+    a.move_lineage_cursor(Direction::Down);
+    assert_eq!(
+        a.lineage_cursor_uid().as_deref(),
+        Some("model.p.c08+more"),
+        "down from the last kept sibling lands on the marker"
+    );
+    a.move_lineage_cursor(Direction::Down);
+    assert_eq!(
+        a.lineage_cursor_uid().as_deref(),
+        Some("model.p.c08+more"),
+        "the marker is the column bottom"
+    );
+    // The marker is a real movement node horizontally too: Left reaches the
+    // hub (the only column-0 box), Right returns into the children column.
+    a.move_lineage_cursor(Direction::Left);
+    assert_eq!(a.lineage_cursor_uid().as_deref(), Some("model.p.hub"));
+    a.move_lineage_cursor(Direction::Right);
+    assert!(
+        a.lineage_cursor_uid().is_some(),
+        "back into the children column"
+    );
+}
+
+#[test]
+fn lineage_search_auto_expands_a_hidden_match() {
+    let mut a = collapse_app(20, 8);
+    a.ui_state.set_focus(Focus::RightPane); // `/` targets the lineage pane
+                                            // Pre-condition: c15 hides behind the marker.
+    assert!(!a
+        .styled_lineage_layout()
+        .unwrap()
+        .rects
+        .contains_key("model.p.c15"));
+
+    apply_action(&mut a, Action::SearchOpen);
+    for c in "c15".chars() {
+        apply_action(&mut a, Action::SearchType(c));
+    }
+    assert_eq!(
+        a.current_lineage_match().as_deref(),
+        Some("model.p.c15"),
+        "the query lands on the hidden member"
+    );
+    let lay = a.styled_lineage_layout().expect("revealed layout");
+    assert!(
+        lay.rects.contains_key("model.p.c15"),
+        "the hidden match's group expanded — the match is drawn"
+    );
+    // The reveal is expansion state, not search state: it survives a cancel.
+    apply_action(&mut a, Action::SearchCancel);
+    let lay = a.styled_lineage_layout().expect("post-search layout");
+    assert!(
+        lay.rects.contains_key("model.p.c15"),
+        "the revealed member stays expanded after the search closes"
+    );
+}
+
+#[test]
+fn keep_priority_bookmarks_and_path_nodes() {
+    // A bookmarked tail member sorts past the cut but stays visible.
+    let mut a = collapse_app(20, 8);
+    a.bookmarks.insert("model.p.c15".to_string());
+    let lay = a.styled_lineage_layout().expect("layout");
+    assert!(
+        lay.rects.contains_key("model.p.c15"),
+        "a bookmarked member is never hidden"
+    );
+    // kept = the threshold slots, priority-first: {c15, c00..c06} (c15 takes a
+    // slot inside the first 8, so c07 spills into the marker tail).
+    assert_eq!(lay.rects.len(), 1 + 8 + 1);
+    assert!(!lay.rects.contains_key("model.p.c07"), "c07 fills the tail");
+
+    // A hidden member on the root↔cursor path stays visible: cursor the leaf
+    // under c15, and the path hub → c15 → leaf keeps c15 drawn.
+    let mut a = collapse_app_with_leaf(20, 8, Some("model.p.c15"));
+    a.ui_state.set_focus(Focus::RightPane);
+    a.lineage_cursor = Some("model.p.leaf".to_string());
+    let lay = a.styled_lineage_layout().expect("layout");
+    assert!(
+        lay.rects.contains_key("model.p.c15"),
+        "a path member is never hidden behind its marker"
+    );
+    assert!(lay.rects.contains_key("model.p.leaf"));
+}
+
+#[test]
+fn expansion_resets_on_re_root_and_survives_same_root() {
+    let mut a = collapse_app(20, 8);
+    a.ui_state.set_focus(Focus::RightPane);
+    a.lineage_cursor = Some(the_marker(&a));
+    apply_action(&mut a, Action::DetailOpen); // expand
+    assert_eq!(a.styled_lineage_layout().unwrap().rects.len(), 22);
+
+    // Re-root: the expansions are per-root state — the new root recomputes.
+    assert!(a.select_by_unique_id("model.p.c05"));
+    // Rooted on c05, the hub is UPSTREAM: its own 20-child group is not in
+    // this subgraph at all — but the expansion key must not linger.
+    assert!(
+        a.collapsed_view().groups.is_empty(),
+        "no group under the new root"
+    );
+
+    // ...and back: the hub's group is collapsed again (state was dropped).
+    assert!(a.select_by_unique_id("model.p.hub"));
+    let lay = a.styled_lineage_layout().expect("back at the hub");
+    assert_eq!(lay.rects.len(), 1 + 8 + 1, "expansions reset on re-root");
+}
+
+#[test]
+fn exports_keep_the_semantic_graph_but_ascii_mirrors_the_screen() {
+    // Policy: Mermaid/DOT emit every real node (no markers); the ASCII yank is
+    // screen-equivalent — the pane's diagram, `+M more` markers included.
+    let a = collapse_app(20, 8);
+    let mermaid = a.lineage_mermaid().expect("mermaid");
+    assert!(mermaid.contains("c19"), "mermaid keeps hidden members");
+    assert!(!mermaid.contains("+more"), "no marker in mermaid");
+    let dot = a.lineage_dot().expect("dot");
+    assert!(dot.contains("model.p.c19"), "dot keeps hidden members");
+    assert!(!dot.contains("+more"), "no marker in dot");
+    let ascii = a.lineage_ascii().expect("ascii");
+    assert!(
+        ascii.contains("+12 more"),
+        "screen-equivalent ascii draws the marker:\n{ascii}"
+    );
+    assert!(
+        !ascii.contains("c19"),
+        "hidden members stay hidden in ascii"
+    );
 }

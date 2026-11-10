@@ -167,6 +167,21 @@ pub struct App {
     /// (`config.yml` `owner_meta_key`, default `owner`). Feeds the `D` modal
     /// snapshot + `e` export through [`crate::diff_report`].
     pub owner_meta_key: String,
+    /// `config.yml`'s `lineage_collapse`: the sibling-group size over which a
+    /// lineage column contracts the tail into one `+M more` marker node
+    /// (`0` = never collapse). Display-only — the rooted subgraph, the
+    /// Mermaid/DOT exports, and lineage search keep every real node; only the
+    /// pane (and the screen-equivalent ASCII export) sees the markers.
+    pub collapse_threshold: usize,
+    /// The sibling-collapse groups the user expanded, keyed to the CURRENT
+    /// root — the issue's "kept per root, initialised on re-root". A plain
+    /// `BTreeSet` of group keys (hub parent uids), cleared by every path that
+    /// lands on a different selected model:
+    /// [`select_by_unique_id`](App::select_by_unique_id)'s change check, the
+    /// event loop's selection-change chokepoint, and
+    /// [`reload`](App::reload) (a new graph re-initialises everything). Never
+    /// read for a stale root — it is empty by then.
+    collapse_expanded: BTreeSet<String>,
     /// Bookmarked model `unique_id`s (Space toggles, `'` cycles). A `BTreeSet`
     /// for deterministic iteration; lives on `App` (not the list) so toggling a
     /// bookmark never rebuilds the list and it survives a refilter untouched.
@@ -409,6 +424,8 @@ impl App {
             sort,
             group_by_meta: None,
             owner_meta_key: "owner".to_string(),
+            collapse_threshold: crate::collapse::DEFAULT_COLLAPSE_THRESHOLD,
+            collapse_expanded: BTreeSet::new(),
             bookmarks: BTreeSet::new(),
             ui_state,
             mode: Mode::Selection,
@@ -605,6 +622,23 @@ impl App {
     /// next `diff_report` snapshot, not any cached list.
     pub fn set_owner_meta_key(&mut self, key: impl Into<String>) {
         self.owner_meta_key = key.into();
+    }
+
+    /// Set the sibling-collapse threshold (`config.yml` `lineage_collapse`;
+    /// `0` disables the `+M more` markers entirely). The threshold is a cache
+    /// key input, so no explicit invalidation is needed — the next layout
+    /// read simply misses and rebuilds.
+    pub fn set_collapse_threshold(&mut self, threshold: usize) {
+        self.collapse_threshold = threshold;
+    }
+
+    /// Drop every expanded sibling-collapse group — the re-root
+    /// re-initialisation. Called at the event loop's selection-change
+    /// chokepoint (which also re-homes the cursor) and internally wherever a
+    /// selection-identity change is detected; `reload` calls it on the new
+    /// graph's behalf.
+    pub fn clear_collapse_expansions(&mut self) {
+        self.collapse_expanded.clear();
     }
 
     /// The package scope the Dag was loaded under (`--include-packages` ⇒
@@ -964,6 +998,13 @@ impl App {
             .position(|n| n.unique_id == unique_id);
         match idx {
             Some(i) => {
+                // Landing on a different uid is a re-root: the sibling-collapse
+                // expansions are per-root state, so they re-initialise here.
+                // A same-uid re-resolve (filter toggle, sort rebuild) keeps
+                // them — it is not a re-root.
+                if self.selected_unique_id().as_deref() != Some(unique_id) {
+                    self.collapse_expanded.clear();
+                }
                 self.ui_state.set_selected(i);
                 true
             }
@@ -1083,6 +1124,9 @@ impl App {
         // selection-change chokepoint won't fire — reset here or a pre-reload
         // cursor would survive into the rebuilt graph.
         self.lineage_cursor = None;
+        // Same for the sibling-collapse expansions: the group keys index into
+        // the OLD graph's columns, so a fresh graph re-initialises them.
+        self.collapse_expanded.clear();
         // Re-diff the rebuilt Dag against the (unchanged) --diff baseline, so
         // the Diff lens / chip / modal always describe the CURRENT graph.
         self.diff = self.diff_base.as_ref().map(|b| compute_diff(b, &self.dag));

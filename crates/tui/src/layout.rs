@@ -112,6 +112,10 @@ pub enum MaterializationClass {
     /// A declared downstream consumer (dashboard / notebook / …) — a terminator
     /// leaf on the right edge of the diagram.
     Exposure,
+    /// A `+M more` / `-M less` collapse marker (the sibling-collapse stage):
+    /// display chrome standing in for hidden siblings, never a real resource
+    /// (its `resource_type` is the synthetic `"more"`, which no manifest emits).
+    Collapsed,
 }
 
 impl MaterializationClass {
@@ -132,6 +136,9 @@ impl MaterializationClass {
                 Some("ephemeral") => MaterializationClass::Ephemeral,
                 _ => MaterializationClass::OtherModel,
             },
+            // The collapse marker's synthetic resource_type — classified as
+            // display chrome, not a real resource.
+            "more" => MaterializationClass::Collapsed,
             _ => MaterializationClass::Plain,
         }
     }
@@ -150,6 +157,7 @@ impl MaterializationClass {
             MaterializationClass::Seed => "Seed",
             MaterializationClass::Snapshot => "Snapshot",
             MaterializationClass::Exposure => "Exposure",
+            MaterializationClass::Collapsed => "More",
             MaterializationClass::Plain => "Node",
         }
     }
@@ -726,7 +734,10 @@ fn draw_box(
 /// relaxation to a fixpoint (the subgraph is a DAG, so it converges in at most
 /// `nodes` passes; we cap at `nodes+1` for safety). Returns every node's column
 /// (nodes with no in-subgraph parent get 0).
-fn longest_path_columns(sg: &Subgraph) -> HashMap<String, usize> {
+///
+/// `pub(crate)` for the sibling-collapse stage (`crate::collapse`), which
+/// groups same-parent siblings by the column this assigns.
+pub(crate) fn longest_path_columns(sg: &Subgraph) -> HashMap<String, usize> {
     let mut col: HashMap<String, usize> = sg
         .nodes
         .iter()

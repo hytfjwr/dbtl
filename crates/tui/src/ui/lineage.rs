@@ -443,6 +443,9 @@ fn class_color(class: MaterializationClass, t: &theme::Theme) -> Option<Color> {
         MaterializationClass::Snapshot => Some(t.class_snapshot),
         MaterializationClass::Exposure => Some(t.class_exposure),
         MaterializationClass::OtherModel => Some(t.class_other),
+        // The `+M more` collapse marker renders in the muted "other" gray —
+        // it is display chrome standing in for siblings, not a real resource.
+        MaterializationClass::Collapsed => Some(t.class_other),
         MaterializationClass::Plain => None,
     }
 }

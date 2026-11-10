@@ -89,6 +89,10 @@ pub fn event_loop(
                 // through here before the next draw, so the cursor always re-homes
                 // to the new root — no per-call-site resets to forget.
                 app.reset_lineage_cursor();
+                // Same chokepoint for the sibling-collapse expansions: they are
+                // per-root state (a group key means nothing across a re-root),
+                // so they re-initialise on every selection change.
+                app.clear_collapse_expansions();
             }
 
             // Follow list scroll BEFORE drawing (display-row space) so a jump never
