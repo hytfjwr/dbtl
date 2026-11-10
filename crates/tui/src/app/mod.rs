@@ -976,9 +976,10 @@ impl App {
 
     /// §2 T1: adopt the list cursor's model as the active tab's root — the
     /// browser-link rule that lands every list selection on the tab's own
-    /// history. Called after every list-move arm (and the wheel); a same-uid
-    /// landing is a no-op inside [`jump_to`](App::jump_to).
-    pub(crate) fn adopt_list_selection(&mut self) {
+    /// history. Called after every list-move arm (and by the event loop's
+    /// wheel over the list pane); a same-uid landing is a no-op inside
+    /// [`jump_to`](App::jump_to).
+    pub fn adopt_list_selection(&mut self) {
         if let Some(uid) = self.list_sel_uid() {
             self.jump_to(&uid);
         }
@@ -1421,9 +1422,15 @@ impl App {
         // history_back/forward pop the entry, push the current node onto the
         // opposite stack, and then fail to select — consuming the step and
         // accumulating bogus duplicates instead of landing on a survivor.
+        // The `is_rootable` rule (not mere survival): a node still in the
+        // graph but no longer a `model` can never be a history landing —
+        // inlined here (not the `App::is_rootable` method) so the retain
+        // closures borrow `dag` disjoint from `tabs`.
         for t in &mut self.tabs {
-            t.back.retain(|id| self.dag.get(id).is_some());
-            t.forward.retain(|id| self.dag.get(id).is_some());
+            t.back
+                .retain(|id| self.dag.get(id).is_some_and(|n| n.resource_type == "model"));
+            t.forward
+                .retain(|id| self.dag.get(id).is_some_and(|n| n.resource_type == "model"));
             // Pruning can leave adjacent equal entries (A → vanished → A);
             // collapse them so a history step never "moves" to the same node.
             t.back.dedup();
@@ -1503,17 +1510,30 @@ impl App {
         // that survives but is no longer a `model` can't be re-rooted either
         // (§2: 消えたモデルのタブは捨てる). If every tab died, keep ONE
         // rootless tab rather than break the ≥1-tab invariant.
-        self.tabs.retain(|t| {
+        // The `is_rootable` rule, inlined (not `App::is_rootable`) so the
+        // predicate borrows `dag` disjoint from the `tabs` iteration below.
+        let live = |t: &TabState| {
             t.root
                 .as_deref()
                 .is_some_and(|r| self.dag.get(r).is_some_and(|n| n.resource_type == "model"))
-        });
+        };
+        // `retain` slides survivors left — the active tab follows across
+        // left-of-active prunes the same way `close_tab` shifts `active`:
+        // its new index is the count of SURVIVORS below the old index.
+        let survivors_below = self
+            .tabs
+            .iter()
+            .take(self.active)
+            .filter(|t| live(t))
+            .count();
+        self.tabs.retain(|t| live(t));
         if self.tabs.is_empty() {
             self.tabs.push(TabState::default());
         }
-        // Clamp NOW: `apply_list_filter` below resolves the selection through
-        // the active tab, so `active` can't stay past the shrunk strip.
-        self.active = self.active.min(self.tabs.len() - 1);
+        // Seat NOW: `apply_list_filter` below resolves the selection through
+        // the active tab, so `active` can't point past the shrunk strip —
+        // and must not sit on a DIFFERENT tab than the one that was live.
+        self.active = survivors_below.min(self.tabs.len() - 1);
         // Re-diff the rebuilt Dag against the (unchanged) --diff baseline, so
         // the Diff lens / chip / modal always describe the CURRENT graph.
         // The baseline resolver's per-uid memos stay valid (the baseline never

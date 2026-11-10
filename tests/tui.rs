@@ -873,6 +873,38 @@ fn palette_modal_echoes_query_highlights_selection_and_shows_key_labels() {
 }
 
 #[test]
+fn new_tab_palette_titles_open_in_new_tab() {
+    // The tab strip's `+` palette (`PaletteState::new_tab`) is titled for the
+    // tab-open intent — not "commands" (a plain `@` query re-roots, keeping
+    // the models title).
+    use dbtl::app::App;
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    app.mode = dbtl::Mode::Palette(dbtl::action::PaletteState {
+        query: "@".to_string(),
+        selected: 0,
+        new_tab: true,
+    });
+    let buffer = render_app(&app, 100, 40);
+    let text = buffer_to_string(&buffer);
+    assert!(
+        text.contains("open in new tab"),
+        "the + palette is titled for the tab-open intent:\n{text}"
+    );
+
+    app.mode = dbtl::Mode::Palette(dbtl::action::PaletteState {
+        query: "@stg".to_string(),
+        selected: 0,
+        new_tab: false,
+    });
+    let buffer = render_app(&app, 100, 40);
+    let text = buffer_to_string(&buffer);
+    assert!(
+        text.contains(" models "),
+        "a plain @ query keeps the models title:\n{text}"
+    );
+}
+
+#[test]
 fn palette_highlights_key_label_chars_when_only_the_key_matches() {
     // A row admitted by a KEY-LABEL match (not help) must show its match cue. Query
     // "cmd": the `Cmd-b/Ctrl-b -> show / hide the model list pane` row is admitted

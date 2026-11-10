@@ -1549,10 +1549,12 @@ pub(crate) fn draw_palette(
     let rect = centered_rect(60, 60, area).intersection(area);
     let chrome = super::chrome(glyphs);
     frame.render_widget(Clear, rect);
-    // The `@` model-search mode (Issue 03's `+` / `@` prefix) re-titles the
-    // box — Enter lands a model (a new tab via `new_tab`, else a re-root),
-    // not a command.
-    let title = if state.query.starts_with('@') {
+    // The `@` model-search mode re-titles the box (Issue 03): the `+`
+    // palette's `new_tab` arm lands Enter in a NEW tab, a plain `@` query
+    // re-roots — neither runs a command.
+    let title = if state.new_tab {
+        " open in new tab  (Esc to close, Enter to open) "
+    } else if state.query.starts_with('@') {
         " models  (Esc to close, Enter to open) "
     } else {
         " commands  (Esc to close, Enter to run) "

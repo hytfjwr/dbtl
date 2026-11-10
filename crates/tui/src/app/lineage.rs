@@ -130,10 +130,11 @@ impl App {
                     .model_at(*index)
                     .map(|m| m.unique_id.clone());
                 if let Some(uid) = uid {
-                    // A list click landing on a different model is a re-root,
-                    // so it runs the same "leave the column trace" rule as a
-                    // lineage click (`reroot_select` owns the contract).
-                    self.reroot_select(&uid);
+                    // §2 T1: a click picks the row's model exactly like a
+                    // key-driven selection — re-root WITH the history push
+                    // (and the column-trace / overview rules `jump_to`
+                    // owns). A same-model click no-ops inside `jump_to`.
+                    self.jump_to(&uid);
                 }
             }
             (MouseButton::Left, HitTarget::ListHeader(_))

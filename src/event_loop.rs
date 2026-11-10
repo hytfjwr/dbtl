@@ -1068,7 +1068,15 @@ fn wheel(
     shift: bool,
 ) {
     if within(list_inner, col, row) {
+        // §2 T1: a wheel notch over the list moves the CURSOR — adopt it as
+        // the active tab's root exactly like a j/k move (guarded on the
+        // index actually changing, so a clamped notch at the boundary
+        // never re-roots a detached tab).
+        let before = app.ui_state.selected();
         app.ui_state.wheel_list(down);
+        if app.ui_state.selected() != before {
+            app.adopt_list_selection();
+        }
     } else if within(lin_inner, col, row) {
         if shift {
             app.ui_state.wheel_lineage_x(down);
@@ -2016,5 +2024,42 @@ mod tests {
         );
         assert_eq!(app.ui_state.list_width(), dbtl::ui::DEFAULT_LIST_WIDTH);
         assert!(drag.is_none());
+    }
+
+    #[test]
+    fn wheel_over_the_list_adopts_the_cursor_model_as_tab_root() {
+        // §2 T1 review: a wheel notch over the list moves the CURSOR, and
+        // like a j/k move the cursor's model becomes the active tab's root
+        // (with the history push) — root≠cursor must not detach here.
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        let root0 = app.selected_unique_id().unwrap();
+        // (10,10) at 100x30 sits inside the list pane's interior.
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            MouseEventKind::ScrollDown,
+            10,
+            10,
+        );
+        let landed = app.active_list().model_at(3).unwrap().unique_id.clone();
+        assert_eq!(
+            app.selected_unique_id().as_deref(),
+            Some(landed.as_str()),
+            "the wheeled cursor's model became the active tab's root"
+        );
+        assert_eq!(
+            app.tab().back,
+            vec![root0.clone()],
+            "the wheel re-root pushed the old root onto back"
+        );
+        app.history_back();
+        assert_eq!(
+            app.selected_unique_id().as_deref(),
+            Some(root0.as_str()),
+            "`b` walks the wheel's re-root back"
+        );
     }
 }

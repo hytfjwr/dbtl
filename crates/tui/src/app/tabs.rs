@@ -354,23 +354,6 @@ impl App {
         });
     }
 
-    /// The `@`-palette's model candidates — `(name, unique_id)` rows in the
-    /// ACTIVE list's order, fuzzy-matched on the name (an empty query lists
-    /// every model). The same list `open_node_as_tab`'s gate reads, so an
-    /// Enter can never land a row the tab-open would refuse. Dag-aware →
-    /// precomputed at the loop seam for the (Dag-free) palette painter.
-    pub fn palette_model_candidates(&self, query: &str) -> Vec<(String, String)> {
-        self.active_list()
-            .models
-            .iter()
-            .filter(|n| {
-                let q = query.trim();
-                q.is_empty() || crate::name_matches_query(&n.name, q)
-            })
-            .map(|n| (n.name.clone(), n.unique_id.clone()))
-            .collect()
-    }
-
     /// Swap the whole tab list in — the persistence restore (validated
     /// upstream: every entry's root already resolved against the live `dag`).
     /// `active` clamps to the new strip; then `enter_tab_forced` re-homes

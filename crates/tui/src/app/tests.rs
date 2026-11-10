@@ -7547,12 +7547,19 @@ fn hit_target_minimap_swallows_the_diagram_below_it() {
 #[test]
 fn click_target_left_click_moves_the_cursor_only() {
     let mut a = sample_app();
+    let root0 = a.selected_unique_id().unwrap();
     let second = a.active_list().model_at(1).unwrap().unique_id.clone();
 
-    // A list row: selects via the same reroot_select contract a keypress uses.
+    // A list row: §2 T1 — a click picks the model exactly like a keypress:
+    // re-root WITH the back-history push (`jump_to`, not bare `reroot_select`).
     a.click_target(&HitTarget::ListRow(1), MouseButton::Left, (0, 0));
     assert_eq!(a.selected_unique_id().as_deref(), Some(second.as_str()));
     assert_eq!(a.ui_state.focus(), Focus::List);
+    assert_eq!(
+        a.tab().back,
+        vec![root0],
+        "a list click lands on the tab's history like the key path"
+    );
 
     // A lineage node: §6 M1 — a single left click moves the CURSOR only;
     // the re-root is the double-click's commit (`commit_lineage_node` +
@@ -8708,6 +8715,70 @@ fn reload_drops_tabs_whose_roots_vanished() {
     a.reload().expect("reload ok");
     assert_eq!(a.tab_count(), 1, "one tab reseeds rather than zero");
     assert!(a.tab().root.is_none(), "the reseeded tab is rootless");
+}
+
+#[test]
+fn reload_follows_the_active_tab_across_left_of_active_prunes() {
+    // Review: `retain` slides survivors left — a dead tab BELOW the active
+    // one shifts the live tab's index. `active` must track it (the
+    // `close_tab` rule), not just clamp into range.
+    let mut a = app();
+    let (root0, m1, _m2) = three_models(&a);
+    // [dead, root0, m1] with root0 live at index 1.
+    a.restore_tabs(
+        vec![
+            TabState {
+                root: Some("model.jaffle_finance.ghost_root".to_string()),
+                ..TabState::default()
+            },
+            TabState {
+                root: Some(root0.clone()),
+                ..TabState::default()
+            },
+            TabState {
+                root: Some(m1.clone()),
+                ..TabState::default()
+            },
+        ],
+        1,
+    );
+    a.reload().expect("reload ok");
+    assert_eq!(a.active_tab(), 0, "root0 slid into index 0");
+    assert_eq!(
+        a.selected_unique_id().as_deref(),
+        Some(root0.as_str()),
+        "the SAME tab stays active — not the one that slid under the index"
+    );
+}
+
+#[test]
+fn reload_prunes_non_model_ids_from_tab_history() {
+    // A back/forward entry always names a model ROOT — a uid that survives
+    // the reload as a NON-model (the dag keeps it) can never be a landing:
+    // the prune uses `is_rootable`, not mere survival.
+    let mut a = app();
+    let (root0, m1, _m2) = three_models(&a);
+    let source = "source.jaffle_finance.dev_lake_jaffle_payment.suppliers".to_string();
+    assert!(
+        a.dag.get(&source).is_some(),
+        "the planted id survives reload"
+    );
+    a.restore_tabs(
+        vec![TabState {
+            root: Some(root0.clone()),
+            back: vec![source.clone(), m1.clone()],
+            forward: vec![source.clone(), m1.clone()],
+            ..TabState::default()
+        }],
+        0,
+    );
+    a.reload().expect("reload ok");
+    assert_eq!(
+        a.tab().back,
+        vec![m1.clone()],
+        "the surviving-but-non-model id is pruned from back"
+    );
+    assert_eq!(a.tab().forward, vec![m1], "same for forward");
 }
 
 #[test]
