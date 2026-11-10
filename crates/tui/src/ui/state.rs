@@ -19,12 +19,12 @@ use ratatui::crossterm::event::KeyEvent;
 /// reproduces the muscle-memory coverage view (and keeps the status-bar cov%).
 ///
 /// Cycle order (`cycle_lens`): Off → Coverage → DegreeHeat → Layer → LayerViolation
-/// → Lint → Diff → RunStatus → RunTime → Off. The Lint lens needs at least one
-/// static-lint [`Finding`](crate::Finding), the Diff lens needs a `--diff`
-/// baseline, and the Run* lenses need a loaded `run_results.json` to show
-/// anything, so the `apply_action` CycleLens arm SKIPS them when the App lacks
-/// the data — the raw [`cycle_lens`](UiState::cycle_lens) here stays a pure,
-/// App-blind step.
+/// → Lint → Diff → RunStatus → RunTime → ColumnImpact → Off. The Lint lens
+/// needs at least one static-lint [`Finding`](crate::Finding), the Diff lens
+/// needs a `--diff` baseline, the Run* lenses need a loaded `run_results.json`,
+/// and ColumnImpact needs an active column focus to show anything, so the
+/// `apply_action` CycleLens arm SKIPS them when the App lacks the data — the
+/// raw [`cycle_lens`](UiState::cycle_lens) here stays a pure, App-blind step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LineageLens {
     /// No lens — node boxes show their materialization-class colour.
@@ -50,10 +50,14 @@ pub enum LineageLens {
     /// Last-run `execution_time` heat: the slowest nodes glow on the same
     /// low/mid/high ramp the DegreeHeat lens uses.
     RunTime,
+    /// Column impact (Issue 09): the nodes the TRACED column's closure reaches
+    /// downstream glow — the "who does this column feed" answer. Skipped by
+    /// `CycleLens` while no column focus is active.
+    ColumnImpact,
 }
 
 impl LineageLens {
-    /// The next lens in the `t`-cycle (wraps `RunTime → Off`).
+    /// The next lens in the `t`-cycle (wraps `ColumnImpact → Off`).
     pub fn next(self) -> LineageLens {
         match self {
             LineageLens::Off => LineageLens::Coverage,
@@ -64,7 +68,8 @@ impl LineageLens {
             LineageLens::Lint => LineageLens::Diff,
             LineageLens::Diff => LineageLens::RunStatus,
             LineageLens::RunStatus => LineageLens::RunTime,
-            LineageLens::RunTime => LineageLens::Off,
+            LineageLens::RunTime => LineageLens::ColumnImpact,
+            LineageLens::ColumnImpact => LineageLens::Off,
         }
     }
 }
@@ -859,6 +864,8 @@ mod tests {
         assert_eq!(s.lens(), LineageLens::RunStatus);
         s.cycle_lens();
         assert_eq!(s.lens(), LineageLens::RunTime);
+        s.cycle_lens();
+        assert_eq!(s.lens(), LineageLens::ColumnImpact);
         s.cycle_lens();
         assert_eq!(s.lens(), LineageLens::Off, "wraps back to Off");
     }

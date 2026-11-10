@@ -173,6 +173,9 @@ pub fn event_loop(
                 dbtl::Mode::Diff(dv) => {
                     dv.scroll = dbtl::ui::clamp_diff_scroll(area, dv);
                 }
+                dbtl::Mode::Columns(cv) => {
+                    cv.scroll = dbtl::ui::clamp_columns_scroll(area, cv);
+                }
                 _ => {}
             }
 
@@ -237,6 +240,12 @@ pub fn event_loop(
             // from the active glyph mode's Chrome badges — never hardcoded).
             // Built in App so the string source is single and unit-testable.
             let impact_s = app.impact_status();
+            // The column-focus chip (`column:model.col ↑N ↓M`) and the lineage
+            // title's ` [col:name]` suffix — present only while a column is
+            // traced (and suppressed with the rest of the focus by the
+            // overview). Both are `None` otherwise: no focus, no footprint.
+            let column_s = app.column_status();
+            let col_suffix = app.column_focus_label();
             // The baseline-diff chip (present only with a --diff baseline loaded).
             let diff_s = app.diff_status_label();
             // The run_results chip (coverage + freshness of the loaded artifact).
@@ -265,8 +274,10 @@ pub fn event_loop(
                 ctx.bookmarks = Some(&app.bookmarks);
                 // Full model count for the search title's N/M (M = full list len).
                 ctx.full_model_count = Some(app.model_list.len());
+                ctx.col_suffix = col_suffix.as_deref();
                 ctx.segments = StatusSegments {
                     impact: impact_s.as_deref(),
+                    column: column_s.as_deref(),
                     focus: Some(focus_s),
                     view: view_seg,
                     position: pos_s.as_deref(),
@@ -332,6 +343,11 @@ pub fn event_loop(
                                 | Action::DbtParse
                                 | Action::ToggleDensity
                                 | Action::ToggleOverview
+                                // Column focus swaps in a fresh (filtered)
+                                // subgraph homed on the traced model — the
+                                // anchor branch recentres it like a re-root.
+                                | Action::ColumnFocusEnter
+                                | Action::ColumnFocusExit
                         );
                         let outcome = apply_action(app, action);
                         for effect in outcome.effects {

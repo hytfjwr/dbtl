@@ -56,6 +56,7 @@ pub(crate) fn draw_lineage_pane(
     glyphs: crate::GlyphMode,
     minimap: bool,
     layer_bands: Option<&[LayerBand]>,
+    col_suffix: Option<&str>,
     t: &theme::Theme,
 ) {
     let chrome = super::chrome(glyphs);
@@ -66,7 +67,17 @@ pub(crate) fn draw_lineage_pane(
     let caret = chrome.caret;
     // The lens suffix is appended to EVERY non-search title shape (a small pure
     // helper). It is empty when the lens is Off, so default titles are unchanged.
-    let lens = lens_title_suffix(state.lens());
+    // The column-focus ` [col:name]` suffix rides the same slot — composed into
+    // one string so `compose_lineage_title`'s suffix budget keeps it whole
+    // (pure ASCII like the lens tags, so ambiguous-width-safe in both modes).
+    let lens_owned;
+    let lens = match col_suffix {
+        Some(cs) => {
+            lens_owned = format!("{}{}", lens_title_suffix(state.lens()), cs);
+            lens_owned.as_str()
+        }
+        None => lens_title_suffix(state.lens()),
+    };
     let title = compose_lineage_title(
         sel_name,
         search,
@@ -456,6 +467,7 @@ fn lens_color(tint: LensTint, t: &theme::Theme) -> Option<Color> {
         LensTint::DiffMod => Some(t.diff_mod),
         LensTint::RunWarn => Some(t.warn),
         LensTint::RunSkip => Some(t.text_faint),
+        LensTint::ColumnImpact => Some(t.gold),
     }
 }
 
@@ -547,6 +559,7 @@ fn lens_title_suffix(lens: LineageLens) -> &'static str {
         LineageLens::Diff => " [lens:diff]",
         LineageLens::RunStatus => " [lens:run]",
         LineageLens::RunTime => " [lens:time]",
+        LineageLens::ColumnImpact => " [lens:col]",
     }
 }
 

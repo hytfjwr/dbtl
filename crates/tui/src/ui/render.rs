@@ -59,6 +59,11 @@ pub struct StatusSegments<'a> {
     /// segment renderer adds the `[..]`). Echoes the list-title tag so it
     /// stays visible while the list pane is hidden.
     pub filter: Option<&'a str>,
+    /// The active column-focus readout (Issue 09), e.g.
+    /// `"column:fct_orders.total_amount ↑3 ↓7"` — the traced column's identity
+    /// plus its transitive column-closure sizes. Sits right after `impact`:
+    /// while a column is being traced it IS the headline readout.
+    pub column: Option<&'a str>,
 }
 
 /// The Dag-free bundle of render inputs; future render features add a FIELD, not
@@ -119,6 +124,11 @@ pub struct RenderCtx<'a> {
     /// via `App::layer_bands`). `None` (the default) draws nothing, so every
     /// non-Layer render is untouched. Dag-free: plain precomputed data.
     pub layer_bands: Option<&'a [super::LayerBand]>,
+    /// The column-focus title suffix (`" [col:name]"`, pure ASCII), appended
+    /// to the lineage pane title after the lens tag while a column is being
+    /// traced (Issue 09). `None` (the default) leaves every title unchanged.
+    /// Precomputed at the loop seam (`App::column_focus_label`) — Dag-free.
+    pub col_suffix: Option<&'a str>,
     /// The transient toast text (copy/bookmark/export/reload feedback), drawn
     /// as a small floating box at the TOP-RIGHT, above every pane and modal.
     /// The event loop owns its ~2.5s lifetime ([`App::take_notice`]
@@ -162,6 +172,7 @@ impl<'a> RenderCtx<'a> {
             minimap: false,
             filter_label: None,
             layer_bands: None,
+            col_suffix: None,
             toast: None,
             theme: &theme::DEFAULT,
         }
@@ -221,6 +232,7 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         ctx.glyphs,
         ctx.minimap,
         ctx.layer_bands,
+        ctx.col_suffix,
         ctx.theme,
     );
     draw_status(
@@ -248,6 +260,9 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         }
         crate::action::Mode::Diff(dv) => {
             super::overlay::draw_diff(frame, area, dv, ctx.glyphs, ctx.theme)
+        }
+        crate::action::Mode::Columns(cv) => {
+            super::overlay::draw_columns(frame, area, cv, ctx.glyphs, ctx.theme)
         }
         crate::action::Mode::Palette(p) => {
             super::overlay::draw_palette(frame, area, p, ctx.glyphs, ctx.theme)
@@ -516,7 +531,9 @@ fn draw_status(
     // that doesn't fit stops the loop — so index 0 survives the narrowest line).
     // Each rendered as a bracketed ` [txt]`. Priority:
     //   1. impact — the every-frame blast radius, the headline readout, right
-    //      after the protected core so it survives narrow widths longest.
+    //      after the protected core so it survives narrow widths longest —
+    //      and, while a column is traced, its column-closure chip right beside
+    //      it (the focus IS the headline then).
     //   2. the diff chip (present only when a --diff baseline is loaded — the
     //      at-a-glance readout that mode exists for), then the run artifact
     //      readout and the package-scope tag (emitted every frame — a
@@ -528,8 +545,9 @@ fn draw_status(
     //   5. focus / view LAST (focus is already the accent pane border, and the
     //      view label is echoed in the lineage pane title — redundant cues that
     //      should drop first on a narrow terminal).
-    let candidates: [(Option<&str>, Color); 11] = [
+    let candidates: [(Option<&str>, Color); 12] = [
         (segments.impact, t.danger),
+        (segments.column, t.gold),
         (segments.diff, t.diff_mod),
         (segments.run, t.warn),
         (segments.scope, t.accent),

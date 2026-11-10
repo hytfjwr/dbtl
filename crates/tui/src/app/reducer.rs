@@ -86,7 +86,16 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                     Action::MoveLeft => Direction::Left,
                     _ => Direction::Right,
                 };
-                app.move_lineage_cursor(dir);
+                // Column focus turns h/l into a COLUMN step (the traced column
+                // walks to its next upstream/downstream neighbour); j/k keep
+                // their node-cursor meaning inside the filtered graph.
+                if app.active_column_focus().is_some()
+                    && matches!(dir, Direction::Left | Direction::Right)
+                {
+                    app.column_focus_step(dir);
+                } else {
+                    app.move_lineage_cursor(dir);
+                }
             } else {
                 reduce_selection(&mut app.ui_state, action);
             }
@@ -254,6 +263,77 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                 } else {
                     usize::MAX
                 };
+            }
+            Outcome::cont()
+        }
+        // ---- column-level lineage (Issue 09) ----
+        Action::ColumnFocusEnter => {
+            // Enter/`c` on the structure modal's column cursor commits the
+            // column to the trace view; a column-less modal (or an invalid
+            // cursor) keeps Enter's classic close behaviour.
+            let col = match &app.mode {
+                Mode::Detail(dv) if dv.col_index != usize::MAX => dv
+                    .col_names
+                    .get(dv.col_index)
+                    .map(|c| crate::ColumnRef::new(&dv.model_id, c)),
+                _ => None,
+            };
+            app.mode = Mode::Selection;
+            if let Some(col) = col {
+                app.column_focus_enter(col);
+            }
+            Outcome::cont()
+        }
+        Action::ColumnFocusExit => {
+            // Esc exits the trace view — the lineage returns to the normal
+            // rooted subgraph of whatever is selected.
+            app.column_focus = None;
+            Outcome::cont()
+        }
+        Action::ColumnsOpen => {
+            // The modal's column: the structure modal's cursored column when
+            // opened over it, else the traced column's (Selection `K`).
+            let col = match &app.mode {
+                Mode::Detail(dv) if dv.col_index != usize::MAX => dv
+                    .col_names
+                    .get(dv.col_index)
+                    .map(|c| crate::ColumnRef::new(&dv.model_id, c)),
+                _ => app.column_focus.as_ref().map(|f| f.col.clone()),
+            };
+            match col {
+                Some(col) => app.mode = Mode::Columns(app.columns_view_for(&col)),
+                None => app.set_notice("no column selected — Enter a model, h/l pick a column"),
+            }
+            Outcome::cont()
+        }
+        Action::ColumnRowMove(dir) => {
+            // The column modal's row cursor (j/k): a SELECTION — the loop's
+            // `clamp_columns_scroll` does the ensure-visible follow.
+            if let Mode::Columns(cv) = &mut app.mode {
+                cv.move_cursor(dir);
+            }
+            Outcome::cont()
+        }
+        Action::ColumnJump => {
+            // Re-root to the cursored row's model (records history like a
+            // lineage click; the jump also exits any column focus). A
+            // non-model row (a source/seed column) notices instead.
+            let uid = match &app.mode {
+                Mode::Columns(cv) => cv.rows.get(cv.cursor).and_then(|r| r.uid.clone()),
+                _ => None,
+            };
+            match uid {
+                Some(uid)
+                    if app
+                        .dag
+                        .get(&uid)
+                        .is_some_and(|n| n.resource_type == "model") =>
+                {
+                    app.jump_to(&uid);
+                    app.mode = Mode::Selection;
+                }
+                Some(_) => app.set_notice("cannot re-root to a non-model node"),
+                None => {}
             }
             Outcome::cont()
         }
@@ -698,6 +778,9 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                     LineageLens::Lint => app.lint_findings().is_empty(),
                     LineageLens::Diff => app.diff().is_none(),
                     LineageLens::RunStatus | LineageLens::RunTime => app.run_results().is_none(),
+                    // The ColumnImpact lens only tints inside a column trace —
+                    // without one it looks identical to Off, so skip the slot.
+                    LineageLens::ColumnImpact => app.column_focus.is_none(),
                     _ => false,
                 };
                 if !dead {
@@ -872,6 +955,7 @@ fn modal_scroll_mut(mode: &mut Mode) -> Option<&mut usize> {
         Mode::Sql(sv) => Some(&mut sv.scroll),
         Mode::Stats(sv) => Some(&mut sv.scroll),
         Mode::Diff(dv) => Some(&mut dv.scroll),
+        Mode::Columns(cv) => Some(&mut cv.scroll),
         _ => None,
     }
 }

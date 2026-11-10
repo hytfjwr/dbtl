@@ -90,6 +90,11 @@ fn render_with_toast(app: &App, width: u16, height: u16, toast: Option<&str>) ->
     // The whole-graph overview title (`None` outside it), mirroring the
     // loop's wiring so the overview surface is under the guard too.
     let overview_title = app.overview_title();
+    // The column-focus surfaces (Issue 09): the `column:m.c ^N vM` status
+    // chip (ASCII badges under the guard) and the ` [col:name]` title suffix
+    // (pure ASCII by contract).
+    let column_s = app.column_status();
+    let col_suffix = app.column_focus_label();
 
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
@@ -102,8 +107,10 @@ fn render_with_toast(app: &App, width: u16, height: u16, toast: Option<&str>) ->
         ctx.breadcrumb = breadcrumb.as_deref();
         ctx.overview_title = overview_title.as_deref();
         ctx.glyphs = app.glyph_mode;
+        ctx.col_suffix = col_suffix.as_deref();
         ctx.segments = StatusSegments {
             impact: impact_s.as_deref(),
+            column: column_s.as_deref(),
             focus: Some(focus_s),
             view: Some(label.as_str()),
             position: Some(pos_s.as_str()),
@@ -427,4 +434,28 @@ fn overview_pane_is_all_ascii() {
     assert!(app.ui_state.overview(), "precondition: overview is on");
     assert_all_ascii(&render(&app, 80, 24), "overview 80x24");
     assert_all_ascii(&render(&app, 200, 60), "overview 200x60");
+}
+
+#[test]
+fn column_focus_and_columns_modal_are_all_ascii() {
+    // Issue 09's surfaces under the guard: the traced column's `>` row and the
+    // kind marks (`-`/`%`/`~`/`*` — `·` must NOT leak: it is ambiguous-width,
+    // so `col_mark` resolves it to `-` here), the `^N vM` status badges, the
+    // ` [col:name]` title suffix, and the column modal's bracket chrome.
+    const SAMPLE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sample_manifest.json"
+    );
+    let dag = load_dag(SAMPLE).expect("sample fixture loads");
+    let mut app = App::new(dag, std::path::PathBuf::from(SAMPLE));
+    app.glyph_mode = GlyphMode::Ascii;
+    app.select_by_unique_id("model.sample.cll_demo");
+    apply_action(&mut app, Action::DetailOpen);
+    apply_action(&mut app, Action::ColumnFocusEnter);
+    assert!(app.column_status().is_some(), "the focus engaged");
+    let buffer = render(&app, 100, 30);
+    assert_all_ascii(&buffer, "column focus 100x30");
+    // The column modal over the trace.
+    apply_action(&mut app, Action::ColumnsOpen);
+    assert_all_ascii(&render(&app, 100, 30), "columns modal 100x30");
 }

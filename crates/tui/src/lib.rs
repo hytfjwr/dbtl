@@ -24,8 +24,9 @@ pub use action::{
 pub use app::{apply_action, layer_violation_edges, App, AppStats, ListFilter, Outcome};
 pub use effect::Effect;
 pub use layout::{
-    anchor_offset, blit, clamp_offset, layout, layout_density, layout_mode, CellAttr, CharGrid,
-    Density, GlyphMode, Layout, LensTint, MaterializationClass, NodeRect,
+    anchor_offset, blit, clamp_offset, layout, layout_columns, layout_density, layout_mode,
+    CellAttr, CharGrid, ColLine, Density, GlyphMode, Layout, LensTint, MaterializationClass,
+    NodeRect,
 };
 pub use model_list::{
     build_filtered_model_list, build_model_list, build_model_list_grouped, match_indices,

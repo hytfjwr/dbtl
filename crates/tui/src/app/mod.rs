@@ -45,6 +45,7 @@ use crate::{
 
 mod analysis;
 mod cache;
+mod column;
 mod export;
 mod lineage;
 mod reducer;
@@ -64,6 +65,7 @@ pub use reducer::apply_action;
 
 use analysis::compute_stats;
 use cache::LineageCaches;
+use column::ColumnFocus;
 
 /// What the event loop should do after an action: keep running (and run any
 /// recorded effects) or quit. Effects are data; the loop performs them.
@@ -286,6 +288,15 @@ pub struct App {
     /// highlight runs anchor↔cursor instead of root↔cursor — the two-node
     /// "why does X reach Y" answer. `None` = normal root↔cursor pathing.
     pub(super) path_anchor: Option<String>,
+    /// The traced-column state (Issue 09's column focus — see [`column`]).
+    /// `Some` filters the lineage subgraph to the column's related models and
+    /// draws the related columns inside each box; `None` = the normal rooted
+    /// view. Every reader goes through [`active_column_focus`]
+    /// (App::active_column_focus), which suppresses it while the overview is
+    /// up. Cleared by `Esc` (`ColumnFocusExit`), by [`jump_to`](App::jump_to)
+    /// (a re-root means "leave the trace"), and by `reload` (the rebuilt Dag
+    /// may not carry the column).
+    pub(super) column_focus: Option<ColumnFocus>,
     /// The package scope the Dag was loaded under (`--include-packages` ⇒
     /// `All`): [`reload`](App::reload) re-applies it to the freshly loaded
     /// graph, the status bar prints its tag, and the diff/impact report
@@ -434,6 +445,7 @@ impl App {
             pending_col: None,
             pending_node: None,
             path_anchor: None,
+            column_focus: None,
             // CONTRACT: every App starts recorded as `Root` — the scope is a
             // record of how the Dag was LOADED, and App can never recover it
             // from the already-pruned graph. The load path (`cli::build_app`)
@@ -678,8 +690,11 @@ impl App {
 
     /// Re-root the lineage to `unique_id`, recording the move in the back stack
     /// (and clearing the forward stack) — the browser-style history for clicks /
-    /// lineage-search jumps. No-op if the target isn't a selectable model.
+    /// lineage-search jumps. No-op if the target isn't a selectable model. A
+    /// re-root also ends any column focus: "jump to that model" means land on
+    /// the model's own lineage, not keep the trace's filtered view.
     pub fn jump_to(&mut self, unique_id: &str) {
+        self.column_focus = None;
         let current = self.selected_unique_id();
         if self.select_by_unique_id(unique_id) {
             // A successful re-root is the overview's drill-in gesture: leave the
@@ -1040,6 +1055,10 @@ impl App {
         // Any yank-menu context stashed against the OLD graph dies here too.
         self.pending_col = None;
         self.pending_node = None;
+        // And so does a column trace: the rebuilt Dag may not carry the
+        // column (or resolve different edges for it) — drop the focus rather
+        // than render a stale trace over a new graph.
+        self.column_focus = None;
         // Cursor home: selection is restored BY ID, so the loop's
         // selection-change chokepoint won't fire — reset here or a pre-reload
         // cursor would survive into the rebuilt graph.

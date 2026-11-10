@@ -4844,3 +4844,316 @@ fn set_group_by_meta_treats_blank_keys_as_none() {
     a.set_group_by_meta(Some(String::new()));
     assert_eq!(a.group_by_meta, None, "empty key → None");
 }
+
+// ---- column-level lineage focus (Issue 09) ---------------------------------
+//
+// The CLL-demo fixture (`SAMPLE` = `tests/fixtures/sample_manifest.json`):
+// `raw.orders → stg_orders → fct_orders → cll_demo`, exercising all four edge
+// kinds (rename / passthrough / transform / filter-or-join) — the same graph
+// `tests/cll.rs` pins the resolver against. (`FCT` already names the
+// jaffle_finance fixture's model — these tests use `FCT_S` for sample's.)
+
+const STG: &str = "model.sample.stg_orders";
+const FCT_S: &str = "model.sample.fct_orders";
+const DEMO: &str = "model.sample.cll_demo";
+const RAW_ORDERS: &str = "source.sample.raw.orders";
+
+#[test]
+fn column_focus_enter_filters_the_subgraph_to_the_trace() {
+    // Enter from the structure modal's column list commits the cursored column
+    // to the trace view: the subgraph shrinks to the column's related models,
+    // the status chip appears, and the modal closes.
+    let mut a = sample_app();
+    a.select_by_unique_id(DEMO);
+    apply_action(&mut a, Action::DetailOpen);
+    let dv = match &a.mode {
+        Mode::Detail(dv) => dv,
+        m => panic!("expected Detail, got {m:?}"),
+    };
+    // cll_demo declares no columns; the resolver's inferred list fills
+    // `col_names` — order_id first (BTreeMap key order).
+    let i = dv
+        .col_names
+        .iter()
+        .position(|c| c == "order_id")
+        .expect("order_id is an inferred column");
+    a.mode = Mode::Detail(DetailView {
+        col_index: i,
+        ..match &a.mode {
+            Mode::Detail(dv) => dv.clone(),
+            m => panic!("expected Detail, got {m:?}"),
+        }
+    });
+
+    apply_action(&mut a, Action::ColumnFocusEnter);
+    assert!(matches!(a.mode, Mode::Selection), "the modal closes");
+    let focus = a.column_focus.as_ref().expect("column focus is active");
+    assert_eq!(focus.col.node, DEMO);
+    assert_eq!(focus.col.column, "order_id");
+    // The trace's related models = the three models + the raw source the
+    // column reaches (agg/seeds/snapshots are filtered out). `related` is a
+    // BTreeSet — uid-sorted iteration order.
+    assert_eq!(
+        focus.related.iter().map(String::as_str).collect::<Vec<_>>(),
+        vec![DEMO, FCT_S, STG, RAW_ORDERS],
+    );
+    let sg = a.lineage_subgraph();
+    assert_eq!(sg.selected, DEMO, "the traced model is the graph's home");
+    assert_eq!(
+        sg.nodes.len(),
+        4,
+        "the filtered subgraph keeps only related nodes"
+    );
+    // The status chip reads `column:model.col ↑N ↓M` — order_id's closure is
+    // the frozen 6-upstream / 0-downstream shape (see tests/cll.rs).
+    let status = a.column_status().expect("the chip shows while focused");
+    assert_eq!(status, "column:cll_demo.order_id ↑6 ↓0");
+    assert_eq!(
+        a.column_focus_label().as_deref(),
+        Some(" [col:order_id]"),
+        "the title suffix names the traced column"
+    );
+    // h/l stay free to step the column: the focus pins the pane.
+    assert_eq!(a.ui_state.focus(), Focus::RightPane);
+}
+
+#[test]
+fn column_focus_layout_draws_related_columns_inside_the_boxes() {
+    let mut a = sample_app();
+    a.column_focus_enter(ColumnRef::new(DEMO, "order_id"));
+    let lay = a.styled_lineage_layout().expect("a layout exists");
+    assert!(
+        !lay.col_cells.is_empty(),
+        "column rows recorded their interior cells"
+    );
+    let text = lay.grid.to_text();
+    // The traced column carries the `>` mark inside cll_demo's box; each
+    // parent box lists the columns that feed it (~ = rename upstream).
+    assert!(text.contains("> order_id"), "traced row drawn: {text}");
+    assert!(
+        text.contains("~ id"),
+        "rename-marked upstream column: {text}"
+    );
+    // Unrelated model columns never appear — only the trace's set.
+    let rect = &lay.rects[DEMO];
+    assert!(rect.height > 3, "the traced box grew for its column rows");
+}
+
+#[test]
+fn column_focus_step_walks_the_column_along_its_lineage() {
+    // h = upstream hop, l = downstream hop; the deterministic pick prefers a
+    // same-named column (the passthrough continuation).
+    let mut a = sample_app();
+    a.column_focus_enter(ColumnRef::new(DEMO, "status"));
+    apply_action(&mut a, Action::MoveLeft);
+    let f = a.column_focus.as_ref().unwrap();
+    assert_eq!(f.col.node, FCT_S, "h steps upstream (fct sorts before stg)");
+    assert_eq!(f.col.column, "status");
+    apply_action(&mut a, Action::MoveLeft);
+    let f = a.column_focus.as_ref().unwrap();
+    assert_eq!(f.col.node, STG);
+    apply_action(&mut a, Action::MoveLeft);
+    let f = a.column_focus.as_ref().unwrap();
+    assert_eq!(f.col.node, RAW_ORDERS, "the chain reaches the raw source");
+    apply_action(&mut a, Action::MoveLeft);
+    let f = a.column_focus.as_ref().unwrap();
+    assert_eq!(f.col.node, RAW_ORDERS, "a source column is a dead end");
+    // Back downstream — deterministic (smallest uid column-ref).
+    apply_action(&mut a, Action::MoveRight);
+    let f = a.column_focus.as_ref().unwrap();
+    assert_eq!(f.col.node, STG, "l steps back downstream");
+}
+
+#[test]
+fn column_focus_exit_restores_the_rooted_view() {
+    let mut a = sample_app();
+    a.select_by_unique_id(DEMO);
+    a.column_focus_enter(ColumnRef::new(DEMO, "order_id"));
+    assert!(a.column_focus.is_some());
+    apply_action(&mut a, Action::ColumnFocusExit);
+    assert!(a.column_focus.is_none(), "Esc exits the trace");
+    assert!(a.column_status().is_none());
+    let sg = a.lineage_subgraph();
+    assert_eq!(sg.selected, DEMO, "the rooted subgraph returns");
+    // The rooted default (upstream + downstream) of a terminal model differs
+    // from the trace's filtered set — the focus graph is gone.
+    let lay = a.styled_lineage_layout().expect("a layout exists");
+    assert!(
+        lay.col_cells.is_empty(),
+        "no column rows without an active focus"
+    );
+}
+
+#[test]
+fn columns_modal_lists_the_tree_and_enter_jumps_to_the_model() {
+    let mut a = sample_app();
+    a.select_by_unique_id(STG);
+    a.column_focus_enter(ColumnRef::new(STG, "id"));
+    apply_action(&mut a, Action::ColumnsOpen);
+    let (rows_before, cursor) = match &a.mode {
+        Mode::Columns(cv) => {
+            // Headers bracket the two sections; the cursor sits on the
+            // traced-column row.
+            assert!(cv.rows.iter().any(|r| r.label == "this column:"));
+            assert!(
+                cv.rows.iter().any(|r| r.label.starts_with("upstream (")),
+                "upstream section header"
+            );
+            assert!(
+                cv.rows.iter().any(|r| r.label.starts_with("downstream (")),
+                "downstream section header"
+            );
+            assert_eq!(cv.rows[cv.cursor].uid.as_deref(), Some(STG));
+            assert!(cv.rows[cv.cursor].traced, "the cursor row IS the trace");
+            (cv.rows.len(), cv.cursor)
+        }
+        m => panic!("expected Columns, got {m:?}"),
+    };
+    assert!(rows_before >= 4, "headers + traced + some entries");
+
+    // j walks the ROW cursor to the first downstream entry (skipping the
+    // section header), and Enter re-roots to that row's model.
+    apply_action(&mut a, Action::ColumnRowMove(Direction::Down));
+    let jumped_uid = match &a.mode {
+        Mode::Columns(cv) => {
+            assert!(
+                cv.cursor > cursor,
+                "j advanced the cursor past the header: {cursor} -> {}",
+                cv.cursor
+            );
+            let row = &cv.rows[cv.cursor];
+            let uid = row.uid.clone().expect("entry rows carry a uid");
+            assert_ne!(uid, STG, "the cursor moved off the traced row");
+            uid
+        }
+        m => panic!("expected Columns, got {m:?}"),
+    };
+    let _ = rows_before;
+    apply_action(&mut a, Action::ColumnJump);
+    assert_eq!(a.mode, Mode::Selection, "the modal closes on the jump");
+    assert_eq!(
+        a.selected_unique_id().as_deref(),
+        Some(jumped_uid.as_str()),
+        "Enter re-roots to the row's model"
+    );
+    assert_eq!(a.back.len(), 1, "the jump records history");
+    assert!(
+        a.column_focus.is_none(),
+        "a re-root leaves the column trace"
+    );
+}
+
+#[test]
+fn columns_modal_jump_to_a_non_model_notices_instead() {
+    // A raw-source column row is listed for context but can't be re-rooted to.
+    let mut a = sample_app();
+    a.column_focus_enter(ColumnRef::new(STG, "id"));
+    apply_action(&mut a, Action::ColumnsOpen);
+    // Walk the cursor up into the upstream section onto the source row.
+    apply_action(&mut a, Action::ColumnRowMove(Direction::Up));
+    let uid = match &a.mode {
+        Mode::Columns(cv) => cv.rows[cv.cursor].uid.clone(),
+        m => panic!("expected Columns, got {m:?}"),
+    };
+    assert_eq!(uid.as_deref(), Some(RAW_ORDERS));
+    apply_action(&mut a, Action::ColumnJump);
+    assert!(
+        matches!(a.mode, Mode::Columns(_)),
+        "the modal stays open on a non-model row"
+    );
+    assert!(a.take_notice().is_some(), "a notice explains the no-op");
+    assert!(a.column_focus.is_some(), "focus survives a failed jump");
+}
+
+#[test]
+fn columns_open_without_a_focus_or_column_cursor_notices() {
+    // `K` on the bare selection with no traced column can't open the modal.
+    let mut a = sample_app();
+    apply_action(&mut a, Action::ColumnsOpen);
+    assert!(matches!(a.mode, Mode::Selection));
+    assert!(a.take_notice().is_some());
+}
+
+#[test]
+fn column_focus_exit_and_reload_clear_the_trace() {
+    let mut a = sample_app();
+    a.column_focus_enter(ColumnRef::new(STG, "id"));
+    assert!(a.reload().is_ok());
+    assert!(
+        a.column_focus.is_none(),
+        "a reload drops the trace (the new Dag may not carry the column)"
+    );
+}
+
+#[test]
+fn column_impact_lens_skips_the_cycle_without_a_focus_and_tints_downstream() {
+    // Without a focus the ColumnImpact slot is dead — the `t` cycle jumps over
+    // it (the reducer's dead-slot loop), never landing on a no-op lens.
+    let mut a = sample_app();
+    a.ui_state.set_lens(LineageLens::RunTime);
+    apply_action(&mut a, Action::CycleLens);
+    assert_eq!(
+        a.ui_state.lens(),
+        LineageLens::Off,
+        "ColumnImpact is skipped unfocused"
+    );
+    // Focused, the cycle reaches it and it tints exactly the traced column's
+    // downstream nodes.
+    a.column_focus_enter(ColumnRef::new(STG, "id"));
+    a.ui_state.set_lens(LineageLens::RunTime);
+    apply_action(&mut a, Action::CycleLens);
+    assert_eq!(a.ui_state.lens(), LineageLens::ColumnImpact);
+    let styles = a.lineage_styles(&a.styled_lineage_layout().unwrap());
+    let fct_attr = styles.get(FCT_S).expect("fct is on the trace");
+    assert_eq!(
+        fct_attr.lens,
+        LensTint::ColumnImpact,
+        "a downstream node glows under the lens"
+    );
+    let raw_attr = styles.get(RAW_ORDERS).expect("the source is on the trace");
+    assert_eq!(
+        raw_attr.lens,
+        LensTint::None,
+        "an upstream node stays untinted"
+    );
+}
+
+#[test]
+fn column_focus_survives_an_overview_round_trip() {
+    // The overview temporarily suppresses the focus (its filtered graph would
+    // contradict the whole-graph view); the state survives and returns on exit.
+    let mut a = sample_app();
+    a.column_focus_enter(ColumnRef::new(DEMO, "order_id"));
+    apply_action(&mut a, Action::ToggleOverview);
+    assert!(a.ui_state.overview());
+    assert!(a.column_status().is_none(), "the focus is suppressed");
+    assert!(a.column_focus.is_some(), "but the state itself survives");
+    apply_action(&mut a, Action::ToggleOverview);
+    assert!(a.column_status().is_some(), "the focus returns on exit");
+}
+
+#[test]
+fn detail_enter_on_a_columnless_modal_keeps_the_classic_close() {
+    // A node whose modal has no column rows keeps Enter == close (the Issue
+    // 07 contract — the focus arm only fires with a live column cursor). A
+    // seed is guaranteed columnless (no SQL for the resolver, no declared
+    // columns); navigate the lineage cursor onto it — fct_orders' upstream
+    // subgraph contains the seed — so DetailOpen builds its modal.
+    let mut a = sample_app();
+    a.select_by_unique_id(FCT_S);
+    a.ui_state.set_focus(Focus::RightPane);
+    a.lineage_cursor = Some("seed.sample.country_codes".to_string());
+    apply_action(&mut a, Action::DetailOpen);
+    let dv = match &a.mode {
+        Mode::Detail(dv) => dv,
+        m => panic!("expected Detail, got {m:?}"),
+    };
+    assert!(
+        dv.col_names.is_empty(),
+        "a seed's modal has no column cursor: {:?}",
+        dv.col_names
+    );
+    apply_action(&mut a, Action::ColumnFocusEnter);
+    assert_eq!(a.mode, Mode::Selection, "Enter still closes the modal");
+    assert!(a.column_focus.is_none(), "no focus without a column");
+}

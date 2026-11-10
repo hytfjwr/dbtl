@@ -181,6 +181,30 @@ pub enum Action {
     /// to the clipboard. Bound INSIDE the Diff modal; reads the open
     /// [`DiffView`]'s [`PrImpact::ci_command`].
     YankPrSelector,
+    // --- column-level lineage focus (Issue 09) ---
+    /// Enter column focus on the structure modal's cursored column: the
+    /// lineage pane filters to the column's related models and draws the
+    /// related columns inside each box. Falls back to `DetailClose`
+    /// behaviour when no column is under the cursor (so Enter still closes
+    /// a column-less modal).
+    ColumnFocusEnter,
+    /// Leave column focus (Esc in Selection mode) — the lineage returns to
+    /// the normal rooted view. No-op while unfocused.
+    ColumnFocusExit,
+    /// Open the column-lineage modal (`Mode::Columns`): the traced /
+    /// cursored column's upstream+downstream column tree, scrollable and
+    /// jumpable (Enter re-roots to the row's model). Toasts a hint when no
+    /// column is in scope.
+    ColumnsOpen,
+    /// Move the column modal's row cursor one selectable row (`Up`/`Left` =
+    /// previous, `Down`/`Right` = next) — a SELECTION like
+    /// `DetailColumnMove`, not a viewport scroll; the loop's
+    /// `clamp_columns_scroll` follows it.
+    ColumnRowMove(Direction),
+    /// Re-root to the model of the column-modal row under the cursor
+    /// (records re-root history, like a lineage click). A non-model row
+    /// notices instead of jumping.
+    ColumnJump,
 }
 
 /// Which pane a search targets (decided from focus when search opens).
@@ -402,6 +426,80 @@ pub struct PaletteState {
     pub selected: usize,
 }
 
+/// One row of the column-lineage modal (`Mode::Columns`, Issue 09 C): either a
+/// section header/separator (`uid == None`, non-selectable) or a selectable
+/// `model.column` entry — `Enter` on it re-roots to the entry's model. The
+/// text is pre-rendered at open time so the render layer stays Dag-free.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnRow {
+    /// The row's display text (indent + `name.column` + an optional edge-kind
+    /// tag), already formatted. Section headers use plain caps text.
+    pub label: String,
+    /// The node's `unique_id` this row's column lives on; `None` for
+    /// headers/separators — the cursor (j/k) only lands on `Some` rows, and
+    /// [`Action::ColumnJump`] re-roots to it when it names a model.
+    pub uid: Option<String>,
+    /// This row IS the traced column — accent-rendered when not the cursor row.
+    pub traced: bool,
+    /// The edge that brought this column onto the trace is inference-only
+    /// (never saw [`crate::Confidence::Exact`]) — rendered faint.
+    pub faint: bool,
+}
+
+impl ColumnRow {
+    /// A non-selectable section header / separator row.
+    pub fn header(label: String) -> Self {
+        ColumnRow {
+            label,
+            uid: None,
+            traced: false,
+            faint: false,
+        }
+    }
+}
+
+/// The column-lineage modal payload (Issue 09 C), snapshotted when the modal
+/// opens so the render layer never needs a [`Dag`](crate::Dag): the traced
+/// column's upstream and downstream columns as a hop-indented tree, one
+/// selectable row per column. MUST be `Eq` (`Mode` derives `Eq`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnView {
+    /// The traced column's `model.column` label, echoed in the modal title.
+    pub title: String,
+    /// Header + entry rows in display order. `rows[i].uid.is_some()` = a
+    /// selectable entry (the cursor lands only on those).
+    pub rows: Vec<ColumnRow>,
+    /// The selection cursor — an INDEX into `rows` (lands only on entry rows;
+    /// opens on the traced column's own row).
+    pub cursor: usize,
+    pub scroll: usize,
+}
+
+impl ColumnView {
+    /// Move the selection cursor one row in `dir` over SELECTABLE rows
+    /// (`uid.is_some()`); headers and separators are skipped. Clamped at both
+    /// ends, never wraps — the loop's `clamp_columns_scroll` follows it with a
+    /// minimal pan.
+    pub fn move_cursor(&mut self, dir: Direction) {
+        if self.cursor >= self.rows.len() {
+            return;
+        }
+        let step: isize = match dir {
+            Direction::Up | Direction::Left => -1,
+            Direction::Down | Direction::Right => 1,
+        };
+        let n = self.rows.len() as isize;
+        let mut i = self.cursor as isize + step;
+        while (0..n).contains(&i) {
+            if self.rows[i as usize].uid.is_some() {
+                self.cursor = i as usize;
+                return;
+            }
+            i += step;
+        }
+    }
+}
+
 /// The interaction mode. Overlays are plain enum variants (not boxed trait
 /// objects): adding one is a variant + a render arm.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -416,6 +514,9 @@ pub enum Mode {
     Stats(StatsView),
     /// Baseline-diff summary (scrollable sections; needs a `--diff` baseline).
     Diff(DiffView),
+    /// Column-lineage tree for one column (scrollable, Enter jumps to the
+    /// row's model — Issue 09 C).
+    Columns(ColumnView),
     /// Command palette: a fuzzy finder over every Selection-mode command.
     Palette(PaletteState),
     /// The `y` yank-prefix which-key menu: any key dispatched here runs its
@@ -436,6 +537,7 @@ pub enum ModeKind {
     Sql,
     Stats,
     Diff,
+    Columns,
     Palette,
     Yank,
     Help,
@@ -450,6 +552,7 @@ impl Mode {
             Mode::Sql(_) => ModeKind::Sql,
             Mode::Stats(_) => ModeKind::Stats,
             Mode::Diff(_) => ModeKind::Diff,
+            Mode::Columns(_) => ModeKind::Columns,
             Mode::Palette(_) => ModeKind::Palette,
             Mode::Yank => ModeKind::Yank,
             Mode::Help { .. } => ModeKind::Help,
@@ -607,6 +710,8 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('!'))], action: A::YankSelector, help: "copy dbt --select command" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('w'))], action: A::ToggleOverview, help: "toggle whole-graph overview" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('p'))], action: A::PathToggle, help: "anchor/clear two-node path" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('K'))], action: A::ColumnsOpen, help: "column lineage modal (traced column)" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Esc)], action: A::ColumnFocusExit, help: "exit column focus" },
     // ---- Yank prefix mode (`y` + one key): the second key is the SAME letter
     // the single-key binding always used, so muscle memory carries over as
     // `ym`/`yC`/…; `yy` copies the unique_id (what bare `y` used to do). ----
@@ -635,7 +740,12 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Palette, triggers: &[Key(Up)], action: A::SearchMove(Direction::Up), help: "prev command" },
     KeyBinding { mode: M::Palette, triggers: &[Key(Down)], action: A::SearchMove(Direction::Down), help: "next command" },
     // ---- Detail modal ----
-    KeyBinding { mode: M::Detail, triggers: &[Key(Esc), Key(Enter), Key(Char('q'))], action: A::DetailClose, help: "close" },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Esc), Key(Char('q'))], action: A::DetailClose, help: "close" },
+    // Enter/`c` commits the column under the h/l cursor to column focus (the
+    // arm closes the modal instead when the node has no columns — the classic
+    // Enter-to-close survives there).
+    KeyBinding { mode: M::Detail, triggers: &[Key(Enter), Key(Char('c'))], action: A::ColumnFocusEnter, help: "trace this column's lineage" },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('K'))], action: A::ColumnsOpen, help: "column lineage modal (this column)" },
     KeyBinding { mode: M::Detail, triggers: &[Key(Char('h')), Key(Char('H'))], action: A::DetailColumnMove(Direction::Up), help: "previous column" },
     KeyBinding { mode: M::Detail, triggers: &[Key(Char('l')), Key(Char('L'))], action: A::DetailColumnMove(Direction::Down), help: "next column" },
     KeyBinding { mode: M::Detail, triggers: &[Key(Char('y'))], action: A::YankPrefix, help: "yank prefix menu" },
@@ -672,6 +782,17 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Diff, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up" },
     KeyBinding { mode: M::Diff, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top" },
     KeyBinding { mode: M::Diff, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom" },
+    // ---- Column lineage modal (Issue 09): j/k move the ROW cursor (a
+    // selection the loop scroll-follows), d/u/g/G page the viewport like every
+    // other modal, Enter re-roots to the row's model. ----
+    KeyBinding { mode: M::Columns, triggers: &[Key(Esc), Key(Char('q'))], action: A::DetailClose, help: "close" },
+    KeyBinding { mode: M::Columns, triggers: &[Key(Enter)], action: A::ColumnJump, help: "jump to this model" },
+    KeyBinding { mode: M::Columns, triggers: &[Key(Char('j')), Key(Down)], action: A::ColumnRowMove(Direction::Down), help: "next column row" },
+    KeyBinding { mode: M::Columns, triggers: &[Key(Char('k')), Key(Up)], action: A::ColumnRowMove(Direction::Up), help: "previous column row" },
+    KeyBinding { mode: M::Columns, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down" },
+    KeyBinding { mode: M::Columns, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up" },
+    KeyBinding { mode: M::Columns, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top" },
+    KeyBinding { mode: M::Columns, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom" },
     // ---- Help overlay ----
     KeyBinding { mode: M::Help, triggers: &[Key(Esc), Key(Char('?')), Key(Char('q'))], action: A::HelpToggle, help: "close help" },
     KeyBinding { mode: M::Help, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down" },
@@ -840,6 +961,14 @@ mod tests {
     }
     fn diff_mode() -> Mode {
         Mode::Diff(DiffView::default())
+    }
+    fn columns_mode() -> Mode {
+        Mode::Columns(ColumnView {
+            title: "m.c".into(),
+            rows: vec![],
+            cursor: usize::MAX,
+            scroll: 0,
+        })
     }
     fn stats_mode() -> Mode {
         Mode::Stats(StatsView {
@@ -1079,7 +1208,12 @@ mod tests {
             | Action::ThemeCycle
             | Action::DiffOpen
             | Action::ExportPrImpact
-            | Action::YankPrSelector => true,
+            | Action::YankPrSelector
+            | Action::ColumnFocusEnter
+            | Action::ColumnFocusExit
+            | Action::ColumnsOpen
+            | Action::ColumnRowMove(_)
+            | Action::ColumnJump => true,
             // Dynamic: produced without a fixed key binding (text input). Mouse
             // is handled in the event loop (size-aware), not via the keymap.
             Action::SearchType(_) => false,
@@ -1102,6 +1236,7 @@ mod tests {
                 ModeKind::Sql => sql_mode(),
                 ModeKind::Stats => stats_mode(),
                 ModeKind::Diff => diff_mode(),
+                ModeKind::Columns => columns_mode(),
                 ModeKind::Palette => palette_mode(),
                 ModeKind::Yank => Mode::Yank,
                 ModeKind::Help => Mode::Help { scroll: 0 },
@@ -1198,6 +1333,11 @@ mod tests {
             Action::DiffOpen,
             Action::ExportPrImpact,
             Action::YankPrSelector,
+            Action::ColumnFocusEnter,
+            Action::ColumnFocusExit,
+            Action::ColumnsOpen,
+            Action::ColumnRowMove(Direction::Down),
+            Action::ColumnJump,
         ];
         for a in samples {
             assert!(
@@ -1219,6 +1359,57 @@ mod tests {
     }
 
     // ---- command palette ----
+
+    #[test]
+    fn column_focus_keys_dispatch() {
+        // Issue 09's keymap: `K` opens the column modal from Selection or the
+        // structure modal, Enter/`c` on a Detail column cursor commits it to
+        // the trace, Esc exits the trace in Selection (and closes the modal
+        // like every other overlay), and the modal rides ColumnRowMove/
+        // ColumnJump + the shared scroll chords.
+        assert_eq!(
+            dispatch(&Mode::Selection, press(KeyCode::Char('K'))),
+            Some(Action::ColumnsOpen)
+        );
+        assert_eq!(
+            dispatch(&Mode::Selection, press(KeyCode::Esc)),
+            Some(Action::ColumnFocusExit)
+        );
+        let dv = detail_mode();
+        assert_eq!(
+            dispatch(&dv, press(KeyCode::Enter)),
+            Some(Action::ColumnFocusEnter)
+        );
+        assert_eq!(
+            dispatch(&dv, press(KeyCode::Char('c'))),
+            Some(Action::ColumnFocusEnter)
+        );
+        assert_eq!(
+            dispatch(&dv, press(KeyCode::Char('K'))),
+            Some(Action::ColumnsOpen)
+        );
+        let cv = columns_mode();
+        assert_eq!(
+            dispatch(&cv, press(KeyCode::Char('j'))),
+            Some(Action::ColumnRowMove(Direction::Down))
+        );
+        assert_eq!(
+            dispatch(&cv, press(KeyCode::Char('k'))),
+            Some(Action::ColumnRowMove(Direction::Up))
+        );
+        assert_eq!(
+            dispatch(&cv, press(KeyCode::Enter)),
+            Some(Action::ColumnJump)
+        );
+        assert_eq!(
+            dispatch(&cv, ctrl('d')),
+            Some(Action::DetailScrollPage(Direction::Down))
+        );
+        assert_eq!(
+            dispatch(&cv, press(KeyCode::Esc)),
+            Some(Action::DetailClose)
+        );
+    }
 
     #[test]
     fn ctrl_p_and_cmd_p_open_the_palette() {

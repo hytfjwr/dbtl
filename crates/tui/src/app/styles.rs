@@ -259,6 +259,20 @@ impl App {
                     _ => LensTint::HeatHigh,
                 }
             }
+            // Column impact (Issue 09): the models the traced column's
+            // downstream closure reaches glow — the "who does this column
+            // feed" answer. No active focus → the lens tints nothing (the
+            // CycleLens arm also skips it while unfocused).
+            LineageLens::ColumnImpact => {
+                if self
+                    .active_column_focus()
+                    .is_some_and(|f| f.down_nodes.contains(uid))
+                {
+                    LensTint::ColumnImpact
+                } else {
+                    LensTint::None
+                }
+            }
         }
     }
 }
