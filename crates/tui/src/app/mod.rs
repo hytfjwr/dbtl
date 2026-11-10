@@ -27,13 +27,13 @@
 //!   layout → styles) and impact counts; pure-function results only, so
 //!   determinism is unaffected.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 
 use anyhow::Result;
 
-use crate::action::{Mode, SearchTarget};
+use crate::action::{Mode, NoticeLevel, NotificationEntry, NotificationsView, SearchTarget};
 use crate::effect::Effect;
 use crate::ui::theme::{self, Theme};
 use crate::{
@@ -206,14 +206,30 @@ pub struct App {
     /// Every read goes through [`lineage_cursor_uid`](App::lineage_cursor_uid),
     /// which validates against the live subgraph, so a stale id can never escape.
     lineage_cursor: Option<String>,
-    /// The transient-notice channel: a one-shot message describing the latest
-    /// user-visible outcome (copied / bookmarked / exported / reloaded).
+    /// The transient-notice channel: a one-shot (level, message) describing the
+    /// latest user-visible outcome (copied / bookmarked / exported / reloaded).
     /// Writers: the reducer arms (intent) and `main::run_effect` (which
     /// OVERWRITES the intent on effect failure — it runs after `apply_action`
     /// in the same loop iteration, so the failure always wins). The event loop
-    /// drains it via [`take_notice`](App::take_notice) and owns the on-screen
-    /// toast lifetime — `App` stores no clock, so the reducer stays pure.
-    notice: Option<String>,
+    /// drains it via [`take_notice_leveled`](App::take_notice_leveled), stamps
+    /// the wall-clock, and owns the on-screen toast lifetime — `App` stores no
+    /// clock, so the reducer stays pure.
+    notice: Option<(NoticeLevel, String)>,
+    /// The notification log behind `Ctrl-n` (Issue 08): stamped entries,
+    /// newest LAST, capped at [`NOTIFICATION_CAP`](App::NOTIFICATION_CAP).
+    /// Written by the event loop (every drained notice) and the CLI's
+    /// `build_app` (startup load warnings) — never by the reducer, so
+    /// timestamps always come from the outside. Memory-only: never persisted.
+    notifications: VecDeque<NotificationEntry>,
+    /// Read watermark into `notifications`: entries before this index (the
+    /// oldest end) are read; everything at or after is unread. Set to
+    /// `notifications.len()` by
+    /// [`mark_notifications_read`](App::mark_notifications_read) (opening the
+    /// centre is the read gesture) and shifted down when a front evicts, so
+    /// the `!N` chip always counts warnings still in the log — a raw counter
+    /// could not, since evicting an unread entry must decrement it while
+    /// evicting a read one must not underflow it.
+    unread_from: usize,
     /// Re-root history (back/forward stacks of `unique_id`s).
     back: Vec<String>,
     forward: Vec<String>,
@@ -445,9 +461,12 @@ impl App {
             glyph_mode: crate::GlyphMode::default(),
             lineage_cursor: None,
             // A malformed `.dbtl.yml` surfaces as a startup toast (one-shot
-            // notice) — the same channel main.rs uses for the source-mode
-            // hint (it can overwrite this; both are informational).
-            notice: lint_notice,
+            // WARNING notice) — the same channel main.rs uses for the
+            // source-mode hint (an info append joins it without dropping the
+            // warning level).
+            notice: lint_notice.map(|t| (NoticeLevel::Warning, t)),
+            notifications: VecDeque::new(),
+            unread_from: 0,
             back: Vec::new(),
             forward: Vec::new(),
             source,
@@ -736,29 +755,111 @@ impl App {
         self.set_notice(format!("theme: {name}"));
     }
 
-    /// Record a transient notice (the toast text). Last write wins: a later
-    /// writer in the same loop iteration (e.g. `run_effect` reporting a
-    /// failure) deliberately replaces the reducer's optimistic intent.
+    /// The notification log's capacity (Issue 08): the centre keeps the
+    /// newest `NOTIFICATION_CAP` entries; the oldest evicts beyond it.
+    /// Memory-only — the log is never persisted.
+    pub const NOTIFICATION_CAP: usize = 100;
+
+    /// Record a transient notice (the toast text) at the default `Info` level.
+    /// Last write wins: a later writer in the same loop iteration (e.g.
+    /// `run_effect` reporting a failure) deliberately replaces the reducer's
+    /// optimistic intent.
     pub fn set_notice(&mut self, text: impl Into<String>) {
-        self.notice = Some(text.into());
+        self.set_notice_level(NoticeLevel::Info, text);
+    }
+
+    /// `set_notice` with an explicit level: warnings carry a longer on-screen
+    /// TTL and bump the `!N` unread count once the loop logs them. Same
+    /// last-write-wins rule — an effect failure still replaces the optimistic
+    /// intent notice outright.
+    pub fn set_notice_level(&mut self, level: NoticeLevel, text: impl Into<String>) {
+        self.notice = Some((level, text.into()));
     }
 
     /// Append to a PENDING notice instead of replacing it (`" | "` joined) —
     /// for startup-time writers that must not clobber a warning already
     /// queued by `with_source` (e.g. a malformed `.dbtl.yml` notice followed
-    /// by the source-mode hint: both show in the one toast).
+    /// by the source-mode hint: both show in the one toast). The pending
+    /// notice's level is preserved (an info append never downgrades a queued
+    /// warning).
     pub fn append_notice(&mut self, text: impl Into<String>) {
         let text = text.into();
         self.notice = Some(match self.notice.take() {
-            Some(prev) => format!("{prev} | {text}"),
-            None => text,
+            Some((level, prev)) => (level, format!("{prev} | {text}")),
+            None => (NoticeLevel::Info, text),
         });
     }
 
-    /// Drain the pending notice (one-shot). The event loop calls this once per
-    /// frame and stamps the wall-clock there, keeping time out of the reducer.
+    /// Drain the pending notice's text (one-shot). The event loop calls
+    /// [`take_notice_leveled`](App::take_notice_leveled) so the level drives
+    /// the toast TTL and the log entry; this text-only view stays for tests
+    /// and callers that don't care about severity.
     pub fn take_notice(&mut self) -> Option<String> {
+        self.take_notice_leveled().map(|(_, t)| t)
+    }
+
+    /// Drain the pending notice WITH its level — the event loop's per-frame
+    /// drain (it stamps the wall-clock and pushes the toast + the log entry,
+    /// keeping time out of the reducer).
+    pub fn take_notice_leveled(&mut self) -> Option<(NoticeLevel, String)> {
         self.notice.take()
+    }
+
+    /// Append `entry` to the notification log (newest last; the oldest drops
+    /// at [`NOTIFICATION_CAP`](App::NOTIFICATION_CAP)). Warning entries count
+    /// toward the unread `!N` chip until the centre is opened. The `stamp` is
+    /// the caller's — the event loop / CLI format the wall-clock; `App` keeps
+    /// no clock.
+    pub fn record_notification(&mut self, entry: NotificationEntry) {
+        if self.notifications.len() >= Self::NOTIFICATION_CAP {
+            self.notifications.pop_front();
+            // The evicted front shifts every index down — the read watermark
+            // shifts with it, whether that entry was read or unread.
+            self.unread_from = self.unread_from.saturating_sub(1);
+        }
+        self.notifications.push_back(entry);
+    }
+
+    /// Record every startup load warning in the notification log (warning
+    /// level, unread) — `build_app` feeds it the `ResolvedSource.warnings`
+    /// vec after printing them to stderr as before. `stamp` is the caller's
+    /// wall-clock reading, taken ONCE per batch: stamping per line would
+    /// spawn one `date` per warning (and could split a batch across a
+    /// second boundary anyway).
+    pub fn record_startup_warnings(&mut self, warnings: &[String], stamp: &str) {
+        for w in warnings {
+            self.record_notification(NotificationEntry {
+                stamp: stamp.to_string(),
+                level: NoticeLevel::Warning,
+                text: w.clone(),
+            });
+        }
+    }
+
+    /// The number of unread WARNING notifications (drives the `!N` chip) —
+    /// counted from the log itself each call, so the chip can never count a
+    /// warning the cap has already evicted.
+    pub fn unread_warnings(&self) -> usize {
+        self.notifications
+            .iter()
+            .skip(self.unread_from)
+            .filter(|n| n.level == NoticeLevel::Warning)
+            .count()
+    }
+
+    /// The notification log's rows newest-first, snapshotted for the
+    /// `Ctrl-n` centre (the render layer needs no `Dag`, like every modal).
+    pub fn notifications_snapshot(&self) -> NotificationsView {
+        NotificationsView {
+            rows: self.notifications.iter().rev().cloned().collect(),
+            scroll: 0,
+        }
+    }
+
+    /// Mark every logged entry read — opening the notification centre is the
+    /// read gesture that zeroes the `!N` chip. Later entries stay unread.
+    pub fn mark_notifications_read(&mut self) {
+        self.unread_from = self.notifications.len();
     }
 
     /// Re-root the lineage to `unique_id`, recording the move in the back stack
