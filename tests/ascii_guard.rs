@@ -32,13 +32,13 @@ fn ascii_app() -> App {
 
 /// Render the app exactly as the event loop does (layout in the app's glyph
 /// mode, styles applied, Dag-derived strings passed) and return the buffer.
-fn render(app: &App, width: u16, height: u16) -> Buffer {
+fn render(app: &mut App, width: u16, height: u16) -> Buffer {
     render_with_toasts(app, width, height, &[])
 }
 
 /// [`render`] plus an optional toast stack (the transient copy/bookmark
 /// acknowledgement, Issue 08), mirroring the event loop's `ctx.toasts` wiring.
-fn render_with_toasts(app: &App, width: u16, height: u16, toasts: &[ToastLine]) -> Buffer {
+fn render_with_toasts(app: &mut App, width: u16, height: u16, toasts: &[ToastLine]) -> Buffer {
     // The SAME memoized producer the event loop draws from, so the guard
     // scans exactly what production renders.
     let lineage = app.styled_lineage_layout();
@@ -49,6 +49,34 @@ fn render_with_toasts(app: &App, width: u16, height: u16, toasts: &[ToastLine]) 
         (Some(lay), dbtl::ui::LineageLens::Layer) => Some(app.layer_bands(lay)),
         _ => None,
     };
+    // Mirror the loop's inspector visibility seam (Issue 04): `auto` resolves
+    // against the rendered width, `on`/`off` always/never show — so a guard
+    // scenario exercises the pane whenever the loop would.
+    let want = match app.ui_state.inspector_policy() {
+        dbtl::ui::InspectorPolicy::On => true,
+        dbtl::ui::InspectorPolicy::Off => false,
+        dbtl::ui::InspectorPolicy::Auto => width >= 160,
+    };
+    app.ui_state.set_inspector_shown(want);
+    if let Some(uid) = app.inspector_target() {
+        app.ui_state.set_inspector_target(&uid);
+    }
+    // Mirror the loop's phase 2: a squeezed or view-less `want` resolves to
+    // `shown = false` — the carved region goes back to the other panes.
+    let inspector = if want
+        && dbtl::ui::pane_layout(
+            ratatui::layout::Rect::new(0, 0, width, height),
+            &app.ui_state.pane_config(),
+        )
+        .inspector
+        .width
+            > 0
+    {
+        app.inspector_view()
+    } else {
+        None
+    };
+    app.ui_state.set_inspector_shown(inspector.is_some());
     let status = app.selected_status_note();
     let label = app.lineage_view_label();
 
@@ -58,6 +86,7 @@ fn render_with_toasts(app: &App, width: u16, height: u16, toasts: &[ToastLine]) 
     let focus_s = match app.ui_state.focus() {
         Focus::List => "list",
         Focus::RightPane => "lineage",
+        Focus::Inspector => "inspector",
     };
     let pos_s = format!(
         "{}/{}",
@@ -163,6 +192,10 @@ fn render_with_toasts(app: &App, width: u16, height: u16, toasts: &[ToastLine]) 
             project: Some(app.stats.project.as_str()),
             hover: None,
         });
+        // Mirror the loop's inspector draw seam (Issue 04): the published
+        // snapshot rides `RenderCtx` so the pane's marks/badges/scrollbar
+        // are under the same all-ASCII scan.
+        ctx.inspector = inspector.as_deref();
         terminal
             .draw(|frame| draw(frame, &ctx))
             .expect("draw must not panic");
@@ -201,10 +234,10 @@ fn selection_screen_with_clipped_lineage_is_all_ascii() {
     // depth/direction label, and the status note.
     let mut app = ascii_app();
     apply_action(&mut app, Action::DepthDecrease); // label shows "<=3"
-    let buffer = render(&app, 80, 24);
+    let buffer = render(&mut app, 80, 24);
     assert_all_ascii(&buffer, "selection 80x24");
     // And at a size where the diagram fits (no markers; centred pad).
-    let buffer = render(&app, 200, 60);
+    let buffer = render(&mut app, 200, 60);
     assert_all_ascii(&buffer, "selection 200x60");
 }
 
@@ -216,9 +249,9 @@ fn persistent_filter_tags_and_coverage_badges_are_all_ascii() {
     apply_action(&mut app, Action::BookmarkToggle);
     apply_action(&mut app, Action::ToggleBookmarkFilter);
     apply_action(&mut app, Action::CycleLens); // Coverage -> t:N badges
-    assert_all_ascii(&render(&app, 80, 24), "bookmarked filter 80x24");
+    assert_all_ascii(&render(&mut app, 80, 24), "bookmarked filter 80x24");
     apply_action(&mut app, Action::ToggleUntestedFilter);
-    assert_all_ascii(&render(&app, 80, 24), "untested filter 80x24");
+    assert_all_ascii(&render(&mut app, 80, 24), "untested filter 80x24");
 }
 
 #[test]
@@ -229,7 +262,7 @@ fn list_and_lineage_search_titles_are_all_ascii() {
     for c in "pos".chars() {
         apply_action(&mut app, Action::SearchType(c));
     }
-    assert_all_ascii(&render(&app, 100, 30), "list search");
+    assert_all_ascii(&render(&mut app, 100, 30), "list search");
     apply_action(&mut app, Action::SearchCancel);
 
     app.ui_state.set_focus(Focus::RightPane);
@@ -237,14 +270,14 @@ fn list_and_lineage_search_titles_are_all_ascii() {
     for c in "dim".chars() {
         apply_action(&mut app, Action::SearchType(c));
     }
-    assert_all_ascii(&render(&app, 100, 30), "lineage search");
+    assert_all_ascii(&render(&mut app, 100, 30), "lineage search");
 }
 
 #[test]
 fn help_overlay_is_all_ascii() {
     let mut app = ascii_app();
     apply_action(&mut app, Action::HelpToggle);
-    assert_all_ascii(&render(&app, 100, 40), "help overlay");
+    assert_all_ascii(&render(&mut app, 100, 40), "help overlay");
 }
 
 #[test]
@@ -258,9 +291,9 @@ fn breadcrumb_title_is_all_ascii() {
         app.breadcrumb(200).is_some(),
         "two jumps produced a breadcrumb"
     );
-    assert_all_ascii(&render(&app, 100, 30), "breadcrumb title");
+    assert_all_ascii(&render(&mut app, 100, 30), "breadcrumb title");
     // And at a narrow width that forces the ".." left-truncation path.
-    assert_all_ascii(&render(&app, 40, 30), "breadcrumb truncated");
+    assert_all_ascii(&render(&mut app, 40, 30), "breadcrumb truncated");
 }
 
 #[test]
@@ -268,7 +301,7 @@ fn detail_modal_is_all_ascii() {
     let mut app = ascii_app();
     app.select_by_unique_id("model.jaffle_finance.pos_txn");
     apply_action(&mut app, Action::DetailOpen);
-    assert_all_ascii(&render(&app, 100, 40), "detail modal");
+    assert_all_ascii(&render(&mut app, 100, 40), "detail modal");
 }
 
 #[test]
@@ -280,11 +313,11 @@ fn detail_modal_badges_and_tests_section_are_all_ascii() {
     let mut app = ascii_app();
     app.select_by_unique_id("model.jaffle_finance.pos_ord");
     apply_action(&mut app, Action::DetailOpen);
-    assert_all_ascii(&render(&app, 100, 40), "detail badges + tests rows");
+    assert_all_ascii(&render(&mut app, 100, 40), "detail badges + tests rows");
     // Tab into the tests section: the title hint flips to `Tab cols` +
     // `Enter/c jump` and the `> ` marker lands on the relationships row.
     apply_action(&mut app, Action::DetailSectionToggle);
-    assert_all_ascii(&render(&app, 100, 40), "detail tests-section cursor");
+    assert_all_ascii(&render(&mut app, 100, 40), "detail tests-section cursor");
 }
 
 #[test]
@@ -294,7 +327,7 @@ fn sql_modal_is_all_ascii() {
     let mut app = ascii_app();
     app.select_by_unique_id("model.jaffle_finance.pos_txn");
     apply_action(&mut app, Action::SqlOpen);
-    assert_all_ascii(&render(&app, 100, 40), "sql modal");
+    assert_all_ascii(&render(&mut app, 100, 40), "sql modal");
 }
 
 #[test]
@@ -314,14 +347,17 @@ fn sql_modal_compiled_variant_is_all_ascii() {
     app.glyph_mode = GlyphMode::Ascii;
     app.select_by_unique_id("model.compiled_demo.mart_one");
     apply_action(&mut app, Action::SqlOpen);
-    assert_all_ascii(&render(&app, 100, 40), "sql modal [raw]");
+    assert_all_ascii(&render(&mut app, 100, 40), "sql modal [raw]");
     apply_action(&mut app, Action::SqlToggleCompiled);
-    assert_all_ascii(&render(&app, 100, 40), "sql modal [compiled]");
+    assert_all_ascii(&render(&mut app, 100, 40), "sql modal [compiled]");
 
     app.select_by_unique_id("model.compiled_demo.stg_one");
     apply_action(&mut app, Action::SqlOpen);
     apply_action(&mut app, Action::SqlToggleCompiled);
-    assert_all_ascii(&render(&app, 100, 40), "sql modal compiled file fallback");
+    assert_all_ascii(
+        &render(&mut app, 100, 40),
+        "sql modal compiled file fallback",
+    );
 }
 
 #[test]
@@ -329,7 +365,7 @@ fn stats_modal_is_all_ascii() {
     // The coverage bar is plain ASCII (#/-); section headers carry no chrome.
     let mut app = ascii_app();
     apply_action(&mut app, Action::StatsOpen);
-    assert_all_ascii(&render(&app, 100, 40), "stats modal");
+    assert_all_ascii(&render(&mut app, 100, 40), "stats modal");
 }
 
 #[test]
@@ -341,10 +377,13 @@ fn palette_modal_is_all_ascii() {
     for c in "toggle".chars() {
         apply_action(&mut app, Action::SearchType(c));
     }
-    assert_all_ascii(&render(&app, 100, 40), "command palette");
+    assert_all_ascii(&render(&mut app, 100, 40), "command palette");
     // A short height forces the candidate list to overflow → the right-border
     // scrollbar thumb renders (ASCII `#`).
-    assert_all_ascii(&render(&app, 100, 12), "command palette overflow scrollbar");
+    assert_all_ascii(
+        &render(&mut app, 100, 12),
+        "command palette overflow scrollbar",
+    );
 }
 
 #[test]
@@ -354,20 +393,26 @@ fn overflowing_overlays_with_scrollbars_are_all_ascii() {
     // (`#`), the case the taller fixtures above do not reach.
     let mut app = ascii_app();
     apply_action(&mut app, Action::HelpToggle);
-    assert_all_ascii(&render(&app, 100, 12), "help overlay overflow scrollbar");
+    assert_all_ascii(
+        &render(&mut app, 100, 12),
+        "help overlay overflow scrollbar",
+    );
     apply_action(&mut app, Action::HelpToggle); // close
 
     app.select_by_unique_id("model.jaffle_finance.pos_txn");
     apply_action(&mut app, Action::DetailOpen);
-    assert_all_ascii(&render(&app, 100, 12), "detail modal overflow scrollbar");
+    assert_all_ascii(
+        &render(&mut app, 100, 12),
+        "detail modal overflow scrollbar",
+    );
     apply_action(&mut app, Action::DetailClose); // all modals close via DetailClose
 
     apply_action(&mut app, Action::SqlOpen);
-    assert_all_ascii(&render(&app, 100, 12), "sql modal overflow scrollbar");
+    assert_all_ascii(&render(&mut app, 100, 12), "sql modal overflow scrollbar");
     apply_action(&mut app, Action::DetailClose);
 
     apply_action(&mut app, Action::StatsOpen);
-    assert_all_ascii(&render(&app, 100, 12), "stats modal overflow scrollbar");
+    assert_all_ascii(&render(&mut app, 100, 12), "stats modal overflow scrollbar");
 }
 
 #[test]
@@ -393,11 +438,11 @@ fn every_lens_with_off_root_cursor_is_all_ascii() {
         // At 80x24 the diagram overflows (lens tint + dim + scroll markers + list
         // tint exercised); 200x60 fits (centred pad, no markers).
         assert_all_ascii(
-            &render(&app, 80, 24),
+            &render(&mut app, 80, 24),
             &format!("lens step {step} + off-root cursor 80x24"),
         );
         assert_all_ascii(
-            &render(&app, 200, 60),
+            &render(&mut app, 200, 60),
             &format!("lens step {step} + off-root cursor 200x60"),
         );
         apply_action(&mut app, Action::CycleLens);
@@ -413,7 +458,7 @@ fn minimap_inset_is_all_ascii() {
     let mut app = ascii_app();
     apply_action(&mut app, Action::ToggleMinimap);
     assert!(app.ui_state.minimap_visible(), "minimap toggled on");
-    assert_all_ascii(&render(&app, 80, 24), "minimap inset 80x24");
+    assert_all_ascii(&render(&mut app, 80, 24), "minimap inset 80x24");
 }
 
 #[test]
@@ -421,7 +466,7 @@ fn toast_stack_is_all_ascii() {
     // The stacked toasts float over the top-right with the glyph-mode border
     // set (info + warning rows stacked, Issue 08), and overflow truncation
     // appends a plain ".." (never an ellipsis glyph).
-    let app = ascii_app();
+    let mut app = ascii_app();
     let stack = [
         ToastLine {
             level: NoticeLevel::Info,
@@ -437,7 +482,7 @@ fn toast_stack_is_all_ascii() {
         },
     ];
     assert_all_ascii(
-        &render_with_toasts(&app, 80, 24, &stack),
+        &render_with_toasts(&mut app, 80, 24, &stack),
         "toast stack 80x24",
     );
     // A toast wider than the screen budget exercises the truncation path.
@@ -448,7 +493,7 @@ fn toast_stack_is_all_ascii() {
         text: long,
     }];
     assert_all_ascii(
-        &render_with_toasts(&app, 40, 24, &stack),
+        &render_with_toasts(&mut app, 40, 24, &stack),
         "truncated toast 40x24",
     );
 }
@@ -470,16 +515,16 @@ fn notification_center_and_chip_are_all_ascii() {
         text: "Reloaded".into(),
     });
     assert_eq!(app.unread_warnings(), 1, "one unread warning → !1 chip");
-    assert_all_ascii(&render(&app, 100, 30), "!1 status chip 100x30");
+    assert_all_ascii(&render(&mut app, 100, 30), "!1 status chip 100x30");
 
     apply_action(&mut app, Action::NotificationsOpen); // clears !N, opens modal
-    assert_all_ascii(&render(&app, 100, 40), "notification center 100x40");
-    assert_all_ascii(&render(&app, 60, 20), "notification center 60x20");
+    assert_all_ascii(&render(&mut app, 100, 40), "notification center 100x40");
+    assert_all_ascii(&render(&mut app, 60, 20), "notification center 60x20");
 
     // The empty state — a fresh app with nothing logged.
     let mut empty = ascii_app();
     apply_action(&mut empty, Action::NotificationsOpen);
-    assert_all_ascii(&render(&empty, 100, 40), "notification center empty");
+    assert_all_ascii(&render(&mut empty, 100, 40), "notification center empty");
 }
 
 #[test]
@@ -496,8 +541,8 @@ fn diff_lens_chip_and_modal_are_all_ascii() {
     // Diff lens active (clean diff: tints nothing, but the lens title suffix
     // and the chip render).
     app.ui_state.set_lens(dbtl::ui::LineageLens::Diff);
-    assert_all_ascii(&render(&app, 80, 24), "diff lens + chip 80x24");
-    assert_all_ascii(&render(&app, 200, 60), "diff lens + chip 200x60");
+    assert_all_ascii(&render(&mut app, 80, 24), "diff lens + chip 80x24");
+    assert_all_ascii(&render(&mut app, 200, 60), "diff lens + chip 200x60");
 
     // The summary modal over the panes.
     apply_action(&mut app, Action::DiffOpen);
@@ -505,8 +550,8 @@ fn diff_lens_chip_and_modal_are_all_ascii() {
         matches!(app.mode, dbtl::Mode::Diff(_)),
         "D opens the diff modal with a baseline"
     );
-    assert_all_ascii(&render(&app, 80, 24), "diff modal 80x24");
-    assert_all_ascii(&render(&app, 120, 40), "diff modal 120x40");
+    assert_all_ascii(&render(&mut app, 80, 24), "diff modal 80x24");
+    assert_all_ascii(&render(&mut app, 120, 40), "diff modal 120x40");
 
     // A DIFFERING baseline (the sample manifest is another project, so every
     // current node reads as added) makes the diff non-empty — now the PR impact
@@ -520,8 +565,8 @@ fn diff_lens_chip_and_modal_are_all_ascii() {
     let other = load_dag(SAMPLE).expect("sample manifest loads");
     app.set_diff_base(other, "sample".to_string());
     apply_action(&mut app, Action::DiffOpen);
-    assert_all_ascii(&render(&app, 80, 24), "PR impact pack 80x24");
-    assert_all_ascii(&render(&app, 120, 60), "PR impact pack 120x60");
+    assert_all_ascii(&render(&mut app, 80, 24), "PR impact pack 80x24");
+    assert_all_ascii(&render(&mut app, 120, 60), "PR impact pack 120x60");
 }
 
 #[test]
@@ -532,8 +577,8 @@ fn overview_pane_is_all_ascii() {
     let mut app = ascii_app();
     apply_action(&mut app, Action::ToggleOverview);
     assert!(app.ui_state.overview(), "precondition: overview is on");
-    assert_all_ascii(&render(&app, 80, 24), "overview 80x24");
-    assert_all_ascii(&render(&app, 200, 60), "overview 200x60");
+    assert_all_ascii(&render(&mut app, 80, 24), "overview 80x24");
+    assert_all_ascii(&render(&mut app, 200, 60), "overview 200x60");
 }
 
 #[test]
@@ -553,11 +598,11 @@ fn column_focus_and_columns_modal_are_all_ascii() {
     apply_action(&mut app, Action::DetailOpen);
     apply_action(&mut app, Action::ColumnFocusEnter);
     assert!(app.column_status().is_some(), "the focus engaged");
-    let buffer = render(&app, 100, 30);
+    let buffer = render(&mut app, 100, 30);
     assert_all_ascii(&buffer, "column focus 100x30");
     // The column modal over the trace.
     apply_action(&mut app, Action::ColumnsOpen);
-    assert_all_ascii(&render(&app, 100, 30), "columns modal 100x30");
+    assert_all_ascii(&render(&mut app, 100, 30), "columns modal 100x30");
 }
 
 #[test]
@@ -571,13 +616,13 @@ fn issue09_surfaces_are_all_ascii() {
 
     // Empty-query list search: `!tag:x selector  ?text full-text  ^ history`.
     apply_action(&mut app, Action::SearchOpen);
-    assert_all_ascii(&render(&app, 200, 30), "search hint 200x30");
+    assert_all_ascii(&render(&mut app, 200, 30), "search hint 200x30");
 
     // Zero-match: `no match - try ?text for full-text search` (ASCII dash).
     for c in "zzzzqqq".chars() {
         apply_action(&mut app, Action::SearchType(c));
     }
-    assert_all_ascii(&render(&app, 200, 30), "search zero-match 200x30");
+    assert_all_ascii(&render(&mut app, 200, 30), "search zero-match 200x30");
     apply_action(&mut app, Action::SearchCancel);
 
     // Command palette: a Recent row + Commands header + an UNAVAILABLE row's
@@ -588,17 +633,17 @@ fn issue09_surfaces_are_all_ascii() {
     }
     apply_action(&mut app, Action::SearchConfirm); // records the Recent
     apply_action(&mut app, Action::PaletteOpen);
-    assert_all_ascii(&render(&app, 110, 40), "palette Recent+Commands");
+    assert_all_ascii(&render(&mut app, 110, 40), "palette Recent+Commands");
     for c in "baseline".chars() {
         apply_action(&mut app, Action::SearchType(c));
     }
-    assert_all_ascii(&render(&app, 110, 40), "palette unavailable reason");
+    assert_all_ascii(&render(&mut app, 110, 40), "palette unavailable reason");
     app.mode = dbtl::Mode::Palette(dbtl::action::PaletteState {
         query: "@pos".to_string(),
         selected: 0,
         new_tab: false,
     });
-    assert_all_ascii(&render(&app, 110, 40), "palette @-model rows");
+    assert_all_ascii(&render(&mut app, 110, 40), "palette @-model rows");
     app.mode = dbtl::Mode::Selection;
 
     // Help `/`-filter live: the `/copy` title + narrowed sections.
@@ -607,7 +652,7 @@ fn issue09_surfaces_are_all_ascii() {
     for c in "copy".chars() {
         apply_action(&mut app, Action::SearchType(c));
     }
-    assert_all_ascii(&render(&app, 110, 45), "help /-filter");
+    assert_all_ascii(&render(&mut app, 110, 45), "help /-filter");
     apply_action(&mut app, Action::HelpToggle); // clear filter
     apply_action(&mut app, Action::HelpToggle); // close help
 
@@ -630,7 +675,7 @@ fn issue09_surfaces_are_all_ascii() {
     });
     let mut app = App::new(empty, std::path::PathBuf::from(FIXTURE));
     app.glyph_mode = GlyphMode::Ascii;
-    assert_all_ascii(&render(&app, 200, 30), "empty project 200x30");
+    assert_all_ascii(&render(&mut app, 200, 30), "empty project 200x30");
 }
 
 #[test]
@@ -639,8 +684,8 @@ fn node_menu_overlay_is_all_ascii() {
     // and the box border must all stay pure ASCII in Ascii mode.
     let mut app = ascii_app();
     apply_action(&mut app, Action::MenuOpen);
-    assert_all_ascii(&render(&app, 100, 40), "node context menu 100x40");
-    assert_all_ascii(&render(&app, 80, 24), "node context menu 80x24");
+    assert_all_ascii(&render(&mut app, 100, 40), "node context menu 100x40");
+    assert_all_ascii(&render(&mut app, 80, 24), "node context menu 80x24");
 }
 
 #[test]
@@ -648,8 +693,8 @@ fn yank_menu_overlay_is_all_ascii() {
     // The `y` which-key menu (y<key> rows + box) in both sizes.
     let mut app = ascii_app();
     apply_action(&mut app, Action::YankPrefix);
-    assert_all_ascii(&render(&app, 100, 40), "yank menu 100x40");
-    assert_all_ascii(&render(&app, 80, 24), "yank menu 80x24");
+    assert_all_ascii(&render(&mut app, 100, 40), "yank menu 100x40");
+    assert_all_ascii(&render(&mut app, 80, 24), "yank menu 80x24");
 }
 
 #[test]
@@ -659,6 +704,32 @@ fn menu_stacked_over_modal_is_all_ascii() {
     let mut app = ascii_app();
     apply_action(&mut app, Action::DetailOpen);
     apply_action(&mut app, Action::MenuOpen);
-    assert_all_ascii(&render(&app, 100, 40), "menu over modal 100x40");
-    assert_all_ascii(&render(&app, 80, 24), "menu over modal 80x24");
+    assert_all_ascii(&render(&mut app, 100, 40), "menu over modal 100x40");
+    assert_all_ascii(&render(&mut app, 80, 24), "menu over modal 80x24");
+}
+
+#[test]
+fn inspector_pane_is_all_ascii() {
+    // Issue 04's pane under the guard: the `v`/`x`/`!` lint and test marks,
+    // the `^N vM` column badges, and the scrollbar thumb must all resolve to
+    // ASCII here — including a forced `On` narrow-screen render (the pane
+    // squeezes but stays ASCII) and a focused-column pick.
+    let mut app = ascii_app();
+    app.ui_state
+        .set_inspector_policy(dbtl::ui::InspectorPolicy::On);
+    // Publish `inspector_shown` before toggling — the traversal skips the
+    // inspector while `shown` is still false (the loop publishes it each
+    // frame; the test renders once to do the same).
+    let _ = render(&mut app, 200, 60);
+    apply_action(&mut app, Action::ToggleFocus);
+    apply_action(&mut app, Action::ToggleFocus);
+    assert_eq!(
+        app.ui_state.focus(),
+        Focus::Inspector,
+        "precondition: inspector focus"
+    );
+    assert_all_ascii(&render(&mut app, 200, 60), "inspector 200x60");
+    assert_all_ascii(&render(&mut app, 120, 40), "inspector forced-on 120x40");
+    app.ui_state.set_inspector_col(0);
+    assert_all_ascii(&render(&mut app, 200, 60), "inspector column pick");
 }

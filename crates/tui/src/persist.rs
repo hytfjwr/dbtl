@@ -50,6 +50,11 @@ pub struct PersistedState {
     /// The inspector pane's saved width in columns (saved ahead of Issue 04's
     /// pane so `=` and an early drag already round-trip). `None` = unset.
     pub inspector_width: Option<u16>,
+    /// The inspector visibility pref (`auto`/`on`/`off` — see
+    /// [`InspectorPolicy::name`](crate::ui::InspectorPolicy::name)). `None` =
+    /// unset. The resolved on/off is never persisted — it is the loop's
+    /// width-aware answer, not a user choice.
+    pub inspector: Option<String>,
     /// Whether the list pane was visible (the `Ctrl-b` toggle). `None` = unset.
     pub list_visible: Option<bool>,
     /// Whether the lineage minimap was on (the `M` toggle). `None` = unset.
@@ -114,6 +119,9 @@ pub struct Config {
     /// marker (default 8; `0` = never collapse). Config-only — it is a
     /// display policy, not a per-project pref, so the state file ignores it.
     pub lineage_collapse: Option<usize>,
+    /// Default inspector visibility pref (`auto`/`on`/`off`) — Issue 04's
+    /// `I` cycle. Same Option-layering as the other pref names.
+    pub inspector: Option<String>,
 }
 
 impl Config {
@@ -141,6 +149,7 @@ impl Config {
             lens: self.lens.clone(),
             density: self.density.clone(),
             sort: self.sort.clone(),
+            inspector: self.inspector.clone(),
             ..PersistedState::default()
         }
     }
@@ -243,6 +252,7 @@ impl App {
             recent: self.recent.clone(),
             list_width: Some(self.ui_state.list_width()),
             inspector_width: Some(self.ui_state.inspector_width()),
+            inspector: Some(self.ui_state.inspector_policy().name().to_string()),
             list_visible: Some(self.ui_state.list_visible()),
             minimap: Some(self.ui_state.minimap_visible()),
             theme: Some(self.theme_name().to_string()),
@@ -323,6 +333,13 @@ impl App {
         }
         if let Some(w) = prefs.inspector_width {
             self.ui_state.set_inspector_width(w);
+        }
+        if let Some(policy) = prefs
+            .inspector
+            .as_deref()
+            .and_then(crate::ui::InspectorPolicy::from_name)
+        {
+            self.ui_state.set_inspector_policy(policy);
         }
         if let Some(visible) = prefs.list_visible {
             self.ui_state.set_list_visible(visible);
@@ -701,6 +718,7 @@ mod tests {
             recent: vec!["model.a.x".to_string()],
             list_width: Some(50),
             inspector_width: Some(60),
+            inspector: Some("on".to_string()),
             list_visible: Some(false),
             minimap: Some(true),
             theme: Some("midnight".to_string()),

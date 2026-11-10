@@ -73,6 +73,99 @@ fn detail_view_for(app: &App, uid: String) -> DetailView {
     }
 }
 
+/// The inspector pane's snapshot for `uid` — built ONCE per
+/// `(uid, generation)` into `LineageCaches::inspector`, so the per-frame
+/// redraw is an `Rc` clone. The `detail` field is the verbatim output of
+/// [`detail_view_for`] (screen-spec §4: the pane shares the structure
+/// modal's construction, it never reassembles domain data itself); the
+/// remaining fields are the pane-only extras the modal doesn't carry:
+/// materialization tag, the third (exposure) component of the impact
+/// breakdown, per-column catalog types, the last-run row, this node's lint
+/// findings, and the diff readout.
+pub(super) fn inspector_view_for(app: &App, uid: String) -> crate::InspectorView {
+    let detail = detail_view_for(app, uid.clone());
+    // `impact_breakdown_for`'s third component — the downstream EXPOSURE
+    // count `impact_counts_for` deliberately drops for the modal's
+    // two-number blast radius.
+    let (_, _, exposures) = app.impact_breakdown_for(&uid);
+    // The owner entry under the configured meta key (`owner_meta_key`,
+    // default `"owner"`) — resolved here so the render layer never reads
+    // the config.
+    let owner = detail.detail.meta.get(&app.owner_meta_key).cloned();
+    let tag = app
+        .dag
+        .get(&uid)
+        .map(|n| {
+            crate::MaterializationClass::classify(
+                n.resource_type.as_str(),
+                n.materialized.as_deref(),
+            )
+            .tag()
+        })
+        .unwrap_or("model");
+    // The catalog's real warehouse type per declared column — keyed by the
+    // column name as declared (the row lookup needs no normalization; the
+    // catalog's own matching is case-insensitive already). Skips the
+    // `catalog_note` line shape entirely: the pane renders types INLINE on
+    // each column row, not as a separate `  col: type` block.
+    let mut col_types = std::collections::BTreeMap::new();
+    if let Some(node) = app.catalog().and_then(|c| c.get(&uid)) {
+        for col in &detail.detail.columns {
+            if let Some(ty) = node.column_type(&col.name) {
+                col_types.insert(col.name.clone(), ty.to_string());
+            }
+        }
+    }
+    // The `run_results.json` row — `(status word, seconds)`. The status word
+    // follows the artifact's own vocabulary so the pane reads like `dbt
+    // run`'s summary line.
+    let run = app.run_results().and_then(|rr| {
+        rr.get(&uid).map(|r| {
+            let word = match &r.status {
+                crate::RunStatus::Success => "success".to_string(),
+                crate::RunStatus::Error => "error".to_string(),
+                crate::RunStatus::Fail => "fail".to_string(),
+                crate::RunStatus::Warn => "warn".to_string(),
+                crate::RunStatus::Skipped => "skipped".to_string(),
+                crate::RunStatus::Other(s) => s.clone(),
+            };
+            (word, r.execution_time)
+        })
+    });
+    // This node's lint findings — `"{rule}: {message}"`, in `lint_findings`'
+    // own deterministic order. A finding lands here only when `node_uid` IS
+    // this node: `related` uids are context on the OTHER node's violation.
+    let lint = app
+        .lint_findings()
+        .iter()
+        .filter(|f| f.node_uid == uid)
+        .map(|f| format!("{}: {}", f.rule.name(), f.message))
+        .collect();
+    // The diff readout for THIS node — `+ added`, or `~ modified:` plus the
+    // baseline's recorded reasons (a fixed-order human list). `None` on
+    // `Unchanged` (nothing to show) or when no baseline is loaded.
+    let diff = app.diff().and_then(|d| match d.status(&uid) {
+        crate::DiffStatus::Added => Some("+ added".to_string()),
+        crate::DiffStatus::Modified => Some(match d.modified.get(&uid) {
+            Some(reasons) if !reasons.is_empty() => {
+                format!("~ modified: {}", reasons.join(", "))
+            }
+            _ => "~ modified".to_string(),
+        }),
+        crate::DiffStatus::Unchanged => None,
+    });
+    crate::InspectorView {
+        detail,
+        tag,
+        exposures,
+        owner,
+        col_types,
+        run,
+        lint,
+        diff,
+    }
+}
+
 /// Export filenames embed the node name, which comes from an untrusted
 /// `manifest.json`: a crafted name (e.g. `../../x`) would let the export write
 /// outside the working directory. Keep ASCII alphanumerics plus `.`/`-`/`_`
@@ -101,6 +194,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
     // it is on, so gate them to a notice instead of mutating state that
     // would surprisingly apply the moment the user drills back in.
     if app.ui_state.overview()
+        && app.ui_state.focus() != Focus::Inspector
         && matches!(
             action,
             Action::ToggleUpstream
@@ -120,6 +214,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
     // exits the trace. (`v` density stays live: Compact legitimately hides
     // the column rows.)
     if app.active_column_focus().is_some()
+        && app.ui_state.focus() != Focus::Inspector
         && matches!(
             action,
             Action::ToggleUpstream
@@ -145,7 +240,20 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         // the viewport — the loop follows the cursor with a minimal
         // ensure-visible.
         Action::MoveDown | Action::MoveUp | Action::MoveLeft | Action::MoveRight => {
-            if app.ui_state.focus() == Focus::RightPane {
+            if app.ui_state.focus() == Focus::Inspector {
+                // Inspector focus: j/k scroll the pane's content; h/l have no
+                // meaning there (the column cursor is a mouse affordance —
+                // §4's keyboard set is scroll + Enter only).
+                let scroll = app.ui_state.inspector_scroll();
+                app.ui_state
+                    .set_inspector_scroll(if action == Action::MoveDown {
+                        scroll.saturating_add(1)
+                    } else if action == Action::MoveUp {
+                        scroll.saturating_sub(1)
+                    } else {
+                        scroll
+                    });
+            } else if app.ui_state.focus() == Focus::RightPane {
                 let dir = match action {
                     Action::MoveDown => Direction::Down,
                     Action::MoveUp => Direction::Up,
@@ -175,17 +283,72 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             }
             Outcome::cont()
         }
-        // UiState-only arms: forward to the sub-reducer. The paging/jump arms
-        // adopt on the same changed-index rule as the move keys; the focus and
-        // visibility toggles never move the cursor, so they never adopt.
-        Action::JumpTop | Action::JumpBottom | Action::PageDown | Action::PageUp => {
-            let before = app.ui_state.selected();
-            reduce_selection(&mut app.ui_state, action);
-            if app.ui_state.selected() != before {
-                app.adopt_list_selection();
+        // Inspector focus reroutes the shared jump/page bindings to the pane's
+        // own scroll slot — they never reach the list path below.
+        Action::JumpTop | Action::JumpBottom => {
+            if app.ui_state.focus() == Focus::Inspector {
+                app.ui_state
+                    .set_inspector_scroll(if action == Action::JumpTop {
+                        0
+                    } else {
+                        // `usize::MAX` is the "end" intent the loop's clamp bounds
+                        // to content — the modal scrolls use the same idiom.
+                        usize::MAX
+                    });
+            } else {
+                // UiState-only arm: forward to the sub-reducer, then adopt on
+                // the same changed-index rule as the move keys (§2 T1).
+                let before = app.ui_state.selected();
+                reduce_selection(&mut app.ui_state, action);
+                if app.ui_state.selected() != before {
+                    app.adopt_list_selection();
+                }
             }
             Outcome::cont()
         }
+        Action::PageDown | Action::PageUp => {
+            if app.ui_state.focus() == Focus::Inspector {
+                let scroll = app.ui_state.inspector_scroll();
+                app.ui_state
+                    .set_inspector_scroll(if action == Action::PageDown {
+                        scroll.saturating_add(crate::ui::INSPECTOR_PAGE_STEP)
+                    } else {
+                        scroll.saturating_sub(crate::ui::INSPECTOR_PAGE_STEP)
+                    });
+            } else {
+                let before = app.ui_state.selected();
+                reduce_selection(&mut app.ui_state, action);
+                if app.ui_state.selected() != before {
+                    app.adopt_list_selection();
+                }
+            }
+            Outcome::cont()
+        }
+        // `d`/`u` in Selection mode bind to the lineage view filters — while
+        // the inspector is focused they mean what every scrollable pane reads
+        // them as: a half-page-style scroll step (the same fixed 10 the modal
+        // `DetailScrollPage` uses).
+        Action::ToggleDownstream | Action::ToggleUpstream => {
+            if app.ui_state.focus() == Focus::Inspector {
+                let scroll = app.ui_state.inspector_scroll();
+                app.ui_state
+                    .set_inspector_scroll(if action == Action::ToggleDownstream {
+                        scroll.saturating_add(crate::ui::INSPECTOR_PAGE_STEP)
+                    } else {
+                        scroll.saturating_sub(crate::ui::INSPECTOR_PAGE_STEP)
+                    });
+            } else {
+                let v = &mut app.tab_mut().lineage_view;
+                if action == Action::ToggleUpstream {
+                    v.upstream = !v.upstream;
+                } else {
+                    v.downstream = !v.downstream;
+                }
+            }
+            Outcome::cont()
+        }
+        // UiState-only arms: forward to the sub-reducer. The focus and
+        // visibility toggles never move the cursor, so they never adopt.
         Action::ToggleFocus | Action::ToggleListPane => {
             reduce_selection(&mut app.ui_state, action);
             Outcome::cont()
@@ -216,6 +379,26 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             Outcome::cont()
         }
         Action::DetailOpen => {
+            // Inspector-focused Enter commits the pane's cursored COLUMN row
+            // to the column-trace view — the same flow Enter on the
+            // structure modal's column cursor takes (§4: カラム行で Enter
+            // → カラム Lineage 遷移). No row cursored → nothing to commit;
+            // the inspector keeps focus.
+            if app.ui_state.focus() == Focus::Inspector {
+                let col = {
+                    let idx = app.ui_state.inspector_col();
+                    app.inspector_view().and_then(|v| {
+                        v.detail
+                            .col_names
+                            .get(idx)
+                            .map(|c| crate::ColumnRef::new(&v.detail.model_id, c))
+                    })
+                };
+                if let Some(col) = col {
+                    app.column_focus_enter(col);
+                }
+                return Outcome::cont();
+            }
             // Enter acts on the lineage CURSOR when the lineage pane is focused
             // (else the selection): an off-root cursor on a model RE-ROOTS to it
             // (committing the cursor, same as a mouse click); anything else —
@@ -1039,16 +1222,6 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             app.reset_lineage_cursor();
             Outcome::cont()
         }
-        Action::ToggleUpstream => {
-            let v = &mut app.tab_mut().lineage_view;
-            v.upstream = !v.upstream;
-            Outcome::cont()
-        }
-        Action::ToggleDownstream => {
-            let v = &mut app.tab_mut().lineage_view;
-            v.downstream = !v.downstream;
-            Outcome::cont()
-        }
         Action::DepthDecrease => {
             let v = &mut app.tab_mut().lineage_view;
             v.depth = match v.depth {
@@ -1375,9 +1548,8 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         }
         // `<`/`>`: nudge the saved pane width by §5's 4-column step, a pure
         // UiState view-pref like the minimap — direct here, never through
-        // `reduce_selection`. The pane follows §5's focus rule (the inspector
-        // while focused); `Focus::Inspector` arrives with Issue 04's pane, so
-        // the list is the only target today. The floor is in the write; the
+        // `reduce_selection`. The pane follows §5's focus rule: the inspector
+        // while focused, the list otherwise. The floor is in the write; the
         // terminal-relative cap is the event loop's post-clamp (size-aware)
         // plus `pane_layout`'s display clamp — the reducer stays size-blind.
         Action::PaneNarrow | Action::PaneWiden => {
@@ -1386,7 +1558,11 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             } else {
                 -4
             };
-            app.ui_state.nudge_list_width(step);
+            if app.ui_state.focus() == Focus::Inspector {
+                app.ui_state.nudge_inspector_width(step);
+            } else {
+                app.ui_state.nudge_list_width(step);
+            }
             Outcome::cont()
         }
         // `=`: every resizable pane's saved width back to its §1 default
@@ -1424,6 +1600,28 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         // is a no-op — tabs past 9 carry no number key).
         Action::TabActivate(n) => {
             app.activate_tab(usize::from(n).saturating_sub(1));
+            Outcome::cont()
+        }
+        // `I`: cycle the inspector visibility pref `auto → on → off` — the
+        // persisted value only; the event loop resolves `auto` against the
+        // terminal width and publishes `inspector_shown` next frame.
+        Action::ToggleInspector => {
+            app.ui_state.cycle_inspector();
+            Outcome::cont()
+        }
+        // A click on an inspector column row moves the pane's column cursor
+        // to it — the same select-before-Enter contract the columns modal's
+        // `ColumnPick` keeps (double-click wiring lands with Issue 05).
+        Action::InspectorColumnPick(i) => {
+            let cols = app
+                .inspector_view()
+                .map(|v| v.detail.col_names.len())
+                .unwrap_or(0);
+            app.ui_state.set_inspector_col(if cols == 0 {
+                usize::MAX
+            } else {
+                i.min(cols - 1)
+            });
             Outcome::cont()
         }
         // `p` two-node path: first press anchors the path start at the

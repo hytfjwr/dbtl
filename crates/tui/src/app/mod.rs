@@ -552,10 +552,14 @@ impl App {
 
     /// Point the app at a specific `run_results.json` (`--run-results`). A load
     /// failure is the caller's error to report — the App only ever stores a
-    /// successfully parsed file. Re-read by [`reload`](App::reload).
+    /// successfully parsed file. Re-read by [`reload`](App::reload). Run
+    /// results are a style input (the RunStatus/RunTime lenses and the
+    /// inspector's last-run section read them), so the cache generation
+    /// bumps like `set_lint_config`'s does.
     pub fn set_run_results(&mut self, path: PathBuf) -> Result<()> {
         self.run_results = Some(RunResults::load(&path)?);
         self.run_results_path = Some(path);
+        self.generation += 1;
         Ok(())
     }
 
@@ -677,10 +681,13 @@ impl App {
     }
 
     /// Set the `meta` key the impact reports read as "affected owners"
-    /// (`config.yml` `owner_meta_key`). A plain assignment — it feeds the
-    /// next `diff_report` snapshot, not any cached list.
+    /// (`config.yml` `owner_meta_key`). It feeds the next `diff_report`
+    /// snapshot AND the inspector's owner line, so the generation bumps
+    /// like every style input — a mid-session call never serves a stale
+    /// cached snapshot.
     pub fn set_owner_meta_key(&mut self, key: impl Into<String>) {
         self.owner_meta_key = key.into();
+        self.generation += 1;
     }
 
     /// Set the sibling-collapse threshold (`config.yml` `lineage_collapse`;

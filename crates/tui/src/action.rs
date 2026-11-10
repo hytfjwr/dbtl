@@ -273,6 +273,14 @@ pub enum Action {
     /// `1`..=`9`: activate the tab at that 1-based position (tabs from
     /// position 10 carry no number and are unreachable by digit).
     TabActivate(u8),
+    // --- inspector pane (Issue 04; screen-spec §4) ---
+    /// `I`: cycle the inspector visibility pref `auto → on → off` (the
+    /// persisted value; the width-aware auto rule resolves at draw time).
+    ToggleInspector,
+    /// Move the inspector's column-row cursor to `i` (a row click in the
+    /// pane — the event loop maps the cell to the column index). `Enter`
+    /// then traces the row's column, exactly like the structure modal's.
+    InspectorColumnPick(usize),
 }
 
 /// Which pane a search targets (decided from focus when search opens).
@@ -354,6 +362,50 @@ pub struct DetailView {
     /// `[name-match]` tag.
     pub name_match: bool,
     pub scroll: usize,
+}
+
+/// The right inspector pane's snapshot for the node under the lineage cursor
+/// (or the rooted selection): `detail` reuses the structure modal's
+/// `detail_view_for` assembly verbatim (screen-spec §4's "share the DetailView
+/// construction" rule — one domain pass, never two), and the pane-specific
+/// extras (tag / exposures / catalog types / last-run / lint / diff) join
+/// here. Plain comparable data, built at `(uid, generation)` cache time so
+/// the render layer stays `Dag`-free.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InspectorView {
+    /// The structure-modal data product for this node (`detail_view_for`'s
+    /// output — tests / col_names / col_counts / catalog lines / impact
+    /// counts / `name` / `model_id` all ride inside). The modal-only fields
+    /// (`scroll`, `col_index`, `test_index`) sit at their defaults; the
+    /// inspector's own scroll + column cursor live on `UiState`.
+    pub detail: DetailView,
+    /// The materialization tag (`MaterializationClass::tag`) for the head
+    /// line — `Table` / `View` / `Source` / …
+    pub tag: &'static str,
+    /// Downstream EXPOSURE count — the third component of
+    /// `impact_breakdown_for` the two-number `DetailView` drops. §4 shows it
+    /// alongside the up/down counts.
+    pub exposures: usize,
+    /// The owner from `App::owner_meta_key`'s meta lookup (the config's key,
+    /// default `"owner"`), resolved at build so the render layer never reads
+    /// the config. `None` when the node carries no such meta entry.
+    pub owner: Option<String>,
+    /// `catalog.json`'s real warehouse type per cursor-addressable column
+    /// (keyed by the declared/resolved name verbatim — the row lookup needs
+    /// no normalization). Empty when the catalog doesn't cover this node.
+    pub col_types: std::collections::BTreeMap<String, String>,
+    /// The `run_results.json` row for this node as a display pair
+    /// `(status word, optional seconds)` — `("success", Some(3.2))` renders
+    /// `✓ success  3.2s`. `None` when the artifact doesn't cover the node.
+    pub run: Option<(String, Option<f64>)>,
+    /// This node's lint findings as `"{rule}: {message}"` lines (only
+    /// findings whose `node_uid` IS this node — `related` uids are context
+    /// for the OTHER node's violation, not this node's).
+    pub lint: Vec<String>,
+    /// The diff readout when a `--diff` baseline flags this node:
+    /// `"+ added"` / `"~ modified: {reasons}"`. `None` when unchanged or no
+    /// baseline is loaded.
+    pub diff: Option<String>,
 }
 
 /// The SQL-preview modal payload, snapshotted when the modal opens so the render
@@ -1103,6 +1155,8 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('7'))], action: A::TabActivate(7), help: "go to tab 7" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('8'))], action: A::TabActivate(8), help: "go to tab 8" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('9'))], action: A::TabActivate(9), help: "go to tab 9" },
+    // ---- inspector (Issue 04; §4): `I` cycles the pane's visibility pref. ----
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('I'))], action: A::ToggleInspector, help: "inspector pane auto / on / off" },
     // ---- Yank prefix mode (`y` + one key): the second key is the SAME letter
     // the single-key binding always used, so muscle memory carries over as
     // `ym`/`yC`/…; `yy` copies the unique_id (what bare `y` used to do). ----
@@ -1426,6 +1480,7 @@ pub fn reanchors_lineage(action: Action) -> bool {
             | Action::ResetView
             | Action::Reload
             | Action::ToggleListPane
+            | Action::ToggleInspector
             | Action::DbtParse
             | Action::ToggleDensity
             | Action::ToggleOverview
@@ -1836,7 +1891,8 @@ mod tests {
             | Action::TabClose
             | Action::TabPrev
             | Action::TabNext
-            | Action::TabActivate(_) => true,
+            | Action::TabActivate(_)
+            | Action::ToggleInspector => true,
             // Dynamic: produced without a fixed key binding (text input, a
             // resolved menu item, mouse row picks/invokes). Mouse is handled
             // in the event loop (size-aware), not via the keymap.
@@ -1846,7 +1902,8 @@ mod tests {
             | Action::YankPick(_)
             | Action::YankInvoke(_)
             | Action::PalettePick(_)
-            | Action::ColumnPick(_) => false,
+            | Action::ColumnPick(_)
+            | Action::InspectorColumnPick(_) => false,
         }
     }
 

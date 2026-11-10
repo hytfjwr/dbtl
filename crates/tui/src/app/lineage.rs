@@ -154,6 +154,14 @@ impl App {
             (MouseButton::Left, HitTarget::LineageBlank) => {
                 self.ui_state.set_focus(Focus::RightPane);
             }
+            (MouseButton::Left, HitTarget::InspectorRow(_)) => {
+                // An inspector-row click takes the pane's focus; the row pick
+                // itself goes through `InspectorColumnPick` (dispatched by
+                // the loop, which owns the screen→row mapping) — landing
+                // focus here is what clicking a pane's interior means
+                // everywhere else.
+                self.ui_state.set_focus(Focus::Inspector);
+            }
             // Inert surfaces do nothing at all — the minimap literally
             // swallows its click (Issue 05 gives it a pan meaning), and the
             // reserved targets wait on Issues 05/06 (menu/modal chrome) and
@@ -454,11 +462,36 @@ impl App {
     /// `DetailOpen` and `SqlOpen` both call it, so a focus-routing change touches
     /// one place.
     pub fn focus_target(&self) -> Option<String> {
-        if self.ui_state.focus() == Focus::RightPane {
-            self.lineage_cursor_uid()
-        } else {
-            self.list_sel_uid()
+        match self.ui_state.focus() {
+            Focus::RightPane | Focus::Inspector => self.lineage_cursor_uid(),
+            Focus::List => self.list_sel_uid(),
         }
+    }
+
+    /// The `unique_id` the inspector pane describes — §4's rule: the lineage
+    /// cursor's node, the rooted selection when the cursor is home (or while
+    /// the list is focused, where the selection IS the root). This is the one
+    /// place that decision lives; the cache key and the title both read it.
+    pub fn inspector_target(&self) -> Option<String> {
+        let uid = match self.ui_state.focus() {
+            Focus::List => self.list_sel_uid(),
+            _ => self.lineage_cursor_uid(),
+        };
+        if uid.as_deref().is_some_and(|u| self.dag.get(u).is_some()) {
+            return uid;
+        }
+        // A `+M more` collapse marker is a valid CURSOR position (it lives
+        // in the collapsed subgraph) but carries a synthetic uid with no
+        // `Dag` entry — inspecting it would title the pane "… +3 more".
+        // Fall back to the rooted home, the same answer an un-set cursor
+        // gives; the trailing filter keeps an empty-dag edge honest.
+        let sg = self.subgraph_rc();
+        let home = if sg.selected.is_empty() {
+            self.selected_unique_id()
+        } else {
+            Some(sg.selected.clone())
+        };
+        home.filter(|u| self.dag.get(u).is_some())
     }
 
     /// The first node in the current lineage subgraph whose name matches `query`

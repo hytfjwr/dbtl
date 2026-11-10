@@ -825,6 +825,12 @@ pub enum HitTarget {
     /// Lineage pane interior with no node under the point (includes the
     /// centering pad around a fully-fitting diagram).
     LineageBlank,
+    /// An interior ROW of the inspector pane (Issue 04): `(row - inner.y)`,
+    /// 0-based inside its border — the same shape [`HitTarget::OverlayRow`]
+    /// uses for covering overlays. What the row MEANS (a column row vs other
+    /// content) is content-dependent, so the event loop resolves it against
+    /// the scrolled [`InspectorView`](crate::InspectorView).
+    InspectorRow(usize),
     /// The lineage minimap inset. It overlays real nodes, so a point inside it
     /// reports `Minimap` and never the node below.
     Minimap,
@@ -975,6 +981,13 @@ pub fn hit_target(g: &HitGeometry, col: u16, row: u16) -> Option<HitTarget> {
             }
         }
         return Some(HitTarget::LineageBlank);
+    }
+    let ins_inner = pane_interior(p.inspector);
+    if ins_inner.contains(at) {
+        // The whole interior reports its 0-based row — column rows and every
+        // other line alike (which row IS a column row depends on the
+        // InspectorView's content + scroll, both loop-side data).
+        return Some(HitTarget::InspectorRow((row - ins_inner.y) as usize));
     }
     None
 }
