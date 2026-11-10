@@ -129,6 +129,11 @@ impl App {
             (MouseButton::Middle, HitTarget::LineageNode(uid)) => {
                 self.open_node_as_tab(uid);
             }
+            // §3: a home row IS its Enter — open the model tab / run the
+            // command, exactly like `HomeOpen` on the selected row.
+            (MouseButton::Left, HitTarget::HomeRow(i)) => {
+                return self.chrome_dispatch(Action::HomePick(*i));
+            }
             // §6: the `×` closes on left-click; the WHOLE tab cell (× column
             // included) closes on middle-click.
             (MouseButton::Middle, HitTarget::Tab(i) | HitTarget::TabClose(i))

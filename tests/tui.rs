@@ -3871,6 +3871,7 @@ fn sticky_hit_test_reports_the_pinned_header() {
     let g = HitGeometry {
         panes,
         tab_bar: None,
+        home: None,
         list: &list,
         list_offset: state.offset(),
         list_selected: state.selected(),
@@ -3975,6 +3976,44 @@ fn render_with(width: u16, height: u16, f: impl FnOnce(&mut UiState)) -> Buffer 
     terminal.backend().buffer().clone()
 }
 
+// ============================================================================
+// Issue 10: the home screen
+// ============================================================================
+
+/// The home frame exactly as the event loop wires it: the app's own
+/// `home_data` snapshot in `ctx.home`, the `⌂`-led tab strip, and the mode
+/// (a home-target search swaps the body to its results).
+fn render_home(app: &dbtl::App, width: u16, height: u16) -> Buffer {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    let home = app.home_data();
+    {
+        let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, None);
+        ctx.mode = &app.mode;
+        ctx.glyphs = app.glyph_mode;
+        ctx.home = Some(&home);
+        ctx.home_sel = app.home_sel;
+        ctx.home_scroll = app.home_scroll;
+        let tab_labels = app.tab_labels();
+        let panes = dbtl::ui::pane_layout(
+            ratatui::layout::Rect::new(0, 0, width, height),
+            &app.ui_state.pane_config(),
+        );
+        let tab_layout = app.tab_bar_layout_for(panes.tab_bar, true);
+        ctx.tab_bar = Some(dbtl::ui::TabBarView {
+            labels: &tab_labels,
+            layout: &tab_layout,
+            active: app.active_tab(),
+            project: Some(app.stats.project.as_str()),
+            hover: None,
+        });
+        terminal
+            .draw(|frame| draw(frame, &ctx))
+            .expect("home render must not panic");
+    }
+    terminal.backend().buffer().clone()
+}
+
 #[test]
 fn too_small_screen_shows_only_the_message() {
     // §12: below 50x12 the whole frame is the one message — no pane, status,
@@ -4072,6 +4111,86 @@ fn narrow_band_drawer_renders_the_list_over_the_lineage() {
 }
 
 #[test]
+fn home_screen_renders_title_health_sections_cursor_and_home_cell() {
+    use dbtl::app::App;
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    app.enter_home();
+    // 60 rows: the fixture's ~29 attention rows leave room for every
+    // section (a 30-row body legitimately clips them under "+N more").
+    let buffer = render_home(&app, 100, 60);
+    let text = buffer_to_string(&buffer);
+
+    assert!(text.contains("dbtl home"), "the title row renders");
+    assert!(text.contains("models"), "the health strip renders");
+    assert!(text.contains("[Actions]"), "the actions section renders");
+    assert!(text.contains("[Recent]"), "the recent section renders");
+    assert!(
+        text.contains("search models"),
+        "the search bar's placeholder renders"
+    );
+    assert!(
+        text.contains("stats dashboard"),
+        "a BINDINGS action row renders its help text"
+    );
+    assert!(text.contains(" > "), "the cursor marks the selected row");
+    // The footer counts clipped rows when the terminal is short — on this
+    // height the "+N more" line is absent instead of lying.
+    let row0 = row_text(&buffer, 0);
+    assert!(
+        row0.contains('⌂'),
+        "the home cell draws the chrome glyph: {row0}"
+    );
+    // The home cell is the only unclosable one — its own 4 columns carry no
+    // `×` (the model tab beside it does).
+    let home_cell: String = row0.chars().take(4).collect();
+    assert!(
+        !home_cell.contains('×'),
+        "the home cell has no close glyph: {home_cell:?}"
+    );
+    assert!(row0.contains('×'), "the model tab keeps its close glyph");
+}
+
+#[test]
+fn home_screen_short_terminal_clips_with_a_more_footer() {
+    use dbtl::app::App;
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    app.enter_home();
+    // An 8-row body can't hold the sections — the footer names the clip.
+    let buffer = render_home(&app, 80, 9);
+    let text = buffer_to_string(&buffer);
+    assert!(
+        text.contains("more"),
+        "a clipped home shows the +N more footer:\n{text}"
+    );
+}
+
+#[test]
+fn home_screen_search_swaps_sections_for_results() {
+    use dbtl::app::{apply_action, App};
+    use dbtl::Action;
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    app.enter_home();
+    apply_action(&mut app, Action::SearchOpen);
+    for c in "budgets".chars() {
+        apply_action(&mut app, Action::SearchType(c));
+    }
+    let buffer = render_home(&app, 100, 30);
+    let text = buffer_to_string(&buffer);
+    assert!(
+        text.contains("budgets"),
+        "the live query renders in the bar"
+    );
+    assert!(
+        text.contains("stg_finance__budgets"),
+        "the matched model row renders"
+    );
+    assert!(
+        !text.contains("[Actions]"),
+        "sections are replaced while searching"
+    );
+}
+
+#[test]
 fn leaving_the_band_restores_the_inline_list() {
     // A stale drawer flag is inert above 80 — `pane_layout` ignores it, the
     // pref's inline pane simply returns where it was.
@@ -4137,4 +4256,19 @@ fn band_transitions_preserve_selection_and_pref() {
     // leaving the band does NOT hand it back — the pinned value IS the state
     // that survives.
     assert_eq!(state.focus(), dbtl::ui::Focus::RightPane);
+}
+
+#[test]
+fn home_screen_tiny_sizes_never_panic() {
+    use dbtl::app::App;
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    app.enter_home();
+    for (w, h) in [(1, 1), (10, 3), (30, 8), (200, 50)] {
+        render_home(&app, w, h);
+    }
+    // Ascii glyph mode renders the `~` home cell and `..` ellipsis.
+    app.glyph_mode = dbtl::GlyphMode::Ascii;
+    let buffer = render_home(&app, 60, 20);
+    let row0 = row_text(&buffer, 0);
+    assert!(row0.contains('~'), "ascii mode draws `~` for home: {row0}");
 }

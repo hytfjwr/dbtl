@@ -50,6 +50,7 @@ mod analysis;
 mod cache;
 mod column;
 mod export;
+mod home;
 mod lineage;
 // `pub(crate)`: the persisted-state layer reads its cap constants; the
 // palette surface itself reaches `App` through the `impl App` methods.
@@ -68,6 +69,7 @@ pub use crate::layer_violation_edges;
 // The subgraph→fenced-Mermaid core lives in `dbtl_core::mermaid` so the static
 // docs generator (`dbtl-docs`) shares the identical id-assignment/escaping
 // without depending on this crate.
+pub use home::{HomeData, HomeItem, HomeRow, HomeSearch, HomeSection, HomeTone};
 pub(crate) use lineage::fit_breadcrumb;
 pub use reducer::apply_action;
 pub use tabs::TabState;
@@ -257,6 +259,24 @@ pub struct App {
     /// Recently-rooted models (newest first, max 10) — Issue 10's home reads
     /// it; persisted per project like the tab list itself.
     pub recent: Vec<String>,
+    /// The home screen's item cursor — an index into the flattened
+    /// selectable rows ([`HomeData::selectable`]), or into the search-result
+    /// list while a home-target `/` search is open. Lives on `App` (not
+    /// `Mode::Home`) so modal round-trips keep it.
+    pub home_sel: usize,
+    /// The home screen's `Resume` row: the last active MODEL tab's root —
+    /// captured by `activate_tab`/`close_tab` when they land on home, or
+    /// seeded from the persisted `last_selected` on a home-landing restore.
+    pub home_resume: Option<String>,
+    /// The home body's scroll offset (lines scrolled off the top). Written
+    /// ONLY by the event loop's ensure-visible clamp — the size-aware seam
+    /// that owns every other viewport bound.
+    pub home_scroll: usize,
+    /// Stamp covering every `HomeData` input `generation` does NOT already
+    /// key: `recent` writes, bookmark toggles, `home_resume` writes. Bumped
+    /// at each mutation site — the home cache keys on
+    /// `(generation, home_stamp)`.
+    pub(crate) home_stamp: u64,
     /// Where the `Dag` came from, so reload re-reads the same source.
     source: DataSource,
     /// dbt project root (`<root>/target/manifest.json` → `<root>`, or the project
@@ -495,14 +515,25 @@ impl App {
             notice: lint_notice.map(|t| (NoticeLevel::Warning, t)),
             notifications: VecDeque::new(),
             unread_from: 0,
-            tabs: vec![TabState {
-                root: first_root.clone(),
-                ..TabState::default()
-            }],
-            active: 0,
+            // The strip always opens `[home, seeded]` — home is the fixed
+            // left tab (Issue 10). `active` starts on the seeded model tab so
+            // a pre-home state file keeps its old landing behaviour; the
+            // no-state-file path calls `enter_home` explicitly (§3/H2).
+            tabs: vec![
+                TabState::home(),
+                TabState {
+                    root: first_root.clone(),
+                    ..TabState::default()
+                },
+            ],
+            active: 1,
             tab_switched: false,
             tab_scroll: 0,
             recent: first_root.into_iter().collect(),
+            home_sel: 0,
+            home_resume: None,
+            home_scroll: 0,
+            home_stamp: 0,
             source,
             project_root,
             generation: 0,
@@ -1513,6 +1544,12 @@ impl App {
         // Drop bookmarks whose model vanished; surviving ids persist (ids stable).
         self.bookmarks.retain(|id| self.dag.get(id).is_some());
         self.recent.retain(|id| self.dag.get(id).is_some());
+        // The Resume row's uid is a model-tab root — a surviving-but-
+        // non-model id can't be re-rooted (same rule the tab retain uses).
+        self.home_resume = self
+            .home_resume
+            .take()
+            .filter(|id| self.dag.get(id).is_some_and(|n| n.resource_type == "model"));
         // Folded-group keys index into the list's group LABELS — a group the
         // rebuilt list no longer has (renamed dir, emptied group, a
         // `group_by_meta` change) would pin a phantom fold; prune to live
@@ -1587,7 +1624,7 @@ impl App {
         }
         self.lint_findings = crate::run_rules(&self.dag, &self.lint_config);
         self.filter = None;
-        self.mode = Mode::Selection;
+        self.mode = self.idle_mode();
         // Any yank-menu context stashed against the OLD graph dies here too.
         self.pending_col = None;
         self.pending_node = None;
@@ -1609,14 +1646,15 @@ impl App {
         }
         // Drop the tabs whose root vanished from the rebuilt graph — a root
         // that survives but is no longer a `model` can't be re-rooted either
-        // (§2: 消えたモデルのタブは捨てる). If every tab died, keep ONE
-        // rootless tab rather than break the ≥1-tab invariant.
+        // (§2: 消えたモデルのタブは捨てる). The HOME tab always survives
+        // (Issue 10's fixed left tab); it can never empty the strip.
         // The `is_rootable` rule, inlined (not `App::is_rootable`) so the
         // predicate borrows `dag` disjoint from the `tabs` iteration below.
         let live = |t: &TabState| {
-            t.root
-                .as_deref()
-                .is_some_and(|r| self.dag.get(r).is_some_and(|n| n.resource_type == "model"))
+            t.home
+                || t.root
+                    .as_deref()
+                    .is_some_and(|r| self.dag.get(r).is_some_and(|n| n.resource_type == "model"))
         };
         // `retain` slides survivors left — the active tab follows across
         // left-of-active prunes the same way `close_tab` shifts `active`:
@@ -1629,7 +1667,7 @@ impl App {
             .count();
         self.tabs.retain(|t| live(t));
         if self.tabs.is_empty() {
-            self.tabs.push(TabState::default());
+            self.tabs.push(TabState::home());
         }
         // Seat NOW: `apply_list_filter` below resolves the selection through
         // the active tab, so `active` can't point past the shrunk strip —
@@ -1767,7 +1805,7 @@ impl App {
     /// origin inside a still-folded group is the ordinary §2 detach.
     fn close_search(&mut self, restore_uid: Option<String>, unfold: bool) {
         self.filter = None;
-        self.mode = Mode::Selection;
+        self.mode = self.idle_mode();
         if unfold {
             if let Some(group) = restore_uid
                 .as_deref()

@@ -242,7 +242,9 @@ impl App {
             sort: Some(sort_name(self.sort).to_string()),
             // `last_selected` keeps being written — the compat field an older
             // dbtl reads (`tabs`/`active_tab` are the same truth, newer shape).
-            last_selected: self.selected_unique_id(),
+            // On home the active tab carries no root; the Resume row's uid is
+            // the closest equivalent an older dbtl can land on.
+            last_selected: self.selected_unique_id().or(self.home_resume.clone()),
             tabs: self
                 .tabs()
                 .iter()
@@ -253,7 +255,21 @@ impl App {
                     })
                 })
                 .collect(),
-            active_tab: Some(self.active_tab()),
+            // `active_tab` is a MODEL-tab index (home is never persisted):
+            // `None` = home was active; `Some(n)` = the nth rooted tab — the
+            // count of persistable tabs below the live index, so any
+            // root-less gap can't skew it.
+            active_tab: if self.home_active() {
+                None
+            } else {
+                Some(
+                    self.tabs()
+                        .iter()
+                        .take(self.active_tab())
+                        .filter(|t| t.root.is_some())
+                        .count(),
+                )
+            },
             recent: self.recent.clone(),
             folded_groups: self.folded_groups.clone(),
             list_width: Some(self.ui_state.list_width()),
@@ -315,7 +331,18 @@ impl App {
             })
             .collect();
         if !saved.is_empty() {
-            self.restore_tabs(saved, prefs.active_tab.unwrap_or(0));
+            // `active_tab: None` = the file was written on home — land on
+            // home again (the strip gets its fixed home tab re-seeded).
+            self.restore_tabs(saved, prefs.active_tab);
+            // The compat `last_selected` doubles as "the tab you were on" —
+            // seed the Resume row whenever nothing better was recorded, so a
+            // later `~` offers it even after a model-tab landing.
+            if self.home_resume.is_none() {
+                self.home_resume = prefs
+                    .last_selected
+                    .clone()
+                    .filter(|uid| self.dag.get(uid).is_some());
+            }
         } else if let Some(uid) = &prefs.last_selected {
             self.select_by_unique_id(uid);
         }
@@ -611,7 +638,7 @@ mod tests {
         // `last_selected` keeps mirroring the ACTIVE tab's root.
         let mut a = fixture_app();
         let m1 = "model.jaffle_finance.rpt_delivery_base_metrics".to_string();
-        a.tab_mut().lineage_view.upstream = false; // tab 0 carries a non-default view
+        a.tab_mut().lineage_view.upstream = false; // the seeded tab carries a non-default view
         a.open_node_as_tab(&m1);
         let snap = a.prefs_snapshot();
         assert_eq!(snap.tabs.len(), 2);
@@ -625,15 +652,16 @@ mod tests {
 
         let mut b = fixture_app();
         b.apply_prefs(&snap);
-        assert_eq!(b.tab_count(), 2);
-        assert_eq!(b.active_tab(), 1);
+        assert_eq!(b.tab_count(), 3, "home + the two restored model tabs");
+        assert_eq!(b.active_tab(), 2);
         assert_eq!(b.selected_unique_id().as_deref(), Some(m1.as_str()));
-        assert!(!b.tabs()[0].lineage_view.upstream, "tab 0's view restored");
-        assert!(b.tabs()[1].lineage_view.upstream, "tab 1 kept the default");
+        assert!(b.tabs()[0].home, "index 0 is the re-seeded home tab");
+        assert!(!b.tabs()[1].lineage_view.upstream, "tab 1's view restored");
+        assert!(b.tabs()[2].lineage_view.upstream, "tab 2 kept the default");
         assert_eq!(b.recent.first().map(String::as_str), Some(m1.as_str()));
         // Session state deliberately does NOT restore — the tab re-homes on
         // its root (§13: cursor/history/scroll start fresh).
-        assert!(b.tabs()[0].back.is_empty() && b.tabs()[0].lineage_cursor.is_none());
+        assert!(b.tabs()[1].back.is_empty() && b.tabs()[1].lineage_cursor.is_none());
     }
 
     #[test]
@@ -658,8 +686,12 @@ mod tests {
             ..PersistedState::default()
         };
         a.apply_prefs(&prefs);
-        assert_eq!(a.tab_count(), 1, "dead roots drop their whole tab");
-        assert_eq!(a.active_tab(), 0, "active clamps to the survivors");
+        assert_eq!(
+            a.tab_count(),
+            2,
+            "dead roots drop their whole tab; home stays"
+        );
+        assert_eq!(a.active_tab(), 1, "active clamps to the survivors");
         assert_eq!(
             a.selected_unique_id().as_deref(),
             Some("model.jaffle_finance.rpt_delivery_base_metrics")
@@ -676,7 +708,7 @@ mod tests {
             ..PersistedState::default()
         };
         a.apply_prefs(&prefs);
-        assert_eq!(a.tab_count(), 1);
+        assert_eq!(a.tab_count(), 2, "home + the re-rooted seeded tab");
         assert_eq!(
             a.selected_unique_id().as_deref(),
             Some("model.jaffle_finance.rpt_delivery_base_metrics")
@@ -692,11 +724,49 @@ mod tests {
         };
         let mut b = fixture_app();
         b.apply_prefs(&prefs);
-        assert_eq!(b.tab_count(), 1);
+        assert_eq!(b.tab_count(), 2, "home + the re-rooted seeded tab");
         assert_eq!(
             b.selected_unique_id().as_deref(),
             Some("model.jaffle_finance.rpt_delivery_base_metrics")
         );
+    }
+
+    #[test]
+    fn home_landing_persists_none_active_tab_and_resume_seeds() {
+        // Issue 10: a file written on the home tab has `active_tab: None`
+        // (home is never serialized — it re-seeds on apply) and lands back
+        // on home. `last_selected` mirrors the Resume uid so an older dbtl
+        // can still land on a model.
+        let mut a = fixture_app();
+        a.open_node_as_tab("model.jaffle_finance.rpt_delivery_base_metrics");
+        a.enter_home();
+        let snap = a.prefs_snapshot();
+        assert_eq!(snap.active_tab, None, "home persists as None");
+        assert!(
+            snap.tabs.iter().all(|t| t.root.starts_with("model.")),
+            "the home tab never serializes — every row is a model root: {:?}",
+            snap.tabs
+        );
+        assert_eq!(
+            snap.last_selected.as_deref(),
+            a.home_resume.as_deref(),
+            "last_selected mirrors the Resume uid"
+        );
+        assert_eq!(
+            snap.recent.first().map(String::as_str),
+            Some("model.jaffle_finance.rpt_delivery_base_metrics"),
+            "the MRU serializes with the strip"
+        );
+
+        let mut b = fixture_app();
+        b.apply_prefs(&snap);
+        assert!(b.home_active(), "a home-written file lands back on home");
+        assert_eq!(
+            b.home_resume.as_deref(),
+            Some("model.jaffle_finance.rpt_delivery_base_metrics"),
+            "the Resume row restores from last_selected"
+        );
+        assert!(matches!(b.mode, crate::action::Mode::Home));
     }
 
     #[test]

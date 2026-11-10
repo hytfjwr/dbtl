@@ -278,8 +278,23 @@ pub enum Action {
     TabPrev,
     TabNext,
     /// `1`..=`9`: activate the tab at that 1-based position (tabs from
-    /// position 10 carry no number and are unreachable by digit).
+    /// position 10 carry no number and are unreachable by digit). Position
+    /// counts MODEL tabs only — the home tab sits left of position 1 and is
+    /// reached via `~`/`{`/`}` (Issue 10).
     TabActivate(u8),
+    // --- home tab (Issue 10; screen-spec §3) ---
+    /// `~`: activate the home tab (no-op while already on it).
+    HomeGo,
+    /// `j`/`k`/`↑`/`↓` on the home screen: move the item cursor over the
+    /// flattened selectable rows (resume → recent → bookmarks → attention;
+    /// the search-results list while `/` search is open).
+    HomeMove(Direction),
+    /// `Enter` on the home screen: open the item under the cursor — already
+    /// open activates its tab, else a new tab (§3's "開く" rule).
+    HomeOpen,
+    /// A click on home item `i` (its flattened selectable index): select it
+    /// and open it in one gesture (§6 — items open on click).
+    HomePick(usize),
     // --- inspector pane (Issue 04; screen-spec §4) ---
     /// `I`: cycle the inspector visibility pref `auto → on → off` (the
     /// persisted value; the width-aware auto rule resolves at draw time).
@@ -297,6 +312,10 @@ pub enum SearchTarget {
     List,
     /// Jump to a matching node within the current lineage subgraph.
     Lineage,
+    /// The home screen's `/` field (§3): same syntax as `List` (`!` selector /
+    /// `?` full-text), results replace the home sections. Enter opens the
+    /// picked model in a tab rather than re-rooting.
+    Home,
 }
 
 /// Live search state (query text + which pane it drives + the selection to
@@ -941,6 +960,12 @@ pub enum Mode {
     /// The `?` keybindings overlay (scrollable, `/`-filterable; `back`
     /// restores the mode it was opened over — Issue 09).
     Help(HelpView),
+    /// The home tab is ACTIVE (Issue 10, §3): the body draws the home screen
+    /// instead of the three panes. NOT a modal — it is the idle mode while
+    /// `tabs[0]` (the unclosable home tab) is active; overlays (help, stats,
+    /// search) still stack on top and close back to it. The item cursor
+    /// lives on `App::home_sel` so modal round-trips keep it.
+    Home,
 }
 
 /// The mode discriminant, used for keymap lookup (the binding table keys on this,
@@ -959,6 +984,7 @@ pub enum ModeKind {
     Yank,
     Menu,
     Help,
+    Home,
 }
 
 impl Mode {
@@ -976,6 +1002,7 @@ impl Mode {
             Mode::Yank { .. } => ModeKind::Yank,
             Mode::Menu(_) => ModeKind::Menu,
             Mode::Help(_) => ModeKind::Help,
+            Mode::Home => ModeKind::Home,
         }
     }
 
@@ -1057,6 +1084,11 @@ pub struct KeyBinding {
     pub triggers: &'static [Trigger],
     pub action: Action,
     pub help: &'static str,
+    /// The home screen's Actions row (§3): `true` marks this row eligible for
+    /// the home "Actions" line — the row's `key_label()`/`help` render there
+    /// verbatim, and [`App::unavailable_reason`] still filters the unusable
+    /// ones out (a baseline-less `D` never shows).
+    pub home: bool,
     /// Status-line hint annotations (screen-spec §8): offer this row's action
     /// as a `{key} {desc}` hint while `ctx` is the on-screen context. Rows
     /// sharing `(ctx, prio, desc)` merge into ONE hint (`j` + `k` →
@@ -1084,6 +1116,9 @@ pub enum HintCtx {
     Overview,
     /// The inspector pane owns the focus (Issue 04's third pane).
     Inspector,
+    /// The home tab is active (Issue 10; §8's `j/k move ⏎ open / search
+    /// 1-9 tabs q quit` row).
+    Home,
 }
 
 /// One hint annotation on a [`KeyBinding`] row (see [`KeyBinding::hints`]).
@@ -1145,6 +1180,14 @@ impl Hint {
             desc,
         }
     }
+    /// Offer while the home tab is active.
+    pub const fn home(prio: u8, desc: &'static str) -> Self {
+        Hint {
+            prio,
+            ctx: HintCtx::Home,
+            desc,
+        }
+    }
 }
 
 /// One status-line hint's data (its cell range lives in
@@ -1179,22 +1222,25 @@ pub fn status_hints(mode: ModeKind, focus: Focus, traced: bool, overview: bool) 
     // Selection the focused pane's ctx emits — except a live column trace or
     // the overview, which supersede the pane story with their own (traced
     // wins over overview: a trace pins a rooted graph).
-    let ctxs: &[HintCtx] = if mode == ModeKind::Selection {
-        if traced {
-            // A live trace supersedes even the `?` escape hatch — §8's traced
-            // row is a self-contained story (`h/l`, `K`, `Esc`).
-            &[HintCtx::Traced]
-        } else if overview {
-            &[HintCtx::Overview]
-        } else {
-            match focus {
-                Focus::List => &[HintCtx::Any, HintCtx::List],
-                Focus::RightPane => &[HintCtx::Any, HintCtx::Lineage],
-                Focus::Inspector => &[HintCtx::Any, HintCtx::Inspector],
+    let ctxs: &[HintCtx] = match mode {
+        ModeKind::Selection => {
+            if traced {
+                // A live trace supersedes even the `?` escape hatch — §8's
+                // traced row is a self-contained story (`h/l`, `K`, `Esc`).
+                &[HintCtx::Traced]
+            } else if overview {
+                &[HintCtx::Overview]
+            } else {
+                match focus {
+                    Focus::List => &[HintCtx::Any, HintCtx::List],
+                    Focus::RightPane => &[HintCtx::Any, HintCtx::Lineage],
+                    Focus::Inspector => &[HintCtx::Any, HintCtx::Inspector],
+                }
             }
         }
-    } else {
-        &[HintCtx::Any]
+        // §8's home row: `j/k move  ⏎ open  / search  1-9 tabs  q quit`.
+        ModeKind::Home => &[HintCtx::Any, HintCtx::Home],
+        _ => &[HintCtx::Any],
     };
     // Group rows by (ctx, prio, desc). `BTreeMap` iteration IS the priority
     // sort. A group's click action survives only while every member agrees
@@ -1285,212 +1331,242 @@ use Trigger::{Ctrl, Key, Super};
 #[rustfmt::skip]
 pub static BINDINGS: &[KeyBinding] = &[
     // ---- Selection mode ----
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('j')), Key(Down)], action: A::MoveDown, help: "down (list / lineage cursor)", hints: &[Hint::list(10, "move"), Hint::lineage(10, "move"), Hint::overview(10, "move"), Hint::inspector(10, "scroll")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('k')), Key(Up)], action: A::MoveUp, help: "up (list / lineage cursor)", hints: &[Hint::list(10, "move"), Hint::lineage(10, "move"), Hint::overview(10, "move"), Hint::inspector(10, "scroll")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('h')), Key(Left)], action: A::MoveLeft, help: "lineage cursor left (upstream)", hints: &[Hint::lineage(10, "move"), Hint::traced(10, "step column")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('l')), Key(Right)], action: A::MoveRight, help: "lineage cursor right (downstream)", hints: &[Hint::lineage(10, "move"), Hint::traced(10, "step column")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('g'))], action: A::JumpTop, help: "jump to first model (list)", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('G'))], action: A::JumpBottom, help: "jump to last model (list)", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Tab)], action: A::ToggleFocus, help: "switch list / lineage focus", hints: &[Hint::list(50, "lineage"), Hint::inspector(30, "list")] },
-    KeyBinding { mode: M::Selection, triggers: &[Super('b'), Ctrl('b')], action: A::ToggleListPane, help: "show / hide the model list pane", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Enter)], action: A::DetailOpen, help: "open structure / re-root to cursor / toggle +more", hints: &[Hint::list(20, "open"), Hint::lineage(20, "re-root"), Hint::overview(20, "open"), Hint::inspector(20, "trace column")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('/'))], action: A::SearchOpen, help: "search (list filter / lineage jump)", hints: &[Hint::list(30, "search"), Hint::overview(30, "search")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "toggle this help", hints: &[Hint::any(90, "help")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('o'))], action: A::OpenEditor, help: "open SQL in $EDITOR", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('y'))], action: A::YankPrefix, help: "yank prefix menu", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('Y'))], action: A::YankName, help: "copy model name", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('m'))], action: A::YankMermaid, help: "copy lineage as Mermaid", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('x'))], action: A::YankDot, help: "copy lineage as Graphviz DOT", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('r'))], action: A::Reload, help: "reload manifest", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('z'))], action: A::Recenter, help: "cursor home + re-center lineage", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('u'))], action: A::ToggleUpstream, help: "toggle upstream side", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('d'))], action: A::ToggleDownstream, help: "toggle downstream side", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('['))], action: A::DepthDecrease, help: "limit lineage depth (-)", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char(']'))], action: A::DepthIncrease, help: "widen lineage depth (+)", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('0'))], action: A::ResetView, help: "reset lineage view", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('b'))], action: A::HistoryBack, help: "jump back (re-root history)", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('f'))], action: A::HistoryForward, help: "jump forward (re-root history)", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('q')), Ctrl('c')], action: A::Quit, help: "quit", hints: &[Hint::overview(80, "quit")] },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('j')), Key(Down)], action: A::MoveDown, help: "down (list / lineage cursor)", hints: &[Hint::list(10, "move"), Hint::lineage(10, "move"), Hint::overview(10, "move"), Hint::inspector(10, "scroll")], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('k')), Key(Up)], action: A::MoveUp, help: "up (list / lineage cursor)", hints: &[Hint::list(10, "move"), Hint::lineage(10, "move"), Hint::overview(10, "move"), Hint::inspector(10, "scroll")], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('h')), Key(Left)], action: A::MoveLeft, help: "lineage cursor left (upstream)", hints: &[Hint::lineage(10, "move"), Hint::traced(10, "step column")], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('l')), Key(Right)], action: A::MoveRight, help: "lineage cursor right (downstream)", hints: &[Hint::lineage(10, "move"), Hint::traced(10, "step column")], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('g'))], action: A::JumpTop, help: "jump to first model (list)", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('G'))], action: A::JumpBottom, help: "jump to last model (list)", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Tab)], action: A::ToggleFocus, help: "switch list / lineage focus", hints: &[Hint::list(50, "lineage"), Hint::inspector(30, "list")], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Super('b'), Ctrl('b')], action: A::ToggleListPane, help: "show / hide the model list pane", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Enter)], action: A::DetailOpen, help: "open structure / re-root to cursor / toggle +more", hints: &[Hint::list(20, "open"), Hint::lineage(20, "re-root"), Hint::overview(20, "open"), Hint::inspector(20, "trace column")], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('/'))], action: A::SearchOpen, help: "search (list filter / lineage jump)", hints: &[Hint::list(30, "search"), Hint::overview(30, "search")], home: true },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "toggle this help", hints: &[Hint::any(90, "help")], home: true },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('o'))], action: A::OpenEditor, help: "open SQL in $EDITOR", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('y'))], action: A::YankPrefix, help: "yank prefix menu", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('Y'))], action: A::YankName, help: "copy model name", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('m'))], action: A::YankMermaid, help: "copy lineage as Mermaid", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('x'))], action: A::YankDot, help: "copy lineage as Graphviz DOT", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('r'))], action: A::Reload, help: "reload manifest", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('z'))], action: A::Recenter, help: "cursor home + re-center lineage", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('u'))], action: A::ToggleUpstream, help: "toggle upstream side", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('d'))], action: A::ToggleDownstream, help: "toggle downstream side", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('['))], action: A::DepthDecrease, help: "limit lineage depth (-)", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char(']'))], action: A::DepthIncrease, help: "widen lineage depth (+)", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('0'))], action: A::ResetView, help: "reset lineage view", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('b'))], action: A::HistoryBack, help: "jump back (re-root history)", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('f'))], action: A::HistoryForward, help: "jump forward (re-root history)", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('q')), Ctrl('c')], action: A::Quit, help: "quit", hints: &[Hint::overview(80, "quit")], home: false },
     // ---- new feature commands: placed AFTER `quit` so `quit` stays inside the
     // first help page at 100x40 (help_overlay_renders_keybindings_from_keymap).
     // Reorder these past `quit` only if that test's TestBackend height grows. ----
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('s'))], action: A::SqlOpen, help: "preview SQL", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('S'))], action: A::StatsOpen, help: "stats dashboard", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('t'))], action: A::CycleLens, help: "cycle lineage lens", hints: &[Hint::lineage(50, "lens")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char(' '))], action: A::BookmarkToggle, help: "toggle bookmark", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('\''))], action: A::BookmarkCycle, help: "cycle bookmarks", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('.'))], action: A::SortCycle, help: "cycle list sort", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('M'))], action: A::ToggleMinimap, help: "toggle minimap", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('v'))], action: A::ToggleDensity, help: "toggle compact lineage", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Ctrl('p'), Super('p')], action: A::PaletteOpen, help: "command palette", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('c'))], action: A::YankAscii, help: "copy lineage as text diagram", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('C'))], action: A::YankSql, help: "copy raw SQL", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('i'))], action: A::YankImpact, help: "copy impact report (Markdown)", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('e'))], action: A::ExportLineage, help: "export lineage to <name>_lineage.txt", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(PageDown), Ctrl('d')], action: A::PageDown, help: "page down (list)", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(PageUp), Ctrl('u')], action: A::PageUp, help: "page up (list)", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('n'))], action: A::GapNext, help: "next untested model", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('N'))], action: A::GapPrev, help: "previous untested model", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('"'))], action: A::BookmarkCycleBack, help: "cycle bookmarks backward", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('H'))], action: A::LineageLeftmost, help: "lineage cursor to first column", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('L'))], action: A::LineageRightmost, help: "lineage cursor to last column", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('T'))], action: A::ToggleUntestedFilter, help: "filter list: untested only", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('*'))], action: A::ToggleBookmarkFilter, help: "filter list: bookmarked only", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('-'))], action: A::ToggleGroupFold, help: "fold/unfold model group", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('P'))], action: A::DbtParse, help: "run dbt parse (build manifest)", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Ctrl('t')], action: A::ThemeCycle, help: "cycle color theme", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('D'))], action: A::DiffOpen, help: "diff vs baseline (--diff)", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('!'))], action: A::YankSelector, help: "copy dbt --select command", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('w'))], action: A::ToggleOverview, help: "toggle whole-graph overview", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('p'))], action: A::PathToggle, help: "anchor/clear two-node path", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('K'))], action: A::ColumnsOpen, help: "column lineage modal (traced column)", hints: &[Hint::traced(20, "column modal")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('a'))], action: A::MenuOpen, help: "node actions menu", hints: &[Hint::lineage(40, "actions")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Esc)], action: A::ColumnFocusExit, help: "exit column focus", hints: &[Hint::traced(30, "exit trace")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('<'))], action: A::PaneNarrow, help: "narrow pane 4 cols", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('>'))], action: A::PaneWiden, help: "widen pane 4 cols", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('='))], action: A::PaneWidthsReset, help: "reset pane widths", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Ctrl('n')], action: A::NotificationsOpen, help: "notification center", hints: &[] },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('s'))], action: A::SqlOpen, help: "preview SQL", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('S'))], action: A::StatsOpen, help: "stats dashboard", hints: &[], home: true },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('t'))], action: A::CycleLens, help: "cycle lineage lens", hints: &[Hint::lineage(50, "lens")], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char(' '))], action: A::BookmarkToggle, help: "toggle bookmark", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('\''))], action: A::BookmarkCycle, help: "cycle bookmarks", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('.'))], action: A::SortCycle, help: "cycle list sort", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('M'))], action: A::ToggleMinimap, help: "toggle minimap", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('v'))], action: A::ToggleDensity, help: "toggle compact lineage", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Ctrl('p'), Super('p')], action: A::PaletteOpen, help: "command palette", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('c'))], action: A::YankAscii, help: "copy lineage as text diagram", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('C'))], action: A::YankSql, help: "copy raw SQL", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('i'))], action: A::YankImpact, help: "copy impact report (Markdown)", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('e'))], action: A::ExportLineage, help: "export lineage to <name>_lineage.txt", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(PageDown), Ctrl('d')], action: A::PageDown, help: "page down (list)", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(PageUp), Ctrl('u')], action: A::PageUp, help: "page up (list)", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('n'))], action: A::GapNext, help: "next untested model", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('N'))], action: A::GapPrev, help: "previous untested model", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('"'))], action: A::BookmarkCycleBack, help: "cycle bookmarks backward", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('H'))], action: A::LineageLeftmost, help: "lineage cursor to first column", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('L'))], action: A::LineageRightmost, help: "lineage cursor to last column", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('T'))], action: A::ToggleUntestedFilter, help: "filter list: untested only", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('*'))], action: A::ToggleBookmarkFilter, help: "filter list: bookmarked only", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('-'))], action: A::ToggleGroupFold, help: "fold/unfold model group", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('P'))], action: A::DbtParse, help: "run dbt parse (build manifest)", hints: &[], home: true },
+    KeyBinding { mode: M::Selection, triggers: &[Ctrl('t')], action: A::ThemeCycle, help: "cycle color theme", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('D'))], action: A::DiffOpen, help: "diff vs baseline (--diff)", hints: &[], home: true },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('!'))], action: A::YankSelector, help: "copy dbt --select command", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('w'))], action: A::ToggleOverview, help: "toggle whole-graph overview", hints: &[], home: true },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('p'))], action: A::PathToggle, help: "anchor/clear two-node path", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('K'))], action: A::ColumnsOpen, help: "column lineage modal (traced column)", hints: &[Hint::traced(20, "column modal")], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('a'))], action: A::MenuOpen, help: "node actions menu", hints: &[Hint::lineage(40, "actions")], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Esc)], action: A::ColumnFocusExit, help: "exit column focus", hints: &[Hint::traced(30, "exit trace")], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('<'))], action: A::PaneNarrow, help: "narrow pane 4 cols", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('>'))], action: A::PaneWiden, help: "widen pane 4 cols", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('='))], action: A::PaneWidthsReset, help: "reset pane widths", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Ctrl('n')], action: A::NotificationsOpen, help: "notification center", hints: &[], home: false },
     // ---- tabs (Issue 03; §2): `O` opens the cursor's model in a new tab,
     // `X`/Ctrl-w closes, `{`/`}` cycle, `1`-`9` jump straight to a tab. ----
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('O'))], action: A::TabOpen, help: "open node in new tab", hints: &[Hint::list(40, "new tab"), Hint::lineage(30, "new tab")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('X')), Ctrl('w')], action: A::TabClose, help: "close tab", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('{'))], action: A::TabPrev, help: "previous tab", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('}'))], action: A::TabNext, help: "next tab", hints: &[] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('1'))], action: A::TabActivate(1), help: "go to tab 1", hints: &[Hint::overview(40, "tabs")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('2'))], action: A::TabActivate(2), help: "go to tab 2", hints: &[Hint::overview(40, "tabs")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('3'))], action: A::TabActivate(3), help: "go to tab 3", hints: &[Hint::overview(40, "tabs")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('4'))], action: A::TabActivate(4), help: "go to tab 4", hints: &[Hint::overview(40, "tabs")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('5'))], action: A::TabActivate(5), help: "go to tab 5", hints: &[Hint::overview(40, "tabs")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('6'))], action: A::TabActivate(6), help: "go to tab 6", hints: &[Hint::overview(40, "tabs")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('7'))], action: A::TabActivate(7), help: "go to tab 7", hints: &[Hint::overview(40, "tabs")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('8'))], action: A::TabActivate(8), help: "go to tab 8", hints: &[Hint::overview(40, "tabs")] },
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('9'))], action: A::TabActivate(9), help: "go to tab 9", hints: &[Hint::overview(40, "tabs")] },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('O'))], action: A::TabOpen, help: "open node in new tab", hints: &[Hint::list(40, "new tab"), Hint::lineage(30, "new tab")], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('X')), Ctrl('w')], action: A::TabClose, help: "close tab", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('{'))], action: A::TabPrev, help: "previous tab", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('}'))], action: A::TabNext, help: "next tab", hints: &[], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('1'))], action: A::TabActivate(1), help: "go to tab 1", hints: &[Hint::overview(40, "tabs")], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('2'))], action: A::TabActivate(2), help: "go to tab 2", hints: &[Hint::overview(40, "tabs")], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('3'))], action: A::TabActivate(3), help: "go to tab 3", hints: &[Hint::overview(40, "tabs")], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('4'))], action: A::TabActivate(4), help: "go to tab 4", hints: &[Hint::overview(40, "tabs")], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('5'))], action: A::TabActivate(5), help: "go to tab 5", hints: &[Hint::overview(40, "tabs")], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('6'))], action: A::TabActivate(6), help: "go to tab 6", hints: &[Hint::overview(40, "tabs")], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('7'))], action: A::TabActivate(7), help: "go to tab 7", hints: &[Hint::overview(40, "tabs")], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('8'))], action: A::TabActivate(8), help: "go to tab 8", hints: &[Hint::overview(40, "tabs")], home: false },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('9'))], action: A::TabActivate(9), help: "go to tab 9", hints: &[Hint::overview(40, "tabs")], home: false },
     // ---- inspector (Issue 04; §4): `I` cycles the pane's visibility pref. ----
-    KeyBinding { mode: M::Selection, triggers: &[Key(Char('I'))], action: A::ToggleInspector, help: "inspector pane auto / on / off", hints: &[] },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('I'))], action: A::ToggleInspector, help: "inspector pane auto / on / off", hints: &[], home: false },
+    // ---- home tab (Issue 10; §3): `~` jumps to the fixed left tab. ----
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('~'))], action: A::HomeGo, help: "go to home tab", hints: &[], home: false },
     // ---- Yank prefix mode (`y` + one key): the second key is the SAME letter
     // the single-key binding always used, so muscle memory carries over as
     // `ym`/`yC`/…; `yy` copies the unique_id (what bare `y` used to do). ----
-    KeyBinding { mode: M::Yank, triggers: &[Key(Char('y'))], action: A::YankId, help: "copy unique_id", hints: &[] },
-    KeyBinding { mode: M::Yank, triggers: &[Key(Char('Y'))], action: A::YankName, help: "copy model name", hints: &[] },
-    KeyBinding { mode: M::Yank, triggers: &[Key(Char('m'))], action: A::YankMermaid, help: "copy lineage as Mermaid", hints: &[] },
-    KeyBinding { mode: M::Yank, triggers: &[Key(Char('x'))], action: A::YankDot, help: "copy lineage as Graphviz DOT", hints: &[] },
-    KeyBinding { mode: M::Yank, triggers: &[Key(Char('c'))], action: A::YankAscii, help: "copy lineage as text diagram", hints: &[] },
-    KeyBinding { mode: M::Yank, triggers: &[Key(Char('C'))], action: A::YankSql, help: "copy raw SQL", hints: &[] },
-    KeyBinding { mode: M::Yank, triggers: &[Key(Char('s'))], action: A::YankCompiledSql, help: "copy compiled SQL", hints: &[] },
-    KeyBinding { mode: M::Yank, triggers: &[Key(Char('i'))], action: A::YankImpact, help: "copy impact report (Markdown)", hints: &[] },
-    KeyBinding { mode: M::Yank, triggers: &[Key(Char('l'))], action: A::YankColumnLineage, help: "copy column lineage (Markdown)", hints: &[] },
-    KeyBinding { mode: M::Yank, triggers: &[Key(Char('!'))], action: A::YankSelector, help: "copy dbt --select command", hints: &[] },
-    KeyBinding { mode: M::Yank, triggers: &[Key(Esc), Key(Char('q'))], action: A::DetailClose, help: "cancel", hints: &[Hint::any(80, "cancel")] },
-    KeyBinding { mode: M::Yank, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "help", hints: &[Hint::any(90, "help")] },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('y'))], action: A::YankId, help: "copy unique_id", hints: &[], home: false },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('Y'))], action: A::YankName, help: "copy model name", hints: &[], home: false },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('m'))], action: A::YankMermaid, help: "copy lineage as Mermaid", hints: &[], home: false },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('x'))], action: A::YankDot, help: "copy lineage as Graphviz DOT", hints: &[], home: false },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('c'))], action: A::YankAscii, help: "copy lineage as text diagram", hints: &[], home: false },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('C'))], action: A::YankSql, help: "copy raw SQL", hints: &[], home: false },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('s'))], action: A::YankCompiledSql, help: "copy compiled SQL", hints: &[], home: false },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('i'))], action: A::YankImpact, help: "copy impact report (Markdown)", hints: &[], home: false },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('l'))], action: A::YankColumnLineage, help: "copy column lineage (Markdown)", hints: &[], home: false },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('!'))], action: A::YankSelector, help: "copy dbt --select command", hints: &[], home: false },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Esc), Key(Char('q'))], action: A::DetailClose, help: "cancel", hints: &[Hint::any(80, "cancel")], home: false },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "help", hints: &[Hint::any(90, "help")], home: false },
     // ---- Search mode (printable chars are handled dynamically -> SearchType) ----
-    KeyBinding { mode: M::Search, triggers: &[Key(Esc)], action: A::SearchCancel, help: "cancel search", hints: &[Hint::any(80, "cancel")] },
-    KeyBinding { mode: M::Search, triggers: &[Key(Enter)], action: A::SearchConfirm, help: "confirm", hints: &[Hint::any(20, "confirm")] },
-    KeyBinding { mode: M::Search, triggers: &[Key(Backspace)], action: A::SearchBackspace, help: "delete char", hints: &[] },
-    KeyBinding { mode: M::Search, triggers: &[Key(Up)], action: A::SearchMove(Direction::Up), help: "previous match", hints: &[Hint::any(10, "match")] },
-    KeyBinding { mode: M::Search, triggers: &[Key(Down)], action: A::SearchMove(Direction::Down), help: "next match", hints: &[Hint::any(10, "match")] },
+    KeyBinding { mode: M::Search, triggers: &[Key(Esc)], action: A::SearchCancel, help: "cancel search", hints: &[Hint::any(80, "cancel")], home: false },
+    KeyBinding { mode: M::Search, triggers: &[Key(Enter)], action: A::SearchConfirm, help: "confirm", hints: &[Hint::any(20, "confirm")], home: false },
+    KeyBinding { mode: M::Search, triggers: &[Key(Backspace)], action: A::SearchBackspace, help: "delete char", hints: &[], home: false },
+    KeyBinding { mode: M::Search, triggers: &[Key(Up)], action: A::SearchMove(Direction::Up), help: "previous match", hints: &[Hint::any(10, "match")], home: false },
+    KeyBinding { mode: M::Search, triggers: &[Key(Down)], action: A::SearchMove(Direction::Down), help: "next match", hints: &[Hint::any(10, "match")], home: false },
     // ---- Command palette (printable chars are handled dynamically -> SearchType;
     // the editing actions REUSE the Search* arms, routed by mode in apply_action) ----
-    KeyBinding { mode: M::Palette, triggers: &[Key(Esc)], action: A::SearchCancel, help: "close palette", hints: &[Hint::any(80, "close")] },
-    KeyBinding { mode: M::Palette, triggers: &[Key(Enter)], action: A::SearchConfirm, help: "run command", hints: &[Hint::any(20, "run")] },
-    KeyBinding { mode: M::Palette, triggers: &[Key(Backspace)], action: A::SearchBackspace, help: "delete char", hints: &[] },
-    KeyBinding { mode: M::Palette, triggers: &[Key(Up)], action: A::SearchMove(Direction::Up), help: "prev command", hints: &[Hint::any(10, "pick")] },
-    KeyBinding { mode: M::Palette, triggers: &[Key(Down)], action: A::SearchMove(Direction::Down), help: "next command", hints: &[Hint::any(10, "pick")] },
+    KeyBinding { mode: M::Palette, triggers: &[Key(Esc)], action: A::SearchCancel, help: "close palette", hints: &[Hint::any(80, "close")], home: false },
+    KeyBinding { mode: M::Palette, triggers: &[Key(Enter)], action: A::SearchConfirm, help: "run command", hints: &[Hint::any(20, "run")], home: false },
+    KeyBinding { mode: M::Palette, triggers: &[Key(Backspace)], action: A::SearchBackspace, help: "delete char", hints: &[], home: false },
+    KeyBinding { mode: M::Palette, triggers: &[Key(Up)], action: A::SearchMove(Direction::Up), help: "prev command", hints: &[Hint::any(10, "pick")], home: false },
+    KeyBinding { mode: M::Palette, triggers: &[Key(Down)], action: A::SearchMove(Direction::Down), help: "next command", hints: &[Hint::any(10, "pick")], home: false },
     // ---- Detail modal ----
-    KeyBinding { mode: M::Detail, triggers: &[Key(Esc), Key(Char('q'))], action: A::DetailClose, help: "close", hints: &[Hint::any(80, "close")] },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Esc), Key(Char('q'))], action: A::DetailClose, help: "close", hints: &[Hint::any(80, "close")], home: false },
     // `?` opens help over the modal (HelpView.back restores it) — the
     // structure-modal section then leads the layout.
-    KeyBinding { mode: M::Detail, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "help", hints: &[Hint::any(90, "help")] },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "help", hints: &[Hint::any(90, "help")], home: false },
     // Enter/`c` commits the column under the h/l cursor to column focus (the
     // arm closes the modal instead when the node has no columns — the classic
     // Enter-to-close survives there). While the tests section owns the cursor
     // (Tab), Enter re-roots to the relationships test's `to:` target instead.
-    KeyBinding { mode: M::Detail, triggers: &[Key(Enter), Key(Char('c'))], action: A::ColumnFocusEnter, help: "trace column / jump to test target", hints: &[Hint::any(50, "trace")] },
-    KeyBinding { mode: M::Detail, triggers: &[Key(Tab), Key(BackTab)], action: A::DetailSectionToggle, help: "columns / tests section", hints: &[Hint::any(40, "sections")] },
-    KeyBinding { mode: M::Detail, triggers: &[Key(Char('K'))], action: A::ColumnsOpen, help: "column lineage modal (this column)", hints: &[Hint::any(60, "column modal")] },
-    KeyBinding { mode: M::Detail, triggers: &[Key(Char('h')), Key(Char('H'))], action: A::DetailColumnMove(Direction::Up), help: "previous column / test", hints: &[Hint::any(30, "column")] },
-    KeyBinding { mode: M::Detail, triggers: &[Key(Char('l')), Key(Char('L'))], action: A::DetailColumnMove(Direction::Down), help: "next column / test", hints: &[Hint::any(30, "column")] },
-    KeyBinding { mode: M::Detail, triggers: &[Key(Char('y'))], action: A::YankPrefix, help: "yank prefix menu", hints: &[Hint::any(70, "yank")] },
-    KeyBinding { mode: M::Detail, triggers: &[Key(Char('a'))], action: A::MenuOpen, help: "node actions menu", hints: &[Hint::any(75, "actions")] },
-    KeyBinding { mode: M::Detail, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down", hints: &[Hint::any(10, "scroll")] },
-    KeyBinding { mode: M::Detail, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up", hints: &[Hint::any(10, "scroll")] },
-    KeyBinding { mode: M::Detail, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down", hints: &[Hint::any(15, "page")] },
-    KeyBinding { mode: M::Detail, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up", hints: &[Hint::any(15, "page")] },
-    KeyBinding { mode: M::Detail, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top", hints: &[Hint::any(20, "jump")] },
-    KeyBinding { mode: M::Detail, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom", hints: &[Hint::any(20, "jump")] },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Enter), Key(Char('c'))], action: A::ColumnFocusEnter, help: "trace column / jump to test target", hints: &[Hint::any(50, "trace")], home: false },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Tab), Key(BackTab)], action: A::DetailSectionToggle, help: "columns / tests section", hints: &[Hint::any(40, "sections")], home: false },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('K'))], action: A::ColumnsOpen, help: "column lineage modal (this column)", hints: &[Hint::any(60, "column modal")], home: false },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('h')), Key(Char('H'))], action: A::DetailColumnMove(Direction::Up), help: "previous column / test", hints: &[Hint::any(30, "column")], home: false },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('l')), Key(Char('L'))], action: A::DetailColumnMove(Direction::Down), help: "next column / test", hints: &[Hint::any(30, "column")], home: false },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('y'))], action: A::YankPrefix, help: "yank prefix menu", hints: &[Hint::any(70, "yank")], home: false },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('a'))], action: A::MenuOpen, help: "node actions menu", hints: &[Hint::any(75, "actions")], home: false },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down", hints: &[Hint::any(10, "scroll")], home: false },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up", hints: &[Hint::any(10, "scroll")], home: false },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down", hints: &[Hint::any(15, "page")], home: false },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up", hints: &[Hint::any(15, "page")], home: false },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top", hints: &[Hint::any(20, "jump")], home: false },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom", hints: &[Hint::any(20, "jump")], home: false },
     // ---- SQL preview modal (reuses DetailClose + DetailScroll) ----
-    KeyBinding { mode: M::Sql, triggers: &[Key(Esc), Key(Enter), Key(Char('q'))], action: A::DetailClose, help: "close", hints: &[Hint::any(80, "close")] },
-    KeyBinding { mode: M::Sql, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "help", hints: &[Hint::any(90, "help")] },
-    KeyBinding { mode: M::Sql, triggers: &[Key(Char('c'))], action: A::SqlToggleCompiled, help: "toggle raw / compiled SQL", hints: &[Hint::any(30, "compiled")] },
-    KeyBinding { mode: M::Sql, triggers: &[Key(Char('a'))], action: A::MenuOpen, help: "node actions menu", hints: &[Hint::any(40, "actions")] },
-    KeyBinding { mode: M::Sql, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down", hints: &[Hint::any(10, "scroll")] },
-    KeyBinding { mode: M::Sql, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up", hints: &[Hint::any(10, "scroll")] },
-    KeyBinding { mode: M::Sql, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down", hints: &[Hint::any(15, "page")] },
-    KeyBinding { mode: M::Sql, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up", hints: &[Hint::any(15, "page")] },
-    KeyBinding { mode: M::Sql, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top", hints: &[Hint::any(20, "jump")] },
-    KeyBinding { mode: M::Sql, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom", hints: &[Hint::any(20, "jump")] },
+    KeyBinding { mode: M::Sql, triggers: &[Key(Esc), Key(Enter), Key(Char('q'))], action: A::DetailClose, help: "close", hints: &[Hint::any(80, "close")], home: false },
+    KeyBinding { mode: M::Sql, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "help", hints: &[Hint::any(90, "help")], home: false },
+    KeyBinding { mode: M::Sql, triggers: &[Key(Char('c'))], action: A::SqlToggleCompiled, help: "toggle raw / compiled SQL", hints: &[Hint::any(30, "compiled")], home: false },
+    KeyBinding { mode: M::Sql, triggers: &[Key(Char('a'))], action: A::MenuOpen, help: "node actions menu", hints: &[Hint::any(40, "actions")], home: false },
+    KeyBinding { mode: M::Sql, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down", hints: &[Hint::any(10, "scroll")], home: false },
+    KeyBinding { mode: M::Sql, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up", hints: &[Hint::any(10, "scroll")], home: false },
+    KeyBinding { mode: M::Sql, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down", hints: &[Hint::any(15, "page")], home: false },
+    KeyBinding { mode: M::Sql, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up", hints: &[Hint::any(15, "page")], home: false },
+    KeyBinding { mode: M::Sql, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top", hints: &[Hint::any(20, "jump")], home: false },
+    KeyBinding { mode: M::Sql, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom", hints: &[Hint::any(20, "jump")], home: false },
     // ---- Stats dashboard modal (reuses DetailClose + DetailScroll) ----
-    KeyBinding { mode: M::Stats, triggers: &[Key(Esc), Key(Enter), Key(Char('q'))], action: A::DetailClose, help: "close", hints: &[Hint::any(80, "close")] },
-    KeyBinding { mode: M::Stats, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "help", hints: &[Hint::any(90, "help")] },
-    KeyBinding { mode: M::Stats, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down", hints: &[Hint::any(10, "scroll")] },
-    KeyBinding { mode: M::Stats, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up", hints: &[Hint::any(10, "scroll")] },
-    KeyBinding { mode: M::Stats, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down", hints: &[Hint::any(15, "page")] },
-    KeyBinding { mode: M::Stats, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up", hints: &[Hint::any(15, "page")] },
-    KeyBinding { mode: M::Stats, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top", hints: &[Hint::any(20, "jump")] },
-    KeyBinding { mode: M::Stats, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom", hints: &[Hint::any(20, "jump")] },
+    KeyBinding { mode: M::Stats, triggers: &[Key(Esc), Key(Enter), Key(Char('q'))], action: A::DetailClose, help: "close", hints: &[Hint::any(80, "close")], home: false },
+    KeyBinding { mode: M::Stats, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "help", hints: &[Hint::any(90, "help")], home: false },
+    KeyBinding { mode: M::Stats, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down", hints: &[Hint::any(10, "scroll")], home: false },
+    KeyBinding { mode: M::Stats, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up", hints: &[Hint::any(10, "scroll")], home: false },
+    KeyBinding { mode: M::Stats, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down", hints: &[Hint::any(15, "page")], home: false },
+    KeyBinding { mode: M::Stats, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up", hints: &[Hint::any(15, "page")], home: false },
+    KeyBinding { mode: M::Stats, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top", hints: &[Hint::any(20, "jump")], home: false },
+    KeyBinding { mode: M::Stats, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom", hints: &[Hint::any(20, "jump")], home: false },
     // ---- Diff summary modal (reuses DetailClose + DetailScroll) ----
-    KeyBinding { mode: M::Diff, triggers: &[Key(Esc), Key(Enter), Key(Char('q'))], action: A::DetailClose, help: "close", hints: &[Hint::any(80, "close")] },
-    KeyBinding { mode: M::Diff, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "help", hints: &[Hint::any(90, "help")] },
-    KeyBinding { mode: M::Diff, triggers: &[Key(Char('e'))], action: A::ExportPrImpact, help: "export PR impact report (Markdown)", hints: &[Hint::any(30, "export")] },
-    KeyBinding { mode: M::Diff, triggers: &[Key(Char('y'))], action: A::YankPrSelector, help: "copy dbt build --select (column-narrowed)", hints: &[Hint::any(40, "copy selector")] },
-    KeyBinding { mode: M::Diff, triggers: &[Key(Char('Y'))], action: A::YankPrSelectorWide, help: "copy dbt build --select (wide)", hints: &[] },
-    KeyBinding { mode: M::Diff, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down", hints: &[Hint::any(10, "scroll")] },
-    KeyBinding { mode: M::Diff, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up", hints: &[Hint::any(10, "scroll")] },
-    KeyBinding { mode: M::Diff, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down", hints: &[Hint::any(15, "page")] },
-    KeyBinding { mode: M::Diff, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up", hints: &[Hint::any(15, "page")] },
-    KeyBinding { mode: M::Diff, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top", hints: &[Hint::any(20, "jump")] },
-    KeyBinding { mode: M::Diff, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom", hints: &[Hint::any(20, "jump")] },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Esc), Key(Enter), Key(Char('q'))], action: A::DetailClose, help: "close", hints: &[Hint::any(80, "close")], home: false },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "help", hints: &[Hint::any(90, "help")], home: false },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('e'))], action: A::ExportPrImpact, help: "export PR impact report (Markdown)", hints: &[Hint::any(30, "export")], home: false },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('y'))], action: A::YankPrSelector, help: "copy dbt build --select (column-narrowed)", hints: &[Hint::any(40, "copy selector")], home: false },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('Y'))], action: A::YankPrSelectorWide, help: "copy dbt build --select (wide)", hints: &[], home: false },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down", hints: &[Hint::any(10, "scroll")], home: false },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up", hints: &[Hint::any(10, "scroll")], home: false },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down", hints: &[Hint::any(15, "page")], home: false },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up", hints: &[Hint::any(15, "page")], home: false },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top", hints: &[Hint::any(20, "jump")], home: false },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom", hints: &[Hint::any(20, "jump")], home: false },
     // ---- Column lineage modal (Issue 09): j/k move the ROW cursor (a
     // selection the loop scroll-follows), d/u/g/G page the viewport like every
     // other modal, Enter re-roots to the row's model. ----
-    KeyBinding { mode: M::Columns, triggers: &[Key(Esc), Key(Char('q'))], action: A::DetailClose, help: "close", hints: &[Hint::any(80, "close")] },
-    KeyBinding { mode: M::Columns, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "help", hints: &[Hint::any(90, "help")] },
-    KeyBinding { mode: M::Columns, triggers: &[Key(Enter)], action: A::ColumnJump, help: "jump to this model", hints: &[Hint::any(30, "open")] },
-    KeyBinding { mode: M::Columns, triggers: &[Key(Char('j')), Key(Down)], action: A::ColumnRowMove(Direction::Down), help: "next column row", hints: &[Hint::any(10, "row")] },
-    KeyBinding { mode: M::Columns, triggers: &[Key(Char('k')), Key(Up)], action: A::ColumnRowMove(Direction::Up), help: "previous column row", hints: &[Hint::any(10, "row")] },
-    KeyBinding { mode: M::Columns, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down", hints: &[Hint::any(15, "page")] },
-    KeyBinding { mode: M::Columns, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up", hints: &[Hint::any(15, "page")] },
-    KeyBinding { mode: M::Columns, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top", hints: &[Hint::any(20, "jump")] },
-    KeyBinding { mode: M::Columns, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom", hints: &[Hint::any(20, "jump")] },
+    KeyBinding { mode: M::Columns, triggers: &[Key(Esc), Key(Char('q'))], action: A::DetailClose, help: "close", hints: &[Hint::any(80, "close")], home: false },
+    KeyBinding { mode: M::Columns, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "help", hints: &[Hint::any(90, "help")], home: false },
+    KeyBinding { mode: M::Columns, triggers: &[Key(Enter)], action: A::ColumnJump, help: "jump to this model", hints: &[Hint::any(30, "open")], home: false },
+    KeyBinding { mode: M::Columns, triggers: &[Key(Char('j')), Key(Down)], action: A::ColumnRowMove(Direction::Down), help: "next column row", hints: &[Hint::any(10, "row")], home: false },
+    KeyBinding { mode: M::Columns, triggers: &[Key(Char('k')), Key(Up)], action: A::ColumnRowMove(Direction::Up), help: "previous column row", hints: &[Hint::any(10, "row")], home: false },
+    KeyBinding { mode: M::Columns, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down", hints: &[Hint::any(15, "page")], home: false },
+    KeyBinding { mode: M::Columns, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up", hints: &[Hint::any(15, "page")], home: false },
+    KeyBinding { mode: M::Columns, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top", hints: &[Hint::any(20, "jump")], home: false },
+    KeyBinding { mode: M::Columns, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom", hints: &[Hint::any(20, "jump")], home: false },
     // ---- Notification centre (Issue 08; reuses DetailClose + DetailScroll) ----
     // `Ctrl-n` opens it from Selection and toggles it closed while open.
-    KeyBinding { mode: M::Notifications, triggers: &[Key(Esc), Key(Enter), Key(Char('q')), Ctrl('n')], action: A::DetailClose, help: "close", hints: &[Hint::any(80, "close")] },
-    KeyBinding { mode: M::Notifications, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down", hints: &[Hint::any(10, "scroll")] },
-    KeyBinding { mode: M::Notifications, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up", hints: &[Hint::any(10, "scroll")] },
-    KeyBinding { mode: M::Notifications, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down", hints: &[Hint::any(15, "page")] },
-    KeyBinding { mode: M::Notifications, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up", hints: &[Hint::any(15, "page")] },
-    KeyBinding { mode: M::Notifications, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top", hints: &[Hint::any(20, "jump")] },
-    KeyBinding { mode: M::Notifications, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom", hints: &[Hint::any(20, "jump")] },
+    KeyBinding { mode: M::Notifications, triggers: &[Key(Esc), Key(Enter), Key(Char('q')), Ctrl('n')], action: A::DetailClose, help: "close", hints: &[Hint::any(80, "close")], home: false },
+    KeyBinding { mode: M::Notifications, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down", hints: &[Hint::any(10, "scroll")], home: false },
+    KeyBinding { mode: M::Notifications, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up", hints: &[Hint::any(10, "scroll")], home: false },
+    KeyBinding { mode: M::Notifications, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down", hints: &[Hint::any(15, "page")], home: false },
+    KeyBinding { mode: M::Notifications, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up", hints: &[Hint::any(15, "page")], home: false },
+    KeyBinding { mode: M::Notifications, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top", hints: &[Hint::any(20, "jump")], home: false },
+    KeyBinding { mode: M::Notifications, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom", hints: &[Hint::any(20, "jump")], home: false },
     // ---- Node context menu (Issue 06): only nav / run / close live here —
     // an item's OWN shortcut (the trigger of the BINDINGS row its layout
     // slot names) is resolved by the dispatcher's item lookup, never a
     // fixed row. ----
-    KeyBinding { mode: M::Menu, triggers: &[Key(Char('j')), Key(Down)], action: A::MenuMove(Direction::Down), help: "next item", hints: &[Hint::any(10, "move")] },
-    KeyBinding { mode: M::Menu, triggers: &[Key(Char('k')), Key(Up)], action: A::MenuMove(Direction::Up), help: "previous item", hints: &[Hint::any(10, "move")] },
-    KeyBinding { mode: M::Menu, triggers: &[Key(Enter)], action: A::MenuConfirm, help: "run the selected action", hints: &[Hint::any(20, "run")] },
-    KeyBinding { mode: M::Menu, triggers: &[Key(Esc), Key(Char('q'))], action: A::DetailClose, help: "close menu", hints: &[Hint::any(80, "close")] },
+    KeyBinding { mode: M::Menu, triggers: &[Key(Char('j')), Key(Down)], action: A::MenuMove(Direction::Down), help: "next item", hints: &[Hint::any(10, "move")], home: false },
+    KeyBinding { mode: M::Menu, triggers: &[Key(Char('k')), Key(Up)], action: A::MenuMove(Direction::Up), help: "previous item", hints: &[Hint::any(10, "move")], home: false },
+    KeyBinding { mode: M::Menu, triggers: &[Key(Enter)], action: A::MenuConfirm, help: "run the selected action", hints: &[Hint::any(20, "run")], home: false },
+    KeyBinding { mode: M::Menu, triggers: &[Key(Esc), Key(Char('q'))], action: A::DetailClose, help: "close menu", hints: &[Hint::any(80, "close")], home: false },
     // ---- Help overlay ----
-    KeyBinding { mode: M::Help, triggers: &[Key(Esc), Key(Char('?')), Key(Char('q'))], action: A::HelpToggle, help: "close help", hints: &[Hint::any(80, "close")] },
-    KeyBinding { mode: M::Help, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down", hints: &[Hint::any(10, "scroll")] },
-    KeyBinding { mode: M::Help, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up", hints: &[Hint::any(10, "scroll")] },
-    KeyBinding { mode: M::Help, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down", hints: &[Hint::any(15, "page")] },
-    KeyBinding { mode: M::Help, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up", hints: &[Hint::any(15, "page")] },
-    KeyBinding { mode: M::Help, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top", hints: &[Hint::any(20, "jump")] },
-    KeyBinding { mode: M::Help, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom", hints: &[Hint::any(20, "jump")] },
+    KeyBinding { mode: M::Help, triggers: &[Key(Esc), Key(Char('?')), Key(Char('q'))], action: A::HelpToggle, help: "close help", hints: &[Hint::any(80, "close")], home: false },
+    KeyBinding { mode: M::Help, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down", hints: &[Hint::any(10, "scroll")], home: false },
+    KeyBinding { mode: M::Help, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up", hints: &[Hint::any(10, "scroll")], home: false },
+    KeyBinding { mode: M::Help, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down", hints: &[Hint::any(15, "page")], home: false },
+    KeyBinding { mode: M::Help, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up", hints: &[Hint::any(15, "page")], home: false },
+    KeyBinding { mode: M::Help, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top", hints: &[Hint::any(20, "jump")], home: false },
+    KeyBinding { mode: M::Help, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom", hints: &[Hint::any(20, "jump")], home: false },
     // `/` opens the line filter. While the filter is being edited, printable
     // keys are TEXT (they route through the Search* editing actions — the same
     // reuse the palette/search rows use), so `?`/`q` close is suspended until
     // the filter is committed (Enter) or cleared (Esc); see dispatch().
-    KeyBinding { mode: M::Help, triggers: &[Key(Char('/'))], action: A::SearchOpen, help: "filter help lines", hints: &[Hint::any(30, "filter")] },
+    KeyBinding { mode: M::Help, triggers: &[Key(Char('/'))], action: A::SearchOpen, help: "filter help lines", hints: &[Hint::any(30, "filter")], home: false },
+    // ---- Home tab (Issue 10; §3 操作): j/k move over model items, Enter
+    // opens (activate-or-new-tab), `/` types into the search field, `Esc`
+    // lives in the Search rows. The Actions-row commands rebind here so the
+    // same keys work while the home tab is active. ----
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('j')), Key(Down)], action: A::HomeMove(Direction::Down), help: "next item", hints: &[Hint::home(10, "move")], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('k')), Key(Up)], action: A::HomeMove(Direction::Up), help: "previous item", hints: &[Hint::home(10, "move")], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Enter)], action: A::HomeOpen, help: "open item in a tab", hints: &[Hint::home(20, "open")], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('/'))], action: A::SearchOpen, help: "search models", hints: &[Hint::home(30, "search")], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('1'))], action: A::TabActivate(1), help: "go to tab 1", hints: &[Hint::home(40, "tabs")], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('2'))], action: A::TabActivate(2), help: "go to tab 2", hints: &[Hint::home(40, "tabs")], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('3'))], action: A::TabActivate(3), help: "go to tab 3", hints: &[Hint::home(40, "tabs")], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('4'))], action: A::TabActivate(4), help: "go to tab 4", hints: &[Hint::home(40, "tabs")], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('5'))], action: A::TabActivate(5), help: "go to tab 5", hints: &[Hint::home(40, "tabs")], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('6'))], action: A::TabActivate(6), help: "go to tab 6", hints: &[Hint::home(40, "tabs")], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('7'))], action: A::TabActivate(7), help: "go to tab 7", hints: &[Hint::home(40, "tabs")], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('8'))], action: A::TabActivate(8), help: "go to tab 8", hints: &[Hint::home(40, "tabs")], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('9'))], action: A::TabActivate(9), help: "go to tab 9", hints: &[Hint::home(40, "tabs")], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('{'))], action: A::TabPrev, help: "previous tab", hints: &[], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('}'))], action: A::TabNext, help: "next tab", hints: &[], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('~'))], action: A::HomeGo, help: "go to home tab", hints: &[], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('X')), Ctrl('w')], action: A::TabClose, help: "close tab", hints: &[], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('w'))], action: A::ToggleOverview, help: "toggle whole-graph overview", hints: &[], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('S'))], action: A::StatsOpen, help: "stats dashboard", hints: &[], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('D'))], action: A::DiffOpen, help: "diff vs baseline (--diff)", hints: &[], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('P'))], action: A::DbtParse, help: "run dbt parse (build manifest)", hints: &[], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Ctrl('n')], action: A::NotificationsOpen, help: "notification center", hints: &[], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "toggle this help", hints: &[Hint::any(90, "help")], home: false },
+    KeyBinding { mode: M::Home, triggers: &[Key(Char('q')), Ctrl('c')], action: A::Quit, help: "quit", hints: &[Hint::home(80, "quit")], home: false },
 ];
 
 /// Map `(Mode, KeyEvent)` to an [`Action`], or `None` if the key is unbound.
@@ -1845,7 +1921,7 @@ mod tests {
         );
         assert_eq!(dispatch(&sel, press(Char('q'))), Some(Action::Quit));
         assert_eq!(dispatch(&sel, ctrl('c')), Some(Action::Quit));
-        assert_eq!(dispatch(&sel, press(Char('~'))), None, "unbound key");
+        assert_eq!(dispatch(&sel, press(Char('\\'))), None, "unbound key");
     }
 
     #[test]
@@ -2103,6 +2179,9 @@ mod tests {
             | Action::TabPrev
             | Action::TabNext
             | Action::TabActivate(_)
+            | Action::HomeGo
+            | Action::HomeMove(_)
+            | Action::HomeOpen
             | Action::ToggleInspector => true,
             // Dynamic: produced without a fixed key binding (text input, a
             // resolved menu item, mouse row picks/invokes). Mouse is handled
@@ -2115,6 +2194,7 @@ mod tests {
             | Action::PalettePick(_)
             | Action::ColumnPick(_)
             | Action::InspectorColumnPick(_)
+            | Action::HomePick(_)
             | Action::SetLens(_) => false,
         }
     }
@@ -2141,6 +2221,7 @@ mod tests {
                 ModeKind::Yank => yank_mode(),
                 ModeKind::Menu => menu_mode(),
                 ModeKind::Help => help_mode(),
+                ModeKind::Home => Mode::Home,
             };
             for t in b.triggers {
                 let key = match t {

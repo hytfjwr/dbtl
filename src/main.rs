@@ -204,6 +204,13 @@ fn run(cli: &Cli) -> Result<()> {
     app.apply_prefs(&config.as_prefs());
     let saved = state::load_state(app.project_root());
     app.apply_prefs(&saved);
+    // §3/H2: a project with NO state file starts on the home tab (the
+    // "project health + where to look next" screen). An existing file
+    // resumes its saved strip as before — and `--select` below always wins
+    // (it opens/activates the model's tab over whatever landing came first).
+    if !state::state_file_exists(app.project_root()) {
+        app.enter_home();
+    }
     if let Some(name) = &cli.select {
         // Fail as plain text before the terminal is touched, like a load error.
         // Plain model name first; on a miss, try it as a dbt selector spec

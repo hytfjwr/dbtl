@@ -345,7 +345,7 @@ pub fn event_loop(
             // Built only when the intent AND the carved rect leave it room —
             // a forced `On` on a narrow screen squeezes the region to zero
             // cols, which is NOT a pane.
-            let inspector = if want && panes.inspector.width > 0 {
+            let inspector = if want && !app.home_active() && panes.inspector.width > 0 {
                 app.inspector_view()
             } else {
                 None
@@ -578,6 +578,40 @@ pub fn event_loop(
             // side is the chip order `status_chips` derives from the segments
             // (impact/notify head the drop order).
             let panes = pane_layout(area, &app.ui_state.pane_config());
+            // Issue 10: the home body's draw product — built only while the
+            // fixed home tab is active (a `None` ctx.home keeps the panes).
+            // The size-aware seam then clamps `home_sel`/`match_idx` into
+            // range and scrolls so the cursor's line stays visible — the
+            // same ensure-visible job the list's offset does.
+            let home_data = if app.home_active() {
+                Some(app.home_data())
+            } else {
+                None
+            };
+            if let Some(data) = &home_data {
+                let body = panes.list.union(panes.lineage).union(panes.inspector);
+                let n = data.selectable.len();
+                let cur = match &mut app.mode {
+                    dbtl::Mode::Search(s) if s.target == dbtl::SearchTarget::Home => {
+                        let c = s.match_idx.min(n.saturating_sub(1));
+                        s.match_idx = c;
+                        c
+                    }
+                    _ => {
+                        app.home_sel = app.home_sel.min(n.saturating_sub(1));
+                        app.home_sel
+                    }
+                };
+                let plan = dbtl::ui::home_lines(data);
+                let sel_line = dbtl::ui::home_line_of(&plan, cur);
+                let h = body.height as usize;
+                if sel_line < app.home_scroll {
+                    app.home_scroll = sel_line;
+                } else if sel_line >= app.home_scroll + h.max(1) {
+                    app.home_scroll = sel_line + 1 - h.max(1);
+                }
+                app.home_scroll = app.home_scroll.min(plan.len().saturating_sub(1));
+            }
             let hints_vec: Vec<StatusHint> = match &splitter_hint {
                 Some(text) => vec![StatusHint {
                     key: text.clone(),
@@ -681,6 +715,11 @@ pub fn event_loop(
                     .filter(|h| matches!(h, HitTarget::ListRow(_) | HitTarget::ListHeader(_)));
                 ctx.theme = app.active_theme();
                 ctx.inspector = inspector.as_deref();
+                // Issue 10: `Some` IS the body switch — the home view owns
+                // the whole band while the fixed tab is active.
+                ctx.home = home_data.as_deref();
+                ctx.home_sel = app.home_sel;
+                ctx.home_scroll = app.home_scroll;
                 terminal
                     .draw(|frame| draw(frame, &ctx))
                     .context("failed to draw frame")?;
@@ -1589,6 +1628,7 @@ fn hit_geometry<'a>(
     title: Option<&'a TitleLayout>,
 ) -> HitGeometry<'a> {
     let panes = pane_layout(area, &app.ui_state.pane_config());
+    let home = home_hit_lines(app, &panes);
     HitGeometry {
         panes,
         // Replay the stored scroll — synced to the RESOLVED scroll after
@@ -1605,6 +1645,7 @@ fn hit_geometry<'a>(
         overlay,
         status,
         title,
+        home,
     }
 }
 
@@ -1628,6 +1669,22 @@ fn drawer_shortcut(app: &mut App, key: event::KeyEvent, action: Action) -> bool 
         return true;
     }
     false
+}
+
+/// The home body's line window while the home tab is active — the SAME
+/// plan/scroll/height the draw used (the loop resolved `app.home_scroll`
+/// before stashing it), so a click lands on the row the screen painted.
+fn home_hit_lines(app: &App, panes: &dbtl::ui::PaneRects) -> Option<Vec<dbtl::ui::HomeLine>> {
+    if !app.home_active() {
+        return None;
+    }
+    let body = panes.list.union(panes.lineage).union(panes.inspector);
+    let data = app.home_data();
+    Some(dbtl::ui::home_window(
+        &dbtl::ui::home_lines(&data),
+        body.height as usize,
+        app.home_scroll,
+    ))
 }
 
 /// Whether screen cell `(x, y)` is inside `r`.

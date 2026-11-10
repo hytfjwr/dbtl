@@ -110,6 +110,9 @@ pub(super) struct LineageCaches {
     layout: RefCell<Option<(LayoutKey, Rc<Layout>)>>,
     impact: RefCell<Option<(ImpactKey, ImpactCounts)>>,
     inspector: RefCell<Option<(InspectorKey, Rc<crate::InspectorView>)>>,
+    /// Issue 10's home body — keyed `(generation, home_stamp, search)` so it
+    /// rebuilds only when an input actually moves.
+    pub(super) home: RefCell<Option<(super::home::HomeKey, Rc<crate::app::HomeData>)>>,
 }
 
 impl App {

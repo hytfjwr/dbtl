@@ -13,6 +13,7 @@
 use ratatui::style::{Modifier, Style};
 
 mod geom;
+mod home;
 mod inspector;
 mod lineage;
 mod mouse;
@@ -22,14 +23,15 @@ mod state;
 pub mod theme;
 
 pub use geom::{
-    clamp_inspector_width, clamp_list_width, clip_edges, hit_target, hit_test,
-    lineage_content_rect, list_drawer_width, menu_rect, minimap_rect, minimap_scroll_to,
-    modal_rect, overlay_rect, pan_offset, pane_interior, pane_layout, splitter_drag_width,
-    status_layout, tab_bar_layout, terminal_too_small, tooltip_rect, underlay_mode, yank_menu_rect,
-    ClipEdges, HitGeometry, HitTarget, PaneConfig, PaneRects, Splitter, StatusChip, StatusLayout,
-    StatusSpan, TabBarLayout, TabCell, TitleKind, TitleLayout, TitleSpan, DEFAULT_INSPECTOR_WIDTH,
-    DEFAULT_LIST_WIDTH, INSPECTOR_AUTO_W, LIST_AUTO_HIDE_W, MIN_INSPECTOR_WIDTH, MIN_LINEAGE_WIDTH,
-    MIN_LIST_WIDTH, MIN_TERMINAL_H, MIN_TERMINAL_W, TOOLTIP_MAX_W,
+    clamp_inspector_width, clamp_list_width, clip_edges, hit_target, hit_test, home_line_of,
+    home_lines, home_window, lineage_content_rect, list_drawer_width, menu_rect, minimap_rect,
+    minimap_scroll_to, modal_rect, overlay_rect, pan_offset, pane_interior, pane_layout,
+    splitter_drag_width, status_layout, tab_bar_layout, terminal_too_small, tooltip_rect,
+    underlay_mode, yank_menu_rect, ClipEdges, HitGeometry, HitTarget, HomeLine, PaneConfig,
+    PaneRects, Splitter, StatusChip, StatusLayout, StatusSpan, TabBarLayout, TabCell, TitleKind,
+    TitleLayout, TitleSpan, DEFAULT_INSPECTOR_WIDTH, DEFAULT_LIST_WIDTH, INSPECTOR_AUTO_W,
+    LIST_AUTO_HIDE_W, MIN_INSPECTOR_WIDTH, MIN_LINEAGE_WIDTH, MIN_LIST_WIDTH, MIN_TERMINAL_H,
+    MIN_TERMINAL_W, TOOLTIP_MAX_W,
 };
 pub use inspector::{
     clamp_inspector_scroll, draw_inspector_pane, inspector_column_at, inspector_columns_line0,
@@ -126,6 +128,10 @@ pub(crate) struct Chrome {
     /// `…` is East-Asian-Ambiguous — ASCII mode uses the two-cell `..` so the
     /// truncation budget stays cell-exact on ambiguous-width terminals.
     pub ellipsis: &'static str,
+    /// The fixed home tab's glyph (`⌂` Unicode / `~` ASCII — Issue 10, §15).
+    /// `⌂` is East-Asian-Ambiguous; `~` is also the `~` key's label, so the
+    /// ASCII bar reads "press ~ to get here".
+    pub home: &'static str,
 }
 
 /// The chrome for a [`GlyphMode`](crate::GlyphMode).
@@ -167,6 +173,7 @@ static UNICODE_CHROME: Chrome = Chrome {
     group_open: "▾",
     group_folded: "▸",
     ellipsis: "…",
+    home: "⌂",
 };
 
 static ASCII_CHROME: Chrome = Chrome {
@@ -195,6 +202,7 @@ static ASCII_CHROME: Chrome = Chrome {
     group_open: "v",
     group_folded: ">",
     ellipsis: "..",
+    home: "~",
 };
 
 /// Highlight style for the selected row / emphasized lineage label: an

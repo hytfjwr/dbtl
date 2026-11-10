@@ -26,7 +26,10 @@ pub use action::{
     ModeKind, NoticeLevel, NotificationEntry, NotificationsView, PaletteRow, SearchTarget, SqlView,
     StatsView,
 };
-pub use app::{apply_action, layer_violation_edges, App, AppStats, ListFilter, Outcome};
+pub use app::{
+    apply_action, layer_violation_edges, App, AppStats, HomeData, HomeItem, HomeRow, HomeSearch,
+    HomeSection, HomeTone, ListFilter, Outcome,
+};
 pub use effect::Effect;
 pub use layout::{
     anchor_offset, blit, clamp_offset, layout, layout_columns, layout_density, layout_mode,
