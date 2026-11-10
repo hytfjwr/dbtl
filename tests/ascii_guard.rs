@@ -242,14 +242,14 @@ fn detail_modal_is_all_ascii() {
 fn detail_modal_badges_and_tests_section_are_all_ascii() {
     // Issue 11 surfaces: the `[NN U]`/`[NN R]` column badge trails, the
     // `-> target` relationships row, the tests-section `> ` cursor, and the
-    // `Tab tests`/`Enter jump` title hints — every glyph pure ASCII in BOTH
-    // glyph modes by construction.
+    // `Tab tests`/`Enter/c jump` title hints — every glyph pure ASCII in
+    // BOTH glyph modes by construction.
     let mut app = ascii_app();
     app.select_by_unique_id("model.jaffle_finance.pos_ord");
     apply_action(&mut app, Action::DetailOpen);
     assert_all_ascii(&render(&app, 100, 40), "detail badges + tests rows");
     // Tab into the tests section: the title hint flips to `Tab cols` +
-    // `Enter jump` and the `> ` marker lands on the relationships row.
+    // `Enter/c jump` and the `> ` marker lands on the relationships row.
     apply_action(&mut app, Action::DetailSectionToggle);
     assert_all_ascii(&render(&app, 100, 40), "detail tests-section cursor");
 }

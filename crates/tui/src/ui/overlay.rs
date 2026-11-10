@@ -258,22 +258,24 @@ fn detail_column_rows(dv: &DetailView) -> (Vec<(String, String, String)>, bool) 
 /// The fixed-width ASCII badge for a test kind — pure ASCII in BOTH glyph
 /// modes per the Issue 11 spec (no ambiguous-width glyphs on this surface):
 /// `NN` not_null, `U` unique, `R` relationships, `AV` accepted_values,
-/// `AR` accepted_range, `UC` unique_combination_of_columns, `*` anything
-/// else. `ends_with` catches package-namespaced spellings
-/// (`dbt_utils.accepted_range`) the way `has_pk_guarantee` does.
+/// `AR` accepted_range, `*` anything else. `ends_with` catches
+/// package-namespaced spellings (`dbt_utils.accepted_range`, a package's
+/// `pkg.relationships`) the way `register_test`'s `to:` resolution does —
+/// a namespaced relationships test is jumpable, so it must badge `R`, not
+/// `*`. `unique_combination_of_columns` has NO badge: it's a model-level
+/// test (`column_name` always `None`), so it can never appear on a column
+/// row — it shows in the tests list and drives the PrimaryKey lens instead.
 fn test_badge(kind: &str) -> &'static str {
     if kind == "not_null" {
         "NN"
     } else if kind == "unique" {
         "U"
-    } else if kind == "relationships" {
+    } else if kind.ends_with("relationships") {
         "R"
     } else if kind.ends_with("accepted_values") {
         "AV"
     } else if kind.ends_with("accepted_range") {
         "AR"
-    } else if kind.ends_with("unique_combination_of_columns") {
-        "UC"
     } else {
         "*"
     }
@@ -283,7 +285,7 @@ fn test_badge(kind: &str) -> &'static str {
 /// to it (normalized-name match — the same key space `col_counts` uses), in
 /// the FIXED display order below so the row is deterministic.
 fn column_badges<'a>(dv: &'a DetailView, column: &str) -> Vec<&'a str> {
-    const ORDER: &[&str] = &["NN", "U", "R", "AV", "AR", "UC", "*"];
+    const ORDER: &[&str] = &["NN", "U", "R", "AV", "AR", "*"];
     let norm = crate::normalize_column(column);
     let mut seen = std::collections::BTreeSet::new();
     for test in &dv.tests {
@@ -494,7 +496,7 @@ pub(crate) fn draw_detail(
     // `to:` target. `Tab` is only advertised when the tests section HAS a
     // jumpable row — otherwise the key notices and stays on columns.
     let (sect_hint, tab_hint) = if dv.test_index != usize::MAX {
-        (", h/l test, Enter jump", ", Tab cols")
+        (", h/l test, Enter/c jump", ", Tab cols")
     } else {
         let col_hint = if dv.col_index == usize::MAX {
             ""

@@ -297,9 +297,17 @@ fn node_markdown(
                 }
                 r
             });
+            // The Test column: schema tests show the KIND (their recorded
+            // name is a hashed `not_null_order_items_…` slug — noise), while
+            // a unit test's name IS its identity (`kind` alone reads `unit`).
+            let test_label = if t.unit.is_some() {
+                t.name.as_str()
+            } else {
+                t.kind.as_str()
+            };
             s.push_str(&format!(
                 "| {} | {} | {} | {} |\n",
-                md_cell(&t.kind),
+                md_cell(test_label),
                 md_cell(t.column_name.as_deref().unwrap_or("")),
                 target,
                 md_cell(&rows),

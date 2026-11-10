@@ -757,13 +757,21 @@ impl Dag {
             }
         }
 
-        // Deterministic test ordering per node (HashMap iteration is unordered).
+        // Deterministic test ordering per node (HashMap iteration is
+        // unordered, and `sort_by` is STABLE — a key tie would leak insertion
+        // order). The key must cover the displayed payload: two `relationships`
+        // tests on the same column synthesize identical names (source mode
+        // names tests after the ATTACHED node), so `ref_uid`/`ref_column`
+        // break their tie. `ref_name` derives from `ref_uid`, and unit-test
+        // names are manifest-unique per node — the key below is total.
         for v in tests.values_mut() {
             v.sort_by(|a, b| {
                 a.kind
                     .cmp(&b.kind)
                     .then_with(|| a.column_name.cmp(&b.column_name))
                     .then_with(|| a.name.cmp(&b.name))
+                    .then_with(|| a.ref_uid.cmp(&b.ref_uid))
+                    .then_with(|| a.ref_column.cmp(&b.ref_column))
             });
         }
 
@@ -2567,5 +2575,68 @@ mod tests {
         assert_eq!(shape.inputs, 2);
         assert_eq!(shape.given_rows, Some(3));
         assert_eq!(shape.expect_rows, Some(1));
+    }
+
+    #[test]
+    fn same_named_relationships_tests_sort_by_their_target() {
+        // Determinism guard: two `relationships` tests on the SAME column of
+        // the SAME model — source mode names both `relationships_<node>_<col>`,
+        // so the (kind, column_name, name) key ties and the STABLE sort would
+        // leak `manifest.nodes` HashMap iteration order (random per build)
+        // into the tests vec — flaking `docs --check` diffs. `ref_uid` breaks
+        // the tie; rebuild repeatedly so a broken key can't pass by luck.
+        let build = || {
+            let mut manifest = sample_manifest();
+            for name in ["x", "y"] {
+                manifest.nodes.insert(
+                    format!("model.p.{name}"),
+                    RawNode {
+                        name: name.into(),
+                        resource_type: "model".into(),
+                        ..Default::default()
+                    },
+                );
+            }
+            for (key, to) in [("test.p.rel_y", "model.p.y"), ("test.p.rel_x", "model.p.x")] {
+                manifest.nodes.insert(
+                    key.to_string(),
+                    RawNode {
+                        // The shared, synthesized-style name — the collision
+                        // the sort key has to absorb.
+                        name: "relationships_b_a_id".into(),
+                        resource_type: "test".into(),
+                        attached_node: Some("model.p.b".into()),
+                        column_name: Some("a_id".into()),
+                        test_metadata: Some(RawTestMetadata {
+                            name: Some("relationships".into()),
+                            kwargs: Some(serde_json::Map::from_iter([(
+                                "field".to_string(),
+                                serde_json::Value::String("id".to_string()),
+                            )])),
+                        }),
+                        depends_on: crate::RawDependsOn {
+                            macros: vec![],
+                            nodes: vec!["model.p.b".to_string(), to.to_string()],
+                        },
+                        ..Default::default()
+                    },
+                );
+            }
+            Dag::build(&manifest)
+        };
+        for _ in 0..16 {
+            let dag = build();
+            let rels: Vec<Option<&str>> = dag
+                .tests("model.p.b")
+                .iter()
+                .filter(|t| t.kind == "relationships")
+                .map(|t| t.ref_uid.as_deref())
+                .collect();
+            assert_eq!(
+                rels,
+                vec![Some("model.p.x"), Some("model.p.y")],
+                "ref_uid breaks the (kind, column, name) tie deterministically"
+            );
+        }
     }
 }
