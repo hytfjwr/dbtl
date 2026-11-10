@@ -467,6 +467,74 @@ fn detail_modal_renders_column_counts_cursor_and_inferred_tag() {
 }
 
 #[test]
+fn detail_modal_renders_column_badges_and_relationship_targets() {
+    // Issue 11: pos_ord declares `id` (unique+not_null -> `[NN U]`) and
+    // `lg_id` (not_null+relationships -> `[NN R]`); the tests section resolves
+    // the `to:` target and Tab lands the h/l cursor on the jumpable row.
+    use dbtl::app::{apply_action, App};
+    use dbtl::Action;
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    app.select_by_unique_id("model.jaffle_finance.pos_ord");
+    apply_action(&mut app, Action::DetailOpen);
+
+    let text = buffer_to_string(&render_app(&app, 140, 40));
+    assert!(
+        text.contains("[NN U]"),
+        "the PK pair badges on `id`: {text}"
+    );
+    assert!(
+        text.contains("[NN R]"),
+        "not_null+relationships badges on `lg_id`: {text}"
+    );
+    // The relationships `to:` target resolves to the kept source's name.
+    assert!(
+        text.contains("relationships(lg_id) -> pos_pay"),
+        "the resolved target row: {text}"
+    );
+
+    // Tab moves the h/l cursor onto the jumpable row — the `> ` marker leaves
+    // the columns section for the test row.
+    apply_action(&mut app, Action::DetailSectionToggle);
+    let text = buffer_to_string(&render_app(&app, 140, 40));
+    assert!(
+        text.contains("> relationships(lg_id) -> pos_pay"),
+        "the cursor sits on the jumpable row: {text}"
+    );
+    assert!(
+        !text.contains("> id"),
+        "the column cursor is inactive: {text}"
+    );
+
+    // Enter on a SOURCE target can't re-root (sources aren't selectable) —
+    // it notices and the modal stays open.
+    apply_action(&mut app, Action::ColumnFocusEnter);
+    assert_eq!(
+        app.take_notice().as_deref(),
+        Some("cannot re-root to a non-model node")
+    );
+    assert!(
+        matches!(app.mode, dbtl::Mode::Detail(_)),
+        "the modal stays open on a non-model target"
+    );
+}
+
+#[test]
+fn stats_modal_renders_column_coverage() {
+    // Issue 11: the column-coverage gauge line reaches the buffer — the same
+    // numbers the docs README quotes.
+    let sv = stats_view_with(0, 0, 0);
+    let text = buffer_to_string(&render_stats_modal(sv, 100, 40));
+    assert!(
+        text.contains("Column coverage (declared columns):"),
+        "the column-coverage header: {text}"
+    );
+    assert!(
+        text.contains("12/20 columns tested (60%)"),
+        "the column-coverage counts: {text}"
+    );
+}
+
+#[test]
 fn sql_modal_titles_the_active_variant() {
     // End-to-end through the REAL draw path against the compiled fixture:
     // `s` opens on [raw] with the toggle hint, `c` flips to [compiled] showing
@@ -545,6 +613,8 @@ fn stats_view_with(n_orphans: usize, n_viol: usize, n_lint: usize) -> dbtl::Stat
         by_materialization: vec![("table".into(), 5), ("view".into(), 3)],
         testable_total: 10,
         testable_tested: 9,
+        col_declared: 20,
+        col_tested: 12,
         top_hubs: vec![("model.proj.a".into(), "a".into(), 6)],
         transitive_hubs: vec![("a".into(), 12), ("b".into(), 4)],
         orphan_models: (0..n_orphans).map(|i| format!("orphan_{i:02}")).collect(),
@@ -1574,9 +1644,10 @@ fn lineage_title_shows_lens_suffix_per_lens_and_nothing_when_off() {
     assert!(!off.contains("[lens:"), "Off lens adds no suffix");
 
     // One suffix per lens across the cycle. The fixture has lint findings so
-    // the Lint lens lands between LayerViolation and Off (no baseline or
-    // run_results → Diff and the run lenses are skipped).
-    for expected in ["coverage", "heat", "layer", "violation", "lint"] {
+    // the Lint lens lands between LayerViolation and PrimaryKey; PrimaryKey
+    // needs only `Dag::tests` so it's never skipped (no baseline, run_results,
+    // or column focus → Diff, the run lenses, and ColumnImpact are skipped).
+    for expected in ["coverage", "heat", "layer", "violation", "lint", "pk"] {
         apply_action(&mut app, Action::CycleLens);
         let text = buffer_to_string(&render_app(&app, 120, 24));
         assert!(

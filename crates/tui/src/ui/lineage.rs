@@ -563,6 +563,7 @@ fn lens_title_suffix(lens: LineageLens) -> &'static str {
         LineageLens::RunStatus => " [lens:run]",
         LineageLens::RunTime => " [lens:time]",
         LineageLens::ColumnImpact => " [lens:col]",
+        LineageLens::PrimaryKey => " [lens:pk]",
     }
 }
 
@@ -824,6 +825,12 @@ mod tests {
             lens_title_suffix(LineageLens::LayerViolation),
             " [lens:violation]"
         );
+        assert_eq!(lens_title_suffix(LineageLens::Lint), " [lens:lint]");
+        assert_eq!(lens_title_suffix(LineageLens::Diff), " [lens:diff]");
+        assert_eq!(lens_title_suffix(LineageLens::RunStatus), " [lens:run]");
+        assert_eq!(lens_title_suffix(LineageLens::RunTime), " [lens:time]");
+        assert_eq!(lens_title_suffix(LineageLens::ColumnImpact), " [lens:col]");
+        assert_eq!(lens_title_suffix(LineageLens::PrimaryKey), " [lens:pk]");
     }
 
     #[test]

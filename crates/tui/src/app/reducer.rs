@@ -25,6 +25,50 @@ fn yank_with_notice(app: &mut App, text: Option<String>, notice: &str) -> Outcom
     }
 }
 
+/// The structure modal's snapshot — every Dag-derived field resolved ONCE at
+/// open so the render layer needs no `Dag` (the modal is a pure payload).
+/// `col_names` is the cursor-addressable list — declared columns, else the
+/// resolver's inferred names so an undocumented model still gets a cursor +
+/// counts. `test_index` starts detached (`usize::MAX`): the COLUMNS section
+/// owns the h/l cursor until `Tab` moves it to the tests side.
+fn detail_view_for(app: &App, uid: String) -> DetailView {
+    let name = app.node_name_or_uid(&uid);
+    let detail = app.dag.detail(&uid).cloned().unwrap_or_default();
+    let tests = app.dag.tests(&uid).to_vec();
+    // Blast radius of THIS node (the focus target — may be a non-root
+    // source/seed/snapshot the lineage cursor sits on, NOT the root).
+    let (downstream_count, upstream_count) = app.impact_counts_for(&uid);
+    let catalog = app.catalog_note(&uid, &detail);
+    // Column-level lineage snapshot (lazy + memoized in the resolver;
+    // resolving THIS node + its direct children is the only cost).
+    let col_counts = app.column_counts_for(&uid);
+    let col_names: Vec<String> = if detail.columns.is_empty() {
+        col_counts.keys().cloned().collect()
+    } else {
+        detail.columns.iter().map(|c| c.name.clone()).collect()
+    };
+    let col_index = if col_names.is_empty() { usize::MAX } else { 0 };
+    let stale = matches!(
+        crate::resolution_sql(&app.dag, &uid),
+        Some((_, crate::Confidence::Stale))
+    );
+    DetailView {
+        model_id: uid,
+        name,
+        detail,
+        tests,
+        downstream_count,
+        upstream_count,
+        catalog,
+        col_names,
+        col_index,
+        test_index: usize::MAX,
+        col_counts,
+        stale,
+        scroll: 0,
+    }
+}
+
 /// Export filenames embed the node name, which comes from an untrusted
 /// `manifest.json`: a crafted name (e.g. `../../x`) would let the export write
 /// outside the working directory. Keep ASCII alphanumerics plus `.`/`-`/`_`
@@ -172,43 +216,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                 app.jump_to(&uid);
                 return Outcome::cont();
             }
-            let name = app.node_name_or_uid(&uid);
-            let detail = app.dag.detail(&uid).cloned().unwrap_or_default();
-            let tests = app.dag.tests(&uid).to_vec();
-            // Blast radius of THIS node (the focus target — may be a non-root
-            // source/seed/snapshot the lineage cursor sits on, NOT the root).
-            let (downstream_count, upstream_count) = app.impact_counts_for(&uid);
-            let catalog = app.catalog_note(&uid, &detail);
-            // Column-level lineage snapshot (lazy + memoized in the resolver;
-            // resolving THIS node + its direct children is the only cost).
-            // `col_names` is the cursor-addressable list — declared columns,
-            // else the resolver's inferred names so an undocumented model
-            // still gets a cursor + counts.
-            let col_counts = app.column_counts_for(&uid);
-            let col_names: Vec<String> = if detail.columns.is_empty() {
-                col_counts.keys().cloned().collect()
-            } else {
-                detail.columns.iter().map(|c| c.name.clone()).collect()
-            };
-            let col_index = if col_names.is_empty() { usize::MAX } else { 0 };
-            let stale = matches!(
-                crate::resolution_sql(&app.dag, &uid),
-                Some((_, crate::Confidence::Stale))
-            );
-            app.mode = Mode::Detail(DetailView {
-                model_id: uid,
-                name,
-                detail,
-                tests,
-                downstream_count,
-                upstream_count,
-                catalog,
-                col_names,
-                col_index,
-                col_counts,
-                stale,
-                scroll: 0,
-            });
+            app.mode = Mode::Detail(detail_view_for(app, uid));
             Outcome::cont()
         }
         Action::DetailClose => {
@@ -250,12 +258,46 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         // lineage's upstream/downstream axes.)
         Action::DetailColumnMove(dir) => {
             if let Mode::Detail(dv) = &mut app.mode {
-                if dv.col_index != usize::MAX && !dv.col_names.is_empty() {
+                if dv.test_index != usize::MAX {
+                    // The tests section owns the cursor: walk only the
+                    // JUMPABLE rows (relationships `to:` targets) — plain test
+                    // rows are skipped the way the columns modal skips
+                    // uid-less rows.
+                    let back = matches!(dir, Direction::Up | Direction::Left);
+                    let next = if back {
+                        (0..dv.test_index)
+                            .rev()
+                            .find(|&i| dv.tests[i].ref_uid.is_some())
+                    } else {
+                        (dv.test_index + 1..dv.tests.len()).find(|&i| dv.tests[i].ref_uid.is_some())
+                    };
+                    if let Some(i) = next {
+                        dv.test_index = i;
+                    }
+                } else if dv.col_index != usize::MAX && !dv.col_names.is_empty() {
                     let last = dv.col_names.len() - 1;
                     dv.col_index = match dir {
                         Direction::Up | Direction::Left => dv.col_index.saturating_sub(1),
                         _ => (dv.col_index + 1).min(last),
                     };
+                }
+            }
+            Outcome::cont()
+        }
+        Action::DetailSectionToggle => {
+            // `Tab` inside the structure modal moves the h/l cursor between
+            // the COLUMNS list and the TESTS list. The tests side only accepts
+            // the cursor when at least one row is jumpable (a relationships
+            // test with a resolved `to:` target) — otherwise Tab notices and
+            // stays on columns, so Enter can never strand on a dead row.
+            if let Mode::Detail(dv) = &mut app.mode {
+                if dv.test_index == usize::MAX {
+                    match dv.tests.iter().position(|t| t.ref_uid.is_some()) {
+                        Some(i) => dv.test_index = i,
+                        None => app.set_notice("no relationship test targets on this node"),
+                    }
+                } else {
+                    dv.test_index = usize::MAX;
                 }
             }
             Outcome::cont()
@@ -293,9 +335,31 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         }
         // ---- column-level lineage (Issue 09) ----
         Action::ColumnFocusEnter => {
-            // Enter/`c` on the structure modal's column cursor commits the
-            // column to the trace view; a column-less modal (or an invalid
-            // cursor) keeps Enter's classic close behaviour.
+            // Enter is contextual over the structure modal: while the tests
+            // section owns the cursor it jumps to the relationships `to:`
+            // target (the same re-root contract as the column modal's Enter —
+            // a non-model target notices instead); over the columns section it
+            // commits the cursored column to the trace view; a column-less
+            // modal keeps Enter's classic close behaviour.
+            if let Mode::Detail(dv) = &app.mode {
+                if dv.test_index != usize::MAX {
+                    let target = dv.tests.get(dv.test_index).and_then(|t| t.ref_uid.clone());
+                    match target {
+                        Some(uid)
+                            if app
+                                .dag
+                                .get(&uid)
+                                .is_some_and(|n| n.resource_type == "model") =>
+                        {
+                            app.jump_to(&uid);
+                            app.mode = Mode::Selection;
+                        }
+                        Some(_) => app.set_notice("cannot re-root to a non-model node"),
+                        None => {}
+                    }
+                    return Outcome::cont();
+                }
+            }
             let col = match &app.mode {
                 Mode::Detail(dv) if dv.col_index != usize::MAX => dv
                     .col_names

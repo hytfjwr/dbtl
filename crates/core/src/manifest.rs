@@ -35,6 +35,13 @@ pub struct RawDependsOn {
 pub struct RawTestMetadata {
     #[serde(default)]
     pub name: Option<String>,
+    /// The test's rendered keyword args (`to`, `field`, `values`, …). Only
+    /// `field` is consumed today — a `relationships` test's referenced column;
+    /// the rest rides along verbatim so source mode can fill the same shape.
+    /// `Option` (not a defaulted map) because dbt writes an explicit
+    /// `"kwargs": null` for tests declared with no args.
+    #[serde(default)]
+    pub kwargs: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// A single node in the parsed manifest (`nodes` entry).
@@ -220,6 +227,29 @@ pub struct RawUnitTest {
     /// The model name this unit test is declared on.
     #[serde(default)]
     pub model: Option<String>,
+    /// The `given:` inputs (each a `ref`/`source` table plus its rows) — the
+    /// count and inline row counts are surfaced in the structure modal.
+    #[serde(default)]
+    pub given: Vec<RawUnitTestIo>,
+    /// The `expect:` output rows the test asserts.
+    #[serde(default)]
+    pub expect: Option<RawUnitTestIo>,
+}
+
+/// One `given:`/`expect:` entry of a unit test. Only `rows` is surfaced: an
+/// inline `rows:` list is countable from the manifest, while a `fixture:`
+/// reference or a CSV-string `rows:` payload is not (dbt stores the string,
+/// not the parsed rows — counting it would invent a number).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RawUnitTestIo {
+    /// The `input:` reference for `given:` entries (`ref('x')` /
+    /// `source('a','b')` as a string). Kept raw — display doesn't resolve it.
+    #[serde(default)]
+    pub input: Option<String>,
+    /// The inline `rows:` payload: a JSON array for row-dict fixtures, a
+    /// string for `format: csv` fixtures. Counted only when it is an array.
+    #[serde(default)]
+    pub rows: Option<serde_json::Value>,
 }
 
 /// A single macro in the parsed manifest (`macros` entry). Only the fields the

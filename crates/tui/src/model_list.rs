@@ -736,6 +736,7 @@ mod tests {
                 attached_node: Some("model.p.s_b".into()),
                 test_metadata: Some(crate::RawTestMetadata {
                     name: Some("not_null".into()),
+                    ..Default::default()
                 }),
                 ..Default::default()
             },

@@ -18,8 +18,8 @@ use std::collections::{BTreeMap, HashSet};
 use dbtl_core::layer::{first_dir, layer_rank};
 use dbtl_core::mermaid::subgraph_mermaid_linked;
 use dbtl_core::{
-    coverage_counts, in_package, Dag, Edge, Finding, LintRule, NodeInfo, PackageScope, Subgraph,
-    LAYER_ORDER,
+    column_coverage_counts, coverage_counts, in_package, Dag, Edge, Finding, LintRule, NodeInfo,
+    PackageScope, Subgraph, LAYER_ORDER,
 };
 
 /// The subdirectory under `<out>` that holds every node page. The index
@@ -256,19 +256,61 @@ fn node_markdown(
         }
     }
 
-    // Tests.
+    // Tests — the `Target` column resolves a `relationships` test's `to:`
+    // (linked to the target's own page when it has one), and `Rows` carries
+    // the unit-test shape (`in:`/`given:`/`expect:` counts) the manifest
+    // records (Issue 11).
     s.push_str("\n## Tests\n\n");
     let tests = dag.tests(uid);
     if tests.is_empty() {
         s.push_str("No tests.\n");
     } else {
-        s.push_str("| Test | Column |\n");
-        s.push_str("| --- | --- |\n");
+        s.push_str("| Test | Column | Target | Rows |\n");
+        s.push_str("| --- | --- | --- | --- |\n");
         for t in tests {
+            // The relationships `to:` target: the resolved display name when
+            // the node survived pruning, else the raw uid; linked to its
+            // page like a dependency entry. `.col` appends the `field:`.
+            let target = match t.ref_uid.as_deref() {
+                Some(ref_uid) => {
+                    let name = t.ref_name.as_deref().unwrap_or(ref_uid);
+                    let label = match t.ref_column.as_deref() {
+                        Some(rc) => format!("{name}.{rc}"),
+                        None => name.to_string(),
+                    };
+                    match files.get(ref_uid) {
+                        Some(rel) => format!("[{}]({})", md_cell(&label), link_between_nodes(rel)),
+                        None => md_cell(&label),
+                    }
+                }
+                None => String::new(),
+            };
+            // The unit-test shape: `in:`/input-table count plus the inline
+            // row counts the manifest carries (fixture:/CSV sides stay blank).
+            let rows = t.unit.as_ref().map_or(String::new(), |u| {
+                let mut r = format!("in:{}", u.inputs);
+                if let Some(g) = u.given_rows {
+                    r.push_str(&format!(" given:{g}"));
+                }
+                if let Some(e) = u.expect_rows {
+                    r.push_str(&format!(" expect:{e}"));
+                }
+                r
+            });
+            // The Test column: schema tests show the KIND (their recorded
+            // name is a hashed `not_null_order_items_…` slug — noise), while
+            // a unit test's name IS its identity (`kind` alone reads `unit`).
+            let test_label = if t.unit.is_some() {
+                t.name.as_str()
+            } else {
+                t.kind.as_str()
+            };
             s.push_str(&format!(
-                "| {} | {} |\n",
-                md_cell(&t.kind),
+                "| {} | {} | {} | {} |\n",
+                md_cell(test_label),
                 md_cell(t.column_name.as_deref().unwrap_or("")),
+                target,
+                md_cell(&rows),
             ));
         }
     }
@@ -628,6 +670,10 @@ fn layer_groups(dag: &Dag) -> Vec<LayerGroup> {
 /// Both are order-independent / sorted, so the section is deterministic.
 fn push_stats_summary(s: &mut String, dag: &Dag, files: &BTreeMap<String, String>) {
     let (tested, testable) = coverage_counts(dag);
+    // Column-level coverage (Issue 11): the SAME `column_coverage_counts` the
+    // stats dashboard's "Column coverage" gauge quotes — declared columns
+    // carrying ≥1 test over the root-project testable set.
+    let (col_tested, col_declared) = column_coverage_counts(dag);
     // Resolve the owning package ONCE for the orphan sweep — `is_root_project`
     // re-resolves per call.
     let primary = dag.primary_package();
@@ -653,6 +699,13 @@ fn push_stats_summary(s: &mut String, dag: &Dag, files: &BTreeMap<String, String
             s.push_str(&format!("- coverage: {pct}%\n"));
             s.push_str(&format!("- untested: {}\n", testable - tested));
         }
+    }
+    // Declared columns carrying at least one test — the integer-percent
+    // `checked_div` convention matches the resource coverage above.
+    if let Some(pct) = (col_tested * 100).checked_div(col_declared) {
+        s.push_str(&format!(
+            "- columns tested: {col_tested} / {col_declared} declared columns ({pct}%)\n"
+        ));
     }
 
     s.push_str("\n## Orphan models\n\n");
@@ -1027,6 +1080,24 @@ mod tests {
     }
 
     #[test]
+    fn relationships_test_target_is_linked_in_the_tests_table() {
+        // Issue 11: pos_ord's relationships test targets the pos_pay source —
+        // the Tests table resolves the `to:` name and links its page.
+        let dag = fixture_dag();
+        let out = generate_docs(&dag, "p", "src", PackageScope::Root);
+        let files = node_files(&dag);
+        let page = file(&out, &files["model.jaffle_finance.pos_ord"]);
+        assert!(
+            page.contains("| Test | Column | Target | Rows |"),
+            "the 4-column tests table: {page}"
+        );
+        assert!(
+            page.contains("[pos_pay]("),
+            "the relationships row links its target: {page}"
+        );
+    }
+
+    #[test]
     fn empty_sections_are_labeled_not_dropped() {
         // A source with no tests still shows the Tests heading + "No tests."
         let dag = fixture_dag();
@@ -1302,6 +1373,25 @@ mod tests {
         assert!(
             readme.contains(&format!("- untested: {}", testable - tested)),
             "untested count line"
+        );
+    }
+
+    #[test]
+    fn readme_column_coverage_matches_column_coverage_counts() {
+        // The README's column-coverage line must be exactly the shared
+        // `column_coverage_counts` base the TUI stats dashboard quotes —
+        // declared columns carrying ≥1 test over the root-project testable
+        // set (212/322 on the frozen fixture).
+        let dag = fixture_dag();
+        let (tested, declared) = column_coverage_counts(&dag);
+        let pct = tested * 100 / declared;
+        let out = generate_docs(&dag, "p", "src", PackageScope::Root);
+        let readme = file(&out, "README.md");
+        assert!(
+            readme.contains(&format!(
+                "- columns tested: {tested} / {declared} declared columns ({pct}%)"
+            )),
+            "column coverage line, expected {tested}/{declared}, got: {readme}"
         );
     }
 

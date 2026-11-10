@@ -28,14 +28,14 @@ pub use cll::{
 };
 pub use compiled::{default_compiled_dir, default_target_dir, CompiledSql};
 pub use dag::{
-    coverage_gap, in_package, is_exposure, load_dag, load_dag_with_warnings,
+    coverage_gap, has_pk_guarantee, in_package, is_exposure, load_dag, load_dag_with_warnings,
     unhandled_resource_types, ColumnInfo, Dag, Edge, ExposureInfo, MacroInfo, NodeDetail, NodeInfo,
-    PackageScope, ResourceTypeSupport, Subgraph, TestInfo,
+    PackageScope, ResourceTypeSupport, Subgraph, TestInfo, UnitTestShape,
 };
 pub use diff::{compute_diff, DagDiff, DiffStatus};
 pub use impact::{
-    coverage_counts, diff_report, exposure_note, layer_violation_edges, pr_impact,
-    pr_impact_markdown, DiffReport, PrImpact, PR_HUB_MIN_DOWNSTREAM,
+    column_coverage_counts, coverage_counts, diff_report, exposure_note, layer_violation_edges,
+    pr_impact, pr_impact_markdown, DiffReport, PrImpact, PR_HUB_MIN_DOWNSTREAM,
 };
 pub use layer::{first_dir, layer_rank, LAYER_ORDER};
 pub use lint::{
@@ -44,7 +44,7 @@ pub use lint::{
 };
 pub use manifest::{
     load_manifest, RawConfig, RawDependsOn, RawExposure, RawExposureOwner, RawManifest,
-    RawMetadata, RawNode, RawSource, RawTestMetadata,
+    RawMetadata, RawNode, RawSource, RawTestMetadata, RawUnitTest, RawUnitTestIo,
 };
 pub use mermaid::{
     mermaid_ids, mermaid_label, node_kind, subgraph_mermaid, subgraph_mermaid_linked,

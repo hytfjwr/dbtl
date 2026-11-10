@@ -19,12 +19,14 @@ use ratatui::crossterm::event::KeyEvent;
 /// reproduces the muscle-memory coverage view (and keeps the status-bar cov%).
 ///
 /// Cycle order (`cycle_lens`): Off → Coverage → DegreeHeat → Layer → LayerViolation
-/// → Lint → Diff → RunStatus → RunTime → ColumnImpact → Off. The Lint lens
-/// needs at least one static-lint [`Finding`](crate::Finding), the Diff lens
-/// needs a `--diff` baseline, the Run* lenses need a loaded `run_results.json`,
-/// and ColumnImpact needs an active column focus to show anything, so the
-/// `apply_action` CycleLens arm SKIPS them when the App lacks the data — the
-/// raw [`cycle_lens`](UiState::cycle_lens) here stays a pure, App-blind step.
+/// → Lint → Diff → RunStatus → RunTime → ColumnImpact → PrimaryKey → Off. The
+/// Lint lens needs at least one static-lint [`Finding`](crate::Finding), the
+/// Diff lens needs a `--diff` baseline, the Run* lenses need a loaded
+/// `run_results.json`, and ColumnImpact needs an active column focus to show
+/// anything, so the `apply_action` CycleLens arm SKIPS them when the App lacks
+/// the data — the raw [`cycle_lens`](UiState::cycle_lens) here stays a pure,
+/// App-blind step. PrimaryKey is never skipped: its input (`Dag::tests`) is
+/// always loaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LineageLens {
     /// No lens — node boxes show their materialization-class colour.
@@ -54,10 +56,16 @@ pub enum LineageLens {
     /// downstream glow — the "who does this column feed" answer. Skipped by
     /// `CycleLens` while no column focus is active.
     ColumnImpact,
+    /// Primary-key guarantee (Issue 11): models lacking the shared
+    /// [`has_pk_guarantee`](crate::has_pk_guarantee) predicate — a `unique` +
+    /// `not_null` pair on one column, or a `unique_combination_of_columns`
+    /// test — are violation-coloured. Data-free (needs only `Dag::tests`), so
+    /// the cycle never skips it.
+    PrimaryKey,
 }
 
 impl LineageLens {
-    /// The next lens in the `t`-cycle (wraps `ColumnImpact → Off`).
+    /// The next lens in the `t`-cycle (wraps `PrimaryKey → Off`).
     pub fn next(self) -> LineageLens {
         match self {
             LineageLens::Off => LineageLens::Coverage,
@@ -69,7 +77,8 @@ impl LineageLens {
             LineageLens::Diff => LineageLens::RunStatus,
             LineageLens::RunStatus => LineageLens::RunTime,
             LineageLens::RunTime => LineageLens::ColumnImpact,
-            LineageLens::ColumnImpact => LineageLens::Off,
+            LineageLens::ColumnImpact => LineageLens::PrimaryKey,
+            LineageLens::PrimaryKey => LineageLens::Off,
         }
     }
 }
@@ -866,6 +875,8 @@ mod tests {
         assert_eq!(s.lens(), LineageLens::RunTime);
         s.cycle_lens();
         assert_eq!(s.lens(), LineageLens::ColumnImpact);
+        s.cycle_lens();
+        assert_eq!(s.lens(), LineageLens::PrimaryKey);
         s.cycle_lens();
         assert_eq!(s.lens(), LineageLens::Off, "wraps back to Off");
     }

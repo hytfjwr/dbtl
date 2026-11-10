@@ -15,13 +15,13 @@
 //! lint policy is project-owned (a CI gate must not depend on the
 //! developer's machine).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::layer::first_dir;
-use crate::{in_package, layer_violation_edges, Dag, NodeInfo};
+use crate::{has_pk_guarantee, in_package, layer_violation_edges, Dag, NodeInfo};
 
 /// The conventional project-local config file name: `.dbtl.yml` next to
 /// `dbt_project.yml` (or at the project root above `target/` in manifest
@@ -749,29 +749,10 @@ fn missing_primary_key_tests(
         if n.resource_type != "model" || !in_scope(n) {
             continue;
         }
-        let tests = dag.tests(uid);
-        let mut uniques: BTreeSet<&str> = BTreeSet::new();
-        let mut not_nulls: BTreeSet<&str> = BTreeSet::new();
-        let mut has_combination = false;
-        for t in tests {
-            match t.kind.as_str() {
-                "unique" => {
-                    if let Some(c) = &t.column_name {
-                        uniques.insert(c);
-                    }
-                }
-                "not_null" => {
-                    if let Some(c) = &t.column_name {
-                        not_nulls.insert(c);
-                    }
-                }
-                kind if kind.ends_with("unique_combination_of_columns") => {
-                    has_combination = true;
-                }
-                _ => {}
-            }
-        }
-        if has_combination || !uniques.is_disjoint(&not_nulls) {
+        // The ONE primary-key-guarantee predicate — shared with the TUI's
+        // PrimaryKey lineage lens, so a node the lint clears can never be
+        // tinted (and vice versa).
+        if has_pk_guarantee(dag.tests(uid)) {
             continue;
         }
         out.push(Finding {
@@ -957,6 +938,7 @@ mod tests {
                 column_name: Some(column.into()),
                 test_metadata: Some(RawTestMetadata {
                     name: Some(kind.into()),
+                    ..Default::default()
                 }),
                 ..Default::default()
             },
@@ -1318,6 +1300,7 @@ mod tests {
                         attached_node: Some("model.p.stg_combo".into()),
                         test_metadata: Some(RawTestMetadata {
                             name: Some("unique_combination_of_columns".into()),
+                            ..Default::default()
                         }),
                         ..Default::default()
                     },

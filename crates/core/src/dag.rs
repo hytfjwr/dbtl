@@ -6,7 +6,7 @@
 //! Side maps (`details` / `tests` / `sql` / `compiled` / `exposures`) are
 //! captured pre-prune as data only — they never touch the topology.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::Result;
@@ -191,6 +191,65 @@ pub struct TestInfo {
     pub name: String,
     pub kind: String,
     pub column_name: Option<String>,
+    /// A `relationships` test's referenced node uid (the `to:` target), resolved
+    /// from `depends_on` minus the attached node. `None` for other kinds, for a
+    /// `to:` dbt can't resolve, or when the manifest records no depends_on pair.
+    /// The node may still have been pruned out of the graph (a dropped source)
+    /// — check `ref_name`/the Dag before navigating.
+    pub ref_uid: Option<String>,
+    /// `ref_uid`'s display name, resolved post-build once every node exists —
+    /// so the structure modal and the docs table never re-resolve. `None` when
+    /// the target node isn't in the kept graph.
+    pub ref_name: Option<String>,
+    /// A `relationships` test's referenced column (the kwargs `field:`).
+    pub ref_column: Option<String>,
+    /// The unit-test shape (dbt ≥1.8), present only on `kind == "unit"`.
+    pub unit: Option<UnitTestShape>,
+}
+
+/// The manifest-carried shape of a dbt unit test: how many `given:` input
+/// tables feed it and how many rows each side declares. Row counts are
+/// `Some` only where the manifest carries an inline `rows` list — a `fixture:`
+/// reference or a CSV-string `rows` payload is `None` ("where the manifest
+/// carries them", per the Issue 11 spec).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnitTestShape {
+    /// Number of `given:` input tables the test feeds the model.
+    pub inputs: usize,
+    /// Total inline `rows:` across the `given:` inputs — `Some` only when
+    /// EVERY input declares an inline `rows` list (a partial count would
+    /// understate the real input size).
+    pub given_rows: Option<usize>,
+    /// The `expect:` inline `rows:` count, same inline-list caveat.
+    pub expect_rows: Option<usize>,
+}
+
+/// Whether a node's [`TestInfo`] set guarantees a primary key — the SHARED
+/// predicate the `missing_primary_key_tests` lint rule and the `PrimaryKey`
+/// lineage lens quote, so the two can never disagree:
+/// a `unique` + `not_null` pair on the SAME column, or any
+/// `unique_combination_of_columns` test (the `ends_with` keeps the bare kind
+/// plus package-namespaced spellings like `dbt_utils.unique_combination_of_columns`).
+pub fn has_pk_guarantee(tests: &[TestInfo]) -> bool {
+    let mut uniques: BTreeSet<&str> = BTreeSet::new();
+    let mut not_nulls: BTreeSet<&str> = BTreeSet::new();
+    for t in tests {
+        match t.kind.as_str() {
+            "unique" => {
+                if let Some(c) = &t.column_name {
+                    uniques.insert(c.as_str());
+                }
+            }
+            "not_null" => {
+                if let Some(c) = &t.column_name {
+                    not_nulls.insert(c.as_str());
+                }
+            }
+            kind if kind.ends_with("unique_combination_of_columns") => return true,
+            _ => {}
+        }
+    }
+    !uniques.is_disjoint(&not_nulls)
 }
 
 /// The exposure-specific payload (kind / owner / url), hung off the [`Dag`] as
@@ -677,19 +736,57 @@ impl Dag {
                 tests.entry(target).or_default().push(TestInfo {
                     name: ut.name.clone(),
                     kind: "unit".to_string(),
-                    column_name: None,
+                    unit: Some(UnitTestShape {
+                        inputs: ut.given.len(),
+                        // The total is honest only when every `given:` input
+                        // carries an inline `rows` list — a partial count would
+                        // understate the real input size.
+                        given_rows: ut
+                            .given
+                            .iter()
+                            .map(|io| io.rows.as_ref()?.as_array().map(Vec::len))
+                            .collect::<Option<Vec<usize>>>()
+                            .map(|v| v.into_iter().sum()),
+                        expect_rows: ut
+                            .expect
+                            .as_ref()
+                            .and_then(|io| io.rows.as_ref()?.as_array().map(Vec::len)),
+                    }),
+                    ..Default::default()
                 });
             }
         }
 
-        // Deterministic test ordering per node (HashMap iteration is unordered).
+        // Deterministic test ordering per node (HashMap iteration is
+        // unordered, and `sort_by` is STABLE — a key tie would leak insertion
+        // order). The key must cover the displayed payload: two `relationships`
+        // tests on the same column synthesize identical names (source mode
+        // names tests after the ATTACHED node), so `ref_uid`/`ref_column`
+        // break their tie. `ref_name` derives from `ref_uid`, and unit-test
+        // names are manifest-unique per node — the key below is total.
         for v in tests.values_mut() {
             v.sort_by(|a, b| {
                 a.kind
                     .cmp(&b.kind)
                     .then_with(|| a.column_name.cmp(&b.column_name))
                     .then_with(|| a.name.cmp(&b.name))
+                    .then_with(|| a.ref_uid.cmp(&b.ref_uid))
+                    .then_with(|| a.ref_column.cmp(&b.ref_column))
             });
+        }
+
+        // Relationship targets name-resolve once the `nodes` map is complete
+        // (register_test runs DURING it — the target may not have been built
+        // yet). `None` stays `None` (a target pruned out of the kept graph —
+        // the display then falls back to the raw uid).
+        for v in tests.values_mut() {
+            for t in v.iter_mut() {
+                if t.ref_name.is_none() {
+                    if let Some(u) = &t.ref_uid {
+                        t.ref_name = nodes.get(u).map(|n| n.name.clone());
+                    }
+                }
+            }
         }
 
         let kept: HashSet<&String> = nodes.keys().collect();
@@ -1464,14 +1561,40 @@ fn model_uid_by_name(nodes: &HashMap<String, NodeInfo>, name: &str) -> Option<St
 /// fall back to every node in `depends_on`. This is a pure recording — it never
 /// touches the adjacency maps, so a test is never a lineage transit hop.
 fn register_test(tests: &mut HashMap<String, Vec<TestInfo>>, node: &RawNode) {
+    let kind = node
+        .test_metadata
+        .as_ref()
+        .and_then(|m| m.name.clone())
+        .unwrap_or_else(|| "singular".to_string());
+    // A `relationships` test's `to:` target: dbt's depends_on carries the
+    // attached node AND the referenced one, so `ref` = the smallest
+    // non-attached dep (min for determinism — a malformed triple-dep test
+    // still resolves the same way every run). `ends_with` catches the bare
+    // kind plus package-wrapped spellings.
+    let ref_uid = if kind.ends_with("relationships") {
+        node.depends_on
+            .nodes
+            .iter()
+            .filter(|d| Some(*d) != node.attached_node.as_ref())
+            .min()
+            .cloned()
+    } else {
+        None
+    };
+    let ref_column = node
+        .test_metadata
+        .as_ref()
+        .and_then(|m| m.kwargs.as_ref())
+        .and_then(|k| k.get("field"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     let info = TestInfo {
         name: node.name.clone(),
-        kind: node
-            .test_metadata
-            .as_ref()
-            .and_then(|m| m.name.clone())
-            .unwrap_or_else(|| "singular".to_string()),
+        kind,
         column_name: node.column_name.clone(),
+        ref_uid,
+        ref_column,
+        ..Default::default()
     };
     match &node.attached_node {
         Some(target) => tests.entry(target.clone()).or_default().push(info),
@@ -1585,6 +1708,7 @@ mod tests {
                     column_name: Some("id".into()),
                     test_metadata: Some(RawTestMetadata {
                         name: Some("not_null".into()),
+                        ..Default::default()
                     }),
                     ..Default::default()
                 },
@@ -2014,6 +2138,7 @@ mod tests {
             crate::manifest::RawUnitTest {
                 name: "test_b".into(),
                 model: Some("b".into()),
+                ..Default::default()
             },
         );
         let dag = Dag::build(&manifest);
@@ -2330,5 +2455,188 @@ mod tests {
         let mut dag = Dag::build(&manifest);
         dag.ingest_compiled(&compiled_dir, Some(root));
         assert_eq!(dag.compiled_code("model.p.e"), Some("select 3"));
+    }
+
+    // ---- Issue 11: the shared PK predicate + relationships metadata ----
+
+    fn ti(kind: &str, col: Option<&str>) -> TestInfo {
+        TestInfo {
+            name: String::new(),
+            kind: kind.into(),
+            column_name: col.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn has_pk_guarantee_needs_a_same_column_pair_or_combination() {
+        // Same-column unique + not_null qualifies.
+        assert!(has_pk_guarantee(&[
+            ti("unique", Some("id")),
+            ti("not_null", Some("id")),
+        ]));
+        // A split pair — unique(a) + not_null(b) — does NOT.
+        assert!(!has_pk_guarantee(&[
+            ti("unique", Some("a")),
+            ti("not_null", Some("b")),
+        ]));
+        // unique_combination_of_columns alone qualifies, including a
+        // package-namespaced spelling.
+        assert!(has_pk_guarantee(&[ti(
+            "unique_combination_of_columns",
+            None
+        )]));
+        assert!(has_pk_guarantee(&[ti(
+            "dbt_utils.unique_combination_of_columns",
+            None
+        )]));
+        // A lone unique or not_null never qualifies; an empty set trivially not.
+        assert!(!has_pk_guarantee(&[ti("unique", Some("id"))]));
+        assert!(!has_pk_guarantee(&[ti("not_null", Some("id"))]));
+        assert!(!has_pk_guarantee(&[]));
+    }
+
+    #[test]
+    fn relationships_tests_capture_their_target_and_field() {
+        // A relationships test node: attached to m, depends_on carries BOTH
+        // the attached node and the `to:` target; kwargs carries `field`.
+        let mut manifest = sample_manifest();
+        manifest.nodes.insert(
+            "test.p.rel".to_string(),
+            RawNode {
+                name: "rel".into(),
+                resource_type: "test".into(),
+                attached_node: Some("model.p.b".into()),
+                column_name: Some("a_id".into()),
+                test_metadata: Some(RawTestMetadata {
+                    name: Some("relationships".into()),
+                    kwargs: Some(serde_json::Map::from_iter([(
+                        "field".to_string(),
+                        serde_json::Value::String("id".to_string()),
+                    )])),
+                }),
+                depends_on: crate::RawDependsOn {
+                    macros: vec![],
+                    nodes: vec!["model.p.b".to_string(), "model.p.a".to_string()],
+                },
+                ..Default::default()
+            },
+        );
+        let dag = Dag::build(&manifest);
+        let tests = dag.tests("model.p.b");
+        let rel = tests
+            .iter()
+            .find(|t| t.kind == "relationships")
+            .expect("the relationships test is captured");
+        assert_eq!(rel.column_name.as_deref(), Some("a_id"));
+        assert_eq!(rel.ref_uid.as_deref(), Some("model.p.a"));
+        assert_eq!(rel.ref_name.as_deref(), Some("a"));
+        assert_eq!(rel.ref_column.as_deref(), Some("id"));
+        // The sibling not_null test has no target.
+        let nn = tests.iter().find(|t| t.kind == "not_null").unwrap();
+        assert_eq!(nn.ref_uid, None);
+        assert_eq!(nn.ref_column, None);
+    }
+
+    #[test]
+    fn unit_tests_carry_their_shape() {
+        // A unit_test entry attaches to its model by uid-shape guess; the
+        // shape counts given inputs + inline row counts.
+        let mut manifest = sample_manifest();
+        manifest.unit_tests.insert(
+            "unit_test.p.b.my_unit".to_string(),
+            crate::RawUnitTest {
+                name: "my_unit".into(),
+                model: Some("b".into()),
+                given: vec![
+                    crate::RawUnitTestIo {
+                        input: Some("ref('a')".into()),
+                        rows: Some(serde_json::json!([{"id": 1}, {"id": 2}])),
+                    },
+                    crate::RawUnitTestIo {
+                        input: Some("source('s','c')".into()),
+                        rows: Some(serde_json::json!([{"id": 3}])),
+                    },
+                ],
+                expect: Some(crate::RawUnitTestIo {
+                    input: None,
+                    rows: Some(serde_json::json!([{"id": 1}])),
+                }),
+            },
+        );
+        let dag = Dag::build(&manifest);
+        let tests = dag.tests("model.p.b");
+        let unit = tests
+            .iter()
+            .find(|t| t.kind == "unit")
+            .expect("the unit test is captured");
+        assert_eq!(unit.name, "my_unit");
+        let shape = unit.unit.as_ref().expect("unit shape present");
+        assert_eq!(shape.inputs, 2);
+        assert_eq!(shape.given_rows, Some(3));
+        assert_eq!(shape.expect_rows, Some(1));
+    }
+
+    #[test]
+    fn same_named_relationships_tests_sort_by_their_target() {
+        // Determinism guard: two `relationships` tests on the SAME column of
+        // the SAME model — source mode names both `relationships_<node>_<col>`,
+        // so the (kind, column_name, name) key ties and the STABLE sort would
+        // leak `manifest.nodes` HashMap iteration order (random per build)
+        // into the tests vec — flaking `docs --check` diffs. `ref_uid` breaks
+        // the tie; rebuild repeatedly so a broken key can't pass by luck.
+        let build = || {
+            let mut manifest = sample_manifest();
+            for name in ["x", "y"] {
+                manifest.nodes.insert(
+                    format!("model.p.{name}"),
+                    RawNode {
+                        name: name.into(),
+                        resource_type: "model".into(),
+                        ..Default::default()
+                    },
+                );
+            }
+            for (key, to) in [("test.p.rel_y", "model.p.y"), ("test.p.rel_x", "model.p.x")] {
+                manifest.nodes.insert(
+                    key.to_string(),
+                    RawNode {
+                        // The shared, synthesized-style name — the collision
+                        // the sort key has to absorb.
+                        name: "relationships_b_a_id".into(),
+                        resource_type: "test".into(),
+                        attached_node: Some("model.p.b".into()),
+                        column_name: Some("a_id".into()),
+                        test_metadata: Some(RawTestMetadata {
+                            name: Some("relationships".into()),
+                            kwargs: Some(serde_json::Map::from_iter([(
+                                "field".to_string(),
+                                serde_json::Value::String("id".to_string()),
+                            )])),
+                        }),
+                        depends_on: crate::RawDependsOn {
+                            macros: vec![],
+                            nodes: vec!["model.p.b".to_string(), to.to_string()],
+                        },
+                        ..Default::default()
+                    },
+                );
+            }
+            Dag::build(&manifest)
+        };
+        for _ in 0..16 {
+            let dag = build();
+            let rels: Vec<Option<&str>> = dag
+                .tests("model.p.b")
+                .iter()
+                .filter(|t| t.kind == "relationships")
+                .map(|t| t.ref_uid.as_deref())
+                .collect();
+            assert_eq!(
+                rels,
+                vec![Some("model.p.x"), Some("model.p.y")],
+                "ref_uid breaks the (kind, column, name) tie deterministically"
+            );
+        }
     }
 }

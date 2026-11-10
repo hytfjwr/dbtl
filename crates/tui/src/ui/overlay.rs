@@ -255,9 +255,55 @@ fn detail_column_rows(dv: &DetailView) -> (Vec<(String, String, String)>, bool) 
     }
 }
 
+/// The fixed-width ASCII badge for a test kind — pure ASCII in BOTH glyph
+/// modes per the Issue 11 spec (no ambiguous-width glyphs on this surface):
+/// `NN` not_null, `U` unique, `R` relationships, `AV` accepted_values,
+/// `AR` accepted_range, `*` anything else. `ends_with` catches
+/// package-namespaced spellings (`dbt_utils.accepted_range`, a package's
+/// `pkg.relationships`) the way `register_test`'s `to:` resolution does —
+/// a namespaced relationships test is jumpable, so it must badge `R`, not
+/// `*`. `unique_combination_of_columns` has NO badge: it's a model-level
+/// test (`column_name` always `None`), so it can never appear on a column
+/// row — it shows in the tests list and drives the PrimaryKey lens instead.
+fn test_badge(kind: &str) -> &'static str {
+    if kind == "not_null" {
+        "NN"
+    } else if kind == "unique" {
+        "U"
+    } else if kind.ends_with("relationships") {
+        "R"
+    } else if kind.ends_with("accepted_values") {
+        "AV"
+    } else if kind.ends_with("accepted_range") {
+        "AR"
+    } else {
+        "*"
+    }
+}
+
+/// A column's badge list: the distinct [`test_badge`]s of the tests attached
+/// to it (normalized-name match — the same key space `col_counts` uses), in
+/// the FIXED display order below so the row is deterministic.
+fn column_badges<'a>(dv: &'a DetailView, column: &str) -> Vec<&'a str> {
+    const ORDER: &[&str] = &["NN", "U", "R", "AV", "AR", "*"];
+    let norm = crate::normalize_column(column);
+    let mut seen = std::collections::BTreeSet::new();
+    for test in &dv.tests {
+        if test
+            .column_name
+            .as_deref()
+            .is_some_and(|c| crate::normalize_column(c) == norm)
+        {
+            seen.insert(test_badge(&test.kind));
+        }
+    }
+    ORDER.iter().copied().filter(|b| seen.contains(b)).collect()
+}
+
 /// The columns section: header + one row per [`detail_column_rows`] entry,
-/// each with the h/l cursor marker (`> `, the shared `SELECTED_MARKER`) and the
-/// one-hop column-level up/down edge counts in the chrome badge glyphs.
+/// each with the h/l cursor marker (`> `, the shared `SELECTED_MARKER`), the
+/// per-column test-kind badges (Issue 11), and the one-hop column-level
+/// up/down edge counts in the chrome badge glyphs.
 fn detail_column_lines(
     dv: &DetailView,
     glyphs: crate::GlyphMode,
@@ -284,13 +330,86 @@ fn detail_column_lines(
             .get(&crate::normalize_column(name))
             .map(|(u, d)| format!("{}{} {}{}", chrome.badge_up, u, chrome.badge_down, d))
             .unwrap_or_default();
-        let selected = i == dv.col_index;
+        // The test-kind badge trail for THIS column (`[NN U R]`); untested
+        // columns get nothing so the gap stays visible.
+        let badges = column_badges(dv, name);
+        let badge_str = if badges.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", badges.join(" "))
+        };
+        let selected = i == dv.col_index && dv.test_index == usize::MAX;
         let mark = if selected {
             super::SELECTED_MARKER
         } else {
             "  "
         };
-        let text = format!("  {mark}{name:<26} {ty:<14} {desc} {counts}");
+        let text = format!("  {mark}{name:<26} {ty:<14}{badge_str} {desc} {counts}");
+        out.push(if selected {
+            Line::styled(text, selected_style(t))
+        } else {
+            Line::from(text)
+        });
+    }
+    out
+}
+
+/// The tests section: header + one row per attached test — the plain
+/// `kind(col)` for schema tests, a `-> target.col` jump hint for resolved
+/// `relationships` targets, and the `in:N given:M expect:K` shape for unit
+/// tests (Issue 11). The tests-section h/l cursor (`test_index`, owned via
+/// `Tab`) lands only on resolved relationships targets — the rows Enter can
+/// re-root to — so it renders the same `> ` marker the columns side does.
+fn detail_test_lines(dv: &DetailView, t: &theme::Theme) -> Vec<Line<'static>> {
+    let mut out = vec![Line::styled(
+        format!("tests ({}):", dv.tests.len()),
+        header_style(t),
+    )];
+    for (i, test) in dv.tests.iter().enumerate() {
+        let col = test
+            .column_name
+            .as_deref()
+            .map(|c| format!("({c})"))
+            .unwrap_or_default();
+        // The relationships target: the resolved display name when the node
+        // survived pruning, else the raw uid (still informative); `->` is
+        // pure ASCII in both glyph modes.
+        let target = if test.ref_uid.is_some() {
+            let name = test
+                .ref_name
+                .as_deref()
+                .or(test.ref_uid.as_deref())
+                .unwrap_or("?");
+            let rcol = test
+                .ref_column
+                .as_deref()
+                .map(|c| format!(".{c}"))
+                .unwrap_or_default();
+            format!(" -> {name}{rcol}")
+        } else {
+            String::new()
+        };
+        // The unit-test shape: the test's own name (a unit test's identity —
+        // the `kind` alone is just `unit`), the input-table count, and the
+        // inline row counts the manifest carries (a `fixture:`/CSV side
+        // shows no number).
+        let unit = test.unit.as_ref().map_or(String::new(), |u| {
+            let mut s = format!(" {} in:{}", test.name, u.inputs);
+            if let Some(g) = u.given_rows {
+                s.push_str(&format!(" given:{g}"));
+            }
+            if let Some(e) = u.expect_rows {
+                s.push_str(&format!(" expect:{e}"));
+            }
+            s
+        });
+        let selected = i == dv.test_index;
+        let mark = if selected {
+            super::SELECTED_MARKER
+        } else {
+            "  "
+        };
+        let text = format!("  {mark}{}{}{}{}", test.kind, col, target, unit);
         out.push(if selected {
             Line::styled(text, selected_style(t))
         } else {
@@ -309,6 +428,13 @@ pub(crate) fn detail_columns_line0(dv: &DetailView) -> usize {
     detail_head_lines(dv, &theme::DEFAULT).len() + 1
 }
 
+/// The line index of the FIRST test row inside the modal body (head + the
+/// columns header + column rows + the blank separator + the `tests (N):`
+/// header) — the same ensure-visible base for the tests-section cursor.
+pub(crate) fn detail_tests_line0(dv: &DetailView) -> usize {
+    detail_columns_line0(dv) + detail_column_rows(dv).0.len() + 2
+}
+
 /// The structure modal content as display lines: type / location / tags /
 /// description / columns table / tests list. Built once and shared by the clamp
 /// and the renderer so scroll bounds match the content.
@@ -321,33 +447,30 @@ fn detail_display_lines(
     out.extend(detail_column_lines(dv, glyphs, t));
 
     out.push(Line::from(""));
-    out.push(Line::styled(
-        format!("tests ({}):", dv.tests.len()),
-        header_style(t),
-    ));
-    for t in &dv.tests {
-        let col = t
-            .column_name
-            .as_deref()
-            .map(|c| format!("({c})"))
-            .unwrap_or_default();
-        out.push(Line::from(format!("  {}{}", t.kind, col)));
-    }
+    out.extend(detail_test_lines(dv, t));
 
     out
 }
 
 /// Clamp the detail modal's scroll offset to its content/viewport (size-aware),
-/// then ensure the column cursor's row is inside the window — the minimal-pan
-/// follow the lineage cursor already uses. Counts with the DEFAULT theme —
-/// the line count is theme- and glyph-independent.
+/// then ensure the ACTIVE section cursor's row is inside the window — the
+/// minimal-pan follow the lineage cursor already uses. Counts with the
+/// DEFAULT theme — the line count is theme- and glyph-independent.
 pub fn clamp_detail_scroll(area: Rect, dv: &DetailView) -> usize {
     let total = detail_display_lines(dv, crate::GlyphMode::Ascii, &theme::DEFAULT).len();
     let view_h = modal_rect(area).height.saturating_sub(2) as usize;
     let mut scroll = clamp_modal_scroll(area, total, dv.scroll);
-    // Ensure-visible for the h/l column cursor: pan just enough to keep its
-    // row inside [scroll, scroll + view_h) — never a re-center.
-    if dv.col_index != usize::MAX && dv.col_index < dv.col_names.len() {
+    // Ensure-visible for the h/l cursor: pan just enough to keep its row
+    // inside [scroll, scroll + view_h) — never a re-center. The tests-section
+    // cursor (Tab-owned) gets the same follow at its own line base.
+    if dv.test_index != usize::MAX && dv.test_index < dv.tests.len() {
+        let row = detail_tests_line0(dv) + dv.test_index;
+        if row < scroll {
+            scroll = row;
+        } else if view_h > 0 && row >= scroll + view_h {
+            scroll = row + 1 - view_h;
+        }
+    } else if dv.col_index != usize::MAX && dv.col_index < dv.col_names.len() {
         let row = detail_columns_line0(dv) + dv.col_index;
         if row < scroll {
             scroll = row;
@@ -368,18 +491,32 @@ pub(crate) fn draw_detail(
     glyphs: crate::GlyphMode,
     t: &theme::Theme,
 ) {
-    // The column gestures only exist when the modal HAS a column cursor — a
-    // columnless node keeps Enter's plain close and has no h/l target, so the
-    // hints stay off the title too.
-    let col_hint = if dv.col_index == usize::MAX {
-        ""
+    // The gesture hints follow the ACTIVE cursor section: the columns side
+    // traces a column on Enter, the tests side jumps to the relationships
+    // `to:` target. `Tab` is only advertised when the tests section HAS a
+    // jumpable row — otherwise the key notices and stays on columns.
+    let (sect_hint, tab_hint) = if dv.test_index != usize::MAX {
+        (", h/l test, Enter/c jump", ", Tab cols")
     } else {
-        ", h/l column, Enter/c trace"
+        let col_hint = if dv.col_index == usize::MAX {
+            ""
+        } else {
+            ", h/l column, Enter/c trace"
+        };
+        let tab_hint = if dv.tests.iter().any(|t| t.ref_uid.is_some()) {
+            ", Tab tests"
+        } else {
+            ""
+        };
+        (col_hint, tab_hint)
     };
     draw_scrollable_modal(
         frame,
         area,
-        format!(" {}  (Esc/q to close, j/k scroll{col_hint}) ", dv.name),
+        format!(
+            " {}  (Esc/q to close, j/k scroll{sect_hint}{tab_hint}) ",
+            dv.name
+        ),
         detail_display_lines(dv, glyphs, t),
         dv.scroll,
         glyphs,
@@ -780,6 +917,23 @@ fn stats_display_lines(sv: &StatsView, t: &theme::Theme) -> Vec<Line<'static>> {
         sv.testable_tested, sv.testable_total
     )));
     out.push(Line::from(cov_spans));
+
+    // Column-level coverage (Issue 11): the SAME `column_coverage_counts`
+    // numbers `dbtl docs`' README quotes — declared columns carrying ≥1 test.
+    out.push(Line::styled(
+        "Column coverage (declared columns):",
+        header_style(t),
+    ));
+    let cpct = (sv.col_tested * 100)
+        .checked_div(sv.col_declared)
+        .unwrap_or(0);
+    let mut col_spans = vec![Span::raw("  ")];
+    col_spans.extend(coverage_gauge(cpct, 20, t));
+    col_spans.push(Span::raw(format!(
+        " {}/{} columns tested ({cpct}%)",
+        sv.col_tested, sv.col_declared
+    )));
+    out.push(Line::from(col_spans));
 
     out.push(Line::from(""));
     out.push(Line::styled("Top hubs (degree):", header_style(t)));
@@ -1514,6 +1668,7 @@ mod tests {
             catalog: vec![],
             col_names: vec![],
             col_index: usize::MAX,
+            test_index: usize::MAX,
             col_counts: Default::default(),
             stale: false,
             scroll: 0,
@@ -1569,6 +1724,7 @@ mod tests {
             catalog: vec![],
             col_names: vec![],
             col_index: usize::MAX,
+            test_index: usize::MAX,
             col_counts: Default::default(),
             stale: false,
             scroll: 0,
