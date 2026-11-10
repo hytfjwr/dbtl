@@ -599,7 +599,7 @@ fn draw_status(
     //      it only exists while the pointer is already on the strip — the
     //      accent columns carry the feedback — so on a crowded line the long
     //      string drops first instead of pushing the persistent segments out.
-    let candidates: [(Option<&str>, Color); 13] = [
+    let candidates: [(Option<&str>, Color); 14] = [
         (segments.impact, t.danger),
         (segments.notify, t.danger),
         (segments.column, t.gold),
