@@ -12,8 +12,8 @@
 
 use dbtl::app::{apply_action, App};
 use dbtl::layout::GlyphMode;
-use dbtl::ui::{draw, Focus, RenderCtx, StatusSegments};
-use dbtl::{load_dag, Action};
+use dbtl::ui::{draw, Focus, RenderCtx, StatusSegments, ToastLine};
+use dbtl::{load_dag, Action, NoticeLevel, NotificationEntry};
 
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -33,12 +33,12 @@ fn ascii_app() -> App {
 /// Render the app exactly as the event loop does (layout in the app's glyph
 /// mode, styles applied, Dag-derived strings passed) and return the buffer.
 fn render(app: &App, width: u16, height: u16) -> Buffer {
-    render_with_toast(app, width, height, None)
+    render_with_toasts(app, width, height, &[])
 }
 
-/// [`render`] plus an optional floating toast (the transient copy/bookmark
-/// acknowledgement), mirroring the event loop's `ctx.toast` wiring.
-fn render_with_toast(app: &App, width: u16, height: u16, toast: Option<&str>) -> Buffer {
+/// [`render`] plus an optional toast stack (the transient copy/bookmark
+/// acknowledgement, Issue 08), mirroring the event loop's `ctx.toasts` wiring.
+fn render_with_toasts(app: &App, width: u16, height: u16, toasts: &[ToastLine]) -> Buffer {
     // The SAME memoized producer the event loop draws from, so the guard
     // scans exactly what production renders.
     let lineage = app.styled_lineage_layout();
@@ -80,6 +80,13 @@ fn render_with_toast(app: &App, width: u16, height: u16, toast: Option<&str>) ->
     // REAL value so the guard actually scans the rendered badge glyphs for
     // ASCII-safety (a hardcoded `↓`/`↑` would fail this render).
     let impact_s = app.impact_status();
+    // The unread-warning badge `!N` (Issue 08, pure ASCII by contract),
+    // mirroring the loop's wiring.
+    let notify_s = if app.unread_warnings() > 0 {
+        Some(format!("!{}", app.unread_warnings()))
+    } else {
+        None
+    };
     // The diff chip (ASCII `+/~/-` counts), present only when a guard scenario
     // loaded a --diff baseline — mirroring the loop's wiring.
     let diff_s = app.diff_status_label();
@@ -111,6 +118,7 @@ fn render_with_toast(app: &App, width: u16, height: u16, toast: Option<&str>) ->
         ctx.segments = StatusSegments {
             hint: None,
             impact: impact_s.as_deref(),
+            notify: notify_s.as_deref(),
             column: column_s.as_deref(),
             focus: Some(focus_s),
             view: Some(label.as_str()),
@@ -130,7 +138,7 @@ fn render_with_toast(app: &App, width: u16, height: u16, toast: Option<&str>) ->
         // `#`/`.`/`+` glyphs whenever the lens is toggled on (all pure ASCII).
         ctx.minimap = app.ui_state.minimap_visible();
         ctx.layer_bands = layer_bands.as_deref();
-        ctx.toast = toast;
+        ctx.toasts = toasts;
         terminal
             .draw(|frame| draw(frame, &ctx))
             .expect("draw must not panic");
@@ -385,19 +393,69 @@ fn minimap_inset_is_all_ascii() {
 }
 
 #[test]
-fn toast_overlay_is_all_ascii() {
-    // The toast floats over the top-right with the glyph-mode border set, and
-    // its overflow truncation appends a plain ".." (never an ellipsis glyph).
+fn toast_stack_is_all_ascii() {
+    // The stacked toasts float over the top-right with the glyph-mode border
+    // set (info + warning rows stacked, Issue 08), and overflow truncation
+    // appends a plain ".." (never an ellipsis glyph).
     let app = ascii_app();
-    let buffer = render_with_toast(&app, 80, 24, Some("Copied unique_id"));
-    assert_all_ascii(&buffer, "toast 80x24");
+    let stack = [
+        ToastLine {
+            level: NoticeLevel::Info,
+            text: "Copied unique_id",
+        },
+        ToastLine {
+            level: NoticeLevel::Warning,
+            text: "Reload failed (kept previous data)",
+        },
+        ToastLine {
+            level: NoticeLevel::Info,
+            text: "theme: default",
+        },
+    ];
+    assert_all_ascii(
+        &render_with_toasts(&app, 80, 24, &stack),
+        "toast stack 80x24",
+    );
     // A toast wider than the screen budget exercises the truncation path.
     let long =
         "Removed bookmark: some_extremely_long_model_name_that_cannot_possibly_fit_in_the_box";
+    let stack = [ToastLine {
+        level: NoticeLevel::Warning,
+        text: long,
+    }];
     assert_all_ascii(
-        &render_with_toast(&app, 40, 24, Some(long)),
+        &render_with_toasts(&app, 40, 24, &stack),
         "truncated toast 40x24",
     );
+}
+
+#[test]
+fn notification_center_and_chip_are_all_ascii() {
+    // Issue 08: the `Ctrl-n` centre modal (rows `HH:MM:SS  level  text` — the
+    // `warn`/`info` labels and stamp are plain ASCII), the `!N` unread chip,
+    // and the empty state, all under the ASCII guard.
+    let mut app = ascii_app();
+    app.record_notification(NotificationEntry {
+        stamp: "10:20:30".into(),
+        level: NoticeLevel::Warning,
+        text: "resource type 'check' is not supported".into(),
+    });
+    app.record_notification(NotificationEntry {
+        stamp: "10:20:31".into(),
+        level: NoticeLevel::Info,
+        text: "Reloaded".into(),
+    });
+    assert_eq!(app.unread_warnings(), 1, "one unread warning → !1 chip");
+    assert_all_ascii(&render(&app, 100, 30), "!1 status chip 100x30");
+
+    apply_action(&mut app, Action::NotificationsOpen); // clears !N, opens modal
+    assert_all_ascii(&render(&app, 100, 40), "notification center 100x40");
+    assert_all_ascii(&render(&app, 60, 20), "notification center 60x20");
+
+    // The empty state — a fresh app with nothing logged.
+    let mut empty = ascii_app();
+    apply_action(&mut empty, Action::NotificationsOpen);
+    assert_all_ascii(&render(&empty, 100, 40), "notification center empty");
 }
 
 #[test]

@@ -832,6 +832,14 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             app.mode = Mode::Stats(app.compute_stats_view());
             Outcome::cont()
         }
+        // The notification centre (`Ctrl-n`, Issue 08): opens on a snapshot
+        // of the log; opening is the read gesture — `!N` zeroes the moment
+        // the modal appears.
+        Action::NotificationsOpen => {
+            app.mark_notifications_read();
+            app.mode = Mode::Notifications(app.notifications_snapshot());
+            Outcome::cont()
+        }
         // The baseline-diff summary: opens only with a --diff baseline loaded
         // (the payload is snapshotted like the other modals); otherwise a toast
         // explains how to get one.
@@ -1109,8 +1117,8 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
 }
 
 /// The scroll slot of whichever overlay modal is open (`None` in non-modal
-/// modes). The ONE place the five scrollable modals are enumerated, shared by
-/// the line / page / home / end scroll arms so a new modal can't be wired into
+/// modes). The ONE place every scrollable modal is enumerated, shared by the
+/// line / page / home / end scroll arms so a new modal can't be wired into
 /// some arms and missed in others.
 fn modal_scroll_mut(mode: &mut Mode) -> Option<&mut usize> {
     match mode {
@@ -1120,6 +1128,7 @@ fn modal_scroll_mut(mode: &mut Mode) -> Option<&mut usize> {
         Mode::Stats(sv) => Some(&mut sv.scroll),
         Mode::Diff(dv) => Some(&mut dv.scroll),
         Mode::Columns(cv) => Some(&mut cv.scroll),
+        Mode::Notifications(nv) => Some(&mut nv.scroll),
         _ => None,
     }
 }

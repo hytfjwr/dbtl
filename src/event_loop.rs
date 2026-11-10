@@ -6,7 +6,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
@@ -50,12 +50,13 @@ pub fn event_loop(
     let mut last_selection: Option<String> = None;
     let mut last_cursor: Option<String> = None;
     let mut force_anchor = false;
-    // The on-screen toast: the latest App notice stamped with its arrival time.
-    // The loop owns the lifetime (the reducer stays clock-free): a new notice
-    // replaces the current toast, and an expired one clears on the next
-    // iteration — the 250ms idle tick guarantees that redraw happens promptly.
-    const TOAST_TTL: Duration = Duration::from_millis(2500);
-    let mut toast: Option<(String, Instant)> = None;
+    // The on-screen toast stack (Issue 08): each App notice is stamped with
+    // its arrival time and pushed to the TOP — the loop owns the per-level
+    // lifetime (info 2.5s / warning 5s, the reducer stays clock-free), and an
+    // expired entry drops on the next iteration — the 250ms idle tick
+    // guarantees that redraw happens promptly. Past `ToastStack::MAX` the
+    // oldest evicts.
+    let mut toasts = ToastStack::default();
     // The mouse gesture router: tracks the live press (release-confirmed
     // clicks, the double-click window, the drag threshold) and the last
     // reported hover target — the `Moved` redraw gate. The loop owns the
@@ -78,15 +79,23 @@ pub fn event_loop(
     let mut area = ratatui::layout::Rect::default();
 
     loop {
-        if let Some(text) = app.take_notice() {
-            toast = Some((text, Instant::now()));
+        // Drain the pending notice WITH its level: it becomes BOTH a toast and
+        // a stamped notification-log entry (the centre's HH:MM:SS comes from
+        // this wall clock — `App` itself never reads a clock).
+        if let Some((level, text)) = app.take_notice_leveled() {
+            app.record_notification(dbtl::NotificationEntry {
+                stamp: now_hhmmss(),
+                level,
+                text: text.clone(),
+            });
+            toasts.push(ToastItem {
+                level,
+                text,
+                at: Instant::now(),
+            });
             dirty = true;
         }
-        if toast
-            .as_ref()
-            .is_some_and(|(_, at)| at.elapsed() >= TOAST_TTL)
-        {
-            toast = None;
+        if toasts.retain_fresh() {
             dirty = true;
         }
         if dirty {
@@ -190,6 +199,9 @@ pub fn event_loop(
                 dbtl::Mode::Columns(cv) => {
                     cv.scroll = dbtl::ui::clamp_columns_scroll(area, cv);
                 }
+                dbtl::Mode::Notifications(nv) => {
+                    nv.scroll = dbtl::ui::clamp_notifications_scroll(area, nv);
+                }
                 _ => {}
             }
 
@@ -263,6 +275,13 @@ pub fn event_loop(
             // from the active glyph mode's Chrome badges — never hardcoded).
             // Built in App so the string source is single and unit-testable.
             let impact_s = app.impact_status();
+            // The unread-warning badge (`!N`, Issue 08) — sits right after
+            // impact in the chip order; absent when nothing is unread.
+            let notify_s = if app.unread_warnings() > 0 {
+                Some(format!("!{}", app.unread_warnings()))
+            } else {
+                None
+            };
             // The baseline-diff chip (present only with a --diff baseline loaded).
             let diff_s = app.diff_status_label();
             // The run_results chip (coverage + freshness of the loaded artifact).
@@ -272,6 +291,9 @@ pub fn event_loop(
             // which graph the numbers describe, but still a droppable segment:
             // a narrow-enough terminal sheds it like any other chip.
             let scope_s = format!("scope:{}", app.scope().tag());
+            // The toast stack for the draw seam: borrows of the live entries
+            // (newest first), capped at the stack's MAX.
+            let toast_lines = toasts.lines();
             // Layer bands: the lineage pane's bottom-border column annotations,
             // present exactly while the Layer lens is active (cheap: one pass over
             // the layout's rects, only computed when the lens is on).
@@ -346,6 +368,7 @@ pub fn event_loop(
                 ctx.segments = StatusSegments {
                     hint: splitter_hint.as_deref(),
                     impact: impact_s.as_deref(),
+                    notify: notify_s.as_deref(),
                     column: column_s.as_deref(),
                     focus: Some(focus_s),
                     view: view_seg,
@@ -361,7 +384,7 @@ pub fn event_loop(
                 ctx.minimap = app.ui_state.minimap_visible();
                 ctx.filter_label = app.list_filter_label();
                 ctx.layer_bands = layer_bands.as_deref();
-                ctx.toast = toast.as_ref().map(|(text, _)| text.as_str());
+                ctx.toasts = &toast_lines;
                 ctx.theme = app.active_theme();
                 terminal
                     .draw(|frame| draw(frame, &ctx))
@@ -377,12 +400,23 @@ pub fn event_loop(
                 if w.poll() {
                     // Same semantics as the `r` key: on failure the app keeps
                     // running on the old data; the reshaped graph re-centres.
-                    let note = match app.reload() {
-                        Ok(w) if w.is_empty() => "Reloaded (source changed)".to_string(),
-                        Ok(w) => format!("Reloaded (source changed) — {}", warnings_tail(&w)),
-                        Err(_) => "Reload failed (kept previous data)".to_string(),
+                    // Load warnings and failures are WARNING-level notices —
+                    // a clean reload stays info.
+                    let (level, note) = match app.reload() {
+                        Ok(w) if w.is_empty() => (
+                            dbtl::NoticeLevel::Info,
+                            "Reloaded (source changed)".to_string(),
+                        ),
+                        Ok(w) => (
+                            dbtl::NoticeLevel::Warning,
+                            format!("Reloaded (source changed) — {}", warnings_tail(&w)),
+                        ),
+                        Err(_) => (
+                            dbtl::NoticeLevel::Warning,
+                            "Reload failed (kept previous data)".to_string(),
+                        ),
                     };
-                    app.set_notice(note);
+                    app.set_notice_level(level, note);
                     force_anchor = true;
                     dirty = true;
                 }
@@ -724,22 +758,32 @@ fn run_effect(terminal: &mut DefaultTerminal, app: &mut App, effect: Effect) -> 
         Effect::OpenEditor(path) => open_in_editor(terminal, app, &path)?,
         Effect::Yank(text) => {
             if yank_to_clipboard(&text).is_err() {
-                app.set_notice("Copy failed (clipboard unavailable)");
+                app.set_notice_level(
+                    dbtl::NoticeLevel::Warning,
+                    "Copy failed (clipboard unavailable)",
+                );
             }
         }
         Effect::ReloadManifest => {
             // On failure the app is left unchanged (reload `?`-returns before
-            // mutating), so we keep running on the old data.
-            let note = match app.reload() {
-                Ok(w) if w.is_empty() => "Reloaded".to_string(),
-                Ok(w) => format!("Reloaded — {}", warnings_tail(&w)),
-                Err(_) => "Reload failed (kept previous data)".to_string(),
+            // mutating), so we keep running on the old data. Load warnings and
+            // failures are WARNING-level; a clean reload stays info.
+            let (level, note) = match app.reload() {
+                Ok(w) if w.is_empty() => (dbtl::NoticeLevel::Info, "Reloaded".to_string()),
+                Ok(w) => (
+                    dbtl::NoticeLevel::Warning,
+                    format!("Reloaded — {}", warnings_tail(&w)),
+                ),
+                Err(_) => (
+                    dbtl::NoticeLevel::Warning,
+                    "Reload failed (kept previous data)".to_string(),
+                ),
             };
-            app.set_notice(note);
+            app.set_notice_level(level, note);
         }
         Effect::WriteFile { path, contents } => {
             if std::fs::write(&path, contents).is_err() {
-                app.set_notice(format!("Export failed: {path}"));
+                app.set_notice_level(dbtl::NoticeLevel::Warning, format!("Export failed: {path}"));
             }
         }
         Effect::DbtParse => run_dbt_parse(terminal, app)?,
@@ -756,12 +800,15 @@ fn run_effect(terminal: &mut DefaultTerminal, app: &mut App, effect: Effect) -> 
 /// dbt's own progress/error output is visible while it runs.
 fn run_dbt_parse(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
     let Some(dbt) = find_dbt() else {
-        app.set_notice("dbt not found in PATH");
+        app.set_notice_level(dbtl::NoticeLevel::Warning, "dbt not found in PATH");
         return Ok(());
     };
     let root = app.project_root().to_path_buf();
     if !root.join("dbt_project.yml").is_file() {
-        app.set_notice(format!("No dbt_project.yml in {}", root.display()));
+        app.set_notice_level(
+            dbtl::NoticeLevel::Warning,
+            format!("No dbt_project.yml in {}", root.display()),
+        );
         return Ok(());
     }
 
@@ -780,29 +827,132 @@ fn run_dbt_parse(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
     match status {
         Ok(s) if s.success() => {}
         Ok(_) => {
-            app.set_notice("dbt parse failed (kept current data)");
+            app.set_notice_level(
+                dbtl::NoticeLevel::Warning,
+                "dbt parse failed (kept current data)",
+            );
             return Ok(());
         }
         Err(_) => {
-            app.set_notice("Failed to launch dbt (kept current data)");
+            app.set_notice_level(
+                dbtl::NoticeLevel::Warning,
+                "Failed to launch dbt (kept current data)",
+            );
             return Ok(());
         }
     }
     let manifest = root.join("target").join("manifest.json");
     if !manifest.is_file() {
-        app.set_notice("dbt parse wrote no target/manifest.json");
+        app.set_notice_level(
+            dbtl::NoticeLevel::Warning,
+            "dbt parse wrote no target/manifest.json",
+        );
         return Ok(());
     }
     // On a load error `adopt_manifest` restores the previous source, so the
     // app keeps running on the pre-parse data. Load warnings (unhandled
     // resource_types, scope warnings) ride the toast like a manual reload.
-    let note = match app.adopt_manifest(manifest) {
-        Ok(w) if w.is_empty() => "dbt parse OK: now reading target/manifest.json".to_string(),
-        Ok(w) => format!("dbt parse OK — {}", warnings_tail(&w)),
-        Err(_) => "dbt parse OK but the manifest failed to load (kept current data)".to_string(),
+    let (level, note) = match app.adopt_manifest(manifest) {
+        Ok(w) if w.is_empty() => (
+            dbtl::NoticeLevel::Info,
+            "dbt parse OK: now reading target/manifest.json".to_string(),
+        ),
+        Ok(w) => (
+            dbtl::NoticeLevel::Warning,
+            format!("dbt parse OK — {}", warnings_tail(&w)),
+        ),
+        Err(_) => (
+            dbtl::NoticeLevel::Warning,
+            "dbt parse OK but the manifest failed to load (kept current data)".to_string(),
+        ),
     };
-    app.set_notice(note);
+    app.set_notice_level(level, note);
     Ok(())
+}
+
+/// One live toast in the top-right stack (Issue 08): the notice text, its
+/// severity (drives the TTL and the border colour), and the arrival stamp the
+/// loop adds — the reducer stays clock-free.
+struct ToastItem {
+    level: dbtl::NoticeLevel,
+    text: String,
+    at: Instant,
+}
+
+/// The visible toast stack: newest FIRST (`items[0]` renders on top), capped
+/// at [`ToastStack::MAX`]. [`ToastStack::push`] drops the oldest past the cap;
+/// [`ToastStack::retain_fresh`] drops anything past its per-level TTL.
+#[derive(Default)]
+struct ToastStack {
+    items: Vec<ToastItem>,
+}
+
+impl ToastStack {
+    /// At most 3 toasts on screen at once (Issue 08).
+    const MAX: usize = 3;
+
+    /// Push `item` to the TOP (newest first), evicting the oldest past `MAX`.
+    fn push(&mut self, item: ToastItem) {
+        self.items.insert(0, item);
+        self.items.truncate(Self::MAX);
+    }
+
+    /// Drop every toast past its per-level TTL; true when anything expired
+    /// (the caller marks the frame dirty).
+    fn retain_fresh(&mut self) -> bool {
+        let before = self.items.len();
+        self.items.retain(|t| t.at.elapsed() < toast_ttl(t.level));
+        self.items.len() != before
+    }
+
+    /// The draw-seam view: borrows of the live entries, newest first.
+    fn lines(&self) -> Vec<dbtl::ToastLine<'_>> {
+        self.items
+            .iter()
+            .map(|t| dbtl::ToastLine {
+                level: t.level,
+                text: t.text.as_str(),
+            })
+            .collect()
+    }
+}
+
+/// Per-level on-screen lifetime: info ~2.5s (the legacy toast TTL), warning
+/// ~5s so failures stay readable. Owned here, not in `NoticeLevel` — the
+/// TTL is a UI policy, the level itself is UI-free.
+fn toast_ttl(level: dbtl::NoticeLevel) -> Duration {
+    match level {
+        dbtl::NoticeLevel::Info => Duration::from_millis(2500),
+        dbtl::NoticeLevel::Warning => Duration::from_millis(5000),
+    }
+}
+
+/// Local wall-clock `HH:MM:SS` for notification stamps. `std` has no local
+/// time API and adding `time`/`chrono` would trip the orchestration's
+/// dependency stop-condition — so the platform `date` answers "what time is
+/// it here", with std UTC math as the fallback if `date` is somehow absent.
+/// `pub(crate)` because `cli::build_app` stamps startup warnings through the
+/// same clock.
+pub(crate) fn now_hhmmss() -> String {
+    if let Ok(out) = Command::new("date").arg("+%H:%M:%S").output() {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            let s = s.trim();
+            if s.len() == 8 {
+                return s.to_string();
+            }
+        }
+    }
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!(
+        "{:02}:{:02}:{:02}",
+        secs / 3600 % 24,
+        secs / 60 % 60,
+        secs % 60
+    )
 }
 
 /// The reload/`dbt parse` toast tail for a non-empty load-warnings vec:
@@ -930,7 +1080,7 @@ fn open_in_editor(terminal: &mut DefaultTerminal, app: &mut App, path: &str) -> 
     let _ = terminal.clear();
 
     if let Some(note) = editor_failure_notice(&program, &status) {
-        app.set_notice(note);
+        app.set_notice_level(dbtl::NoticeLevel::Warning, note);
     }
     Ok(())
 }
@@ -1110,6 +1260,68 @@ mod tests {
     fn restore_is_idempotent_and_tty_free() {
         ratatui::restore();
         ratatui::restore();
+    }
+
+    /// Issue 08: the stack holds at most 3 toasts, newest on top — a 4th push
+    /// evicts the OLDEST entry so a burst never wedges on stale text.
+    #[test]
+    fn toast_stack_caps_at_three_and_evicts_oldest() {
+        let item = |text: &str| ToastItem {
+            level: dbtl::NoticeLevel::Info,
+            text: text.into(),
+            at: Instant::now(),
+        };
+        let mut s = ToastStack::default();
+        for t in ["a", "b", "c", "d"] {
+            s.push(item(t));
+        }
+        let texts: Vec<&str> = s.lines().iter().map(|l| l.text).collect();
+        assert_eq!(texts, vec!["d", "c", "b"], "newest first, 'a' evicted");
+    }
+
+    /// Per-level TTL: info entries die at 2.5s while same-age warnings still
+    /// live (5s) — the retain pass only drops expired rows and reports the
+    /// flip so the loop redraws.
+    #[test]
+    fn toast_ttl_differs_by_level_and_retain_drops_expired() {
+        assert_eq!(
+            toast_ttl(dbtl::NoticeLevel::Info),
+            Duration::from_millis(2500)
+        );
+        assert_eq!(
+            toast_ttl(dbtl::NoticeLevel::Warning),
+            Duration::from_millis(5000)
+        );
+        let mut s = ToastStack::default();
+        // An info toast stamped 3s ago is dead; a warning of the same age is not.
+        s.push(ToastItem {
+            level: dbtl::NoticeLevel::Info,
+            text: "old info".into(),
+            at: Instant::now() - Duration::from_secs(3),
+        });
+        s.push(ToastItem {
+            level: dbtl::NoticeLevel::Warning,
+            text: "same-age warning".into(),
+            at: Instant::now() - Duration::from_secs(3),
+        });
+        assert!(s.retain_fresh(), "the expired info dropped");
+        let texts: Vec<&str> = s.lines().iter().map(|l| l.text).collect();
+        assert_eq!(texts, vec!["same-age warning"]);
+        assert!(!s.retain_fresh(), "nothing left to expire");
+    }
+
+    /// The notification stamp is a parseable `HH:MM:SS` from the platform
+    /// `date` (with the std UTC fallback never producing garbage either).
+    #[test]
+    fn now_hhmmss_is_well_formed() {
+        let s = now_hhmmss();
+        assert_eq!(s.len(), 8, "HH:MM:SS shape: {s:?}");
+        let parts: Vec<&str> = s.split(':').collect();
+        assert_eq!(parts.len(), 3);
+        let h: u32 = parts[0].parse().expect("hour");
+        let m: u32 = parts[1].parse().expect("minute");
+        let sec: u32 = parts[2].parse().expect("second");
+        assert!(h < 24 && m < 60 && sec < 60, "{s} out of range");
     }
 
     /// The warnings toast tail pluralizes correctly and joins EVERY warning —
