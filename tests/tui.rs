@@ -2901,6 +2901,24 @@ fn search_empty_query_stamps_the_syntax_hint() {
     // The arrow comes from Chrome: ↑ in Unicode mode, ^ in ASCII.
     assert!(text.contains("↑ history"), "the history hint renders");
 
+    // §11 position: the hint stamps the FIRST interior row (interior row 0,
+    // not a row under the headers or the pane's last row).
+    let inner = dbtl::ui::pane_interior(
+        dbtl::ui::pane_layout(
+            ratatui::layout::Rect::new(0, 0, 200, 30),
+            &app.ui_state.pane_config(),
+        )
+        .list,
+    );
+    let hint_line = text
+        .lines()
+        .nth(inner.y as usize)
+        .expect("a line exists at the first interior row");
+    assert!(
+        hint_line.contains("!tag:x selector"),
+        "the hint sits on interior row 0, got {hint_line:?}"
+    );
+
     // Same hint in ASCII mode — pure-ASCII substitutions only.
     app.glyph_mode = dbtl::GlyphMode::Ascii;
     let ascii = buffer_to_string(&render_app(&app, 200, 30));

@@ -206,11 +206,13 @@ pub struct RenderCtx<'a> {
     /// Dag-free. `None` falls back to plain `palette_candidates` rows
     /// (headless renders that never computed them still draw).
     pub palette_rows: Option<&'a [crate::PaletteRow]>,
-    /// The one-line reason stamped on the list pane's FIRST interior row when
-    /// the active list is empty (`no models in scope — …` / `no match — …` /
+    /// The one-line reason stamped on the list pane's interior when the
+    /// active list is empty (`no models in scope — …` / `no match — …` /
     /// the persistent-filter reason) — Dag-aware, computed at the loop seam
-    /// via [`App::list_empty_reason`](crate::App::list_empty_reason). `None`
-    /// in headless renders (or whenever the list has models).
+    /// via [`App::list_empty_reason`](crate::App::list_empty_reason). It lands
+    /// BELOW any surviving display rows (an all-folded pane still draws its
+    /// group headers), else on the first interior row. `None` in headless
+    /// renders (or whenever the list has models).
     pub empty_reason: Option<&'a str>,
     /// The folded group keys (`App::folded_groups`) — the group headers'
     /// `▾`/`▸` marker (§10). `None` (the default) treats every group as open,
@@ -712,8 +714,8 @@ fn draw_list(
     }
 
     // The empty-state / search-hint line: display-only chrome stamped onto the
-    // FIRST interior row AFTER the rows render — never an injected DisplayRow,
-    // so model-space and display-row-space stay untouched (the two-coordinate
+    // interior AFTER the rows render — never an injected DisplayRow, so
+    // model-space and display-row-space stay untouched (the two-coordinate
     // invariant). An EMPTY list shows the reason (`empty_reason`); a live list
     // search with an EMPTY query shows the syntax hint on a non-empty list
     // (it covers the top row for that frame only — it vanishes on the first
@@ -730,13 +732,18 @@ fn draw_list(
     };
     if let Some(text) = stamp {
         if inner.height > 0 {
-            // Folded headers still draw: an all-folded pane (models empty but
-            // display rows live) takes the row BELOW the last header instead
-            // of covering the first one.
-            let y = list
-                .row_count()
-                .saturating_sub(state.offset())
-                .min(inner_height - 1);
+            // The empty reason goes BELOW any surviving display rows (the
+            // all-folded pane still draws its `▸` headers — §10 says folded
+            // headers never vanish); a truly empty list's row_count is 0,
+            // so the same math lands on row 0. The non-empty search hint
+            // always stamps interior row 0 (§11).
+            let y = if list.is_empty() {
+                list.row_count()
+                    .saturating_sub(state.offset())
+                    .min(inner_height - 1)
+            } else {
+                0
+            };
             let row = Rect {
                 y: inner.y + y as u16,
                 height: 1,

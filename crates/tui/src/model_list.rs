@@ -478,10 +478,13 @@ pub fn mid_truncate_indexed(name: &str, budget: usize, marker: &str) -> (String,
     let cell = |c: char| UnicodeWidthChar::width(c).unwrap_or(0);
     if budget <= marker_w {
         // Degenerate budget (no room for head+marker+tail): keep the TAIL
-        // alone — the distinguishing end — clipped to `budget` cells.
+        // alone — the distinguishing end — clipped to `budget` cells. When
+        // nothing fits (a 2-cell char in a 1-cell budget, or budget 0),
+        // `taken` stays `len` and the empty string goes out — the
+        // `<= budget` contract holds even here.
         let chars: Vec<char> = name.chars().collect();
         let mut w = 0;
-        let mut taken = 0;
+        let mut taken = chars.len();
         for (i, &ch) in chars.iter().enumerate().rev() {
             if w + cell(ch) > budget {
                 break;
@@ -1157,6 +1160,13 @@ mod tests {
         assert_eq!(t, "…s");
         let (t, _) = mid_truncate_indexed("stg_finance__budgets", 1, "…");
         assert_eq!(t, "s");
+        // Nothing fits at all → empty (never the unclipped name — the
+        // `<= budget` contract holds even below the marker's width).
+        let (t, m) = mid_truncate_indexed("stg_finance__budgets", 0, "…");
+        assert!(t.is_empty() && m.is_empty());
+        // A 1-cell budget can't hold the name's last 2-cell char.
+        let (t, m) = mid_truncate_indexed("モデル", 1, "…");
+        assert!(t.is_empty() && m.is_empty());
     }
 
     #[test]
