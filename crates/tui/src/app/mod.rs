@@ -249,9 +249,14 @@ pub struct App {
     pub(super) cll: NameMatchResolver,
     /// The column target `y` stashed while opening the yank menu over the
     /// structure modal — what `yl` copies. Always rewritten on
-    /// `Action::YankPrefix` (the menu's entry point), so it can never be
-    /// consumed stale.
+    /// `Action::YankPrefix` (the menu's entry point) and cleared the moment
+    /// the menu closes, so it can never be consumed stale.
     pub(super) pending_col: Option<ColumnRef>,
+    /// The structure modal's `model_id`, stashed the same way — what every
+    /// OTHER `y`-menu yank (`yy`/`yY`/`yC`/`ym`/…) targets instead of the
+    /// list selection. Without it a yank dispatched over the modal would
+    /// silently copy the *selected* node's data, not the modal's.
+    pub(super) pending_node: Option<String>,
     /// The `p`-anchored path start (`unique_id`): while set, the lineage path
     /// highlight runs anchor↔cursor instead of root↔cursor — the two-node
     /// "why does X reach Y" answer. `None` = normal root↔cursor pathing.
@@ -359,6 +364,7 @@ impl App {
             catalog_path,
             cll,
             pending_col: None,
+            pending_node: None,
             path_anchor: None,
         }
     }
@@ -570,6 +576,21 @@ impl App {
     /// The selected node's `unique_id`, if any.
     pub fn selected_unique_id(&self) -> Option<String> {
         self.selected_node().map(|n| n.unique_id.clone())
+    }
+
+    /// The `unique_id` a `y`-menu yank should act on: the structure modal's
+    /// node (`pending_node`, stashed when `y` opened the menu over the modal)
+    /// preferred over the list selection — ONLY while `Mode::Yank` is live;
+    /// the fields are cleared the moment the menu closes, so a single-key
+    /// yank outside the menu keeps the selection semantics.
+    pub(super) fn yank_target_uid(&self) -> Option<String> {
+        if matches!(self.mode, Mode::Yank) {
+            self.pending_node
+                .clone()
+                .or_else(|| self.selected_unique_id())
+        } else {
+            self.selected_unique_id()
+        }
     }
 
     /// The selected node's display name, if any.
@@ -827,6 +848,9 @@ impl App {
         self.cll = NameMatchResolver::new(self.catalog.clone());
         self.filter = None;
         self.mode = Mode::Selection;
+        // Any yank-menu context stashed against the OLD graph dies here too.
+        self.pending_col = None;
+        self.pending_node = None;
         // Cursor home: selection is restored BY ID, so the loop's
         // selection-change chokepoint won't fire — reset here or a pre-reload
         // cursor would survive into the rebuilt graph.

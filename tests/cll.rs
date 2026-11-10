@@ -196,9 +196,11 @@ fn downstream_closure_of_stg_id_is_the_blast_radius() {
 }
 
 #[test]
-fn column_counts_match_the_closure_sizes() {
-    // The structure modal's `↑u ↓d` numbers ARE the closure sizes — pin the
-    // equivalence so the render layer and the engine can't disagree.
+fn column_counts_are_the_one_hop_edge_counts() {
+    // The structure modal's `↑u ↓d` numbers are the ONE-HOP edge counts —
+    // `upstream()`/`downstream()` lens per the Issue 07 spec, NOT transitive
+    // closures. Pin the equivalence so the render layer and the engine can't
+    // disagree.
     let dag = load_dag(MANIFEST).expect("sample manifest loads");
     let resolver = NameMatchResolver::new(None);
     let lin = ColumnLineage::new(&dag, &resolver);
@@ -210,18 +212,18 @@ fn column_counts_match_the_closure_sizes() {
     );
     for (c, (up, down)) in &counts {
         let c = col(&model("cll_demo"), c);
-        assert_eq!(*up, lin.closure_up(&c).len(), "upstream count for {c:?}");
+        assert_eq!(*up, lin.upstream(&c).len(), "upstream count for {c:?}");
         assert_eq!(
             *down,
-            lin.closure_down(&c).len(),
+            lin.downstream(&c).len(),
             "downstream count for {c:?}"
         );
     }
-    // Every cll_demo output has the same 6-column transitive provenance (the
-    // FOJ fans attach to every output, and the shared-name over-connection
-    // reaches stg AND fct), and cll_demo is a terminal model: downstream = 0.
+    // Every cll_demo output has the same 4-edge 1-hop provenance (two direct
+    // edges + the two FOJ fans stg.disabled_flag / fct.country, which attach
+    // to every output), and cll_demo is a terminal model: downstream = 0.
     for c in ["order_id", "n_orders", "status", "status_upper"] {
-        assert_eq!(counts[c], (6, 0), "{c} counts");
+        assert_eq!(counts[c], (4, 0), "{c} counts");
     }
 }
 

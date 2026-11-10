@@ -150,8 +150,9 @@ impl App {
         (down, up)
     }
 
-    /// The per-column `(upstream, downstream)` transitive closure sizes for a
-    /// node — the structure modal's `↑u ↓d` counts beside each column row.
+    /// The per-column `(upstream, downstream)` ONE-HOP column-edge counts for
+    /// a node — the structure modal's `↑u ↓d` counts beside each column row
+    /// (direct parents in / direct children out, per the Issue 07 spec).
     /// Drives the app-owned [`NameMatchResolver`](crate::NameMatchResolver)
     /// through a fresh lazy [`ColumnLineage`](crate::ColumnLineage) (the
     /// resolver's own per-uid memos persist; the engine's per-node memo is

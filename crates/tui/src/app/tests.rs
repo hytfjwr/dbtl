@@ -4287,11 +4287,11 @@ fn full_text_search_matches_desc_columns_and_sql() {
 
 // ---------------------------------------------------------------------------
 // Column-level lineage (Issue 07): the structure modal's column rows carry
-// up/down closure counts, h/l walks a column cursor, and `y l` yanks the
+// up/down ONE-HOP edge counts, h/l walks a column cursor, and `y l` yanks the
 // selected column's downstream closure as the shared ColumnReport markdown.
 // The sample fixture's `cll_demo` is the predictable end: it declares no
 // columns (so the rows come from the resolver's SQL extraction) and every
-// output has the same 6-column upstream / 0 downstream closure.
+// output has the same 4-edge one-hop upstream / 0 downstream.
 // ---------------------------------------------------------------------------
 
 const SAMPLE: &str = concat!(
@@ -4327,7 +4327,9 @@ fn detail_open_snapshots_column_counts_and_inferred_names() {
     );
     assert_eq!(dv.col_index, 0, "cursor homes to the first column");
     for c in &dv.col_names {
-        assert_eq!(dv.col_counts[c], (6, 0), "{c} closure counts");
+        // One-hop counts (direct parents in / direct children out) — the
+        // Issue 07 spec, NOT the transitive closure (which was 6 here).
+        assert_eq!(dv.col_counts[c], (4, 0), "{c} one-hop counts");
     }
     assert!(!dv.stale, "the frozen fixture's compiled SQL is fresh");
 }
@@ -4441,4 +4443,125 @@ fn yank_column_lineage_without_a_column_explains_instead_of_yanking() {
         a.take_notice().as_deref(),
         Some("no column selected — Enter, h/l pick a column, then y l")
     );
+}
+
+#[test]
+fn yank_menu_over_the_modal_targets_the_modal_node_not_the_selection() {
+    // The hostile-review finding: open the modal on node A while the list
+    // selection sits on node B — EVERY `y<key>` yank must act on A (the
+    // modal's node), never silently on B.
+    let mut a = sample_app();
+    let dv = open_detail(&mut a, "model.sample.stg_orders").clone();
+    assert_eq!(dv.model_id, "model.sample.stg_orders");
+    // Move the LIST selection elsewhere (the modal stays open on stg_orders).
+    a.select_by_unique_id("model.sample.fct_orders");
+    apply_action(&mut a, Action::YankPrefix);
+    assert_eq!(a.mode, Mode::Yank);
+    assert_eq!(
+        a.pending_node.as_deref(),
+        Some("model.sample.stg_orders"),
+        "the modal's node is stashed as the yank target"
+    );
+    let out = apply_action(&mut a, Action::YankId);
+    let text = match out.effects.as_slice() {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert_eq!(
+        text, "model.sample.stg_orders",
+        "yy copies the modal's uid, not the list selection's fct_orders"
+    );
+    assert_eq!(a.mode, Mode::Selection, "the which-key is one-shot");
+    assert!(a.pending_node.is_none(), "the stash dies with the menu");
+}
+
+#[test]
+fn yank_name_and_impact_over_the_modal_also_follow_the_modal_node() {
+    // (The which-key is one-shot, so each yank gets its own modal-open pass.)
+    let mut a = sample_app();
+    open_detail(&mut a, "model.sample.stg_orders");
+    a.select_by_unique_id("model.sample.fct_orders");
+    apply_action(&mut a, Action::YankPrefix);
+    let out = apply_action(&mut a, Action::YankName);
+    let text = match out.effects.as_slice() {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert_eq!(text, "stg_orders", "yY copies the modal node's name");
+
+    // The impact report is the second selection-based surface — same flow:
+    // modal on stg_orders, selection on fct_orders, `yi` reports the MODAL
+    // node's blast radius.
+    open_detail(&mut a, "model.sample.stg_orders");
+    a.select_by_unique_id("model.sample.fct_orders");
+    apply_action(&mut a, Action::YankPrefix);
+    let out = apply_action(&mut a, Action::YankImpact);
+    let text = match out.effects.as_slice() {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert!(
+        text.starts_with("# Impact: stg_orders\n"),
+        "yi reports the modal node, got: {text:?}"
+    );
+    assert!(text.contains("`model.sample.stg_orders`"));
+}
+
+#[test]
+fn yank_mermaid_over_the_modal_draws_the_modal_nodes_lineage() {
+    // Discriminating case: `country_codes` is upstream of fct_orders ONLY —
+    // it appears in fct_orders' rooted lineage but nowhere in stg_orders'.
+    // If the yank silently used the list selection it could never contain it.
+    let mut a = sample_app();
+    open_detail(&mut a, "model.sample.fct_orders");
+    a.select_by_unique_id("model.sample.stg_orders");
+    apply_action(&mut a, Action::YankPrefix);
+    let out = apply_action(&mut a, Action::YankMermaid);
+    let text = match out.effects.as_slice() {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert!(
+        text.contains("country_codes"),
+        "the diagram is the MODAL node's (fct_orders') lineage — country_codes \
+         is upstream of fct_orders but absent from stg_orders' lineage: {text:?}"
+    );
+}
+
+#[test]
+fn yank_without_the_modal_keeps_the_selection_semantics() {
+    // Guard the fallback: `y` opened from Selection mode stashes no modal
+    // node, so the yank target stays the list selection.
+    let mut a = sample_app();
+    a.select_by_unique_id("model.sample.fct_orders");
+    apply_action(&mut a, Action::YankPrefix);
+    assert_eq!(a.mode, Mode::Yank);
+    assert!(a.pending_node.is_none(), "no modal → nothing stashed");
+    let out = apply_action(&mut a, Action::YankId);
+    let text = match out.effects.as_slice() {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert_eq!(text, "model.sample.fct_orders");
+}
+
+#[test]
+fn a_stale_modal_stash_cannot_leak_into_a_later_selection_yank() {
+    // Open the modal on A, press `y`, cancel with an unbound key (closes the
+    // menu), move the selection, press `y` again from Selection — the second
+    // yank must target the SELECTION, not the cancelled modal's node.
+    let mut a = sample_app();
+    open_detail(&mut a, "model.sample.stg_orders");
+    apply_action(&mut a, Action::YankPrefix);
+    apply_action(&mut a, Action::DetailClose); // the cancel path closes the menu
+    assert_eq!(a.mode, Mode::Selection);
+    assert!(a.pending_node.is_none(), "cancel drops the stash");
+    a.select_by_unique_id("model.sample.fct_orders");
+    apply_action(&mut a, Action::YankPrefix);
+    let out = apply_action(&mut a, Action::YankId);
+    let text = match out.effects.as_slice() {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert_eq!(text, "model.sample.fct_orders", "no stale modal target");
 }

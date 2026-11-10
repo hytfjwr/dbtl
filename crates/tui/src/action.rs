@@ -227,15 +227,21 @@ pub struct DetailView {
     /// resolver's inferred list (so a model with no documented columns still
     /// gets a cursor). `col_index` indexes this; when declared columns exist
     /// they render with type/description rows, otherwise this list IS the
-    /// rows.
+    /// rows. Declared names render verbatim; the resolver's inferred names are
+    /// already normalized + deduped.
     pub col_names: Vec<String>,
     /// The column cursor (h/l inside the modal) — an index into `col_names`,
     /// or `usize::MAX` when the list is empty.
     pub col_index: usize,
-    /// `normalized column -> (upstream, downstream)` transitive column-closure
-    /// sizes, snapshotted from `ColumnLineage::column_counts` at open — the
-    /// `u/d` numbers beside each column row. `BTreeMap` keeps the render
-    /// order deterministic; empty when the resolver sees no columns.
+    /// `normalized column -> (one-hop upstream, one-hop downstream)` DIRECT
+    /// column-edge counts, snapshotted from `ColumnLineage::column_counts` at
+    /// open — the `↑u ↓d` numbers beside each column row (direct parents in /
+    /// direct children out, per the Issue 07 spec — NOT the transitive
+    /// closure). `BTreeMap` keeps the render order deterministic; empty when
+    /// the resolver sees no columns. Keys are the resolver's normalized names,
+    /// so a declared `col_names` entry looks itself up through
+    /// `norm_column` — an un-normalizable name (rare: declared names come
+    /// from manifest keys, which dbt already lowers) just gets no count.
     pub col_counts: std::collections::BTreeMap<String, (usize, usize)>,
     /// Any of this node's column edges was resolved against compiled SQL
     /// older than its source — the columns header gets a `[stale]` tag.

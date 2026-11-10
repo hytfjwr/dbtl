@@ -60,6 +60,15 @@ impl ColumnRef {
     }
 }
 
+/// First-occurrence-order dedupe on a NORMALIZED column list: two declared
+/// names can fold to one key (`Status` vs `status`, `x` vs `"x"`), and every
+/// downstream key space (`column_counts`, the modal's `col_counts`) is per
+/// normalized name — a duplicate row would just read the same counts twice.
+fn dedup_columns(cols: &mut Vec<String>) {
+    let mut seen = BTreeSet::new();
+    cols.retain(|c| seen.insert(c.clone()));
+}
+
 /// How a column edge was derived. `Ord` so `BTreeSet<ColumnEdge>` output is
 /// deterministic; `Serialize` (snake_case) for `--format json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -93,7 +102,8 @@ impl std::fmt::Display for ColumnEdgeKind {
 
 /// How much trust an edge deserves. `Ord`/`Serialize` like
 /// [`ColumnEdgeKind`]. `Stale` sorts after `NameMatch` and `Exact`, so a
-/// `min()` over a node's edges reports the freshest basis it used.
+/// `max()` over a row's links / a report's rows reports the most conservative
+/// basis used — the "weakest link" semantics both surfaces share.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Confidence {
@@ -169,10 +179,13 @@ pub trait ColumnResolver {
     fn columns(&self, dag: &Dag, node: &str) -> Vec<String> {
         dag.detail(node)
             .map(|d| {
-                d.columns
+                let mut cols: Vec<String> = d
+                    .columns
                     .iter()
                     .map(|c| normalize_column(&c.name))
-                    .collect()
+                    .collect();
+                dedup_columns(&mut cols);
+                cols
             })
             .unwrap_or_default()
     }
@@ -301,18 +314,16 @@ impl<'a, R: ColumnResolver + ?Sized> ColumnLineage<'a, R> {
     }
 
     /// All of `node`'s output columns (per the resolver's column list) with
-    /// their `(upstream, downstream)` transitive column-closure sizes — the
-    /// numbers the structure modal prints beside each column row. Resolves
-    /// `node` and its direct children once (memoized). `BTreeMap` →
+    /// their `(upstream, downstream)` ONE-HOP column-edge counts — the direct
+    /// parent columns feeding each output, and the direct child columns it
+    /// feeds (the Issue 07 spec's `↑u ↓d`, not transitive closure sizes).
+    /// Resolves `node` and its direct children once (memoized). `BTreeMap` →
     /// deterministic iteration order (normalized name).
     pub fn column_counts(&self, node: &str) -> BTreeMap<String, (usize, usize)> {
         let mut out = BTreeMap::new();
         for c in self.columns(node) {
             let col = ColumnRef::new(node, &c);
-            out.insert(
-                c,
-                (self.closure_up(&col).len(), self.closure_down(&col).len()),
-            );
+            out.insert(c, (self.upstream(&col).len(), self.downstream(&col).len()));
         }
         out
     }
@@ -355,6 +366,13 @@ pub struct NameMatchResolver {
     col_memo: RefCell<BTreeMap<String, Rc<Vec<String>>>>,
     /// Memoized masked-SQL parses per uid (select items + region identifiers).
     sql_memo: RefCell<BTreeMap<String, Rc<ParsedSql>>>,
+    /// Memoized `resolve` answers per uid: a [`ColumnLineage`] engine memoizes
+    /// only for its own lifetime, but each structure-modal open / `yl` yank /
+    /// `dbtl columns` run builds a FRESH engine — without this the region
+    /// walk + edge build would be paid per query, per node, again.
+    /// Same single-Dag caveat as the other memos: uid-keyed, so the resolver
+    /// belongs to one loaded `Dag` (the `App` rebuilds it on reload).
+    resolved_memo: RefCell<BTreeMap<String, Rc<Vec<ColumnEdge>>>>,
 }
 
 impl NameMatchResolver {
@@ -365,6 +383,7 @@ impl NameMatchResolver {
             catalog,
             col_memo: RefCell::new(BTreeMap::new()),
             sql_memo: RefCell::new(BTreeMap::new()),
+            resolved_memo: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -405,17 +424,22 @@ impl NameMatchResolver {
         if let Some(cat) = &self.catalog {
             if let Some(n) = cat.get(node) {
                 if !n.columns.is_empty() {
-                    return n.columns.keys().map(|k| normalize_column(k)).collect();
+                    let mut cols: Vec<String> =
+                        n.columns.keys().map(|k| normalize_column(k)).collect();
+                    dedup_columns(&mut cols);
+                    return cols;
                 }
             }
         }
         if let Some(d) = dag.detail(node) {
             if !d.columns.is_empty() {
-                return d
+                let mut cols: Vec<String> = d
                     .columns
                     .iter()
                     .map(|c| normalize_column(&c.name))
                     .collect();
+                dedup_columns(&mut cols);
+                return cols;
             }
         }
         let Some((text, _)) = resolution_sql(dag, node) else {
@@ -460,14 +484,6 @@ impl NameMatchResolver {
             .insert(node.to_string(), rc.clone());
         rc
     }
-}
-
-impl ColumnResolver for NameMatchResolver {
-    fn columns(&self, dag: &Dag, node: &str) -> Vec<String> {
-        self.columns_rc(dag, node, &mut BTreeSet::new())
-            .as_ref()
-            .clone()
-    }
 
     /// Edges into `node`. Per output column `c` of the node, against each
     /// direct parent `P`:
@@ -483,7 +499,7 @@ impl ColumnResolver for NameMatchResolver {
     /// - a parent column that appears in the FROM/JOIN/WHERE/GROUP BY tail and
     ///   carries no direct edge → [`FilterOrJoin`](ColumnEdgeKind::FilterOrJoin)
     ///   to every output column (it shapes the row set, not a value).
-    fn resolve(&self, dag: &Dag, node: &str) -> Vec<ColumnEdge> {
+    fn compute_resolve(&self, dag: &Dag, node: &str) -> Vec<ColumnEdge> {
         let Some((text, confidence)) = resolution_sql(dag, node) else {
             return Vec::new();
         };
@@ -608,6 +624,29 @@ impl ColumnResolver for NameMatchResolver {
     }
 }
 
+impl ColumnResolver for NameMatchResolver {
+    fn columns(&self, dag: &Dag, node: &str) -> Vec<String> {
+        self.columns_rc(dag, node, &mut BTreeSet::new())
+            .as_ref()
+            .clone()
+    }
+
+    /// `resolve` memoized per uid — fresh [`ColumnLineage`] engines (one per
+    /// modal open / yank / CLI run) share the paid computation through the
+    /// resolver. The trait returns an owned `Vec`, so the memo hands out a
+    /// cheap clone of the shared answer rather than re-walking the region.
+    fn resolve(&self, dag: &Dag, node: &str) -> Vec<ColumnEdge> {
+        if let Some(v) = self.resolved_memo.borrow().get(node) {
+            return v.as_ref().clone();
+        }
+        let rc = Rc::new(self.compute_resolve(dag, node));
+        self.resolved_memo
+            .borrow_mut()
+            .insert(node.to_string(), rc.clone());
+        rc.as_ref().clone()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Naïve SQL scanning (deliberately scanner-grade; Issue 08 replaces it)
 // ---------------------------------------------------------------------------
@@ -664,14 +703,18 @@ fn trim_ascii(b: &[u8]) -> &[u8] {
 }
 
 /// Is `kw` at byte offset `i` of `b`, on an identifier boundary, ASCII
-/// case-insensitive? (`select` inside `myselect` or `selection` does not count.)
+/// case-insensitive? (`select` inside `myselect` or `selection` does not
+/// count.) A `.` immediately before the word disqualifies it too: the `from`
+/// of `t.from` is a qualified identifier segment, not the clause keyword.
+/// (A `.` separated by whitespace — `t. from` — still slips through; that
+/// spacing is vanishingly rare in generated SQL.)
 fn keyword_at(b: &[u8], i: usize, kw: &[u8]) -> bool {
     let Some(end) = i.checked_add(kw.len()) else {
         return false;
     };
     end <= b.len()
         && b[i..end].eq_ignore_ascii_case(kw)
-        && (i == 0 || !is_ident_byte(b[i - 1]))
+        && (i == 0 || (!is_ident_byte(b[i - 1]) && b[i - 1] != b'.'))
         && (end == b.len() || !is_ident_byte(b[end]))
 }
 
@@ -747,10 +790,354 @@ fn mask_sql(sql: &str) -> Vec<u8> {
     out
 }
 
+/// A second masking layer over [`mask_sql`]'s output: the interiors of
+/// double-quoted / backticked identifiers (quotes included) blank to spaces.
+/// Clause-keyword scans and select-item splitting run on THIS view, so
+/// `"union"` or `` `except` `` can never be mistaken for a clause marker, a
+/// set-operator boundary, or an item separator — and a `,`/`(` inside quotes
+/// can neither split an item nor skew paren depth. [`idents`] still reads the
+/// [`mask_sql`] view: quoted identifiers ARE identifiers to name-match, they
+/// just can't carry keywords.
+fn keyword_mask(text: &[u8]) -> Vec<u8> {
+    let mut out = text.to_vec();
+    let mut i = 0;
+    while i < text.len() {
+        let b = text[i];
+        if b != b'"' && b != b'`' {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i += 1;
+        while i < text.len() && text[i] != b && text[i] != b'\n' {
+            i += 1;
+        }
+        i = (i + 1).min(text.len()); // consume the closing quote when present
+        for c in out.iter_mut().take(i).skip(start) {
+            if *c != b'\n' {
+                *c = b' ';
+            }
+        }
+    }
+    out
+}
+
+/// SQL words that are never honest column references when they appear
+/// UNQUOTED: clause markers, operators, join/aggregate/window function names,
+/// and type names — the unambiguous ones only. `idents()` drops them so a
+/// keyword can never name-match a parent column that coincidentally shares
+/// its spelling (`cast(x as date)` must not draw a transform edge to a
+/// `date` parent column, nor `left join` a `filter_or_join` edge to `left`).
+/// SORTED — `binary_search`ed per word; keep it that way (a test pins it).
+const SQL_WORDS: &[&str] = &[
+    "abs",
+    "all",
+    "alter",
+    "and",
+    "any",
+    "approx_count_distinct",
+    "array",
+    "array_agg",
+    "as",
+    "asc",
+    "avg",
+    "between",
+    "bigint",
+    "bigserial",
+    "binary",
+    "blob",
+    "bool",
+    "boolean",
+    "by",
+    "bytes",
+    "case",
+    "cast",
+    "ceil",
+    "ceiling",
+    "char",
+    "char_length",
+    "character",
+    "character_length",
+    "check",
+    "clob",
+    "coalesce",
+    "collate",
+    "commit",
+    "concat",
+    "concat_ws",
+    "constraint",
+    "convert",
+    "corr",
+    "count",
+    "covar_pop",
+    "covar_samp",
+    "create",
+    "cross",
+    "cume_dist",
+    "curdate",
+    "current",
+    "current_date",
+    "current_time",
+    "current_timestamp",
+    "date",
+    "date_add",
+    "date_diff",
+    "date_part",
+    "date_sub",
+    "date_trunc",
+    "dateadd",
+    "datediff",
+    "datetime",
+    "datetime2",
+    "day",
+    "decade",
+    "decimal",
+    "decode",
+    "default",
+    "delete",
+    "dense_rank",
+    "desc",
+    "describe",
+    "distinct",
+    "double",
+    "dow",
+    "doy",
+    "drop",
+    "else",
+    "end",
+    "epoch",
+    "escape",
+    "except",
+    "exists",
+    "exp",
+    "explain",
+    "extract",
+    "false",
+    "fetch",
+    "first",
+    "first_value",
+    "flatten",
+    "float",
+    "float4",
+    "float64",
+    "float8",
+    "floor",
+    "following",
+    "for",
+    "foreign",
+    "from",
+    "full",
+    "generate_series",
+    "getdate",
+    "grant",
+    "greatest",
+    "group",
+    "group_concat",
+    "having",
+    "hour",
+    "if",
+    "iff",
+    "ilike",
+    "in",
+    "index",
+    "initcap",
+    "inner",
+    "insert",
+    "instr",
+    "int",
+    "int2",
+    "int4",
+    "int64",
+    "int8",
+    "integer",
+    "intersect",
+    "interval",
+    "into",
+    "is",
+    "isnull",
+    "isodow",
+    "isoyear",
+    "join",
+    "json",
+    "jsonb",
+    "lag",
+    "last_value",
+    "lateral",
+    "lead",
+    "least",
+    "left",
+    "len",
+    "length",
+    "like",
+    "limit",
+    "listagg",
+    "ln",
+    "locate",
+    "log",
+    "log10",
+    "lower",
+    "lpad",
+    "ltrim",
+    "map",
+    "max",
+    "md5",
+    "median",
+    "millennium",
+    "min",
+    "minus",
+    "minute",
+    "mod",
+    "month",
+    "natural",
+    "nchar",
+    "next",
+    "not",
+    "now",
+    "nth_value",
+    "ntile",
+    "null",
+    "nullif",
+    "nulls",
+    "number",
+    "numeric",
+    "nvarchar",
+    "nvl",
+    "nvl2",
+    "object",
+    "offset",
+    "on",
+    "only",
+    "or",
+    "order",
+    "outer",
+    "over",
+    "partition",
+    "percent_rank",
+    "percentile_cont",
+    "percentile_disc",
+    "pivot",
+    "position",
+    "pow",
+    "power",
+    "preceding",
+    "primary",
+    "qualify",
+    "quarter",
+    "rand",
+    "random",
+    "range",
+    "rank",
+    "real",
+    "recursive",
+    "references",
+    "regexp",
+    "regexp_extract",
+    "regexp_like",
+    "regexp_replace",
+    "repeat",
+    "replace",
+    "reverse",
+    "revoke",
+    "right",
+    "rlike",
+    "rollback",
+    "round",
+    "row_number",
+    "rows",
+    "rpad",
+    "rtrim",
+    "safe_cast",
+    "sample",
+    "second",
+    "select",
+    "serial",
+    "set",
+    "sha1",
+    "sha2",
+    "show",
+    "sign",
+    "similar",
+    "smallint",
+    "smallserial",
+    "some",
+    "split",
+    "split_part",
+    "sqrt",
+    "stddev",
+    "stddev_pop",
+    "stddev_samp",
+    "string",
+    "string_agg",
+    "strpos",
+    "struct",
+    "substring",
+    "sum",
+    "sysdate",
+    "table",
+    "tablesample",
+    "text",
+    "then",
+    "time",
+    "timestamp",
+    "timestamp_ltz",
+    "timestamp_ntz",
+    "timestamp_tz",
+    "timestamptz",
+    "timetz",
+    "tinyint",
+    "to_char",
+    "to_date",
+    "to_number",
+    "to_timestamp",
+    "top",
+    "transaction",
+    "translate",
+    "trim",
+    "true",
+    "trunc",
+    "try_cast",
+    "unbounded",
+    "union",
+    "unique",
+    "unnest",
+    "unpivot",
+    "update",
+    "upper",
+    "uuid",
+    "values",
+    "var_pop",
+    "var_samp",
+    "varbinary",
+    "varchar",
+    "variance",
+    "variant",
+    "view",
+    "week",
+    "when",
+    "where",
+    "with",
+    "xml",
+    "year",
+];
+
+/// Is `w` (already-lowercased) an unambiguous SQL keyword / function name /
+/// type name? See [`SQL_WORDS`] — binary search over the sorted list.
+fn is_sql_keyword(w: &str) -> bool {
+    debug_assert!(SQL_WORDS.windows(2).all(|p| p[0] < p[1]));
+    SQL_WORDS.binary_search(&w).is_ok()
+}
+
 /// All identifiers in `text`, normalized: unquoted words fold lowercase;
 /// `"…"` / `` `…` `` keep their case (sans quotes). `[…]` bracket text is NOT
 /// scanned — in dbt-targeted SQL it is overwhelmingly array indexing, not a
 /// quoted identifier.
+///
+/// Two word classes are skipped as candidates: bare [`is_sql_keyword`] words
+/// (a keyword can't honestly name-match a parent column — `cast(x as date)`
+/// is a TYPE usage, not a `date` reference), and `[…]` regions. A keyword
+/// spelling still counts when it is *marked as an identifier*: `.`-qualified
+/// (`t.order` — keywords can't be qualified) or quoted (`"left"`). That keeps
+/// the escape hatch for real columns that happen to share a keyword's name.
 fn idents(text: &[u8]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let mut i = 0;
@@ -767,16 +1154,30 @@ fn idents(text: &[u8]) -> BTreeSet<String> {
                 let tok = std::str::from_utf8(&text[start..i]).unwrap_or("");
                 out.insert(normalize_column(tok));
             }
+        } else if b == b'[' {
+            // Array indexing, not a quoted identifier — skip the bracketed
+            // region wholesale (nested brackets count depth).
+            let mut depth = 1i32;
+            i += 1;
+            while i < text.len() && depth > 0 {
+                match text[i] {
+                    b'[' => depth += 1,
+                    b']' => depth -= 1,
+                    _ => {}
+                }
+                i += 1;
+            }
         } else if b.is_ascii_alphabetic() || b == b'_' {
             let start = i;
             while i < text.len() && is_ident_byte(text[i]) {
                 i += 1;
             }
-            out.insert(
-                String::from_utf8_lossy(&text[start..i])
-                    .to_lowercase()
-                    .to_string(),
-            );
+            let tok = String::from_utf8_lossy(&text[start..i]).to_lowercase();
+            // A `.`-qualified segment is definitively a column reference —
+            // the stoplist only prunes BARE words.
+            if (start > 0 && text[start - 1] == b'.') || !is_sql_keyword(&tok) {
+                out.insert(tok);
+            }
         } else {
             i += 1;
         }
@@ -842,7 +1243,11 @@ fn parse_item(item: &[u8]) -> Option<SelectItem> {
             kind: ItemKind::Wildcard,
         });
     }
-    if let Some(pos) = last_top_keyword(t, b"as") {
+    // The `as` split scans the keyword-masked copy (same length, positions
+    // aligned): an `as` inside a quoted identifier — `x as "a as b"` — can
+    // never split the item, and parens inside quotes can't skew its depth.
+    let kw = keyword_mask(t);
+    if let Some(pos) = last_top_keyword(&kw, b"as") {
         if let Some(alias) = ident_last_segment(trim_ascii(&t[pos + 2..])) {
             let expr = trim_ascii(&t[..pos]);
             let kind = match ident_last_segment(expr) {
@@ -875,6 +1280,12 @@ fn parse_item(item: &[u8]) -> Option<SelectItem> {
 /// filter/join region is everything after it up to a depth-0
 /// `union`/`intersect`/`except` (a second UNION arm's columns would otherwise
 /// leak false FilterOrJoin hits — v0 answers from the first arm only).
+///
+/// Every structural scan (clause keywords, set operators, depth, item
+/// commas) runs on [`keyword_mask`]'s view — quoted-identifier interiors are
+/// spaces there, so `"union"`/`t.from`/a comma inside `"a,b"` can't fake a
+/// boundary. Identifier EXTRACTION still reads `masked`, so the quoted
+/// identifier itself remains a name-match candidate.
 fn parse_select(masked: &[u8]) -> ParsedSql {
     let all_idents = idents(masked);
     let empty = || ParsedSql {
@@ -882,14 +1293,15 @@ fn parse_select(masked: &[u8]) -> ParsedSql {
         filter_idents: BTreeSet::new(),
         all_idents: all_idents.clone(),
     };
+    let kw = keyword_mask(masked);
     // First depth-0 `select`.
     let mut depth = 0i32;
     let mut select_end = None;
-    for (i, &ch) in masked.iter().enumerate() {
+    for (i, &ch) in kw.iter().enumerate() {
         match ch {
             b'(' | b'[' => depth += 1,
             b')' | b']' => depth -= 1,
-            _ if depth == 0 && keyword_at(masked, i, b"select") => {
+            _ if depth == 0 && keyword_at(&kw, i, b"select") => {
                 select_end = Some(i + 6);
                 break;
             }
@@ -901,14 +1313,14 @@ fn parse_select(masked: &[u8]) -> ParsedSql {
     };
     // A leading DISTINCT / ALL keyword is list decoration, not part of an item.
     {
-        let ws = masked[list_start..]
+        let ws = kw[list_start..]
             .iter()
             .take_while(|b| b.is_ascii_whitespace())
             .count();
         let w = list_start + ws;
-        for kw in [b"distinct".as_slice(), b"all".as_slice()] {
-            if keyword_at(masked, w, kw) {
-                list_start = w + kw.len();
+        for word in [b"distinct".as_slice(), b"all".as_slice()] {
+            if keyword_at(&kw, w, word) {
+                list_start = w + word.len();
                 break;
             }
         }
@@ -918,15 +1330,15 @@ fn parse_select(masked: &[u8]) -> ParsedSql {
     let mut depth = 0i32;
     let mut from_pos = None;
     let mut boundary = masked.len();
-    for (i, &ch) in masked.iter().enumerate().skip(list_start) {
+    for (i, &ch) in kw.iter().enumerate().skip(list_start) {
         match ch {
             b'(' | b'[' => depth += 1,
             b')' | b']' => depth -= 1,
-            _ if depth == 0 && keyword_at(masked, i, b"from") => {
+            _ if depth == 0 && keyword_at(&kw, i, b"from") => {
                 from_pos = Some(i);
                 break;
             }
-            _ if depth == 0 && is_set_operator(masked, i) => {
+            _ if depth == 0 && is_set_operator(&kw, i) => {
                 boundary = i;
                 break;
             }
@@ -938,7 +1350,7 @@ fn parse_select(masked: &[u8]) -> ParsedSql {
     let mut depth = 0i32;
     let mut start = list_start;
     for i in list_start..list_end {
-        match masked[i] {
+        match kw[i] {
             b'(' | b'[' => depth += 1,
             b')' | b']' => depth -= 1,
             b',' if depth == 0 => {
@@ -958,11 +1370,11 @@ fn parse_select(masked: &[u8]) -> ParsedSql {
         Some(from) => {
             let mut depth = 0i32;
             let mut end = masked.len();
-            for (i, &ch) in masked.iter().enumerate().skip(from + 4) {
+            for (i, &ch) in kw.iter().enumerate().skip(from + 4) {
                 match ch {
                     b'(' | b'[' => depth += 1,
                     b')' | b']' => depth -= 1,
-                    _ if depth == 0 && is_set_operator(masked, i) => {
+                    _ if depth == 0 && is_set_operator(&kw, i) => {
                         end = i;
                         break;
                     }
@@ -1018,8 +1430,9 @@ pub struct ColumnRow {
     pub via: Vec<String>,
     /// The deduplicated edge kinds on those links, enum order.
     pub kinds: Vec<ColumnEdgeKind>,
-    /// The freshest confidence on the links (`Exact`/`NameMatch` before
-    /// `Stale`).
+    /// The most conservative confidence on the links — `stale` when ANY link
+    /// read an old compiled file (the same rule as the report's own
+    /// `confidence`, so a row can never look fresher than the header claim).
     pub confidence: Confidence,
 }
 
@@ -1096,7 +1509,7 @@ pub fn closure_report(
         let confidence = links
             .iter()
             .map(|e| e.confidence)
-            .min()
+            .max()
             .unwrap_or(Confidence::NameMatch);
         columns.push(ColumnRow {
             column: addr(t),
@@ -1461,5 +1874,170 @@ mod tests {
             "comment/literal columns invisible: {edges:?}"
         );
         assert!(edges.iter().any(|e| e.from.column == "a"));
+    }
+
+    // ---- scanner regressions: quoted / qualified identifiers + the word
+    // stoplist. `parse_select`/`idents`/`keyword_at` are unit-tested directly;
+    // `resolve` tests pin the phantom-edge prevention end to end. ----
+
+    #[test]
+    fn sql_words_stay_sorted_for_binary_search() {
+        assert!(
+            SQL_WORDS.windows(2).all(|p| p[0] < p[1]),
+            "SQL_WORDS must stay sorted"
+        );
+        assert!(is_sql_keyword("order") && is_sql_keyword("timestamp"));
+        assert!(!is_sql_keyword("status") && !is_sql_keyword("n_orders"));
+    }
+
+    #[test]
+    fn keyword_at_rejects_qualified_segments() {
+        assert!(!keyword_at(b"t.from", 2, b"from"), "t.from is a column");
+        assert!(keyword_at(b"a from b", 2, b"from"));
+        assert!(!keyword_at(b"myselect", 0, b"select"));
+        assert!(!keyword_at(b"selection", 0, b"select"));
+    }
+
+    #[test]
+    fn quoted_and_qualified_keywords_do_not_corrupt_the_parse() {
+        // `t.from` must not end the select list; `"union"` / `` `except` ``
+        // must not act as set-operator boundaries; a comma inside quotes must
+        // not split items. All three were column-extraction killers.
+        let sql = "select t.id, t.from, x as \"union\", \"a,b\" as pair \
+                   from stg t join o on t.y = o.`except`";
+        let p = parse_select(&mask_sql(sql));
+        let aliases: Vec<Option<&str>> = p.items.iter().map(|i| i.alias.as_deref()).collect();
+        assert_eq!(
+            aliases,
+            vec![Some("id"), Some("from"), Some("union"), Some("pair")],
+            "every item survives: {:?}",
+            p.items
+        );
+        assert!(
+            p.filter_idents.contains("except"),
+            "a quoted keyword is still an identifier to name-match: {:?}",
+            p.filter_idents
+        );
+        assert!(
+            !p.filter_idents.contains("join") && !p.filter_idents.contains("on"),
+            "bare join keywords are not idents: {:?}",
+            p.filter_idents
+        );
+    }
+
+    #[test]
+    fn set_operators_still_bound_the_first_arm() {
+        let p = parse_select(&mask_sql(
+            "select a as \"except\" from t union select b from u",
+        ));
+        assert_eq!(p.items.len(), 1, "one first-arm item: {:?}", p.items);
+        assert_eq!(p.items[0].alias.as_deref(), Some("except"));
+        assert!(p.filter_idents.contains("t"));
+        assert!(
+            !p.filter_idents.contains("u") && !p.filter_idents.contains("b"),
+            "second union arm invisible: {:?}",
+            p.filter_idents
+        );
+    }
+
+    #[test]
+    fn idents_skip_brackets_and_bare_keywords_but_keep_marked_uses() {
+        let ids = idents(b"arr[i] t.order \"left\" order by timestamp(1)");
+        assert!(ids.contains("arr"), "arr outside brackets: {ids:?}");
+        assert!(!ids.contains("i"), "[i] is array indexing: {ids:?}");
+        assert!(
+            ids.contains("order"),
+            "t.order is qualified — keywords can't be: {ids:?}"
+        );
+        assert!(
+            ids.contains("left"),
+            "\"left\" quoted marks identifier intent: {ids:?}"
+        );
+        for kw in ["by", "timestamp"] {
+            assert!(!ids.contains(kw), "bare {kw} dropped: {ids:?}");
+        }
+    }
+
+    #[test]
+    fn keywords_and_types_cannot_draw_phantom_edges() {
+        // The parent literally carries `date`/`order`/`from` columns:
+        // `cast(x as date)`'s type name and a bare `order by` must not
+        // name-match them, while the qualified `t.date`/`t.from` still do.
+        let dag = Dag::build(&manifest(
+            &[
+                ("model.p.up", "select 1", &["a", "date", "order", "from"]),
+                (
+                    "model.p.stg",
+                    "select t.a, cast(t.a as date) as d, t.date as dt, t.from as f \
+                     from up t order by t.a",
+                    &[],
+                ),
+            ],
+            &[("model.p.up", "model.p.stg")],
+        ));
+        let r = NameMatchResolver::new(None);
+        let edges = r.resolve(&dag, "model.p.stg");
+        assert!(
+            edges
+                .iter()
+                .all(|e| !(e.to.column == "d" && e.from.column == "date")),
+            "`cast(.. as date)` is a type, not a source: {edges:?}"
+        );
+        assert!(
+            edges.iter().all(|e| e.from.column != "order"),
+            "bare `order by` keyword draws no edge: {edges:?}"
+        );
+        assert!(edges.iter().any(|e| e.from.column == "date"
+            && e.to.column == "dt"
+            && e.kind == ColumnEdgeKind::Rename));
+        assert!(edges.iter().any(|e| e.from.column == "from"
+            && e.to.column == "f"
+            && e.kind == ColumnEdgeKind::Rename));
+    }
+
+    #[test]
+    fn report_row_confidence_is_the_weakest_links() {
+        // Row `p.x` feeds two in-scope columns whose edges were resolved from
+        // different bases: a fresh name-match (a) and a STALE compiled file
+        // (b). The row must report `stale` — the same most-conservative rule
+        // as the report header, never fresher than the worst link.
+        let m = manifest(
+            &[
+                ("model.p.p", "select 1", &["x"]),
+                ("model.p.a", "select x from p", &[]),
+                ("model.p.b", "select x from p", &[]),
+                (
+                    "model.p.t",
+                    "select a.x as x1, b.x as x2 from a, b",
+                    &["x1"],
+                ),
+            ],
+            &[
+                ("model.p.p", "model.p.a"),
+                ("model.p.p", "model.p.b"),
+                ("model.p.a", "model.p.t"),
+                ("model.p.b", "model.p.t"),
+            ],
+        );
+        let mut dag = Dag::build(&m);
+        dag.set_compiled_for_test("model.p.b", "select x from p", true);
+        let r = NameMatchResolver::new(None);
+        let report = closure_report(
+            &dag,
+            &r,
+            &ColumnRef::new("model.p.t", "x1"),
+            ClosureDirection::Upstream,
+        );
+        assert_eq!(report.confidence, Confidence::Stale);
+        let row = report
+            .columns
+            .iter()
+            .find(|c| c.column == "p.x")
+            .expect("p.x is reached");
+        assert_eq!(
+            row.confidence,
+            Confidence::Stale,
+            "one stale link marks the whole row stale"
+        );
     }
 }

@@ -236,7 +236,7 @@ fn detail_column_rows(dv: &DetailView) -> (Vec<(String, String, String)>, bool) 
 
 /// The columns section: header + one row per [`detail_column_rows`] entry,
 /// each with the h/l cursor marker (`> `, the shared `SELECTED_MARKER`) and the
-/// column-level up/down closure counts in the chrome badge glyphs.
+/// one-hop column-level up/down edge counts in the chrome badge glyphs.
 fn detail_column_lines(
     dv: &DetailView,
     glyphs: crate::GlyphMode,
@@ -281,8 +281,10 @@ fn detail_column_lines(
 
 /// The line index of the FIRST column row inside the modal body (head + the
 /// `columns (N):` header) — the base the cursor's ensure-visible math needs.
-/// Line-count only, so the theme/glyph args don't matter.
-pub fn detail_columns_line0(dv: &DetailView) -> usize {
+/// Line-count only, so the theme/glyph args don't matter. `pub(crate)`:
+/// consumed by `clamp_detail_scroll` and the renderer only — not part of the
+/// crate's API surface.
+pub(crate) fn detail_columns_line0(dv: &DetailView) -> usize {
     detail_head_lines(dv, &theme::DEFAULT).len() + 1
 }
 

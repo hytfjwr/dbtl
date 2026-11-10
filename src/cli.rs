@@ -176,7 +176,9 @@ pub enum Commands {
         /// The column to trace, as `<model>.<column>` — e.g.
         /// `cll_demo.order_id`. The model segment is a node name or unique_id;
         /// the column segment matches case-insensitively (unquoted-identifier
-        /// normalization, same as the resolver).
+        /// normalization, same as the resolver). LIMIT: the split is on the
+        /// LAST `.`, so a column whose name itself contains one (a quoted
+        /// `"a.b"` identifier) cannot be expressed here today.
         target: String,
         /// List the columns feeding INTO the target (provenance). Default is
         /// the downstream blast radius.

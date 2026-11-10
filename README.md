@@ -249,7 +249,8 @@ $ dbtl columns stg_orders.id --format json  # machine-readable report
 The default output is a deterministic Markdown table (`column | via | kind |
 confidence`) suitable for PR comments; `--format json` emits the same report as
 structured data. Inside the app, the `Enter` structure view shows `↑u ↓d`
-closure counts beside every column — `h`/`l` move a cursor between them and
+ONE-HOP edge counts beside every column (direct parents in / direct children
+out — not the transitive closure) — `h`/`l` move a cursor between them and
 `y l` copies the selected column's downstream closure as the same Markdown.
 
 v0 matches columns **by name**, so it intentionally over-connects: `o.id`
@@ -259,6 +260,20 @@ they semantically shape. The `confidence` field marks the resolution basis —
 `name_match` for the approximation, `stale` for out-of-date compiled SQL. An
 exact parser (AST-level, tracking a column through projections) can replace
 the resolver behind the same interface without touching the TUI or CLI.
+
+Known v0 approximations (the exact-parser swap is the tracked follow-up):
+
+- The scanner reads the OUTERMOST `SELECT` list only — CTE bodies and
+  subqueries are opaque (their outputs resolve through the parent models
+  `dbtl` already knows, not through the inner text).
+- `select *` expands to the direct parents' column union — an intervening
+  `WHERE`-only column still lands on every output (`filter_or_join`).
+- Unquoted identifiers are matched case-insensitively (the warehouse's
+  folding); a *quoted* `"WeIrD"` column keeps its exact spelling, so it
+  only matches identically-quoted names downstream.
+- `dbtl columns` addresses a column as `<node>.<column>` — a column name
+  that itself contains a `.` (a quoted `"a.b"` identifier) cannot be
+  expressed in that position today.
 
 ## Keybindings
 
@@ -301,7 +316,7 @@ Press `?` inside the app for the full list. The most useful ones:
 | `?` | Toggle the full help overlay |
 | `q` | Quit (`Ctrl-c` from anywhere) |
 
-Inside a scrollable modal, `j`/`k` scroll, `d`/`u`/`Ctrl-d`/`Ctrl-u`/`PgDn`/`PgUp` page, `g`/`G` jump to the top / bottom, and `Esc`/`Enter`/`q` (`?` too, for the help overlay) closes. In the structure view, `h`/`l` move a cursor across the column rows (each shows its `↑`/`↓` column-lineage closure size) — the target of `y l`. In a `/` search, `Up`/`Down` move between matches.
+Inside a scrollable modal, `j`/`k` scroll, `d`/`u`/`Ctrl-d`/`Ctrl-u`/`PgDn`/`PgUp` page, `g`/`G` jump to the top / bottom, and `Esc`/`Enter`/`q` (`?` too, for the help overlay) closes. In the structure view, `h`/`l` move a cursor across the column rows (each shows its `↑`/`↓` one-hop column-edge count) — the target of `y l`. Pressing `y` over the structure view aims every `y<key>` yank at *the modal's node*, not the list selection — `y l` yanks the column under its cursor. Known limitation: the yank menu is one-shot and closes to the list — `Esc`/`q` from it does NOT return to the modal (re-open with `Enter`); restoring the modal on cancel is a tracked follow-up. In a `/` search, `Up`/`Down` move between matches.
 
 The mouse works too: click a lineage node to re-root, and use the wheel to scroll. The lineage pane pans in both directions. A horizontal wheel notch (trackpad swipe or tilt wheel) or `Shift`+wheel scrolls it sideways.
 
