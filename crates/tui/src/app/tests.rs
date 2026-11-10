@@ -34,6 +34,26 @@ fn app() -> App {
     a
 }
 
+/// A zero-node `App` — every "empty X" surface's floor.
+fn empty_app() -> App {
+    use std::collections::HashMap;
+    let dag = Dag::build(&crate::RawManifest {
+        metadata: Default::default(),
+        nodes: HashMap::new(),
+        sources: HashMap::new(),
+        exposures: HashMap::new(),
+        semantic_models: HashMap::new(),
+        metrics: HashMap::new(),
+        saved_queries: HashMap::new(),
+        unit_tests: HashMap::new(),
+        functions: HashMap::new(),
+        parent_map: HashMap::new(),
+        child_map: HashMap::new(),
+        macros: HashMap::new(),
+    });
+    App::new(dag, PathBuf::from(FIXTURE))
+}
+
 #[test]
 fn yank_and_bookmark_record_oneshot_notices() {
     let mut a = app();
@@ -4153,7 +4173,7 @@ fn palette_unavailable_command_toasts_the_reason_and_stays_open() {
     // No --diff baseline loaded → `D` "diff vs baseline" is greyed.
     let mut a = app();
     assert_eq!(
-        a.unavailable_reason(Action::DiffOpen),
+        a.unavailable_reason(Action::DiffOpen).as_deref(),
         Some("needs --diff"),
         "same predicate the apply arm's no-op condition uses"
     );
@@ -4203,16 +4223,16 @@ fn unavailable_reason_mirrors_apply_noops() {
     // Selection-present cases: bookmark cycle with no bookmarks; view filters
     // gated in overview; history back with an empty stack.
     assert_eq!(
-        a.unavailable_reason(Action::BookmarkCycle),
+        a.unavailable_reason(Action::BookmarkCycle).as_deref(),
         Some("no bookmarks in the list")
     );
     assert_eq!(
-        a.unavailable_reason(Action::HistoryBack),
+        a.unavailable_reason(Action::HistoryBack).as_deref(),
         Some("no earlier model")
     );
     apply_action(&mut a, Action::ToggleOverview);
     assert_eq!(
-        a.unavailable_reason(Action::ToggleUpstream),
+        a.unavailable_reason(Action::ToggleUpstream).as_deref(),
         Some("off in overview"),
         "the SAME gate the apply arm uses"
     );
@@ -4221,6 +4241,92 @@ fn unavailable_reason_mirrors_apply_noops() {
     // Commands that always run stay unmarked.
     assert_eq!(a.unavailable_reason(Action::Quit), None);
     assert_eq!(a.unavailable_reason(Action::HelpToggle), None);
+}
+
+#[test]
+fn unavailable_reason_covers_the_empty_graph_under_overview() {
+    // The lineage yanks and the `e` export share `yank_subgraph`: an empty
+    // Dag yields an EMPTY nodes list even under the overview's whole-graph
+    // pull — "no model selected" is the wrong story there, and "available"
+    // would have been a silent dead row.
+    let mut a = empty_app();
+    apply_action(&mut a, Action::ToggleOverview);
+    for act in [
+        Action::YankMermaid,
+        Action::YankDot,
+        Action::YankAscii,
+        Action::ExportLineage,
+    ] {
+        assert_eq!(
+            a.unavailable_reason(act).as_deref(),
+            Some("empty lineage"),
+            "{act:?} on an empty graph in overview"
+        );
+    }
+    // Off the overview the same emptiness reads as "nothing selected".
+    apply_action(&mut a, Action::ToggleOverview);
+    assert_eq!(
+        a.unavailable_reason(Action::YankMermaid).as_deref(),
+        Some("no model selected")
+    );
+    assert_eq!(
+        a.unavailable_reason(Action::ExportLineage).as_deref(),
+        Some("no model selected")
+    );
+    // …while a populated Dag stays available in overview even with no
+    // selection (the whole graph IS the yank).
+    let mut a = app();
+    apply_action(&mut a, Action::ToggleOverview);
+    assert_eq!(a.unavailable_reason(Action::YankMermaid), None);
+    assert_eq!(a.unavailable_reason(Action::ExportLineage), None);
+}
+
+#[test]
+fn unavailable_reason_mirrors_focus_routed_movement_noops() {
+    // List-side moves die on an empty list — with the list's OWN stamped
+    // reason, not a generic one.
+    let a = empty_app();
+    for act in [Action::MoveDown, Action::JumpTop, Action::PageDown] {
+        assert_eq!(
+            a.unavailable_reason(act).as_deref(),
+            Some("no models in scope — try --include-packages"),
+            "{act:?} on an empty list"
+        );
+    }
+    // h/l have no list arm at all — always dead with list focus.
+    assert_eq!(
+        a.unavailable_reason(Action::MoveLeft).as_deref(),
+        Some("lineage pane only")
+    );
+    // Lineage-focus moves need a cursor; g/G/Pg are list-only.
+    let mut a = empty_app();
+    apply_action(&mut a, Action::ToggleFocus); // → lineage pane
+    for act in [
+        Action::MoveDown,
+        Action::MoveLeft,
+        Action::LineageLeftmost,
+        Action::LineageRightmost,
+    ] {
+        assert_eq!(
+            a.unavailable_reason(act).as_deref(),
+            Some("no model selected"),
+            "{act:?} with lineage focus and no cursor"
+        );
+    }
+    assert_eq!(
+        a.unavailable_reason(Action::JumpTop).as_deref(),
+        Some("list pane only")
+    );
+    // And on a populated app the same commands run.
+    let mut a = app();
+    assert_eq!(a.unavailable_reason(Action::MoveDown), None);
+    apply_action(&mut a, Action::ToggleFocus);
+    assert_eq!(a.unavailable_reason(Action::MoveDown), None);
+    assert_eq!(
+        a.unavailable_reason(Action::JumpTop).as_deref(),
+        Some("list pane only"),
+        "jumps are list-side regardless of focus"
+    );
 }
 
 // ---- Issue 09: help `/`-filter + opening-mode section ----------------------
@@ -5804,6 +5910,46 @@ fn a_stale_modal_stash_cannot_leak_into_a_later_selection_yank() {
         other => panic!("expected one Yank effect, got {other:?}"),
     };
     assert_eq!(text, "model.sample.fct_orders", "no stale modal target");
+}
+
+#[test]
+fn help_over_the_yank_menu_keeps_the_modal_stash_alive() {
+    // The review sequence: Detail → y → ? → Esc → yy. The `?` help LAYERS
+    // over the which-key menu (back = Yank) — the stashed modal target must
+    // survive it, or the yank silently hits the list selection instead of
+    // the modal's node (a quiet wrong-target, the worst kind).
+    let mut a = sample_app();
+    open_detail(&mut a, "model.sample.stg_orders");
+    a.select_by_unique_id("model.sample.fct_orders");
+    apply_action(&mut a, Action::YankPrefix);
+    assert_eq!(
+        a.pending_node.as_deref(),
+        Some("model.sample.stg_orders"),
+        "the modal's node is stashed"
+    );
+    apply_action(&mut a, Action::HelpToggle);
+    match &a.mode {
+        Mode::Help(h) => assert_eq!(*h.back, Mode::Yank, "help layers over the menu"),
+        _ => panic!("expected Help mode"),
+    }
+    assert_eq!(
+        a.pending_node.as_deref(),
+        Some("model.sample.stg_orders"),
+        "the stash survives the help layer"
+    );
+    // Esc peels back to the menu — which still knows its target.
+    apply_action(&mut a, Action::HelpToggle);
+    assert_eq!(a.mode, Mode::Yank);
+    let out = apply_action(&mut a, Action::YankId);
+    let text = match out.effects.as_slice() {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert_eq!(
+        text, "model.sample.stg_orders",
+        "yy still yanks the modal's node, not the list selection's fct_orders"
+    );
+    assert!(a.pending_node.is_none(), "the yank itself closes the stash");
 }
 
 #[test]

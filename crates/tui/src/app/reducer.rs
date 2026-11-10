@@ -1230,12 +1230,18 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
     if in_yank_menu && matches!(app.mode, Mode::Yank) {
         app.mode = Mode::Selection;
     }
-    // The yank stashes live only while the which-key is open: once the mode is
-    // anything else — after a yank, or an Esc/q cancel — the modal context is
-    // dropped, so a stale `pending_node`/`pending_col` can never leak into a
-    // later yank (both are also rewritten on every `y` press; this just closes
-    // the stale-read window after a cancel).
-    if !matches!(app.mode, Mode::Yank) {
+    // The yank stashes live only while the which-key is open — that INCLUDES
+    // a `?` help layer sitting on top of it (`Help` whose `back` is `Yank`):
+    // Esc peels the help back to the menu, which must find the modal target
+    // still stashed, or the next `y<key>` silently yanks the list selection
+    // instead of the modal's node. Any other mode — after a yank, or an
+    // Esc/q cancel — drops the modal context, so a stale
+    // `pending_node`/`pending_col` can never leak into a later yank (both
+    // are also rewritten on every `y` press; this just closes the stale-read
+    // window after a cancel).
+    let yank_still_open = matches!(app.mode, Mode::Yank)
+        || matches!(&app.mode, Mode::Help(h) if matches!(h.back.as_ref(), Mode::Yank));
+    if !yank_still_open {
         app.pending_col = None;
         app.pending_node = None;
     }

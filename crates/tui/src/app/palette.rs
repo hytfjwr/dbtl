@@ -120,38 +120,40 @@ impl App {
     /// running it. The predicate mirrors each apply arm's own no-op
     /// conditions (e.g. `D` with no baseline loaded), so the palette's marks
     /// can't drift from real behaviour — and Issue 06's menu greys the same
-    /// commands. `None` = runs.
-    pub fn unavailable_reason(&self, action: Action) -> Option<&'static str> {
+    /// commands. `None` = runs. `String` not `&'static str`: the list-empty
+    /// reasons are built at runtime (glyph-mode dash, the active filter's
+    /// name).
+    pub fn unavailable_reason(&self, action: Action) -> Option<String> {
         use Action as A;
         let no_selection = self.selected_unique_id().is_none();
         match action {
             // `D` opens the diff view only when a baseline is loaded.
-            A::DiffOpen => self.diff().is_none().then_some("needs --diff"),
+            A::DiffOpen => self.diff().is_none().then(|| "needs --diff".to_string()),
             // `e` needs the selected node's on-disk SQL path.
             A::OpenEditor => self
                 .selected_file_path()
                 .is_none()
-                .then_some("no file path for this node"),
+                .then(|| "no file path for this node".to_string()),
             // Enter/`s` need a focus target; an empty list has none.
-            A::DetailOpen | A::SqlOpen => {
-                self.focus_target().is_none().then_some("no model selected")
-            }
+            A::DetailOpen | A::SqlOpen => self
+                .focus_target()
+                .is_none()
+                .then(|| "no model selected".to_string()),
             // `K` needs a traced column — or the structure modal's column
             // cursor, which the palette (a Selection surface) can't see.
             A::ColumnsOpen => (self.column_focus.is_none()
                 && !matches!(self.mode, Mode::Detail(_)))
-            .then_some("no traced column"),
+            .then(|| "no traced column".to_string()),
             A::ColumnFocusExit => self
                 .column_focus
                 .is_none()
-                .then_some("not tracing a column"),
-            A::BookmarkToggle => no_selection.then_some("no model selected"),
+                .then(|| "not tracing a column".to_string()),
+            A::BookmarkToggle => no_selection.then(|| "no model selected".to_string()),
             // `z` always homes the cursor — the arm is unconditional.
             // `p` CLEARS a live anchor even with no selection (the arm's first
             // branch), so it is only dead when both are absent.
-            A::PathToggle => {
-                (self.path_anchor.is_none() && no_selection).then_some("no model selected")
-            }
+            A::PathToggle => (self.path_anchor.is_none() && no_selection)
+                .then(|| "no model selected".to_string()),
             // The cycle targets bookmarks in the ACTIVE (filtered) list — a
             // bookmark filtered out by the persistent filter can't be cycled
             // to, which is the arm's real no-op condition (`cycle_to` → None).
@@ -160,11 +162,51 @@ impl App {
                 .models
                 .iter()
                 .any(|m| self.bookmarks.contains(&m.unique_id)))
-            .then_some("no bookmarks in the list"),
+            .then(|| "no bookmarks in the list".to_string()),
             A::GapNext | A::GapPrev => (!self.active_list().models.iter().any(coverage_gap))
-                .then_some("no untested models"),
-            A::HistoryBack => self.back.is_empty().then_some("no earlier model"),
-            A::HistoryForward => self.forward.is_empty().then_some("no later model"),
+                .then(|| "no untested models".to_string()),
+            A::HistoryBack => self.back.is_empty().then(|| "no earlier model".to_string()),
+            A::HistoryForward => self
+                .forward
+                .is_empty()
+                .then(|| "no later model".to_string()),
+            // Movement is focus-routed exactly like apply: list focus forwards
+            // to `reduce_selection` (dead on an empty list — its own stamped
+            // reason is the accurate WHY), lineage focus needs a cursor (a
+            // selection). h/l have no list arm at all — always dead there.
+            A::MoveDown | A::MoveUp => {
+                if self.ui_state.focus() == crate::Focus::List {
+                    self.list_empty_reason()
+                } else {
+                    self.lineage_cursor_uid()
+                        .is_none()
+                        .then(|| "no model selected".to_string())
+                }
+            }
+            A::MoveLeft | A::MoveRight => {
+                if self.ui_state.focus() == crate::Focus::List {
+                    Some("lineage pane only".to_string())
+                } else {
+                    self.lineage_cursor_uid()
+                        .is_none()
+                        .then(|| "no model selected".to_string())
+                }
+            }
+            // g/G/PgUp/PgDn are list-side commands (`jump_*`/`page_move` no-op
+            // unless the list pane is focused): dead with lineage focus, dead
+            // on an empty list.
+            A::JumpTop | A::JumpBottom | A::PageDown | A::PageUp => {
+                if self.ui_state.focus() != crate::Focus::List {
+                    Some("list pane only".to_string())
+                } else {
+                    self.list_empty_reason()
+                }
+            }
+            // H/L act on the lineage regardless of focus — still need a cursor.
+            A::LineageLeftmost | A::LineageRightmost => self
+                .lineage_cursor_uid()
+                .is_none()
+                .then(|| "no model selected".to_string()),
             // The apply-time gates, mirrored 1:1 — overview blocks the five
             // view filters + density; a column trace blocks the filters.
             A::ToggleUpstream
@@ -173,44 +215,61 @@ impl App {
             | A::DepthIncrease
             | A::ResetView => {
                 if self.ui_state.overview() {
-                    Some("off in overview")
+                    Some("off in overview".to_string())
                 } else {
                     self.active_column_focus()
                         .is_some()
-                        .then_some("off while tracing a column")
+                        .then(|| "off while tracing a column".to_string())
                 }
             }
-            A::ToggleDensity => self.ui_state.overview().then_some("off in overview"),
+            A::ToggleDensity => self
+                .ui_state
+                .overview()
+                .then(|| "off in overview".to_string()),
             // Node-scoped yanks dead-end at `yank_target_uid` when nothing is
-            // selected. The LINEAGE yanks pull `yank_subgraph` → the whole
-            // graph under the overview, so they also run with no selection.
+            // selected.
             A::YankId | A::YankName | A::YankImpact | A::YankSelector => {
-                no_selection.then_some("no model selected")
+                no_selection.then(|| "no model selected".to_string())
             }
-            A::YankMermaid | A::YankDot | A::YankAscii => {
-                (no_selection && !self.ui_state.overview()).then_some("no model selected")
+            // The lineage yanks and the `e` export all derive from
+            // `yank_subgraph` → `lineage_subgraph`: EMPTY nodes is their
+            // shared no-op (mermaid/dot/ascii return None; the export never
+            // emits its effect). Non-overview that means nothing selected;
+            // under the overview's whole-graph pull it means the GRAPH is
+            // empty — the case "no selection" alone would have missed.
+            A::YankMermaid | A::YankDot | A::YankAscii | A::ExportLineage => {
+                if self.subgraph_rc().nodes.is_empty() {
+                    Some(
+                        if self.ui_state.overview() {
+                            "empty lineage"
+                        } else {
+                            "no model selected"
+                        }
+                        .to_string(),
+                    )
+                } else {
+                    None
+                }
             }
             // `yC`/`yI` need the node's recorded SQL — the arm's own
             // `raw_sql_for`/`compiled` predicates (blank counts as absent).
             A::YankSql => match self.yank_target_uid() {
-                None => Some("no model selected"),
-                Some(uid) => self.raw_sql_for(&uid).is_none().then_some("no raw SQL"),
+                None => Some("no model selected".to_string()),
+                Some(uid) => self
+                    .raw_sql_for(&uid)
+                    .is_none()
+                    .then(|| "no raw SQL".to_string()),
             },
             A::YankCompiledSql => match self.yank_target_uid() {
-                None => Some("no model selected"),
+                None => Some("no model selected".to_string()),
                 Some(uid) => {
                     let has = self
                         .dag
                         .compiled(&uid)
                         .is_some_and(|c| !c.code.trim().is_empty());
-                    (!has).then_some("no compiled SQL")
+                    (!has).then(|| "no compiled SQL".to_string())
                 }
             },
-            // The export needs SOME lineage — a selection, or the overview's
-            // whole graph.
-            A::ExportLineage => {
-                (no_selection && !self.ui_state.overview()).then_some("no model selected")
-            }
             _ => None,
         }
     }

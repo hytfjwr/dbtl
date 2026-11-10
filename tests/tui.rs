@@ -2971,6 +2971,48 @@ fn palette_unavailable_row_renders_the_reason() {
 }
 
 #[test]
+fn palette_overshot_selected_still_highlights_the_last_row() {
+    // `selected` can outlive a shrinking candidate set (the reducer clamps on
+    // mutation, not on draw — e.g. a --watch reload mid-palette). The renderer
+    // must clamp too, or NO row carries the cursor and the highlight vanishes.
+    use dbtl::app::{apply_action, App};
+    use dbtl::Action;
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    apply_action(&mut app, Action::PaletteOpen);
+    for c in "minimap".chars() {
+        apply_action(&mut app, Action::SearchType(c));
+    }
+    if let dbtl::Mode::Palette(p) = &mut app.mode {
+        p.selected = 99; // out of range — draw must clamp to the last row
+    }
+    let buffer = render_app(&app, 100, 40);
+    let text = buffer_to_string(&buffer);
+    // The palette's cursor row is the REVERSED line inside the modal — find
+    // whichever reversed row carries the command's help text (the list
+    // pane's own selection marker is reversed too, so scan every row).
+    let mut hit = false;
+    for y in 0..buffer.area.height {
+        let line: String = (0..buffer.area.width)
+            .filter_map(|x| buffer.cell((x, y)))
+            .map(|c| c.symbol())
+            .collect();
+        let reversed = (0..buffer.area.width).any(|x| {
+            buffer
+                .cell((x, y))
+                .is_some_and(|c| c.modifier.contains(Modifier::REVERSED))
+        });
+        if reversed && line.contains("minimap") {
+            hit = true;
+            break;
+        }
+    }
+    assert!(
+        hit,
+        "the clamped LAST candidate keeps the cursor highlight:\n{text}"
+    );
+}
+
+#[test]
 fn help_filter_narrows_to_matching_bindings() {
     // `/copy` inside help: only the matching (Yank) section's rows stay —
     // a section with no match drops its header AND its rows, and the title

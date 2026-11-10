@@ -505,7 +505,7 @@ pub enum PaletteRow {
         action: Action,
         help: &'static str,
         keys: String,
-        unavailable: Option<&'static str>,
+        unavailable: Option<String>,
     },
     /// An `@`-search model result: Enter re-roots to `uid` (the "active tab
     /// root" the spec names — the current selection until tabs exist).
@@ -1072,7 +1072,8 @@ pub struct HelpLine {
 }
 
 /// Synthetic help for actions NOT bound to a fixed key (text input, mouse).
-/// The drift test asserts these are exactly the non-`BINDINGS` actions.
+/// These are hand-maintained — add a row whenever a mode gains key-free
+/// input behaviour so the `?` overlay documents it.
 static DYNAMIC_HELP: &[(ModeKind, &str, &str)] = &[
     (ModeKind::Search, "a-z..", "type to filter / search"),
     (ModeKind::Palette, "a-z..", "type to filter commands"),
@@ -1410,6 +1411,44 @@ mod tests {
         assert_eq!(
             dispatch(&detail_mode(), press(Esc)),
             Some(Action::DetailClose)
+        );
+    }
+
+    #[test]
+    fn help_editing_printable_keys_are_text_not_commands() {
+        // While the `/`-filter is being edited, printable chars are TEXT —
+        // they must never reach the Help-mode BINDINGS rows (`q`/`?` close,
+        // `j`/`g` scroll, `/` re-arms). The editing pre-emption in dispatch
+        // is what stands between the filter and those commands.
+        let editing = Mode::Help(HelpView {
+            editing: true,
+            filter: Some("co".to_string()),
+            ..HelpView::new(Mode::Selection)
+        });
+        for c in ['q', '?', 'j', 'g', '/', 'G', 'k'] {
+            assert_eq!(
+                dispatch(&editing, press(Char(c))),
+                Some(Action::SearchType(c)),
+                "'{c}' while editing the help filter must be text, not a command"
+            );
+        }
+        assert_eq!(
+            dispatch(&editing, press(Backspace)),
+            Some(Action::SearchBackspace)
+        );
+        assert_eq!(
+            dispatch(&editing, press(Enter)),
+            Some(Action::SearchConfirm)
+        );
+        // Esc is not printable: it still reaches the close binding — the
+        // reducer reads it as "clear the filter first".
+        assert_eq!(dispatch(&editing, press(Esc)), Some(Action::HelpToggle));
+        // And NOT editing: the printable chars ARE commands again.
+        let idle = help_mode();
+        assert_eq!(dispatch(&idle, press(Char('q'))), Some(Action::HelpToggle));
+        assert_eq!(
+            dispatch(&idle, press(Char('j'))),
+            Some(Action::DetailScroll(Direction::Down))
         );
     }
 

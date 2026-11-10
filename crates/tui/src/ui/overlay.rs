@@ -1623,19 +1623,31 @@ pub(crate) fn draw_palette(
     if view_h == 0 {
         return;
     }
-    // `selected` indexes the SELECTABLE rows (headers never count); find its
-    // display position for the scroll window.
+    // `selected` indexes the SELECTABLE rows (headers never count). It can
+    // overshoot when the candidates shrank under a fixed query outside a
+    // mutation the reducer sees (a --watch reload mid-palette): clamp it for
+    // display like the confirm arm does, or the highlight row vanishes and
+    // the scroll window loses the cursor entirely.
+    let selectable = rows
+        .iter()
+        .filter(|r| !matches!(r, PaletteRow::Header(_)))
+        .count();
+    let sel = if selectable == 0 {
+        usize::MAX // nothing to land on — no row may claim the cursor
+    } else {
+        state.selected.min(selectable - 1)
+    };
+    // Find the clamped selection's display position for the scroll window.
     let mut sel_i = 0usize;
     let mut sel_display = 0usize;
     for (di, r) in rows.iter().enumerate() {
         if !matches!(r, PaletteRow::Header(_)) {
-            if sel_i == state.selected {
+            if sel_i == sel {
                 sel_display = di;
             }
             sel_i += 1;
         }
     }
-    let selectable = sel_i;
     let total = rows.len();
     let off = sel_display
         .saturating_sub(view_h - 1)
@@ -1647,7 +1659,7 @@ pub(crate) fn draw_palette(
     let mut sel_i = 0usize;
     for (di, row) in rows.iter().enumerate() {
         let header = matches!(row, PaletteRow::Header(_));
-        let selected = !header && sel_i == state.selected;
+        let selected = !header && sel_i == sel;
         if !header {
             sel_i += 1;
         }
@@ -1694,7 +1706,10 @@ pub(crate) fn draw_palette(
                 }
                 // Right-align the dim key label within the row width
                 // (best-effort: pad between help and key when there is room).
-                let reason = unavailable.map(|r| format!(" ({r})")).unwrap_or_default();
+                let reason = unavailable
+                    .as_ref()
+                    .map(|r| format!(" ({r})"))
+                    .unwrap_or_default();
                 let used = 2 + help.chars().count() + keys.chars().count() + reason.chars().count();
                 if label_w > used {
                     spans.push(Span::styled(" ".repeat(label_w - used), base));
