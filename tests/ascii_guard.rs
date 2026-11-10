@@ -33,12 +33,40 @@ fn ascii_app() -> App {
 /// Render the app exactly as the event loop does (layout in the app's glyph
 /// mode, styles applied, Dag-derived strings passed) and return the buffer.
 fn render(app: &mut App, width: u16, height: u16) -> Buffer {
-    render_with_toasts(app, width, height, &[])
+    render_ctx(app, width, height, &[], None, None)
 }
 
 /// [`render`] plus an optional toast stack (the transient copy/bookmark
 /// acknowledgement, Issue 08), mirroring the event loop's `ctx.toasts` wiring.
 fn render_with_toasts(app: &mut App, width: u16, height: u16, toasts: &[ToastLine]) -> Buffer {
+    render_ctx(app, width, height, toasts, None, None)
+}
+
+/// [`render`] plus the Issue-05 pointer overlays: the hovered node's accent
+/// frame (`hover`), the search-match frames + `i/N` title (derived from the
+/// app's mode like the loop computes them), and the settled-hover tooltip.
+fn render_mouse(
+    app: &mut App,
+    width: u16,
+    height: u16,
+    hover: Option<&str>,
+    tip: Option<&dbtl::ui::TooltipView>,
+) -> Buffer {
+    render_ctx(app, width, height, &[], hover, tip)
+}
+
+/// The shared render body: the base panes plus every overlay surface the
+/// event loop can stack — toasts, the hover accent, the tooltip, the tab
+/// strip, and the inspector (the two `&mut App` seams mirror the loop's
+/// inspector-visibility resolution).
+fn render_ctx(
+    app: &mut App,
+    width: u16,
+    height: u16,
+    toasts: &[ToastLine],
+    hover: Option<&str>,
+    tip: Option<&dbtl::ui::TooltipView>,
+) -> Buffer {
     // The SAME memoized producer the event loop draws from, so the guard
     // scans exactly what production renders.
     let lineage = app.styled_lineage_layout();
@@ -177,6 +205,25 @@ fn render_with_toasts(app: &mut App, width: u16, height: u16, toasts: &[ToastLin
         ctx.minimap = app.ui_state.minimap_visible();
         ctx.layer_bands = layer_bands.as_deref();
         ctx.toasts = toasts;
+        // The Issue-05 pointer overlays, computed exactly like the loop does:
+        // the search-match frames + `i/N` title ride the app's open search,
+        // the hover accent + settled tooltip arrive as parameters.
+        let (search_matches, search_pos) = match &app.mode {
+            dbtl::Mode::Search(s) if s.target == dbtl::SearchTarget::Lineage => {
+                let m = app.lineage_matches(&s.query);
+                let pos = if m.is_empty() {
+                    (0, 0)
+                } else {
+                    (s.match_idx % m.len() + 1, m.len())
+                };
+                (m, Some(pos))
+            }
+            _ => (Vec::new(), None),
+        };
+        ctx.hover_node = hover;
+        ctx.search_matches = &search_matches;
+        ctx.search_pos = search_pos;
+        ctx.tooltip = tip;
         // Mirror the loop's tab-strip wiring so the bar's `x`/`<`/`>`/`+`/`..`
         // chrome is under the guard in every scenario (all pure ASCII).
         let tab_labels = app.tab_labels();
@@ -732,4 +779,48 @@ fn inspector_pane_is_all_ascii() {
     assert_all_ascii(&render(&mut app, 120, 40), "inspector forced-on 120x40");
     app.ui_state.set_inspector_col(0);
     assert_all_ascii(&render(&mut app, 200, 60), "inspector column pick");
+}
+
+#[test]
+fn issue05_pointer_surfaces_are_all_ascii() {
+    // Issue 05's surfaces under the guard: the settled-hover tooltip (border
+    // set + `^`/`v` stats badges — `↑`/`↓` must NOT leak), the hovered node's
+    // accent frame, and the lineage-search title's `i/N` + `_` caret (the
+    // `▏` unicode caret is ambiguous-width and must not leak either).
+    let mut app = ascii_app();
+    app.ui_state.set_focus(Focus::RightPane);
+
+    // The tooltip (at the pointer cell beside a real node).
+    let tip = app
+        .tooltip_view("model.jaffle_finance.stg_finance__budgets", (40, 12))
+        .expect("a real node produces a tooltip");
+    assert_all_ascii(
+        &render_mouse(
+            &mut app,
+            100,
+            30,
+            Some("model.jaffle_finance.stg_finance__budgets"),
+            Some(&tip),
+        ),
+        "hover accent + tooltip 100x30",
+    );
+    // Near the right/bottom edge: the flip-clamp path must stay ASCII too.
+    let tip_edge = app
+        .tooltip_view("model.jaffle_finance.stg_finance__budgets", (90, 25))
+        .expect("edge tooltip");
+    assert_all_ascii(
+        &render_mouse(&mut app, 100, 30, None, Some(&tip_edge)),
+        "flipped tooltip 100x30",
+    );
+
+    // A live lineage search: every match's frame accents and the title rides
+    // `/{query}{caret} i/N` — the `_` ASCII caret + ASCII digits/slashes only.
+    apply_action(&mut app, Action::SearchOpen);
+    for c in "budgets".chars() {
+        apply_action(&mut app, Action::SearchType(c));
+    }
+    assert_all_ascii(
+        &render_mouse(&mut app, 100, 30, None, None),
+        "lineage search title + match accents 100x30",
+    );
 }

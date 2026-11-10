@@ -6,6 +6,8 @@
 //! was built by `layout()` and the window chosen by `blit()` with `state`'s
 //! scroll offset, so the computed window equals the drawn window.
 
+use std::collections::BTreeSet;
+
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -50,6 +52,7 @@ pub(crate) fn draw_lineage_pane(
     state: &UiState,
     lineage: Option<&crate::Layout>,
     search: Option<&str>,
+    search_pos: Option<(usize, usize)>,
     view_label: Option<&str>,
     breadcrumb: Option<&str>,
     overview_title: Option<&str>,
@@ -57,6 +60,8 @@ pub(crate) fn draw_lineage_pane(
     minimap: bool,
     layer_bands: Option<&[LayerBand]>,
     col_suffix: Option<&str>,
+    hover_node: Option<&str>,
+    search_matches: &[String],
     t: &theme::Theme,
 ) {
     let chrome = super::chrome(glyphs);
@@ -80,7 +85,7 @@ pub(crate) fn draw_lineage_pane(
     };
     let title = compose_lineage_title(
         sel_name,
-        search,
+        search.map(|q| (q, search_pos)),
         view_label,
         breadcrumb,
         overview_title,
@@ -169,6 +174,24 @@ pub(crate) fn draw_lineage_pane(
     }
 
     frame.render_widget(Paragraph::new(lines), target);
+
+    // Issue 05's pointer/search accents (§6): every search-match node's box
+    // frame, and the HOVERED node's frame plus the connector cells of its
+    // direct edges — a style-only post-blit pass mapped through the same
+    // scroll window the blit used. Glyphs, geometry, and CharGrid are all
+    // untouched (it never reaches the layout cache keys), so the golden
+    // fixtures and hit-test see nothing. Drawn before the minimap — the inset
+    // is its own sketch and wins where the two overlap.
+    stamp_accent_cells(
+        frame,
+        target,
+        lay,
+        state.lineage_scroll_x(),
+        state.lineage_scroll_y(),
+        hover_node,
+        search_matches,
+        t,
+    );
 
     // A wide/tall diagram is scrolled, not broken: stamp a directional marker on
     // each clipped border edge so partially-drawn boxes read as "scroll this way"
@@ -308,6 +331,90 @@ fn draw_minimap(
                     cell.set_symbol(chrome.mm_view).set_style(view_style);
                 }
             }
+        }
+    }
+}
+
+/// The grid cells Issue 05's accent overlay paints (§6): every uid's box
+/// PERIMETER (top/bottom rows + left/right columns — the frame, not the label
+/// interior), and for the hovered node additionally the connector cells of
+/// its DIRECT edges. `edge_cells` keys an edge by `(parent, child)`, so a
+/// node's incident runs are those keyed with the uid at either end. Pure over
+/// `lay`'s maps (grid coordinates, deduped via `BTreeSet`), so the set is
+/// deterministic and a unit test asserts the exact cells. A `+M more` marker
+/// uid works too — its rect exists in `lay.rects` like any node's.
+fn accent_cells(
+    lay: &crate::Layout,
+    hover_node: Option<&str>,
+    search_matches: &[String],
+) -> BTreeSet<(usize, usize)> {
+    let mut cells = BTreeSet::new();
+    let frame = |cells: &mut BTreeSet<_>, uid: &str| {
+        let Some(r) = lay.rects.get(uid) else {
+            return; // off-screen or hidden behind a collapse marker
+        };
+        if r.height == 1 {
+            // A compact `│name│` box: the frame is the two border cells —
+            // the name interior keeps its own (label) styling.
+            cells.insert((r.x, r.y));
+            cells.insert((r.x + r.width.saturating_sub(1), r.y));
+            return;
+        }
+        for dx in 0..r.width {
+            cells.insert((r.x + dx, r.y));
+            cells.insert((r.x + dx, r.y + r.height - 1));
+        }
+        for dy in 0..r.height {
+            cells.insert((r.x, r.y + dy));
+            cells.insert((r.x + r.width.saturating_sub(1), r.y + dy));
+        }
+    };
+    for uid in search_matches {
+        frame(&mut cells, uid);
+    }
+    if let Some(h) = hover_node {
+        frame(&mut cells, h);
+        for ((parent, child), run) in &lay.edge_cells {
+            if parent == h || child == h {
+                cells.extend(run.iter().copied());
+            }
+        }
+    }
+    cells
+}
+
+/// Paint the accent overlay for [`accent_cells`]: fg → `t.accent` + BOLD on
+/// each frame-buffer cell the grid->screen window maps (scrolled-out cells
+/// drop). Style-only — `bg` and existing modifiers are preserved via the
+/// cell's own style (an on-path band or the REVERSED selection cue survive
+/// the accent), and no glyph ever moves, so this is safe to run on top of the
+/// blit without perturbing the frozen renders.
+#[allow(clippy::too_many_arguments)]
+fn stamp_accent_cells(
+    frame: &mut Frame,
+    target: Rect,
+    lay: &crate::Layout,
+    scroll_x: usize,
+    scroll_y: usize,
+    hover_node: Option<&str>,
+    search_matches: &[String],
+    t: &theme::Theme,
+) {
+    if hover_node.is_none() && search_matches.is_empty() {
+        return;
+    }
+    let buf = frame.buffer_mut();
+    for (gx, gy) in accent_cells(lay, hover_node, search_matches) {
+        let (Some(sx), Some(sy)) = (gx.checked_sub(scroll_x), gy.checked_sub(scroll_y)) else {
+            continue; // scrolled off the left/top
+        };
+        if sx >= target.width as usize || sy >= target.height as usize {
+            continue; // scrolled off the right/bottom
+        }
+        let (x, y) = (target.x + sx as u16, target.y + sy as u16);
+        if let Some(cell) = buf.cell_mut((x, y)) {
+            let style = cell.style().fg(t.accent).add_modifier(Modifier::BOLD);
+            cell.set_style(style);
         }
     }
 }
@@ -502,7 +609,11 @@ fn lens_color(tint: LensTint, t: &theme::Theme) -> Option<Color> {
 /// where `area.width` is known).
 ///
 /// Four shapes:
-/// - **Search**: `" Lineage: {sel} /{query}{caret} "` — unchanged.
+/// - **Search**: `" /{query}{caret} {cur}/{total} "` — screen-spec §9's
+///   lineage-search form: the query + caret + the cycled match position,
+///   which OWNS the title while the search is open (the `Lineage: {sel}`
+///   body and any breadcrumb/lens suffixes drop). `(0, 0)` while the query
+///   matches nothing, `1/total`-based cycling otherwise.
 /// - **No breadcrumb**: `" Lineage: {sel} [{v}]{lens} "` / `" Lineage: {sel}{lens} "`
 ///   — BYTE-IDENTICAL to the pre-breadcrumb titles (the default render is pinned).
 /// - **Breadcrumb present**: the `Lineage: {sel}` body is OMITTED (the crumb
@@ -522,7 +633,7 @@ fn lens_color(tint: LensTint, t: &theme::Theme) -> Option<Color> {
 #[allow(clippy::too_many_arguments)]
 fn compose_lineage_title(
     sel_name: &str,
-    search: Option<&str>,
+    search: Option<(&str, Option<(usize, usize)>)>,
     view_label: Option<&str>,
     breadcrumb: Option<&str>,
     overview: Option<&str>,
@@ -532,9 +643,14 @@ fn compose_lineage_title(
 ) -> String {
     use unicode_width::UnicodeWidthStr;
 
-    // Search shape is unaffected by the breadcrumb.
-    if let Some(query) = search {
-        return format!(" Lineage: {sel_name}  /{query}{caret} ");
+    // The lineage-search shape owns the title (§9): `/` + query + caret +
+    // the `{cur}/{total}` cycle position — the sel body, breadcrumb, and
+    // lens suffixes all drop while a search is open.
+    if let Some((query, pos)) = search {
+        let count = pos
+            .map(|(cur, total)| format!(" {cur}/{total}"))
+            .unwrap_or_default();
+        return format!(" /{query}{caret}{count} ");
     }
 
     // Overview: the body replaces both the `Lineage: {name}` body and the

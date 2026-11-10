@@ -1037,6 +1037,81 @@ pub fn minimap_rect(
     })
 }
 
+/// The scroll offsets a minimap cell `(col, row)` asks for — click-to-centre
+/// and drag-scrub share it (§6: `ミニマップ` click moves the viewport, drag
+/// pans). Each minimap cell covers a `sx`×`sy` block of grid cells (the same
+/// division [`draw_minimap`] stamps with — ceil so the whole grid maps inside
+/// the inset), so the cell maps back to its block's CENTRE in grid space and
+/// the returned offsets put the content window's centre there. Saturating;
+/// the caller's `clamp_lineage` pass bounds the far edge.
+///
+/// `mm` is the [`minimap_rect`] screen rect; `view_w`/`view_h` are the
+/// CONTENT window dims (`min(grid, interior)` — the same value the minimap
+/// draws its viewport sketch from), so a click on the sketched viewport's own
+/// cell is a near-no-op rather than a jump.
+///
+/// [`draw_minimap`]: super::lineage
+pub fn minimap_scroll_to(
+    mm: Rect,
+    col: u16,
+    row: u16,
+    grid_w: usize,
+    grid_h: usize,
+    view_w: usize,
+    view_h: usize,
+) -> (usize, usize) {
+    let sx = grid_w.div_ceil(mm.width.max(1) as usize).max(1);
+    let sy = grid_h.div_ceil(mm.height.max(1) as usize).max(1);
+    // Cells past the rect's right/bottom edge (a drag scrubbing outside)
+    // clamp to the grid's far edge — `mx * sx` can only overshoot grid_w by
+    // less than one block, and `clamp_lineage` lands it on the max offset.
+    let mx = usize::from(col.saturating_sub(mm.x));
+    let my = usize::from(row.saturating_sub(mm.y));
+    let scroll_x = (mx * sx + sx / 2).saturating_sub(view_w / 2);
+    let scroll_y = (my * sy + sy / 2).saturating_sub(view_h / 2);
+    (scroll_x, scroll_y)
+}
+
+/// The scroll offset a lineage pan drag asks for: the press-time offset
+/// `base` replayed against the pointer's displacement from its press cell
+/// `origin` to `at` — the diagram tracks the pointer 1:1 in both axes (grab
+/// the picture: drag left → content moves left → the scroll offset grows).
+/// Saturates at 0; the loop's `clamp_lineage` bounds the far edge, the same
+/// contract every scroll writer (`wheel_lineage`, `anchor_lineage`) keeps.
+pub fn pan_offset(base: usize, origin: u16, at: u16) -> usize {
+    (base as i64 + i64::from(origin) - i64::from(at)).max(0) as usize
+}
+
+/// The hover tooltip's widest box in columns (screen-spec §9's floating-chrome
+/// rule — a name-plus-two-lines box never becomes a wall of text).
+pub const TOOLTIP_MAX_W: u16 = 48;
+
+/// The hover tooltip's frame rect: hangs one cell below-right of the pointer
+/// cell `at`, flips to the cell's left/top when the preferred corner would
+/// overflow `area` (§9's "右下（はみ出すなら反転）" rule — the same anchor
+/// policy [`menu_rect`] applies), then clamps inside `area`. `w`/`h` are the
+/// caller's content-sized box. Pure, so the draw and a test measure the same
+/// rect — the tooltip itself is a frame-buffer overlay, never a CharGrid
+/// input (it must not perturb the layout cache or the hit-test).
+pub fn tooltip_rect(at: Position, w: u16, h: u16, area: Rect) -> Rect {
+    let w = w.min(area.width.max(1)).max(1);
+    let h = h.min(area.height.max(1)).max(1);
+    let mut x = at.x.saturating_add(1);
+    if x + w > area.x + area.width {
+        x = at.x.saturating_sub(w);
+    }
+    let mut y = at.y.saturating_add(1);
+    if y + h > area.y + area.height {
+        y = at.y.saturating_sub(h);
+    }
+    Rect {
+        x: x.clamp(area.x, area.x + area.width.saturating_sub(w)),
+        y: y.clamp(area.y, area.y + area.height.saturating_sub(h)),
+        width: w,
+        height: h,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1562,5 +1637,74 @@ mod tests {
             track_y0 + track_h,
             "out-of-range offset clamps to a flush-bottom thumb"
         );
+    }
+
+    #[test]
+    fn minimap_scroll_to_centres_the_clicked_block() {
+        // 160×60 grid in a 16×6 inset at (80,2): sx = 10, sy = 10.
+        let mm = Rect::new(80, 2, 16, 6);
+        // Cell (0,0) covers grid [0,10) — its centre is (5,5); a 40×20 window
+        // centred there clamps to scroll (0,0).
+        assert_eq!(minimap_scroll_to(mm, 80, 2, 160, 60, 40, 20), (0, 0));
+        // Cell (8,3) covers grid x [80,90), y [30,40) — centre (85,35) →
+        // scroll = centre - view/2 = (65,25).
+        assert_eq!(minimap_scroll_to(mm, 88, 5, 160, 60, 40, 20), (65, 25));
+        // The last cell saturates toward the grid's far edge (the caller's
+        // clamp_lineage lands it on the max offset — here it just can't go
+        // below the centre-minus-half floor).
+        assert_eq!(minimap_scroll_to(mm, 95, 7, 160, 60, 40, 20), (135, 45));
+        // A scrub outside the rect keeps tracking (saturating left/top).
+        assert_eq!(minimap_scroll_to(mm, 79, 1, 160, 60, 40, 20), (0, 0));
+        assert_eq!(minimap_scroll_to(mm, 99, 9, 160, 60, 40, 20), (175, 65));
+    }
+
+    #[test]
+    fn pan_offset_tracks_the_pointer_one_to_one() {
+        // Grab at (50,·) with scroll 10: drag left 5 → scroll 15 (content
+        // follows the pointer); drag right 5 → scroll 5.
+        assert_eq!(pan_offset(10, 50, 45), 15);
+        assert_eq!(pan_offset(10, 50, 55), 5);
+        // Past the diagram's home edge: saturate at 0 (the far edge is the
+        // caller's clamp_lineage).
+        assert_eq!(pan_offset(4, 50, 60), 0);
+        assert_eq!(pan_offset(10, 50, 50), 10, "no movement → no change");
+    }
+
+    #[test]
+    fn tooltip_rect_hangs_below_right_and_flips_on_overflow() {
+        let area = Rect::new(0, 0, 100, 40);
+        let at = Position { x: 10, y: 10 };
+        // Preferred: one cell below-right of the pointer cell.
+        assert_eq!(
+            tooltip_rect(at, 30, 6, area),
+            Rect::new(11, 11, 30, 6),
+            "below-right anchor"
+        );
+        // Right-edge overflow: the box lands LEFT of the cell.
+        assert_eq!(
+            tooltip_rect(Position { x: 95, y: 10 }, 30, 6, area),
+            Rect::new(65, 11, 30, 6),
+            "flipped left"
+        );
+        // Bottom-edge overflow: the box ends AT the cell's row.
+        assert_eq!(
+            tooltip_rect(Position { x: 10, y: 39 }, 30, 6, area),
+            Rect::new(11, 33, 30, 6),
+            "flipped up"
+        );
+        // Both edges: bottom-left of the cell.
+        assert_eq!(
+            tooltip_rect(Position { x: 95, y: 39 }, 30, 6, area),
+            Rect::new(65, 33, 30, 6),
+            "flipped both ways"
+        );
+        // A box bigger than the area shrinks to it and clamps inside.
+        assert_eq!(
+            tooltip_rect(Position { x: 50, y: 20 }, 200, 60, area),
+            Rect::new(0, 0, 100, 40),
+            "clamped into the area"
+        );
+        // Degenerate area never panics.
+        let _ = tooltip_rect(Position { x: 0, y: 0 }, 5, 3, Rect::new(0, 0, 1, 1));
     }
 }

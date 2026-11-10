@@ -195,6 +195,32 @@ impl App {
         }
     }
 
+    /// The settled-hover tooltip's content for `uid`, anchored at the pointer
+    /// cell `at` (§9's pointer summary — drawn whether or not the inspector
+    /// is up, M2-b). A Dag-side snapshot like every other overlay payload, so
+    /// `RenderCtx` stays Dag-free. `None` for a uid the Dag doesn't know: a
+    /// `+M more` marker is display chrome, not a node — its hover accents the
+    /// frame but draws no tooltip (there is nothing to describe).
+    pub fn tooltip_view(&self, uid: &str, at: (u16, u16)) -> Option<crate::ui::TooltipView> {
+        let n = self.dag.get(uid)?;
+        Some(crate::ui::TooltipView {
+            name: n.name.clone(),
+            tag: crate::MaterializationClass::classify(&n.resource_type, n.materialized.as_deref())
+                .tag()
+                .to_string(),
+            desc: self
+                .dag
+                .detail(uid)
+                .and_then(|d| d.description.as_deref())
+                .map(|d| d.lines().take(2).map(str::to_string).collect())
+                .unwrap_or_default(),
+            tests: n.test_count,
+            up: n.direct_up,
+            down: n.direct_down,
+            at,
+        })
+    }
+
     /// The subgraph the lineage pane DRAWS: the COLLAPSED display view —
     /// the rooted subgraph with oversized sibling groups contracted into
     /// `+M more` markers and `selected` swapped to the cursor, so the existing

@@ -631,6 +631,19 @@ impl UiState {
         self.lineage_scroll_y = y;
     }
 
+    /// Write both lineage scroll offsets as pan/minimap intent — the pointer
+    /// gestures' write path (§6: blank-space drag pans, minimap click/drag
+    /// scrubs). Same unvalidated-intent contract as the wheel setters: the
+    /// caller resolves the pure cell math (geom's `pan_offset` /
+    /// `minimap_scroll_to`) and this stores it; the loop's
+    /// [`clamp_lineage`](UiState::clamp_lineage) bounds it next frame.
+    /// `pub` (not `pub(crate)`) because the only caller is the ROOT crate's
+    /// event loop — a different crate than `dbtl-tui`.
+    pub fn pan_lineage(&mut self, x: usize, y: usize) {
+        self.lineage_scroll_x = x;
+        self.lineage_scroll_y = y;
+    }
+
     /// Set the selected model index, clamped to the current model count.
     ///
     /// Used by the `App` when selection is driven *externally* — mouse re-root,

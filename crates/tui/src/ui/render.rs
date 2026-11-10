@@ -172,6 +172,26 @@ pub struct RenderCtx<'a> {
     /// traced (Issue 09). `None` (the default) leaves every title unchanged.
     /// Precomputed at the loop seam (`App::column_focus_label`) — Dag-free.
     pub col_suffix: Option<&'a str>,
+    /// The lineage node the pointer currently hovers (Issue 05's accent cue:
+    /// its box frame + direct-edge cells paint `accent`). `None` (the
+    /// default) while the pointer is elsewhere or a button is held — a
+    /// style-only overlay, so it never reaches the layout cache keys.
+    pub hover_node: Option<&'a str>,
+    /// Every node matching the open lineage search (Issue 05, §9 — each
+    /// match's box frame accents, not just the cycled current). The loop
+    /// fills it from `App::lineage_matches` while `Mode::Search(Lineage)` is
+    /// up; the default empty slice accents nothing.
+    pub search_matches: &'a [String],
+    /// The lineage-search title's `{cur}/{total}` position (`1`-based cur
+    /// over the match count — `match_idx % len + 1`; `(0, 0)` while the
+    /// query matches nothing). `None` in headless renders — the title then
+    /// shows the query + caret alone.
+    pub search_pos: Option<(usize, usize)>,
+    /// The settled-hover tooltip (Issue 05's §9 pointer summary — the loop
+    /// arms it after 500 ms of stationary node hover, regardless of the
+    /// inspector). A frame-buffer overlay like the toasts: `None` (the
+    /// default) draws nothing.
+    pub tooltip: Option<&'a super::overlay::TooltipView>,
     /// The visible toast stack (Issue 08): up to 3 [`ToastLine`]s, newest
     /// FIRST (drawn top-most at the upper-right, above every pane and modal).
     /// The event loop owns their per-level lifetimes — info ~2.5s, warning
@@ -248,6 +268,10 @@ impl<'a> RenderCtx<'a> {
             layer_bands: None,
             tab_bar: None,
             col_suffix: None,
+            hover_node: None,
+            search_matches: &[],
+            search_pos: None,
+            tooltip: None,
             toasts: &[],
             palette_rows: None,
             empty_reason: None,
@@ -314,6 +338,7 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         ctx.state,
         ctx.lineage,
         lineage_query,
+        ctx.search_pos,
         ctx.lineage_label,
         ctx.breadcrumb,
         ctx.overview_title,
@@ -321,6 +346,8 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         ctx.minimap,
         ctx.layer_bands,
         ctx.col_suffix,
+        ctx.hover_node,
+        ctx.search_matches,
         ctx.theme,
     );
     // The right inspector pane (Issue 04): a published snapshot IS the
@@ -376,6 +403,14 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
     ) {
         super::overlay::dim_exterior(frame, or, ctx.theme);
         draw_overlay(frame, area, lin_inner, ctx.mode, ctx);
+    }
+
+    // The settled-hover tooltip floats over the panes (§9's pointer summary —
+    // the event loop arms it only while a hover is settled, so a covering
+    // overlay can never coexist with one). It layers under the toast stack:
+    // a toast is a one-shot acknowledgement and always wins.
+    if let Some(tip) = ctx.tooltip {
+        super::overlay::draw_tooltip(frame, area, tip, ctx.glyphs, ctx.theme);
     }
 
     // The toast stack floats above EVERYTHING (panes and modals alike), so a
