@@ -319,8 +319,11 @@ fn readme_markdown(
     s.push_str(&format!("# {project_name}\n\n"));
     s.push_str(&format!("Generated from: `{source_label}`\n\n"));
 
-    // Summary: total + per-resource-type breakdown (the kinds present, in a
-    // fixed display order so the line is deterministic).
+    // Summary: total + per-resource-type breakdown. Kinds in RESOURCE_ORDER
+    // come first in their fixed display order, then every OTHER kind present
+    // in the graph (semantic_model/metric/saved_query, or a type this version
+    // does not classify) sorted by name — the breakdown enumerates ALL types
+    // in the manifest, so the counts always sum to `total nodes`.
     s.push_str("## Summary\n\n");
     s.push_str(&format!("- total nodes: {}\n", dag.len()));
     for kind in RESOURCE_ORDER {
@@ -328,6 +331,15 @@ fn readme_markdown(
         if n > 0 {
             s.push_str(&format!("- {kind}: {n}\n"));
         }
+    }
+    let mut unlisted: BTreeMap<&str, usize> = BTreeMap::new();
+    for node in dag.nodes().values() {
+        if !RESOURCE_ORDER.contains(&node.resource_type.as_str()) {
+            *unlisted.entry(node.resource_type.as_str()).or_default() += 1;
+        }
+    }
+    for (kind, n) in unlisted {
+        s.push_str(&format!("- {kind}: {n}\n"));
     }
 
     // Test-coverage + orphan summary, computed from the SAME predicates the TUI

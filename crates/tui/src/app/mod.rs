@@ -38,8 +38,9 @@ use crate::effect::Effect;
 use crate::ui::theme::{self, Theme};
 use crate::{
     build_filtered_model_list, build_model_list, compute_diff, coverage_gap, default_catalog_path,
-    default_run_results_path, load_dag, load_dag_from_source_with_warnings, ColumnRef, Dag,
-    DagDiff, ModelList, NameMatchResolver, NodeDetail, NodeInfo, RunResults, SortMode, UiState,
+    default_run_results_path, load_dag_from_source_with_warnings, load_dag_with_warnings,
+    ColumnRef, Dag, DagDiff, ModelList, NameMatchResolver, NodeDetail, NodeInfo, RunResults,
+    SortMode, UiState,
 };
 
 mod analysis;
@@ -749,15 +750,21 @@ impl App {
     /// the app — same never-corrupt contract as [`reload`](App::reload). On
     /// success the project root is re-derived from the manifest path, keeping
     /// the `$EDITOR` jump correct even for a manifest under a different root.
-    pub fn adopt_manifest(&mut self, path: PathBuf) -> Result<()> {
+    /// Returns the manifest's load warnings (unknown `resource_type`s) like
+    /// [`reload`](App::reload) does, so the caller can toast them.
+    pub fn adopt_manifest(&mut self, path: PathBuf) -> Result<Vec<String>> {
         let new_root = derive_project_root(&path);
         let prev = std::mem::replace(&mut self.source, DataSource::Manifest(path));
-        if let Err(err) = self.reload() {
-            self.source = prev;
-            return Err(err);
+        match self.reload() {
+            Err(err) => {
+                self.source = prev;
+                Err(err)
+            }
+            Ok(warnings) => {
+                self.project_root = new_root;
+                Ok(warnings)
+            }
         }
-        self.project_root = new_root;
-        Ok(())
     }
 
     /// Move the selection to the model with this `unique_id` in the active list,
@@ -801,13 +808,14 @@ impl App {
     /// selection by `unique_id` when possible. On a load error the app is left
     /// unchanged (the `?` returns before any mutation), so reload never corrupts
     /// state — the caller can keep running on the old data. Returns the
-    /// source-mode parse warnings (unparsable schema.yml, duplicate resource
-    /// names); manifest mode always returns an empty vec.
+    /// load warnings: source-mode parse warnings (unparsable schema.yml,
+    /// duplicate resource names) or manifest-mode unknown `resource_type`s
+    /// (usually empty — a synthesized source manifest never carries them).
     pub fn reload(&mut self) -> Result<Vec<String>> {
         let current = self.selected_node().map(|n| n.unique_id.clone());
         // Re-read from the same source; returns before mutating on error.
         let (dag, warnings) = match &self.source {
-            DataSource::Manifest(path) => (load_dag(path)?, Vec::new()),
+            DataSource::Manifest(path) => load_dag_with_warnings(path)?,
             DataSource::Project(dir) => load_dag_from_source_with_warnings(dir)?,
         };
         self.model_list = build_model_list(&dag, self.sort);

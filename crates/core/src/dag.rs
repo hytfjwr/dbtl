@@ -1,7 +1,8 @@
 //! The pruned dependency DAG and its value types: merge a parsed manifest's
-//! `nodes` (excluding `test` / `operation`), `sources`, and `exposures` into a
-//! single `unique_id -> NodeInfo` map, build pruned adjacency over the kept
-//! set, and compute upstream / downstream transitive closures (cycle-safe).
+//! `nodes` (excluding `test` / `operation` / `analysis` / `check`), `sources`,
+//! and `exposures` into a single `unique_id -> NodeInfo` map, build pruned
+//! adjacency over the kept set, and compute upstream / downstream transitive
+//! closures (cycle-safe).
 //! Side maps (`details` / `tests` / `sql` / `compiled` / `exposures`) are
 //! captured pre-prune as data only — they never touch the topology.
 
@@ -161,8 +162,8 @@ impl Subgraph {
 /// The internal DAG model built from a parsed manifest.
 ///
 /// - `nodes`: unified `unique_id -> NodeInfo` map (every resource type except
-///   the excluded `test` / `operation` — models, sources, seeds, snapshots,
-///   and exposures).
+///   the excluded `test` / `operation` / `analysis` / `check` — models,
+///   sources, seeds, snapshots, and exposures).
 /// - `parents` / `children`: adjacency lists pruned to the kept node set, so
 ///   neither keys nor neighbours ever reference an excluded node.
 /// - `details`: per-node detail (materialized/schema/columns/…) for the
@@ -231,19 +232,77 @@ pub struct MacroInfo {
 /// `analysis` is excluded alongside `test`/`operation` because `source.rs`
 /// never parses `analyses/` at all — showing it only in manifest mode would
 /// break the manifest↔source consistency contract (the same graph either way).
+/// `check` (dbt Fusion's validation resource, `check.<pkg>.<name>`) gets the
+/// same fate as `test`: it declares a check over models, not a buildable
+/// lineage step, and its payload is dropped entirely — it is NOT folded into
+/// the `tests` side map, so it never moves the `tests:N` counts or coverage.
 fn is_excluded(resource_type: &str) -> bool {
-    resource_type == "test" || resource_type == "operation" || resource_type == "analysis"
+    matches!(resource_type, "test" | "operation" | "analysis" | "check")
+}
+
+/// The `resource_type`s [`Dag::build`] handles deliberately inside
+/// `manifest.nodes`: the kept buildable resources plus the excluded non-graph
+/// kinds. Any OTHER type (a newer dbt/Fusion resource such as `rpc` or
+/// `notebook`, or a plugin type) still joins the graph as a generic node —
+/// [`unknown_resource_types`] reports it at load time so a type dbtl does not
+/// understand is never drawn silently.
+const KNOWN_NODE_RESOURCE_TYPES: &[&str] = &[
+    "model",
+    "seed",
+    "snapshot",
+    "test",
+    "operation",
+    "analysis",
+    "check",
+];
+
+/// `(resource_type, count)` for every type in `manifest.nodes` outside
+/// [`KNOWN_NODE_RESOURCE_TYPES`], sorted by type for determinism. Deliberately
+/// excluded types (`test`/`check`/…) are KNOWN, so they never warn. The
+/// surfaces maps (`sources`/`exposures`/`semantic_models`/…) carry a fixed
+/// type by construction, so only `nodes` is scanned.
+pub fn unknown_resource_types(manifest: &RawManifest) -> Vec<(String, usize)> {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for node in manifest.nodes.values() {
+        if !KNOWN_NODE_RESOURCE_TYPES.contains(&node.resource_type.as_str()) {
+            *counts.entry(node.resource_type.as_str()).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .map(|(kind, n)| (kind.to_string(), n))
+        .collect()
 }
 
 /// Convenience: load a manifest from disk and build its DAG in one call.
+/// Discards load-time warnings — see [`load_dag_with_warnings`].
 ///
 /// Also auto-detects the compiled-SQL side map: `target/compiled/` next to
 /// the manifest (same sibling-artifact pattern as `run_results.json` /
 /// `catalog.json`). Missing dirs/files are simply "no compiled SQL", never
 /// an error.
 pub fn load_dag<P: AsRef<Path>>(path: P) -> Result<Dag> {
+    load_dag_with_warnings(path).map(|(dag, _)| dag)
+}
+
+/// Like [`load_dag`], but also returns load-time warnings: one line per
+/// unknown `resource_type` found in `manifest.nodes` (see
+/// [`unknown_resource_types`]). Unknown types are KEPT as generic graph
+/// nodes and the warning says so — dbtl is a viewer, so silently dropping a
+/// resource it does not understand would hide real topology, while silently
+/// keeping it would draw an unexplained plain box.
+pub fn load_dag_with_warnings<P: AsRef<Path>>(path: P) -> Result<(Dag, Vec<String>)> {
     let path = path.as_ref();
     let manifest = load_manifest(path)?;
+    let warnings: Vec<String> = unknown_resource_types(&manifest)
+        .into_iter()
+        .map(|(kind, n)| {
+            format!(
+                "unknown resource_type '{kind}' ({n} node{}): kept as generic graph nodes",
+                if n == 1 { "" } else { "s" }
+            )
+        })
+        .collect();
     let mut dag = Dag::build(&manifest);
     if let Some(compiled_dir) = crate::compiled::default_compiled_dir(Some(path), None) {
         // The staleness root is the project root = the manifest dir's parent
@@ -259,14 +318,14 @@ pub fn load_dag<P: AsRef<Path>>(path: P) -> Result<Dag> {
             .and_then(|d| d.parent());
         dag.ingest_compiled(&compiled_dir, root);
     }
-    Ok(dag)
+    Ok((dag, warnings))
 }
 
 impl Dag {
     /// Build the DAG from a parsed manifest.
     ///
-    /// Excludes `test` / `operation` / `analysis` nodes, merges `nodes` +
-    /// `sources` into a single map, and prunes `parent_map` / `child_map` down
+    /// Excludes `test` / `operation` / `analysis` / `check` nodes, merges
+    /// `nodes` + `sources` into a single map, and prunes `parent_map` / `child_map` down
     /// to the kept set
     /// (both keys and neighbour lists) so traversal never touches an excluded
     /// node as an endpoint or as an intermediate hop.

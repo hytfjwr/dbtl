@@ -537,10 +537,12 @@ fn run_dbt_parse(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
         return Ok(());
     }
     // On a load error `adopt_manifest` restores the previous source, so the
-    // app keeps running on the pre-parse data.
+    // app keeps running on the pre-parse data. Load warnings (unknown
+    // resource_types) ride the toast like a manual reload.
     let note = match app.adopt_manifest(manifest) {
-        Ok(()) => "dbt parse OK: now reading target/manifest.json",
-        Err(_) => "dbt parse OK but the manifest failed to load (kept current data)",
+        Ok(w) if w.is_empty() => "dbt parse OK: now reading target/manifest.json".to_string(),
+        Ok(w) => format!("dbt parse OK — {} warning(s): {}", w.len(), w[0]),
+        Err(_) => "dbt parse OK but the manifest failed to load (kept current data)".to_string(),
     };
     app.set_notice(note);
     Ok(())

@@ -1,0 +1,401 @@
+{
+ "metadata": {
+  "dbt_schema_version": "https://schemas.getdbt.com/dbt/manifest/v12.json",
+  "dbt_version": "2.0.0",
+  "generated_at": "2026-11-01T09:00:00.000000Z",
+  "invocation_id": "3f5f4c2a-9b1d-4e7a-b2c8-6d0f1a2b3c4d",
+  "env": {},
+  "project_name": "fusion_shop",
+  "adapter_type": "duckdb"
+ },
+ "nodes": {
+  "model.fusion_shop.stg_orders": {
+   "database": "fusion_shop",
+   "schema": "main",
+   "name": "stg_orders",
+   "resource_type": "model",
+   "package_name": "fusion_shop",
+   "path": "staging/stg_orders.sql",
+   "original_file_path": "models/staging/stg_orders.sql",
+   "unique_id": "model.fusion_shop.stg_orders",
+   "config": {
+    "enabled": true,
+    "materialized": "view",
+    "tags": []
+   },
+   "tags": [],
+   "description": "Staged orders.",
+   "columns": {
+    "id": {
+     "name": "id",
+     "data_type": "integer",
+     "description": "Order id."
+    }
+   },
+   "depends_on": {
+    "macros": [],
+    "nodes": [
+     "source.fusion_shop.lake.raw_orders"
+    ]
+   },
+   "raw_code": "select * from {{ source('lake', 'raw_orders') }}",
+   "compiled_code": "select * from lake.raw_orders"
+  },
+  "model.fusion_shop.stg_payments": {
+   "database": "fusion_shop",
+   "schema": "main",
+   "name": "stg_payments",
+   "resource_type": "model",
+   "package_name": "fusion_shop",
+   "path": "staging/stg_payments.sql",
+   "original_file_path": "models/staging/stg_payments.sql",
+   "unique_id": "model.fusion_shop.stg_payments",
+   "config": {
+    "enabled": true,
+    "materialized": "view",
+    "tags": []
+   },
+   "tags": [],
+   "description": "Staged payments.",
+   "columns": {},
+   "depends_on": {
+    "macros": [],
+    "nodes": [
+     "source.fusion_shop.lake.raw_payments"
+    ]
+   },
+   "raw_code": "select * from {{ source('lake', 'raw_payments') }}"
+  },
+  "model.fusion_shop.fct_orders": {
+   "database": "fusion_shop",
+   "schema": "main",
+   "name": "fct_orders",
+   "resource_type": "model",
+   "package_name": "fusion_shop",
+   "path": "marts/fct_orders.sql",
+   "original_file_path": "models/marts/fct_orders.sql",
+   "unique_id": "model.fusion_shop.fct_orders",
+   "config": {
+    "enabled": true,
+    "materialized": "table",
+    "tags": []
+   },
+   "tags": [],
+   "description": "Order fact table.",
+   "columns": {
+    "id": {
+     "name": "id",
+     "data_type": "integer",
+     "description": ""
+    }
+   },
+   "depends_on": {
+    "macros": [],
+    "nodes": [
+     "model.fusion_shop.stg_orders",
+     "model.fusion_shop.stg_payments"
+    ]
+   },
+   "raw_code": "select o.id, p.amount from {{ ref('stg_orders') }} o join {{ ref('stg_payments') }} p on o.id = p.order_id"
+  },
+  "check.fusion_shop.stg_orders_row_count": {
+   "name": "stg_orders_row_count",
+   "resource_type": "check",
+   "package_name": "fusion_shop",
+   "path": "staging/checks.yml",
+   "original_file_path": "models/staging/checks.yml",
+   "unique_id": "check.fusion_shop.stg_orders_row_count",
+   "alias": "stg_orders_row_count",
+   "checksum": {
+    "name": "sha256",
+    "checksum": "7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c"
+   },
+   "classifiers": [
+    "row_count"
+   ],
+   "columns": {},
+   "config": {
+    "enabled": true
+   },
+   "contract": {
+    "enforced": false
+   },
+   "depends_on": {
+    "macros": [],
+    "nodes": [
+     "model.fusion_shop.stg_orders"
+    ]
+   },
+   "description": "Row-count sanity check (Fusion validation node).",
+   "raw_code": "select count(*) from stg_orders",
+   "refs": [
+    {
+     "name": "stg_orders",
+     "package": null,
+     "version": null
+    }
+   ],
+   "sources": []
+  },
+  "check.fusion_shop.fct_orders_freshness": {
+   "name": "fct_orders_freshness",
+   "resource_type": "check",
+   "package_name": "fusion_shop",
+   "path": "marts/checks.yml",
+   "original_file_path": "models/marts/checks.yml",
+   "unique_id": "check.fusion_shop.fct_orders_freshness",
+   "alias": "fct_orders_freshness",
+   "checksum": {
+    "name": "sha256",
+    "checksum": "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b"
+   },
+   "classifiers": [
+    "freshness"
+   ],
+   "columns": {},
+   "config": {
+    "enabled": true
+   },
+   "contract": {
+    "enforced": false
+   },
+   "depends_on": {
+    "macros": [],
+    "nodes": [
+     "model.fusion_shop.fct_orders"
+    ]
+   },
+   "description": "Freshness check on the fact table (Fusion validation node).",
+   "raw_code": "select max(loaded_at) from fct_orders",
+   "refs": [
+    {
+     "name": "fct_orders",
+     "package": null,
+     "version": null
+    }
+   ],
+   "sources": []
+  },
+  "test.fusion_shop.not_null_fct_orders_id.a1b2c3d4e5": {
+   "name": "not_null_fct_orders_id",
+   "resource_type": "test",
+   "package_name": "fusion_shop",
+   "path": "not_null_fct_orders_id.sql",
+   "original_file_path": "models/marts/schema.yml",
+   "unique_id": "test.fusion_shop.not_null_fct_orders_id.a1b2c3d4e5",
+   "config": {
+    "enabled": true
+   },
+   "test_metadata": {
+    "name": "not_null",
+    "kwargs": {
+     "column_name": "id"
+    }
+   },
+   "column_name": "id",
+   "attached_node": "model.fusion_shop.fct_orders",
+   "depends_on": {
+    "macros": [],
+    "nodes": [
+     "model.fusion_shop.fct_orders"
+    ]
+   },
+   "raw_code": "select id from fct_orders where id is null"
+  },
+  "notebook.fusion_shop.weekly_report": {
+   "name": "weekly_report",
+   "resource_type": "notebook",
+   "package_name": "fusion_shop",
+   "path": "notebooks/weekly_report.ipynb",
+   "original_file_path": "notebooks/weekly_report.ipynb",
+   "unique_id": "notebook.fusion_shop.weekly_report",
+   "description": "Weekly ops report (a resource type dbtl does not know).",
+   "depends_on": {
+    "macros": [],
+    "nodes": [
+     "model.fusion_shop.fct_orders"
+    ]
+   }
+  },
+  "rpc.fusion_shop.rebuild_mart": {
+   "name": "rebuild_mart",
+   "resource_type": "rpc",
+   "package_name": "fusion_shop",
+   "path": "rpc/rebuild_mart.sql",
+   "original_file_path": "analysis/rebuild_mart.sql",
+   "unique_id": "rpc.fusion_shop.rebuild_mart",
+   "description": "Remote procedure call node.",
+   "depends_on": {
+    "macros": [],
+    "nodes": [
+     "model.fusion_shop.fct_orders"
+    ]
+   }
+  },
+  "rpc.fusion_shop.noop": {
+   "name": "noop",
+   "resource_type": "rpc",
+   "package_name": "fusion_shop",
+   "path": "rpc/noop.sql",
+   "original_file_path": "analysis/noop.sql",
+   "unique_id": "rpc.fusion_shop.noop",
+   "depends_on": {
+    "macros": [],
+    "nodes": []
+   }
+  }
+ },
+ "sources": {
+  "source.fusion_shop.lake.raw_orders": {
+   "database": "fusion_lake",
+   "schema": "lake",
+   "name": "raw_orders",
+   "resource_type": "source",
+   "package_name": "fusion_shop",
+   "path": "models/staging/schema.yml",
+   "original_file_path": "models/staging/schema.yml",
+   "unique_id": "source.fusion_shop.lake.raw_orders",
+   "source_name": "lake",
+   "description": "Raw orders export.",
+   "columns": {},
+   "depends_on": {
+    "macros": [],
+    "nodes": []
+   }
+  },
+  "source.fusion_shop.lake.raw_payments": {
+   "database": "fusion_lake",
+   "schema": "lake",
+   "name": "raw_payments",
+   "resource_type": "source",
+   "package_name": "fusion_shop",
+   "path": "models/staging/schema.yml",
+   "original_file_path": "models/staging/schema.yml",
+   "unique_id": "source.fusion_shop.lake.raw_payments",
+   "source_name": "lake",
+   "description": "Raw payments export.",
+   "columns": {},
+   "depends_on": {
+    "macros": [],
+    "nodes": []
+   }
+  }
+ },
+ "exposures": {
+  "exposure.fusion_shop.ops_dashboard": {
+   "name": "ops_dashboard",
+   "type": "dashboard",
+   "owner": {
+    "email": "ops@example.com",
+    "name": "Ops"
+   },
+   "description": "Ops KPI dashboard.",
+   "path": "marts/exposures.yml",
+   "original_file_path": "models/marts/exposures.yml",
+   "unique_id": "exposure.fusion_shop.ops_dashboard",
+   "depends_on": {
+    "macros": [],
+    "nodes": [
+     "model.fusion_shop.fct_orders"
+    ]
+   }
+  }
+ },
+ "semantic_models": {
+  "semantic_model.fusion_shop.orders": {
+   "name": "orders",
+   "path": "marts/semantic.yml",
+   "original_file_path": "models/marts/semantic.yml",
+   "unique_id": "semantic_model.fusion_shop.orders",
+   "description": "Orders semantic model.",
+   "depends_on": {
+    "macros": [],
+    "nodes": [
+     "model.fusion_shop.fct_orders"
+    ]
+   }
+  }
+ },
+ "metrics": {
+  "metric.fusion_shop.order_count": {
+   "name": "order_count",
+   "path": "marts/semantic.yml",
+   "original_file_path": "models/marts/semantic.yml",
+   "unique_id": "metric.fusion_shop.order_count",
+   "description": "Count of orders.",
+   "depends_on": {
+    "macros": [],
+    "nodes": [
+     "semantic_model.fusion_shop.orders"
+    ]
+   }
+  }
+ },
+ "saved_queries": {},
+ "unit_tests": {},
+ "macros": {},
+ "functions": {},
+ "disabled": {},
+ "parent_map": {
+  "model.fusion_shop.stg_orders": [
+   "source.fusion_shop.lake.raw_orders"
+  ],
+  "model.fusion_shop.stg_payments": [
+   "source.fusion_shop.lake.raw_payments"
+  ],
+  "model.fusion_shop.fct_orders": [
+   "model.fusion_shop.stg_orders",
+   "model.fusion_shop.stg_payments"
+  ],
+  "check.fusion_shop.stg_orders_row_count": [
+   "model.fusion_shop.stg_orders"
+  ],
+  "check.fusion_shop.fct_orders_freshness": [
+   "model.fusion_shop.fct_orders"
+  ],
+  "test.fusion_shop.not_null_fct_orders_id.a1b2c3d4e5": [
+   "model.fusion_shop.fct_orders"
+  ],
+  "notebook.fusion_shop.weekly_report": [
+   "model.fusion_shop.fct_orders"
+  ],
+  "rpc.fusion_shop.rebuild_mart": [
+   "model.fusion_shop.fct_orders"
+  ],
+  "semantic_model.fusion_shop.orders": [
+   "model.fusion_shop.fct_orders"
+  ],
+  "metric.fusion_shop.order_count": [
+   "semantic_model.fusion_shop.orders"
+  ],
+  "exposure.fusion_shop.ops_dashboard": [
+   "model.fusion_shop.fct_orders"
+  ]
+ },
+ "child_map": {
+  "source.fusion_shop.lake.raw_orders": [
+   "model.fusion_shop.stg_orders"
+  ],
+  "source.fusion_shop.lake.raw_payments": [
+   "model.fusion_shop.stg_payments"
+  ],
+  "model.fusion_shop.stg_orders": [
+   "model.fusion_shop.fct_orders",
+   "check.fusion_shop.stg_orders_row_count"
+  ],
+  "model.fusion_shop.stg_payments": [
+   "model.fusion_shop.fct_orders"
+  ],
+  "model.fusion_shop.fct_orders": [
+   "check.fusion_shop.fct_orders_freshness",
+   "test.fusion_shop.not_null_fct_orders_id.a1b2c3d4e5",
+   "notebook.fusion_shop.weekly_report",
+   "rpc.fusion_shop.rebuild_mart",
+   "semantic_model.fusion_shop.orders",
+   "exposure.fusion_shop.ops_dashboard"
+  ],
+  "semantic_model.fusion_shop.orders": [
+   "metric.fusion_shop.order_count"
+  ]
+ }
+}

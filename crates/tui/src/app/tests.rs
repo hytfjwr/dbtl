@@ -2,8 +2,8 @@ use super::*;
 use crate::action::{palette_candidates, Action, DetailView, Direction, Mode, SearchTarget};
 use crate::effect::Effect;
 use crate::{
-    coverage_gap, load_dag_from_source, reduce_selection, Dag, Focus, LensTint, LineageLens,
-    MaterializationClass, NodeInfo, SortMode, UiState,
+    coverage_gap, load_dag, load_dag_from_source, reduce_selection, Dag, Focus, LensTint,
+    LineageLens, MaterializationClass, NodeInfo, SortMode, UiState,
 };
 
 use std::path::{Path, PathBuf};
