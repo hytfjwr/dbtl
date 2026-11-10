@@ -8,7 +8,7 @@ use std::collections::HashSet;
 
 use ratatui::crossterm::event::MouseButton;
 
-use crate::action::{Direction, Mode, SearchTarget};
+use crate::action::{Action, Direction, Mode, SearchTarget};
 use crate::collapse::{collapse_siblings, CollapseGroup, Collapsed};
 use crate::ui::HitTarget;
 use crate::{Focus, Subgraph};
@@ -65,7 +65,10 @@ impl App {
     }
 
     /// Apply a release-confirmed click on the [`HitTarget`] the event loop
-    /// resolved (§6's click table):
+    /// resolved (§6's click table). Returns the accumulated [`Outcome`] —
+    /// clickable chrome (status hints/chips, the title's crumb/view/lens
+    /// spans) dispatches through `apply_action`, so an action's effects and
+    /// quit flag reach the caller exactly like a keypress's would.
     ///
     /// - **Left** on a list row re-root-selects (via the row's `unique_id`,
     ///   the same `reroot_select` contract every selection change follows);
@@ -75,14 +78,24 @@ impl App {
     ///   folds/unfolds its group (the `-` key's mouse twin, §10); a blank
     ///   interior / lineage blank just takes that pane's focus; tab-strip
     ///   cells switch / close / scroll / open the `+` palette.
+    /// - **Left** on a status hint runs the hint's `Action` (a `None` action
+    ///   is a transient readout — inert); on a chip, the §8 table's action;
+    ///   on a title breadcrumb entry, `history_back` that many steps (no new
+    ///   history model — the same replay `b` gives); on the title's `[{v}]`
+    ///   / `[lens:…]` tags, `ResetView` / `CycleLens`.
     /// - **Right** on a list row or lineage node opens its context menu at
     ///   `at` (Issue 06).
     /// - **Middle** on a list row or a lineage node opens that model in a
     ///   NEW tab; on a tab it closes it.
-    /// - The minimap, pane borders, status bar, and the reserved modal
-    ///   targets stay inert (Issues 05/07 own them). The size-aware half
-    ///   (point → target) is `ui::hit_target`.
-    pub fn click_target(&mut self, target: &HitTarget, button: MouseButton, at: (u16, u16)) {
+    /// - The minimap, pane borders, the inert status cells, and the reserved
+    ///   modal targets stay inert (Issues 05 owns the minimap). The
+    ///   size-aware half (point → target) is `ui::hit_target`.
+    pub fn click_target(
+        &mut self,
+        target: &HitTarget,
+        button: MouseButton,
+        at: (u16, u16),
+    ) -> crate::app::Outcome {
         if button == MouseButton::Right {
             match target {
                 HitTarget::ListRow(index) => {
@@ -101,7 +114,7 @@ impl App {
                 }
                 _ => {} // elsewhere a right-click carries no meaning yet
             }
-            return;
+            return crate::app::Outcome::cont();
         }
         match (button, target) {
             (MouseButton::Middle, HitTarget::ListRow(index)) => {
@@ -124,6 +137,32 @@ impl App {
             (MouseButton::Left, HitTarget::TabNew) => self.open_tab_palette(),
             (MouseButton::Left, HitTarget::TabScrollLeft) => self.scroll_tab_bar(-1),
             (MouseButton::Left, HitTarget::TabScrollRight) => self.scroll_tab_bar(1),
+            // §8: a status hint click runs the hint's own action — the same
+            // `apply_action` the key would take (a transient readout's `None`
+            // action is inert by contract). A chip resolves through the §8
+            // table ([`status_chip_action`](App::status_chip_action)).
+            (MouseButton::Left, HitTarget::StatusHint(Some(action))) => {
+                return self.chrome_dispatch(*action);
+            }
+            (MouseButton::Left, HitTarget::StatusHint(None)) => {}
+            (MouseButton::Left, HitTarget::StatusChip(chip)) => {
+                if let Some(action) = self.status_chip_action(*chip) {
+                    return self.chrome_dispatch(action);
+                }
+            }
+            // §6: a breadcrumb entry replays `history_back` its step count —
+            // no new history model, just the `b` arm repeated.
+            (MouseButton::Left, HitTarget::TitleCrumb(steps)) => {
+                for _ in 0..*steps {
+                    self.history_back();
+                }
+            }
+            (MouseButton::Left, HitTarget::TitleView) => {
+                return self.chrome_dispatch(Action::ResetView);
+            }
+            (MouseButton::Left, HitTarget::TitleLens) => {
+                return self.chrome_dispatch(Action::CycleLens);
+            }
             (MouseButton::Left, HitTarget::ListRow(index)) => {
                 self.ui_state.set_focus(Focus::List);
                 let uid = self
@@ -170,10 +209,10 @@ impl App {
             }
             // Inert surfaces do nothing at all — the minimap literally
             // swallows its click (Issue 05 gives it a pan meaning), and the
-            // reserved targets wait on Issues 05/06 (menu/modal chrome) and
-            // 07 (status chips). A pane boundary's single click is also
-            // inert: only its DRAG and DOUBLE-CLICK carry meaning (§5) — the
-            // loop handles both without routing here.
+            // reserved targets wait on Issues 05/06 (menu/modal chrome). A
+            // pane boundary's single click is also inert: only its DRAG and
+            // DOUBLE-CLICK carry meaning (§5) — the loop handles both without
+            // routing here.
             (
                 MouseButton::Left,
                 HitTarget::Minimap
@@ -187,6 +226,18 @@ impl App {
             // pairing not named above carries no meaning.
             _ => {}
         }
+        crate::app::Outcome::cont()
+    }
+
+    /// Dispatch a status/title chrome click's resolved action exactly like
+    /// its key press — including the `Outcome.reanchor` flag the loop's
+    /// dispatched-key path computes via [`crate::action::reanchors_lineage`]:
+    /// a clicked ` [{v}]` tag or `Esc exit trace` hint recentres the lineage
+    /// viewport identically to `0`/`Esc`.
+    fn chrome_dispatch(&mut self, action: Action) -> crate::app::Outcome {
+        let mut out = crate::app::apply_action(self, action);
+        out.reanchor |= crate::action::reanchors_lineage(action);
+        out
     }
 
     /// The cursor half of a lineage node's DOUBLE-click commit (§6's "double

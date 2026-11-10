@@ -38,25 +38,19 @@ pub struct TabBarView<'a> {
     pub hover: Option<&'a HitTarget>,
 }
 
-/// The optional, colored, droppable segments appended to the status bar AFTER its
-/// protected core (`[j/k] move` hint + `sel:{name}`). Each field is `Option<&str>`:
-/// absent ⇒ that segment is omitted, which is both graceful degradation on a
-/// narrow terminal AND the plug-in seam other features fill (coverage / bookmarks
-/// / sort). All borrows, so the struct stays a thin Dag-free bundle precomputed in
-/// the event loop (like `status`/`lineage_label`).
+/// The optional, colored, droppable chips rendered on the status bar's RIGHT
+/// side (screen-spec §8). Each field is `Option<&str>` (the BARE chip text —
+/// the chip renderer adds the ` [..]`): absent ⇒ that chip is omitted, which is
+/// both graceful degradation on a narrow terminal AND the plug-in seam other
+/// features fill (coverage / bookmarks / sort). All borrows, so the struct
+/// stays a thin Dag-free bundle precomputed in the event loop (like
+/// `lineage_label`). The LEFT side's contextual hints travel separately in
+/// [`RenderCtx::hints`] — Issue 07 moved them out of this struct.
 #[derive(Debug, Clone, Default)]
 pub struct StatusSegments<'a> {
-    /// A transient interaction hint — the splitter hover/drag readout
-    /// (`"drag to resize · double-click to reset"` / `"list 34 cols"`). LAST
-    /// among the segments: the candidate loop stops at the first segment that
-    /// doesn't fit, so a long hint placed earlier would drop every real state
-    /// segment while shown — the transient teaching text yields to them
-    /// instead. `None` normally. (Issue 02's stopgap — Issue 07 gives hints a
-    /// real home in the general mechanism.)
-    pub hint: Option<&'a str>,
     /// Blast radius of the selected node, e.g. `"impact ↓23 ↑5"` (ASCII `v`/`^`).
-    /// Always-on (not user-toggled) and the highest-priority droppable segment, so
-    /// it survives narrow widths longest — placed right after the protected core.
+    /// Always-on (not user-toggled) and the highest-priority droppable chip, so
+    /// it survives narrow widths longest (§8's `impact` rule).
     pub impact: Option<&'a str>,
     /// Which pane has focus: `"list"` | `"lineage"`.
     pub focus: Option<&'a str>,
@@ -111,10 +105,18 @@ pub struct RenderCtx<'a> {
     pub lineage: Option<&'a crate::Layout>,
     /// The interaction mode (drives which overlay, if any, is drawn on top).
     pub mode: &'a crate::action::Mode,
-    /// A precomputed one-line summary for the selected node (materialization +
-    /// tests count). Dag-free by design: the App computes it and the loop sets
-    /// it here, so headless renders just pass `None`.
-    pub status: Option<&'a str>,
+    /// The contextual status-line hints (screen-spec §8 — the LEFT side),
+    /// generated from `BINDINGS` via
+    /// [`status_hints`](crate::action::status_hints) and arriving
+    /// priority-sorted. The event loop may REPLACE the list with a transient
+    /// readout (splitter hover/drag: `action: None`). Empty (the default)
+    /// draws no hints.
+    pub hints: &'a [crate::action::StatusHint],
+    /// The screen cell the pointer currently hovers, resolved through the
+    /// SAME `hit_target` a click would use — the §6 hover cues (title-part
+    /// underline, status hint/chip emphasis) render from it. `None` (the
+    /// default) draws every cue off.
+    pub hover: Option<&'a HitTarget>,
     /// Project-level counts for the list title bar (`None` in headless renders).
     pub stats: Option<&'a crate::AppStats>,
     /// A short lineage-view indicator for the lineage pane title (direction +
@@ -265,7 +267,8 @@ impl<'a> RenderCtx<'a> {
             state,
             lineage,
             mode: &DEFAULT_MODE,
-            status: None,
+            hints: &[],
+            hover: None,
             stats: None,
             lineage_label: None,
             breadcrumb: None,
@@ -364,6 +367,7 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         ctx.col_suffix,
         ctx.hover_node,
         ctx.search_matches,
+        ctx.hover,
         ctx.theme,
     );
     // The right inspector pane (Issue 04): a published snapshot IS the
@@ -388,15 +392,7 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
             }
         }
     }
-    draw_status(
-        frame,
-        rects.status,
-        ctx.list,
-        ctx.state,
-        ctx.status,
-        &ctx.segments,
-        ctx.theme,
-    );
+    draw_status(frame, rects.status, ctx);
 
     // Overlays: a stacked mode (the `y` which-key / the node menu / help over
     // a modal) draws its origin's overlay UNDER itself first, then the whole
@@ -942,110 +938,125 @@ fn title_case(s: &str) -> String {
     }
 }
 
-/// Draw the bottom status/help line. The PROTECTED CORE — a compact `[j/k] move`
-/// key hint (full keybindings live in the `?` help overlay), the `sel:{name}` echo
-/// (the node NAME, not the full dotted `unique_id` — keeping the core short enough
-/// that the colored segments survive an 80-col terminal), and an optional
-/// precomputed `[note]` (materialization + tests) — is derived in-place from
-/// `list`+`state`, rendered FIRST as a single contiguous span, and is never dropped
-/// (so `status_help_line_present` and `scrolled_render_still_shows_status_and_borders`
-/// always match `[j/k]` and the name). The colored [`StatusSegments`] are then
-/// appended left-to-right ONLY while they fit `area.width` (measured with
-/// `unicode_width`), so they degrade gracefully on a narrow terminal and never push
-/// the core off-screen.
-fn draw_status(
-    frame: &mut Frame,
-    area: Rect,
-    list: &ModelList,
-    state: &UiState,
-    status: Option<&str>,
-    segments: &StatusSegments,
-    t: &theme::Theme,
-) {
+/// Convert a [`StatusSegments`] into the priority-ordered chip list
+/// [`status_layout`](super::status_layout) and `draw_status` share — the
+/// `(chip, bracketed-label)` pairs in §8's keep order (`Impact` survives
+/// longest, `View` sheds first). The single producer for chips, so the
+/// draw and the hit-test can never disagree on which chips exist.
+pub fn status_chips(segments: &StatusSegments) -> Vec<(super::StatusChip, String)> {
+    use super::StatusChip as C;
+    let mut v = Vec::with_capacity(13);
+    let mut push = |chip: C, txt: Option<&str>| {
+        if let Some(txt) = txt {
+            v.push((chip, format!("[{txt}]")));
+        }
+    };
+    // Declaration order == §8's survival order (see [`StatusChip`]).
+    push(C::Impact, segments.impact);
+    push(C::Notify, segments.notify);
+    push(C::Column, segments.column);
+    push(C::Diff, segments.diff);
+    push(C::Run, segments.run);
+    push(C::Scope, segments.scope);
+    push(C::Coverage, segments.coverage);
+    push(C::Bookmarks, segments.bookmarks);
+    push(C::Filter, segments.filter);
+    push(C::Sort, segments.sort);
+    push(C::Position, segments.position);
+    push(C::Focus, segments.focus);
+    push(C::View, segments.view);
+    v
+}
+
+/// A chip's semantic colour — the same per-segment colour assignments the
+/// legacy segment list used, keyed by [`StatusChip`] now.
+fn chip_color(chip: super::StatusChip, t: &theme::Theme) -> Color {
+    use super::StatusChip as C;
+    match chip {
+        C::Impact | C::Notify => t.danger,
+        C::Column | C::Bookmarks => t.gold,
+        C::Diff => t.diff_mod,
+        C::Run | C::Coverage => t.warn,
+        C::Scope | C::Filter | C::Sort => t.accent,
+        C::Position => t.text_faint,
+        C::Focus => t.ok,
+        C::View => t.chip_view,
+    }
+}
+
+/// Draw the bottom status line (screen-spec §8): the contextual hints
+/// left-anchored (key in `accent`, description in `text_dim`), the chips
+/// right-anchored in their semantic colours — all placed by the shared
+/// [`status_layout`](super::status_layout) the hit-test also consumed, so
+/// every drawn span answers the click its `HitTarget` promises. The hovered
+/// span draws BOLD (§6's emphasis cue); the inert `StatusBar` cells keep
+/// the plain surface band.
+fn draw_status(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
     use unicode_width::UnicodeWidthStr;
 
-    let sel = list
-        .model_at(state.selected())
-        .map(|n| n.name.as_str())
-        .unwrap_or("-");
-    let note = status.map(|s| format!("  [{s}]")).unwrap_or_default();
-    // `[?] help` stays in the protected core: it is the key that reveals every
-    // other binding, so first-run discoverability must survive narrow widths.
-    // `sel:` echoes the NAME (dbt model names are project-unique), not the
-    // dotted unique_id — that is what keeps the core short enough for the
-    // colored segments to still fit on an 80-col terminal.
-    //
-    // The core is split into styled spans (hints dim, the name bright) but its
-    // concatenated TEXT is byte-identical to the single-span original, so the
-    // contains-based assertions keep matching.
-    let hints = "[j/k] move  [?] help  sel: ";
-    let mut used = hints.width() + sel.width() + note.width();
-    let dim = Style::default().fg(t.text_dim);
-    let mut spans: Vec<Span> = vec![
-        Span::styled(hints, dim),
-        Span::styled(
-            sel.to_string(),
-            Style::default()
-                .fg(t.text_bright)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(note, dim),
-    ];
+    let t = ctx.theme;
+    let chips = status_chips(&ctx.segments);
+    let layout = super::status_layout(area.width, ctx.hints, &chips);
 
-    // (text, fg) in append/drop priority order (right-first drop, since a segment
-    // that doesn't fit stops the loop — so index 0 survives the narrowest line).
-    // Each rendered as a bracketed ` [txt]`. Priority:
-    //   1. impact — the every-frame blast radius, the headline readout, right
-    //      after the protected core so it survives narrow widths longest —
-    //      and `!N` (the unread-warning badge, Issue 08) right beside it:
-    //      pending warnings outrank everything but the blast radius. While a
-    //      column is traced, its column-closure chip slots in next (the focus
-    //      IS the headline then).
-    //   2. the diff chip (present only when a --diff baseline is loaded — the
-    //      at-a-glance readout that mode exists for), then the run artifact
-    //      readout and the package-scope tag (emitted every frame — a
-    //      statement about what the numbers describe, not user-activated but
-    //      load-defining — yet droppable on narrow widths like the rest).
-    //   3. the user-ACTIVATED states (coverage lens %, bookmarks, filter, sort —
-    //      information shown nowhere else).
-    //   4. position.
-    //   5. focus / view (focus is already the accent pane border, and the
-    //      view label is echoed in the lineage pane title — redundant cues).
-    //   6. The splitter hover/drag hint (Issue 02's transient readout) LAST:
-    //      it only exists while the pointer is already on the strip — the
-    //      accent columns carry the feedback — so on a crowded line the long
-    //      string drops first instead of pushing the persistent segments out.
-    let candidates: [(Option<&str>, Color); 14] = [
-        (segments.impact, t.danger),
-        (segments.notify, t.danger),
-        (segments.column, t.gold),
-        (segments.diff, t.diff_mod),
-        (segments.run, t.warn),
-        (segments.scope, t.accent),
-        (segments.coverage, t.warn),
-        (segments.bookmarks, t.gold),
-        (segments.filter, t.accent),
-        (segments.sort, t.accent),
-        (segments.position, t.text_faint),
-        (segments.focus, t.ok),
-        (segments.view, t.chip_view),
-        (segments.hint, t.accent),
-    ];
-    let cap = area.width as usize;
-    for (txt, color) in candidates.into_iter() {
-        let Some(txt) = txt else { continue };
-        let seg = format!(" [{txt}]");
-        let w = seg.width();
-        if used + w > cap {
-            break; // first segment that doesn't fit: stop (drops the rest).
-        }
-        used += w;
-        spans.push(Span::styled(seg, Style::default().fg(color)));
+    // The surface band first (the whole row is chrome, not content rows).
+    frame.render_widget(
+        Paragraph::new("").style(Style::default().bg(t.surface)),
+        area,
+    );
+    if area.height == 0 {
+        return;
     }
+    let row = area.y;
+    let buf = frame.buffer_mut();
+    let mut stamp = |x: u16, s: &str, st: Style| {
+        buf.set_stringn(
+            area.x + x,
+            row,
+            s,
+            (area.width.saturating_sub(x)) as usize,
+            st,
+        );
+    };
 
-    // The paragraph style paints the SURFACE band across the whole status row
-    // (spans inherit the bg), turning the line into a footer bar.
-    let paragraph =
-        Paragraph::new(Line::from(spans)).style(Style::default().fg(t.text_dim).bg(t.surface));
-    frame.render_widget(paragraph, area);
+    // Hints — `layout.hints` is a PREFIX of `ctx.hints` (the drop keeps the
+    // head of the priority-sorted input), so the zip pairs each span with
+    // its hint.
+    for (span, hint) in layout.hints.iter().zip(ctx.hints.iter()) {
+        let hot = ctx.hover == Some(&span.target);
+        let mut x = span.x0;
+        let key_st = Style::default()
+            .fg(t.accent)
+            .bg(t.surface)
+            .add_modifier(if hot {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            });
+        stamp(x, &format!(" {}", hint.key), key_st);
+        x += 1 + UnicodeWidthStr::width(hint.key.as_str()) as u16;
+        if !hint.desc.is_empty() {
+            let desc_st = Style::default()
+                .fg(t.text_dim)
+                .bg(t.surface)
+                .add_modifier(if hot {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                });
+            stamp(x, &format!(" {}", hint.desc), desc_st);
+        }
+    }
+    // Chips — same prefix-pairing over the right-anchored block.
+    for (span, (chip, label)) in layout.chips.iter().zip(chips.iter()) {
+        let hot = ctx.hover == Some(&span.target);
+        let st = Style::default()
+            .fg(chip_color(*chip, t))
+            .bg(t.surface)
+            .add_modifier(if hot {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            });
+        stamp(span.x0, &format!(" {label}"), st);
+    }
 }

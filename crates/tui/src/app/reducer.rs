@@ -558,8 +558,12 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             // must see the MENU's target instead or the item would act on
             // whatever happened to be selected.
             app.pending_node = Some(target);
-            let out = apply_action(app, action);
+            let mut out = apply_action(app, action);
             app.pending_node = None;
+            // Same re-anchor contract as the palette confirm below: the loop
+            // can't see the menu-resolved action, so the flag travels on the
+            // Outcome.
+            out.reanchor |= crate::action::reanchors_lineage(action);
             return out;
         }
         // ---- pointer row actions (Issue 06 mouse) ----
@@ -1426,6 +1430,14 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                 }
                 app.ui_state.cycle_lens();
             }
+            Outcome::cont()
+        }
+        // Pointer-only lens set: the status chips name the lens they want
+        // (the `run …` chip jumps straight to RunStatus rather than pedalling
+        // the `t` cycle through dead slots). Never key-bound — the chip only
+        // exists while its lens has data, so no dead-slot skip is needed.
+        Action::SetLens(lens) => {
+            app.ui_state.set_lens(lens);
             Outcome::cont()
         }
         // ---- bookmarks + list sort (Step C) — App-level data, so handled here

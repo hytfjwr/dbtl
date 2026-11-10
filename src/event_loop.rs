@@ -12,15 +12,17 @@ use anyhow::{Context, Result};
 
 use dbtl::action::{
     dispatch, esc_action, reanchors_lineage, Action, Direction, PaletteRow, SearchTarget,
+    StatusHint,
 };
 use dbtl::app::{apply_action, App, LineageView, Outcome};
 use dbtl::effect::Effect;
 use dbtl::layout::Layout;
 use dbtl::ui::{
     draw, hit_target, lineage_content_rect, minimap_rect, minimap_scroll_to, mouse_dirty,
-    overlay_rect, pan_offset, pane_interior, pane_layout, splitter_drag_width, Focus, HitGeometry,
-    HitTarget, LineageLens, MouseInput, MouseOutcome, MouseRouter, PaneRects, RenderCtx, Splitter,
-    StatusSegments, TabBarView,
+    overlay_rect, pan_offset, pane_interior, pane_layout, splitter_drag_width, status_chips,
+    status_layout, Focus, HitGeometry, HitTarget, LineageLens, MouseInput, MouseOutcome,
+    MouseRouter, PaneRects, RenderCtx, Splitter, StatusLayout, StatusSegments, TabBarView,
+    TitleLayout,
 };
 use dbtl::{Mode, SortMode};
 
@@ -76,6 +78,11 @@ pub fn event_loop(
     // lands. The loop owns the clock — the 250ms idle tick supplies the
     // flip's redraw, the reducer and renderer stay clock-free.
     let mut hover_tip: Option<HoverTip> = None;
+    // §8/§6's chrome geometry: the status-line + lineage-title layouts the
+    // LAST draw painted — recomputed alongside the ctx each dirty pass and
+    // handed to `hit_geometry`, so a hover/click lands on the exact spans
+    // the frame showed (the draw and the hit-test share the layout).
+    let mut chrome = ChromeGeom::default();
     // Dirty-flag redraw: the frame work below only runs when something
     // actually changed (first frame, any event, a toast flip, a --watch
     // reload). An idle 250ms tick with none of those skips straight back to
@@ -344,7 +351,6 @@ pub fn event_loop(
 
             // Precompute Dag-aware strings so RenderCtx stays Dag-free; the borrows
             // live for the draw call below.
-            let status_note = app.selected_status_note();
             let view_label = app.lineage_view_label();
             // The re-root breadcrumb for the lineage pane title. `App::breadcrumb` is
             // size-unaware (max_width is a parameter); the FULL trail is handed to the
@@ -461,7 +467,7 @@ pub fn event_loop(
                             app.ui_state.lineage_scroll_y(),
                         )
                     };
-                    let g = hit_geometry(app, lineage.as_deref(), area, overlay);
+                    let g = chrome.hit_geometry(app, lineage.as_deref(), area, overlay);
                     hit_target(&g, cell.x, cell.y)
                 } else {
                     None
@@ -531,10 +537,65 @@ pub fn event_loop(
             // persistent-filter reason) — `Some` only while the active list is
             // empty, so non-empty frames keep the legacy pane untouched.
             let empty_reason = app.list_empty_reason();
+            // §8's status line: the LEFT side is the contextual hints
+            // (`App::status_hints` — generated from BINDINGS), REPLACED by the
+            // splitter's transient readout while its border is hot (the
+            // pointer is the gesture, so its action is `None`). The RIGHT
+            // side is the chip order `status_chips` derives from the segments
+            // (impact/notify head the drop order).
+            let panes = pane_layout(area, &app.ui_state.pane_config());
+            let hints_vec: Vec<StatusHint> = match &splitter_hint {
+                Some(text) => vec![StatusHint {
+                    key: text.clone(),
+                    desc: String::new(),
+                    action: None,
+                    prio: 0,
+                }],
+                None => app.status_hints(),
+            };
+            let segments = StatusSegments {
+                impact: impact_s.as_deref(),
+                notify: notify_s.as_deref(),
+                column: column_s.as_deref(),
+                focus: Some(focus_s),
+                view: view_seg,
+                position: pos_s.as_deref(),
+                coverage: coverage_s.as_deref(),
+                bookmarks: bookmarks_s.as_deref(),
+                sort: sort_s.as_deref(),
+                diff: diff_s.as_deref(),
+                run: run_s.as_deref(),
+                scope: Some(&scope_s),
+                filter: app.list_filter_label(),
+            };
+            // The layouts the draw paints AND the hit-test reads — stashed
+            // so a hover/click lands on the spans the frame shows. The
+            // title's inputs mirror the ctx's: the `[view]` suffix drops
+            // while a column is traced, the search title takes over from
+            // `mode`, and ` [col:name]` owns the suffix slot then.
+            let chips = status_chips(&segments);
+            chrome.status = Some(status_layout(panes.status.width, &hints_vec, &chips));
+            let lineage_query = match &app.mode {
+                dbtl::Mode::Search(s) if s.target == SearchTarget::Lineage => {
+                    Some(s.query.as_str())
+                }
+                _ => None,
+            };
+            chrome.title = Some(app.lineage_title(
+                lineage_query.map(|q| (q, search_pos)),
+                if column_s.is_some() {
+                    None
+                } else {
+                    Some(view_label.as_str())
+                },
+                breadcrumb.as_deref(),
+                overview_title.as_deref(),
+                col_suffix.as_deref(),
+                panes.lineage.width,
+            ));
             {
                 let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, lineage.as_deref());
                 ctx.mode = &app.mode;
-                ctx.status = status_note.as_deref();
                 ctx.stats = Some(&app.stats);
                 // The title's `[view]` suffix is a rooted-view label — while a
                 // column is traced the pane shows the filtered graph (whose
@@ -553,22 +614,9 @@ pub fn event_loop(
                 ctx.full_model_count = Some(app.model_list.len());
                 ctx.col_suffix = col_suffix.as_deref();
                 ctx.splitter_highlight = highlight;
-                ctx.segments = StatusSegments {
-                    hint: splitter_hint.as_deref(),
-                    impact: impact_s.as_deref(),
-                    notify: notify_s.as_deref(),
-                    column: column_s.as_deref(),
-                    focus: Some(focus_s),
-                    view: view_seg,
-                    position: pos_s.as_deref(),
-                    coverage: coverage_s.as_deref(),
-                    bookmarks: bookmarks_s.as_deref(),
-                    sort: sort_s.as_deref(),
-                    diff: diff_s.as_deref(),
-                    run: run_s.as_deref(),
-                    scope: Some(&scope_s),
-                    filter: app.list_filter_label(),
-                };
+                ctx.hints = &hints_vec;
+                ctx.hover = mouse.hover();
+                ctx.segments = segments;
                 ctx.minimap = app.ui_state.minimap_visible();
                 ctx.filter_label = app.list_filter_label();
                 ctx.tab_bar = Some(TabBarView {
@@ -690,6 +738,7 @@ pub fn event_loop(
                         me,
                         lineage.as_deref(),
                         area,
+                        &chrome,
                     );
                     dirty |= handled.dirty;
                     for effect in handled.outcome.effects {
@@ -706,7 +755,7 @@ pub fn event_loop(
                     if handled.outcome.quit {
                         return Ok(());
                     }
-                    if handled.reanchor {
+                    if handled.reanchor || handled.outcome.reanchor {
                         force_anchor = true;
                     }
                 }
@@ -817,8 +866,9 @@ fn begin_pane_drag(
     lineage: Option<&Layout>,
     area: Rect,
     origin: ratatui::layout::Position,
+    chrome: &ChromeGeom,
 ) -> Option<PaneDrag> {
-    let g = hit_geometry(app, lineage, area, None);
+    let g = chrome.hit_geometry(app, lineage, area, None);
     match hit_target(&g, origin.x, origin.y)? {
         HitTarget::PaneBorder(which) => {
             let strip = g.panes.splitter(which)?;
@@ -936,7 +986,10 @@ fn apply_mouse(app: &mut App, outcome: &mut Outcome, action: Action) {
     let o = apply_action(app, action);
     outcome.quit |= o.quit;
     outcome.effects.extend(o.effects);
-    outcome.reanchor |= o.reanchor;
+    // The flag a reducer-set reanchor already carries OR the same
+    // dispatched-action check the key path runs — a mouse-fired ResetView
+    // recentres identically to `0`.
+    outcome.reanchor |= o.reanchor || reanchors_lineage(action);
 }
 
 /// Handle a mouse event (size-aware, so it lives in the loop, not the reducer).
@@ -950,6 +1003,10 @@ fn apply_mouse(app: &mut App, outcome: &mut Outcome, action: Action) {
 /// covering overlay's rect — its interior rows, its inert frame, and the
 /// click-outside dismissal ([`overlay_click`]). `Search` stays pointer-inert.
 /// Over the tab strip the wheel scrolls the STRIP, not the panes (§6).
+///
+/// `chrome` is the §8/§6 span geometry the last draw painted (the loop's
+/// stash) — status hints/chips and title parts hit-test against the exact
+/// cells the screen showed.
 fn handle_mouse(
     app: &mut App,
     mouse: &mut MouseRouter,
@@ -957,6 +1014,7 @@ fn handle_mouse(
     me: MouseEvent,
     lineage: Option<&Layout>,
     area: Rect,
+    chrome: &ChromeGeom,
 ) -> MouseHandled {
     let mut outcome = Outcome::cont();
     match me.kind {
@@ -1093,7 +1151,7 @@ fn handle_mouse(
             match &gesture {
                 MouseOutcome::Hover { at } if live => {
                     let target = {
-                        let g = hit_geometry(app, lineage, area, overlay);
+                        let g = chrome.hit_geometry(app, lineage, area, overlay);
                         hit_target(&g, at.x, at.y)
                     };
                     // Menu rows take a hover cursor — the pointer visibly
@@ -1109,7 +1167,7 @@ fn handle_mouse(
                     if live =>
                 {
                     let target = {
-                        let g = hit_geometry(app, lineage, area, overlay);
+                        let g = chrome.hit_geometry(app, lineage, area, overlay);
                         hit_target(&g, at.x, at.y)
                     };
                     if let Some(t) = target.as_ref() {
@@ -1151,7 +1209,10 @@ fn handle_mouse(
                                 // (content + scroll are live loop data).
                                 // Enter then traces the picked column.
                                 HitTarget::InspectorRow(y) if !double_left => {
-                                    app.click_target(t, *button, (at.x, at.y));
+                                    let o = app.click_target(t, *button, (at.x, at.y));
+                                    outcome.quit |= o.quit;
+                                    outcome.effects.extend(o.effects);
+                                    outcome.reanchor |= o.reanchor;
                                     if *button == MouseButton::Left {
                                         if let Some(view) = app.inspector_view() {
                                             let inner = pane_interior(
@@ -1190,7 +1251,16 @@ fn handle_mouse(
                                 HitTarget::Minimap if *button == MouseButton::Left => {
                                     minimap_scroll_at(app, lineage, area, at.x, at.y);
                                 }
-                                _ => app.click_target(t, *button, (at.x, at.y)),
+                                _ => {
+                                    // §8/§6's clickable chrome returns a
+                                    // real Outcome (a hint's action, a chip's
+                                    // dispatch) — merge it like every other
+                                    // reducer result.
+                                    let o = app.click_target(t, *button, (at.x, at.y));
+                                    outcome.quit |= o.quit;
+                                    outcome.effects.extend(o.effects);
+                                    outcome.reanchor |= o.reanchor;
+                                }
                             }
                         } else {
                             overlay_click(
@@ -1214,7 +1284,7 @@ fn handle_mouse(
                 // (a press on a non-drag surface begins nothing).
                 MouseOutcome::DragStart { button, origin, at } if sel => {
                     if *button == MouseButton::Left {
-                        *pane_drag = begin_pane_drag(app, lineage, area, *origin);
+                        *pane_drag = begin_pane_drag(app, lineage, area, *origin, chrome);
                         if let Some(d) = *pane_drag {
                             apply_pane_drag(app, d, lineage, area, *at);
                         }
@@ -1232,7 +1302,8 @@ fn handle_mouse(
                     // flick (press → release elsewhere): the router still
                     // reports DragEnd, so resolve the press cell like
                     // DragStart before finishing.
-                    let d = (*pane_drag).or_else(|| begin_pane_drag(app, lineage, area, *origin));
+                    let d = (*pane_drag)
+                        .or_else(|| begin_pane_drag(app, lineage, area, *origin, chrome));
                     if let Some(d) = d {
                         apply_pane_drag(app, d, lineage, area, *at);
                     }
@@ -1379,16 +1450,51 @@ fn overlay_click(
     }
 }
 
+/// The §8/§6 span geometry the last draw painted — the status line's
+/// hint/chip placement and the lineage title's crumb/`[{v}]`/`[lens:…]`
+/// placement — stashed by the loop and handed to [`hit_geometry`] so a
+/// hover/click lands on the exact spans the screen showed.
+#[derive(Default)]
+struct ChromeGeom {
+    status: Option<StatusLayout>,
+    title: Option<TitleLayout>,
+}
+
+impl ChromeGeom {
+    /// [`hit_geometry`] with the stash's borrows — the one call shape every
+    /// mouse path uses.
+    fn hit_geometry<'a>(
+        &'a self,
+        app: &'a App,
+        lineage: Option<&'a Layout>,
+        area: Rect,
+        overlay: Option<Rect>,
+    ) -> HitGeometry<'a> {
+        hit_geometry(
+            app,
+            lineage,
+            area,
+            overlay,
+            self.status.as_ref(),
+            self.title.as_ref(),
+        )
+    }
+}
+
 /// Bundle the frame's hit-test inputs, all from the SAME sources the draw
 /// uses: `pane_layout` on the live area + `pane_config`, the last styled
 /// `Layout`, and `UiState`'s scroll offsets — so a click lands on what the
 /// screen shows. `overlay` is the covering overlay's outer rect
 /// ([`overlay_rect`]'s output) — `None` while the panes are the surface.
+/// `status`/`title` are the §8/§6 layouts the loop stashed after the last
+/// draw — the hit-test reads the SAME spans the frame painted.
 fn hit_geometry<'a>(
     app: &'a App,
     lineage: Option<&'a Layout>,
     area: Rect,
     overlay: Option<Rect>,
+    status: Option<&'a StatusLayout>,
+    title: Option<&'a TitleLayout>,
 ) -> HitGeometry<'a> {
     let panes = pane_layout(area, &app.ui_state.pane_config());
     HitGeometry {
@@ -1405,6 +1511,8 @@ fn hit_geometry<'a>(
         scroll_y: app.ui_state.lineage_scroll_y(),
         minimap: app.ui_state.minimap_visible(),
         overlay,
+        status,
+        title,
     }
 }
 
@@ -2137,6 +2245,7 @@ mod tests {
             mouse(kind, x, y),
             lineage,
             Rect::new(0, 0, 100, 30),
+            &ChromeGeom::default(),
         );
     }
 
@@ -2727,6 +2836,7 @@ mod tests {
             mouse(MouseEventKind::Down(MouseButton::Left), 40, 12),
             lineage.as_deref(),
             Rect::new(0, 0, 100, 30),
+            &ChromeGeom::default(),
         );
         assert!(
             handled.dirty,

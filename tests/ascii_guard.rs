@@ -105,7 +105,9 @@ fn render_ctx(
         None
     };
     app.ui_state.set_inspector_shown(inspector.is_some());
-    let status = app.selected_status_note();
+    // The contextual status hints (§8 — BINDINGS-generated, ASCII-safe in
+    // both glyph modes since the key labels are); scanned under the guard.
+    let hints = app.status_hints();
     let label = app.lineage_view_label();
 
     // Mirror the event loop's status-segment wiring so the segmented status bar
@@ -174,7 +176,7 @@ fn render_ctx(
         ctx.mode = &app.mode;
         ctx.palette_rows = palette_rows.as_deref();
         ctx.empty_reason = empty_reason.as_deref();
-        ctx.status = status.as_deref();
+        ctx.hints = &hints;
         ctx.stats = Some(&app.stats);
         ctx.lineage_label = Some(&label);
         ctx.breadcrumb = breadcrumb.as_deref();
@@ -182,7 +184,6 @@ fn render_ctx(
         ctx.glyphs = app.glyph_mode;
         ctx.col_suffix = col_suffix.as_deref();
         ctx.segments = StatusSegments {
-            hint: None,
             impact: impact_s.as_deref(),
             notify: notify_s.as_deref(),
             column: column_s.as_deref(),
