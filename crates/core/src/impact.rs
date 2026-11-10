@@ -13,7 +13,9 @@ use std::collections::{BTreeSet, HashSet};
 use serde::Serialize;
 
 use crate::layer::{first_dir, layer_rank};
-use crate::{coverage_gap, is_exposure, Dag, DagDiff, ExposureInfo, PackageScope};
+use crate::{
+    coverage_gap, in_package, is_exposure, Dag, DagDiff, ExposureInfo, NodeInfo, PackageScope,
+};
 
 /// A changed node whose transitive downstream (buildable) closure is at least
 /// this large is flagged as a "hub" risk in the PR impact pack — changing it
@@ -164,6 +166,12 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, owner_key: &str)
     // but the counts below stay scoped to the root project — an installed
     // package's own consumers are dependency context, never YOUR blast
     // radius (the same rule `coverage_counts`/`dbtl check` share).
+    //
+    // The owning package is resolved ONCE up front — every filter below shares
+    // it (`is_root_project` re-resolves per call, so a sweep would pay an
+    // O(nodes) scan per node on unrecorded manifests).
+    let primary = dag.primary_package();
+    let in_scope = |n: &NodeInfo| primary.as_deref().is_none_or(|p| in_package(n, p));
     let mut down_uids: HashSet<String> = HashSet::new();
     for uid in &changed {
         down_uids.extend(dag.downstream(uid));
@@ -177,7 +185,7 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, owner_key: &str)
             continue;
         }
         let Some(n) = dag.get(uid) else { continue };
-        if !dag.is_root_project(n) {
+        if !in_scope(n) {
             continue;
         }
         if is_exposure(n) {
@@ -227,7 +235,7 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, owner_key: &str)
     let mut untested_changes: Vec<String> = changed
         .iter()
         .filter_map(|uid| dag.get(uid))
-        .filter(|n| dag.is_root_project(n) && coverage_gap(n))
+        .filter(|n| in_scope(n) && coverage_gap(n))
         .map(|n| n.name.clone())
         .collect();
     untested_changes.sort();
@@ -247,7 +255,7 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, owner_key: &str)
             (down >= PR_HUB_MIN_DOWNSTREAM)
                 .then(|| {
                     dag.get(uid)
-                        .filter(|n| dag.is_root_project(n))
+                        .filter(|n| in_scope(n))
                         .map(|n| (n.name.clone(), down))
                 })
                 .flatten()
@@ -290,10 +298,20 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, owner_key: &str)
 /// wrong way down the layer taxonomy). Sorted via `Dag::edges()`. The single
 /// violation predicate: the `LayerViolation` lens, the stats worklist, the PR
 /// impact pack's "new violations" risk, and `dbtl check` all read it.
+///
 /// Layer-violation edges are scoped to the root project the same way the
-/// other metrics are: the violating CHILD must be yours. An edge between two
-/// installed-package nodes is dependency context, not your project's health.
+/// other metrics are — but on BOTH endpoints, not just the child: a package
+/// node's layer rank is read off the PACKAGE's own `path` taxonomy (an
+/// `audit/`-rooted package dir ranks "unknown", i.e. last), which is not the
+/// root project's layer order. A package→root edge ranking "backwards" would
+/// flag every package consumer as a violation — pure noise, so an edge with
+/// either endpoint installed is dependency context, never your project's
+/// health.
 pub fn layer_violation_edges(dag: &Dag) -> Vec<(String, String)> {
+    // Resolve the owning package ONCE — the per-edge scope test shares it
+    // (`is_root_project` would re-resolve per edge).
+    let primary = dag.primary_package();
+    let in_scope = |n: &NodeInfo| primary.as_deref().is_none_or(|p| in_package(n, p));
     dag.edges()
         .into_iter()
         .filter(|(parent, child)| {
@@ -303,7 +321,7 @@ pub fn layer_violation_edges(dag: &Dag) -> Vec<(String, String)> {
             if p.resource_type != "model" || c.resource_type != "model" {
                 return false;
             }
-            if !dag.is_root_project(c) {
+            if !in_scope(p) || !in_scope(c) {
                 return false;
             }
             let pr = layer_rank(first_dir(p).unwrap_or(""));
@@ -325,10 +343,14 @@ pub fn layer_violation_edges(dag: &Dag) -> Vec<(String, String)> {
 /// (or a single-package manifest) the predicate passes every node, so this is
 /// the exact count it always was.
 pub fn coverage_counts(dag: &Dag) -> (usize, usize) {
+    // Resolve the owning package ONCE for the sweep — `is_root_project`
+    // re-resolves it per call, an O(nodes) scan per node when no
+    // `metadata.project_name` is recorded.
+    let primary = dag.primary_package();
     let mut total = 0;
     let mut tested = 0;
     for n in dag.nodes().values() {
-        if !dag.is_root_project(n) {
+        if !primary.as_deref().is_none_or(|p| in_package(n, p)) {
             continue;
         }
         if matches!(n.resource_type.as_str(), "model" | "snapshot" | "seed") {
@@ -676,7 +698,14 @@ mod tests {
         let pr = pr_impact(&current, Some(&base), &diff, "team");
         assert!(pr.affected_owners.is_empty());
         // The markdown section lists them.
-        let report = diff_report(&current, Some(&base), &diff, "b", "owner");
+        let report = diff_report(
+            &current,
+            Some(&base),
+            &diff,
+            "b",
+            PackageScope::Root,
+            "owner",
+        );
         let md = pr_impact_markdown("p", &report);
         assert!(md.contains("## Affected owners (2)\n- alice\n- bob\n"));
     }
@@ -745,8 +774,22 @@ mod tests {
         m.nodes.get_mut("model.p.fct_x").unwrap().raw_code = Some("select 22".into());
         let current = Dag::build(&m);
         let diff = compute_diff(&base, &current);
-        let r1 = diff_report(&current, Some(&base), &diff, "base", PackageScope::Root, "owner");
-        let r2 = diff_report(&current, Some(&base), &diff, "base", PackageScope::Root, "owner");
+        let r1 = diff_report(
+            &current,
+            Some(&base),
+            &diff,
+            "base",
+            PackageScope::Root,
+            "owner",
+        );
+        let r2 = diff_report(
+            &current,
+            Some(&base),
+            &diff,
+            "base",
+            PackageScope::Root,
+            "owner",
+        );
         assert_eq!(r1, r2);
         let md = pr_impact_markdown("p", &r1);
         assert!(md.contains("# PR Impact Report: p"));

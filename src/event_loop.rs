@@ -233,17 +233,18 @@ pub fn event_loop(
             } else {
                 None
             };
-            // Blast radius of the selected node (always-on; arrows from the active
-            // glyph mode's Chrome badges — never hardcoded). Built in App so the
-            // string source is single and unit-testable.
+            // Blast radius of the selected node (emitted every frame; arrows
+            // from the active glyph mode's Chrome badges — never hardcoded).
+            // Built in App so the string source is single and unit-testable.
             let impact_s = app.impact_status();
             // The baseline-diff chip (present only with a --diff baseline loaded).
             let diff_s = app.diff_status_label();
             // The run_results chip (coverage + freshness of the loaded artifact).
             let run_s = app.run_status_label();
-            // The package-scope tag — always present: it states which graph the
-            // numbers describe (`scope:root` default / `scope:+pkgs` under
-            // --include-packages). Built per frame from the App's recorded scope.
+            // The package-scope tag — emitted on every frame (`scope:root`
+            // default / `scope:+pkgs` under --include-packages) since it states
+            // which graph the numbers describe, but still a droppable segment:
+            // a narrow-enough terminal sheds it like any other chip.
             let scope_s = format!("scope:{}", app.scope().tag());
             // Layer bands: the lineage pane's bottom-border column annotations,
             // present exactly while the Layer lens is active (cheap: one pass over
@@ -538,8 +539,8 @@ fn run_dbt_parse(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
         return Ok(());
     }
     // On a load error `adopt_manifest` restores the previous source, so the
-    // app keeps running on the pre-parse data. Load warnings (unknown
-    // resource_types) ride the toast like a manual reload.
+    // app keeps running on the pre-parse data. Load warnings (unhandled
+    // resource_types, scope warnings) ride the toast like a manual reload.
     let note = match app.adopt_manifest(manifest) {
         Ok(w) if w.is_empty() => "dbt parse OK: now reading target/manifest.json".to_string(),
         Ok(w) => format!("dbt parse OK — {}", warnings_tail(&w)),

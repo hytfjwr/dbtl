@@ -33,8 +33,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
 use dbtl::{
-    build_model_list, coverage_counts, generate_docs, load_dag, load_dag_from_source, Dag,
-    NodeInfo, PackageScope, SortMode,
+    build_model_list, coverage_counts, generate_docs, layer_violation_edges, load_dag,
+    load_dag_from_source, Dag, NodeInfo, PackageScope, SortMode,
 };
 
 const MANIFEST: &str = concat!(
@@ -94,8 +94,48 @@ fn readme_of(files: &[(String, String)]) -> String {
 fn run(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_dbtl"))
         .args(args)
+        // stdin must not be a TTY: a bare invocation (no subcommand) reaches
+        // the interactive TUI, and an inherited terminal would park the child
+        // on the event loop forever. Null stdin makes the TTY probe fail so
+        // the binary exits after printing its startup warnings.
+        .stdin(std::process::Stdio::null())
         .output()
         .expect("failed to run dbtl")
+}
+
+/// A minimal manifest.json body: `nodes` + `sources` + the two adjacency maps
+/// are the only required keys. Each `uid` becomes a bare model node — enough
+/// for the load path, the scope predicates, and `dbtl check`.
+fn manifest_json(project_name: Option<&str>, uids: &[&str]) -> String {
+    let nodes: serde_json::Map<String, serde_json::Value> = uids
+        .iter()
+        .map(|uid| {
+            (
+                uid.to_string(),
+                serde_json::json!({
+                    "name": uid.rsplit('.').next().unwrap_or(uid),
+                    "resource_type": "model",
+                }),
+            )
+        })
+        .collect();
+    let mut manifest = serde_json::json!({
+        "nodes": nodes,
+        "sources": {},
+        "parent_map": {},
+        "child_map": {},
+    });
+    if let Some(p) = project_name {
+        manifest["metadata"] = serde_json::json!({ "project_name": p });
+    }
+    manifest.to_string()
+}
+
+/// Write [`manifest_json`] to `<dir>/manifest.json` and return its path.
+fn write_manifest(dir: &std::path::Path, project_name: Option<&str>, uids: &[&str]) -> String {
+    let path = dir.join("manifest.json");
+    std::fs::write(&path, manifest_json(project_name, uids)).expect("write manifest");
+    path.to_string_lossy().into_owned()
 }
 
 // ---------- the default scope: root project only ----------
@@ -371,8 +411,39 @@ fn project_only_is_a_deprecated_no_op() {
     // Backwards compatibility: the flag still parses and changes nothing (the
     // default scope is already root-only) — but it must NOT be silent, on the
     // TUI path and on subcommands alike.
-    let out = run(&["--manifest", MANIFEST, "--project-only"]);
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    //
+    // The bare invocation reaches `ratatui::try_init()`: on a host WITHOUT a
+    // console it exits with "no TTY", but a Windows CI runner HAS a console
+    // (crossterm opens CONIN$ — stdin redirection cannot hide it), so the
+    // child parks on the event loop. The deprecation warning is emitted
+    // BEFORE terminal init, so read it off stderr and kill the child if it
+    // happens to find a console instead of exiting.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_dbtl"))
+        .args(["--manifest", MANIFEST, "--project-only"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn dbtl");
+    let stderr_pipe = child.stderr.take().expect("stderr piped");
+    let reader = std::thread::spawn(move || {
+        let mut buf = String::new();
+        use std::io::Read;
+        let _ = std::io::BufReader::new(stderr_pipe).read_to_string(&mut buf);
+        buf
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if child.try_wait().expect("poll child").is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if child.try_wait().expect("poll child").is_none() {
+        child.kill().expect("kill parked TUI child");
+    }
+    let _ = child.wait();
+    let stderr = reader.join().expect("stderr reader");
     assert!(
         stderr.contains("--project-only is deprecated"),
         "deprecated flag warns (the TUI load path), got stderr: {stderr}"
@@ -483,4 +554,208 @@ fn impact_report_carries_the_scope() {
     assert!(out.status.success());
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
     assert_eq!(v["scope"].as_str(), Some("root"), "scope serializes");
+}
+
+// ---------- the global flag + the warning surface ----------
+
+#[test]
+fn include_packages_flag_works_before_the_subcommand() {
+    // The flag is GLOBAL: `dbtl --include-packages check` must widen exactly
+    // like `dbtl check --include-packages` — a subcommand-scoped flag would
+    // leave the top-level form parsed but silently ignored.
+    for args in [
+        ["--include-packages", "check", "--manifest", MANIFEST].as_slice(),
+        ["check", "--manifest", MANIFEST, "--include-packages"].as_slice(),
+    ] {
+        let out = run(args);
+        assert!(
+            out.status.success(),
+            "{args:?} runs, stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("scope: all packages (metrics count the root project only)"),
+            "{args:?} reaches the scope in both placements, got: {stdout}"
+        );
+    }
+}
+
+#[test]
+fn project_only_conflicts_with_include_packages() {
+    // Same level AND cross level: `--include-packages` is global, so the
+    // conflict must hold wherever each flag was typed — not just when both
+    // sit in the same argv segment.
+    for args in [
+        [
+            "--project-only",
+            "--include-packages",
+            "--manifest",
+            MANIFEST,
+        ]
+        .as_slice(),
+        [
+            "--project-only",
+            "check",
+            "--manifest",
+            MANIFEST,
+            "--include-packages",
+        ]
+        .as_slice(),
+    ] {
+        let out = run(args);
+        assert!(!out.status.success(), "{args:?} must fail");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("cannot be used with '--include-packages'"),
+            "{args:?} reports the conflict, got: {stderr}"
+        );
+    }
+
+    // `--list-themes` never loads a project, so a scope flag alongside it is
+    // noise — the deprecated flag is declared to conflict with it too.
+    let out = run(&["--project-only", "--list-themes"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot be used with '--list-themes'"),
+        "the query-flag conflict, got: {stderr}"
+    );
+}
+
+#[test]
+fn select_miss_hints_at_the_hidden_package_scope() {
+    // `audit_rollups` IS in the manifest — but in the installed package, which
+    // the default scope pruned. The error names the escape hatch.
+    let out = run(&["--manifest", MANIFEST, "--select", "audit_rollups"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("not found"), "{stderr}");
+    assert!(
+        stderr.contains("--include-packages"),
+        "the hint names the flag: {stderr}"
+    );
+}
+
+#[test]
+fn unrecorded_multi_package_manifest_warns_about_the_root_guess() {
+    // No `metadata.project_name` + several packages → the frequency fallback
+    // is a GUESS; the load must say so on stderr rather than silently picking
+    // whichever package happens to outnumber the root project.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manifest = write_manifest(
+        dir.path(),
+        None,
+        &["model.aaa.a", "model.bbb.b", "model.bbb.c"],
+    );
+    let out = run(&["check", "--manifest", &manifest]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("metadata.project_name") && stderr.contains("bbb"),
+        "the ambiguous-root warning names the guess, got: {stderr}"
+    );
+}
+
+#[test]
+fn deps_only_manifest_warns_that_the_scope_emptied_the_graph() {
+    // Recorded root contributes NO nodes: an honestly empty graph plus the
+    // warning that explains where every node went — never a silent re-scope
+    // to some other package.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manifest = write_manifest(
+        dir.path(),
+        Some("zzz_proj"),
+        &["model.aaa.a", "model.aaa.b"],
+    );
+    let out = run(&["check", "--manifest", &manifest]);
+    // `check` passes on the empty graph (0/0 coverage); the warning is the
+    // contract being tested.
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no nodes belong to the root project 'zzz_proj'"),
+        "the emptied-graph warning, got: {stderr}"
+    );
+}
+
+#[test]
+fn layer_violation_requires_both_endpoints_in_the_root_project() {
+    // The documented scope rule: BOTH endpoints must be root models — a
+    // package node's `path` ranks against the PACKAGE's own layer taxonomy,
+    // so a package→root edge ranking "backwards" would flag every package
+    // consumer as a violation. Such edges are dependency context, never
+    // your project's health — under either scope.
+    let manifest = r#"{
+        "metadata": {"project_name": "pkg"},
+        "nodes": {
+            "model.pkg.stg_a":    {"name": "stg_a",   "resource_type": "model", "path": "staging/stg_a.sql"},
+            "model.pkg.mart_p":   {"name": "mart_p",  "resource_type": "model", "path": "marts/mart_p.sql"},
+            "model.pkg.stg_b":    {"name": "stg_b",   "resource_type": "model", "path": "staging/stg_b.sql"},
+            "model.dep.mart_p":   {"name": "mart_p",  "resource_type": "model", "path": "marts/mart_p.sql"},
+            "model.pkg.mart_c":   {"name": "mart_c",  "resource_type": "model", "path": "marts/mart_c.sql"},
+            "model.dep.stg_c":    {"name": "stg_c",   "resource_type": "model", "path": "staging/stg_c.sql"}
+        },
+        "sources": {},
+        "parent_map": {
+            "model.pkg.stg_a": ["model.pkg.mart_p"],
+            "model.pkg.stg_b": ["model.dep.mart_p"],
+            "model.dep.stg_c": ["model.pkg.mart_c"]
+        },
+        "child_map": {
+            "model.pkg.mart_p": ["model.pkg.stg_a"],
+            "model.dep.mart_p": ["model.pkg.stg_b"],
+            "model.pkg.mart_c": ["model.dep.stg_c"]
+        }
+    }"#;
+    let raw: dbtl::RawManifest = serde_json::from_str(manifest).expect("synthesized manifest");
+    let dag = Dag::build(&raw);
+
+    let violations = layer_violation_edges(&dag);
+    assert_eq!(
+        violations,
+        vec![(
+            "model.pkg.mart_p".to_string(),
+            "model.pkg.stg_a".to_string()
+        )],
+        "only the root↔root backward edge reports — the package-parent and \
+         package-child violations are dependency context, not project health"
+    );
+
+    // And under the default scope the answer is the same: the root↔root
+    // violation survives the prune.
+    let (scoped, _) = PackageScope::Root.apply_with_warnings(dag);
+    assert_eq!(
+        layer_violation_edges(&scoped),
+        vec![(
+            "model.pkg.mart_p".to_string(),
+            "model.pkg.stg_a".to_string()
+        )],
+        "the default scope keeps the root↔root violation"
+    );
+}
+
+#[test]
+fn docs_all_scope_with_zero_package_nodes_omits_the_count() {
+    // A single-package Dag under --include-packages: "(0 installed-package
+    // nodes)" would read as a bug — the bullet degrades to the bare scope
+    // label instead of quoting a meaningless zero.
+    let files = generate_docs(&manifest_root(), "pkg", "fixture", PackageScope::All);
+    let readme = readme_of(&files);
+    assert!(
+        readme.contains("- scope: all packages (metrics count the root project only)"),
+        "the bare label when there is nothing extra, got:\n{readme}"
+    );
+    assert!(
+        !readme.contains("0 installed-package nodes"),
+        "the meaningless zero is never written, got:\n{readme}"
+    );
 }

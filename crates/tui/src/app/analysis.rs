@@ -29,6 +29,7 @@ impl App {
         );
         Some(DiffView {
             baseline: report.baseline,
+            scope: report.scope,
             added: report.added,
             removed: report.removed,
             modified: report.modified,
@@ -63,9 +64,14 @@ impl App {
         // the same [`Dag::is_root_project`] scope `coverage_counts` and
         // `dbtl check` share. Under the `All` package scope installed-package
         // nodes sit in the graph as dependency context but are never part of
-        // your project's type/materialization/orphan/hub numbers.
+        // your project's type/materialization/orphan/hub numbers. The owning
+        // package is resolved ONCE for the sweep (`is_root_project`
+        // re-resolves per call — an O(nodes) scan per node without recorded
+        // metadata); the title-bar `model:N` counts deliberately do NOT scope
+        // — see `compute_stats`.
+        let primary = self.dag.primary_package();
         for (uid, n) in self.dag.nodes() {
-            if !self.dag.is_root_project(n) {
+            if !primary.as_deref().is_none_or(|p| crate::in_package(n, p)) {
                 continue;
             }
             *by_rt.entry(n.resource_type.clone()).or_default() += 1;
@@ -369,6 +375,13 @@ pub(super) fn weighted_chain(dag: &Dag, weight: impl Fn(&str) -> f64) -> (Vec<St
 /// manifest's recorded root project (`metadata.project_name`), falling back
 /// to a `unique_id`-segment heuristic — resolved by [`Dag::project_name`] so
 /// the title bar and the docs index quote the same name.
+///
+/// The resource counts intentionally describe the LOADED graph — every node
+/// the list and lineage can show — so under `--include-packages` the
+/// `model:N`/`src:N`… chips include installed-package context while the `S`
+/// dashboard, coverage, and `dbtl check` still count the root project only.
+/// The divergence is deliberate: the title enumerates what is on screen, the
+/// dashboard reports your project's health.
 pub(super) fn compute_stats(dag: &Dag) -> AppStats {
     let project = dag.project_name().unwrap_or("").to_string();
     AppStats {

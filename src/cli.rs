@@ -70,16 +70,21 @@ pub struct Cli {
     /// at load). Passing it prints a deprecation warning and changes nothing —
     /// use `--include-packages` to WIDEN the scope instead. Will be removed in
     /// a future release.
-    #[arg(long, hide = true)]
+    /// `conflicts_with_all`: `--include-packages` is the opposite scope and
+    /// `--list-themes` is a query-only flag that never loads a project —
+    /// warning about a scope that will never apply is noise.
+    #[arg(long, hide = true, conflicts_with_all = ["include_packages", "list_themes"])]
     pub project_only: bool,
     /// Include nodes installed from dbt packages (`dbt deps` / `packages.yml`)
     /// in the graph: manifest mode's compiled `nodes` map mixes them in. They
-    /// appear in the model list, lineage, and docs pages as dependency
-    /// context — but every aggregate metric (coverage / orphans / stats /
-    /// docs summary / `dbtl check` / the PR-impact risk flags) still counts
-    /// the root project only. Source mode never parses `dbt_packages`, so the
-    /// flag is a no-op there (with a warning).
-    #[arg(long)]
+    /// appear in the model list, lineage, docs pages, and `--diff` baselines as
+    /// dependency context — but every aggregate metric (coverage / orphans /
+    /// stats / docs summary / `dbtl check` / the PR-impact risk flags) still
+    /// counts the root project only. Source mode never parses `dbt_packages`,
+    /// so the flag is a no-op there (with a warning). `global` so it works
+    /// before OR after a subcommand (`dbtl --include-packages check` ≡
+    /// `dbtl check --include-packages`).
+    #[arg(long, global = true)]
     pub include_packages: bool,
     /// A non-interactive subcommand. Omitted = launch the TUI (the default,
     /// unchanged behaviour).
@@ -125,11 +130,6 @@ pub enum Commands {
         /// stale marked file. Prints one line per difference for the CI log.
         #[arg(long, conflicts_with = "clean")]
         check: bool,
-        /// Include nodes installed from dbt packages in the generated docs —
-        /// they get their own pages (as dependency context), while the README
-        /// stats summary still counts the root project only.
-        #[arg(long)]
-        include_packages: bool,
     },
     /// Print the PR impact pack for a `--diff` baseline comparison to stdout
     /// and exit — Markdown by default (paste into a PR description), `--format
@@ -153,11 +153,6 @@ pub enum Commands {
         /// else parse source.
         #[arg(long, default_value = ".")]
         project: String,
-        /// Include nodes installed from dbt packages in the compared graphs —
-        /// the diff listings can then name package nodes, while the risk
-        /// metrics still count the root project only.
-        #[arg(long)]
-        include_packages: bool,
     },
     /// Run CI checks over the resolved data source and exit 1 when any fails:
     /// test coverage below `--coverage-min`, newly introduced layer violations,
@@ -185,11 +180,6 @@ pub enum Commands {
         /// Suppress the per-check report on stdout; only the exit code matters.
         #[arg(long)]
         quiet: bool,
-        /// Include nodes installed from dbt packages in the loaded graphs —
-        /// the checked metrics still count the root project only, so the flag
-        /// only widens the `--diff` baseline comparison's node set.
-        #[arg(long)]
-        include_packages: bool,
     },
     /// Print a column's column-level lineage to stdout and exit — the same
     /// `ColumnReport` the TUI's `yl` yank copies (Markdown by default,
@@ -319,8 +309,9 @@ pub fn resolve_source(
 }
 
 /// The package scope the CLI asks for (`--include-packages` ⇒ `All`, else the
-/// default `Root`). `Cli::command` carries its own flag for the subcommands,
-/// so this reads the top-level (TUI) flag.
+/// default `Root`). The flag is `global`, so clap lands the value here whether
+/// it was typed before or after a subcommand — the TUI and the subcommand
+/// dispatchers all read this one field.
 impl Cli {
     pub fn package_scope(&self) -> dbtl::PackageScope {
         if self.include_packages {
@@ -334,36 +325,27 @@ impl Cli {
 /// Apply the loaded graph's package scope: `All` keeps the manifest's full
 /// contents (installed-package nodes as dependency context); the default
 /// `Root` prunes to the root project — what `--project-only` used to ask for.
-/// Prints a stderr warning when the `Root` scope empties the graph — a
-/// manifest whose recorded root project contributes NO kept nodes (a
-/// deps-only project, or every local node disabled) is a valid if surprising
-/// outcome: the empty graph is honest, whereas silently re-scoping to a
-/// foreign package would show the exact opposite of the scope's intent.
+/// The scope decision itself (prune predicate, early-out, and the warnings —
+/// an emptied graph, or an ambiguous root guess when `metadata.project_name`
+/// is absent) lives in [`dbtl::PackageScope::apply_with_warnings`], so the
+/// TUI's `reload` re-running the same scope reports the same outcomes. This
+/// wrapper only prints them to stderr; the one CLI-side warning left is the
+/// `--include-packages`-in-source-mode no-op, which is about the flag, not
+/// the graph.
 fn apply_package_scope(dag: dbtl::Dag, scope: dbtl::PackageScope, is_source: bool) -> dbtl::Dag {
-    if scope.includes_packages() {
-        if is_source {
-            // Source mode synthesizes the manifest from the local project
-            // only — there are never package nodes to include.
-            eprintln!(
-                "warning: --include-packages has no effect in source mode \
-                 (installed packages are never parsed)"
-            );
-        }
-        return dag;
+    if scope.includes_packages() && is_source {
+        // Source mode synthesizes the manifest from the local project
+        // only — there are never package nodes to include.
+        eprintln!(
+            "warning: --include-packages has no effect in source mode \
+             (installed packages are never parsed)"
+        );
     }
-    let pkg = dag.primary_package();
-    let was_empty = dag.is_empty();
-    let scoped = dag.root_scoped();
-    if scoped.is_empty() && !was_empty {
-        if let Some(pkg) = pkg {
-            eprintln!(
-                "warning (scope): no nodes belong to the root project '{pkg}' — \
-                 the graph is empty (--include-packages keeps installed-package \
-                 nodes in scope)"
-            );
-        }
+    let (dag, warnings) = scope.apply_with_warnings(dag);
+    for w in &warnings {
+        eprintln!("warning (scope): {w}");
     }
-    scoped
+    dag
 }
 
 /// Resolve the CLI into a loaded [`App`]. Explicit `--manifest` / `--source` win;
@@ -591,7 +573,14 @@ pub fn run_impact(
     let resolved = resolve_source(manifest, source, project, scope)?;
     let (base, label) = load_baseline(diff_path, scope)?;
     let diff = dbtl::compute_diff(&base, &resolved.dag);
-    let report = dbtl::diff_report(&resolved.dag, Some(&base), &diff, &label, scope, &owner_meta_key());
+    let report = dbtl::diff_report(
+        &resolved.dag,
+        Some(&base),
+        &diff,
+        &label,
+        scope,
+        &owner_meta_key(),
+    );
     match format {
         ImpactFormat::Markdown => {
             let project = resolved.dag.project_name().unwrap_or("dbt");
@@ -718,6 +707,7 @@ pub fn run_columns(
     manifest: &Option<String>,
     source: &Option<String>,
     project: &str,
+    include_packages: bool,
 ) -> Result<()> {
     let (model, column) = target
         .rsplit_once('.')
@@ -726,7 +716,12 @@ pub fn run_columns(
         !model.is_empty() && !column.is_empty(),
         "columns: expected <model>.<column>, got '{target}'"
     );
-    let resolved = resolve_source(manifest, source, project)?;
+    let scope = if include_packages {
+        dbtl::PackageScope::All
+    } else {
+        dbtl::PackageScope::Root
+    };
+    let resolved = resolve_source(manifest, source, project, scope)?;
     let dag = &resolved.dag;
 
     // The model segment: an exact unique_id first, else the unique node NAME

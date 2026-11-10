@@ -107,15 +107,66 @@ impl PackageScope {
     /// Apply the scope to a just-loaded `Dag`: `Root` prunes to the root
     /// project's own nodes ([`Dag::root_scoped`]); `All` keeps the graph whole.
     /// No-ops cheaply when there is nothing to prune (source mode and
-    /// single-package manifests are already root-only).
+    /// single-package manifests are already root-only). Discards the warnings
+    /// [`apply_with_warnings`](PackageScope::apply_with_warnings) reports —
+    /// callers that surface scope outcomes (the CLI load path, `App::reload`)
+    /// use that instead.
     pub fn apply(&self, dag: Dag) -> Dag {
+        self.apply_with_warnings(dag).0
+    }
+
+    /// [`apply`](PackageScope::apply) plus the warnings the scope decision
+    /// produced — RETURNED, not printed, so every caller surfaces them its own
+    /// way (the CLI prints them on stderr; `App::reload` merges them into the
+    /// warnings vec its toast quotes). Two warnings exist, both about trusting
+    /// the outcome too much:
+    ///
+    /// - the AMBIGUOUS-ROOT guess: the manifest records no
+    ///   `metadata.project_name` (pre-dbt-1.6 or hand-built) AND more than one
+    ///   package is present, so [`Dag::primary_package`]'s frequency fallback
+    ///   picked the root — a guess that inverts when an installed package
+    ///   outnumbers the project. Emitted under EITHER scope: `All` skips the
+    ///   prune but every root-scoped metric still trusts the same guess.
+    /// - the EMPTIED graph: the `Root` scope pruned a non-empty graph to
+    ///   nothing (the recorded/inferred root contributes no kept nodes — a
+    ///   deps-only project, or the guess above gone wrong). The empty graph is
+    ///   honest; silently re-scoping to a foreign package would show the exact
+    ///   opposite of the scope's intent.
+    pub fn apply_with_warnings(&self, dag: Dag) -> (Dag, Vec<String>) {
+        let mut warnings = Vec::new();
+        // The owning package resolved ONCE, shared by the ambiguity check, the
+        // already-root-only early-out, and the prune predicate — the
+        // unrecorded fallback is an O(nodes) scan, so nothing below may
+        // re-resolve it (the shape [`Dag::root_scoped`] already documents).
+        let primary = dag.primary_package();
+        if dag.recorded_project().is_none() && dag.package_histogram().len() > 1 {
+            warnings.push(format!(
+                "the manifest records no metadata.project_name (pre-dbt-1.6 or \
+                 hand-built) and multiple packages are present — the root \
+                 project was inferred as '{}' by node frequency, a guess an \
+                 installed package can steal when it outnumbers the project \
+                 (recompile with dbt >=1.6 to pin it)",
+                primary.as_deref().unwrap_or("<unresolved>")
+            ));
+        }
         match self {
-            Self::All => dag,
+            Self::All => (dag, warnings),
             Self::Root => {
-                if dag.nodes().values().all(|n| dag.is_root_project(n)) {
-                    dag // already root-only — skip the prune + clone entirely
+                let keep = |n: &NodeInfo| primary.as_deref().is_none_or(|pkg| in_package(n, pkg));
+                if dag.nodes().values().all(&keep) {
+                    (dag, warnings) // already root-only — skip the prune + clone
                 } else {
-                    dag.root_scoped()
+                    let scoped = dag.filtered(keep);
+                    if scoped.is_empty() {
+                        if let Some(pkg) = &primary {
+                            warnings.push(format!(
+                                "no nodes belong to the root project '{pkg}' — \
+                                 the graph is empty (--include-packages keeps \
+                                 installed-package nodes in scope)"
+                            ));
+                        }
+                    }
+                    (scoped, warnings)
                 }
             }
         }
@@ -870,6 +921,14 @@ impl Dag {
     ///
     /// Shared by the docs index heading and the title-bar stats so the two
     /// never disagree.
+    ///
+    /// NOTE: the two name fallbacks diverge by design — `project_name` takes
+    /// the lexicographically SMALLEST segment (a stable display name) while
+    /// [`primary_package`](Dag::primary_package) takes the most FREQUENT (the
+    /// likeliest graph owner). Under a recorded `metadata.project_name` they
+    /// agree; without it a multi-package manifest can name two different
+    /// packages — which is why the scope path warns on that exact ambiguity
+    /// ([`PackageScope::apply_with_warnings`]).
     pub fn project_name(&self) -> Option<&str> {
         self.root_project.as_deref().or_else(|| {
             self.nodes
@@ -917,16 +976,50 @@ impl Dag {
         );
     }
 
+    /// The root project name the manifest RECORDED (`metadata.project_name`,
+    /// dbt ≥1.6; source mode synthesizes it from `dbt_project.yml`) — `None`
+    /// for pre-1.6 or hand-built manifests, where [`project_name`] and
+    /// [`primary_package`] fall back to `unique_id`-segment heuristics. The
+    /// scope path branches on this to warn when the fallback is actually
+    /// ambiguous (more than one package present).
+    ///
+    /// [`project_name`]: Dag::project_name
+    /// [`primary_package`]: Dag::primary_package
+    pub fn recorded_project(&self) -> Option<&str> {
+        self.root_project.as_deref()
+    }
+
     /// The name of the package that OWNS this graph — the ROOT project's name
     /// when the manifest records it (see [`project_name`](Dag::project_name)),
     /// else the most frequent `unique_id` project segment
     /// (`model.<pkg>.<name>`), robust to installed packages that happen to
-    /// sort first; ties break to the smaller name. Drives `--project-only`
-    /// (which therefore scopes to the root project, not the biggest package).
+    /// sort first; ties break to the smaller name. Drives the `Root`
+    /// [`PackageScope`] (which therefore scopes to the root project, not the
+    /// biggest package).
+    ///
+    /// Without recorded metadata the answer is a GUESS: a manifest whose
+    /// installed packages outnumber the root project would invert it.
+    /// [`PackageScope::apply_with_warnings`] warns on exactly that case (no
+    /// `metadata.project_name` AND more than one package), so the guess is
+    /// never silent. This is the resolve-ONCE entry point for sweeps — pair it
+    /// with [`in_package`] instead of calling [`is_root_project`](Dag::is_root_project)
+    /// per node.
     pub fn primary_package(&self) -> Option<String> {
         if let Some(root) = &self.root_project {
             return Some(root.clone());
         }
+        self.package_histogram()
+            .into_iter()
+            .max_by(|(a, ca), (b, cb)| ca.cmp(cb).then_with(|| b.cmp(a)))
+            .map(|(name, _)| name.to_string())
+    }
+
+    /// The `<pkg>`-segment histogram over the node `unique_id`s
+    /// (`model.<pkg>.<name>` → `pkg` counts one) — the data behind
+    /// [`primary_package`](Dag::primary_package)'s frequency fallback AND the
+    /// scope path's "more than one package" ambiguity test. Private so both
+    /// share ONE scan shape.
+    fn package_histogram(&self) -> BTreeMap<&str, usize> {
         let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
         for uid in self.nodes.keys() {
             if let Some(seg) = uid.split('.').nth(1).filter(|s| !s.is_empty()) {
@@ -934,9 +1027,6 @@ impl Dag {
             }
         }
         counts
-            .into_iter()
-            .max_by(|(a, ca), (b, cb)| ca.cmp(cb).then_with(|| b.cmp(a)))
-            .map(|(name, _)| name.to_string())
     }
 
     /// Whether `n` belongs to the ROOT project — the ONE package-scope
@@ -955,8 +1045,12 @@ impl Dag {
     ///
     /// Per-call cost is O(1) when `metadata.project_name` is recorded (dbt
     /// ≥1.6, source mode); only pre-1.6 / hand-built manifests fall back to
-    /// the O(nodes) `primary_package` scan — bulk filters therefore go through
-    /// [`root_scoped`](Dag::root_scoped), which resolves the package ONCE.
+    /// the O(nodes) `primary_package` scan. This is the ONE-OFF test — sweeps
+    /// and bulk filters must resolve the package ONCE via
+    /// [`primary_package`](Dag::primary_package) and test each node with
+    /// [`in_package`] (`primary.as_deref().is_none_or(|p| in_package(n, p))`
+    /// is exactly this predicate), the shape [`root_scoped`](Dag::root_scoped)
+    /// already models.
     pub fn is_root_project(&self, n: &NodeInfo) -> bool {
         match self.primary_package() {
             Some(pkg) => in_package(n, &pkg),
@@ -1286,10 +1380,11 @@ fn meta_strings(map: &serde_json::Map<String, serde_json::Value>) -> BTreeMap<St
 /// → `pkg`, `source.<pkg>.<src>.<tbl>` → `pkg`, and so on for every
 /// `<resource>.<pkg>.…` uid shape. A uid with no non-empty second segment is
 /// unattributable → counts as in-scope (scope never drops what it cannot
-/// name). The private half of [`Dag::is_root_project`], shared with
-/// [`Dag::root_scoped`] so bulk filtering reuses the same rule without
-/// re-resolving the owning package per node.
-fn in_package(n: &NodeInfo, pkg: &str) -> bool {
+/// name). The per-node half of [`Dag::is_root_project`], `pub` so sweeps can
+/// resolve the owning package ONCE ([`Dag::primary_package`]) and share it —
+/// [`Dag::root_scoped`] and [`PackageScope::apply_with_warnings`] do the same
+/// instead of re-resolving per node.
+pub fn in_package(n: &NodeInfo, pkg: &str) -> bool {
     n.unique_id
         .split('.')
         .nth(1)
@@ -2044,6 +2139,69 @@ mod tests {
         assert_eq!(f.len(), 1);
         assert_eq!(f.project_name(), Some("zzz_proj"));
         assert_eq!(f.primary_package().as_deref(), Some("zzz_proj"));
+    }
+
+    // ---- PackageScope::apply_with_warnings -------------------------------
+
+    #[test]
+    fn apply_with_warnings_flags_the_ambiguous_root_guess() {
+        // No recorded `metadata.project_name` + several packages → the
+        // frequency fallback is a guess, and the warning names it — under BOTH
+        // scopes (`All` skips the prune but every root-scoped metric still
+        // trusts the same guess). Here `mmm_pkg` wins on frequency while
+        // `aaa_pkg` sorts first — the guess is real.
+        let dag = Dag::build(&multi_package_manifest(None));
+        let (scoped, w) = PackageScope::Root.apply_with_warnings(dag);
+        assert_eq!(w.len(), 1, "one ambiguity warning, got {w:?}");
+        assert!(w[0].contains("metadata.project_name"), "{w:?}");
+        assert!(
+            w[0].contains("mmm_pkg"),
+            "the warning names the guess: {w:?}"
+        );
+        assert!(
+            scoped
+                .nodes()
+                .keys()
+                .all(|u| u.split('.').nth(1) == Some("mmm_pkg")),
+            "the guessed package scopes the pruned graph"
+        );
+
+        let dag = Dag::build(&multi_package_manifest(None));
+        let (_, w) = PackageScope::All.apply_with_warnings(dag);
+        assert_eq!(w.len(), 1, "the same guess is warned under All");
+
+        // Recorded metadata is not a guess — no warning either way.
+        let dag = Dag::build(&multi_package_manifest(Some("zzz_proj")));
+        let (_, w) = PackageScope::Root.apply_with_warnings(dag);
+        assert!(w.is_empty(), "a recorded root never warns, got {w:?}");
+        let dag = Dag::build(&multi_package_manifest(Some("zzz_proj")));
+        let (_, w) = PackageScope::All.apply_with_warnings(dag);
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn apply_with_warnings_reports_the_emptied_graph() {
+        // A deps-only manifest (recorded root contributes NO nodes): the Root
+        // scope yields an honestly empty graph plus the warning the CLI prints
+        // and `App::reload` toasts — never a silent re-scope.
+        let mut manifest = multi_package_manifest(Some("zzz_proj"));
+        manifest.nodes.remove("model.zzz_proj.root_model");
+        let dag = Dag::build(&manifest);
+        let (scoped, w) = PackageScope::Root.apply_with_warnings(dag);
+        assert!(scoped.is_empty());
+        assert!(
+            w.iter()
+                .any(|m| m.contains("no nodes belong to the root project 'zzz_proj'")),
+            "the emptied-graph warning, got {w:?}"
+        );
+    }
+
+    #[test]
+    fn apply_with_warnings_is_quiet_on_a_normal_root_scope() {
+        let dag = Dag::build(&multi_package_manifest(Some("zzz_proj")));
+        let (scoped, w) = PackageScope::Root.apply_with_warnings(dag);
+        assert_eq!(scoped.len(), 1, "only the root project's model survives");
+        assert!(w.is_empty(), "a clean prune warns about nothing, got {w:?}");
     }
 
     // ---- compiled side map ingestion (target/compiled/) -------------------

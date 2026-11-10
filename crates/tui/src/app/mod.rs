@@ -387,6 +387,11 @@ impl App {
             pending_col: None,
             pending_node: None,
             path_anchor: None,
+            // CONTRACT: every App starts recorded as `Root` — the scope is a
+            // record of how the Dag was LOADED, and App can never recover it
+            // from the already-pruned graph. The load path (`cli::build_app`)
+            // MUST call `set_scope` with the real CLI scope right after
+            // construction, or `reload` will silently re-scope to Root.
             scope: crate::PackageScope::default(),
         }
     }
@@ -815,7 +820,8 @@ impl App {
     /// success the project root is re-derived from the manifest path, keeping
     /// the `$EDITOR` jump correct even for a manifest under a different root.
     /// Returns the manifest's load warnings (unhandled `resource_type`s /
-    /// `functions`) like [`reload`](App::reload) does, so the caller can
+    /// `functions`, plus the package-scope warnings from re-applying
+    /// `self.scope`) like [`reload`](App::reload) does, so the caller can
     /// toast them.
     pub fn adopt_manifest(&mut self, path: PathBuf) -> Result<Vec<String>> {
         let new_root = derive_project_root(&path);
@@ -876,18 +882,25 @@ impl App {
     /// warnings for whichever source is active: source mode's parse warnings
     /// (unparsable schema.yml, duplicate resource names), or manifest mode's
     /// unhandled `resource_type`/`functions` warnings (a synthesized source
-    /// manifest never produces the latter — that channel is manifest-only).
+    /// manifest never produces the latter — that channel is manifest-only),
+    /// plus the package-scope warnings from re-applying `self.scope`
+    /// ([`PackageScope::apply_with_warnings`] — e.g. an ambiguously-rooted or
+    /// emptied graph); an unremarkable reload returns an empty vec.
     pub fn reload(&mut self) -> Result<Vec<String>> {
         let current = self.selected_node().map(|n| n.unique_id.clone());
         // Re-read from the same source; returns before mutating on error.
         // The package scope the load path applied at startup is re-applied
         // here — a recompiled manifest can gain/drop `dbt_packages/` contents
         // between reloads, and the default `Root` scope must keep hiding them.
-        let (dag, warnings) = match &self.source {
+        let (dag, mut warnings) = match &self.source {
             DataSource::Manifest(path) => load_dag_with_warnings(path)?,
             DataSource::Project(dir) => load_dag_from_source_with_warnings(dir)?,
         };
-        let dag = self.scope.apply(dag);
+        // The SAME scope application the CLI load path runs, warnings included:
+        // an emptied or ambiguously-rooted re-load is reported exactly like a
+        // first load (the toast quotes the returned vec).
+        let (dag, scope_warnings) = self.scope.apply_with_warnings(dag);
+        warnings.extend(scope_warnings);
         self.model_list = build_model_list_grouped(&dag, self.sort, self.group_by_meta.as_deref());
         self.stats = compute_stats(&dag);
         self.dag = dag;

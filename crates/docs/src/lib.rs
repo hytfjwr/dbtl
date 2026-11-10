@@ -17,7 +17,9 @@ use std::collections::{BTreeMap, HashSet};
 
 use dbtl_core::layer::{first_dir, layer_rank};
 use dbtl_core::mermaid::subgraph_mermaid_linked;
-use dbtl_core::{coverage_counts, Dag, Edge, NodeInfo, PackageScope, Subgraph, LAYER_ORDER};
+use dbtl_core::{
+    coverage_counts, in_package, Dag, Edge, NodeInfo, PackageScope, Subgraph, LAYER_ORDER,
+};
 
 /// The subdirectory under `<out>` that holds every node page. The index
 /// `README.md` sits at the root and links into here.
@@ -356,14 +358,24 @@ fn readme_markdown(
     s.push_str("## Summary\n\n");
     match scope {
         PackageScope::All => {
+            // Count the installed-package nodes kept as context — the owning
+            // package resolved ONCE for the sweep (`is_root_project`
+            // re-resolves per call).
+            let primary = dag.primary_package();
             let pkgs = dag
                 .nodes()
                 .values()
-                .filter(|n| !dag.is_root_project(n))
+                .filter(|n| primary.as_deref().is_some_and(|p| !in_package(n, p)))
                 .count();
-            s.push_str(&format!(
-                "- scope: all packages ({pkgs} installed-package nodes; metrics count the root project only)\n"
-            ));
+            if pkgs == 0 {
+                // `--include-packages` on a package-free manifest: the bare
+                // label reads cleaner than "(0 installed-package nodes)".
+                s.push_str(&format!("- scope: {}\n", scope.describe()));
+            } else {
+                s.push_str(&format!(
+                    "- scope: all packages ({pkgs} installed-package nodes; metrics count the root project only)\n"
+                ));
+            }
         }
         PackageScope::Root => s.push_str(&format!("- scope: {}\n", scope.describe())),
     }
@@ -554,11 +566,16 @@ fn layer_groups(dag: &Dag) -> Vec<LayerGroup> {
 /// Both are order-independent / sorted, so the section is deterministic.
 fn push_stats_summary(s: &mut String, dag: &Dag, files: &BTreeMap<String, String>) {
     let (tested, testable) = coverage_counts(dag);
+    // Resolve the owning package ONCE for the orphan sweep — `is_root_project`
+    // re-resolves per call.
+    let primary = dag.primary_package();
     let mut orphans: Vec<&NodeInfo> = dag
         .nodes()
         .values()
         .filter(|node| {
-            dag.is_root_project(node) && node.resource_type == "model" && node.direct_down == 0
+            primary.as_deref().is_none_or(|p| in_package(node, p))
+                && node.resource_type == "model"
+                && node.direct_down == 0
         })
         .collect();
     s.push_str("\n## Test coverage\n\n");
@@ -944,7 +961,7 @@ mod tests {
             macros: HashMap::new(),
         };
         let dag = Dag::build(&manifest);
-        let out = generate_docs(&dag, "p", "src");
+        let out = generate_docs(&dag, "p", "src", PackageScope::Root);
         let files = node_files(&dag);
         let page = file(&out, &files["model.p.m"]);
         let section = page

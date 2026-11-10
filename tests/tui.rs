@@ -2022,6 +2022,7 @@ fn render_diff_modal(dv: dbtl::DiffView, width: u16, height: u16) -> Buffer {
 fn diff_modal_lists_sections_with_counts_marks_and_more_cap() {
     let dv = dbtl::DiffView {
         baseline: "main/target/manifest.json".into(),
+        scope: dbtl::PackageScope::Root,
         added: (0..12)
             .map(|i| (format!("new_model_{i:02}"), "model".to_string()))
             .collect(),
@@ -2037,6 +2038,10 @@ fn diff_modal_lists_sections_with_counts_marks_and_more_cap() {
     assert!(
         text.contains("baseline: main/target/manifest.json"),
         "names the baseline source"
+    );
+    assert!(
+        text.contains("scope: root project only"),
+        "the modal states the scope like the export, got: {text}"
     );
     assert!(
         text.contains("Added (12):"),
@@ -2072,6 +2077,23 @@ fn diff_modal_with_no_changes_says_so() {
     assert!(
         text.contains("no changes vs the baseline"),
         "a clean diff is stated, not an empty wall of zeros"
+    );
+}
+
+#[test]
+fn diff_modal_scope_line_matches_the_export() {
+    // Under --include-packages the modal prints the same `scope:` line the
+    // `D`→`e` export writes — screen and file must not disagree about what
+    // the numbers cover.
+    let dv = dbtl::DiffView {
+        baseline: "base".into(),
+        scope: dbtl::PackageScope::All,
+        ..Default::default()
+    };
+    let text = buffer_to_string(&render_diff_modal(dv, 100, 30));
+    assert!(
+        text.contains("scope: all packages (metrics count the root project only)"),
+        "the all-scope label, got: {text}"
     );
 }
 

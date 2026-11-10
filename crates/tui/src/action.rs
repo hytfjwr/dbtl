@@ -8,7 +8,7 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::{NodeDetail, PrImpact, TestInfo};
+use crate::{NodeDetail, PackageScope, PrImpact, TestInfo};
 
 /// A movement / scroll direction, reused across actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -364,6 +364,11 @@ pub struct StatsView {
 pub struct DiffView {
     /// Where the baseline came from (the `--diff` argument), for the title.
     pub baseline: String,
+    /// The package scope both graphs were loaded under — the modal prints it
+    /// as the `scope:` line so the screen matches the `D`→`e` export and the
+    /// `dbtl impact` report (whose [`DiffReport::scope`](crate::DiffReport)
+    /// field carries the same value).
+    pub scope: PackageScope,
     /// Added nodes as `(name, resource_type)`, sorted by name.
     pub added: Vec<(String, String)>,
     /// Removed (baseline-only) nodes as `(name, resource_type)`, sorted.

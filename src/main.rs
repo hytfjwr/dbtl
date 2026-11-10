@@ -48,6 +48,15 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: &Cli) -> Result<()> {
+    // clap's `conflicts_with` catches `--project-only --include-packages` at
+    // the same level — but `--include-packages` is GLOBAL, so it can also
+    // arrive via a subcommand context (`dbtl --project-only check
+    // --include-packages`), which the declarative conflict does not reach.
+    // Check the parsed pair so the two are exclusive wherever they were typed.
+    if cli.project_only && cli.include_packages {
+        anyhow::bail!("the argument '--project-only' cannot be used with '--include-packages'");
+    }
+
     // --list-themes is a plain stdout listing, no data source / TTY needed.
     if cli.list_themes {
         print_theme_list();
@@ -70,6 +79,9 @@ fn run(cli: &Cli) -> Result<()> {
     // Non-interactive subcommands run and return BEFORE any terminal init /
     // probe (same as --list-themes), so they work in a non-TTY / CI environment.
     match &cli.command {
+        // `--include-packages` is a GLOBAL flag (parsed before OR after the
+        // subcommand, landing on `cli.include_packages` either way), so the
+        // subcommand variants carry no field of their own.
         Some(Commands::Docs {
             out,
             manifest,
@@ -78,7 +90,6 @@ fn run(cli: &Cli) -> Result<()> {
             quiet,
             clean,
             check,
-            include_packages,
         }) => {
             return run_docs(
                 out,
@@ -88,7 +99,7 @@ fn run(cli: &Cli) -> Result<()> {
                 *quiet,
                 *clean,
                 *check,
-                *include_packages,
+                cli.include_packages,
             );
         }
         Some(Commands::Impact {
@@ -97,9 +108,15 @@ fn run(cli: &Cli) -> Result<()> {
             manifest,
             source,
             project,
-            include_packages,
         }) => {
-            return run_impact(diff, *format, manifest, source, project, *include_packages);
+            return run_impact(
+                diff,
+                *format,
+                manifest,
+                source,
+                project,
+                cli.include_packages,
+            );
         }
         Some(Commands::Check {
             diff,
@@ -108,7 +125,6 @@ fn run(cli: &Cli) -> Result<()> {
             source,
             project,
             quiet,
-            include_packages,
         }) => {
             return run_check(
                 diff,
@@ -117,7 +133,7 @@ fn run(cli: &Cli) -> Result<()> {
                 source,
                 project,
                 *quiet,
-                *include_packages,
+                cli.include_packages,
             );
         }
         Some(Commands::Columns {
@@ -129,7 +145,15 @@ fn run(cli: &Cli) -> Result<()> {
             project,
             ..
         }) => {
-            return run_columns(target, *upstream, *format, manifest, source, project);
+            return run_columns(
+                target,
+                *upstream,
+                *format,
+                manifest,
+                source,
+                project,
+                cli.include_packages,
+            );
         }
         None => {}
     }
@@ -170,7 +194,16 @@ fn run(cli: &Cli) -> Result<()> {
                 .iter()
                 .next()
                 .is_some_and(|uid| app.select_by_unique_id(uid));
-        anyhow::ensure!(found, "--select: model '{name}' not found");
+        // A miss under the default scope might just be a pruned installed
+        // package — name the escape hatch instead of leaving the user guessing
+        // (--include-packages removes the hiding place, so no hint needed then).
+        let hint = if cli.package_scope() == dbtl::PackageScope::Root {
+            " (installed packages are hidden by the default scope — retry with \
+             --include-packages if the model lives in one)"
+        } else {
+            ""
+        };
+        anyhow::ensure!(found, "--select: model '{name}' not found{hint}");
     }
 
     // Load the --diff baseline (a second Dag) and open on the Diff lens so the

@@ -16,6 +16,9 @@ fn fixture_manifest() -> PathBuf {
 fn run(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_dbtl"))
         .args(args)
+        // Null stdin keeps a bare (no-subcommand) invocation from seeing the
+        // test runner's TTY and parking on the interactive event loop.
+        .stdin(std::process::Stdio::null())
         .output()
         .expect("failed to run dbtl")
 }
@@ -25,6 +28,7 @@ fn run(args: &[&str]) -> std::process::Output {
 fn run_env(args: &[&str], envs: &[(&str, &std::path::Path)]) -> std::process::Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_dbtl"));
     cmd.args(args);
+    cmd.stdin(std::process::Stdio::null());
     for (k, v) in envs {
         cmd.env(k, v);
     }

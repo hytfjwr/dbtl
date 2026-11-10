@@ -1337,6 +1337,89 @@ fn adopt_manifest_switches_the_source_and_reverts_on_error() {
     );
 }
 
+/// Write a minimal manifest.json (nodes + sources + the two adjacency maps
+/// are the required keys) into `dir` and return its path — each uid becomes a
+/// bare model node, enough for `load_dag` + the scope predicates.
+fn write_min_manifest(dir: &Path, project_name: Option<&str>, uids: &[&str]) -> PathBuf {
+    let nodes: serde_json::Map<String, serde_json::Value> = uids
+        .iter()
+        .map(|uid| {
+            (
+                uid.to_string(),
+                serde_json::json!({
+                    "name": uid.rsplit('.').next().unwrap_or(uid),
+                    "resource_type": "model",
+                }),
+            )
+        })
+        .collect();
+    let mut manifest = serde_json::json!({
+        "nodes": nodes,
+        "sources": {},
+        "parent_map": {},
+        "child_map": {},
+    });
+    if let Some(p) = project_name {
+        manifest["metadata"] = serde_json::json!({ "project_name": p });
+    }
+    let path = dir.join("manifest.json");
+    std::fs::write(&path, manifest.to_string()).expect("write manifest");
+    path
+}
+
+#[test]
+fn reload_and_adopt_return_the_scope_warnings() {
+    // `reload`/`adopt_manifest` must surface the same warnings the CLI load
+    // path prints — an emptied or ambiguously-rooted re-load is a load
+    // outcome, not a silent re-scope.
+    let tmp = tempfile::tempdir().unwrap();
+    let path = write_min_manifest(tmp.path(), Some("zzz"), &["model.zzz.a", "model.aaa.b"]);
+    let mut a = App::new(load_dag(&path).unwrap(), path.clone());
+    assert!(
+        a.reload().expect("clean reload").is_empty(),
+        "an unremarkable reload warns about nothing"
+    );
+
+    // The recorded root vanishes between reloads: the scope now empties the
+    // graph and the warning explains where every node went.
+    write_min_manifest(tmp.path(), Some("zzz"), &["model.aaa.a", "model.aaa.b"]);
+    let warnings = a.reload().expect("reload");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("no nodes belong to the root project 'zzz'")),
+        "the emptied-graph warning reaches the caller, got {warnings:?}"
+    );
+
+    // No metadata + several packages: the root-package guess is flagged too.
+    write_min_manifest(
+        tmp.path(),
+        None,
+        &["model.aaa.a", "model.bbb.b", "model.bbb.c"],
+    );
+    let warnings = a.reload().expect("reload");
+    assert!(
+        warnings.iter().any(|w| w.contains("metadata.project_name")),
+        "the ambiguous-root warning, got {warnings:?}"
+    );
+
+    // `adopt_manifest` forwards reload's warnings on success — and on a bad
+    // path keeps the old source (the never-corrupt contract).
+    let prev = a.model_list.len();
+    assert!(a
+        .adopt_manifest(PathBuf::from("/no/such/manifest.json"))
+        .is_err());
+    assert_eq!(a.model_list.len(), prev, "failed adopt leaves state intact");
+    let path = write_min_manifest(tmp.path(), Some("zzz"), &["model.aaa.a", "model.aaa.b"]);
+    let warnings = a.adopt_manifest(path).expect("adopt");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("no nodes belong to the root project 'zzz'")),
+        "adopt forwards the emptied-graph warning, got {warnings:?}"
+    );
+}
+
 #[test]
 fn effect_actions_emit_effects_without_mutating_state() {
     let mut a = app();
