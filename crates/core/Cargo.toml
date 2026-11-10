@@ -12,6 +12,9 @@ anyhow.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# `.dbtl.yml` is dbtl's OWN config file — serde_norway like the user-level
+# config (dbt's own YAML files go through yaml-rust2, see source.rs).
+serde_norway.workspace = true
 yaml-rust2.workspace = true
 
 [dev-dependencies]

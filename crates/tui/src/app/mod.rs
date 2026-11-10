@@ -257,6 +257,21 @@ pub struct App {
     /// `ColumnResolver` trait is the consumer-facing boundary: the Issue 08
     /// exact parser swaps in here without touching callers.
     pub(super) cll: NameMatchResolver,
+    /// The project-local lint configuration (`.dbtl.yml`'s `lint:` section;
+    /// [`crate::LintConfig::default`] when absent). Every surface reads the
+    /// SAME computed findings — the `Lint` lens, the stats worklist, and
+    /// `dbtl check --lint` can never disagree.
+    lint_config: crate::LintConfig,
+    /// The static-lint findings under `lint_config`, computed once per graph
+    /// (in `with_source` / `reload` / [`set_lint_config`](App::set_lint_config))
+    /// by the shared [`crate::run_rules`] — a style input, so changes ride the
+    /// `generation` cache key.
+    lint_findings: Vec<crate::Finding>,
+    /// The `.dbtl.yml` in effect (auto-detected beside the data source like
+    /// `run_results.json` is), so [`reload`](App::reload) re-reads the same
+    /// file — a config edit shows up without a restart. `None` when no
+    /// `.dbtl.yml` exists (defaults still lint).
+    lint_config_path: Option<PathBuf>,
     /// The column target `y` stashed while opening the yank menu over the
     /// structure modal — what `yl` copies. Always rewritten on
     /// `Action::YankPrefix` (the menu's entry point) and cleared the moment
@@ -308,6 +323,16 @@ impl DataSource {
             DataSource::Project(d) => default_catalog_path(None, Some(d)),
         }
     }
+
+    /// The `.dbtl.yml` lint config for this source (the auto-detect target
+    /// [`crate::lint_config_path`] encodes): the project dir in source mode,
+    /// the project root (parent of `target/`) in manifest mode.
+    fn lint_config_path(&self) -> Option<PathBuf> {
+        match self {
+            DataSource::Manifest(m) => crate::lint_config_path(Some(m), None),
+            DataSource::Project(d) => crate::lint_config_path(None, Some(d)),
+        }
+    }
 }
 
 impl App {
@@ -348,6 +373,22 @@ impl App {
             .and_then(|p| crate::Catalog::load(p).ok())
             .map(Rc::new);
         let cll = NameMatchResolver::new(catalog.clone());
+        // Same auto-detect for `.dbtl.yml`: the project-local lint config.
+        // A malformed file is a warning + shipped defaults (the TUI's policy —
+        // `check`/`docs` make the same error fatal; the screen never blocks on
+        // it). The notice is a one-shot toast, like the other load warnings.
+        let lint_config_path = source.lint_config_path();
+        let (lint_config, lint_notice) = match &lint_config_path {
+            Some(path) => match crate::LintConfig::load(path) {
+                Ok(c) => (c, None),
+                Err(e) => (
+                    crate::LintConfig::default(),
+                    Some(format!("warning: ignoring .dbtl.yml: {e}")),
+                ),
+            },
+            None => (crate::LintConfig::default(), None),
+        };
+        let lint_findings = crate::run_rules(&dag, &lint_config);
         App {
             dag,
             model_list,
@@ -364,7 +405,10 @@ impl App {
             lineage_view: LineageView::default(),
             glyph_mode: crate::GlyphMode::default(),
             lineage_cursor: None,
-            notice: None,
+            // A malformed `.dbtl.yml` surfaces as a startup toast (one-shot
+            // notice) — the same channel main.rs uses for the source-mode
+            // hint (it can overwrite this; both are informational).
+            notice: lint_notice,
             back: Vec::new(),
             forward: Vec::new(),
             source,
@@ -384,6 +428,9 @@ impl App {
             catalog,
             catalog_path,
             cll,
+            lint_config,
+            lint_findings,
+            lint_config_path,
             pending_col: None,
             pending_node: None,
             path_anchor: None,
@@ -394,6 +441,27 @@ impl App {
             // construction, or `reload` will silently re-scope to Root.
             scope: crate::PackageScope::default(),
         }
+    }
+
+    /// The static-lint findings under the active [`LintConfig`](crate::LintConfig)
+    /// — the shared [`crate::run_rules`] output every surface reads (Lint lens,
+    /// stats worklist). `dbtl check --lint` gates on the same vector.
+    pub fn lint_findings(&self) -> &[crate::Finding] {
+        &self.lint_findings
+    }
+
+    /// The active lint configuration (`.dbtl.yml` or the shipped defaults).
+    pub fn lint_config(&self) -> &crate::LintConfig {
+        &self.lint_config
+    }
+
+    /// Replace the lint configuration and recompute findings (test/CLI seam —
+    /// production gets its config from the auto-detected `.dbtl.yml`). Findings
+    /// are a style input, so the generation bumps like a reload.
+    pub fn set_lint_config(&mut self, config: crate::LintConfig) {
+        self.lint_config = config;
+        self.lint_findings = crate::run_rules(&self.dag, &self.lint_config);
+        self.generation += 1;
     }
 
     /// The loaded `run_results.json` side-map, if any (auto-detected sibling or
@@ -588,6 +656,18 @@ impl App {
     /// failure) deliberately replaces the reducer's optimistic intent.
     pub fn set_notice(&mut self, text: impl Into<String>) {
         self.notice = Some(text.into());
+    }
+
+    /// Append to a PENDING notice instead of replacing it (`" | "` joined) —
+    /// for startup-time writers that must not clobber a warning already
+    /// queued by `with_source` (e.g. a malformed `.dbtl.yml` notice followed
+    /// by the source-mode hint: both show in the one toast).
+    pub fn append_notice(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        self.notice = Some(match self.notice.take() {
+            Some(prev) => format!("{prev} | {text}"),
+            None => text,
+        });
     }
 
     /// Drain the pending notice (one-shot). The event loop calls this once per
@@ -937,6 +1017,24 @@ impl App {
         // replaced Dag those memos are poison, so rebuild (memos inside the
         // engine are per-call and die with it anyway).
         self.cll = NameMatchResolver::new(self.catalog.clone());
+        // `.dbtl.yml` reloads alongside the graph like the other side maps —
+        // an edit mid-session applies on the next reload, and a file created
+        // or deleted mid-session is picked up/dropped too (the path is
+        // re-detected from the data source, not just replayed). A malformed
+        // file falls back to shipped defaults + a warning (same policy as
+        // startup).
+        self.lint_config_path = self.source.lint_config_path();
+        match &self.lint_config_path {
+            Some(path) => match crate::LintConfig::load(path) {
+                Ok(c) => self.lint_config = c,
+                Err(e) => {
+                    warnings.push(format!("ignoring .dbtl.yml: {e}"));
+                    self.lint_config = crate::LintConfig::default();
+                }
+            },
+            None => self.lint_config = crate::LintConfig::default(),
+        }
+        self.lint_findings = crate::run_rules(&self.dag, &self.lint_config);
         self.filter = None;
         self.mode = Mode::Selection;
         // Any yank-menu context stashed against the OLD graph dies here too.

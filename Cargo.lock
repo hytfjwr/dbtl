@@ -484,6 +484,7 @@ dependencies = [
  "dbtl-docs",
  "dbtl-tui",
  "ratatui",
+ "serde",
  "serde_json",
  "tempfile",
  "unicode-width",
@@ -497,6 +498,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "serde_norway",
  "tempfile",
  "yaml-rust2",
 ]

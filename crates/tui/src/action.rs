@@ -334,6 +334,12 @@ pub struct StatsView {
     /// [`layer_violation_edges`](crate::layer_violation_edges), sorted. Stored in
     /// full; the render caps the listing and shows the total `(N)`.
     pub layer_violations: Vec<(String, String)>,
+    /// The static-lint worklist: `(rule name, sorted violating node names)` per
+    /// rule that has ≥1 finding, in [`LintRule::ALL`](crate::LintRule) order —
+    /// the SAME [`run_rules`](crate::run_rules) findings `dbtl check --lint`
+    /// gates on, so the dashboard can never disagree with the CI gate. Empty
+    /// when nothing violates.
+    pub lint_findings: Vec<(String, Vec<String>)>,
     /// The longest dependency chain in the whole DAG (node names, upstream →
     /// downstream; deterministic tie-breaks by `unique_id`). Its `len()` is the
     /// graph's depth — the "how many hops can a change ripple" readout.
@@ -846,6 +852,7 @@ mod tests {
             transitive_hubs: vec![],
             orphan_models: vec![],
             layer_violations: vec![],
+            lint_findings: vec![],
             critical_path: vec![],
             critical_path_runtime: None,
             untested_testable: 0,

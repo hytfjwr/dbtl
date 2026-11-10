@@ -121,6 +121,9 @@ fn run(cli: &Cli) -> Result<()> {
         Some(Commands::Check {
             diff,
             coverage_min,
+            lint,
+            rules,
+            format,
             manifest,
             source,
             project,
@@ -129,6 +132,9 @@ fn run(cli: &Cli) -> Result<()> {
             return run_check(
                 diff,
                 *coverage_min,
+                *lint,
+                rules,
+                *format,
                 manifest,
                 source,
                 project,
@@ -251,8 +257,10 @@ fn run(cli: &Cli) -> Result<()> {
     // Source mode infers lineage from regex-parsed SQL (no Jinja rendering), so
     // macro-generated refs and the like are invisible — recommend the compiled
     // manifest up front. One-shot: the toast shows on the first frames only.
+    // append_notice, not set_notice: `with_source` may already have queued a
+    // warning (a malformed `.dbtl.yml`) — both must show, not last-write-wins.
     if app.is_source_mode() {
-        app.set_notice(if find_dbt().is_some() {
+        app.append_notice(if find_dbt().is_some() {
             "Source mode: lineage is inferred - press P to run dbt parse"
         } else {
             "Source mode: lineage is inferred (a compiled manifest is exact)"

@@ -861,6 +861,31 @@ fn stats_display_lines(sv: &StatsView, t: &theme::Theme) -> Vec<Line<'static>> {
         )));
     }
 
+    // The static-lint worklist: per-rule node names from the same `run_rules`
+    // findings `dbtl check --lint` gates on — so the dashboard can never
+    // disagree with the CI gate. Each rule's names cap like the other lists.
+    let lint_total: usize = sv.lint_findings.iter().map(|(_, names)| names.len()).sum();
+    out.push(Line::from(""));
+    out.push(Line::styled(
+        format!("Lint findings ({lint_total}):"),
+        header_style(t),
+    ));
+    if lint_total == 0 {
+        out.push(Line::from("  none"));
+    }
+    for (rule, names) in &sv.lint_findings {
+        out.push(Line::from(format!("  {rule} ({}):", names.len())));
+        for name in names.iter().take(WORKLIST_CAP) {
+            out.push(Line::from(format!("    {name}")));
+        }
+        if names.len() > WORKLIST_CAP {
+            out.push(Line::from(format!(
+                "    +{} more",
+                names.len() - WORKLIST_CAP
+            )));
+        }
+    }
+
     out.push(Line::from(""));
     out.push(Line::styled("Warnings:", header_style(t)));
     out.push(Line::from(format!(

@@ -13,6 +13,7 @@ pub mod dag;
 pub mod diff;
 pub mod impact;
 pub mod layer;
+pub mod lint;
 pub mod manifest;
 pub mod mermaid;
 pub mod run_results;
@@ -37,6 +38,10 @@ pub use impact::{
     pr_impact_markdown, DiffReport, PrImpact, PR_HUB_MIN_DOWNSTREAM,
 };
 pub use layer::{first_dir, layer_rank, LAYER_ORDER};
+pub use lint::{
+    lint_config_candidates, lint_config_path, run_rules, Finding, LintConfig, LintRule,
+    LINT_CONFIG_NAME,
+};
 pub use manifest::{
     load_manifest, RawConfig, RawDependsOn, RawExposure, RawExposureOwner, RawManifest,
     RawMetadata, RawNode, RawSource, RawTestMetadata,
