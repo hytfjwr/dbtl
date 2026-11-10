@@ -385,9 +385,12 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
     // §12's narrow-band drawer: the SAME list pane floated over the lineage's
     // left edge — the same `draw_list` pass (same offset/sticky/fold/chrome)
     // the inline pane gets, so a row means the same thing on either surface.
-    // Drawn AFTER the panes it covers (the buffer's later-wins order IS the
-    // covering), before the modal/toast overlays that must top it.
+    // Drawn AFTER the panes it covers, before the modal/toast overlays that
+    // must top it — on a `Clear`ed rect, because `draw_list` only writes the
+    // cells its lines produce (header tails and empty interior rows stay
+    // untouched), and without the wipe the lineage below ghosts through them.
     if let Some(dr) = rects.list_drawer {
+        frame.render_widget(Clear, dr);
         draw_list(
             frame,
             dr,

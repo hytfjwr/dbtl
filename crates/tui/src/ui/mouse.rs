@@ -172,6 +172,14 @@ pub struct MouseRouter {
     /// target after a frame that changed without a `Moved` (a click re-root,
     /// a wheel pan, a resize, a reload).
     pointer: Option<Position>,
+    /// Set by the event loop when a `Click` it dispatched consumed a
+    /// transient overlay surface (e.g. picked from the narrow-band drawer,
+    /// which then closed): the follow-up `DoubleClick` would hit-test the
+    /// REVEALED surface — a row, node or pane the user never aimed at — so
+    /// the loop inerts it instead. Carried here because the router owns the
+    /// gesture stream: the next emitted gesture consumes the flag, so a
+    /// stale set can never suppress an unrelated later double-click.
+    suppress_next_double: bool,
 }
 
 impl MouseRouter {
@@ -304,6 +312,25 @@ impl MouseRouter {
     /// its cache key).
     pub fn hover(&self) -> Option<&HitTarget> {
         self.hover.as_ref()
+    }
+
+    /// Mark the `Click` the loop just dispatched as having consumed a
+    /// transient overlay surface that has since closed (the §12 drawer's
+    /// click-pick): the follow-up `DoubleClick` must be inert or it would
+    /// hit-test the revealed surface and act on a target the user never
+    /// aimed at.
+    pub fn suppress_double(&mut self) {
+        self.suppress_next_double = true;
+    }
+
+    /// Consume the [`suppress_double`] flag — the loop reads it once per
+    /// emitted gesture, so a flag set by one click can only inert the
+    /// `DoubleClick` immediately following it (any other gesture in between
+    /// clears it harmlessly).
+    ///
+    /// [`suppress_double`]: MouseRouter::suppress_double
+    pub fn take_suppress_double(&mut self) -> bool {
+        std::mem::take(&mut self.suppress_next_double)
     }
 }
 

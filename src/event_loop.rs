@@ -738,6 +738,13 @@ pub fn event_loop(
                         // must re-centre even when the selected id is unchanged.
                         let reanchor = reanchors_lineage(action);
                         let outcome = apply_action(app, action);
+                        // §12: Enter IS the drawer's keyboard pick — the
+                        // row's model commits (re-root/detail) and the
+                        // transient surface closes, the same contract a
+                        // mouse click-pick keeps.
+                        if matches!(action, Action::DetailOpen) && app.ui_state.list_drawer() {
+                            app.ui_state.set_list_drawer(false);
+                        }
                         // `<`/`>` stepped the saved width size-blind (the §1
                         // floor lives in `nudge_list_width`); the §1 max is
                         // terminal-relative, so it clamps HERE — the same
@@ -1154,6 +1161,11 @@ fn handle_mouse(
             };
             let live = app.mode.mouse_live();
             let sel = matches!(app.mode, Mode::Selection);
+            // One consume per emitted gesture: a pick that closed a
+            // transient overlay flags its follow-up `DoubleClick` inert (see
+            // `MouseRouter::suppress_double`); any other gesture in between
+            // simply clears it.
+            let suppress_double = mouse.take_suppress_double();
             // The covering overlay's outer rect — the hit-test routes by it
             // (interior rows / frame / exterior), computed from the SAME
             // layout + scroll the frame drew.
@@ -1208,7 +1220,15 @@ fn handle_mouse(
                 MouseOutcome::Click { button, at } | MouseOutcome::DoubleClick { button, at }
                     if live =>
                 {
-                    let target = {
+                    // A pick that closed the drawer suppresses the follow-up
+                    // double: the target it would resolve now sits on the
+                    // REVEALED surface — a row, node or pane the user never
+                    // aimed at — so no arm fires.
+                    let inert =
+                        suppress_double && matches!(gesture, MouseOutcome::DoubleClick { .. });
+                    let target = if inert {
+                        None
+                    } else {
                         let g = chrome.hit_geometry(app, lineage, area, overlay);
                         hit_target(&g, at.x, at.y)
                     };
@@ -1308,6 +1328,10 @@ fn handle_mouse(
                                     outcome.effects.extend(o.effects);
                                     outcome.reanchor |= o.reanchor;
                                     app.ui_state.set_list_drawer(false);
+                                    // The drawer is gone: the follow-up
+                                    // double-click must not re-hit-test the
+                                    // revealed surface.
+                                    mouse.suppress_double();
                                 }
                                 // A click outside the open drawer dismisses
                                 // it — the band's modal-exterior surface
@@ -2361,6 +2385,77 @@ mod tests {
         );
     }
 
+    /// [`feed_l`] at a caller-chosen terminal `area` — the §12 drawer only
+    /// exists below 80 columns, so its gestures feed a narrow band.
+    #[allow(clippy::too_many_arguments)]
+    fn feed_area(
+        app: &mut App,
+        router: &mut MouseRouter,
+        drag: &mut Option<PaneDrag>,
+        kind: MouseEventKind,
+        x: u16,
+        y: u16,
+        lineage: Option<&Layout>,
+        area: Rect,
+    ) {
+        handle_mouse(
+            app,
+            router,
+            drag,
+            mouse(kind, x, y),
+            lineage,
+            area,
+            &ChromeGeom::default(),
+        );
+    }
+
+    /// The narrow band the §12 drawer tests feed: 60x24 puts `pane_layout`
+    /// under `LIST_AUTO_HIDE_W`, so the flag-backed rect actually resolves.
+    const BAND: Rect = Rect::new(0, 0, 60, 24);
+
+    /// Open the drawer the way the loop's per-frame band publish does.
+    fn open_band_drawer(app: &mut App) {
+        app.ui_state.set_list_auto_hidden(true);
+        app.ui_state.set_list_drawer(true);
+    }
+
+    /// The first cell hit-testing as `ListRow` under `g` (left-to-right,
+    /// top-to-bottom) — aimed by the test instead of hardcoded, so a fixture
+    /// row reshuffle can't silently move the target.
+    fn list_row_cell(app: &App, lineage: Option<&Layout>, area: Rect) -> (u16, u16) {
+        let chrome = ChromeGeom::default();
+        let g = chrome.hit_geometry(app, lineage, area, None);
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                if let Some(HitTarget::ListRow(_)) = hit_target(&g, x, y) {
+                    return (x, y);
+                }
+            }
+        }
+        panic!("no ListRow cell resolved in the geometry");
+    }
+
+    /// Every `(x, y, target)` the geometry resolves — OWNED results, so the
+    /// borrow on `app` ends here and the caller may mutate state between an
+    /// open- and closed-surface scan (the drawer reveal test needs both).
+    fn resolved_targets(
+        app: &App,
+        lineage: Option<&Layout>,
+        area: Rect,
+    ) -> Vec<(u16, u16, HitTarget)> {
+        let chrome = ChromeGeom::default();
+        let g = chrome.hit_geometry(app, lineage, area, None);
+        let mut out = Vec::new();
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                if let Some(t) = hit_target(&g, x, y) {
+                    out.push((x, y, t));
+                }
+            }
+        }
+        out
+    }
+
     #[test]
     fn splitter_drag_resizes_the_list_and_tracks_the_grab_offset() {
         let mut app = fixture_app();
@@ -3006,5 +3101,186 @@ mod tests {
         let node = HitTarget::LineageNode("seed.jaffle_finance.source_datetime_policy".to_string());
         reconcile_hover_tip(&mut tip, Some(&node), false, (0, 0), &app.dag);
         assert!(tip.is_some(), "a real node still arms the tip");
+    }
+
+    // ---- §12 narrow-band drawer: loop-level gestures ----
+
+    /// A left press+release at a cell — one full click through the router.
+    fn click(
+        app: &mut App,
+        router: &mut MouseRouter,
+        drag: &mut Option<PaneDrag>,
+        x: u16,
+        y: u16,
+        lineage: Option<&Layout>,
+    ) {
+        feed_area(
+            app,
+            router,
+            drag,
+            MouseEventKind::Down(MouseButton::Left),
+            x,
+            y,
+            lineage,
+            BAND,
+        );
+        feed_area(
+            app,
+            router,
+            drag,
+            MouseEventKind::Up(MouseButton::Left),
+            x,
+            y,
+            lineage,
+            BAND,
+        );
+    }
+
+    /// A click on a drawer row picks the model and closes the surface —
+    /// and the closed surface hands list focus back to the lineage.
+    #[test]
+    fn drawer_row_click_picks_and_closes() {
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        open_band_drawer(&mut app);
+        let (x, y) = list_row_cell(&app, None, BAND);
+        click(&mut app, &mut router, &mut drag, x, y, None);
+        assert!(
+            !app.ui_state.list_drawer(),
+            "a drawer-row pick closes the drawer"
+        );
+        assert_eq!(
+            app.ui_state.focus(),
+            Focus::RightPane,
+            "the closed surface hands focus to the lineage"
+        );
+    }
+
+    /// The pick's follow-up `DoubleClick` must be inert: the row cell it
+    /// resolves on the REVEALED surface is a lineage node the user never
+    /// aimed at — firing its arm would re-root or open the structure modal.
+    #[test]
+    fn drawer_pick_makes_the_follow_up_double_click_inert() {
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        open_band_drawer(&mut app);
+        let lineage = app.styled_lineage_layout();
+        // Aim at a cell that is a drawer row while open AND a non-model
+        // lineage node once revealed (a seed/source double-click opens the
+        // structure modal — the failure is observable in `app.mode`).
+        let (x, y) = {
+            let rows: Vec<(u16, u16)> = resolved_targets(&app, lineage.as_deref(), BAND)
+                .into_iter()
+                .filter_map(|(x, y, t)| matches!(t, HitTarget::ListRow(_)).then_some((x, y)))
+                .collect();
+            app.ui_state.set_list_drawer(false);
+            let revealed = resolved_targets(&app, lineage.as_deref(), BAND);
+            app.ui_state.set_list_drawer(true);
+            let mut fallback = None;
+            let mut aim = None;
+            for (x, y) in rows {
+                let under = revealed
+                    .iter()
+                    .find(|(rx, ry, _)| *rx == x && *ry == y)
+                    .map(|(_, _, t)| t);
+                if let Some(HitTarget::LineageNode(uid)) = under {
+                    if !uid.starts_with("model.") {
+                        aim = Some((x, y));
+                        break;
+                    }
+                    fallback = fallback.or(Some((x, y)));
+                }
+            }
+            aim.or(fallback).expect("a drawer row over a lineage node")
+        };
+        // The pick: drawer closes, model adopted.
+        click(&mut app, &mut router, &mut drag, x, y, lineage.as_deref());
+        assert!(!app.ui_state.list_drawer(), "the pick closes the drawer");
+        // The double-click that gesture-wise follows MUST be inert.
+        click(&mut app, &mut router, &mut drag, x, y, lineage.as_deref());
+        assert!(
+            matches!(app.mode, Mode::Selection),
+            "the follow-up double must not fire on the revealed node — got {:?}",
+            app.mode
+        );
+    }
+
+    /// A click outside the open drawer dismisses it (`ModalExterior`), and
+    /// a right-click INSIDE keeps it for the context menu.
+    #[test]
+    fn drawer_exterior_click_dismisses_right_click_keeps() {
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        open_band_drawer(&mut app);
+        let (x, y) = list_row_cell(&app, None, BAND);
+        // Right-click a row: the context menu is not a pick — drawer stays.
+        feed_area(
+            &mut app,
+            &mut router,
+            &mut drag,
+            MouseEventKind::Down(MouseButton::Right),
+            x,
+            y,
+            None,
+            BAND,
+        );
+        feed_area(
+            &mut app,
+            &mut router,
+            &mut drag,
+            MouseEventKind::Up(MouseButton::Right),
+            x,
+            y,
+            None,
+            BAND,
+        );
+        assert!(
+            app.ui_state.list_drawer(),
+            "a context-menu right-click keeps the drawer"
+        );
+    }
+
+    #[test]
+    fn drawer_exterior_click_dismisses() {
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        open_band_drawer(&mut app);
+        // Far right of the 34-wide drawer: plain lineage interior.
+        click(&mut app, &mut router, &mut drag, 50, 12, None);
+        assert!(
+            !app.ui_state.list_drawer(),
+            "a click outside the drawer dismisses it"
+        );
+    }
+
+    /// The wheel over the drawer interior scrolls the list (cursor + adopt),
+    /// the same notch the inline pane takes.
+    #[test]
+    fn drawer_wheel_scrolls_the_list() {
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        open_band_drawer(&mut app);
+        let (x, y) = list_row_cell(&app, None, BAND);
+        let before = app.ui_state.selected();
+        feed_area(
+            &mut app,
+            &mut router,
+            &mut drag,
+            MouseEventKind::ScrollDown,
+            x,
+            y,
+            None,
+            BAND,
+        );
+        assert_ne!(
+            app.ui_state.selected(),
+            before,
+            "a wheel notch over the drawer interior moves the list cursor"
+        );
     }
 }

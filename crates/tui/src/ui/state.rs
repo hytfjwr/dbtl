@@ -339,19 +339,26 @@ impl UiState {
         self.list_visible
     }
 
-    /// Show / hide the left model-list pane (the `Ctrl-b` pref — in the
-    /// narrow band the event loop reroutes the key to [`toggle_list_drawer`],
-    /// so this only ever flips while the inline pane can exist). Flipping to
-    /// shown hands focus to the list; flipping to hidden moves it off the
-    /// list — to the lineage, or keeps the inspector if that's where it was —
-    /// the same pin [`set_list_drawer`] and [`set_list_auto_hidden`] keep:
-    /// the decision reads [`list_shown`], so a pref flip in the band can't
-    /// land focus on a surface that isn't drawn.
+    /// Show / hide the left model-list pane (the `Ctrl-b` pref). In the
+    /// narrow band the inline surface cannot exist, so the toggle means the
+    /// drawer — the event loop's `Ctrl-b` reroute hits this same branch, and
+    /// so does every other dispatcher (palette confirm, menu): checking the
+    /// published band verdict HERE keeps `list_visible` — a persisted pref —
+    /// untouched no matter how the action arrived. Flipping to shown hands
+    /// focus to the list; flipping to hidden moves it off the list — to the
+    /// lineage, or keeps the inspector if that's where it was — the same pin
+    /// [`set_list_drawer`] and [`set_list_auto_hidden`] keep: the decision
+    /// reads [`list_shown`], so a pref flip in the band can't land focus on
+    /// a surface that isn't drawn.
     ///
     /// [`set_list_drawer`]: UiState::set_list_drawer
     /// [`set_list_auto_hidden`]: UiState::set_list_auto_hidden
     /// [`list_shown`]: UiState::list_shown
     pub fn toggle_list_pane(&mut self) {
+        if self.list_auto_hidden {
+            self.toggle_list_drawer();
+            return;
+        }
         self.list_visible = !self.list_visible;
         self.focus = if self.list_shown() {
             Focus::List
@@ -417,10 +424,17 @@ impl UiState {
     /// is always hidden and the list exists only as the drawer, so a
     /// `Focus::List` left over from the wide band pins to the lineage; the
     /// drawer flag itself is left untouched — leaving the band hands the
-    /// verdict back to `list_visible` and the flag simply goes inert.
+    /// verdict back to `list_visible` and the flag simply goes inert. A
+    /// drawer left open on the way out re-materializes on re-entry — that
+    /// IS a fresh open, so it takes list focus like [`set_list_drawer`]
+    /// does.
+    ///
+    /// [`set_list_drawer`]: UiState::set_list_drawer
     pub fn set_list_auto_hidden(&mut self, hidden: bool) {
         self.list_auto_hidden = hidden;
-        if !self.list_shown() && self.focus == Focus::List {
+        if hidden && self.list_drawer {
+            self.focus = Focus::List;
+        } else if !self.list_shown() && self.focus == Focus::List {
             self.focus = Focus::RightPane;
         }
     }
@@ -1604,21 +1618,52 @@ mod tests {
     }
 
     #[test]
-    fn pref_flips_in_the_band_never_focus_a_hidden_surface() {
+    fn toggles_in_the_band_move_the_drawer_never_the_pref() {
         let mut s = state(45);
         s.set_list_auto_hidden(true);
-        // `toggle_list_pane` writes the PREF — it can't land focus on the
-        // inline pane the band hides (its decision reads `list_shown`).
+        // `toggle_list_pane` in the band — however it was dispatched (Ctrl-b
+        // reroute, palette confirm, menu) — toggles the DRAWER, the only
+        // list surface that can exist here; the persisted inline pref must
+        // not move (a write here would silently change ≥80 behaviour).
+        let pref = s.list_visible();
         s.set_focus(Focus::RightPane);
         s.toggle_list_pane();
+        assert_eq!(s.list_visible(), pref, "the persisted pref is untouched");
+        assert!(s.list_drawer(), "the drawer opened instead");
+        assert_eq!(s.focus(), Focus::List, "the opened drawer takes focus");
+        // The same toggle closes it and hands focus back.
+        s.toggle_list_pane();
+        assert_eq!(s.list_visible(), pref);
+        assert!(!s.list_drawer());
         assert_eq!(s.focus(), Focus::RightPane);
-        assert!(!s.list_visible(), "the pref itself still flipped");
-        // The reverse flip while the drawer is open DOES land list focus —
-        // `list_shown` is true because the drawer is the shown surface.
-        s.set_list_drawer(true);
-        s.set_focus(Focus::RightPane);
+        // And above the band the same call writes the pref, like always.
+        s.set_list_auto_hidden(false);
         s.toggle_list_pane();
-        assert!(s.list_visible());
-        assert_eq!(s.focus(), Focus::List, "a shown surface may be focused");
+        assert_eq!(s.list_visible(), !pref, "the pref flips off-band");
+    }
+
+    #[test]
+    fn band_reentry_with_an_open_drawer_grabs_list_focus() {
+        let mut s = state(45);
+        s.set_list_auto_hidden(true);
+        s.set_list_drawer(true);
+        assert_eq!(s.focus(), Focus::List);
+        // Leave the band with the drawer still flagged: the flag goes inert
+        // and the user moves on while the wide panes are up.
+        s.set_list_auto_hidden(false);
+        s.set_focus(Focus::RightPane);
+        // Re-entering the band re-materializes the stale-open drawer — that
+        // IS a fresh open, so it takes list focus like `set_list_drawer`
+        // does (a hidden-or-focused mismatch can't strand the surface).
+        s.set_list_auto_hidden(true);
+        assert!(s.list_shown(), "the stale flag re-shows the drawer");
+        assert_eq!(s.focus(), Focus::List, "the re-open grabs list focus");
+        // A drawer the user actually CLOSED before leaving stays closed.
+        s.set_list_drawer(false);
+        s.set_list_auto_hidden(false);
+        s.set_focus(Focus::RightPane);
+        s.set_list_auto_hidden(true);
+        assert!(!s.list_shown());
+        assert_eq!(s.focus(), Focus::RightPane, "no drawer, no steal");
     }
 }
