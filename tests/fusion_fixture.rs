@@ -367,16 +367,42 @@ fn docs_cli_prints_one_warning_per_unhandled_kind_to_stderr() {
 
 /// Issue 08: routing startup warnings into the TUI's notification log must
 /// not change what reaches stderr on the TUI path. Warnings are printed by
-/// `resolve_source` BEFORE terminal init, so they are visible even when this
-/// non-TTY run then fails at `try_init` — assert the lines, ignore the exit.
+/// `resolve_source` BEFORE terminal init.
+///
+/// The bare invocation reaches `ratatui::try_init()`: on a host WITHOUT a
+/// console it exits with "no TTY", but a Windows CI runner HAS a console
+/// (crossterm opens CONIN$ — stdin redirection cannot hide it), so the child
+/// parks on the event loop. Poll `try_wait` and kill a parked child instead
+/// of blocking on `output()` (the pattern `package_scope.rs` uses for the
+/// same reason).
 #[test]
 fn tui_path_still_prints_startup_warnings_to_stderr() {
-    let result = Command::new(env!("CARGO_BIN_EXE_dbtl"))
-        .arg("--manifest")
-        .arg(FIXTURE)
-        .output()
-        .expect("failed to run dbtl");
-    let stderr = String::from_utf8_lossy(&result.stderr);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_dbtl"))
+        .args(["--manifest", FIXTURE])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn dbtl");
+    let stderr_pipe = child.stderr.take().expect("stderr piped");
+    let reader = std::thread::spawn(move || {
+        let mut buf = String::new();
+        use std::io::Read;
+        let _ = std::io::BufReader::new(stderr_pipe).read_to_string(&mut buf);
+        buf
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if child.try_wait().expect("poll child").is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if child.try_wait().expect("poll child").is_none() {
+        child.kill().expect("kill parked TUI child");
+    }
+    let _ = child.wait();
+    let stderr = reader.join().expect("stderr reader");
     for warning in [
         "warning: unsupported resource_type 'fixture' (1 node)",
         "warning: unsupported resource_type 'function' (1 node)",
