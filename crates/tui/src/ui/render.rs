@@ -48,6 +48,13 @@ pub struct StatusSegments<'a> {
     /// The run_results readout (`run 12/34 @ 2024-01-02` — coverage + freshness
     /// of the loaded artifact). `None` when no run_results is loaded.
     pub run: Option<&'a str>,
+    /// The package scope of the loaded graph, `"scope:root"` (the default —
+    /// installed-package nodes are absent) or `"scope:+pkgs"` under
+    /// `--include-packages`. Emitted on every frame (the event loop always
+    /// sets it) because the scope is a statement about what the numbers
+    /// describe — but it is still a droppable segment, shed on narrow widths
+    /// like any other.
+    pub scope: Option<&'a str>,
     /// The persistent list filter when active, e.g. `"untested"` (bare — the
     /// segment renderer adds the `[..]`). Echoes the list-title tag so it
     /// stays visible while the list pane is hidden.
@@ -508,20 +515,24 @@ fn draw_status(
     // (text, fg) in append/drop priority order (right-first drop, since a segment
     // that doesn't fit stops the loop — so index 0 survives the narrowest line).
     // Each rendered as a bracketed ` [txt]`. Priority:
-    //   1. impact — always-on blast radius, the headline readout, right after the
-    //      protected core so it survives narrow widths longest.
+    //   1. impact — the every-frame blast radius, the headline readout, right
+    //      after the protected core so it survives narrow widths longest.
     //   2. the diff chip (present only when a --diff baseline is loaded — the
-    //      at-a-glance readout that mode exists for), then the user-ACTIVATED
-    //      states (coverage lens %, bookmarks, sort — information shown
-    //      nowhere else).
-    //   3. position.
-    //   4. focus / view LAST (focus is already the accent pane border, and the
+    //      at-a-glance readout that mode exists for), then the run artifact
+    //      readout and the package-scope tag (emitted every frame — a
+    //      statement about what the numbers describe, not user-activated but
+    //      load-defining — yet droppable on narrow widths like the rest).
+    //   3. the user-ACTIVATED states (coverage lens %, bookmarks, filter, sort —
+    //      information shown nowhere else).
+    //   4. position.
+    //   5. focus / view LAST (focus is already the accent pane border, and the
     //      view label is echoed in the lineage pane title — redundant cues that
     //      should drop first on a narrow terminal).
-    let candidates: [(Option<&str>, Color); 10] = [
+    let candidates: [(Option<&str>, Color); 11] = [
         (segments.impact, t.danger),
         (segments.diff, t.diff_mod),
         (segments.run, t.warn),
+        (segments.scope, t.accent),
         (segments.coverage, t.warn),
         (segments.bookmarks, t.gold),
         (segments.filter, t.accent),

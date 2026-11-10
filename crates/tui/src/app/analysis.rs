@@ -24,10 +24,12 @@ impl App {
             self.diff_base.as_ref(),
             diff,
             self.diff_label(),
+            self.scope(),
             &self.owner_meta_key,
         );
         Some(DiffView {
             baseline: report.baseline,
+            scope: report.scope,
             added: report.added,
             removed: report.removed,
             modified: report.modified,
@@ -48,15 +50,30 @@ impl App {
         let mut zero_down = 0;
         let mut no_desc = 0;
         let mut hubs: Vec<(String, String, usize)> = Vec::new();
-        // Transitive blast-radius hubs over ALL nodes (same base as `hubs`), and
-        // orphan models (zero kept parents AND zero kept children).
+        // Transitive blast-radius hubs (root-project membership like `hubs`;
+        // the count itself is the graph-wide closure so the number matches the
+        // DegreeHeat/impact readouts), and orphan models (zero kept parents
+        // AND zero kept children).
         let mut transitive: Vec<(String, String, usize)> = Vec::new();
         let mut orphans: Vec<String> = Vec::new();
         // Coverage comes from the ONE shared source (`coverage_summary`, the
         // `coverage_gap` base) so the dashboard, the `t` lens, and the status
         // `cov` segment always quote the same numbers.
         let (testable_tested, testable_total) = self.coverage_summary();
+        // Every count/list the dashboard reports describes the ROOT project —
+        // the same [`Dag::is_root_project`] scope `coverage_counts` and
+        // `dbtl check` share. Under the `All` package scope installed-package
+        // nodes sit in the graph as dependency context but are never part of
+        // your project's type/materialization/orphan/hub numbers. The owning
+        // package is resolved ONCE for the sweep (`is_root_project`
+        // re-resolves per call — an O(nodes) scan per node without recorded
+        // metadata); the title-bar `model:N` counts deliberately do NOT scope
+        // — see `compute_stats`.
+        let primary = self.dag.primary_package();
         for (uid, n) in self.dag.nodes() {
+            if !primary.as_deref().is_none_or(|p| crate::in_package(n, p)) {
+                continue;
+            }
             *by_rt.entry(n.resource_type.clone()).or_default() += 1;
             let degree = n.direct_up + n.direct_down;
             hubs.push((uid.clone(), n.name.clone(), degree));
@@ -358,6 +375,13 @@ pub(super) fn weighted_chain(dag: &Dag, weight: impl Fn(&str) -> f64) -> (Vec<St
 /// manifest's recorded root project (`metadata.project_name`), falling back
 /// to a `unique_id`-segment heuristic — resolved by [`Dag::project_name`] so
 /// the title bar and the docs index quote the same name.
+///
+/// The resource counts intentionally describe the LOADED graph — every node
+/// the list and lineage can show — so under `--include-packages` the
+/// `model:N`/`src:N`… chips include installed-package context while the `S`
+/// dashboard, coverage, and `dbtl check` still count the root project only.
+/// The divergence is deliberate: the title enumerates what is on screen, the
+/// dashboard reports your project's health.
 pub(super) fn compute_stats(dag: &Dag) -> AppStats {
     let project = dag.project_name().unwrap_or("").to_string();
     AppStats {

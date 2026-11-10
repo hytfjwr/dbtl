@@ -144,7 +144,12 @@ fn check_never_reaches_the_stats_dashboard() {
 #[test]
 fn check_never_reaches_generated_docs() {
     let dag = fixture_dag();
-    let out = generate_docs(&dag, "fusion_shop", "fusion_manifest.json");
+    let out = generate_docs(
+        &dag,
+        "fusion_shop",
+        "fusion_manifest.json",
+        dbtl::PackageScope::Root,
+    );
     assert_eq!(out.len(), dag.len() + 1, "one page per node + README");
     for (path, contents) in &out {
         assert!(
@@ -265,7 +270,12 @@ fn unhandled_types_stay_in_the_graph_with_their_edges() {
 #[test]
 fn readme_breakdown_enumerates_every_resource_type_and_sums_to_total() {
     let dag = fixture_dag();
-    let out = generate_docs(&dag, "fusion_shop", "fusion_manifest.json");
+    let out = generate_docs(
+        &dag,
+        "fusion_shop",
+        "fusion_manifest.json",
+        dbtl::PackageScope::Root,
+    );
     let readme = &out
         .iter()
         .find(|(p, _)| p == "README.md")
@@ -295,7 +305,10 @@ fn readme_breakdown_enumerates_every_resource_type_and_sums_to_total() {
     let summary = summary.split("## Test coverage").next().unwrap();
     let mut total = None;
     let mut sum = 0usize;
-    for l in summary.lines().filter(|l| l.starts_with("- ")) {
+    for l in summary
+        .lines()
+        .filter(|l| l.starts_with("- ") && !l.starts_with("- scope:"))
+    {
         let (kind, n) = l
             .trim_start_matches("- ")
             .split_once(':')

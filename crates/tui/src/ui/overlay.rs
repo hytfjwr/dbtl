@@ -924,6 +924,10 @@ pub(crate) fn draw_stats(
 fn diff_display_lines(dv: &DiffView, t: &theme::Theme) -> Vec<Line<'static>> {
     let mut out: Vec<Line> = Vec::new();
     out.push(Line::from(format!("baseline: {}", dv.baseline)));
+    // Same `- scope:` line the export and `dbtl impact` print: the numbers
+    // below describe the ROOT project under either scope, and the modal must
+    // say so or a screenshot reads differently from the pasted report.
+    out.push(Line::from(format!("scope: {}", dv.scope.describe())));
 
     let total = dv.added.len()
         + dv.modified.len()

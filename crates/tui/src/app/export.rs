@@ -270,6 +270,9 @@ impl App {
         // scroll offset, so it maps back to DiffReport field-for-field.
         let report = crate::DiffReport {
             baseline: dv.baseline.clone(),
+            // The snapshot's own scope field — the export must match what the
+            // modal printed, so it never re-reads live App state.
+            scope: dv.scope,
             added: dv.added.clone(),
             removed: dv.removed.clone(),
             modified: dv.modified.clone(),

@@ -1,0 +1,317 @@
+{
+  "metadata": {
+    "dbt_schema_version": "https://schemas.getdbt.com/dbt/manifest/v12.json",
+    "dbt_version": "1.9.1",
+    "generated_at": "2026-01-01T00:00:00.000000Z",
+    "invocation_id": "00000000-0000-0000-0000-000000000000",
+    "env": {},
+    "project_name": "acme_analytics",
+    "adapter_type": "duckdb"
+  },
+  "nodes": {
+    "model.acme_analytics.stg_orders": {
+      "name": "stg_orders",
+      "resource_type": "model",
+      "package_name": "acme_analytics",
+      "path": "staging/stg_orders.sql",
+      "original_file_path": "models/staging/stg_orders.sql",
+      "unique_id": "model.acme_analytics.stg_orders",
+      "config": {
+        "materialized": "view"
+      },
+      "depends_on": {
+        "macros": [],
+        "nodes": ["source.acme_analytics.raw.orders"]
+      },
+      "raw_code": "select * from {{ source('raw', 'orders') }}"
+    },
+    "model.acme_analytics.stg_metrics": {
+      "name": "stg_metrics",
+      "resource_type": "model",
+      "package_name": "acme_analytics",
+      "path": "staging/stg_metrics.sql",
+      "original_file_path": "models/staging/stg_metrics.sql",
+      "unique_id": "model.acme_analytics.stg_metrics",
+      "config": {
+        "materialized": "view"
+      },
+      "depends_on": {
+        "macros": [],
+        "nodes": ["source.acme_analytics.raw.orders"]
+      },
+      "raw_code": "select * from {{ source('raw', 'orders') }}"
+    },
+    "model.acme_analytics.stg_audit_events": {
+      "name": "stg_audit_events",
+      "resource_type": "model",
+      "package_name": "acme_analytics",
+      "path": "staging/stg_audit_events.sql",
+      "original_file_path": "models/staging/stg_audit_events.sql",
+      "unique_id": "model.acme_analytics.stg_audit_events",
+      "config": {
+        "materialized": "view"
+      },
+      "depends_on": {
+        "macros": [],
+        "nodes": ["model.audit_tools.audit_events"]
+      },
+      "raw_code": "select * from {{ ref('audit_events') }}"
+    },
+    "model.acme_analytics.fct_orders": {
+      "name": "fct_orders",
+      "resource_type": "model",
+      "package_name": "acme_analytics",
+      "path": "marts/fct_orders.sql",
+      "original_file_path": "models/marts/fct_orders.sql",
+      "unique_id": "model.acme_analytics.fct_orders",
+      "description": "Order facts.",
+      "config": {
+        "materialized": "table"
+      },
+      "columns": {
+        "order_id": {
+          "name": "order_id"
+        }
+      },
+      "depends_on": {
+        "macros": [],
+        "nodes": ["model.acme_analytics.stg_orders"]
+      },
+      "raw_code": "select * from {{ ref('stg_orders') }}"
+    },
+    "model.acme_analytics.dim_customers": {
+      "name": "dim_customers",
+      "resource_type": "model",
+      "package_name": "acme_analytics",
+      "path": "marts/dim_customers.sql",
+      "original_file_path": "models/marts/dim_customers.sql",
+      "unique_id": "model.acme_analytics.dim_customers",
+      "config": {
+        "materialized": "table"
+      },
+      "depends_on": {
+        "macros": [],
+        "nodes": ["source.acme_analytics.raw.customers"]
+      },
+      "raw_code": "select * from {{ source('raw', 'customers') }}"
+    },
+    "model.audit_tools.audit_events": {
+      "name": "audit_events",
+      "resource_type": "model",
+      "package_name": "audit_tools",
+      "path": "audit/audit_events.sql",
+      "original_file_path": "dbt_packages/audit_tools/models/audit/audit_events.sql",
+      "unique_id": "model.audit_tools.audit_events",
+      "config": {
+        "materialized": "table"
+      },
+      "depends_on": {
+        "macros": [],
+        "nodes": ["source.audit_tools.telemetry.events"]
+      },
+      "raw_code": "select * from {{ source('telemetry', 'events') }}"
+    },
+    "model.audit_tools.audit_rollups": {
+      "name": "audit_rollups",
+      "resource_type": "model",
+      "package_name": "audit_tools",
+      "path": "audit/audit_rollups.sql",
+      "original_file_path": "dbt_packages/audit_tools/models/audit/audit_rollups.sql",
+      "unique_id": "model.audit_tools.audit_rollups",
+      "config": {
+        "materialized": "table"
+      },
+      "depends_on": {
+        "macros": [],
+        "nodes": ["model.audit_tools.audit_events", "model.acme_analytics.stg_metrics"]
+      },
+      "raw_code": "select * from {{ ref('audit_events') }} join {{ ref('stg_metrics') }} using (order_id)"
+    },
+    "test.acme_analytics.unique_fct_orders_order_id.deadbeef01": {
+      "name": "unique_fct_orders_order_id",
+      "resource_type": "test",
+      "package_name": "acme_analytics",
+      "path": "unique_fct_orders_order_id.sql",
+      "original_file_path": "models/schema.yml",
+      "unique_id": "test.acme_analytics.unique_fct_orders_order_id.deadbeef01",
+      "column_name": "order_id",
+      "attached_node": "model.acme_analytics.fct_orders",
+      "test_metadata": {
+        "name": "unique",
+        "kwargs": {
+          "column_name": "order_id",
+          "model": "{{ get_where_subquery(ref('fct_orders')) }}"
+        }
+      },
+      "depends_on": {
+        "macros": ["macro.dbt.test_unique"],
+        "nodes": ["model.acme_analytics.fct_orders"]
+      }
+    },
+    "test.acme_analytics.not_null_fct_orders_order_id.cafebabe02": {
+      "name": "not_null_fct_orders_order_id",
+      "resource_type": "test",
+      "package_name": "acme_analytics",
+      "path": "not_null_fct_orders_order_id.sql",
+      "original_file_path": "models/schema.yml",
+      "unique_id": "test.acme_analytics.not_null_fct_orders_order_id.cafebabe02",
+      "column_name": "order_id",
+      "attached_node": "model.acme_analytics.fct_orders",
+      "test_metadata": {
+        "name": "not_null",
+        "kwargs": {
+          "column_name": "order_id",
+          "model": "{{ get_where_subquery(ref('fct_orders')) }}"
+        }
+      },
+      "depends_on": {
+        "macros": ["macro.dbt.test_not_null"],
+        "nodes": ["model.acme_analytics.fct_orders"]
+      }
+    },
+    "test.audit_tools.unique_audit_events_id.aaaabbbb01": {
+      "name": "unique_audit_events_id",
+      "resource_type": "test",
+      "package_name": "audit_tools",
+      "path": "unique_audit_events_id.sql",
+      "original_file_path": "dbt_packages/audit_tools/models/schema.yml",
+      "unique_id": "test.audit_tools.unique_audit_events_id.aaaabbbb01",
+      "column_name": "id",
+      "attached_node": "model.audit_tools.audit_events",
+      "test_metadata": {
+        "name": "unique",
+        "kwargs": {
+          "column_name": "id",
+          "model": "{{ get_where_subquery(ref('audit_events')) }}"
+        }
+      },
+      "depends_on": {
+        "macros": ["macro.dbt.test_unique"],
+        "nodes": ["model.audit_tools.audit_events"]
+      }
+    }
+  },
+  "sources": {
+    "source.acme_analytics.raw.orders": {
+      "name": "orders",
+      "resource_type": "source",
+      "package_name": "acme_analytics",
+      "path": "models/schema.yml",
+      "original_file_path": "models/schema.yml",
+      "unique_id": "source.acme_analytics.raw.orders",
+      "source_name": "raw",
+      "schema": "raw",
+      "columns": {}
+    },
+    "source.acme_analytics.raw.customers": {
+      "name": "customers",
+      "resource_type": "source",
+      "package_name": "acme_analytics",
+      "path": "models/schema.yml",
+      "original_file_path": "models/schema.yml",
+      "unique_id": "source.acme_analytics.raw.customers",
+      "source_name": "raw",
+      "schema": "raw",
+      "columns": {}
+    },
+    "source.audit_tools.telemetry.events": {
+      "name": "events",
+      "resource_type": "source",
+      "package_name": "audit_tools",
+      "path": "models/sources.yml",
+      "original_file_path": "dbt_packages/audit_tools/models/sources.yml",
+      "unique_id": "source.audit_tools.telemetry.events",
+      "source_name": "telemetry",
+      "schema": "telemetry",
+      "columns": {}
+    }
+  },
+  "exposures": {
+    "exposure.acme_analytics.ops_dashboard": {
+      "name": "ops_dashboard",
+      "resource_type": "exposure",
+      "package_name": "acme_analytics",
+      "path": "schema.yml",
+      "original_file_path": "models/schema.yml",
+      "unique_id": "exposure.acme_analytics.ops_dashboard",
+      "type": "dashboard",
+      "owner": {
+        "name": "Analytics Team"
+      },
+      "depends_on": {
+        "macros": [],
+        "nodes": ["model.acme_analytics.fct_orders"]
+      }
+    },
+    "exposure.audit_tools.audit_health": {
+      "name": "audit_health",
+      "resource_type": "exposure",
+      "package_name": "audit_tools",
+      "path": "exposures.yml",
+      "original_file_path": "dbt_packages/audit_tools/models/exposures.yml",
+      "unique_id": "exposure.audit_tools.audit_health",
+      "type": "dashboard",
+      "owner": {
+        "name": "Audit Tools"
+      },
+      "depends_on": {
+        "macros": [],
+        "nodes": ["model.audit_tools.audit_rollups"]
+      }
+    }
+  },
+  "macros": {},
+  "semantic_models": {},
+  "metrics": {},
+  "saved_queries": {},
+  "unit_tests": {},
+  "parent_map": {
+    "model.acme_analytics.stg_orders": ["source.acme_analytics.raw.orders"],
+    "model.acme_analytics.stg_metrics": ["source.acme_analytics.raw.orders"],
+    "model.acme_analytics.stg_audit_events": ["model.audit_tools.audit_events"],
+    "model.acme_analytics.fct_orders": [
+      "model.acme_analytics.stg_orders",
+      "test.acme_analytics.not_null_fct_orders_order_id.cafebabe02",
+      "test.acme_analytics.unique_fct_orders_order_id.deadbeef01"
+    ],
+    "model.acme_analytics.dim_customers": ["source.acme_analytics.raw.customers"],
+    "model.audit_tools.audit_events": ["source.audit_tools.telemetry.events"],
+    "model.audit_tools.audit_rollups": [
+      "model.audit_tools.audit_events",
+      "model.acme_analytics.stg_metrics"
+    ],
+    "exposure.acme_analytics.ops_dashboard": ["model.acme_analytics.fct_orders"],
+    "exposure.audit_tools.audit_health": ["model.audit_tools.audit_rollups"],
+    "test.acme_analytics.unique_fct_orders_order_id.deadbeef01": ["model.acme_analytics.fct_orders"],
+    "test.acme_analytics.not_null_fct_orders_order_id.cafebabe02": ["model.acme_analytics.fct_orders"],
+    "test.audit_tools.unique_audit_events_id.aaaabbbb01": ["model.audit_tools.audit_events"]
+  },
+  "child_map": {
+    "source.acme_analytics.raw.orders": [
+      "model.acme_analytics.stg_orders",
+      "model.acme_analytics.stg_metrics"
+    ],
+    "source.acme_analytics.raw.customers": ["model.acme_analytics.dim_customers"],
+    "source.audit_tools.telemetry.events": ["model.audit_tools.audit_events"],
+    "model.acme_analytics.stg_orders": ["model.acme_analytics.fct_orders"],
+    "model.acme_analytics.stg_metrics": ["model.audit_tools.audit_rollups"],
+    "model.acme_analytics.stg_audit_events": [],
+    "model.acme_analytics.fct_orders": [
+      "exposure.acme_analytics.ops_dashboard",
+      "test.acme_analytics.not_null_fct_orders_order_id.cafebabe02",
+      "test.acme_analytics.unique_fct_orders_order_id.deadbeef01"
+    ],
+    "model.acme_analytics.dim_customers": [],
+    "model.audit_tools.audit_events": [
+      "model.audit_tools.audit_rollups",
+      "model.acme_analytics.stg_audit_events",
+      "test.audit_tools.unique_audit_events_id.aaaabbbb01"
+    ],
+    "model.audit_tools.audit_rollups": ["exposure.audit_tools.audit_health"],
+    "exposure.acme_analytics.ops_dashboard": [],
+    "exposure.audit_tools.audit_health": [],
+    "test.acme_analytics.unique_fct_orders_order_id.deadbeef01": [],
+    "test.acme_analytics.not_null_fct_orders_order_id.cafebabe02": [],
+    "test.audit_tools.unique_audit_events_id.aaaabbbb01": []
+  }
+}

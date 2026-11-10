@@ -11,7 +11,7 @@ mod common;
 
 use common::{synth_manifest, SynthParams};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use dbtl::{generate_docs, layout_density, App, Dag, Density, GlyphMode};
+use dbtl::{generate_docs, layout_density, App, Dag, Density, GlyphMode, PackageScope};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -107,7 +107,7 @@ fn bench_docs(c: &mut Criterion) {
     for n in [1000usize, 4000] {
         let dag = dag(n);
         g.bench_with_input(BenchmarkId::from_parameter(n), &dag, |b, d| {
-            b.iter(|| generate_docs(black_box(d), "bench", "synthetic"))
+            b.iter(|| generate_docs(black_box(d), "bench", "synthetic", PackageScope::Root))
         });
     }
     g.finish();

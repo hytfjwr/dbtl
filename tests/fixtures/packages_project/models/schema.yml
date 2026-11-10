@@ -1,0 +1,25 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: raw
+    tables:
+      - name: orders
+      - name: customers
+
+models:
+  - name: fct_orders
+    description: "Order facts."
+    columns:
+      - name: order_id
+        data_tests:
+          - unique
+          - not_null
+
+exposures:
+  - name: ops_dashboard
+    type: dashboard
+    owner:
+      name: Analytics Team
+    depends_on:
+      - ref('fct_orders')

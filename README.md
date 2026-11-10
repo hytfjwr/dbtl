@@ -145,8 +145,9 @@ $ dbtl --select stg_orders --watch              # --watch: auto-reload on source
 $ dbtl --select 'tag:nightly'
 $ dbtl --select 'meta:domain=sales'             # meta:key / meta:key=value selectors
 
-# Hide models installed from dbt packages (manifest mode)
-$ dbtl --project-only
+# Include models installed from dbt packages in the graph (manifest mode —
+# the default scope is the root project only)
+$ dbtl --include-packages
 
 # Pick a color theme (or set DBTL_THEME)
 $ dbtl --theme ayu-mirage
@@ -179,11 +180,19 @@ The diff identifies nodes by `unique_id`, so a rename shows up as one node remov
 
 When both sides are compiled manifests, a change inside a shared **macro** is caught too: the diff reads each manifest's `macros` plus every node's `depends_on.macros` and marks callers of a changed macro — including transitive macro→macro calls — with a `macro:<name>` reason. That is the one surface raw SQL can't show.
 
-One caveat left: a compiled-manifest baseline also contains installed packages' models, which a source-parsed current side doesn't — for the cleanest signal, diff manifest against manifest, and use `--project-only` if installed-package noise matters.
+Both sides of a diff are loaded under the same package scope, so a compiled-manifest baseline and a source-parsed current side now compare cleanly by default — see the next section.
 
-#### Hiding installed packages (`--project-only`)
+#### Package scope: root project by default (`--include-packages`)
 
-A compiled manifest mixes `deps`-installed packages (`dbt_utils`, …) into `nodes`. `--project-only` keeps only the project's own nodes: the owning package is the manifest's `metadata.project_name` (the root project dbt recorded; on old manifests without it, the most frequent `model.<pkg>.<name>` uid segment), and every dangling edge/side-map entry from dropped nodes is pruned with them. Each node's `package_name` is shown in the `Enter` structure view either way.
+**Breaking change:** a compiled manifest mixes `deps`-installed packages (`dbt_utils`, …) into `nodes`, and dbtl used to load them all. The default scope is now the **root project only** — installed-package nodes are pruned at load, exactly like source mode (which never parses `dbt_packages/`). Manifest mode and source mode now agree on the node set, and every metric — test coverage, orphan models, the `S` stats dashboard, the docs README summary, `dbtl check`, the PR-impact risk flags — counts the root project under either scope.
+
+`--include-packages` widens the scope back to the manifest's full contents: package nodes appear in the model list, lineage, and docs pages as dependency context (a package model's lineage edge is real — it just isn't *your* model). The metrics still count the root project only. The flag is global, so `dbtl --include-packages check` and `dbtl check --include-packages` are equivalent.
+
+Under the default scope the prune is graph-wide — the lineage pane included. A root model whose only upstream (or downstream) was a package node shows no edge there at all: the same shape source mode draws for an unresolvable `ref()`, since installed packages are simply invisible rather than marked as pruned. A visual marker for those pruned package edges is a future follow-up; until then `--include-packages` is the way to see them.
+
+The scope is always visible where numbers are reported: the status bar shows `scope:root` (or `scope:+pkgs`), the generated docs README leads its summary with a `- scope:` bullet, `dbtl check` prints a `scope:` line, the `D` diff modal and the `dbtl impact` report carry it in the header.
+
+The owning package is the manifest's `metadata.project_name` (the root project dbt recorded; on old manifests without it, the most frequent `model.<pkg>.<name>` uid segment — a heuristic dbtl warns about when several packages are present and the guess is genuinely ambiguous). On such unrecorded manifests the *displayed* project name (title bar, docs index) can differ from the *scoped* package: the display name takes the lexicographically smallest uid segment for stability while the scope follows the most frequent one — under recorded metadata they always agree. `--project-only` still parses for backwards compatibility but is a deprecated no-op — the default already is what it asked for — and prints a deprecation warning on stderr (it also conflicts with `--include-packages`). In source mode `--include-packages` is a no-op with a warning, since installed packages are never parsed.
 
 ### The last run and the warehouse
 
