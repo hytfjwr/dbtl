@@ -681,10 +681,13 @@ impl App {
     }
 
     /// Set the `meta` key the impact reports read as "affected owners"
-    /// (`config.yml` `owner_meta_key`). A plain assignment — it feeds the
-    /// next `diff_report` snapshot, not any cached list.
+    /// (`config.yml` `owner_meta_key`). It feeds the next `diff_report`
+    /// snapshot AND the inspector's owner line, so the generation bumps
+    /// like every style input — a mid-session call never serves a stale
+    /// cached snapshot.
     pub fn set_owner_meta_key(&mut self, key: impl Into<String>) {
         self.owner_meta_key = key.into();
+        self.generation += 1;
     }
 
     /// Set the sibling-collapse threshold (`config.yml` `lineage_collapse`;

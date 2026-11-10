@@ -52,20 +52,31 @@ fn render_with_toasts(app: &mut App, width: u16, height: u16, toasts: &[ToastLin
     // Mirror the loop's inspector visibility seam (Issue 04): `auto` resolves
     // against the rendered width, `on`/`off` always/never show — so a guard
     // scenario exercises the pane whenever the loop would.
-    app.ui_state
-        .set_inspector_shown(match app.ui_state.inspector_policy() {
-            dbtl::ui::InspectorPolicy::On => true,
-            dbtl::ui::InspectorPolicy::Off => false,
-            dbtl::ui::InspectorPolicy::Auto => width >= 160,
-        });
+    let want = match app.ui_state.inspector_policy() {
+        dbtl::ui::InspectorPolicy::On => true,
+        dbtl::ui::InspectorPolicy::Off => false,
+        dbtl::ui::InspectorPolicy::Auto => width >= 160,
+    };
+    app.ui_state.set_inspector_shown(want);
     if let Some(uid) = app.inspector_target() {
         app.ui_state.set_inspector_target(&uid);
     }
-    let inspector = if app.ui_state.inspector_shown() {
+    // Mirror the loop's phase 2: a squeezed or view-less `want` resolves to
+    // `shown = false` — the carved region goes back to the other panes.
+    let inspector = if want
+        && dbtl::ui::pane_layout(
+            ratatui::layout::Rect::new(0, 0, width, height),
+            &app.ui_state.pane_config(),
+        )
+        .inspector
+        .width
+            > 0
+    {
         app.inspector_view()
     } else {
         None
     };
+    app.ui_state.set_inspector_shown(inspector.is_some());
     let status = app.selected_status_note();
     let label = app.lineage_view_label();
 

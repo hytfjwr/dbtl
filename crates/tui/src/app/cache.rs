@@ -291,7 +291,12 @@ impl App {
     ///
     /// [`inspector_target`]: App::inspector_target
     pub fn inspector_view(&self) -> Option<Rc<crate::InspectorView>> {
-        let uid = self.inspector_target()?;
+        // `inspector_target` already falls back to a real node — the
+        // `dag.get` filter here keeps the contract explicit at the cache
+        // seam (a `+M more` marker uid can never key a snapshot).
+        let uid = self
+            .inspector_target()
+            .filter(|u| self.dag.get(u).is_some())?;
         let key = (uid.clone(), self.generation);
         if let Some((k, v)) = self.caches.inspector.borrow().as_ref() {
             if *k == key {

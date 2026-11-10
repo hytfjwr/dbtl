@@ -227,10 +227,15 @@ pub fn inspector_columns_line0(
         .unwrap_or(lines.len())
 }
 
-/// Clamp the inspector's scroll to its content/viewport and keep a cursored
-/// column row inside the window — the pane-side analogue of
-/// [`clamp_detail_scroll`](super::clamp_detail_scroll). `inner_w`/`inner_h`
-/// are the interior cell counts the loop measured.
+/// Clamp the inspector's scroll to its content/viewport and — when
+/// `reveal_col` names a column row — scroll it inside the window, the
+/// pane-side analogue of [`clamp_detail_scroll`](super::clamp_detail_scroll).
+/// `reveal_col` is a ONE-SHOT intent (the mouse pick's reveal, drained via
+/// [`UiState::take_inspector_reveal`](crate::UiState::take_inspector_reveal));
+/// `usize::MAX` means "clamp only". It is deliberately NOT the every-frame
+/// `inspector_col` — re-pinning each frame would cage the scroll keys inside
+/// `inner_h` of the last pick forever. `inner_w`/`inner_h` are the interior
+/// cell counts the loop measured.
 pub fn clamp_inspector_scroll(
     view: &InspectorView,
     glyphs: crate::GlyphMode,
@@ -238,12 +243,12 @@ pub fn clamp_inspector_scroll(
     inner_w: usize,
     inner_h: usize,
     scroll: usize,
-    col_cursor: usize,
+    reveal_col: usize,
 ) -> usize {
     let total = inspector_lines(view, glyphs, t, inner_w, usize::MAX).len();
     let mut scroll = scroll.min(total.saturating_sub(inner_h.max(1)));
-    if col_cursor != usize::MAX && col_cursor < view.detail.col_names.len() {
-        let row = inspector_columns_line0(view, glyphs, t, inner_w) + col_cursor;
+    if reveal_col != usize::MAX && reveal_col < view.detail.col_names.len() {
+        let row = inspector_columns_line0(view, glyphs, t, inner_w) + reveal_col;
         if row < scroll {
             scroll = row;
         } else if row >= scroll + inner_h.max(1) {

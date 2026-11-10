@@ -9199,6 +9199,61 @@ fn inspector_column_pick_clamps_to_the_columns() {
     );
 }
 
+/// A pick arms the reveal for exactly ONE clamped frame — then j/k/d/u/
+/// wheel scroll past the picked row freely. Re-pinning every frame would
+/// cage the scroll keys inside `inner_h` of the last pick forever.
+#[test]
+fn inspector_pick_reveal_is_one_shot() {
+    let mut a = app();
+    a.ui_state.set_inspector_shown(true);
+    a.ui_state.set_focus(Focus::Inspector);
+    let view = a.inspector_view().expect("fixture inspects");
+    let cols = view.detail.col_names.len();
+    assert!(cols > 1, "fixture's first model declares columns");
+
+    // No pick yet: nothing armed.
+    assert!(!a.ui_state.take_inspector_reveal());
+    apply_action(&mut a, Action::InspectorColumnPick(cols - 1));
+    assert_eq!(a.ui_state.inspector_col(), cols - 1);
+    // The pick arms the reveal; the drain is one-shot.
+    assert!(a.ui_state.take_inspector_reveal());
+    assert!(
+        !a.ui_state.take_inspector_reveal(),
+        "a second frame scrolls free — the clamp can't drag back"
+    );
+
+    // The loop-shaped frame: with the intent drained, the clamp scrolls
+    // the picked row into view…
+    let (w, h) = (30usize, 5usize);
+    let pinned = crate::ui::clamp_inspector_scroll(
+        view.as_ref(),
+        a.glyph_mode,
+        a.active_theme(),
+        w,
+        h,
+        0,
+        cols - 1,
+    );
+    assert!(pinned > 0, "the reveal scrolls the picked row into view");
+    // …and the same clamp WITHOUT the intent leaves a scrolled-away
+    // viewport exactly where the user's keys put it (0 here).
+    let home = crate::ui::clamp_inspector_scroll(
+        view.as_ref(),
+        a.glyph_mode,
+        a.active_theme(),
+        w,
+        h,
+        0,
+        usize::MAX,
+    );
+    assert_eq!(home, 0, "no re-pin once the reveal is spent");
+
+    // A retarget clears a still-pending reveal.
+    a.ui_state.set_inspector_col(0);
+    a.ui_state.set_inspector_target("model.p.other");
+    assert!(!a.ui_state.take_inspector_reveal());
+}
+
 /// Enter on a cursored inspector column row enters the SAME column-trace
 /// flow the structure modal's Enter runs (focus lands on the lineage — the
 /// trace IS the lineage view now).

@@ -323,13 +323,11 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         ctx.col_suffix,
         ctx.theme,
     );
-    // The right inspector pane (Issue 04): drawn when the loop published a
-    // snapshot AND `pane_layout` allocated it a visible rect (a width-clamped
-    // `On` at a tiny terminal can yield zero — §1's clamp rule, not an error).
-    if ctx.state.inspector_shown() && rects.inspector.width > 0 {
-        if let Some(view) = ctx.inspector {
-            super::inspector::draw_inspector_pane(frame, rects.inspector, ctx, view);
-        }
+    // The right inspector pane (Issue 04): a published snapshot IS the
+    // resolved visibility answer — the loop sets `ctx.inspector` only when
+    // the pane is on screen, has a nonzero rect, and has a node to describe.
+    if let Some(view) = ctx.inspector {
+        super::inspector::draw_inspector_pane(frame, rects.inspector, ctx, view);
     }
 
     // Restamp the splitter's border columns with the accent while it's

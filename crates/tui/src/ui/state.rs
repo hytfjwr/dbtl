@@ -249,6 +249,13 @@ pub struct UiState {
     /// is cursored (the default — `j`/`k` then scroll instead of moving a
     /// cursor, per §4's "cursor stays a mouse/pick affordance" reading).
     inspector_col: usize,
+    /// One-shot "reveal the picked row" intent: [`set_inspector_col`] arms
+    /// it, the event loop's scroll clamp consumes it via
+    /// [`take_inspector_reveal`]. Without the one-shot flag the every-frame
+    /// clamp would keep dragging the viewport back to the cursored row —
+    /// a single pick would cage `j`/`k`/`d`/`u`/`g`/`G`/wheel inside
+    /// `inner_h` of that row forever.
+    inspector_reveal: bool,
     /// The unique_id the currently-built [`InspectorView`] describes, so the
     /// reducer can reset scroll + cursor when the inspected node changes.
     inspector_target: String,
@@ -276,6 +283,7 @@ impl UiState {
             inspector_shown: false,
             inspector_scroll: 0,
             inspector_col: usize::MAX,
+            inspector_reveal: false,
             inspector_target: String::new(),
         }
     }
@@ -512,9 +520,21 @@ impl UiState {
     }
 
     /// Set the column-row cursor directly (a mouse pick — the index comes
-    /// from the event loop's screen→row mapping). `usize::MAX` clears it.
+    /// from the event loop's screen→row mapping) and arm the one-shot
+    /// reveal so the next clamped frame scrolls it into view. `usize::MAX`
+    /// clears the cursor (and the intent).
     pub fn set_inspector_col(&mut self, index: usize) {
         self.inspector_col = index;
+        self.inspector_reveal = index != usize::MAX;
+    }
+
+    /// Drain the one-shot reveal intent [`set_inspector_col`] armed — the
+    /// event loop's scroll clamp passes the cursored row to
+    /// `clamp_inspector_scroll` for THIS frame only, so a pick reveals its
+    /// row once and `j`/`k`/wheel scroll freely ever after (the highlight
+    /// itself lives on in `inspector_col`, pinned or not).
+    pub fn take_inspector_reveal(&mut self) -> bool {
+        std::mem::take(&mut self.inspector_reveal)
     }
 
     /// The unique_id the current `InspectorView` describes ("" = none yet).
@@ -532,6 +552,7 @@ impl UiState {
             self.inspector_target.push_str(uid);
             self.inspector_scroll = 0;
             self.inspector_col = usize::MAX;
+            self.inspector_reveal = false;
         }
     }
 

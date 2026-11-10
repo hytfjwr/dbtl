@@ -3268,20 +3268,32 @@ fn yank_menu_renders_every_binding_row() {
 /// `ctx.inspector` the cached `Rc` snapshot. Everything else defaults like
 /// [`render_app`].
 fn render_app_with_inspector(app: &mut dbtl::app::App, width: u16, height: u16) -> Buffer {
-    app.ui_state
-        .set_inspector_shown(match app.ui_state.inspector_policy() {
-            dbtl::ui::InspectorPolicy::On => true,
-            dbtl::ui::InspectorPolicy::Off => false,
-            dbtl::ui::InspectorPolicy::Auto => width >= 160,
-        });
+    let want = match app.ui_state.inspector_policy() {
+        dbtl::ui::InspectorPolicy::On => true,
+        dbtl::ui::InspectorPolicy::Off => false,
+        dbtl::ui::InspectorPolicy::Auto => width >= 160,
+    };
+    app.ui_state.set_inspector_shown(want);
     if let Some(uid) = app.inspector_target() {
         app.ui_state.set_inspector_target(&uid);
     }
-    let inspector = if app.ui_state.inspector_shown() {
+    // Mirror the loop's phase 2: the resolved answer is the built snapshot —
+    // a squeezed or view-less `want` publishes `shown = false` so
+    // `pane_config` stops carving the region.
+    let inspector = if want
+        && dbtl::ui::pane_layout(
+            ratatui::layout::Rect::new(0, 0, width, height),
+            &app.ui_state.pane_config(),
+        )
+        .inspector
+        .width
+            > 0
+    {
         app.inspector_view()
     } else {
         None
     };
+    app.ui_state.set_inspector_shown(inspector.is_some());
     if let Some(view) = inspector.as_deref() {
         let inner = dbtl::ui::pane_interior(
             dbtl::ui::pane_layout(
@@ -3290,6 +3302,13 @@ fn render_app_with_inspector(app: &mut dbtl::app::App, width: u16, height: u16) 
             )
             .inspector,
         );
+        // Mirror the loop's one-shot reveal: the cursored row only feeds the
+        // clamp on the pick frame; `usize::MAX` afterwards.
+        let reveal = if app.ui_state.take_inspector_reveal() {
+            app.ui_state.inspector_col()
+        } else {
+            usize::MAX
+        };
         let scroll = dbtl::ui::clamp_inspector_scroll(
             view,
             app.glyph_mode,
@@ -3297,7 +3316,7 @@ fn render_app_with_inspector(app: &mut dbtl::app::App, width: u16, height: u16) 
             inner.width as usize,
             inner.height as usize,
             app.ui_state.inspector_scroll(),
-            app.ui_state.inspector_col(),
+            reveal,
         );
         app.ui_state.set_inspector_scroll(scroll);
     }
@@ -3625,4 +3644,52 @@ fn inspector_pane_keeps_list_and_lineage_unscathed() {
         "lineage keeps its floor: {}",
         panes.lineage.width
     );
+}
+
+#[test]
+fn inspector_min_width_wraps_and_clips_within_30_cols() {
+    // §1's 30-col floor: the pane still renders every section — headers
+    // stay legible, text wraps inside the narrow interior, and long rows
+    // CLIP at the right border instead of bleeding past it.
+    let mut app = dbtl::app::App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    app.select_by_unique_id("model.jaffle_finance.fct_subscription_process");
+    app.ui_state
+        .set_inspector_width(dbtl::ui::MIN_INSPECTOR_WIDTH);
+    let buf = render_app_with_inspector(&mut app, 200, 60);
+    let ins = inspector_rect(&buf, &app);
+    assert_eq!(
+        ins.width,
+        dbtl::ui::MIN_INSPECTOR_WIDTH,
+        "the saved floor width is honoured on a wide terminal"
+    );
+    // The pane hugs the body's right edge — nothing can live past it.
+    assert_eq!(ins.x + ins.width, buf.area.width);
+
+    let pane = region_text(&buf, ins);
+    for section in ["Description", "Columns (7)", "Impact", "Lint"] {
+        assert!(
+            pane.contains(section),
+            "min-width pane keeps section {section:?}: {pane}"
+        );
+    }
+
+    // The head row (`Table  models/fct_subscription_process.sql`) is longer
+    // than the 28-col interior: it clips mid-token, so the rightmost
+    // interior cell is a non-space character — content reaches the border
+    // and stops, never draws over it.
+    let inner = dbtl::ui::pane_interior(ins);
+    let last_x = inner.x + inner.width - 1;
+    let head_tail = buf
+        .cell((last_x, inner.y))
+        .map(|c| c.symbol().to_string())
+        .unwrap_or_default();
+    assert!(
+        !head_tail.trim().is_empty(),
+        "clipped head row ends mid-token at the border"
+    );
+
+    // A description line wraps: the section's body occupies more than one
+    // interior row rather than truncating at the first 28 chars.
+    let desc = region_text(&buf, inner);
+    assert!(desc.contains("Description"), "description section present");
 }

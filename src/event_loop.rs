@@ -123,20 +123,23 @@ pub fn event_loop(
                 app.clear_collapse_expansions();
             }
 
-            // The inspector's effective visibility for THIS frame — the only
-            // size-aware seam resolves the `auto` pref against the terminal
-            // width (>=160 per §4; Issue 12 refines the under-160 policy) and
-            // publishes the answer into UiState so `pane_config` (the layout
-            // below), `hit_target`, and the focus ring all read one resolved
-            // value. `inspector_target` then re-homes the pane's scroll +
-            // column cursor the moment the inspected node changes (the
+            // The inspector's effective visibility for THIS frame — resolved
+            // in two phases, both in this size-aware seam. Phase 1 publishes
+            // the INTENT: the `auto` pref against the terminal width (>=160
+            // per §4; Issue 12 refines the under-160 policy), so `pane_config`
+            // (the layout below) knows whether to carve the region at all.
+            // Phase 2 — after `pane_layout` + the view build — publishes the
+            // ANSWER: `want && width>0 && a view exists`, so `hit_target` and
+            // the focus ring never meet an invisible or content-less pane.
+            // `inspector_target` then re-homes the pane's scroll + column
+            // cursor the moment the inspected node changes (the
             // follow-the-cursor rule).
-            let shown = match app.ui_state.inspector_policy() {
+            let want = match app.ui_state.inspector_policy() {
                 dbtl::InspectorPolicy::On => true,
                 dbtl::InspectorPolicy::Off => false,
                 dbtl::InspectorPolicy::Auto => terminal.size()?.width >= 160,
             };
-            app.ui_state.set_inspector_shown(shown);
+            app.ui_state.set_inspector_shown(want);
             if let Some(uid) = app.inspector_target() {
                 app.ui_state.set_inspector_target(&uid);
             }
@@ -258,17 +261,35 @@ pub fn event_loop(
             // generation)-cached `Rc` clone `RenderCtx` borrows as
             // `Option<&InspectorView>` — `None` keeps the pane's field empty
             // (and the loop never pays the build cost for a hidden pane).
-            let inspector = if app.ui_state.inspector_shown() {
+            // Built only when the intent AND the carved rect leave it room —
+            // a forced `On` on a narrow screen squeezes the region to zero
+            // cols, which is NOT a pane.
+            let inspector = if want && panes.inspector.width > 0 {
                 app.inspector_view()
             } else {
                 None
             };
+            // Phase 2 of the visibility resolution: the RESOLVED answer is
+            // "a built snapshot exists". A `want` whose rect squeezed to zero
+            // cols, or whose target has no `Dag` node to describe (empty dag,
+            // `+M more` marker under the cursor), means no pane at all —
+            // publishing `false` keeps the focus ring and the hit-test off an
+            // invisible surface and lets `draw`'s own `pane_layout` hand the
+            // cells back to the list/lineage.
+            app.ui_state.set_inspector_shown(inspector.is_some());
             // Clamp the pane's scroll to the fresh content + interior (the
             // same size-aware seam the modal scrolls use — the reducer's
-            // scroll intents land unclamped; this bounds them). The column
-            // cursor's ensure-visible rides the same call.
+            // scroll intents land unclamped; this bounds them). A mouse pick's
+            // one-shot reveal passes the cursored row for THIS frame only —
+            // afterwards j/k/wheel scroll freely instead of the clamp
+            // dragging the viewport back to the picked row every frame.
             if let Some(view) = inspector.as_deref() {
                 let inner = pane_interior(panes.inspector);
+                let reveal = if app.ui_state.take_inspector_reveal() {
+                    app.ui_state.inspector_col()
+                } else {
+                    usize::MAX
+                };
                 let scroll = dbtl::ui::clamp_inspector_scroll(
                     view,
                     app.glyph_mode,
@@ -276,7 +297,7 @@ pub fn event_loop(
                     inner.width as usize,
                     inner.height as usize,
                     app.ui_state.inspector_scroll(),
-                    app.ui_state.inspector_col(),
+                    reveal,
                 );
                 app.ui_state.set_inspector_scroll(scroll);
             }
