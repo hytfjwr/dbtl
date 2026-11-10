@@ -32,6 +32,21 @@ pub struct PersistedState {
     pub sort: Option<String>,
     /// The `unique_id` selected when the app exited; `None` = unset.
     pub last_selected: Option<String>,
+    /// The list pane's saved width in columns (screen-spec §5 — columns, not
+    /// ratios). `None` = unset.
+    pub list_width: Option<u16>,
+    /// The inspector pane's saved width in columns (saved ahead of Issue 04's
+    /// pane so `=` and an early drag already round-trip). `None` = unset.
+    pub inspector_width: Option<u16>,
+    /// Whether the list pane was visible (the `Ctrl-b` toggle). `None` = unset.
+    pub list_visible: Option<bool>,
+    /// Whether the lineage minimap was on (the `M` toggle). `None` = unset.
+    pub minimap: Option<bool>,
+    /// The active theme's name (the `--theme`/`Ctrl-t` selection). `None` =
+    /// unset. Applied by the binary's theme loader (saved < `--theme`, >
+    /// `config.yml` — §13), not by [`App::apply_prefs`]: the theme LIST is
+    /// loaded there too, so an absent name degrades to the default.
+    pub theme: Option<String>,
 }
 
 /// User defaults from `~/.config/dbtl/config.yml` — every field optional, so a
@@ -176,6 +191,11 @@ impl App {
             density: Some(density_name(self.ui_state.density()).to_string()),
             sort: Some(sort_name(self.sort).to_string()),
             last_selected: self.selected_unique_id(),
+            list_width: Some(self.ui_state.list_width()),
+            inspector_width: Some(self.ui_state.inspector_width()),
+            list_visible: Some(self.ui_state.list_visible()),
+            minimap: Some(self.ui_state.minimap_visible()),
+            theme: Some(self.theme_name().to_string()),
         }
     }
 
@@ -213,6 +233,24 @@ impl App {
         }
         if let Some(uid) = &prefs.last_selected {
             self.select_by_unique_id(uid);
+        }
+        // Pane/display prefs (Issue 02): same Option-layering as the rest —
+        // `None` keeps the current (or config-defaulted) value. Out-of-range
+        // widths are NOT rejected here: `pane_layout` clamps them for display,
+        // so a stale 200-col write degrades to a capped pane, not an error.
+        // `prefs.theme` is deliberately skipped — the binary's `load_themes`
+        // applies it (the theme list only exists there; see the field's doc).
+        if let Some(w) = prefs.list_width {
+            self.ui_state.set_list_width(w);
+        }
+        if let Some(w) = prefs.inspector_width {
+            self.ui_state.set_inspector_width(w);
+        }
+        if let Some(visible) = prefs.list_visible {
+            self.ui_state.set_list_visible(visible);
+        }
+        if let Some(minimap) = prefs.minimap {
+            self.ui_state.set_minimap(minimap);
         }
     }
 }
@@ -274,6 +312,11 @@ mod tests {
         a.sort = SortMode::Tests;
         a.model_list = build_model_list_grouped(&a.dag, a.sort, None);
         a.select_by_unique_id("model.jaffle_finance.rpt_delivery_base_metrics");
+        // Issue 02's pane/display prefs: set non-defaults so the round-trip
+        // proves they apply, not just that the defaults coincide.
+        a.ui_state.set_list_width(50);
+        a.ui_state.set_inspector_width(60);
+        a.ui_state.toggle_minimap();
 
         let snap = a.prefs_snapshot();
         let mut b = fixture_app();
@@ -288,6 +331,29 @@ mod tests {
             b.selected_unique_id().as_deref(),
             Some("model.jaffle_finance.rpt_delivery_base_metrics")
         );
+        assert_eq!(b.ui_state.list_width(), 50);
+        assert_eq!(b.ui_state.inspector_width(), 60);
+        assert!(b.ui_state.minimap_visible(), "minimap pref restored");
+        assert!(b.ui_state.list_visible(), "list stays visible");
+        assert_eq!(snap.theme.as_deref(), Some(a.theme_name()));
+    }
+
+    #[test]
+    fn apply_prefs_restores_a_hidden_list_and_minimap() {
+        // The Ctrl-b/M result persisted across a restart — the toggles used to
+        // be session-only (Issue 02). `apply_prefs` on the snapshot must
+        // reproduce the hidden list + minimap-on combination.
+        let mut a = fixture_app();
+        a.ui_state.toggle_list_pane(); // hide the list
+        a.ui_state.toggle_minimap();
+        let snap = a.prefs_snapshot();
+
+        let mut b = fixture_app();
+        b.apply_prefs(&snap);
+        assert!(!b.ui_state.list_visible(), "hidden list restores hidden");
+        assert!(b.ui_state.minimap_visible());
+        // Restoring a hidden list must pin focus off it (the toggle's rule).
+        assert_eq!(b.ui_state.focus(), crate::ui::Focus::RightPane);
     }
 
     #[test]
@@ -301,10 +367,8 @@ mod tests {
             .iter()
             .map(ToString::to_string)
             .collect(),
-            lens: None,
-            density: None,
-            sort: None,
             last_selected: Some("model.gone.nope".to_string()),
+            ..PersistedState::default()
         };
         a.apply_prefs(&prefs);
         assert!(a
@@ -338,12 +402,25 @@ mod tests {
             density: None,
             sort: Some("tests".to_string()),
             last_selected: None,
+            list_width: Some(50),
+            inspector_width: Some(60),
+            list_visible: Some(false),
+            minimap: Some(true),
+            theme: Some("midnight".to_string()),
         };
         let json = serde_json::to_string(&p).unwrap();
         let back: PersistedState = serde_json::from_str(&json).unwrap();
         assert_eq!(back, p);
-        // Unknown/absent keys deserialize as defaults — forward-compatible.
+        // Unknown/absent keys deserialize as defaults — forward-compatible,
+        // and an OLD state file (no Issue-02 fields) still loads.
         let sparse: PersistedState = serde_json::from_str("{}").unwrap();
         assert_eq!(sparse, PersistedState::default());
+        let old: PersistedState =
+            serde_json::from_str(r#"{"bookmarks": [], "lens": "coverage", "sort": "layer"}"#)
+                .unwrap();
+        assert_eq!(old.list_width, None);
+        assert_eq!(old.list_visible, None);
+        assert_eq!(old.minimap, None);
+        assert_eq!(old.theme, None);
     }
 }

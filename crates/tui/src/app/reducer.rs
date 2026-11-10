@@ -1041,6 +1041,31 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             }
             Outcome::cont()
         }
+        // `<`/`>`: nudge the saved pane width by §5's 4-column step, a pure
+        // UiState view-pref like the minimap — direct here, never through
+        // `reduce_selection`. The pane follows §5's focus rule (the inspector
+        // while focused); `Focus::Inspector` arrives with Issue 04's pane, so
+        // the list is the only target today. The floor is in the write; the
+        // terminal-relative cap is the event loop's post-clamp (size-aware)
+        // plus `pane_layout`'s display clamp — the reducer stays size-blind.
+        Action::PaneNarrow | Action::PaneWiden => {
+            let step = if matches!(action, Action::PaneWiden) {
+                4
+            } else {
+                -4
+            };
+            app.ui_state.nudge_list_width(step);
+            Outcome::cont()
+        }
+        // `=`: every resizable pane's saved width back to its §1 default
+        // (§5 "全部を既定値に" — the inspector's saved width included, though
+        // its pane only materializes in Issue 04).
+        Action::PaneWidthsReset => {
+            app.ui_state.reset_pane_width(crate::ui::Splitter::List);
+            app.ui_state
+                .reset_pane_width(crate::ui::Splitter::Inspector);
+            Outcome::cont()
+        }
         // `p` two-node path: first press anchors the path start at the
         // selection (the highlight then runs anchor↔cursor), second press
         // clears it back to root↔cursor. Pure state + a toast; the

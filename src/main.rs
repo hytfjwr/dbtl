@@ -199,8 +199,11 @@ fn run(cli: &Cli) -> Result<()> {
     }
     // Layered prefs: config defaults under the per-project saved state (the
     // state's `Some` fields win); --select/--diff below still override both.
+    // The saved state is bound because `load_themes` below also consumes its
+    // `theme` field (§13's precedence: flag > saved > config).
     app.apply_prefs(&config.as_prefs());
-    app.apply_prefs(&state::load_state(app.project_root()));
+    let saved = state::load_state(app.project_root());
+    app.apply_prefs(&saved);
     if let Some(name) = &cli.select {
         // Fail as plain text before the terminal is touched, like a load error.
         // Plain model name first; on a miss, try it as a dbt selector spec
@@ -232,10 +235,24 @@ fn run(cli: &Cli) -> Result<()> {
         app.ui_state.set_lens(LineageLens::Diff);
     }
 
-    // Resolve the colour themes (presets + user files) and the --theme start
-    // index. A bad EXPLICIT selection fails as plain text pre-TTY; user themes
-    // get palette-lint WARNINGS inside load_themes, never errors.
-    let (themes, theme_idx) = load_themes(cli.theme.as_deref().or(config.theme.as_deref()))?;
+    // Resolve the colour themes (presets + user files) and the start index.
+    // §13 precedence: an explicit --theme/DBTL_THEME wins (a bad one fails as
+    // plain text pre-TTY), then the saved theme, then config.yml's. A saved
+    // or config name that no longer resolves (a deleted theme file) warns and
+    // falls back to the default — state is best-effort, never a startup error.
+    let theme_sel = cli
+        .theme
+        .as_deref()
+        .or(saved.theme.as_deref())
+        .or(config.theme.as_deref());
+    let (themes, theme_idx) = match load_themes(theme_sel) {
+        Ok(t) => t,
+        Err(e) if cli.theme.is_none() => {
+            eprintln!("warning: {e:#}");
+            load_themes(None)?
+        }
+        Err(e) => return Err(e),
+    };
     app.set_themes(themes, theme_idx);
 
     // Enter raw mode + alternate screen and install the panic-restoring hook.

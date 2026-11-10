@@ -9,7 +9,9 @@
 
 use dbtl::layout::{layout, Layout};
 use dbtl::model_list::{build_model_list, ModelList, SortMode};
-use dbtl::ui::{clip_edges, draw, handle_key, pane_interior, pane_rects, RenderCtx, UiState};
+use dbtl::ui::{
+    clip_edges, draw, handle_key, pane_interior, pane_layout, PaneConfig, RenderCtx, UiState,
+};
 use dbtl::{load_dag, Dag};
 
 use ratatui::backend::TestBackend;
@@ -59,7 +61,7 @@ fn setup(width: u16, height: u16, selected_index: usize) -> (Buffer, Rect, Layou
     let lay = layout(&dag.subgraph(&node.unique_id));
 
     let area = Rect::new(0, 0, width, height);
-    let interior = pane_interior(pane_rects(area, true).lineage);
+    let interior = pane_interior(pane_layout(area, &PaneConfig::default()).lineage);
     state.anchor_lineage(
         lay.selected_rect,
         &lay.grid,
@@ -223,7 +225,7 @@ fn cursor_keys_traverse_columns_and_highlight_follows() {
     app.ui_state.set_focus(Focus::RightPane);
 
     let area = Rect::new(0, 0, 100, 30);
-    let interior = pane_interior(pane_rects(area, true).lineage);
+    let interior = pane_interior(pane_layout(area, &PaneConfig::default()).lineage);
     let (vw, vh) = (interior.width as usize, interior.height as usize);
 
     // First frame: anchor on the root (the cursor's home). The layout comes
@@ -344,7 +346,7 @@ fn scroll_markers_match_clipped_edges_on_the_border() {
     // The bordered lineage pane rect (markers live on its border, not interior).
     // The top `^` is nudged to the title-free right end of the top border; the
     // others keep their edge midpoints (mirrors `stamp_scroll_markers`).
-    let rect = pane_rects(Rect::new(0, 0, w, h), true).lineage;
+    let rect = pane_layout(Rect::new(0, 0, w, h), &PaneConfig::default()).lineage;
     let mid_y = rect.y + rect.height / 2;
     let right = rect.x + rect.width - 1;
     let bottom = rect.y + rect.height - 1;
@@ -405,7 +407,7 @@ fn no_scroll_markers_when_diagram_fits() {
     // Markers only ever land on the four border midpoints; check exactly those
     // (a whole-rect scan would false-positive on the connector `▶` arrowheads
     // INSIDE the diagram, which are legitimate content, not chrome).
-    let rect = pane_rects(Rect::new(0, 0, w, h), true).lineage;
+    let rect = pane_layout(Rect::new(0, 0, w, h), &PaneConfig::default()).lineage;
     let mid_x = rect.x + rect.width / 2;
     let mid_y = rect.y + rect.height / 2;
     let right = rect.x + rect.width - 1;
@@ -481,7 +483,7 @@ fn layer_bands_stamp_column_labels_on_the_bottom_border() {
     let buffer = terminal.backend().buffer().clone();
     // The lineage pane's bottom border row (status bar is the last row, the
     // pane's bottom border sits right above it).
-    let lineage_rect = pane_rects(Rect::new(0, 0, w, h), true).lineage;
+    let lineage_rect = pane_layout(Rect::new(0, 0, w, h), &PaneConfig::default()).lineage;
     let bottom_y = lineage_rect.y + lineage_rect.height - 1;
     let row: String = (lineage_rect.x..lineage_rect.x + lineage_rect.width)
         .map(|x| {

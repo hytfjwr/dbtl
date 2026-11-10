@@ -4,8 +4,8 @@ use crate::action::{
 };
 use crate::effect::Effect;
 use crate::ui::{
-    hit_target, lineage_content_rect, minimap_rect, pane_interior, pane_rects, HitGeometry,
-    HitTarget,
+    hit_target, lineage_content_rect, minimap_rect, pane_interior, pane_layout, HitGeometry,
+    HitTarget, PaneConfig, Splitter, DEFAULT_INSPECTOR_WIDTH, DEFAULT_LIST_WIDTH, MIN_LIST_WIDTH,
 };
 use crate::{
     coverage_gap, load_dag, load_dag_from_source, reduce_selection, Dag, DisplayRow, Focus, Layout,
@@ -2466,6 +2466,9 @@ fn feature_toggle_stubs_are_safe_noops() {
         Action::BookmarkCycle,
         Action::SortCycle,
         Action::ToggleMinimap,
+        Action::PaneNarrow,
+        Action::PaneWiden,
+        Action::PaneWidthsReset,
     ] {
         let out = apply_action(&mut a, action);
         assert!(!out.quit && out.effects.is_empty(), "{action:?} is a no-op");
@@ -3350,6 +3353,54 @@ fn toggle_minimap_flips_the_flag_as_a_noop_action() {
     apply_action(&mut a, Action::ToggleMinimap);
     assert!(!a.ui_state.minimap_visible(), "and flips back off");
     assert_eq!(a.ui_state.selected(), before, "selection never moved");
+}
+
+#[test]
+fn pane_width_keys_step_the_saved_list_width_by_four() {
+    let mut a = app();
+    a.select_by_unique_id(FCT);
+    let before = a.ui_state.selected();
+    assert_eq!(
+        a.ui_state.list_width(),
+        DEFAULT_LIST_WIDTH,
+        "34-col default"
+    );
+
+    let out = apply_action(&mut a, Action::PaneWiden);
+    assert!(
+        !out.quit && out.effects.is_empty(),
+        "a pure view-pref write"
+    );
+    assert!(matches!(a.mode, Mode::Selection));
+    assert_eq!(
+        a.ui_state.list_width(),
+        38,
+        "`>` widens by the §5 4-col step"
+    );
+    apply_action(&mut a, Action::PaneNarrow);
+    apply_action(&mut a, Action::PaneNarrow);
+    assert_eq!(a.ui_state.list_width(), 30, "`<` narrows by the same step");
+    assert_eq!(a.ui_state.selected(), before, "selection never moved");
+}
+
+#[test]
+fn pane_narrow_stops_at_the_floor_and_reset_restores_defaults() {
+    let mut a = app();
+    // `<` past the §1 floor (18 cols) clamps, never wraps.
+    for _ in 0..10 {
+        apply_action(&mut a, Action::PaneNarrow);
+    }
+    assert_eq!(
+        a.ui_state.list_width(),
+        MIN_LIST_WIDTH,
+        "the saved width floors, it never wraps"
+    );
+    // `=` restores BOTH panes' §1 defaults — the inspector's saved value too,
+    // though its pane only materializes in Issue 04.
+    a.ui_state.set_inspector_width(60);
+    apply_action(&mut a, Action::PaneWidthsReset);
+    assert_eq!(a.ui_state.list_width(), DEFAULT_LIST_WIDTH);
+    assert_eq!(a.ui_state.inspector_width(), DEFAULT_INSPECTOR_WIDTH);
 }
 
 #[test]
@@ -6273,7 +6324,7 @@ fn detail_tab_notices_when_no_jumpable_test_exists() {
 /// it so the headless hit-tests exercise the real wiring, not parallel math.
 fn hit_geom<'a>(a: &'a App, lay: Option<&'a Layout>, area: Rect) -> HitGeometry<'a> {
     HitGeometry {
-        panes: pane_rects(area, a.ui_state.list_visible()),
+        panes: pane_layout(area, &a.ui_state.pane_config()),
         list: a.active_list(),
         list_offset: a.ui_state.offset(),
         layout: lay,
@@ -6329,14 +6380,14 @@ fn hit_target_classifies_the_status_line_boundaries_and_dead_zones() {
         Some(HitTarget::StatusBar)
     );
     // The divider is two columns: the list's right border and the lineage
-    // pane's left border.
+    // pane's left border — both report the LIST splitter (§5).
     assert_eq!(
         hit_target(&g, g.panes.list.x + g.panes.list.width - 1, 5),
-        Some(HitTarget::PaneBorder)
+        Some(HitTarget::PaneBorder(Splitter::List))
     );
     assert_eq!(
         hit_target(&g, g.panes.lineage.x, 5),
-        Some(HitTarget::PaneBorder)
+        Some(HitTarget::PaneBorder(Splitter::List))
     );
     // A pane's top border row is chrome, not a target.
     assert_eq!(hit_target(&g, 5, g.panes.list.y), None);
@@ -6416,7 +6467,7 @@ fn hit_target_minimap_swallows_the_diagram_below_it() {
     let lay = a.styled_lineage_layout().expect("a layout exists");
     // A small frame: the diagram overflows the pane, so the minimap draws.
     let area = Rect::new(0, 0, 80, 24);
-    let inner = pane_interior(pane_rects(area, true).lineage);
+    let inner = pane_interior(pane_layout(area, &PaneConfig::default()).lineage);
     let content = lineage_content_rect(inner, lay.grid.width(), lay.grid.height());
     let mm = minimap_rect(inner, lay.grid.width(), lay.grid.height(), 0, 0, true)
         .expect("an overflowing diagram draws the minimap");
@@ -6507,7 +6558,7 @@ fn click_target_left_click_behaves_like_the_old_down_click() {
         sel,
         "the minimap swallows its click"
     );
-    a.click_target(&HitTarget::PaneBorder, MouseButton::Left);
+    a.click_target(&HitTarget::PaneBorder(Splitter::List), MouseButton::Left);
     a.click_target(&HitTarget::StatusBar, MouseButton::Left);
     assert_eq!(a.selected_unique_id(), sel, "chrome stays inert");
 }
@@ -6521,7 +6572,13 @@ fn hit_target_with_list_hidden_gives_everything_to_the_lineage() {
     // `list_visible = false`: the list rect collapses to zero width and the
     // lineage pane takes the whole body — no divider exists.
     let g = HitGeometry {
-        panes: pane_rects(area, false),
+        panes: pane_layout(
+            area,
+            &PaneConfig {
+                list_visible: false,
+                ..PaneConfig::default()
+            },
+        ),
         ..hit_geom(&a, Some(&lay), area)
     };
     // A cell inside the (former) list region is lineage interior now —

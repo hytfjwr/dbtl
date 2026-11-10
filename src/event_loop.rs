@@ -15,13 +15,14 @@ use dbtl::app::{apply_action, App, LineageView};
 use dbtl::effect::Effect;
 use dbtl::layout::Layout;
 use dbtl::ui::{
-    draw, hit_target, mouse_dirty, pane_interior, pane_rects, Focus, HitGeometry, LineageLens,
-    MouseInput, MouseOutcome, MouseRouter, RenderCtx, StatusSegments,
+    draw, hit_target, mouse_dirty, pane_interior, pane_layout, splitter_drag_width, Focus,
+    HitGeometry, HitTarget, LineageLens, MouseInput, MouseOutcome, MouseRouter, RenderCtx,
+    Splitter, StatusSegments,
 };
 use dbtl::{Mode, SortMode};
 
 use ratatui::crossterm::event::{
-    self, Event, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+    self, Event, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::layout::Rect;
 use ratatui::DefaultTerminal;
@@ -60,6 +61,10 @@ pub fn event_loop(
     // reported hover target — the `Moved` redraw gate. The loop owns the
     // clock; the router only compares `Instant`s it is handed.
     let mut mouse = MouseRouter::new();
+    // The live splitter drag: the grabbed boundary plus the pointer's offset
+    // inside its 2-cell strip at press time. Loop-owned (like the router):
+    // the drag tracks pointer columns, so it is size-aware state by nature.
+    let mut splitter_drag: Option<SplitterDrag> = None;
     // Dirty-flag redraw: the frame work below only runs when something
     // actually changed (first frame, any event, a toast flip, a --watch
     // reload). An idle 250ms tick with none of those skips straight back to
@@ -123,7 +128,7 @@ pub fn event_loop(
             // the viewport is then sized exactly as `draw` will size it, so
             // anchor/clamp matches the drawn window (the 2D display-row guarantee).
             lineage = app.styled_lineage_layout();
-            let (view_w, view_h) = lineage_viewport(terminal, app.ui_state.list_visible())?;
+            let (view_w, view_h) = lineage_viewport(terminal, &app.ui_state)?;
             let cursor = app.lineage_cursor_uid();
             if let Some(lay) = lineage.as_deref() {
                 // A lineage node-jump search anchors the viewport on the cycled match
@@ -291,6 +296,31 @@ pub fn event_loop(
                 };
                 mouse.track_hover(target);
             }
+            // §5 splitter feedback: the accent border + a status hint. The
+            // hint names the live saved width mid-drag; on hover it teaches
+            // the gesture (`·` is ambiguous-width, so ASCII mode swaps it).
+            let (highlight, splitter_hint) = match (splitter_drag, mouse.hover()) {
+                (Some(d), _) => (
+                    Some(d.which),
+                    Some(format!(
+                        "{} {} cols",
+                        d.which.label(),
+                        app.ui_state.pane_width(d.which)
+                    )),
+                ),
+                (None, Some(HitTarget::PaneBorder(which))) => (
+                    Some(*which),
+                    Some(
+                        if app.glyph_mode == dbtl::GlyphMode::Ascii {
+                            "drag to resize, double-click to reset"
+                        } else {
+                            "drag to resize · double-click to reset"
+                        }
+                        .to_string(),
+                    ),
+                ),
+                _ => (None, None),
+            };
             {
                 let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, lineage.as_deref());
                 ctx.mode = &app.mode;
@@ -312,7 +342,9 @@ pub fn event_loop(
                 // Full model count for the search title's N/M (M = full list len).
                 ctx.full_model_count = Some(app.model_list.len());
                 ctx.col_suffix = col_suffix.as_deref();
+                ctx.splitter_highlight = highlight;
                 ctx.segments = StatusSegments {
+                    hint: splitter_hint.as_deref(),
                     impact: impact_s.as_deref(),
                     column: column_s.as_deref(),
                     focus: Some(focus_s),
@@ -387,6 +419,14 @@ pub fn event_loop(
                                 | Action::ColumnFocusExit
                         );
                         let outcome = apply_action(app, action);
+                        // `<`/`>` stepped the saved width size-blind (the §1
+                        // floor lives in `nudge_list_width`); the §1 max is
+                        // terminal-relative, so it clamps HERE — the same
+                        // `set_pane_width` write a splitter drag makes.
+                        if matches!(action, Action::PaneNarrow | Action::PaneWiden) {
+                            let w = app.ui_state.list_width();
+                            app.ui_state.set_pane_width(Splitter::List, w, area.width);
+                        }
                         for effect in outcome.effects {
                             run_effect(terminal, app, effect)?;
                         }
@@ -408,7 +448,14 @@ pub fn event_loop(
                     }
                 }
                 Event::Mouse(me) => {
-                    dirty |= handle_mouse(app, &mut mouse, me, lineage.as_deref(), area);
+                    dirty |= handle_mouse(
+                        app,
+                        &mut mouse,
+                        &mut splitter_drag,
+                        me,
+                        lineage.as_deref(),
+                        area,
+                    );
                 }
                 // Resize / focus / paste and any other delivered event may
                 // change the frame.
@@ -416,6 +463,55 @@ pub fn event_loop(
             }
         }
     }
+}
+
+/// The live splitter drag: which boundary was grabbed plus the pointer's
+/// offset inside its 2-column strip at press time (`0` = the left pane's
+/// right-border cell, `1` = the right pane's left-border cell). Carrying the
+/// offset keeps the grabbed border under the pointer instead of snapping the
+/// pane edge to it.
+#[derive(Clone, Copy)]
+struct SplitterDrag {
+    which: Splitter,
+    grab_off: u16,
+}
+
+/// Resolve a drag press cell to a [`SplitterDrag`] when it lands on a pane
+/// boundary — `None` anywhere else (other drags stay inert until Issue 05
+/// gives the lineage pan a meaning).
+fn begin_splitter_drag(
+    app: &App,
+    lineage: Option<&Layout>,
+    area: Rect,
+    origin: ratatui::layout::Position,
+) -> Option<SplitterDrag> {
+    let g = hit_geometry(app, lineage, area);
+    let HitTarget::PaneBorder(which) = hit_target(&g, origin.x, origin.y)? else {
+        return None;
+    };
+    let strip = g.panes.splitter(which)?;
+    Some(SplitterDrag {
+        which,
+        grab_off: origin.x.saturating_sub(strip.x),
+    })
+}
+
+/// Write the width a live drag asks for: the pointer's column resolved
+/// through [`splitter_drag_width`] (grab-offset honoured) against the
+/// dragged pane's FIXED outer edge — the list's left `x`, the inspector's
+/// right edge — then clamped to the §1 min/max for this terminal inside
+/// `set_pane_width`, so a dragged-out-of-range value clamps identically to
+/// the `<`/`>` keys.
+fn apply_splitter_drag(app: &mut App, drag: SplitterDrag, pointer_x: u16, area: Rect) {
+    let panes = pane_layout(area, &app.ui_state.pane_config());
+    let anchor = match drag.which {
+        Splitter::List => panes.list.x,
+        // The inspector hugs the body's right edge, so its outer edge stays
+        // put while the width moves (`x + width` is stable mid-drag).
+        Splitter::Inspector => panes.inspector.x.saturating_add(panes.inspector.width),
+    };
+    let w = splitter_drag_width(drag.which, pointer_x, drag.grab_off, anchor);
+    app.ui_state.set_pane_width(drag.which, w, area.width);
 }
 
 /// Handle a mouse event (size-aware, so it lives in the loop, not the reducer).
@@ -431,6 +527,7 @@ pub fn event_loop(
 fn handle_mouse(
     app: &mut App,
     mouse: &mut MouseRouter,
+    splitter_drag: &mut Option<SplitterDrag>,
     me: MouseEvent,
     lineage: Option<&Layout>,
     area: Rect,
@@ -440,7 +537,7 @@ fn handle_mouse(
             if !matches!(app.mode, Mode::Selection) {
                 return false;
             }
-            let rects = pane_rects(area, app.ui_state.list_visible());
+            let rects = pane_layout(area, &app.ui_state.pane_config());
             let down = me.kind == MouseEventKind::ScrollDown;
             let shift = me.modifiers.contains(KeyModifiers::SHIFT);
             wheel(
@@ -460,7 +557,7 @@ fn handle_mouse(
             if !matches!(app.mode, Mode::Selection) {
                 return false;
             }
-            let rects = pane_rects(area, app.ui_state.list_visible());
+            let rects = pane_layout(area, &app.ui_state.pane_config());
             wheel_x(
                 app,
                 pane_interior(rects.lineage),
@@ -491,24 +588,70 @@ fn handle_mouse(
                     };
                     target_changed = mouse.track_hover(target);
                 }
-                MouseOutcome::Click { button, at } | MouseOutcome::DoubleClick { button, at }
-                    if sel =>
-                {
+                MouseOutcome::Click { button, at } if sel => {
                     let target = {
                         let g = hit_geometry(app, lineage, area);
                         hit_target(&g, at.x, at.y)
                     };
                     if let Some(t) = target.as_ref() {
-                        // A double-click performs the click action again —
-                        // today's click actions are idempotent (re-rooting the
-                        // same node, re-selecting the same row), so the effect
-                        // matches the old two-clicks-in-a-row behaviour until
-                        // Issue 05 gives double-click its own meaning.
                         app.click_target(t, *button);
                     }
                 }
-                // Drags are recognized by the router but inert until Issues 02
-                // (pane-resize) and 05 (lineage pan) give them meaning.
+                MouseOutcome::DoubleClick { button, at } if sel => {
+                    let target = {
+                        let g = hit_geometry(app, lineage, area);
+                        hit_target(&g, at.x, at.y)
+                    };
+                    match target.as_ref() {
+                        // §5: a splitter double-click resets that pane's saved
+                        // width to default — it is NOT the click action twice.
+                        Some(HitTarget::PaneBorder(which)) if *button == MouseButton::Left => {
+                            app.ui_state.reset_pane_width(*which);
+                        }
+                        // Everywhere else a double-click performs the click
+                        // action again — today's click actions are idempotent
+                        // (re-rooting the same node, re-selecting the same
+                        // row), so the effect matches the old
+                        // two-clicks-in-a-row behaviour until Issue 05 gives
+                        // double-click its own meaning.
+                        Some(t) => app.click_target(t, *button),
+                        None => {}
+                    }
+                }
+                // §5: a drag that began on a pane boundary resizes that pane.
+                // The press cell is hit-tested (only a boundary grab counts);
+                // afterwards the stored `which`+`grab_off` tracks the pointer
+                // — mid-drag motion never re-hit-tests, so a pointer dragged
+                // past a clamp keeps the grabbed border's tracking.
+                MouseOutcome::DragStart { button, origin, at } if sel => {
+                    if *button == MouseButton::Left {
+                        if let Some(d) = begin_splitter_drag(app, lineage, area, *origin) {
+                            apply_splitter_drag(app, d, at.x, area);
+                            *splitter_drag = Some(d);
+                        }
+                    }
+                }
+                MouseOutcome::DragMove { at, .. } if sel => {
+                    if let Some(d) = *splitter_drag {
+                        apply_splitter_drag(app, d, at.x, area);
+                    }
+                }
+                MouseOutcome::DragEnd { button, origin, at }
+                    if sel && *button == MouseButton::Left =>
+                {
+                    // A terminal can deliver no Drag events for a fast
+                    // flick (press → release elsewhere): the router still
+                    // reports DragEnd, so resolve the press cell like
+                    // DragStart before finishing.
+                    let d = (*splitter_drag)
+                        .or_else(|| begin_splitter_drag(app, lineage, area, *origin));
+                    if let Some(d) = d {
+                        apply_splitter_drag(app, d, at.x, area);
+                    }
+                    *splitter_drag = None;
+                }
+                // Other drags are recognized by the router but inert until
+                // Issue 05 (lineage pan) gives them meaning.
                 _ => {}
             }
             mouse_dirty(Some(&outcome), sel, target_changed)
@@ -517,11 +660,12 @@ fn handle_mouse(
 }
 
 /// Bundle the frame's hit-test inputs, all from the SAME sources the draw
-/// uses: `pane_rects` on the live area, the last styled `Layout`, and
-/// `UiState`'s scroll offsets — so a click lands on what the screen shows.
+/// uses: `pane_layout` on the live area + `pane_config`, the last styled
+/// `Layout`, and `UiState`'s scroll offsets — so a click lands on what the
+/// screen shows.
 fn hit_geometry<'a>(app: &'a App, lineage: Option<&'a Layout>, area: Rect) -> HitGeometry<'a> {
     HitGeometry {
-        panes: pane_rects(area, app.ui_state.list_visible()),
+        panes: pane_layout(area, &app.ui_state.pane_config()),
         list: app.active_list(),
         list_offset: app.ui_state.offset(),
         layout: lineage,
@@ -869,11 +1013,11 @@ fn list_pane_height(terminal: &DefaultTerminal) -> Result<usize> {
 }
 
 /// The lineage pane's interior size `(width, height)` for the current terminal,
-/// computed through the SAME pure geometry (`pane_rects` + `pane_interior`) that
-/// `draw` uses — including the list pane's visibility — so the anchor/clamp
-/// viewport equals the blitted/drawn viewport.
-fn lineage_viewport(terminal: &DefaultTerminal, list_visible: bool) -> Result<(usize, usize)> {
-    let interior = pane_interior(pane_rects(full_area(terminal)?, list_visible).lineage);
+/// computed through the SAME pure geometry (`pane_layout` on `pane_config` +
+/// `pane_interior`) that `draw` uses — pane widths included — so the
+/// anchor/clamp viewport equals the blitted/drawn viewport.
+fn lineage_viewport(terminal: &DefaultTerminal, ui: &dbtl::ui::UiState) -> Result<(usize, usize)> {
+    let interior = pane_interior(pane_layout(full_area(terminal)?, &ui.pane_config()).lineage);
     Ok((interior.width as usize, interior.height as usize))
 }
 
@@ -1008,5 +1152,305 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ------------------------------------------------------------------
+    // §5 splitter gestures through `handle_mouse`: MouseEvent -> MouseRouter
+    // -> pane_layout hit-test -> set_pane_width — the same path the loop feeds
+    // (headless: the router is pure, only `Instant::now()` comes from here).
+    // ------------------------------------------------------------------
+
+    const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifest.json");
+
+    fn fixture_app() -> App {
+        let dag = dbtl::load_dag(FIXTURE).expect("fixture loads");
+        App::new(dag, PathBuf::from(FIXTURE))
+    }
+
+    fn mouse(kind: MouseEventKind, x: u16, y: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    /// Feed one event through the production handler (Selection mode, no
+    /// lineage layout needed — the splitter strip is pane geometry only).
+    fn feed(
+        app: &mut App,
+        router: &mut MouseRouter,
+        drag: &mut Option<SplitterDrag>,
+        kind: MouseEventKind,
+        x: u16,
+        y: u16,
+    ) {
+        handle_mouse(
+            app,
+            router,
+            drag,
+            mouse(kind, x, y),
+            None,
+            Rect::new(0, 0, 100, 30),
+        );
+    }
+
+    #[test]
+    fn splitter_drag_resizes_the_list_and_tracks_the_grab_offset() {
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        use MouseEventKind as K;
+        // The 34-column default: the boundary strip is columns 33-34, so a
+        // press on 33 records grab offset 0 (the list's own border cell).
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Down(MouseButton::Left),
+            33,
+            10,
+        );
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Drag(MouseButton::Left),
+            50,
+            10,
+        );
+        assert_eq!(
+            app.ui_state.list_width(),
+            51,
+            "grab 0: pointer col 50 wants the border there -> width 51"
+        );
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Drag(MouseButton::Left),
+            45,
+            10,
+        );
+        assert_eq!(app.ui_state.list_width(), 46);
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Up(MouseButton::Left),
+            45,
+            10,
+        );
+        assert_eq!(app.ui_state.list_width(), 46, "release commits the width");
+
+        // Grabbing the strip's RIGHT cell (the lineage pane's left border,
+        // offset 1) keeps that border under the pointer instead of snapping.
+        // Width 46: the strip is columns 45-46.
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Down(MouseButton::Left),
+            46,
+            10,
+        );
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Drag(MouseButton::Left),
+            60,
+            10,
+        );
+        assert_eq!(
+            app.ui_state.list_width(),
+            60,
+            "grab 1: pointer col 60 wants the right border there -> width 60"
+        );
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Up(MouseButton::Left),
+            60,
+            10,
+        );
+    }
+
+    #[test]
+    fn splitter_drag_clamps_to_the_pane_bounds() {
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        use MouseEventKind as K;
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Down(MouseButton::Left),
+            33,
+            10,
+        );
+        // Past the 60%-of-terminal cap at 100 cols.
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Drag(MouseButton::Left),
+            95,
+            10,
+        );
+        assert_eq!(
+            app.ui_state.list_width(),
+            60,
+            "the cap wins over the pointer"
+        );
+        // Below the 18-column floor.
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Drag(MouseButton::Left),
+            2,
+            10,
+        );
+        assert_eq!(
+            app.ui_state.list_width(),
+            18,
+            "the floor wins over the pointer"
+        );
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Up(MouseButton::Left),
+            2,
+            10,
+        );
+        assert_eq!(app.ui_state.list_width(), 18);
+    }
+
+    #[test]
+    fn splitter_flick_without_drag_events_still_resizes() {
+        // A fast press -> release-farther-right reports no Drag motion at all;
+        // the DragEnd fallback resolves the press cell and commits anyway.
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        use MouseEventKind as K;
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Down(MouseButton::Left),
+            33,
+            10,
+        );
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Up(MouseButton::Left),
+            45,
+            10,
+        );
+        assert_eq!(app.ui_state.list_width(), 46, "release col 45 -> width 46");
+        assert!(drag.is_none(), "the drag state cleared on release");
+    }
+
+    #[test]
+    fn splitter_double_click_resets_the_saved_width() {
+        let mut app = fixture_app();
+        app.ui_state.set_pane_width(Splitter::List, 50, 100);
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        use MouseEventKind as K;
+        // Width 50: the strip is columns 49-50. A plain click is inert — only
+        // the double-click resets.
+        for (kind, x) in [
+            (K::Down(MouseButton::Left), 49),
+            (K::Up(MouseButton::Left), 49),
+        ] {
+            feed(&mut app, &mut router, &mut drag, kind, x, 10);
+        }
+        assert_eq!(
+            app.ui_state.list_width(),
+            50,
+            "a single click keeps the width"
+        );
+        for (kind, x) in [
+            (K::Down(MouseButton::Left), 49),
+            (K::Up(MouseButton::Left), 49),
+        ] {
+            feed(&mut app, &mut router, &mut drag, kind, x, 10);
+        }
+        assert_eq!(
+            app.ui_state.list_width(),
+            dbtl::ui::DEFAULT_LIST_WIDTH,
+            "the double-click resets to the §1 default"
+        );
+    }
+
+    #[test]
+    fn non_splitter_drag_and_right_button_are_inert() {
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        use MouseEventKind as K;
+        // A drag that begins on a list row: no splitter, no width change.
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Down(MouseButton::Left),
+            5,
+            5,
+        );
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Drag(MouseButton::Left),
+            60,
+            5,
+        );
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Up(MouseButton::Left),
+            60,
+            5,
+        );
+        assert_eq!(app.ui_state.list_width(), dbtl::ui::DEFAULT_LIST_WIDTH);
+        assert!(drag.is_none());
+        // A right-button drag on the boundary is not a resize either.
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Down(MouseButton::Right),
+            33,
+            10,
+        );
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Drag(MouseButton::Right),
+            60,
+            10,
+        );
+        feed(
+            &mut app,
+            &mut router,
+            &mut drag,
+            K::Up(MouseButton::Right),
+            60,
+            10,
+        );
+        assert_eq!(app.ui_state.list_width(), dbtl::ui::DEFAULT_LIST_WIDTH);
+        assert!(drag.is_none());
     }
 }
