@@ -10,49 +10,236 @@ use ratatui::widgets::{Block, Borders};
 use crate::model_list::DisplayRow;
 use crate::{ModelList, NodeRect};
 
-/// The three screen regions: left list pane, right lineage pane, bottom status
-/// line (each with its border, except the status line).
-#[derive(Debug, Clone, Copy)]
-pub struct PaneRects {
-    /// Left model-list pane (with border).
-    pub list: Rect,
-    /// Right lineage pane (with border).
-    pub lineage: Rect,
-    /// Bottom status/help line.
-    pub status: Rect,
+/// Pane-width policy (screen-spec §1/§5), in columns — never ratios, so a
+/// resized terminal can't silently change a saved width.
+/// The list pane's default and minimum width in columns.
+pub const DEFAULT_LIST_WIDTH: u16 = 34;
+pub const MIN_LIST_WIDTH: u16 = 18;
+/// The inspector pane's default and minimum width in columns (the pane itself
+/// arrives in Issue 04; the width pref exists ahead of it).
+pub const DEFAULT_INSPECTOR_WIDTH: u16 = 42;
+pub const MIN_INSPECTOR_WIDTH: u16 = 30;
+/// The lineage pane's minimum width in columns — the floor every other pane
+/// gives room to.
+pub const MIN_LINEAGE_WIDTH: u16 = 40;
+/// The list pane's maximum width: 60% of the terminal width.
+const LIST_MAX_PCT: u16 = 60;
+/// The inspector pane's maximum width: 50% of the terminal width.
+const INSPECTOR_MAX_PCT: u16 = 50;
+
+/// Which pane boundary a screen point sits on — the drag target's identity
+/// (which saved width the drag edits).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Splitter {
+    /// Between the list and lineage panes — resizes `list_width`.
+    List,
+    /// Between the lineage and inspector panes — resizes `inspector_width`.
+    Inspector,
 }
 
-/// Split a total `area` into the three pane rects (vertical body/status, then
-/// horizontal 40/60). The single source of truth for screen geometry.
+impl Splitter {
+    /// The pane's status-text name (the drag hint's `"list 34 cols"`).
+    pub fn label(self) -> &'static str {
+        match self {
+            Splitter::List => "list",
+            Splitter::Inspector => "inspector",
+        }
+    }
+}
+
+/// The layout inputs [`pane_layout`] resolves: which panes exist and the
+/// user's saved column widths (columns, not ratios — §5). One value covers
+/// every pane so Issues 03 (tab bar) and 04 (inspector) extend the struct,
+/// not the signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneConfig {
+    /// Show the left model-list pane (the Ctrl-b toggle).
+    pub list_visible: bool,
+    /// The list pane's saved width in columns.
+    pub list_width: u16,
+    /// Show the right inspector pane (Issue 04 fills it; until then the field
+    /// exists so turning it on is a flag flip, not a redesign).
+    pub inspector_visible: bool,
+    /// The inspector pane's saved width in columns.
+    pub inspector_width: u16,
+    /// Show the one-row tab bar above the body (Issue 03 fills it; until then
+    /// the field exists so turning it on is a flag flip, not a redesign).
+    pub tab_bar: bool,
+}
+
+impl Default for PaneConfig {
+    /// The spec §1 defaults: list shown at 34, inspector hidden at a saved 42,
+    /// no tab bar.
+    fn default() -> Self {
+        PaneConfig {
+            list_visible: true,
+            list_width: DEFAULT_LIST_WIDTH,
+            inspector_visible: false,
+            inspector_width: DEFAULT_INSPECTOR_WIDTH,
+            tab_bar: false,
+        }
+    }
+}
+
+/// The screen regions: the tab-bar strip, the bordered list / lineage /
+/// inspector panes, the bottom status line, and the draggable splitter
+/// strips. The single source of truth the renderer, the mouse hit-test, and
+/// the event loop's viewport math all read — they can never disagree.
+#[derive(Debug, Clone, Copy)]
+pub struct PaneRects {
+    /// The tab-bar strip above the body (zero height until Issue 03).
+    pub tab_bar: Rect,
+    /// Left model-list pane (with border). Zero-width while hidden or fully
+    /// squeezed on a narrow terminal (mouse `within` tests on it are then
+    /// always false).
+    pub list: Rect,
+    /// Centre lineage pane (with border).
+    pub lineage: Rect,
+    /// Right inspector pane (with border; zero width until Issue 04 shows it).
+    pub inspector: Rect,
+    /// Bottom status/help line.
+    pub status: Rect,
+    /// The list|lineage splitter strip: the adjacent two border columns where
+    /// the panes meet, spanning the body (either side is grabbable — §5).
+    /// `None` when no boundary exists to grab (a neighbour has no border).
+    pub list_splitter: Option<Rect>,
+    /// The lineage|inspector splitter strip — `None` while the inspector is
+    /// hidden (everywhere today; Issue 04 turns it on).
+    pub inspector_splitter: Option<Rect>,
+}
+
+impl PaneRects {
+    /// The strip for a boundary (`None` when that boundary isn't shown).
+    pub fn splitter(&self, which: Splitter) -> Option<Rect> {
+        match which {
+            Splitter::List => self.list_splitter,
+            Splitter::Inspector => self.inspector_splitter,
+        }
+    }
+}
+
+/// Clamp a requested list-pane width to the §1 floor and the terminal-width
+/// cap (`terminal_w` columns). The floor wins over the cap on a degenerate
+/// terminal (the squeeze below the floor is the layout's job, not the pref's).
+pub fn clamp_list_width(w: u16, terminal_w: u16) -> u16 {
+    // u32 math like `centered_rect`: `w * 60` overflows u16 past ~1000 cols.
+    let cap = (terminal_w as u32 * LIST_MAX_PCT as u32 / 100) as u16;
+    w.clamp(MIN_LIST_WIDTH, cap.max(MIN_LIST_WIDTH))
+}
+
+/// Clamp a requested inspector-pane width to the §1 floor and cap, like
+/// [`clamp_list_width`].
+pub fn clamp_inspector_width(w: u16, terminal_w: u16) -> u16 {
+    let cap = (terminal_w as u32 * INSPECTOR_MAX_PCT as u32 / 100) as u16;
+    w.clamp(MIN_INSPECTOR_WIDTH, cap.max(MIN_INSPECTOR_WIDTH))
+}
+
+/// The width a splitter drag asks for: `at_x` the pointer column, `grab_off`
+/// the press's offset inside the 2-column strip (`0` = the left pane's border
+/// cell was grabbed, `1` = the right pane's), and `anchor` the dragged pane's
+/// FIXED outer edge (the list's left edge — its `x`; the inspector's right
+/// edge — its `x + width`; both sit at a terminal edge in this layout).
+/// Saturates at 0; the §1 min/max clamp is the caller's
+/// (`clamp_list_width`/`clamp_inspector_width`), so a drag past a bound
+/// clamps instead of sticking.
+pub fn splitter_drag_width(which: Splitter, at_x: u16, grab_off: u16, anchor: u16) -> u16 {
+    // The split point tracks the grabbed border cell under the pointer.
+    let edge = i32::from(at_x) - i32::from(grab_off) + 1;
+    let raw = match which {
+        Splitter::List => edge - i32::from(anchor),
+        Splitter::Inspector => i32::from(anchor) - edge,
+    };
+    raw.max(0) as u16
+}
+
+/// Split a total `area` into the pane rects under `cfg`. Vertical: tab bar
+/// (0/1 rows) + body + one status row. Horizontal inside the body: list +
+/// lineage + inspector. The single source of truth for screen geometry.
 ///
-/// With `list_visible = false` the horizontal split is skipped entirely: the
-/// lineage pane takes the whole body and the list rect is zero-width (never a
-/// stray solver cell), so mouse `within` tests on it are always false.
-pub fn pane_rects(area: Rect, list_visible: bool) -> PaneRects {
+/// Widths are the saved column counts clamped to §1's min/max (60% / 50% of
+/// the terminal). When the terminal is too narrow to honour every minimum,
+/// the DISPLAYED widths shrink — inspector first, then the list, each toward
+/// its floor and then below it — while the lineage's 40-column floor holds to
+/// the last. The saved values in `cfg` are never touched (§5).
+///
+/// With `cfg.list_visible = false` the list rect is zero-width (the lineage
+/// pane takes the freed space) so mouse `within` tests on it stay false.
+pub fn pane_layout(area: Rect, cfg: &PaneConfig) -> PaneRects {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(u16::from(cfg.tab_bar)),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
         .split(area);
-    let body = chunks[0];
-    let status = chunks[1];
+    let (tab_bar, body, status) = (chunks[0], chunks[1], chunks[2]);
 
-    if !list_visible {
-        return PaneRects {
-            list: Rect { width: 0, ..body },
-            lineage: body,
-            status,
-        };
+    // Desired widths: saved values clamped to each pane's §1 floor and
+    // terminal-width cap.
+    let mut list_w = if cfg.list_visible {
+        clamp_list_width(cfg.list_width, body.width)
+    } else {
+        0
+    };
+    let mut inspector_w = if cfg.inspector_visible {
+        clamp_inspector_width(cfg.inspector_width, body.width)
+    } else {
+        0
+    };
+    // The deficit under the lineage's 40-column floor — how much the three
+    // panes over-spend the body — is absorbed in §5 order (inspector first,
+    // then the list), first down to each pane's floor, then below it (a
+    // width can reach 0: the pane simply isn't drawn and no splitter exists
+    // to grab). u32 math: `list + inspector + floor` can exceed u16::MAX.
+    let deficit = |list_w: u16, inspector_w: u16| -> u32 {
+        (u32::from(list_w) + u32::from(inspector_w) + u32::from(MIN_LINEAGE_WIDTH))
+            .saturating_sub(u32::from(body.width))
+    };
+    let mut d = deficit(list_w, inspector_w);
+    if d > 0 {
+        // Pass 1: honour the floors — each pane gives up only its surplus.
+        let take = d.min(u32::from(inspector_w.saturating_sub(MIN_INSPECTOR_WIDTH))) as u16;
+        inspector_w -= take;
+        d -= u32::from(take);
+        let take = d.min(u32::from(list_w.saturating_sub(MIN_LIST_WIDTH))) as u16;
+        list_w -= take;
+        d -= u32::from(take);
+        // Pass 2: the floors themselves give way, same order.
+        let take = d.min(u32::from(inspector_w)) as u16;
+        inspector_w -= take;
+        d -= u32::from(take);
+        list_w = list_w.saturating_sub(d.min(u32::from(list_w)) as u16);
     }
 
     let panes = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .constraints([
+            Constraint::Length(list_w),
+            Constraint::Min(0),
+            Constraint::Length(inspector_w),
+        ])
         .split(body);
+    let (list, lineage, inspector) = (panes[0], panes[1], panes[2]);
 
+    // A splitter strip is the adjacent two border columns where the panes
+    // meet — it exists only while both neighbours have a border to grab.
+    let strip = |left: Rect, right: Rect| -> Option<Rect> {
+        (left.width > 0 && right.width > 0).then(|| Rect {
+            x: left.x + left.width - 1,
+            y: body.y,
+            width: 2,
+            height: body.height,
+        })
+    };
     PaneRects {
-        list: panes[0],
-        lineage: panes[1],
+        tab_bar,
+        list,
+        lineage,
+        inspector,
         status,
+        list_splitter: strip(list, lineage),
+        inspector_splitter: strip(lineage, inspector),
     }
 }
 
@@ -225,8 +412,10 @@ pub enum HitTarget {
     /// reports `Minimap` and never the node below.
     Minimap,
     /// A shared boundary between adjacent panes — the two border columns where
-    /// the panes' edges meet (screen-spec §5's drag-to-resize target).
-    PaneBorder,
+    /// the panes' edges meet (screen-spec §5's drag-to-resize target). The
+    /// payload says WHICH boundary, so the drag/double-click edits the right
+    /// saved width.
+    PaneBorder(Splitter),
     /// The bottom status line.
     StatusBar,
     /// Inside a modal overlay. Reserved for Issue 06 (mouse inside modals) —
@@ -242,7 +431,7 @@ pub enum HitTarget {
 /// rather than growing the signature — the loop already computes every field
 /// for drawing, so the hit-test always sees what the frame drew.
 pub struct HitGeometry<'a> {
-    /// The frame's pane rects (`pane_rects(area, list_visible)`).
+    /// The frame's pane rects (`pane_layout(area, &pane_config)`).
     pub panes: PaneRects,
     /// The active model list (its `rows` interleave group headers).
     pub list: &'a ModelList,
@@ -262,18 +451,22 @@ pub struct HitGeometry<'a> {
 /// no interactive surface (pane chrome, or a dead zone between targets).
 ///
 /// Every region is measured through the SAME pure geometry the renderer uses —
-/// `pane_rects`/`pane_interior` for the panes, [`lineage_content_rect`] for the
-/// diagram, [`minimap_rect`] for the inset — so "computed window == drawn
-/// window" holds for hit-testing too. The minimap is checked BEFORE the node
-/// hit-test: it is drawn over the diagram, so its cells must not fall through.
+/// `pane_layout`/`pane_interior` for the panes, [`lineage_content_rect`] for
+/// the diagram, [`minimap_rect`] for the inset — so "computed window == drawn
+/// window" holds for hit-testing too. The splitters are checked BEFORE the
+/// interiors (their cells overlap the panes' border columns), and the minimap
+/// BEFORE the node hit-test: it is drawn over the diagram, so its cells must
+/// not fall through.
 pub fn hit_target(g: &HitGeometry, col: u16, row: u16) -> Option<HitTarget> {
     let p = g.panes;
     let at = Position { x: col, y: row };
     if p.status.contains(at) {
         return Some(HitTarget::StatusBar);
     }
-    if pane_boundary(&p, col, row) {
-        return Some(HitTarget::PaneBorder);
+    for which in [Splitter::List, Splitter::Inspector] {
+        if p.splitter(which).is_some_and(|r| r.contains(at)) {
+            return Some(HitTarget::PaneBorder(which));
+        }
     }
     let list_inner = pane_interior(p.list);
     if list_inner.contains(at) {
@@ -307,20 +500,6 @@ pub fn hit_target(g: &HitGeometry, col: u16, row: u16) -> Option<HitTarget> {
         return Some(HitTarget::LineageBlank);
     }
     None
-}
-
-/// Whether `(col, row)` sits on a pane boundary: the two adjacent border
-/// columns where the list pane's right edge and the lineage pane's left edge
-/// meet, spanning the whole body height (the status line is not part of it).
-/// No boundary exists while the list pane is hidden (`list.width == 0`), which
-/// also guards the `width - 1` subtraction.
-fn pane_boundary(p: &PaneRects, col: u16, row: u16) -> bool {
-    if p.list.width == 0 || row >= p.status.y {
-        return false;
-    }
-    row >= p.list.y
-        && row < p.list.y + p.list.height
-        && (col == p.list.x + p.list.width - 1 || col == p.lineage.x)
 }
 
 /// Minimap inset dimensions (cells). A fixed small sketch in the top-right of
@@ -372,21 +551,267 @@ pub fn minimap_rect(
 mod tests {
     use super::*;
 
-    #[test]
-    fn pane_rects_hidden_list_gives_lineage_the_full_body() {
-        let area = Rect::new(0, 0, 100, 30);
-        let shown = pane_rects(area, true);
-        assert_eq!(shown.list.width, 40, "40% split while visible");
-        assert_eq!(shown.lineage.width, 60);
+    fn cfg() -> PaneConfig {
+        PaneConfig::default()
+    }
 
-        let hidden = pane_rects(area, false);
+    #[test]
+    fn pane_layout_default_is_list_34_plus_lineage() {
+        // §1: the list defaults to 34 columns regardless of terminal width —
+        // NOT a ratio (the old 40/60 split is gone).
+        for w in [80u16, 100, 160, 220] {
+            let area = Rect::new(0, 0, w, 30);
+            let p = pane_layout(area, &cfg());
+            assert_eq!(p.list.width, DEFAULT_LIST_WIDTH, "{w}: list is 34");
+            assert_eq!(p.list, Rect::new(0, 0, 34, 29), "{w}: list spans the body");
+            assert_eq!(
+                p.lineage,
+                Rect::new(34, 0, w - 34, 29),
+                "{w}: lineage takes the rest"
+            );
+            assert_eq!(p.inspector.width, 0, "{w}: inspector hidden by default");
+            assert_eq!(p.tab_bar.height, 0, "{w}: tab bar hidden by default");
+            assert_eq!(
+                p.status,
+                Rect::new(0, 29, w, 1),
+                "{w}: status is the last row"
+            );
+        }
+    }
+
+    #[test]
+    fn pane_layout_clamps_saved_width_to_min_and_cap() {
+        // A saved width below the floor lifts to it; above the 60% cap drops
+        // to it (the cap is terminal-width-relative, unlike the floor).
+        let area = Rect::new(0, 0, 100, 30);
+        let low = pane_layout(
+            area,
+            &PaneConfig {
+                list_width: 4,
+                ..cfg()
+            },
+        );
+        assert_eq!(low.list.width, MIN_LIST_WIDTH, "saved 4 -> floor 18");
+        let high = pane_layout(
+            area,
+            &PaneConfig {
+                list_width: 200,
+                ..cfg()
+            },
+        );
+        assert_eq!(high.list.width, 60, "saved 200 -> cap 60% of 100");
+        // A bigger terminal raises the cap with it.
+        let wide = pane_layout(
+            Rect::new(0, 0, 200, 30),
+            &PaneConfig {
+                list_width: 200,
+                ..cfg()
+            },
+        );
+        assert_eq!(wide.list.width, 120, "cap tracks the terminal");
+    }
+
+    #[test]
+    fn pane_layout_squeezes_displayed_width_below_floor_when_narrow() {
+        // §5: the saved value is untouched while the DISPLAYED width shrinks.
+        // body 50: desired 34 + 0 leaves lineage 16 < 40 — the list gives up
+        // first its surplus to the floor, then below it.
+        let cfg = PaneConfig {
+            list_width: 34,
+            ..cfg()
+        };
+        let p = pane_layout(Rect::new(0, 0, 50, 30), &cfg);
+        assert_eq!(p.list.width, 10, "50 - 40 = a 10-column list display");
+        assert_eq!(p.lineage.width, MIN_LINEAGE_WIDTH);
+        assert_eq!(cfg.list_width, 34, "the saved width never changes");
+    }
+
+    #[test]
+    fn pane_layout_hidden_list_gives_lineage_the_full_body() {
+        let area = Rect::new(0, 0, 100, 30);
+        let hidden = pane_layout(
+            area,
+            &PaneConfig {
+                list_visible: false,
+                ..cfg()
+            },
+        );
         assert_eq!(hidden.list.width, 0, "hidden list is zero-width");
         assert_eq!(
             hidden.lineage,
             Rect::new(0, 0, 100, 29),
             "lineage takes the whole body (status line excluded)"
         );
-        assert_eq!(hidden.status, shown.status, "status line is unaffected");
+        assert_eq!(hidden.list_splitter, None, "no boundary to grab");
+        assert_eq!(
+            hidden.status,
+            Rect::new(0, 29, 100, 1),
+            "status line is unaffected"
+        );
+    }
+
+    #[test]
+    fn pane_layout_splitter_is_the_adjacent_two_border_columns() {
+        // §5's strip: the list's right border column plus the lineage's left
+        // border column, spanning the whole body — either side grabs.
+        let p = pane_layout(Rect::new(0, 0, 100, 30), &cfg());
+        assert_eq!(
+            p.list_splitter,
+            Some(Rect::new(33, 0, 2, 29)),
+            "the 2-column strip between the panes"
+        );
+        // The strip's cells resolve to the List boundary, not to a pane
+        // interior — verified against hit_target in the app tests.
+    }
+
+    #[test]
+    fn pane_layout_inspector_takes_the_right_columns() {
+        // Issue 04's pane, driven through the same config: a 160-col terminal
+        // shows list 34 + inspector 42 + the lineage in between, with a second
+        // splitter on the lineage|inspector edge.
+        let p = pane_layout(
+            Rect::new(0, 0, 160, 30),
+            &PaneConfig {
+                inspector_visible: true,
+                ..cfg()
+            },
+        );
+        assert_eq!(p.list.width, 34);
+        assert_eq!(p.inspector, Rect::new(118, 0, 42, 29));
+        assert_eq!(p.lineage, Rect::new(34, 0, 84, 29));
+        assert_eq!(p.inspector_splitter, Some(Rect::new(117, 0, 2, 29)));
+        assert_eq!(p.list_splitter, Some(Rect::new(33, 0, 2, 29)));
+    }
+
+    #[test]
+    fn pane_layout_tab_bar_claims_a_row_above_the_body() {
+        // Issue 03's strip: with the flag on, the body starts one row lower —
+        // status is untouched.
+        let p = pane_layout(
+            Rect::new(0, 0, 100, 30),
+            &PaneConfig {
+                tab_bar: true,
+                ..cfg()
+            },
+        );
+        assert_eq!(p.tab_bar, Rect::new(0, 0, 100, 1));
+        assert_eq!(p.list.y, 1, "the body moves down one row");
+        assert_eq!(p.list.height, 28);
+        assert_eq!(p.status, Rect::new(0, 29, 100, 1));
+        assert_eq!(p.list_splitter, Some(Rect::new(33, 1, 2, 28)));
+    }
+
+    #[test]
+    fn pane_layout_narrow_squeeze_prefers_lineage_floor_then_order() {
+        // Inspector shown at 90 cols: desired 34 + 42 leaves lineage 14.
+        // Pass 1 (honour floors): inspector 42->30, list 34->20 — every floor
+        // kept. The saved values stay intact.
+        let cfg = PaneConfig {
+            inspector_visible: true,
+            ..cfg()
+        };
+        let p = pane_layout(Rect::new(0, 0, 90, 30), &cfg);
+        assert_eq!(
+            (p.list.width, p.lineage.width, p.inspector.width),
+            (20, 40, 30),
+            "surplus shed in inspector->list order, floors held"
+        );
+        // 80 cols: floors can't all hold — the inspector's own floor breaks
+        // first (the least essential pane), the list keeps 18.
+        let p = pane_layout(Rect::new(0, 0, 80, 30), &cfg);
+        assert_eq!(
+            (p.list.width, p.lineage.width, p.inspector.width),
+            (18, 40, 22),
+            "inspector dips below its floor before the list does"
+        );
+        // 55 cols: inspector is squeezed to nothing, then the list.
+        let p = pane_layout(Rect::new(0, 0, 55, 30), &cfg);
+        assert_eq!(p.inspector.width, 0, "inspector is fully squeezed first");
+        assert_eq!(p.inspector_splitter, None, "no edge to grab on a 0 pane");
+        assert_eq!((p.list.width, p.lineage.width), (15, 40));
+    }
+
+    #[test]
+    fn pane_layout_max_cap_interacts_with_squeeze() {
+        // A saved width past the cap on a narrow terminal: cap first, then the
+        // squeeze decides (cap 60% of 60 = 36, then lineage floor shrinks it).
+        let p = pane_layout(
+            Rect::new(0, 0, 60, 30),
+            &PaneConfig {
+                list_width: 80,
+                ..cfg()
+            },
+        );
+        assert_eq!(p.list.width, 20, "60 - 40; the cap already held it to 36");
+        assert_eq!(p.lineage.width, 40);
+    }
+
+    #[test]
+    fn pane_layout_degenerate_sizes_never_panic() {
+        for (w, h) in [(1u16, 1u16), (3, 3), (10, 2), (40, 5), (18, 10)] {
+            for tab_bar in [false, true] {
+                for inspector in [false, true] {
+                    let p = pane_layout(
+                        Rect::new(0, 0, w, h),
+                        &PaneConfig {
+                            tab_bar,
+                            inspector_visible: inspector,
+                            ..cfg()
+                        },
+                    );
+                    // The panes tile the body without overlap or overflow.
+                    assert_eq!(
+                        p.list.width + p.lineage.width + p.inspector.width,
+                        w,
+                        "{w}x{h}: panes tile the full body width"
+                    );
+                    assert_eq!(
+                        p.list.x + p.list.width,
+                        p.lineage.x,
+                        "{w}x{h}: list|lineage abut"
+                    );
+                    assert_eq!(
+                        p.lineage.x + p.lineage.width,
+                        p.inspector.x,
+                        "{w}x{h}: lineage|inspector abut"
+                    );
+                    assert!(
+                        p.inspector.x + p.inspector.width <= w,
+                        "{w}x{h}: inspector stays inside the body"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn clamp_widths_floor_and_terminal_cap() {
+        assert_eq!(clamp_list_width(0, 100), 18);
+        assert_eq!(clamp_list_width(34, 100), 34);
+        assert_eq!(clamp_list_width(80, 100), 60, "60% cap");
+        assert_eq!(clamp_inspector_width(0, 100), 30);
+        assert_eq!(clamp_inspector_width(80, 100), 50, "50% cap");
+        // Degenerate terminal: the floor wins over a cap below it.
+        assert_eq!(clamp_list_width(34, 20), 18);
+        assert_eq!(clamp_inspector_width(34, 20), 30);
+    }
+
+    #[test]
+    fn splitter_drag_width_tracks_the_grabbed_cell() {
+        // List splitter: the dragged border lands under the pointer. Anchor is
+        // the list's fixed left edge (x=0).
+        assert_eq!(splitter_drag_width(Splitter::List, 50, 0, 0), 51);
+        assert_eq!(splitter_drag_width(Splitter::List, 50, 1, 0), 50);
+        // Grabbed the right-hand cell (the lineage's border): same edge
+        // tracking, one column over.
+        assert_eq!(splitter_drag_width(Splitter::List, 34, 1, 0), 34);
+        // Inspector splitter: grows leftward from the terminal's right edge.
+        assert_eq!(splitter_drag_width(Splitter::Inspector, 118, 1, 160), 42);
+        assert_eq!(splitter_drag_width(Splitter::Inspector, 117, 0, 160), 42);
+        assert_eq!(splitter_drag_width(Splitter::Inspector, 100, 0, 160), 59);
+        // Out-of-range intent saturates at 0 for the caller to clamp.
+        assert_eq!(splitter_drag_width(Splitter::List, 0, 1, 0), 0);
+        assert_eq!(splitter_drag_width(Splitter::Inspector, 200, 0, 160), 0);
     }
 
     #[test]

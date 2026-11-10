@@ -11,10 +11,10 @@ use ratatui::Frame;
 use crate::coverage_gap;
 use crate::model_list::{DisplayRow, ModelList};
 
-use super::geom::pane_rects;
+use super::geom::pane_layout;
 use super::{
-    focus_border, selected_style, theme, title_style, Focus, LineageLens, UiState, SELECTED_MARKER,
-    UNSELECTED_MARKER,
+    focus_border, selected_style, theme, title_style, Focus, LineageLens, Splitter, UiState,
+    SELECTED_MARKER, UNSELECTED_MARKER,
 };
 
 /// The optional, colored, droppable segments appended to the status bar AFTER its
@@ -25,6 +25,14 @@ use super::{
 /// the event loop (like `status`/`lineage_label`).
 #[derive(Debug, Clone, Default)]
 pub struct StatusSegments<'a> {
+    /// A transient interaction hint — the splitter hover/drag readout
+    /// (`"drag to resize · double-click to reset"` / `"list 34 cols"`). LAST
+    /// among the segments: the candidate loop stops at the first segment that
+    /// doesn't fit, so a long hint placed earlier would drop every real state
+    /// segment while shown — the transient teaching text yields to them
+    /// instead. `None` normally. (Issue 02's stopgap — Issue 07 gives hints a
+    /// real home in the general mechanism.)
+    pub hint: Option<&'a str>,
     /// Blast radius of the selected node, e.g. `"impact ↓23 ↑5"` (ASCII `v`/`^`).
     /// Always-on (not user-toggled) and the highest-priority droppable segment, so
     /// it survives narrow widths longest — placed right after the protected core.
@@ -111,6 +119,10 @@ pub struct RenderCtx<'a> {
     /// (so headless `RenderCtx::new` renders construct with no segments); the event
     /// loop fills them from App state.
     pub segments: StatusSegments<'a>,
+    /// The splitter currently hovered or being dragged — its border columns
+    /// draw in `theme.accent` (screen-spec §5 "境界列をアクセント色に"). `None`
+    /// normally; the loop fills it from the hit-test/`DragState`.
+    pub splitter_highlight: Option<Splitter>,
     /// Whether to draw the lineage minimap inset. Defaults to `false`, so every
     /// headless lineage render (whose goldens never opt in) is untouched; the
     /// event loop sets it from `UiState::minimap_visible`.
@@ -169,6 +181,7 @@ impl<'a> RenderCtx<'a> {
             bookmarks: None,
             full_model_count: None,
             segments: StatusSegments::default(),
+            splitter_highlight: None,
             minimap: false,
             filter_label: None,
             layer_bands: None,
@@ -187,7 +200,9 @@ impl<'a> RenderCtx<'a> {
 /// by `ctx.mode`) layer on top — adding one is a new `Mode` variant + a new arm here.
 pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
     let area = frame.area();
-    let rects = pane_rects(area, ctx.state.list_visible());
+    // One shared geometry call: the same PaneConfig the hit-test/viewport math
+    // resolve, so drawn rects == hit-tested rects == measured rects.
+    let rects = pane_layout(area, &ctx.state.pane_config());
 
     // A list-target search shows its query live in the list title (non-covering,
     // so the filtered results stay visible while typing).
@@ -235,6 +250,22 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         ctx.col_suffix,
         ctx.theme,
     );
+
+    // Restamp the splitter's border columns with the accent while it's
+    // hovered/dragged — cheap chrome-level feedback over both panes' drawn
+    // borders (screen-spec §5). The status row and modals draw on top
+    // regardless (the strip only spans body rows, so nothing overlaps).
+    if let Some(which) = ctx.splitter_highlight {
+        if let Some(strip) = rects.splitter(which) {
+            for col in strip.x..strip.x + strip.width {
+                for row in strip.y..strip.y + strip.height {
+                    if let Some(cell) = frame.buffer_mut().cell_mut((col, row)) {
+                        cell.set_fg(ctx.theme.accent);
+                    }
+                }
+            }
+        }
+    }
     draw_status(
         frame,
         rects.status,
@@ -542,10 +573,13 @@ fn draw_status(
     //   3. the user-ACTIVATED states (coverage lens %, bookmarks, filter, sort —
     //      information shown nowhere else).
     //   4. position.
-    //   5. focus / view LAST (focus is already the accent pane border, and the
-    //      view label is echoed in the lineage pane title — redundant cues that
-    //      should drop first on a narrow terminal).
-    let candidates: [(Option<&str>, Color); 12] = [
+    //   5. focus / view (focus is already the accent pane border, and the
+    //      view label is echoed in the lineage pane title — redundant cues).
+    //   6. The splitter hover/drag hint (Issue 02's transient readout) LAST:
+    //      it only exists while the pointer is already on the strip — the
+    //      accent columns carry the feedback — so on a crowded line the long
+    //      string drops first instead of pushing the persistent segments out.
+    let candidates: [(Option<&str>, Color); 13] = [
         (segments.impact, t.danger),
         (segments.column, t.gold),
         (segments.diff, t.diff_mod),
@@ -558,6 +592,7 @@ fn draw_status(
         (segments.position, t.text_faint),
         (segments.focus, t.ok),
         (segments.view, t.chip_view),
+        (segments.hint, t.accent),
     ];
     let cap = area.width as usize;
     for (txt, color) in candidates.into_iter() {

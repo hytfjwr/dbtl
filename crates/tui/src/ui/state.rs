@@ -162,6 +162,15 @@ pub struct UiState {
     /// `Action::ToggleOverview` directly in `apply_action`. Defaulting OFF
     /// keeps every existing render/golden untouched.
     overview: bool,
+    /// The list pane's saved width in columns — a view-pref like
+    /// `list_visible`. Edited by the `<`/`>` keys, the splitter drag, and the
+    /// `=` reset (all direct `apply_action` mutations, never
+    /// `reduce_selection`); the DISPLAYED width is `geom::pane_layout`'s
+    /// clamp of this value to the terminal.
+    list_width: u16,
+    /// The inspector pane's saved width in columns. Stored ahead of Issue
+    /// 04's pane so `=` and the persisted state already carry it.
+    inspector_width: u16,
 }
 
 impl UiState {
@@ -180,6 +189,8 @@ impl UiState {
             minimap_visible: false,
             density: crate::Density::default(),
             overview: false,
+            list_width: super::geom::DEFAULT_LIST_WIDTH,
+            inspector_width: super::geom::DEFAULT_INSPECTOR_WIDTH,
         }
     }
 
@@ -274,6 +285,102 @@ impl UiState {
     /// keys) and the loop force-anchors the reshaped diagram.
     pub fn toggle_overview(&mut self) {
         self.overview = !self.overview;
+    }
+
+    /// The list pane's saved width in columns.
+    pub fn list_width(&self) -> u16 {
+        self.list_width
+    }
+
+    /// The inspector pane's saved width in columns.
+    pub fn inspector_width(&self) -> u16 {
+        self.inspector_width
+    }
+
+    /// The saved width behind a splitter (the drag status hint's readout).
+    pub fn pane_width(&self, which: super::geom::Splitter) -> u16 {
+        match which {
+            super::geom::Splitter::List => self.list_width,
+            super::geom::Splitter::Inspector => self.inspector_width,
+        }
+    }
+
+    /// Set the list pane's saved width directly (the `<`/`>` post-clamp and
+    /// state restore). A stored width below the §1 floor still displays at
+    /// the floor — `pane_layout` clamps — so this only guards a literal 0.
+    pub fn set_list_width(&mut self, w: u16) {
+        self.list_width = w.max(1);
+    }
+
+    /// Set the inspector pane's saved width directly (state restore / `=`).
+    pub fn set_inspector_width(&mut self, w: u16) {
+        self.inspector_width = w.max(1);
+    }
+
+    /// `<`/`>`: nudge the list pane's saved width by `delta` columns (signed),
+    /// floored at the §1 minimum. The size-aware maximum (60% of the
+    /// terminal) is the layout's clamp and the loop's post-clamp — this layer
+    /// never sees pane size (same size-blind split as `wheel_lineage`).
+    pub fn nudge_list_width(&mut self, delta: i32) {
+        self.list_width = (i32::from(self.list_width) + delta)
+            .clamp(i32::from(super::geom::MIN_LIST_WIDTH), i32::from(u16::MAX))
+            as u16;
+    }
+
+    /// Apply a splitter drag's resolved width to the pane pref, clamped to the
+    /// §1 min/max for `terminal_w` — the size-aware caller (the event loop, or
+    /// a headless test) resolves the pointer to `w` via
+    /// `geom::splitter_drag_width`; the write is the same one the keys make.
+    pub fn set_pane_width(&mut self, which: super::geom::Splitter, w: u16, terminal_w: u16) {
+        match which {
+            super::geom::Splitter::List => {
+                self.list_width = super::geom::clamp_list_width(w, terminal_w);
+            }
+            super::geom::Splitter::Inspector => {
+                self.inspector_width = super::geom::clamp_inspector_width(w, terminal_w);
+            }
+        }
+    }
+
+    /// Reset a pane's saved width to its §1 default (double-click on its
+    /// splitter, or `=` for both).
+    pub fn reset_pane_width(&mut self, which: super::geom::Splitter) {
+        match which {
+            super::geom::Splitter::List => {
+                self.list_width = super::geom::DEFAULT_LIST_WIDTH;
+            }
+            super::geom::Splitter::Inspector => {
+                self.inspector_width = super::geom::DEFAULT_INSPECTOR_WIDTH;
+            }
+        }
+    }
+
+    /// Set list-pane visibility directly (state restore), reusing the toggle's
+    /// focus pinning so a hidden list can never keep the cursor.
+    pub fn set_list_visible(&mut self, visible: bool) {
+        if self.list_visible != visible {
+            self.toggle_list_pane();
+        }
+    }
+
+    /// Set the minimap flag directly (state restore — the interactive path
+    /// still goes through [`toggle_minimap`](Self::toggle_minimap)).
+    pub fn set_minimap(&mut self, on: bool) {
+        self.minimap_visible = on;
+    }
+
+    /// The `geom::PaneConfig` for the current view prefs — the ONE derivation
+    /// every `pane_layout` caller (draw, hit-test, viewport math) shares. The
+    /// inspector and tab bar stay off here: Issues 04/03 flip them once those
+    /// panes exist.
+    pub fn pane_config(&self) -> super::geom::PaneConfig {
+        super::geom::PaneConfig {
+            list_visible: self.list_visible,
+            list_width: self.list_width,
+            inspector_visible: false,
+            inspector_width: self.inspector_width,
+            tab_bar: false,
+        }
     }
 
     /// Toggle the focused pane — a no-op while the list pane is hidden (the

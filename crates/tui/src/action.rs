@@ -219,6 +219,14 @@ pub enum Action {
     /// (records re-root history, like a lineage click). A non-model row
     /// notices instead of jumping.
     ColumnJump,
+    // --- pane widths (Issue 02; screen-spec §5) ---
+    /// `<`: shrink the focused pane's saved width by §5's 4-column step —
+    /// the list, until Issue 04's inspector gains a focus target.
+    PaneNarrow,
+    /// `>`: grow the focused pane's saved width by the same step.
+    PaneWiden,
+    /// `=`: every resizable pane's saved width back to its §1 default.
+    PaneWidthsReset,
 }
 
 /// Which pane a search targets (decided from focus when search opens).
@@ -754,6 +762,9 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('p'))], action: A::PathToggle, help: "anchor/clear two-node path" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('K'))], action: A::ColumnsOpen, help: "column lineage modal (traced column)" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Esc)], action: A::ColumnFocusExit, help: "exit column focus" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('<'))], action: A::PaneNarrow, help: "narrow pane 4 cols" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('>'))], action: A::PaneWiden, help: "widen pane 4 cols" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('='))], action: A::PaneWidthsReset, help: "reset pane widths" },
     // ---- Yank prefix mode (`y` + one key): the second key is the SAME letter
     // the single-key binding always used, so muscle memory carries over as
     // `ym`/`yC`/…; `yy` copies the unique_id (what bare `y` used to do). ----
@@ -1265,6 +1276,9 @@ mod tests {
             | Action::ColumnsOpen
             | Action::ColumnRowMove(_)
             | Action::ColumnJump
+            | Action::PaneNarrow
+            | Action::PaneWiden
+            | Action::PaneWidthsReset
             | Action::DetailSectionToggle => true,
             // Dynamic: produced without a fixed key binding (text input). Mouse
             // is handled in the event loop (size-aware), not via the keymap.

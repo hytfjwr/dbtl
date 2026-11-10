@@ -109,6 +109,7 @@ fn render_with_toast(app: &App, width: u16, height: u16, toast: Option<&str>) ->
         ctx.glyphs = app.glyph_mode;
         ctx.col_suffix = col_suffix.as_deref();
         ctx.segments = StatusSegments {
+            hint: None,
             impact: impact_s.as_deref(),
             column: column_s.as_deref(),
             focus: Some(focus_s),

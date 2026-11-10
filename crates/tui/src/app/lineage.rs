@@ -103,10 +103,12 @@ impl App {
             }
             // Inert surfaces do nothing at all — the minimap literally
             // swallows its click (Issue 05 gives it a pan meaning), and the
-            // reserved targets wait on Issues 02 (boundary drag), 06 (modal
-            // chrome), and 07 (status chips).
+            // reserved targets wait on Issues 05/06 (menu/modal chrome) and
+            // 07 (status chips). A pane boundary's single click is also
+            // inert: only its DRAG and DOUBLE-CLICK carry meaning (§5) — the
+            // loop handles both without routing here.
             HitTarget::Minimap
-            | HitTarget::PaneBorder
+            | HitTarget::PaneBorder(_)
             | HitTarget::StatusBar
             | HitTarget::ModalInterior
             | HitTarget::ModalExterior => {}

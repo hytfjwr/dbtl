@@ -272,6 +272,72 @@ fn hidden_list_pane_renders_lineage_full_width() {
 }
 
 #[test]
+fn explicit_list_width_places_the_splitter_deterministically() {
+    // §5: the saved width is COLUMNS, not a ratio — the boundary strip lands
+    // on the two border columns the pure layout reports, so a RenderCtx with
+    // a fixed width draws deterministically.
+    let render_at = |saved: u16| -> Buffer {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let list = fixture_list();
+        let mut state = UiState::new(list.len());
+        state.set_pane_width(dbtl::ui::Splitter::List, saved, 100);
+        let ctx = RenderCtx::new(&list, &state, None);
+        terminal
+            .draw(|frame| draw(frame, &ctx))
+            .expect("draw must not panic");
+        terminal.backend().buffer().clone()
+    };
+    // Default 34: the list's `╮│` and the lineage's `╭│` sit at 33 | 34.
+    // (Row 25 is below the unscrolled scrollbar thumb and the scroll markers'
+    // border midpoints; row 0's corners are never overdrawn.)
+    let buffer = render_at(34);
+    assert_eq!(buffer.cell((33, 0)).unwrap().symbol(), "╮");
+    assert_eq!(buffer.cell((34, 0)).unwrap().symbol(), "╭");
+    assert_eq!(buffer.cell((33, 25)).unwrap().symbol(), "│");
+    assert_eq!(buffer.cell((34, 25)).unwrap().symbol(), "│");
+    // Saved 20: the strip follows — 19 | 20.
+    let buffer = render_at(20);
+    assert_eq!(buffer.cell((19, 0)).unwrap().symbol(), "╮");
+    assert_eq!(buffer.cell((20, 0)).unwrap().symbol(), "╭");
+    assert_eq!(buffer.cell((20, 25)).unwrap().symbol(), "│");
+    // Saved 90 clamps to the §1 60%-of-terminal cap at 100 cols: 59 | 60.
+    let buffer = render_at(90);
+    assert_eq!(buffer.cell((59, 0)).unwrap().symbol(), "╮");
+    assert_eq!(buffer.cell((60, 0)).unwrap().symbol(), "╭");
+    assert_eq!(buffer.cell((60, 25)).unwrap().symbol(), "│");
+}
+
+#[test]
+fn splitter_hover_hint_and_accent_strip_render() {
+    // §5: hovering a boundary restamps its 2 border columns accent and shows
+    // the hint in the status row (the loop supplies both ctx inputs; draw
+    // just paints them).
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    let list = fixture_list();
+    let state = UiState::new(list.len());
+    let mut ctx = RenderCtx::new(&list, &state, None);
+    ctx.splitter_highlight = Some(dbtl::ui::Splitter::List);
+    ctx.segments.hint = Some("drag to resize · double-click to reset");
+    let accent = ctx.theme.accent;
+    terminal
+        .draw(|frame| draw(frame, &ctx))
+        .expect("draw must not panic");
+    let buffer = terminal.backend().buffer().clone();
+    // Every body row of the strip carries the accent fg (top corner and a
+    // mid row are representative; the strip spans the whole body).
+    assert_eq!(buffer.cell((33, 0)).unwrap().fg, accent, "top corner");
+    assert_eq!(buffer.cell((34, 10)).unwrap().fg, accent, "mid strip");
+    // The hint is a status-bar segment on the last row.
+    let status = row_text(&buffer, 29);
+    assert!(
+        status.contains("drag to resize · double-click to reset"),
+        "the §5 hover hint renders in the status row: {status:?}"
+    );
+}
+
+#[test]
 fn help_overlay_renders_keybindings_from_keymap() {
     // The ? overlay is generated from the keymap (single source of truth), so a
     // representative binding description must render.
@@ -1145,7 +1211,10 @@ fn bookmark_badge_renders_on_a_bookmarked_row() {
     use std::collections::BTreeSet;
 
     let list = fixture_list();
-    let state = UiState::new(list.len());
+    let mut state = UiState::new(list.len());
+    // The badge trails the name + degree badges; give the pane enough columns
+    // for the whole row to fit (the default 34 clips this particular name).
+    state.set_pane_width(dbtl::ui::Splitter::List, 40, 100);
     // Bookmark the first model in the flat list (row near the top → on screen).
     let uid = list.models[0].unique_id.clone();
     let mut bookmarks = BTreeSet::new();
@@ -1220,10 +1289,16 @@ fn g_jump_does_not_panic_on_tiny_terminal() {
 // UI chrome: list-pane scrollbar, segmented status bar, accented layer headers
 // ============================================================================
 
-/// The list pane's right-border column for a `width`-wide terminal: the list
-/// pane is the 40% left split (`pane_rects`), so its border is at `0.4*width - 1`.
+/// The list pane's right-border column for a `width`-wide terminal, resolved
+/// through the same pure layout the renderer uses (the saved-width split,
+/// not a ratio).
 fn list_right_border_x(width: u16) -> u16 {
-    ((width as u32 * 40 / 100) as u16) - 1
+    let list = dbtl::ui::pane_layout(
+        ratatui::layout::Rect::new(0, 0, width, 24),
+        &dbtl::ui::PaneConfig::default(),
+    )
+    .list;
+    list.x + list.width - 1
 }
 
 /// Count thumb glyphs (Unicode `█`) drawn on the list pane's right-border column.
@@ -1318,6 +1393,7 @@ fn status_bar_keeps_protected_core_and_appends_segments() {
         let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, None);
         ctx.mode = &app.mode;
         ctx.segments = StatusSegments {
+            hint: None,
             impact: None,
             column: None,
             focus: Some("list"),
@@ -1359,6 +1435,7 @@ fn status_bar_drops_segments_but_never_the_core_on_a_narrow_line() {
     {
         let mut ctx = RenderCtx::new(&list, &state, None);
         ctx.segments = StatusSegments {
+            hint: None,
             impact: None,
             column: None,
             focus: Some("list"),
@@ -1407,6 +1484,7 @@ fn status_segments_render_at_80_cols() {
         ctx.mode = &app.mode;
         ctx.status = status_note.as_deref();
         ctx.segments = StatusSegments {
+            hint: None,
             impact: None,
             column: None,
             focus: Some("list"),
@@ -1458,6 +1536,7 @@ fn status_impact_segment_renders_and_survives_narrowest_droppable_line() {
     {
         let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, None);
         ctx.segments = StatusSegments {
+            hint: None,
             impact: Some(impact.as_str()),
             column: None,
             focus: Some("list"),
@@ -1489,6 +1568,7 @@ fn status_impact_segment_renders_and_survives_narrowest_droppable_line() {
     {
         let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, None);
         ctx.segments = StatusSegments {
+            hint: None,
             impact: Some(impact.as_str()),
             column: None,
             focus: Some("list"),
@@ -1847,7 +1927,7 @@ fn minimap_default_off_keeps_lineage_invariants_intact() {
     // lineage interior, unclipped — i.e. the lineage_render.rs invariants hold
     // because nothing was drawn over the interior.
     use dbtl::app::App;
-    use dbtl::ui::{pane_interior, pane_rects};
+    use dbtl::ui::{pane_interior, pane_layout, PaneConfig};
     use ratatui::layout::Rect;
 
     let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
@@ -1855,7 +1935,8 @@ fn minimap_default_off_keeps_lineage_invariants_intact() {
     assert!(!app.ui_state.minimap_visible(), "minimap default OFF");
 
     // Anchor exactly as the loop does so the selected box centers/shows.
-    let interior = pane_interior(pane_rects(Rect::new(0, 0, 80, 24), true).lineage);
+    let interior =
+        pane_interior(pane_layout(Rect::new(0, 0, 80, 24), &PaneConfig::default()).lineage);
     {
         let lay = app.styled_lineage_layout().expect("non-empty lineage");
         app.ui_state.anchor_lineage(
@@ -1889,7 +1970,7 @@ fn minimap_on_draws_node_and_viewport_glyphs_in_the_inset() {
     // inset of the lineage interior (and ONLY scan that inset, since the minimap
     // legitimately overwrites a corner of the diagram when ON).
     use dbtl::app::{apply_action, App};
-    use dbtl::ui::{pane_interior, pane_rects};
+    use dbtl::ui::{pane_interior, pane_layout, PaneConfig};
     use dbtl::Action;
     use ratatui::layout::Rect;
 
@@ -1898,7 +1979,8 @@ fn minimap_on_draws_node_and_viewport_glyphs_in_the_inset() {
     apply_action(&mut app, Action::ToggleMinimap);
     assert!(app.ui_state.minimap_visible(), "M toggled the minimap on");
 
-    let interior = pane_interior(pane_rects(Rect::new(0, 0, 80, 24), true).lineage);
+    let interior =
+        pane_interior(pane_layout(Rect::new(0, 0, 80, 24), &PaneConfig::default()).lineage);
     {
         let lay = app.styled_lineage_layout().expect("non-empty lineage");
         // Precondition: the fct grid genuinely overflows this interior (so the
@@ -2378,7 +2460,9 @@ fn focus_order_id(app: &mut dbtl::app::App) {
 fn anchor_on_traced(app: &mut dbtl::app::App, w: u16, h: u16) {
     let lay = app.styled_lineage_layout().expect("focused layout");
     let area = ratatui::layout::Rect::new(0, 0, w, h);
-    let inner = dbtl::ui::pane_interior(dbtl::ui::pane_rects(area, true).lineage);
+    let inner = dbtl::ui::pane_interior(
+        dbtl::ui::pane_layout(area, &dbtl::ui::PaneConfig::default()).lineage,
+    );
     app.ui_state.anchor_lineage(
         lay.selected_rect,
         &lay.grid,
