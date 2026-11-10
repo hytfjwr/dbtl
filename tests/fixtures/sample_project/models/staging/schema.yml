@@ -68,3 +68,16 @@ seeds:
     config:
       meta:
         owner: data-eng
+  # Bare top-level `meta:` on a SEED (no `config:` wrapper) — dbt accepts it
+  # exactly like `config.meta` (verified on 1.12.6), so the loader must too.
+  # The values also pin YAML-1.1 scalar resolution: real dbt (PyYAML) lands
+  # `seed_flag: yes` / `on_key: on` / `off_key: off` as BOOLEANS while `y`/`n`
+  # stay STRINGS — serde_norway (YAML 1.2) would keep them all strings.
+  - name: extra_seed
+    meta:
+      bare_seed_meta: "LANDED"
+      seed_flag: yes
+      y_key: y
+      n_key: n
+      on_key: on
+      off_key: off

@@ -173,7 +173,7 @@ pub fn build_model_list(dag: &Dag, sort: SortMode) -> ModelList {
 ///   `meta` key (`group_by_meta` in `config.yml`), by that meta VALUE, which
 ///   REPLACES the layer grouping outright (a reviewer's "who owns this"
 ///   view). Meta groups are labelled `key=value`, sort alphabetically, and a
-///   `(no key)` bucket sorts last for models missing the key.
+///   `(no <key>)` bucket sorts last for models missing the key.
 /// - Orders groups by [`LAYER_ORDER`] (unknown layers appended, by name) —
 ///   meta groups alphabetically instead.
 /// - Sorts each group's models per `sort` ([`SortMode`]): always a name/unique_id
@@ -205,7 +205,7 @@ pub fn build_model_list_grouped(dag: &Dag, sort: SortMode, group_key: Option<&st
     }
 
     match group_key {
-        // Meta groups: alphabetical by `key=value` label, `(no key)` last.
+        // Meta groups: alphabetical by `key=value` label, `(no <key>)` last.
         Some(_) => by_group.sort_by(|(a, _), (b, _)| {
             let missing = |g: &String| Some(g) == missing_label.as_ref();
             missing(a).cmp(&missing(b)).then_with(|| a.cmp(b))
@@ -418,6 +418,7 @@ mod tests {
             saved_queries: HashMap::new(),
             unit_tests: HashMap::new(),
             functions: HashMap::new(),
+
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
             macros: HashMap::new(),
@@ -571,6 +572,7 @@ mod tests {
             metrics: HashMap::new(),
             saved_queries: HashMap::new(),
             unit_tests: HashMap::new(),
+            functions: HashMap::new(),
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
             macros: HashMap::new(),
@@ -689,6 +691,7 @@ mod tests {
             saved_queries: HashMap::new(),
             unit_tests: HashMap::new(),
             functions: HashMap::new(),
+
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
             macros: HashMap::new(),
@@ -761,6 +764,7 @@ mod tests {
             saved_queries: HashMap::new(),
             unit_tests: HashMap::new(),
             functions: HashMap::new(),
+
             parent_map,
             child_map,
             macros: HashMap::new(),

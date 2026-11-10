@@ -29,3 +29,30 @@ snapshots:
   sample:
     +meta:
       domain: snapshots
+# The `sources:` tree keys by the source FQN — <pkg>: <declaring-yml dirs
+# (resource-root-relative)>: <source name>: <table name> (verified against
+# real dbt: `source.sample.raw.orders` has fqn ['sample','staging','raw',
+# 'orders'], and a flat `sources: raw:` key is an *unused config path* — the
+# package segment is mandatory). `+meta` here is the lowest precedence: it
+# loses per key to the source-level `meta:` AND the table-level `meta:` in
+# schema.yml. `raw` and `orders` are separate levels — the source level
+# cascades to all its tables, the table level only to that table.
+sources:
+  sample:
+    staging:
+      raw:
+        +meta:
+          tree_src: proj-tree-src
+        orders:
+          +meta:
+            tree_tbl: proj-tree-tbl
+            # Both of these lose: `shared`/`owner` in schema.yml's source- and
+            # table-level `meta:` sit above the tree in precedence.
+            shared: "tree-level (shadowed)"
+            owner: "tree-level (shadowed)"
+  # A bare <source>: <table>: key (no package/dirs) is an unused config path
+  # in real dbt — kept here to pin that its meta must NOT land on the source.
+  raw:
+    customers:
+      +meta:
+        flat_key: "must-not-land"

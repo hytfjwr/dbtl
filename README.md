@@ -227,7 +227,9 @@ comment can never disagree with the screen.
   threshold — the same `coverage_gap` counts the status `cov%` shows), and —
   with `--diff <BASELINE>` — **newly introduced layer violations** and
   **changed models/seeds/snapshots without tests** (the impact pack's risk
-  flags). `--quiet` suppresses the report for an exit-code-only check.
+  flags). A `--diff` run also prints informational (non-gating) lines — the
+  resolved baseline label and the same `affected owners:` set the impact
+  report lists. `--quiet` suppresses the report for an exit-code-only check.
 
 Example GitHub-Actions shape:
 
@@ -358,7 +360,7 @@ group_by_meta: owner   # group the model list by this meta key's value instead o
 owner_meta_key: owner  # the meta key the impact report counts as "affected owners" (default owner)
 ```
 
-`group_by_meta` swaps the left pane's layer grouping for `key=value` groups (alphabetical, models missing the key land in a `(no key)` group last); the `.` sort cycle still orders models *within* each group. Leave it unset for the default layer grouping. `owner_meta_key` changes which `meta` key `dbtl impact` and the `D` modal read for their "Affected owners" list.
+`group_by_meta` swaps the left pane's layer grouping for `key=value` groups (alphabetical, models missing the key land in a `(no <key>)` group last — e.g. `(no owner)` when grouping by `owner`); the `.` sort cycle still orders models *within* each group. Leave it unset for the default layer grouping. `owner_meta_key` changes which `meta` key `dbtl impact` and the `D` modal read for their "Affected owners" list; `dbtl check --diff` prints them as an informational `affected owners:` line (never a gate).
 
 Precedence is `config.yml` < saved project state < explicit CLI flags — so `dbtl --theme x` always wins over a configured theme, and a project you already visited restores its saved lens rather than the configured one. A malformed `config.yml` prints a warning and is ignored; a stale state file can reference models that no longer exist — those bookmarks are simply dropped.
 

@@ -877,7 +877,7 @@ fn gap_next_and_prev_cycle_through_untested_models() {
         .filter(|(_, m)| crate::coverage_gap(m))
         .map(|(i, _)| i)
         .collect();
-    assert_eq!(gaps.len(), 4, "sample manifest has four untested models");
+    assert_eq!(gaps.len(), 5, "sample manifest has five untested models");
     apply_action(&mut a, Action::GapNext);
     let first = a.ui_state.selected();
     assert!(gaps.contains(&first), "n lands on a coverage gap");
@@ -941,14 +941,14 @@ fn untested_filter_narrows_the_list_and_toggles_off() {
     let full = a.model_list.len();
     apply_action(&mut a, Action::ToggleUntestedFilter);
     assert_eq!(a.list_filter, ListFilter::Untested);
-    assert_eq!(a.active_list().len(), 4, "only the four untested models");
+    assert_eq!(a.active_list().len(), 5, "only the five untested models");
     assert!(
         a.active_list().models.iter().all(crate::coverage_gap),
         "every visible model is untested"
     );
     assert_eq!(
         a.ui_state.model_count(),
-        4,
+        5,
         "selection space follows the filtered view"
     );
     assert_eq!(a.list_filter_label(), Some("untested"));
@@ -4410,7 +4410,7 @@ fn yank_column_lineage_copies_the_selected_columns_downstream_closure() {
         text.contains("# Column lineage: `stg_orders.id` (downstream)"),
         "same ColumnReport markdown as the CLI, got: {text:?}"
     );
-    assert!(text.contains("## Downstream columns (4)"));
+    assert!(text.contains("## Downstream columns (5)"));
     assert!(text.contains("`fct_orders.id`"));
     assert_eq!(a.take_notice().as_deref(), Some("Copied column lineage"));
     assert_eq!(a.mode, Mode::Selection, "the which-key is one-shot");
@@ -4572,4 +4572,35 @@ fn a_stale_modal_stash_cannot_leak_into_a_later_selection_yank() {
         other => panic!("expected one Yank effect, got {other:?}"),
     };
     assert_eq!(text, "model.sample.fct_orders", "no stale modal target");
+}
+
+#[test]
+fn set_group_by_meta_treats_blank_keys_as_none() {
+    // `group_by_meta: " "` in config.yml must NOT bucket every model under a
+    // literal `(no   )` header — blank/whitespace keys normalize to `None`
+    // (the default layer grouping).
+    let mut a = app();
+    assert_eq!(a.group_by_meta, None, "fresh app: layer grouping");
+
+    a.set_group_by_meta(Some("owner".to_string()));
+    assert_eq!(a.group_by_meta.as_deref(), Some("owner"));
+
+    a.set_group_by_meta(Some("   ".to_string()));
+    assert_eq!(a.group_by_meta, None, "whitespace-only key → None");
+    assert!(
+        a.model_list
+            .groups
+            .iter()
+            .all(|g| !g.layer.contains("(no ")),
+        "no `(no <key>)` bucket when grouping is off: {:?}",
+        a.model_list
+            .groups
+            .iter()
+            .map(|g| &g.layer)
+            .collect::<Vec<_>>()
+    );
+
+    a.set_group_by_meta(Some("owner".to_string()));
+    a.set_group_by_meta(Some(String::new()));
+    assert_eq!(a.group_by_meta, None, "empty key → None");
 }

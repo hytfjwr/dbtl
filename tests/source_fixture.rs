@@ -199,10 +199,10 @@ fn schema_tests_are_captured_but_never_dag_nodes() {
 #[test]
 fn builds_dag_with_expected_counts_and_lineage() {
     let dag = load_dag_from_source(PROJECT).unwrap();
-    assert_eq!(dag.count_by_resource_type("model"), 6, "model count");
+    assert_eq!(dag.count_by_resource_type("model"), 7, "model count");
     assert_eq!(dag.count_by_resource_type("source"), 2, "source count");
-    assert_eq!(dag.count_by_resource_type("seed"), 1, "seed count");
-    assert_eq!(dag.count_by_resource_type("snapshot"), 2, "snapshot count");
+    assert_eq!(dag.count_by_resource_type("seed"), 2, "seed count");
+    assert_eq!(dag.count_by_resource_type("snapshot"), 3, "snapshot count");
 
     // fct_orders upstream: stg_orders + its source (transitive) + the seed.
     let up = dag.upstream("model.sample.fct_orders");
@@ -338,13 +338,53 @@ fn meta_merges_per_dbt_precedence() {
     assert_eq!(yml_snap["owner"], "snapshot-eng");
     assert_eq!(yml_snap["domain"], "snapshots");
     // Sources: source-level meta cascades to every table; a table-level meta
-    // overrides per key.
+    // overrides per key. The `sources:` project tree is the LOWEST level:
+    // `tree_src` (source level) reaches every table, `tree_tbl` only its
+    // table, and schema-level `meta:` beats the tree on shared keys.
     let orders = meta("source.sample.raw.orders");
     assert_eq!(orders["owner"], "payments-eng");
     assert_eq!(orders["shared"], "yes");
+    assert_eq!(orders["tree_src"], "proj-tree-src");
+    assert_eq!(orders["tree_tbl"], "proj-tree-tbl");
     let customers = meta("source.sample.raw.customers");
     assert_eq!(customers["owner"], "data-eng");
     assert_eq!(customers["shared"], "yes");
+    assert_eq!(customers["tree_src"], "proj-tree-src");
+    assert!(
+        !customers.contains_key("tree_tbl") && !customers.contains_key("flat_key"),
+        "table-level tree meta and the package-less `sources: raw:` key must not land: {customers:?}"
+    );
+    // Bare top-level `meta:` on a seed — dbt accepts it like `config.meta`,
+    // over the `seeds:` tree. The values also pin PyYAML scalar resolution:
+    // bare `yes`/`on`/`off` are bools ("true"/"false" stringified) while
+    // `y`/`n` stay strings.
+    let extra_seed = meta("seed.sample.extra_seed");
+    assert_eq!(extra_seed["bare_seed_meta"], "LANDED");
+    assert_eq!(extra_seed["domain"], "reference");
+    assert_eq!(extra_seed["seed_flag"], "true");
+    assert_eq!(extra_seed["on_key"], "true");
+    assert_eq!(extra_seed["off_key"], "false");
+    assert_eq!(extra_seed["y_key"], "y");
+    assert_eq!(extra_seed["n_key"], "n");
+    // Bare top-level `meta:` on a yaml-defined snapshot works identically.
+    let extra_snap = meta("snapshot.sample.extra_snapshot");
+    assert_eq!(extra_snap["bare_snap_meta"], "LANDED");
+    assert_eq!(extra_snap["domain"], "snapshots");
+    // Two in-file config() calls: dbt applies each in order — `materialized`
+    // resolves last-wins and `meta` merges per top-level key ({a:1,b:'first'}
+    // then {b:'second',c:3}).
+    let two = meta("model.sample.stg_two_configs");
+    assert_eq!(two["a"], "1");
+    assert_eq!(two["b"], "second");
+    assert_eq!(two["c"], "3");
+    assert_eq!(two["team"], "analytics-eng");
+    assert_eq!(
+        dag.detail("model.sample.stg_two_configs")
+            .and_then(|d| d.materialized.clone())
+            .as_deref(),
+        Some("table"),
+        "the second config() call's materialized wins"
+    );
 }
 
 #[test]

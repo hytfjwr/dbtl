@@ -39,8 +39,8 @@ use crate::ui::theme::{self, Theme};
 use crate::{
     build_filtered_model_list, build_model_list, build_model_list_grouped, compute_diff,
     coverage_gap, default_catalog_path, default_run_results_path,
-    load_dag_from_source_with_warnings, load_dag_with_warnings, ColumnRef, Dag, DagDiff,
-    ModelList, NameMatchResolver, NodeDetail, NodeInfo, RunResults, SortMode, UiState,
+    load_dag_from_source_with_warnings, load_dag_with_warnings, ColumnRef, Dag, DagDiff, ModelList,
+    NameMatchResolver, NodeDetail, NodeInfo, RunResults, SortMode, UiState,
 };
 
 mod analysis;
@@ -158,7 +158,7 @@ pub struct App {
     pub sort: SortMode,
     /// `config.yml`'s `group_by_meta`: `Some(key)` groups the model list by
     /// that `meta` key's VALUE instead of the layer dirs — replacing the
-    /// layer grouping outright (`key=value` groups, `(no key)` last). `sort`
+    /// layer grouping outright (`key=value` groups, `(no <key>)` last). `sort`
     /// still orders within each group; every list rebuild reads this.
     pub group_by_meta: Option<String>,
     /// The `meta` key the PR-impact pack collects as "affected owners"
@@ -487,8 +487,11 @@ impl App {
 
     /// Set the `meta` key the model list groups by (`config.yml`
     /// `group_by_meta`; `None` = the default layer grouping) and rebuild the
-    /// list like a sort change — selection re-resolves by `unique_id`.
+    /// list like a sort change — selection re-resolves by `unique_id`. An
+    /// empty or whitespace-only key is `None` — it would otherwise group
+    /// every model under a literal `(no  )` bucket.
     pub fn set_group_by_meta(&mut self, key: Option<String>) {
+        let key = key.filter(|k| !k.trim().is_empty());
         if self.group_by_meta == key {
             return;
         }

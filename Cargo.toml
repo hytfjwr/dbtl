@@ -38,8 +38,16 @@ serde = { version = "1", features = ["derive"] }
 # becomes an `IndexMap`), so the structure view shows columns as authored.
 serde_json = { version = "1", features = ["preserve_order"] }
 # Parses dbt_project.yml + schema.yml for the source loader (no compiled manifest).
-# Maintained fork of the deprecated serde_yaml (API-compatible).
+# Maintained fork of the deprecated serde_yaml (API-compatible). NOTE: only
+# dbtl's OWN config/state files (persist/theme) parse through it — dbt's own
+# files go through yaml-rust2's event stream so plain-vs-quoted scalar style
+# survives (dbt loads YAML 1.1 via PyYAML: bare `yes` is a bool, `"yes"` isn't).
 serde_norway = "0.9"
+# Event-level YAML for dbt_project.yml/schema.yml in the source loader: the
+# Scalar events carry TScalarStyle, which is the ONLY way to tell a plain
+# `yes` (PyYAML: bool) from a quoted `"yes"` (PyYAML: string) — serde_yaml-
+# family `Value` types erase that distinction before we can see it.
+yaml-rust2 = "0.9"
 # Status-bar segment width measurement (src/ui/render.rs) AND the ascii_guard test
 # (data cells that are unambiguously WIDE render fine everywhere; only
 # ambiguous-width chrome is banned). A normal dependency so `src/` can use it.

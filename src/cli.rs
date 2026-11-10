@@ -500,10 +500,15 @@ fn remove_stale_docs(out_dir: &std::path::Path, files: &[(String, String)]) -> R
 /// same config the TUI reads, so a `dbtl impact` comment and the `D` modal
 /// never disagree on who to page.
 fn owner_meta_key() -> String {
-    crate::state::load_config()
-        .ok()
-        .and_then(|c| c.owner_meta_key)
-        .unwrap_or_else(|| "owner".to_string())
+    match crate::state::load_config() {
+        Ok(c) => c.owner_meta_key.unwrap_or_else(|| "owner".to_string()),
+        // Same policy as the TUI's startup: a malformed config warns and
+        // falls back to defaults — it never blocks the subcommand.
+        Err(e) => {
+            eprintln!("warning: ignoring dbtl config.yml: {e}");
+            "owner".to_string()
+        }
+    }
 }
 
 /// Run the `impact` subcommand: resolve the current source + the `--diff`
@@ -538,7 +543,9 @@ pub fn run_impact(
 /// `--coverage-min` (when >0), and — only with `--diff` — newly introduced
 /// layer violations and changed buildable nodes without tests, all from the
 /// single [`dbtl::pr_impact`] analysis. Prints one PASS/FAIL line per check to
-/// stdout; `--quiet` prints nothing (exit code only).
+/// stdout, plus informational lines that never gate (`baseline:` and, when the
+/// blast radius has any, `affected owners:`); `--quiet` prints nothing (exit
+/// code only).
 pub fn run_check(
     diff_path: &Option<String>,
     coverage_min: u8,
@@ -572,6 +579,14 @@ pub fn run_check(
         let diff = dbtl::compute_diff(&base, dag);
         let pr = dbtl::pr_impact(dag, Some(&base), &diff, &owner_meta_key());
         lines.push(format!("baseline: {label}"));
+        // Informational listing (never a gate): who to page for the blast
+        // radius — the same `affected_owners` set the impact report lists.
+        if !pr.affected_owners.is_empty() {
+            lines.push(format!(
+                "affected owners: {}",
+                pr.affected_owners.join(", ")
+            ));
+        }
         if pr.new_layer_violations.is_empty() {
             lines.push("PASS new layer violations: none".to_string());
         } else {

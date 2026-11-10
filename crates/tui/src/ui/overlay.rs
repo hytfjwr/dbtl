@@ -193,15 +193,20 @@ fn detail_head_lines(dv: &DetailView, t: &theme::Theme) -> Vec<Line<'static>> {
         out.push(Line::from(format!("tags:   {}", d.tags.join(", "))));
     }
     // The `meta` dict as a key-value block (`BTreeMap` → sorted keys); nested
-    // values show their compact-JSON form (`deep: {"x":1}`).
+    // values show their compact-JSON form (`deep: {"x":1}`). Key padding is
+    // counted in CHARS (rust's format width is) so a multibyte key still
+    // aligns; a `\n`/`\r` in a value would tear the one-row-per-entry layout
+    // — flattened to spaces like the docs table's md_cell.
     if !d.meta.is_empty() {
         out.push(Line::from(""));
         out.push(Line::styled(
             format!("meta ({}):", d.meta.len()),
             header_style(t),
         ));
-        let w = d.meta.keys().map(String::len).max().unwrap_or(0);
+        let w = d.meta.keys().map(|k| k.chars().count()).max().unwrap_or(0);
         for (k, v) in &d.meta {
+            // CRLF is ONE break (single space), then lone \n / \r.
+            let v = v.replace("\r\n", " ").replace(['\n', '\r'], " ");
             out.push(Line::from(format!("  {k:<w$}: {v}")));
         }
     }
@@ -1397,9 +1402,13 @@ mod tests {
             downstream_count: 0,
             upstream_count: 0,
             catalog: vec![],
+            col_names: vec![],
+            col_index: usize::MAX,
+            col_counts: Default::default(),
+            stale: false,
             scroll: 0,
         };
-        let lines = detail_display_lines(&dv, &theme::DEFAULT);
+        let lines = detail_display_lines(&dv, crate::GlyphMode::Unicode, &theme::DEFAULT);
         let text: Vec<String> = lines
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
@@ -1421,10 +1430,56 @@ mod tests {
         // An empty meta dict draws no block at all.
         let mut empty = dv.clone();
         empty.detail.meta = BTreeMap::new();
-        let lines = detail_display_lines(&empty, &theme::DEFAULT);
+        let lines = detail_display_lines(&empty, crate::GlyphMode::Unicode, &theme::DEFAULT);
         assert!(lines
             .iter()
             .all(|l| !l.spans.iter().any(|s| s.content.starts_with("meta"))));
+    }
+
+    #[test]
+    fn detail_meta_block_flattens_newlines_and_pads_multibyte_keys() {
+        use std::collections::BTreeMap;
+        // A \n inside a meta VALUE would tear the one-row-per-entry layout —
+        // flattened to a space. And the key column pads by CHAR count (the
+        // format width), not bytes: `équipe` is 6 chars but 7 bytes, so a
+        // byte-counted pad would misalign the `:` column.
+        let dv = DetailView {
+            model_id: "model.p.m".into(),
+            name: "m".into(),
+            detail: crate::NodeDetail {
+                meta: BTreeMap::from_iter([
+                    ("k".to_string(), "line1\nline2\r\nline3".to_string()),
+                    ("équipe".to_string(), "x".to_string()),
+                ]),
+                ..Default::default()
+            },
+            tests: vec![],
+            downstream_count: 0,
+            upstream_count: 0,
+            catalog: vec![],
+            col_names: vec![],
+            col_index: usize::MAX,
+            col_counts: Default::default(),
+            stale: false,
+            scroll: 0,
+        };
+        let lines = detail_display_lines(&dv, crate::GlyphMode::Unicode, &theme::DEFAULT);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        let meta_at = text
+            .iter()
+            .position(|l| l == "meta (2):")
+            .expect("the meta header");
+        assert_eq!(
+            &text[meta_at + 1..meta_at + 3],
+            &[
+                "  k     : line1 line2 line3".to_string(),
+                "  équipe: x".to_string(),
+            ],
+            "char-width padding + newline flattening"
+        );
     }
 
     /// Tokenize a multi-line SQL snippet into per-line `(text, kind)` span
