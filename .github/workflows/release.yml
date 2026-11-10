@@ -29,6 +29,7 @@ jobs:
       (github.event.pull_request.merged == true &&
        startsWith(github.event.pull_request.head.ref, 'release/'))
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       # Create the release tag.
       contents: write
@@ -75,6 +76,7 @@ jobs:
     name: Build (${{ matrix.target }})
     needs: prepare
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     permissions:
       contents: read
     strategy:
@@ -128,6 +130,7 @@ jobs:
     name: Create release
     needs: [prepare, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       # gh release create / upload.
       contents: write
@@ -166,6 +169,7 @@ jobs:
     name: Update Homebrew tap
     needs: [prepare, release]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       # gh release download (the tap push uses TAP_GITHUB_TOKEN instead).
       contents: read

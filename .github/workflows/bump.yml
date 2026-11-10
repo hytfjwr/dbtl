@@ -23,6 +23,7 @@ jobs:
   bump:
     name: Bump version and open PR
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions: {}
     env:
       RELEASE_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
