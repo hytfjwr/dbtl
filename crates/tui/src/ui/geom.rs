@@ -874,11 +874,10 @@ pub fn tab_bar_layout(
                 width: x1 - x0,
                 ..area
             },
-            close_x: closable
-                .get(first)
-                .copied()
-                .unwrap_or(true)
-                .then(|| x1.saturating_sub(1).max(x0)),
+            // The clipped cell paints only the label's head — the `×` never
+            // reaches the drawn surface, so a close_x here would be a
+            // phantom target.
+            close_x: None,
         });
     }
     out
@@ -1587,15 +1586,17 @@ pub fn tooltip_rect(at: Position, w: u16, h: u16, area: Rect) -> Rect {
 /// One line in the home body's vertical plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HomeLine {
-    /// `dbtl home — {project}`.
+    /// `dbtl home — {project} · {source} · scope:{scope}`.
     Title,
-    /// The health strip (chips + the coverage gauge).
-    Health,
     /// A blank spacer row.
     Pad,
     /// The `/` search bar (live query + caret while open, dim hint while
     /// closed).
     SearchBar,
+    /// A section's non-selectable content row — §3's middle rows (Health's
+    /// coverage gauge, Last run's status counts, Diff's delta). The index
+    /// addresses [`HomeData::info_flat`] — never selectable.
+    Info(usize),
     /// A section header (`[Resume]` / `[Attention]` / …).
     SectionHeader(&'static str),
     /// A selectable row — the flat index into `HomeData::selectable` (while
@@ -1617,14 +1618,14 @@ pub enum HomeLine {
 /// cell always lands on the row the screen painted. Pure + mode-independent
 /// (§15).
 ///
-/// Order (fixed, §3): title → health → pad → search bar → pad → either the
-/// open search's result rows (which own the cursor) or the section list in
-/// `HomeData::sections` order, each section a header then its rows, padded
-/// between.
+/// Order (fixed, §3): title → pad → search bar → pad → either the open
+/// search's result rows (which own the cursor) or the section list in
+/// `HomeData::sections` order — each section a header, its `info` content
+/// rows (§3's Health/Last run/Diff middle rows sit here in section order),
+/// its selectable `rows`, then a `+N more` tail — padded between.
 pub fn home_lines(data: &crate::app::HomeData) -> Vec<HomeLine> {
     let mut lines = vec![
         HomeLine::Title,
-        HomeLine::Health,
         HomeLine::Pad,
         HomeLine::SearchBar,
         HomeLine::Pad,
@@ -1638,11 +1639,16 @@ pub fn home_lines(data: &crate::app::HomeData) -> Vec<HomeLine> {
         }
         None => {
             let mut flat = 0;
+            let mut info_i = 0;
             for (si, sec) in data.sections.iter().enumerate() {
                 if si > 0 {
                     lines.push(HomeLine::Pad);
                 }
                 lines.push(HomeLine::SectionHeader(sec.title));
+                for _ in &sec.info {
+                    lines.push(HomeLine::Info(info_i));
+                    info_i += 1;
+                }
                 for _ in &sec.rows {
                     lines.push(HomeLine::Row(flat));
                     flat += 1;
@@ -1689,7 +1695,7 @@ pub fn home_line_of(lines: &[HomeLine], sel: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{HomeData, HomeItem, HomeRow, HomeSection, HomeTone};
+    use crate::app::{HomeData, HomeInfo, HomeItem, HomeRow, HomeSection, HomeTone};
 
     /// A minimal `HomeData` (no Dag needed — it's plain display data) with
     /// one section of `rows` selectable model rows.
@@ -1704,11 +1710,13 @@ mod tests {
         };
         HomeData {
             project: "p".to_string(),
-            health: vec![format!("{rows} models")],
-            coverage: (0, 0),
+            source: "manifest m.json".to_string(),
+            scope: "project",
+            info_flat: vec![HomeInfo::Text(format!("{rows} models"))],
             search: None,
             sections: vec![HomeSection {
                 title: "Recent",
+                info: vec![HomeInfo::Text(format!("{rows} models"))],
                 rows: (0..rows).map(make_row).collect(),
                 tail: None,
             }],
@@ -1718,19 +1726,20 @@ mod tests {
 
     #[test]
     fn home_lines_orders_chrome_then_sections() {
-        // §3's fixed plan: title, health, pad, search bar, pad — then one
-        // header per section followed by its flat-indexed rows, and the
-        // fixed `Tip` line closes the plan (search replaces it all).
+        // §3's fixed plan: title, pad, search bar, pad — then one header
+        // per section followed by its info content rows and flat-indexed
+        // selectable rows, and the fixed `Tip` line closes the plan
+        // (search replaces it all).
         let lines = home_lines(&home_fixture(2));
         assert_eq!(
             lines,
             vec![
                 HomeLine::Title,
-                HomeLine::Health,
                 HomeLine::Pad,
                 HomeLine::SearchBar,
                 HomeLine::Pad,
                 HomeLine::SectionHeader("Recent"),
+                HomeLine::Info(0),
                 HomeLine::Row(0),
                 HomeLine::Row(1),
                 HomeLine::Pad,
@@ -1750,7 +1759,7 @@ mod tests {
         assert_eq!(w.last(), Some(&HomeLine::More(5)), "5 of the 11 lines clip");
         // Scrolling to the cursor's line shows the tail instead.
         let w = home_window(&plan, 7, 1);
-        assert_eq!(w.first(), Some(&HomeLine::Health));
+        assert_eq!(w.first(), Some(&HomeLine::Pad));
         assert_eq!(w.last(), Some(&HomeLine::More(4)));
         // `home_line_of` maps a flat row index to its plan position — the
         // ensure-visible input the loop scrolls to.
@@ -1798,9 +1807,10 @@ mod tests {
         assert_eq!(hit_target(&g, 2, 7), Some(HitTarget::HomeRow(0)));
         assert_eq!(hit_target(&g, 2, 8), Some(HitTarget::HomeRow(1)));
         assert_eq!(hit_target(&g, 2, 9), None, "the +N more line is inert");
-        // The search bar and headers never click.
-        assert_eq!(hit_target(&g, 2, 4), None);
-        assert_eq!(hit_target(&g, 2, 6), None);
+        // The search bar, headers, and info content rows never click.
+        assert_eq!(hit_target(&g, 2, 3), None, "the search bar is inert");
+        assert_eq!(hit_target(&g, 2, 5), None, "the section header is inert");
+        assert_eq!(hit_target(&g, 2, 6), None, "the info row is inert");
     }
 
     fn cfg() -> PaneConfig {

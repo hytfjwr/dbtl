@@ -9088,10 +9088,34 @@ fn home_data_sections_order_and_flat_selectable() {
     assert_eq!(titles.first(), Some(&"Resume"), "Resume heads the page");
     assert_eq!(titles.last(), Some(&"Actions"), "Actions always exists");
     let pos = |t: &str| titles.iter().position(|x| x == &t);
-    // §3's fixed order: Resume → Recent → Bookmarks → Attention → Actions.
+    // §3's fixed order: Resume → Recent → Bookmarks → Health → Last run →
+    // Diff → Attention → Actions (Health always renders; Last run / Diff
+    // only with their data sources — absent under this fixture).
     assert!(
         pos("Recent").unwrap() < pos("Bookmarks").unwrap(),
         "fixed order: Recent before Bookmarks: {titles:?}"
+    );
+    let health = pos("Health").expect("Health always renders");
+    assert!(
+        pos("Bookmarks").unwrap() < health && health < pos("Attention").unwrap(),
+        "Health sits between Bookmarks and Attention: {titles:?}"
+    );
+    assert!(
+        pos("Attention").unwrap() < pos("Actions").unwrap(),
+        "Attention before Actions: {titles:?}"
+    );
+    // The info sections are non-selectable: header + info rows only, so a
+    // click/cursor can never land on them.
+    for s in &d.sections {
+        if matches!(s.title, "Health" | "Last run" | "Diff") {
+            assert!(s.rows.is_empty(), "{} carries info, not rows", s.title);
+            assert!(!s.info.is_empty(), "{} renders at least one line", s.title);
+        }
+    }
+    assert_eq!(
+        d.info_flat.len(),
+        d.sections.iter().map(|s| s.info.len()).sum::<usize>(),
+        "info_flat is the sections' info flattened"
     );
     // `selectable` IS the sections' rows flattened — the cursor/click
     // indexing can't drift from what's drawn.

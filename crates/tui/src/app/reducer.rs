@@ -827,8 +827,14 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             };
             // The search's restore point: the list CURSOR (what Esc lands
             // back on), not the root — under a detached root the cursor sits
-            // on a different model.
-            let origin = app.list_sel_uid();
+            // on a different model. A home-target search has NO origin —
+            // restoring one would re-root nothing yet still record the
+            // unseen list-cursor model into the Recent MRU.
+            let origin = if matches!(target, SearchTarget::Home) {
+                None
+            } else {
+                app.list_sel_uid()
+            };
             app.mode = Mode::Search(SearchState {
                 target,
                 query: String::new(),
@@ -1594,6 +1600,9 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             if let Some(uid) = &current {
                 app.select_by_unique_id(uid);
             }
+            // The rebuilt order is a home input too (search results follow
+            // `model_list`) — the cache must miss or home shows the old sort.
+            app.home_stamp += 1;
             Outcome::cont()
         }
         // Toggle the lineage minimap (a pure UiState view-pref). Routed DIRECTLY
@@ -1614,6 +1623,12 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         // guaranteed to overflow) and toasts an orientation hint; the loop
         // force-anchors next frame — the grid reshapes completely.
         Action::ToggleOverview => {
+            // The home body has no lineage to overview — toggling here
+            // would leak the flag into the next model tab opened.
+            if app.home_active() {
+                app.set_notice("overview needs a model tab".to_string());
+                return Outcome::cont();
+            }
             app.ui_state.toggle_overview();
             if app.ui_state.overview() {
                 if !app.ui_state.minimap_visible() {

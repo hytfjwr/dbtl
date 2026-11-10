@@ -2,16 +2,19 @@
 //! builds once per `(generation, home_stamp, search)` key and hands the
 //! renderer as plain data, keeping `RenderCtx` Dag-free.
 //!
-//! The section order is FIXED (§3: Resume → Recent → Bookmarks → Attention
-//! → Actions — the search bar and the health strip are chrome, not
-//! sections, and a fixed `Tip` line closes the plan); empty sections drop
-//! except `Actions`, which always carries the runnable set. Every row
-//! resolves to a [`HomeItem`] — the flattened `selectable` list is what
-//! `App::home_sel`, `j`/`k`, Enter, and the mouse's row hits index.
+//! The section order is FIXED (§3: Resume → Recent → Bookmarks → Health →
+//! Last run → Diff → Attention → Actions — the search bar is chrome, not a
+//! section, and a fixed `Tip` line closes the plan); empty sections drop
+//! except `Actions` (always carries the runnable set) and `Health` (always
+//! shows the coverage/counts). Item rows resolve to a [`HomeItem`] — the
+//! flattened `selectable` list is what `App::home_sel`, `j`/`k`, Enter, and
+//! the mouse's row hits index; the middle sections' `info` lines are
+//! content rows, never items.
 
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use super::DataSource;
 use crate::action::{Action, Mode, SearchTarget, BINDINGS};
 use crate::model_list::match_indices;
 use crate::App;
@@ -60,12 +63,42 @@ pub struct HomeRow {
 /// `rows` its items (all selectable — headers live on the section, never
 /// inside `rows`, so `selectable` is a plain concatenation). `tail` is the
 /// cap's hidden count — the plan draws it as a non-selectable `+N more`
-/// line after the rows.
+/// line after the rows. `info` carries §3's non-selectable content lines
+/// (Health / Last run / Diff — content rows, not items).
 #[derive(Debug, Clone)]
 pub struct HomeSection {
     pub title: &'static str,
+    pub info: Vec<HomeInfo>,
     pub rows: Vec<HomeRow>,
     pub tail: Option<usize>,
+}
+
+/// One non-selectable info line under a section header — §3's middle rows
+/// (Health / Last run / Diff) carry content, not items. Indexed through
+/// [`HomeData::info_flat`] so [`crate::ui::HomeLine`] stays `Copy`.
+#[derive(Debug, Clone)]
+pub enum HomeInfo {
+    /// `coverage [gauge] {pct}% ({tested}/{total})   {tail}` — the gauge is
+    /// styled spaces (§15's no-gauge-glyphs rule), `tail` the
+    /// `lint N   layer violations N   orphans N` counts.
+    Gauge {
+        tested: usize,
+        total: usize,
+        tail: String,
+    },
+    /// `{x} {error} error   {warn-mark} {warn} warn   {ok-mark} {ok}
+    /// success   @{at}` — marks through Chrome (`run_fail`/`run_warn`/
+    /// `run_ok`, so ASCII mode swaps `x`/`!`/`v`); `other`
+    /// (skipped/unknown) appends `~ {n} other` only when non-zero.
+    Run {
+        error: usize,
+        warn: usize,
+        ok: usize,
+        other: usize,
+        at: String,
+    },
+    /// A plain dim line — `+{a} ~{m} -{r}   vs {label}` for the Diff row.
+    Text(String),
 }
 
 /// The open `/`-search's live state — `Some` while `Mode::Search` carries
@@ -93,13 +126,13 @@ pub struct HomeData {
     /// `metadata.project_name`-style display name (the same readout the tab
     /// bar's project zone shows).
     pub project: String,
-    /// The health strip's text cells in fixed order: model count, coverage,
-    /// run-results readout, diff readout, lint total. `-` cells for absent
-    /// data sources keep the strip's shape stable.
-    pub health: Vec<String>,
-    /// `(tested, total)` on the shared `coverage_gap` base — feeds the
-    /// `cov` gauge bar. `(0, 0)` = no testable resources.
-    pub coverage: (usize, usize),
+    /// §3's 枠の題 data-source readout — `manifest {path}` / `source {dir}`.
+    pub source: String,
+    /// `PackageScope::tag()` — `root` / `+pkgs`.
+    pub scope: &'static str,
+    /// Every section's [`HomeSection::info`] lines, flattened in plan order
+    /// — `HomeLine::Info(i)` indexes here, so the line plan stays `Copy`.
+    pub info_flat: Vec<HomeInfo>,
     /// The open `/`-search's bar + results, `None` while `Mode::Home`.
     pub search: Option<HomeSearch>,
     /// The fixed-order sections (see module doc). `selectable` is their rows
@@ -196,14 +229,22 @@ impl App {
         };
 
         // The stats dashboard's view — the SAME source the `S` modal reads,
-        // so home's counts can never diverge from it.
+        // so home's counts can never diverge from it (§3: 数字を別に計算しない).
         let stats = self.compute_stats_view();
-        let name_to_uid: HashMap<&str, &str> = self
+        // name→uid for the stats-name lists; uid-sorted insertion keeps the
+        // winner deterministic when `--include-packages` carries same-named
+        // models (`HashMap` iteration order is randomized).
+        let mut name_pairs: Vec<(&str, &str)> = self
             .dag
             .nodes()
             .values()
             .filter(|n| n.resource_type == "model")
-            .map(|n| (n.name.as_str(), n.unique_id.as_str()))
+            .map(|n| (n.unique_id.as_str(), n.name.as_str()))
+            .collect();
+        name_pairs.sort();
+        let name_to_uid: HashMap<&str, &str> = name_pairs
+            .into_iter()
+            .map(|(uid, name)| (name, uid))
             .collect();
 
         let mut sections = Vec::new();
@@ -217,13 +258,34 @@ impl App {
                 return;
             }
             selectable.extend(rows.iter().map(|r| r.item.clone()));
-            sections.push(HomeSection { title, rows, tail });
+            sections.push(HomeSection {
+                title,
+                info: Vec::new(),
+                rows,
+                tail,
+            });
         };
+        // §3's info rows (Health / Last run / Diff) are sections whose body
+        // is content, not items — they carry `info` instead of `rows`.
+        let push_info = |sections: &mut Vec<HomeSection>,
+                         info_flat: &mut Vec<HomeInfo>,
+                         title: &'static str,
+                         info: Vec<HomeInfo>| {
+            if info.is_empty() {
+                return;
+            }
+            info_flat.extend(info.iter().cloned());
+            sections.push(HomeSection {
+                title,
+                info,
+                rows: Vec::new(),
+                tail: None,
+            });
+        };
+        let mut info_flat = Vec::new();
 
-        // ---- Attention is computed first: the health strip reads the same
-        // counts (failures/lint) instead of recomputing them. ----
-        let (attention, att_tail, run_fails, lint_total) =
-            self.attention_rows(&stats, &name_to_uid);
+        // ---- §3's worklist (the section sits between Diff and Actions) ----
+        let (attention, att_tail) = self.attention_rows(&stats, &name_to_uid);
 
         // Resume — the last model tab's root (§3 "前回のアクティブタブ").
         if let Some(row) = self
@@ -234,6 +296,7 @@ impl App {
             selectable.push(row.item.clone());
             sections.push(HomeSection {
                 title: "Resume",
+                info: Vec::new(),
                 rows: vec![row],
                 tail: None,
             });
@@ -265,8 +328,76 @@ impl App {
             extra,
         );
 
-        // Attention — §3's worklist (computed above for the health counts);
-        // capped at 5, the overflow reads `+N more` (`S` shows the rest).
+        // Health — §3's middle info row, ALWAYS shown: the coverage gauge +
+        // lint / layer-violation / orphan counts straight from `stats` (the
+        // `S` dashboard's own numbers, never recomputed).
+        let coverage = self.coverage_summary();
+        let lint_total: usize = stats
+            .lint_findings
+            .iter()
+            .map(|(_, names)| names.len())
+            .sum();
+        push_info(
+            &mut sections,
+            &mut info_flat,
+            "Health",
+            vec![HomeInfo::Gauge {
+                tested: coverage.0,
+                total: coverage.1,
+                tail: format!(
+                    "lint {lint_total}   layer violations {}   orphans {}",
+                    stats.layer_violations.len(),
+                    stats.orphan_models.len()
+                ),
+            }],
+        );
+
+        // Last run — per-status counts over this Dag's covered nodes + the
+        // artifact's timestamp (`行を出さない` when no run_results loaded).
+        if let Some(rr) = self.run_results() {
+            let (mut error, mut warn, mut ok, mut other) = (0, 0, 0, 0);
+            for uid in self.dag.nodes().keys() {
+                match rr.status(uid) {
+                    Some(crate::RunStatus::Error | crate::RunStatus::Fail) => error += 1,
+                    Some(crate::RunStatus::Warn) => warn += 1,
+                    Some(crate::RunStatus::Success) => ok += 1,
+                    Some(_) => other += 1,
+                    None => {}
+                }
+            }
+            push_info(
+                &mut sections,
+                &mut info_flat,
+                "Last run",
+                vec![HomeInfo::Run {
+                    error,
+                    warn,
+                    ok,
+                    other,
+                    at: rr.generated_at.clone().unwrap_or_else(|| "-".to_string()),
+                }],
+            );
+        }
+
+        // Diff — `+added ~modified -removed  vs {baseline}` (`行を出さない`
+        // when no baseline loaded).
+        if let Some(d) = self.diff() {
+            push_info(
+                &mut sections,
+                &mut info_flat,
+                "Diff",
+                vec![HomeInfo::Text(format!(
+                    "+{} ~{} -{}   vs {}",
+                    d.added.len(),
+                    d.modified.len(),
+                    d.removed.len(),
+                    self.diff_label()
+                ))],
+            );
+        }
+
+        // Attention — §3's worklist (computed above); capped at 5, the
+        // overflow reads `+N more` (`S` shows the rest).
         push_section(
             &mut sections,
             &mut selectable,
@@ -292,53 +423,19 @@ impl App {
         selectable.extend(actions.iter().map(|r| r.item.clone()));
         sections.push(HomeSection {
             title: "Actions",
+            info: Vec::new(),
             rows: actions,
             tail: None,
         });
 
-        // ---- the health strip: fixed-order cells, `-` for absent sources ----
-        let models = self
-            .dag
-            .nodes()
-            .values()
-            .filter(|n| n.resource_type == "model")
-            .count();
-        let mut health = vec![format!("{models} models")];
-        let coverage = self.coverage_summary();
-        if coverage.1 > 0 {
-            health.push(format!(
-                "cov {}/{} {}%",
-                coverage.0,
-                coverage.1,
-                coverage.0 * 100 / coverage.1
-            ));
-        } else {
-            health.push("cov -".to_string());
-        }
-        health.push(match self.run_results() {
-            Some(rr) => {
-                let covered = rr.covered_in(&self.dag);
-                let at = rr.generated_at.as_deref().unwrap_or("-");
-                format!("run {covered} covered, {run_fails} failed, {at}")
-            }
-            None => "run -".to_string(),
-        });
-        health.push(match self.diff() {
-            Some(d) => format!(
-                "diff +{} -{} ~{} vs {}",
-                d.added.len(),
-                d.removed.len(),
-                d.modified.len(),
-                self.diff_label()
-            ),
-            None => "diff -".to_string(),
-        });
-        health.push(format!("lint {lint_total}"));
-
         HomeData {
             project: self.dag.project_name().unwrap_or("?").to_string(),
-            health,
-            coverage,
+            source: match &self.source {
+                DataSource::Manifest(p) => format!("manifest {}", p.display()),
+                DataSource::Project(d) => format!("source {}", d.display()),
+            },
+            scope: self.scope().tag(),
+            info_flat,
             search,
             sections,
             selectable,
@@ -364,11 +461,9 @@ impl App {
         })
     }
 
-    /// The §3 worklist — returns `(rows, tail, run_fails, lint_total)`:
-    /// `rows` are the §3-capped selectable entries, `tail` the overflow
-    /// count the plan draws as `+N more`, and the counts are UNCAPPED
-    /// structured numbers (the health strip reads them instead of parsing
-    /// rendered `detail` strings).
+    /// The §3 worklist — returns `(rows, tail)`: `rows` are the §3-capped
+    /// selectable entries and `tail` the overflow count the plan draws as
+    /// `+N more`.
     ///
     /// Class order (§3): last-run error/fail (name order) → models with no
     /// tests sorted by downstream count desc → then the softer classes
@@ -378,7 +473,7 @@ impl App {
         &self,
         stats: &crate::StatsView,
         name_to_uid: &HashMap<&str, &str>,
-    ) -> (Vec<HomeRow>, Option<usize>, usize, usize) {
+    ) -> (Vec<HomeRow>, Option<usize>) {
         let mut rows: Vec<(u8, HomeRow)> = Vec::new();
         let mut seen: Vec<&str> = Vec::new();
         let model_row = |uid: &str, label: &str, detail: String, tone: HomeTone| HomeRow {
@@ -390,7 +485,6 @@ impl App {
             tone,
         };
         // 0 — failed last run (run_results.json present); name-sorted.
-        let mut run_fails = 0;
         if let Some(rr) = self.run_results() {
             let mut fails: Vec<(&str, &str, &RunStatus)> = self
                 .dag
@@ -406,7 +500,6 @@ impl App {
             fails.sort_by(|a, b| a.0.cmp(b.0).then(a.1.cmp(b.1)));
             for (name, uid, status) in fails {
                 seen.push(uid);
-                run_fails += 1;
                 let status = match status {
                     RunStatus::Error => "error",
                     RunStatus::Fail => "fail",
@@ -489,7 +582,6 @@ impl App {
             }
         }
         // 4 — lint findings (rule name + node, stats order = LintRule::ALL).
-        let mut lint_total = 0;
         for (rule, names) in &stats.lint_findings {
             for name in names {
                 if let Some(uid) = name_to_uid.get(name.as_str()) {
@@ -497,7 +589,6 @@ impl App {
                         continue;
                     }
                     seen.push(uid);
-                    lint_total += 1;
                     rows.push((
                         4,
                         model_row(uid, name, format!("lint: {rule}"), HomeTone::Bad),
@@ -511,18 +602,19 @@ impl App {
         let mut out: Vec<HomeRow> = rows.into_iter().map(|(_, r)| r).collect();
         let extra = out.len().saturating_sub(SECTION_CAP);
         out.truncate(SECTION_CAP);
-        (out, (extra > 0).then_some(extra), run_fails, lint_total)
+        (out, (extra > 0).then_some(extra))
     }
 
-    /// The `/`-search's model rows over the UNFILTERED model list (home
-    /// search reaches models a list filter hid), empty query = all models
-    /// (palette `@`'s contract). The syntax IS the list `/`'s (§3: 構文は
-    /// 一覧の / と同じ): `!spec` routes through `select::select`'s dbt
-    /// selectors, `?needle` through the full-text match (descriptions,
-    /// columns, raw SQL), anything else through fuzzy name matching.
+    /// The `/`-search's model rows over the UNFILTERED `model_list` (home
+    /// search reaches models a `T`/`*` filter or a fold hid), empty query =
+    /// all models (palette `@`'s contract). The syntax IS the list `/`'s
+    /// (§3: 構文は一覧の / と同じ): `!spec` routes through
+    /// `select::select`'s dbt selectors, `?needle` through the full-text
+    /// match (descriptions, columns, raw SQL), anything else through fuzzy
+    /// name matching.
     fn home_search_rows(&self, query: &str) -> Vec<HomeRow> {
         let q = query.trim();
-        let base = self.base_list();
+        let base = &self.model_list;
         let matched: Vec<&crate::NodeInfo> = if let Some(spec) = q.strip_prefix('!') {
             if spec.trim().is_empty() {
                 // A bare `!` is the selector PREFIX, not a query — keep the

@@ -34,6 +34,13 @@ pub(crate) fn draw_home(frame: &mut Frame, area: Rect, data: &crate::HomeData, c
     }
     let t = ctx.theme;
     let chrome = super::chrome(ctx.glyphs);
+    // §3's `·` separator is a Unicode-only glyph — ASCII mode falls back
+    // to `|` (the ascii_guard renders this surface in ASCII mode).
+    let sep = if ctx.glyphs == crate::GlyphMode::Ascii {
+        " | "
+    } else {
+        " · "
+    };
     // Fill the band with the plain bg first — the panes' borders don't exist
     // under home, so nothing else covers these cells.
     frame.render_widget(
@@ -77,48 +84,107 @@ pub(crate) fn draw_home(frame: &mut Frame, area: Rect, data: &crate::HomeData, c
                             " dbtl home",
                             Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
                         ),
+                        // §3's 枠の題: project · data source + path · scope
+                        // (the `·` swaps for `|` under ASCII mode).
                         Span::styled(
-                            format!(" - {}", data.project),
+                            format!(
+                                " - {project}{sep}{source}{sep}scope:{scope}",
+                                project = data.project,
+                                sep = sep,
+                                source = data.source,
+                                scope = data.scope
+                            ),
                             Style::default().fg(t.text_dim),
                         ),
                     ])),
                     row,
                 );
             }
-            HomeLine::Health => {
-                let mut spans: Vec<Span> = Vec::new();
-                for (i, cell) in data.health.iter().enumerate() {
-                    let (text, style) = if i == 0 {
-                        (
-                            format!(" {cell}"),
-                            Style::default()
-                                .fg(t.text_bright)
-                                .add_modifier(Modifier::BOLD),
-                        )
+            HomeLine::Info(i) => match data.info_flat.get(*i) {
+                // §3's Health row: `coverage [gauge] pct% (n/t)` + the
+                // lint / layer-violation / orphan counts. The gauge is
+                // `ok`/`surface` background SPACES (§15's no-gauge-glyphs
+                // rule) — identical to the stats dashboard's bar.
+                Some(crate::app::HomeInfo::Gauge {
+                    tested,
+                    total,
+                    tail,
+                }) => {
+                    let mut spans =
+                        vec![Span::styled("  coverage ", Style::default().fg(t.text_dim))];
+                    if *total > 0 {
+                        let pct = tested * 100 / total;
+                        let filled = (GAUGE_W * pct / 100).min(GAUGE_W);
+                        spans.push(Span::styled("[", Style::default().fg(t.text_faint)));
+                        spans.push(Span::styled(
+                            " ".repeat(filled),
+                            Style::default().bg(if pct >= 80 { t.ok } else { t.warn }),
+                        ));
+                        spans.push(Span::styled(
+                            " ".repeat(GAUGE_W - filled),
+                            Style::default().bg(t.surface_hi),
+                        ));
+                        spans.push(Span::styled("]", Style::default().fg(t.text_faint)));
+                        spans.push(Span::styled(
+                            format!(" {pct}% ({tested}/{total})"),
+                            Style::default().fg(t.text_dim),
+                        ));
                     } else {
-                        (format!("   {cell}"), Style::default().fg(t.text_dim))
-                    };
-                    spans.push(Span::styled(text, style));
+                        spans.push(Span::styled("-", Style::default().fg(t.text_faint)));
+                    }
+                    if !tail.is_empty() {
+                        spans.push(Span::styled(
+                            format!("   {tail}"),
+                            Style::default().fg(t.text_dim),
+                        ));
+                    }
+                    frame.render_widget(Paragraph::new(Line::from(spans)), row);
                 }
-                // The coverage gauge: `ok`/`surface` background SPACES — the
-                // §15 "styled spaces, never new gauge glyphs" rule.
-                if data.coverage.1 > 0 {
-                    let (tested, total) = data.coverage;
-                    let pct = tested * 100 / total;
-                    let filled = (GAUGE_W * pct / 100).min(GAUGE_W);
-                    spans.push(Span::styled("   [", Style::default().fg(t.text_faint)));
+                // §3's Last run row: per-status counts through Chrome's
+                // run marks (ASCII swaps `x`/`!`/`v`) + the timestamp.
+                Some(crate::app::HomeInfo::Run {
+                    error,
+                    warn,
+                    ok,
+                    other,
+                    at,
+                }) => {
+                    let mut spans = vec![
+                        Span::styled("  ", Style::default()),
+                        Span::styled(chrome.run_fail, Style::default().fg(t.danger)),
+                        Span::styled(
+                            format!(" {error} error   "),
+                            Style::default().fg(t.text_dim),
+                        ),
+                        Span::styled(chrome.run_warn, Style::default().fg(t.warn)),
+                        Span::styled(format!(" {warn} warn   "), Style::default().fg(t.text_dim)),
+                        Span::styled(chrome.run_ok, Style::default().fg(t.ok)),
+                        Span::styled(format!(" {ok} success   "), Style::default().fg(t.text_dim)),
+                    ];
+                    if *other > 0 {
+                        spans.push(Span::styled(
+                            format!("~ {other} other   "),
+                            Style::default().fg(t.text_faint),
+                        ));
+                    }
                     spans.push(Span::styled(
-                        " ".repeat(filled),
-                        Style::default().bg(if pct >= 80 { t.ok } else { t.warn }),
+                        format!("@{at}"),
+                        Style::default().fg(t.text_faint),
                     ));
-                    spans.push(Span::styled(
-                        " ".repeat(GAUGE_W - filled),
-                        Style::default().bg(t.surface_hi),
-                    ));
-                    spans.push(Span::styled("]", Style::default().fg(t.text_faint)));
+                    frame.render_widget(Paragraph::new(Line::from(spans)), row);
                 }
-                frame.render_widget(Paragraph::new(Line::from(spans)), row);
-            }
+                // §3's Diff row (and any other dim content line).
+                Some(crate::app::HomeInfo::Text(text)) => {
+                    frame.render_widget(
+                        Paragraph::new(Line::from(Span::styled(
+                            format!("  {text}"),
+                            Style::default().fg(t.text_dim),
+                        ))),
+                        row,
+                    );
+                }
+                None => {}
+            },
             HomeLine::Pad => {}
             HomeLine::SearchBar => {
                 let text = match &data.search {
@@ -131,13 +197,19 @@ pub(crate) fn draw_home(frame: &mut Frame, area: Rect, data: &crate::HomeData, c
                             Style::default().fg(t.text_faint),
                         ),
                     ]),
-                    None => Line::from(vec![
-                        Span::styled(" / ", Style::default().fg(t.text_faint)),
-                        Span::styled(
-                            "search models - Enter opens a tab",
-                            Style::default().fg(t.text_faint),
-                        ),
-                    ]),
+                    None => {
+                        // §3's syntax hint sits right-aligned in the row.
+                        let hint = "search models - Enter opens a tab";
+                        let syntax = "!selector  ?full-text";
+                        let used = 3 + hint.chars().count() + syntax.chars().count();
+                        let pad = (area.width as usize).saturating_sub(used);
+                        Line::from(vec![
+                            Span::styled(" / ", Style::default().fg(t.text_faint)),
+                            Span::styled(hint, Style::default().fg(t.text_faint)),
+                            Span::styled(" ".repeat(pad), Style::default()),
+                            Span::styled(syntax, Style::default().fg(t.text_faint)),
+                        ])
+                    }
                 };
                 frame.render_widget(Paragraph::new(text), row);
             }
@@ -161,7 +233,7 @@ pub(crate) fn draw_home(frame: &mut Frame, area: Rect, data: &crate::HomeData, c
                         *idx == sel,
                         label_w,
                         t,
-                        chrome.ellipsis,
+                        "..",
                     );
                 }
             }

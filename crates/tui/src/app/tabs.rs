@@ -246,6 +246,12 @@ impl App {
     /// wherever a model becomes a root: `select_by_unique_id` lands and tab
     /// activations.
     pub(super) fn record_recent(&mut self, uid: &str) {
+        // The home tab never roots — a select that lands there (a cancelled
+        // home search restoring its origin, a bookmark cycle) must not
+        // record the unseen list-cursor model into the MRU.
+        if self.tab().home {
+            return;
+        }
         self.recent.retain(|u| u != uid);
         self.recent.insert(0, uid.to_string());
         self.recent.truncate(10);

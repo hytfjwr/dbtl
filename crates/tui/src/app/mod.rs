@@ -69,7 +69,7 @@ pub use crate::layer_violation_edges;
 // The subgraph→fenced-Mermaid core lives in `dbtl_core::mermaid` so the static
 // docs generator (`dbtl-docs`) shares the identical id-assignment/escaping
 // without depending on this crate.
-pub use home::{HomeData, HomeItem, HomeRow, HomeSearch, HomeSection, HomeTone};
+pub use home::{HomeData, HomeInfo, HomeItem, HomeRow, HomeSearch, HomeSection, HomeTone};
 pub(crate) use lineage::fit_breadcrumb;
 pub use reducer::apply_action;
 pub use tabs::TabState;
