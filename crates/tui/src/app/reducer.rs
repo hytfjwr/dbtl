@@ -211,7 +211,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             // payload (cloned from the Dag side maps), so the render layer needs
             // no Dag.
             let root = app.selected_unique_id();
-            let Some(uid) = app.focus_target() else {
+            let Some(uid) = app.pending_or_focus() else {
                 return Outcome::cont();
             };
             // A `+M more` / `-M less` marker under the cursor TOGGLES its
@@ -354,7 +354,16 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             };
             app.mode = back.map(|b| *b).unwrap_or(Mode::Selection);
             app.move_selection_to(&target);
-            return apply_action(app, action);
+            // Arm the overlay target stash for exactly this dispatch: the
+            // selection move above can't land on a non-model node (the list
+            // holds models only), so every producer that reads the selection
+            // — the yanks, bookmark/path, the editor open, `Enter`/`s` —
+            // must see the MENU's target instead or the item would act on
+            // whatever happened to be selected.
+            app.pending_node = Some(target);
+            let out = apply_action(app, action);
+            app.pending_node = None;
+            return out;
         }
         // ---- pointer row actions (Issue 06 mouse) ----
         // A row click in a row-bearing overlay is a SELECTION first (per the
@@ -875,7 +884,10 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             Outcome::cont()
         }
         // ---- effects (performed by the loop, never here) ----
-        Action::OpenEditor => match app.selected_file_path() {
+        Action::OpenEditor => match app
+            .pending_or_selection()
+            .and_then(|uid| app.file_path_for(&uid))
+        {
             Some(path) => Outcome::effect(Effect::OpenEditor(path)),
             None => Outcome::cont(),
         },
@@ -1032,9 +1044,11 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         // ---- SQL preview / stats dashboard modals ----
         Action::SqlOpen => {
             // Focus-aware target (`s` previews whatever the lineage cursor is on
-            // when the lineage pane is focused, else the list selection); unlike
-            // `Enter`, `s` only PREVIEWS — it never re-roots.
-            let Some(uid) = app.focus_target() else {
+            // when the lineage pane is focused, else the list selection — an
+            // armed overlay stash wins, so a menu-invoked `s` previews the
+            // MENU's node); unlike `Enter`, `s` only PREVIEWS — it never
+            // re-roots.
+            let Some(uid) = app.pending_or_focus() else {
                 return Outcome::cont();
             };
             // A collapse marker has no SQL — `s` previews nodes, not chrome.
@@ -1202,11 +1216,12 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         }
         // ---- bookmarks + list sort (Step C) — App-level data, so handled here
         // (never reduce_selection, which is UiState-only and can't reach them). ----
-        // Toggle a bookmark on the SELECTED model, regardless of focus: the list
-        // holds only models, so the selection always has a row to draw the badge
-        // on (a lineage-cursor source/seed/snapshot would have no list-row home).
+        // Toggle a bookmark on the SELECTED model, regardless of focus — an
+        // armed overlay stash wins, so a menu-invoked Bookmark toggles the
+        // menu's node (the menu hides this row for non-models anyway). The
+        // list holds only models, so the target always has a badge row.
         Action::BookmarkToggle => {
-            if let Some(uid) = app.selected_unique_id() {
+            if let Some(uid) = app.pending_or_selection() {
                 let name = app.node_name_or_uid(&uid);
                 if app.bookmarks.insert(uid.clone()) {
                     app.set_notice(format!("Bookmarked: {name}"));
@@ -1354,7 +1369,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             if let Some(uid) = app.path_anchor.take() {
                 let name = app.node_name_or_uid(&uid);
                 app.set_notice(format!("path anchor cleared ({name})"));
-            } else if let Some(uid) = app.selected_unique_id() {
+            } else if let Some(uid) = app.pending_or_selection() {
                 let name = app.node_name_or_uid(&uid);
                 app.path_anchor = Some(uid);
                 app.set_notice(format!(
@@ -1372,12 +1387,22 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             Outcome::cont()
         }
     };
-    if in_yank_menu && !matches!(action, Action::YankPick(_)) {
+    if in_yank_menu
+        && !matches!(
+            action,
+            Action::YankPick(_)
+                | Action::DetailScroll(_)
+                | Action::DetailScrollPage(_)
+                | Action::DetailScrollHome
+                | Action::DetailScrollEnd
+        )
+    {
         // A yank / an unhandled key closes the one-shot which-key: the mode it
         // stacked over (`back`, e.g. the structure modal) comes back — NOT a
-        // jump to Selection (Issue 06's nested-overlay rule). `YankPick` is
-        // exempt: a pointer hover/row click only moves the highlight, it must
-        // never dismiss the menu.
+        // jump to Selection (Issue 06's nested-overlay rule). Two gestures are
+        // exempt: `YankPick` (a pointer hover/row click only moves the
+        // highlight) and the DetailScroll family (a wheel over the which-key
+        // is a no-op — the menu has no scroll slot — and must not dismiss it).
         if let Mode::Yank { back, .. } = &mut app.mode {
             if let Some(back) = back.take() {
                 app.mode = *back;

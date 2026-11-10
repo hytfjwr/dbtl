@@ -766,6 +766,7 @@ pub static NODE_MENU_LAYOUT: &[MenuSlot] = &[
     MenuSlot::Item(ModeKind::Selection, Action::YankName),
     MenuSlot::Item(ModeKind::Yank, Action::YankId),
     MenuSlot::Item(ModeKind::Selection, Action::YankSql),
+    MenuSlot::Item(ModeKind::Yank, Action::YankSelector),
     MenuSlot::Separator,
     MenuSlot::Item(ModeKind::Selection, Action::BookmarkToggle),
     MenuSlot::Item(ModeKind::Selection, Action::PathToggle),
@@ -820,9 +821,10 @@ pub(crate) fn menu_slot_mark(action: Action) -> MenuMark {
         Action::YankName => MenuMark::Label("Copy name"),
         Action::YankId => MenuMark::Label("Copy unique_id"),
         Action::YankSql => MenuMark::Label("Copy raw SQL"),
+        Action::YankSelector => MenuMark::Label("Copy dbt selector"),
         Action::BookmarkToggle => MenuMark::Label("Bookmark"),
         Action::PathToggle => MenuMark::Label("Path anchor here"),
-        _ => MenuMark::Label("item"),
+        other => panic!("menu_slot_mark: no label for {other:?}"),
     }
 }
 
@@ -1310,11 +1312,6 @@ static DYNAMIC_HELP: &[(ModeKind, &str, &str)] = &[
         ModeKind::Selection,
         "left click",
         "re-root / move cursor to a node (release confirms)",
-    ),
-    (
-        ModeKind::Selection,
-        "dbl click",
-        "open the structure view for a node",
     ),
     (ModeKind::Selection, "right click", "node actions menu"),
     (
@@ -2174,6 +2171,8 @@ mod tests {
                 BINDINGS[idx].action, *action,
                 "the resolved row carries the slot's action"
             );
+            // An unmapped slot panics in menu_slot_mark — surface it here.
+            let _ = menu_slot_mark(*action);
         }
     }
 

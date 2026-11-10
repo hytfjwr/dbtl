@@ -8205,3 +8205,129 @@ fn outside_click_action_is_the_same_as_esc() {
         "outside-click action restores the modal"
     );
 }
+
+#[test]
+fn menu_items_act_on_non_model_targets() {
+    // A seed has no list row — the selection can never land on it, so every
+    // item must resolve through the armed stash (`pending_node`), not the
+    // selection. Review: Copy name used to yank the selected model's name.
+    let mut a = sample_app();
+    a.select_by_unique_id("model.sample.stg_orders");
+    a.open_menu("seed.sample.country_codes", crate::action::MenuAnchor::Node);
+    let items = menu_state(&a).items.clone();
+    let invoke = |a: &mut App, label: &str| {
+        let i = items
+            .iter()
+            .position(
+                |e| matches!(e, crate::action::MenuEntry::Item { label: l, .. } if l == label),
+            )
+            .unwrap_or_else(|| panic!("menu has no {label:?} row: {items:?}"));
+        apply_action(a, Action::MenuInvoke(i))
+    };
+
+    // Copy name -> the SEED's name, not the selected model's.
+    let out = invoke(&mut a, "Copy name");
+    let text = match out.effects.as_slice() {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert_eq!(text, "country_codes");
+
+    // Copy unique_id -> the seed's uid.
+    a.open_menu("seed.sample.country_codes", crate::action::MenuAnchor::Node);
+    let items = menu_state(&a).items.clone();
+    let i = items
+        .iter()
+        .position(|e| matches!(e, crate::action::MenuEntry::Item { label: l, .. } if l == "Copy unique_id"))
+        .expect("Copy unique_id row");
+    let out = apply_action(&mut a, Action::MenuInvoke(i));
+    let text = match out.effects.as_slice() {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert_eq!(text, "seed.sample.country_codes");
+
+    // Open in editor -> the seed's file, under the project root.
+    a.open_menu("seed.sample.country_codes", crate::action::MenuAnchor::Node);
+    let items = menu_state(&a).items.clone();
+    let i = items
+        .iter()
+        .position(|e| matches!(e, crate::action::MenuEntry::Item { label: l, .. } if l == "Open in editor"))
+        .expect("Open in editor row (seed has a file)");
+    let out = apply_action(&mut a, Action::MenuInvoke(i));
+    let path = match out.effects.as_slice() {
+        [Effect::OpenEditor(p)] => p.clone(),
+        other => panic!("expected one OpenEditor effect, got {other:?}"),
+    };
+    assert!(
+        path.ends_with("seeds/country_codes.csv"),
+        "editor must open the seed's file, got {path}"
+    );
+
+    // Bookmark is list-row-only — the seed's menu omits it.
+    assert!(
+        !items.iter().any(
+            |e| matches!(e, crate::action::MenuEntry::Item { label: l, .. } if l == "Bookmark")
+        ),
+        "a non-model must not offer Bookmark"
+    );
+
+    // And "Structure view" is honest on a non-model: Enter opens ITS detail
+    // modal (there is no re-root for seeds).
+    assert_eq!(menu_labels(&items)[0], "Structure view");
+    a.open_menu("seed.sample.country_codes", crate::action::MenuAnchor::Node);
+    apply_action(&mut a, Action::MenuInvoke(0));
+    match &a.mode {
+        Mode::Detail(dv) => assert_eq!(dv.model_id, "seed.sample.country_codes"),
+        m => panic!("expected Detail on the seed, got {m:?}"),
+    }
+}
+
+#[test]
+fn menu_invoke_on_a_model_still_reroots_then_acts() {
+    // Model target: the selection move fires (reroot_select lands) AND the
+    // stash makes the yank hit the same node — belt and braces.
+    let mut a = sample_app();
+    a.select_by_unique_id("model.sample.fct_orders");
+    a.open_menu("model.sample.stg_orders", crate::action::MenuAnchor::Node);
+    let i = menu_state(&a)
+        .items
+        .iter()
+        .position(
+            |e| matches!(e, crate::action::MenuEntry::Item { label: l, .. } if l == "Copy name"),
+        )
+        .expect("Copy name row");
+    let out = apply_action(&mut a, Action::MenuInvoke(i));
+    let text = match out.effects.as_slice() {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert_eq!(text, "stg_orders");
+    assert_eq!(
+        a.selected_unique_id().as_deref(),
+        Some("model.sample.stg_orders"),
+        "the cursor move contract: selection lands on the menu's node"
+    );
+}
+
+#[test]
+fn wheel_over_the_whichkey_does_not_close_it() {
+    // Review: a wheel scroll dispatched Action::DetailScroll into the which-key
+    // — a no-op scroll, but the one-shot close fired anyway and dropped the
+    // menu. The scroll family is exempt now, like YankPick.
+    let mut a = sample_app();
+    apply_action(&mut a, Action::YankPrefix);
+    for act in [
+        Action::DetailScroll(Direction::Down),
+        Action::DetailScroll(Direction::Up),
+        Action::DetailScrollPage(Direction::Down),
+        Action::DetailScrollHome,
+        Action::DetailScrollEnd,
+    ] {
+        apply_action(&mut a, act);
+        assert!(
+            matches!(a.mode, Mode::Yank { .. }),
+            "{act:?} must not close the which-key"
+        );
+    }
+}

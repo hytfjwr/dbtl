@@ -3148,8 +3148,11 @@ fn yank_menu_renders_every_binding_row() {
     dbtl::app::apply_action(&mut app, dbtl::Action::YankPrefix);
     let buffer = render_app(&app, 140, 50);
     let text = buffer_to_string(&buffer);
-    // Every `y<key>` row of the which-key menu is drawn.
-    for hint in ["yi", "yn", "ys"] {
-        assert!(text.contains(hint), "yank row {hint:?} missing: {text}");
+    // Every `y<key>` row of the which-key menu is drawn — enumerate them from
+    // the same BINDINGS source the renderer reads, so a new `y<key>` row is
+    // asserted automatically.
+    for b in dbtl::action::yank_bindings() {
+        let hint = format!("y{}", b.key_label());
+        assert!(text.contains(&hint), "yank row {hint:?} missing: {text}");
     }
 }
