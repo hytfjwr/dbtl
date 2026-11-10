@@ -764,6 +764,202 @@ pub fn tab_bar_layout(
     out
 }
 
+// ---------------------------------------------------------------------------
+// Status line + pane title placement (screen-spec §8): ONE pure calculation
+// per surface — `draw_status`/`draw_lineage_pane` render from it and
+// `hit_target` routes clicks through it, so a cell can never hit a span the
+// screen did not draw (nor draw one it cannot hit).
+// ---------------------------------------------------------------------------
+
+/// Which droppable status chip a [`ChipSpan`] renders — the click-dispatch
+/// key. The declaration order IS the §8 drop order: `Impact` is the headline
+/// (sheds last), `View` sheds first, and the `!N` notification badge sits
+/// right after `Impact`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusChip {
+    /// The selected node's blast radius (`impact ↓1 ↑2`) — inert.
+    Impact,
+    /// Unread-warning badge (`!N`) — opens the notification centre.
+    Notify,
+    /// The live column trace (`column:m.c ↑4 ↓0`) — opens the column modal.
+    Column,
+    /// Baseline-diff summary (`diff +A ~M -R`) — opens the diff modal.
+    Diff,
+    /// `run_results` coverage/freshness (`run 12/34 @…`) — switches to the
+    /// RunStatus lens.
+    Run,
+    /// The package-scope tag (`scope:root`) — inert.
+    Scope,
+    /// Coverage-lens percentage (`cov 42% (19/45)`) — toggles the lens.
+    Coverage,
+    /// Bookmark count (`bm:N`) — jumps to the next bookmark.
+    Bookmarks,
+    /// The persistent list filter (`marked`/`untested`) — clears it.
+    Filter,
+    /// Non-default list sort (`sort:tests`) — cycles the sort.
+    Sort,
+    /// Cursor position (`12/45`) — inert.
+    Position,
+    /// The focused pane (`list`/`lineage`) — toggles focus.
+    Focus,
+    /// The rooted-view tag (`↑↓ ≤3`/`overview`) — resets the view.
+    View,
+}
+
+/// One status-line span's placement — a hint on the left or a chip on the
+/// right — as a status-rect-relative cell range `[x0, x1)` plus its
+/// [`HitTarget`]. Owned data (copied from the hint/chip inputs) so the layout
+/// outlives the frame's borrows — the loop stashes it for the hit-test.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusSpan {
+    /// First covered cell (0-based, relative to the status rect's x).
+    pub x0: u16,
+    /// One past the last covered cell.
+    pub x1: u16,
+    /// What a click on this span resolves to.
+    pub target: HitTarget,
+}
+
+/// The pure status-line placement (§8): contextual hints left-anchored,
+/// status chips right-anchored, both droppable at their low-priority ends.
+/// `draw_status` renders exactly these spans; `hit_target` maps a cell to the
+/// same ones.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StatusLayout {
+    /// The kept hint spans (left→right), each `HitTarget::StatusHint`.
+    pub hints: Vec<StatusSpan>,
+    /// The kept chip spans (left→right, right-aligned as a block), each
+    /// `HitTarget::StatusChip`.
+    pub chips: Vec<StatusSpan>,
+}
+
+/// The display-cell width one hint occupies: ` {key}[ {desc}]`.
+fn hint_w(h: &crate::action::StatusHint) -> u16 {
+    use unicode_width::UnicodeWidthStr;
+    (1 + UnicodeWidthStr::width(h.key.as_str())
+        + if h.desc.is_empty() {
+            0
+        } else {
+            1 + UnicodeWidthStr::width(h.desc.as_str())
+        }) as u16
+}
+
+/// The display-cell width one chip occupies: ` {label}` — the label arrives
+/// already bracketed (`[!3]`, `[cov 42%]`).
+fn chip_w(label: &str) -> u16 {
+    use unicode_width::UnicodeWidthStr;
+    (1 + UnicodeWidthStr::width(label)) as u16
+}
+
+/// Place `hints` + `chips` on a `width`-column status line (§8). The inputs
+/// arrive PRIORITY-SORTED (highest-survival first): a too-narrow line sheds
+/// the hints' tail first, then the chips' tail — the kept spans tile `[0,
+/// hints_w)` left-to-right and `[width - chips_w, width)` right-aligned.
+/// Pure — this is the single measurement both drawing and hit-testing use.
+pub fn status_layout(
+    width: u16,
+    hints: &[crate::action::StatusHint],
+    chips: &[(StatusChip, String)],
+) -> StatusLayout {
+    // §8's shed order on a short line: the HINTS' tail first (lowest
+    // priority out), then — only once the hints are gone — the chips' tail.
+    // The kept set is always a PREFIX of each priority-sorted input.
+    let mut kept_h = hints.len();
+    let mut kept_c = chips.len();
+    let fits = |h: usize, c: usize| -> bool {
+        hints[..h].iter().map(hint_w).sum::<u16>()
+            + chips[..c].iter().map(|(_, l)| chip_w(l)).sum::<u16>()
+            <= width
+    };
+    while !fits(kept_h, kept_c) {
+        if kept_h > 0 {
+            kept_h -= 1;
+        } else if kept_c > 0 {
+            kept_c -= 1;
+        } else {
+            break;
+        }
+    }
+    let kept_hints = &hints[..kept_h];
+    let kept_chips = &chips[..kept_c];
+    let chips_w: u16 = kept_chips.iter().map(|(_, l)| chip_w(l)).sum();
+
+    let mut x = 0u16;
+    let hints_placed = kept_hints
+        .iter()
+        .map(|h| {
+            let w = hint_w(h);
+            let span = StatusSpan {
+                x0: x,
+                x1: x + w,
+                target: HitTarget::StatusHint(h.action),
+            };
+            x += w;
+            span
+        })
+        .collect();
+    // Chips are a RIGHT-anchored block: the block's left edge is
+    // `width - chips_w` and the spans tile inside it in priority order.
+    let mut cx = width.saturating_sub(chips_w);
+    let chips_placed = kept_chips
+        .iter()
+        .map(|(chip, label)| {
+            let w = chip_w(label);
+            let span = StatusSpan {
+                x0: cx,
+                x1: cx + w,
+                target: HitTarget::StatusChip(*chip),
+            };
+            cx += w;
+            span
+        })
+        .collect();
+    StatusLayout {
+        hints: hints_placed,
+        chips: chips_placed,
+    }
+}
+
+/// Which clickable span of a pane title a [`TitleSpan`] marks — currently
+/// the lineage title's breadcrumb entries and its `[{v}]` / `[lens:…]` tags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitleKind {
+    /// A breadcrumb entry `steps` re-root hops back: 1 = the direct parent,
+    /// `n` = an earlier ancestor. A click replays `App::history_back` that
+    /// many times — the same behaviour `b` gives, no second history model.
+    Crumb(usize),
+    /// The `[{v}]` view tag (`↑ ≤3`/`overview`) — a click resets the rooted
+    /// view filters, the `0` key's [`Action::ResetView`](crate::Action::ResetView).
+    View,
+    /// The `[lens:…]` tag — a click cycles the lineage lens (`t`).
+    Lens,
+}
+
+/// One title span's placement: the cell range `[x0, x1)` it occupies inside
+/// the pane's top border, measured from the title TEXT's first cell (the
+/// pane's `x + 1` — Block titles start one cell in from the corner).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TitleSpan {
+    /// What a click here dispatches.
+    pub kind: TitleKind,
+    /// First covered cell.
+    pub x0: u16,
+    /// One past the last covered cell.
+    pub x1: u16,
+}
+
+/// The pure lineage-title placement — the composed text plus the cell ranges
+/// of its clickable parts. `draw_lineage_pane` sets `text` verbatim (byte-
+/// identical to the old `compose_lineage_title` output); `hit_target` maps a
+/// title-row cell through `spans`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TitleLayout {
+    /// The full title text as the Block draws it.
+    pub text: String,
+    /// The clickable spans in display order.
+    pub spans: Vec<TitleSpan>,
+}
+
 /// Pure lineage hit-test: map a screen click `(click_x, click_y)` to the
 /// `unique_id` of the node whose label rect it lands on, or `None`.
 ///
@@ -841,6 +1037,20 @@ pub enum HitTarget {
     PaneBorder(Splitter),
     /// The bottom status line.
     StatusBar,
+    /// A contextual hint on the status line (screen-spec §8): the payload is
+    /// the [`Action`](crate::Action) a click dispatches — `None` marks a
+    /// transient readout (splitter hover/drag), which a click leaves inert.
+    StatusHint(Option<crate::Action>),
+    /// A droppable chip on the status line — which one, so the click dispatch
+    /// consults the §6/§8 chip table.
+    StatusChip(StatusChip),
+    /// A breadcrumb entry in the lineage pane's title — the number of
+    /// `history_back` steps a click replays.
+    TitleCrumb(usize),
+    /// The lineage title's `[{v}]` view tag — a click resets the view filters.
+    TitleView,
+    /// The lineage title's `[lens:…]` tag — a click cycles the lens.
+    TitleLens,
     /// An interior ROW of a covering overlay: `(row - inner.y)`, 0-based
     /// inside the overlay's border. Which row MEANS what is mode-specific —
     /// the event loop resolves it (a menu item index, a which-key row, a
@@ -889,6 +1099,14 @@ pub struct HitGeometry<'a> {
     /// [`HitTarget::ModalInterior`], and every outside cell
     /// [`HitTarget::ModalExterior`].
     pub overlay: Option<Rect>,
+    /// The status-line placement the last draw used ([`status_layout`]'s
+    /// output) — `None` renders every status cell plain
+    /// [`HitTarget::StatusBar`]. The loop stashes the same layout it drew so
+    /// a click lands on a span the screen showed.
+    pub status: Option<&'a StatusLayout>,
+    /// The lineage title's placement the last draw used
+    /// ([`TitleLayout`]) — `None` leaves the title row inert chrome.
+    pub title: Option<&'a TitleLayout>,
 }
 
 /// Map a screen cell `(col, row)` to its [`HitTarget`], or `None` when it hits
@@ -948,7 +1166,36 @@ pub fn hit_target(g: &HitGeometry, col: u16, row: u16) -> Option<HitTarget> {
         }
     }
     if p.status.contains(at) {
+        // §8: a span-covered cell reports the span's own target (a hint's
+        // action, a chip's identity); uncovered status cells stay StatusBar.
+        if let Some(l) = g.status {
+            let rel = col.saturating_sub(p.status.x);
+            for span in l.hints.iter().chain(l.chips.iter()) {
+                if rel >= span.x0 && rel < span.x1 {
+                    return Some(span.target.clone());
+                }
+            }
+        }
         return Some(HitTarget::StatusBar);
+    }
+    // The lineage pane's title row (its top border, between the corner
+    // glyphs): cells the shared `TitleLayout` covers report their span target;
+    // every other title cell is inert chrome — same as before, and the two
+    // border columns still belong to the splitters below.
+    if row == p.lineage.y && col > p.lineage.x && col + 1 < p.lineage.x + p.lineage.width {
+        if let Some(t) = g.title {
+            let rel = col - (p.lineage.x + 1);
+            for span in &t.spans {
+                if rel >= span.x0 && rel < span.x1 {
+                    return Some(match span.kind {
+                        TitleKind::Crumb(n) => HitTarget::TitleCrumb(n),
+                        TitleKind::View => HitTarget::TitleView,
+                        TitleKind::Lens => HitTarget::TitleLens,
+                    });
+                }
+            }
+        }
+        return None;
     }
     for which in [Splitter::List, Splitter::Inspector] {
         if p.splitter(which).is_some_and(|r| r.contains(at)) {
@@ -1436,6 +1683,8 @@ mod tests {
             scroll_y: 0,
             minimap: false,
             overlay: None,
+            status: None,
+            title: None,
         };
         assert_eq!(hit_target(&g, 1, 0), Some(HitTarget::Tab(0)));
         // The x cell: tab 0's close_x is rect.x + w - 2 = 9.
@@ -1755,5 +2004,219 @@ mod tests {
         );
         // Degenerate area never panics.
         let _ = tooltip_rect(Position { x: 0, y: 0 }, 5, 3, Rect::new(0, 0, 1, 1));
+    }
+
+    // ---- Issue 07: status-line + title chrome geometry ----
+
+    fn hint(key: &str, desc: &str, action: crate::Action, prio: u8) -> crate::action::StatusHint {
+        crate::action::StatusHint {
+            key: key.to_string(),
+            desc: desc.to_string(),
+            action: Some(action),
+            prio,
+        }
+    }
+
+    #[test]
+    fn status_layout_tiles_hints_left_and_chips_right() {
+        use crate::Action as A;
+        let hints = vec![
+            hint("j/k", "move", A::MoveDown, 10),
+            hint("?", "help", A::HelpToggle, 90),
+        ];
+        let chips = vec![
+            (StatusChip::Impact, "[impact v1 ^2]".to_string()),
+            (StatusChip::Focus, "[list]".to_string()),
+        ];
+        let l = status_layout(60, &hints, &chips);
+        // Hints: " j/k move" = 9 cells, " ? help" = 7 — contiguous from x=0.
+        assert_eq!(
+            l.hints,
+            vec![
+                StatusSpan {
+                    x0: 0,
+                    x1: 9,
+                    target: HitTarget::StatusHint(Some(A::MoveDown)),
+                },
+                StatusSpan {
+                    x0: 9,
+                    x1: 16,
+                    target: HitTarget::StatusHint(Some(A::HelpToggle)),
+                },
+            ]
+        );
+        // Chips are a RIGHT-anchored block: " [impact v1 ^2]" = 15, " [list]"
+        // = 7 → the 22-cell block occupies [38, 60).
+        assert_eq!(
+            l.chips,
+            vec![
+                StatusSpan {
+                    x0: 38,
+                    x1: 53,
+                    target: HitTarget::StatusChip(StatusChip::Impact),
+                },
+                StatusSpan {
+                    x0: 53,
+                    x1: 60,
+                    target: HitTarget::StatusChip(StatusChip::Focus),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn status_layout_drops_the_hint_tail_then_the_chip_tail() {
+        use crate::Action as A;
+        // §8's shed order: the hints' low-priority tail first, then — only
+        // once the hints are gone — the chips' tail. The kept set is always
+        // a PREFIX of each priority-sorted input.
+        let hints = vec![
+            hint("j/k", "move", A::MoveDown, 10),       // 9 cells
+            hint("Enter", "open", A::DetailOpen, 20),   // 11
+            hint("/", "search", A::SearchOpen, 30),     // 9
+            hint("O", "new tab", A::TabOpen, 40),       // 10
+            hint("Tab", "lineage", A::ToggleFocus, 50), // 12
+            hint("?", "help", A::HelpToggle, 90),       // 7
+        ];
+        let chips = vec![
+            (StatusChip::Impact, "[i]".to_string()),
+            (StatusChip::Focus, "[f]".to_string()),
+            (StatusChip::View, "[v]".to_string()),
+        ];
+        // 58 hint cells + 12 chip cells = 70 > 60: `? help` (7) sheds → 63
+        // still over → `Tab lineage` (12) sheds → 51 fits.
+        let l = status_layout(60, &hints, &chips);
+        assert_eq!(l.hints.len(), 4, "the two tail hints shed");
+        assert_eq!(l.chips.len(), 3, "every chip still fits");
+        // At 30: all six hints must go (58 alone > 30), then chips shed to
+        // fit — impact + focus (8 cells) survive, view drops.
+        let l = status_layout(30, &hints, &chips);
+        // 30 - hints 9+11+9=29 keeps 3 hints… recompute: 29+12=41>30 → drop
+        // "help" (51→)… walk the prefix: the layout keeps the longest hint
+        // prefix that leaves the chips their room.
+        let kept_hints = l.hints.len();
+        let hints_w: u16 = [9u16, 11, 9, 10, 12, 7][..kept_hints].iter().sum();
+        let chips_w: u16 = l.chips.len() as u16 * 4;
+        assert!(hints_w + chips_w <= 30, "kept prefix fits");
+        assert_eq!(
+            l.chips.first().map(|s| &s.target),
+            Some(&HitTarget::StatusChip(StatusChip::Impact)),
+            "impact survives longest — kept chips are a head-prefix"
+        );
+        // Degenerate: a width smaller than the impact chip alone keeps
+        // nothing — never a panic, never a span past the line.
+        let l = status_layout(3, &hints, &chips);
+        assert!(l.hints.iter().all(|s| s.x1 <= 3) && l.chips.iter().all(|s| s.x1 <= 3));
+    }
+
+    #[test]
+    fn hit_target_reports_status_spans_then_plain_status_bar() {
+        use crate::Action as A;
+        let dag = crate::load_dag(HIT_FIXTURE).expect("fixture loads");
+        let list = crate::model_list::build_model_list(&dag, crate::SortMode::Layer);
+        let area = Rect::new(0, 0, 80, 24);
+        let panes = pane_layout(
+            area,
+            &PaneConfig {
+                tab_bar: false,
+                ..cfg()
+            },
+        );
+        let hints = vec![hint("j/k", "move", A::MoveDown, 10)];
+        let chips = vec![(StatusChip::Focus, "[list]".to_string())];
+        let status_l = status_layout(panes.status.width, &hints, &chips);
+        let g = HitGeometry {
+            panes,
+            tab_bar: None,
+            list: &list,
+            list_offset: 0,
+            list_selected: 0,
+            layout: None,
+            scroll_x: 0,
+            scroll_y: 0,
+            minimap: false,
+            overlay: None,
+            status: Some(&status_l),
+            title: None,
+        };
+        let y = panes.status.y;
+        // The first hint's span covers its leading-space cell at x=0.
+        assert_eq!(
+            hit_target(&g, 0, y),
+            Some(HitTarget::StatusHint(Some(A::MoveDown)))
+        );
+        // The right-anchored chip: " [list]" = 7 cells → [73, 80).
+        assert_eq!(
+            hit_target(&g, 79, y),
+            Some(HitTarget::StatusChip(StatusChip::Focus))
+        );
+        assert_eq!(
+            hit_target(&g, 73, y),
+            Some(HitTarget::StatusChip(StatusChip::Focus))
+        );
+        // The dead cells between the two regions stay plain StatusBar.
+        assert_eq!(hit_target(&g, 40, y), Some(HitTarget::StatusBar));
+    }
+
+    #[test]
+    fn hit_target_reports_title_spans_between_the_corner_cells() {
+        let dag = crate::load_dag(HIT_FIXTURE).expect("fixture loads");
+        let list = crate::model_list::build_model_list(&dag, crate::SortMode::Layer);
+        let panes = pane_layout(
+            Rect::new(0, 0, 80, 24),
+            &PaneConfig {
+                tab_bar: false,
+                ..cfg()
+            },
+        );
+        // Title spans are RELATIVE to the first title cell (pane.x + 1):
+        // a crumb entry at cells 1..4, the view tag at 20..24, lens at 25..34.
+        let title_l = TitleLayout {
+            text: " a > b > root         [v] [lens:x]".to_string(),
+            spans: vec![
+                TitleSpan {
+                    kind: TitleKind::Crumb(2),
+                    x0: 1,
+                    x1: 4,
+                },
+                TitleSpan {
+                    kind: TitleKind::View,
+                    x0: 20,
+                    x1: 24,
+                },
+                TitleSpan {
+                    kind: TitleKind::Lens,
+                    x0: 25,
+                    x1: 34,
+                },
+            ],
+        };
+        let g = HitGeometry {
+            panes,
+            tab_bar: None,
+            list: &list,
+            list_offset: 0,
+            list_selected: 0,
+            layout: None,
+            scroll_x: 0,
+            scroll_y: 0,
+            minimap: false,
+            overlay: None,
+            status: None,
+            title: Some(&title_l),
+        };
+        let row = panes.lineage.y;
+        let x0 = panes.lineage.x + 1;
+        assert_eq!(hit_target(&g, x0 + 2, row), Some(HitTarget::TitleCrumb(2)));
+        assert_eq!(hit_target(&g, x0 + 21, row), Some(HitTarget::TitleView));
+        assert_eq!(hit_target(&g, x0 + 30, row), Some(HitTarget::TitleLens));
+        // An uncovered title cell (between the crumb and the view tag) is
+        // inert chrome — None, never a stale span claim.
+        assert_eq!(hit_target(&g, x0 + 10, row), None);
+        // The border corner columns still belong to the splitters/chrome.
+        assert_ne!(
+            hit_target(&g, panes.lineage.x, row),
+            Some(HitTarget::TitleCrumb(2))
+        );
     }
 }

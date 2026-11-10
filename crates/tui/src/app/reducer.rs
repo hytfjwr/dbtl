@@ -1428,6 +1428,14 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             }
             Outcome::cont()
         }
+        // Pointer-only lens set: the status chips name the lens they want
+        // (the `run …` chip jumps straight to RunStatus rather than pedalling
+        // the `t` cycle through dead slots). Never key-bound — the chip only
+        // exists while its lens has data, so no dead-slot skip is needed.
+        Action::SetLens(lens) => {
+            app.ui_state.set_lens(lens);
+            Outcome::cont()
+        }
         // ---- bookmarks + list sort (Step C) — App-level data, so handled here
         // (never reduce_selection, which is UiState-only and can't reach them). ----
         // Toggle a bookmark on the SELECTED model, regardless of focus — an

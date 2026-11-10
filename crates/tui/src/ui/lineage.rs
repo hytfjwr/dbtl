@@ -17,7 +17,10 @@ use ratatui::Frame;
 use crate::layout::{CellAttr, LensTint, MaterializationClass};
 use crate::model_list::ModelList;
 
-use super::{focus_border, selected_style, theme, title_style, Focus, LineageLens, UiState};
+use super::geom::{TitleKind, TitleLayout, TitleSpan};
+use super::{
+    focus_border, selected_style, theme, title_style, Focus, HitTarget, LineageLens, UiState,
+};
 
 /// Draw the lineage pane for the selected model (or a blank pane when there is
 /// no subgraph). `pub(crate)` so `render::draw` can compose it.
@@ -62,6 +65,7 @@ pub(crate) fn draw_lineage_pane(
     col_suffix: Option<&str>,
     hover_node: Option<&str>,
     search_matches: &[String],
+    hover: Option<&HitTarget>,
     t: &theme::Theme,
 ) {
     let chrome = super::chrome(glyphs);
@@ -70,34 +74,37 @@ pub(crate) fn draw_lineage_pane(
         .map(|n| n.name.as_str())
         .unwrap_or("-");
     let caret = chrome.caret;
-    // The lens suffix is appended to EVERY non-search title shape (a small pure
-    // helper). It is empty when the lens is Off, so default titles are unchanged.
-    // The column-focus ` [col:name]` suffix rides the same slot — composed into
-    // one string so `compose_lineage_title`'s suffix budget keeps it whole
-    // (pure ASCII like the lens tags, so ambiguous-width-safe in both modes).
-    let lens_owned;
-    let lens = match col_suffix {
-        Some(cs) => {
-            lens_owned = format!("{}{}", lens_title_suffix(state.lens()), cs);
-            lens_owned.as_str()
-        }
-        None => lens_title_suffix(state.lens()),
-    };
-    let title = compose_lineage_title(
+    // The title layout is the SAME shape `hit_target` consulted for the
+    // title row (`title_layout` is the single composer, so the clickable
+    // crumb/view/lens spans exactly overlay the drawn text). The hovered
+    // span — when the pointer sits on one — draws underlined, the affordance
+    // cue for a clickable title part.
+    let title = title_layout(
         sel_name,
         search.map(|q| (q, search_pos)),
         view_label,
         breadcrumb,
         overview_title,
-        lens,
+        state.lens(),
+        col_suffix,
         caret,
         area.width,
     );
+    let hovered = hover.and_then(|h| match h {
+        HitTarget::TitleCrumb(n) => Some(TitleKind::Crumb(*n)),
+        HitTarget::TitleView => Some(TitleKind::View),
+        HitTarget::TitleLens => Some(TitleKind::Lens),
+        _ => None,
+    });
     let block = Block::default()
         .borders(Borders::ALL)
         .border_set(chrome.border)
         .border_style(focus_border(state, Focus::RightPane, t))
-        .title(Line::styled(title, title_style(state, Focus::RightPane, t)));
+        .title(title_line(
+            &title,
+            title_style(state, Focus::RightPane, t),
+            hovered,
+        ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -604,9 +611,36 @@ fn lens_color(tint: LensTint, t: &theme::Theme) -> Option<Color> {
     }
 }
 
-/// Compose the lineage pane title string from its parts, width-aware (the render
-/// layer is the size-aware seam, so the breadcrumb's strict truncation lives HERE
-/// where `area.width` is known).
+/// Append `piece` to `text` (advancing `cell` by its display width) and,
+/// when `kind` is `Some` and the piece is non-empty, record a [`TitleSpan`]
+/// over the piece's cell range — the `""` lens-off tag and `None` view
+/// suffix leave no phantom hit target.
+fn put_title(
+    text: &mut String,
+    cell: &mut u16,
+    spans: &mut Vec<TitleSpan>,
+    piece: &str,
+    kind: Option<TitleKind>,
+) {
+    use unicode_width::UnicodeWidthStr;
+    let w = UnicodeWidthStr::width(piece) as u16;
+    if let Some(kind) = kind.filter(|_| w > 0) {
+        spans.push(TitleSpan {
+            kind,
+            x0: *cell,
+            x1: *cell + w,
+        });
+    }
+    text.push_str(piece);
+    *cell += w;
+}
+
+/// Compose the lineage pane title as a [`TitleLayout`]: the drawn text plus
+/// the cell ranges of its clickable parts. THE single composer — `draw`
+/// renders `text` verbatim and `hit_target` maps title-row cells through
+/// `spans` (screen-spec §6), so a drawn part can never disagree with its
+/// hit range. Byte-compatible with the four shapes the old
+/// `compose_lineage_title` produced.
 ///
 /// Four shapes:
 /// - **Search**: `" /{query}{caret} {cur}/{total} "` — screen-spec §9's
@@ -628,63 +662,180 @@ fn lens_color(tint: LensTint, t: &theme::Theme) -> Option<Color> {
 ///   view suffix is meaningless while it is on, since the direction/depth
 ///   toggles are gated).
 ///
-/// `total_w` is the bordered pane width; the title sits between the two corner
-/// glyphs, so the usable title width is `total_w - 2`.
+/// Clickable parts (§6): each breadcrumb entry — `TitleKind::Crumb(steps)`,
+/// replaying `history_back` that many times — the ` [{v}]` view tag
+/// ([`TitleKind::View`]), and the ` [lens:…]` tag ([`TitleKind::Lens`]). The
+/// ` [col:name]` column-trace suffix stays inert (the `column:` status chip
+/// is its clickable surface). The search shape carries no clickable chrome
+/// (the `i/N` count is a readout; matches cycle by key).
+///
+/// `total_w` is the bordered pane width; the title sits between the two
+/// corner glyphs, so the usable title width is `total_w - 2`.
 #[allow(clippy::too_many_arguments)]
-fn compose_lineage_title(
+pub fn title_layout(
     sel_name: &str,
     search: Option<(&str, Option<(usize, usize)>)>,
     view_label: Option<&str>,
     breadcrumb: Option<&str>,
     overview: Option<&str>,
-    lens: &str,
+    lens: LineageLens,
+    col_suffix: Option<&str>,
     caret: &str,
     total_w: u16,
-) -> String {
+) -> TitleLayout {
     use unicode_width::UnicodeWidthStr;
 
     // The lineage-search shape owns the title (§9): `/` + query + caret +
     // the `{cur}/{total}` cycle position — the sel body, breadcrumb, and
-    // lens suffixes all drop while a search is open.
+    // lens suffixes all drop while a search is open. No clickable chrome:
+    // the `i/N` count is a readout (matches cycle by key, not click).
     if let Some((query, pos)) = search {
         let count = pos
             .map(|(cur, total)| format!(" {cur}/{total}"))
             .unwrap_or_default();
-        return format!(" /{query}{caret}{count} ");
+        return TitleLayout {
+            text: format!(" /{query}{caret}{count} "),
+            spans: Vec::new(),
+        };
     }
+
+    // The `[lens:…]` tag + the inert `[col:name]` suffix share the lens slot
+    // the old merged `lens` param carried (pure ASCII, ambiguous-width-safe).
+    let lens_tag = lens_title_suffix(lens);
+    let col = col_suffix.unwrap_or("");
+    let mut text = String::new();
+    let mut spans = Vec::new();
+    let mut cell = 0u16;
 
     // Overview: the body replaces both the `Lineage: {name}` body and the
-    // breadcrumb; the lens suffix is kept (the view suffix is meaningless —
-    // the direction/depth toggles are gated while the overview is on).
+    // breadcrumb; the lens suffix stays clickable (the view suffix is
+    // meaningless — the toggles are gated while the overview is on).
     if let Some(body) = overview {
-        return format!(" {body}{lens} ");
+        put_title(&mut text, &mut cell, &mut spans, " ", None);
+        put_title(&mut text, &mut cell, &mut spans, body, None);
+        put_title(
+            &mut text,
+            &mut cell,
+            &mut spans,
+            lens_tag,
+            Some(TitleKind::Lens),
+        );
+        put_title(&mut text, &mut cell, &mut spans, col, None);
+        put_title(&mut text, &mut cell, &mut spans, " ", None);
+        return TitleLayout { text, spans };
     }
 
-    // The `[{v}]` view suffix (when a label is present) plus the lens suffix.
+    // The ` [{v}]` view suffix (when a label is present) plus the lens/col
+    // suffixes — each recorded at its own cells.
     let view = view_label.map(|v| format!(" [{v}]")).unwrap_or_default();
-    let suffix = format!("{view}{lens}");
 
     let Some(crumb) = breadcrumb else {
         // No breadcrumb → byte-identical to the original default titles.
-        return match view_label {
-            Some(v) => format!(" Lineage: {sel_name} [{v}]{lens} "),
-            None => format!(" Lineage: {sel_name}{lens} "),
-        };
+        put_title(
+            &mut text,
+            &mut cell,
+            &mut spans,
+            &format!(" Lineage: {sel_name}"),
+            None,
+        );
+        put_title(
+            &mut text,
+            &mut cell,
+            &mut spans,
+            &view,
+            Some(TitleKind::View),
+        );
+        put_title(
+            &mut text,
+            &mut cell,
+            &mut spans,
+            lens_tag,
+            Some(TitleKind::Lens),
+        );
+        put_title(&mut text, &mut cell, &mut spans, col, None);
+        put_title(&mut text, &mut cell, &mut spans, " ", None);
+        return TitleLayout { text, spans };
     };
 
-    // Breadcrumb present: omit the body, keep the suffixes. Budget the crumb into
-    // whatever the suffix leaves of the usable title width (the leading space + the
-    // trailing space are fixed framing). Reserve the suffix width FIRST so it can
-    // never be evicted; drop the crumb to empty if it cannot share the row.
+    // Breadcrumb present: omit the `Lineage: {sel}` body, keep the suffixes.
+    // `fit_breadcrumb` strictly truncates the crumb into whatever the
+    // suffixes leave of the usable title width, so they ALWAYS survive —
+    // including their hit ranges.
+    let suffix_w = UnicodeWidthStr::width(format!("{view}{lens_tag}{col}").as_str());
     let usable = (total_w.saturating_sub(2)) as usize;
     let framing = 2; // leading + trailing space
-    let budget = usable.saturating_sub(suffix.width() + framing);
+    let budget = usable.saturating_sub(suffix_w + framing);
     let fitted = crate::app::fit_breadcrumb(crumb, budget).unwrap_or_default();
-    if fitted.is_empty() {
-        format!(" {suffix} ")
-    } else {
-        format!(" {fitted}{suffix} ")
+
+    put_title(&mut text, &mut cell, &mut spans, " ", None);
+    if !fitted.is_empty() {
+        // Entries join on ` > `; each is a clickable hop back to that root —
+        // `steps` = distance from the CURRENT root (the last entry). The
+        // `..` elision marker and the current root itself stay inert (a
+        // 0-step back is a no-op).
+        let entries: Vec<&str> = fitted.split(" > ").collect();
+        let n = entries.len();
+        for (i, e) in entries.iter().enumerate() {
+            if i > 0 {
+                put_title(&mut text, &mut cell, &mut spans, " > ", None);
+            }
+            let steps = n - 1 - i;
+            let kind = (steps > 0 && *e != "..").then_some(TitleKind::Crumb(steps));
+            put_title(&mut text, &mut cell, &mut spans, e, kind);
+        }
     }
+    put_title(
+        &mut text,
+        &mut cell,
+        &mut spans,
+        &view,
+        Some(TitleKind::View),
+    );
+    put_title(
+        &mut text,
+        &mut cell,
+        &mut spans,
+        lens_tag,
+        Some(TitleKind::Lens),
+    );
+    put_title(&mut text, &mut cell, &mut spans, col, None);
+    put_title(&mut text, &mut cell, &mut spans, " ", None);
+    TitleLayout { text, spans }
+}
+
+/// Build the title `Line` from a [`TitleLayout`]: `text` verbatim, split at
+/// the clickable ranges so the `hovered` part gains UNDERLINE — the §6
+/// affordance cue for a clickable title part. Every other cell keeps the
+/// pane-title style.
+fn title_line(layout: &TitleLayout, base: Style, hovered: Option<TitleKind>) -> Line<'static> {
+    use unicode_width::UnicodeWidthChar;
+    if hovered.is_none() || layout.spans.is_empty() {
+        return Line::styled(layout.text.clone(), base);
+    }
+    let under = base.add_modifier(Modifier::UNDERLINED);
+    let mut spans: Vec<Span> = Vec::new();
+    let mut run = String::new();
+    let mut run_hot = false;
+    let mut cell = 0u16;
+    for ch in layout.text.chars() {
+        let hot = layout
+            .spans
+            .iter()
+            .any(|s| Some(s.kind) == hovered && cell >= s.x0 && cell < s.x1);
+        if hot != run_hot && !run.is_empty() {
+            spans.push(Span::styled(
+                std::mem::take(&mut run),
+                if run_hot { under } else { base },
+            ));
+        }
+        run_hot = hot;
+        run.push(ch);
+        cell += UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
+    }
+    if !run.is_empty() {
+        spans.push(Span::styled(run, if run_hot { under } else { base }));
+    }
+    Line::from(spans)
 }
 
 /// A short ASCII suffix naming the active lens for the lineage pane title
@@ -973,20 +1124,167 @@ mod tests {
     }
 
     #[test]
-    fn compose_lineage_title_overview_wins_over_breadcrumb_and_view() {
+    fn title_layout_overview_wins_over_breadcrumb_and_view() {
         // The overview body replaces both the `Lineage: {sel}` body and the
         // breadcrumb; the lens suffix survives (the view suffix does not, since
         // it is meaningless while the overview is on).
-        let title = compose_lineage_title(
+        let title = title_layout(
             "x",
             None,
             Some("↑↓"),
             Some("a > b"),
             Some("Overview: 93 nodes"),
-            " [lens:heat]",
+            LineageLens::DegreeHeat,
+            None,
             "_",
             80,
         );
-        assert_eq!(title, " Overview: 93 nodes [lens:heat] ");
+        assert_eq!(title.text, " Overview: 93 nodes [lens:heat] ");
+        // The `[lens:…]` tag is the ONLY clickable span — covering exactly its
+        // cell range inside the title text.
+        assert_eq!(title.spans.len(), 1);
+        let s = &title.spans[0];
+        assert_eq!(s.kind, TitleKind::Lens);
+        assert_eq!(
+            &title
+                .text
+                .chars()
+                .skip(s.x0 as usize)
+                .take((s.x1 - s.x0) as usize)
+                .collect::<String>(),
+            " [lens:heat]"
+        );
+    }
+
+    #[test]
+    fn title_layout_breadcrumb_entries_click_back_n_steps() {
+        // `a > b > root` — `a` is 2 hops back, `b` is 1, `root` (the current
+        // root) stays inert. View/lens tags keep their own spans.
+        let title = title_layout(
+            "root",
+            None,
+            Some("↑≤2"),
+            Some("a > b > root"),
+            None,
+            LineageLens::Coverage,
+            None,
+            "_",
+            80,
+        );
+        assert_eq!(title.text, " a > b > root [↑≤2] [lens:coverage] ");
+        let kinds: Vec<TitleKind> = title.spans.iter().map(|s| s.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                TitleKind::Crumb(2),
+                TitleKind::Crumb(1),
+                TitleKind::View,
+                TitleKind::Lens
+            ]
+        );
+        // Each crumb span covers exactly its entry's cells.
+        let piece = |s: &TitleSpan| {
+            title
+                .text
+                .chars()
+                .skip(s.x0 as usize)
+                .take((s.x1 - s.x0) as usize)
+                .collect::<String>()
+        };
+        assert_eq!(piece(&title.spans[0]), "a");
+        assert_eq!(piece(&title.spans[1]), "b");
+        assert_eq!(piece(&title.spans[2]), " [↑≤2]");
+        assert_eq!(piece(&title.spans[3]), " [lens:coverage]");
+    }
+
+    #[test]
+    fn title_layout_drops_elided_crumb_spans_but_keeps_steps() {
+        // Strict-fit elision (`.. > d > root`): the `..` marker is inert, and
+        // `d` keeps its real hop distance (1 step back to the direct parent).
+        let title = title_layout(
+            "root",
+            None,
+            None,
+            Some("long_alpha > long_beta > long_gamma > long_root"),
+            None,
+            LineageLens::Off,
+            None,
+            "_",
+            24, // narrow: only `.. > long_gamma > long_root` + framing fits
+        );
+        // Whatever survived, the last entry (current root) and `..` are inert.
+        assert!(title.text.starts_with(' '), "leading frame space");
+        for s in &title.spans {
+            if let TitleKind::Crumb(steps) = s.kind {
+                assert!(steps > 0, "the current root is never a crumb target");
+                assert!(steps <= 3, "history shows at most 3 back entries");
+            } else {
+                panic!("unexpected span kind {:?}", s.kind);
+            }
+        }
+    }
+
+    #[test]
+    fn title_layout_no_breadcrumb_keeps_default_text_and_tags() {
+        let title = title_layout(
+            "fct_orders",
+            None,
+            Some("↑≤2"),
+            None,
+            None,
+            LineageLens::Off,
+            None,
+            "_",
+            80,
+        );
+        assert_eq!(title.text, " Lineage: fct_orders [↑≤2] ");
+        assert_eq!(title.spans.len(), 1);
+        assert_eq!(title.spans[0].kind, TitleKind::View);
+    }
+
+    #[test]
+    fn title_layout_search_shape_owns_the_title_and_stays_inert() {
+        // §9's lineage-search form owns the title: `/` + query + caret +
+        // `{cur}/{total}` — sel body, crumb, and suffixes all drop, and no
+        // span is clickable (the count is a readout).
+        let title = title_layout(
+            "x",
+            Some(("bud", Some((2, 7)))),
+            Some("↑↓"),
+            Some("a > b"),
+            Some("Overview"),
+            LineageLens::Coverage,
+            Some(" [col:c]"),
+            "_",
+            80,
+        );
+        assert_eq!(title.text, " /bud_ 2/7 ");
+        assert!(title.spans.is_empty(), "the search shape has no chrome");
+        // No match position wired (or 0/0 while the query matches nothing):
+        // the count cell is whatever the loop supplies.
+        let title = title_layout(
+            "x",
+            Some(("bud", Some((0, 0)))),
+            None,
+            None,
+            None,
+            LineageLens::Off,
+            None,
+            "_",
+            80,
+        );
+        assert_eq!(title.text, " /bud_ 0/0 ");
+        let title = title_layout(
+            "x",
+            Some(("bud", None)),
+            None,
+            None,
+            None,
+            LineageLens::Off,
+            None,
+            "_",
+            80,
+        );
+        assert_eq!(title.text, " /bud_ ");
     }
 }

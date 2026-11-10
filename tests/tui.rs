@@ -151,13 +151,28 @@ fn row_text(buffer: &Buffer, y: u16) -> String {
     out
 }
 
+/// The §8 hints a Selection/list-focused frame shows — the same call the
+/// event loop makes (`App::status_hints` needs an App; these helpers render
+/// from a bare list, so the pure generator is called directly with the
+/// matching context).
+fn list_hints() -> Vec<dbtl::action::StatusHint> {
+    dbtl::action::status_hints(
+        dbtl::action::ModeKind::Selection,
+        dbtl::ui::Focus::List,
+        false,
+        false,
+    )
+}
+
 /// Render the initial state into a `width x height` buffer.
 fn render(width: u16, height: u16) -> Buffer {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
     let list = fixture_list();
     let state = UiState::new(list.len());
-    let ctx = RenderCtx::new(&list, &state, None);
+    let hints = list_hints();
+    let mut ctx = RenderCtx::new(&list, &state, None);
+    ctx.hints = &hints;
     terminal
         .draw(|frame| draw(frame, &ctx))
         .expect("draw must not panic");
@@ -228,14 +243,16 @@ fn selected_row_is_visually_distinguished() {
 fn status_help_line_present() {
     let buffer = render(100, 30);
     let text = buffer_to_string(&buffer);
+    // §8's contextual hints (BINDINGS-generated) render on the left of the
+    // status row.
     assert!(
-        text.contains("[j/k]") || text.contains("sel:"),
-        "bottom status/help line with key hints or sel: must be present"
+        text.contains("j/k move") && text.contains("? help"),
+        "the §8 hint row must be present: {text:?}"
     );
-    // The selected node's unique_id is echoed in the status line.
+    // The selected node's name is echoed in the lineage pane title.
     assert!(
         text.contains("stg_finance__budgets"),
-        "status line should echo the selected node"
+        "the selected node name stays visible"
     );
 }
 
@@ -317,9 +334,15 @@ fn splitter_hover_hint_and_accent_strip_render() {
     let mut terminal = Terminal::new(backend).expect("terminal");
     let list = fixture_list();
     let state = UiState::new(list.len());
+    let transient = vec![dbtl::action::StatusHint {
+        key: "drag to resize · double-click to reset".to_string(),
+        desc: String::new(),
+        action: None,
+        prio: 0,
+    }];
     let mut ctx = RenderCtx::new(&list, &state, None);
     ctx.splitter_highlight = Some(dbtl::ui::Splitter::List);
-    ctx.segments.hint = Some("drag to resize · double-click to reset");
+    ctx.hints = &transient;
     let accent = ctx.theme.accent;
     terminal
         .draw(|frame| draw(frame, &ctx))
@@ -1033,7 +1056,14 @@ fn render_after_keys(width: u16, height: u16, keys: &[KeyCode]) -> (Buffer, UiSt
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
     {
-        let ctx = RenderCtx::new(&list, &state, None);
+        let hints = dbtl::action::status_hints(
+            dbtl::action::ModeKind::Selection,
+            state.focus(),
+            false,
+            false,
+        );
+        let mut ctx = RenderCtx::new(&list, &state, None);
+        ctx.hints = &hints;
         terminal
             .draw(|frame| draw(frame, &ctx))
             .expect("draw must not panic");
@@ -1135,12 +1165,12 @@ fn scrolled_render_still_shows_status_and_borders() {
     // still be present (the chrome doesn't get scrolled away).
     let (buffer, state, list) = render_after_keys(100, 30, &[KeyCode::Char('G')]);
     let text = buffer_to_string(&buffer);
-    assert!(text.contains("[j/k]"), "status/help line must remain");
-    // The status core echoes the selected node's NAME (the core was trimmed from
-    // the full dotted unique_id so the colored segments survive an 80-col line).
+    assert!(text.contains("j/k move"), "the §8 hint row must remain");
+    // The selected node's name stays on screen — the list's marker row and
+    // the lineage title both carry it after the scroll.
     assert!(
         text.contains(&list.models[state.selected()].name),
-        "status line must echo the selected node name"
+        "the selected node name must stay visible"
     );
 }
 
@@ -1409,14 +1439,14 @@ fn list_scrollbar_thumb_flush_bottom_when_scrolled_to_end() {
 }
 
 #[test]
-fn status_bar_keeps_protected_core_and_appends_segments() {
+fn status_bar_renders_hints_left_and_chips_right() {
     use dbtl::app::{apply_action, App};
     use dbtl::ui::StatusSegments;
     use dbtl::Action;
 
     let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
     app.select_by_unique_id("model.jaffle_finance.fct_subscription_process");
-    // Cycle to the coverage lens (Off → Coverage) so the cov segment populates.
+    // Cycle to the coverage lens (Off → Coverage) so the cov chip populates.
     apply_action(&mut app, Action::CycleLens);
     let (tested, total) = app.coverage_summary();
     let pct = (tested * 100).checked_div(total).unwrap_or(0);
@@ -1426,146 +1456,112 @@ fn status_bar_keeps_protected_core_and_appends_segments() {
         app.ui_state.selected() + 1,
         app.active_list().len()
     );
+    let hints = app.status_hints();
 
-    // A wide line (160) so every segment fits after the long uid-bearing core.
+    // A wide line (160) so every hint + chip fits.
     let backend = TestBackend::new(160, 30);
     let mut terminal = Terminal::new(backend).expect("terminal");
     {
         let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, None);
         ctx.mode = &app.mode;
+        ctx.hints = &hints;
         ctx.segments = StatusSegments {
-            hint: None,
-            impact: None,
-            notify: None,
-            column: None,
             focus: Some("list"),
-            view: None,
             position: Some(pos.as_str()),
             coverage: Some(cov.as_str()),
-            bookmarks: None,
-            sort: None,
-            diff: None,
-            run: None,
-            filter: None,
-            scope: None,
+            ..StatusSegments::default()
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
     }
     let text = buffer_to_string(&terminal.backend().buffer().clone());
 
-    // Protected core stays present and is never dropped.
-    assert!(text.contains("[j/k]"), "protected key hint must remain");
+    // §8's list-focus hint row, generated from BINDINGS.
+    assert!(text.contains("j/k move"), "hint row renders");
+    assert!(text.contains("/ search"), "the search hint renders");
+    // The colored chips render on the right, bracketed by the chip renderer.
+    assert!(text.contains("[list]"), "focus chip renders");
     assert!(
-        text.contains("fct_subscription_process"),
-        "protected sel:{{uid}} must remain"
+        text.contains(&format!("[{pos}]")),
+        "position chip renders bracketed"
     );
-    // Additive colored segments render (they fit a 160-wide status line).
-    assert!(text.contains("[list]"), "focus segment renders additively");
-    assert!(text.contains(&pos), "position segment renders additively");
-    assert!(text.contains(&cov), "coverage segment renders additively");
+    assert!(
+        text.contains(&format!("[{cov}]")),
+        "coverage chip renders bracketed"
+    );
 }
 
 #[test]
-fn status_bar_drops_segments_but_never_the_core_on_a_narrow_line() {
+fn status_bar_drops_the_hint_tail_then_the_chip_tail_on_a_narrow_line() {
     use dbtl::ui::StatusSegments;
-    // A narrow width where the protected core nearly fills the line: segments
-    // must be dropped (right-first) while the core stays intact.
+    // §8's shed order on a 60-col line: the hints' low-priority tail drops
+    // first (`? help` then `Tab lineage`), the kept hints + the chips that
+    // still fit render.
     let list = fixture_list();
     let state = UiState::new(list.len());
+    let hints = list_hints();
     let backend = TestBackend::new(60, 10);
     let mut terminal = Terminal::new(backend).expect("terminal");
     {
         let mut ctx = RenderCtx::new(&list, &state, None);
+        ctx.hints = &hints;
         ctx.segments = StatusSegments {
-            hint: None,
-            impact: None,
-            notify: None,
-            column: None,
             focus: Some("list"),
-            view: None,
             position: Some("1/45"),
-            coverage: None,
-            bookmarks: None,
-            sort: None,
-            diff: None,
-            run: None,
-            filter: None,
-            scope: None,
+            ..StatusSegments::default()
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
     }
     let text = buffer_to_string(&terminal.backend().buffer().clone());
-    // The protected core is non-droppable.
+    assert!(text.contains("j/k move"), "the head hints survive");
     assert!(
-        text.contains("[j/k]"),
-        "the protected core survives a narrow status line"
+        !text.contains("? help"),
+        "the hint tail sheds before the chips do"
     );
+    assert!(text.contains("[1/45]"), "the chips still fit");
 }
 
 #[test]
 fn status_segments_render_at_80_cols() {
-    // Regression guard: at the standard 80-col terminal the colored segments must
-    // still appear for a realistic dbt uid. Before the core was trimmed (long
-    // `[j/k] move [Tab] focus [?] help [q] quit  sel:{dotted_uid}` + the note),
-    // the core alone exceeded 80, so EVERY segment was dropped and the whole
-    // status-segment feature rendered nothing at the most common width.
+    // Regression guard: at the standard 80-col terminal the hint row AND a
+    // chip must still render (the old monolithic core could crowd the whole
+    // line out; §8's prefix-drop keeps the highest-priority pieces).
     use dbtl::app::{apply_action, App};
     use dbtl::ui::StatusSegments;
     use dbtl::Action;
 
     let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
-    // A long-named node + the coverage lens (populates the status `[note]`), the
-    // realistic worst case the finding called out.
     app.select_by_unique_id("model.jaffle_finance.fct_subscription_process");
     apply_action(&mut app, Action::CycleLens);
-    let status_note = app.selected_status_note();
+    let hints = app.status_hints();
 
     let backend = TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).expect("terminal");
     {
         let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, None);
         ctx.mode = &app.mode;
-        ctx.status = status_note.as_deref();
+        ctx.hints = &hints;
         ctx.segments = StatusSegments {
-            hint: None,
-            impact: None,
-            notify: None,
-            column: None,
             focus: Some("list"),
-            view: None,
             position: Some("1/45"),
-            coverage: None,
-            bookmarks: None,
-            sort: None,
-            diff: None,
-            run: None,
-            filter: None,
-            scope: None,
+            ..StatusSegments::default()
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
     }
     let text = buffer_to_string(&terminal.backend().buffer().clone());
 
-    // The core stays present, echoing the NAME (not the full dotted uid).
-    assert!(text.contains("[j/k]"), "protected core present at 80 cols");
+    assert!(text.contains("j/k move"), "the hint row renders at 80 cols");
     assert!(
         text.contains("fct_subscription_process"),
-        "the selected node name is echoed in the core"
+        "the selected node name stays on screen (lineage title)"
     );
-    // The highest-priority segment that fits MUST render at 80 cols — this is
-    // the bug the core trim fixed (it was invisible before). Position outranks
-    // focus in the deliberate priority order (focus is redundant with the green
-    // pane border, so it is among the first to drop on a narrow terminal).
-    assert!(
-        text.contains("[1/45]"),
-        "at least one status segment renders at 80 cols"
-    );
+    assert!(text.contains("[1/45]"), "a status chip renders at 80 cols");
 }
 
 #[test]
 fn status_impact_segment_renders_and_survives_narrowest_droppable_line() {
-    // The impact segment is the highest-priority droppable segment (index 0): it
-    // renders at a normal width and is the LAST to drop when the line narrows.
+    // The impact chip is §8's top-survival chip (status_chips index 0): it
+    // renders at a normal width and is the LAST chip dropped when the line
+    // narrows.
     use dbtl::app::App;
     use dbtl::ui::StatusSegments;
 
@@ -1574,67 +1570,46 @@ fn status_impact_segment_renders_and_survives_narrowest_droppable_line() {
     let impact = app.impact_status().expect("selected → impact");
     assert_eq!(impact, "impact ↓1 ↑2", "unicode badges in the default mode");
 
-    // At 100 cols every segment fits, so impact renders.
+    // At 100 cols every chip fits, so impact renders.
     let backend = TestBackend::new(100, 24);
     let mut terminal = Terminal::new(backend).expect("terminal");
     {
         let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, None);
         ctx.segments = StatusSegments {
-            hint: None,
             impact: Some(impact.as_str()),
-            notify: None,
-            column: None,
             focus: Some("list"),
             view: Some("↑"),
             position: Some("3/45"),
-            coverage: None,
-            bookmarks: None,
-            sort: None,
-            diff: None,
-            run: None,
-            filter: None,
-            scope: None,
+            ..StatusSegments::default()
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
     }
     let wide = buffer_to_string(&terminal.backend().buffer().clone());
-    assert!(wide.contains(&impact), "impact segment renders at 100 cols");
+    assert!(wide.contains(&impact), "impact chip renders at 100 cols");
     assert!(wide.contains("[3/45]"), "position renders too at 100 cols");
 
-    // On a narrow line the lower-priority segments drop while impact survives
-    // (it is index 0, so it is the LAST to be dropped). Width chosen so only the
-    // core + the impact segment fit.
+    // On a narrow line the lower-priority chips shed tail-first while impact
+    // survives (index 0 = last dropped). Width chosen so only the impact
+    // chip fits (no hints wired → the chips are the whole line).
     use unicode_width::UnicodeWidthStr;
-    let sel = "stg_payment__shoppers";
-    let core = format!("[j/k] move  [?] help  sel: {sel}");
-    let narrow_w = (core.width() + format!(" [{impact}]").width() + 2) as u16;
+    let narrow_w = (format!(" [{impact}]").width() + 1) as u16;
     let backend = TestBackend::new(narrow_w, 6);
     let mut terminal = Terminal::new(backend).expect("terminal");
     {
         let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, None);
         ctx.segments = StatusSegments {
-            hint: None,
             impact: Some(impact.as_str()),
-            notify: None,
-            column: None,
             focus: Some("list"),
             view: Some("↑"),
             position: Some("3/45"),
-            coverage: None,
-            bookmarks: None,
-            sort: None,
-            diff: None,
-            run: None,
-            filter: None,
-            scope: None,
+            ..StatusSegments::default()
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
     }
     let narrow = buffer_to_string(&terminal.backend().buffer().clone());
-    assert!(narrow.contains("[j/k]"), "core survives the narrow line");
     assert!(
         narrow.contains(&impact),
-        "impact survives as top-priority segment"
+        "impact survives as top-priority chip"
     );
     assert!(
         !narrow.contains("[3/45]"),
@@ -2467,8 +2442,8 @@ fn notify_chip_renders_and_drops_on_narrow() {
         "!N sits right after impact"
     );
 
-    // Narrow: 40 cols — the chip drops like any droppable segment, the
-    // protected core (`[j/k] move  [?] help`) must survive.
+    // Narrow: 40 cols — both chips still fit (`[v1 ^2]` 8 + `[!3]` 5); the
+    // head-of-order impact chip survives on its own at the truly narrow end.
     let backend = TestBackend::new(40, 12);
     let mut terminal = Terminal::new(backend).expect("terminal");
     {
@@ -2482,19 +2457,24 @@ fn notify_chip_renders_and_drops_on_narrow() {
     }
     let buffer = terminal.backend().buffer().clone();
     let last = row_text(&buffer, buffer.area.height - 1);
-    assert!(last.contains("[j/k]"), "protected core survives at 40 cols");
+    assert!(
+        last.contains("[v1 ^2]") && last.contains("[!3]"),
+        "both chips fit at 40 cols: {last:?}"
+    );
 }
 
 /// On a terminal too short to float the box above the status bar (the 3-row
 /// toast sits at y=1, so height 4 would land its bottom border ON the status
-/// row), the toast is skipped entirely — the protected status core survives.
+/// row), the toast is skipped entirely — the §8 hint row survives.
 #[test]
 fn toast_skips_tiny_terminals_and_never_covers_the_status_bar() {
     let backend = TestBackend::new(60, 4);
     let mut terminal = Terminal::new(backend).expect("terminal");
     let list = fixture_list();
     let state = UiState::new(list.len());
+    let hints = list_hints();
     let mut ctx = RenderCtx::new(&list, &state, None);
+    ctx.hints = &hints;
     ctx.toasts = &[ToastLine {
         level: NoticeLevel::Info,
         text: "Copied unique_id",
@@ -2508,8 +2488,8 @@ fn toast_skips_tiny_terminals_and_never_covers_the_status_bar() {
         "no toast on a 4-row terminal"
     );
     assert!(
-        row_text(&buffer, 3).contains("[j/k]"),
-        "the status bar's protected core is untouched"
+        row_text(&buffer, 3).contains("j/k"),
+        "the status bar's hint row is untouched"
     );
 }
 
@@ -3549,10 +3529,14 @@ fn inspector_lint_section_reports_verdicts() {
             .iter()
             .map(|f| f.node_uid.as_str())
             .collect();
+        // Deterministic pick: HashMap order is per-run, so choose the clean
+        // model with the fewest tests — a tall Tests section can push the Lint
+        // verdict below the inspector's visible window.
         app.dag
             .nodes()
             .values()
-            .find(|n| n.resource_type == "model" && !linted.contains(n.unique_id.as_str()))
+            .filter(|n| n.resource_type == "model" && !linted.contains(n.unique_id.as_str()))
+            .min_by_key(|n| (n.test_count, n.unique_id.as_str()))
             .map(|n| n.unique_id.clone())
             .expect("fixture has a lint-clean model")
     };
@@ -3895,6 +3879,8 @@ fn sticky_hit_test_reports_the_pinned_header() {
         scroll_y: 0,
         minimap: false,
         overlay: None,
+        status: None,
+        title: None,
     };
     // The sticky pin is active: the window's first row is a mid-group model.
     assert!(

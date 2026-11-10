@@ -24,22 +24,23 @@ pub mod theme;
 pub use geom::{
     clamp_inspector_width, clamp_list_width, clip_edges, hit_target, hit_test,
     lineage_content_rect, menu_rect, minimap_rect, minimap_scroll_to, modal_rect, overlay_rect,
-    pan_offset, pane_interior, pane_layout, splitter_drag_width, tab_bar_layout, tooltip_rect,
-    underlay_mode, yank_menu_rect, ClipEdges, HitGeometry, HitTarget, PaneConfig, PaneRects,
-    Splitter, TabBarLayout, TabCell, DEFAULT_INSPECTOR_WIDTH, DEFAULT_LIST_WIDTH,
-    MIN_INSPECTOR_WIDTH, MIN_LINEAGE_WIDTH, MIN_LIST_WIDTH, TOOLTIP_MAX_W,
+    pan_offset, pane_interior, pane_layout, splitter_drag_width, status_layout, tab_bar_layout,
+    tooltip_rect, underlay_mode, yank_menu_rect, ClipEdges, HitGeometry, HitTarget, PaneConfig,
+    PaneRects, Splitter, StatusChip, StatusLayout, StatusSpan, TabBarLayout, TabCell, TitleKind,
+    TitleLayout, TitleSpan, DEFAULT_INSPECTOR_WIDTH, DEFAULT_LIST_WIDTH, MIN_INSPECTOR_WIDTH,
+    MIN_LINEAGE_WIDTH, MIN_LIST_WIDTH, TOOLTIP_MAX_W,
 };
 pub use inspector::{
     clamp_inspector_scroll, draw_inspector_pane, inspector_column_at, inspector_columns_line0,
     INSPECTOR_PAGE_STEP,
 };
-pub use lineage::LayerBand;
+pub use lineage::{title_layout, LayerBand};
 pub use mouse::{mouse_dirty, MouseInput, MouseOutcome, MouseRouter};
 pub use overlay::{
     clamp_columns_scroll, clamp_detail_scroll, clamp_diff_scroll, clamp_help_scroll,
     clamp_notifications_scroll, clamp_sql_scroll, clamp_stats_scroll, TooltipView,
 };
-pub use render::{draw, RenderCtx, StatusSegments, TabBarView, ToastLine};
+pub use render::{draw, status_chips, RenderCtx, StatusSegments, TabBarView, ToastLine};
 pub use state::{
     handle_key, reduce_selection, Focus, InspectorPolicy, KeyOutcome, LineageLens, UiState,
 };

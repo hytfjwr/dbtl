@@ -55,6 +55,7 @@ mod lineage;
 // palette surface itself reaches `App` through the `impl App` methods.
 pub(crate) mod palette;
 mod reducer;
+mod status;
 mod styles;
 mod tabs;
 #[cfg(test)]
