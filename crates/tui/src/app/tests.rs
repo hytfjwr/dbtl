@@ -4904,10 +4904,12 @@ fn column_focus_enter_filters_the_subgraph_to_the_trace() {
         4,
         "the filtered subgraph keeps only related nodes"
     );
-    // The status chip reads `column:model.col ↑N ↓M` — order_id's closure is
-    // the frozen 6-upstream / 0-downstream shape (see tests/cll.rs).
+    // The status chip reads `column:model.col ↑N ↓M` with ONE-HOP counts —
+    // the same direct-neighbour rule as the structure modal's per-column
+    // counts (order_id: 4 direct upstream, 0 downstream; NOT the 6-column
+    // transitive closure the columns modal's section header quotes).
     let status = a.column_status().expect("the chip shows while focused");
-    assert_eq!(status, "column:cll_demo.order_id ↑6 ↓0");
+    assert_eq!(status, "column:cll_demo.order_id ↑4 ↓0");
     assert_eq!(
         a.column_focus_label().as_deref(),
         Some(" [col:order_id]"),
@@ -5156,4 +5158,171 @@ fn detail_enter_on_a_columnless_modal_keeps_the_classic_close() {
     apply_action(&mut a, Action::ColumnFocusEnter);
     assert_eq!(a.mode, Mode::Selection, "Enter still closes the modal");
     assert!(a.column_focus.is_none(), "no focus without a column");
+}
+
+#[test]
+fn column_focus_survives_clicks_on_the_trace_root_and_non_models() {
+    // Clicking the traced model's own box (or a non-model node in the
+    // filtered graph) is interacting WITH the trace, not leaving it — only a
+    // re-root to a DIFFERENT model ends the focus (the columns modal's Enter
+    // applies the same "failed jump keeps focus" rule).
+    let mut a = sample_app();
+    a.select_by_unique_id(DEMO);
+    a.column_focus_enter(ColumnRef::new(DEMO, "order_id"));
+
+    a.click_lineage_node(DEMO);
+    assert!(
+        a.column_focus.is_some(),
+        "clicking the trace's root keeps the focus"
+    );
+    a.click_lineage_node(RAW_ORDERS);
+    assert!(
+        a.column_focus.is_some(),
+        "a non-model click moves the cursor, not the root"
+    );
+    assert_eq!(
+        a.lineage_cursor.as_deref(),
+        Some(RAW_ORDERS),
+        "the cursor landed on the clicked source"
+    );
+
+    a.click_lineage_node(FCT_S);
+    assert!(
+        a.column_focus.is_none(),
+        "re-rooting to another model leaves the trace"
+    );
+    assert_eq!(a.selected_unique_id().as_deref(), Some(FCT_S));
+}
+
+#[test]
+fn column_focus_survives_when_the_trace_root_is_not_the_selection() {
+    // The trace's root is `col.node`, not the list selection: trace a column
+    // of STG while DEMO is selected, then jump to STG — the selection moves
+    // (a real re-root), yet the target IS the trace's home, so the trace
+    // stays.
+    let mut a = sample_app();
+    a.select_by_unique_id(DEMO);
+    a.column_focus_enter(ColumnRef::new(STG, "id"));
+    a.jump_to(STG);
+    assert!(a.column_focus.is_some(), "landing on the trace's own model");
+    assert_eq!(a.selected_unique_id().as_deref(), Some(STG));
+    // From there, jumping elsewhere still leaves the trace.
+    a.jump_to(DEMO);
+    assert!(a.column_focus.is_none());
+}
+
+#[test]
+fn column_focus_ends_on_history_and_cycle_re_roots() {
+    // History nav is a re-root: `b` back to a different model ends the trace,
+    // while a hop landing ON the traced model keeps it (same contract as
+    // jump_to). The bookmark/gap cycles follow the same rule.
+    let mut a = sample_app();
+    a.select_by_unique_id(FCT_S);
+    a.jump_to(STG); // back = [FCT_S]
+    a.column_focus_enter(ColumnRef::new(STG, "id"));
+    apply_action(&mut a, Action::HistoryBack);
+    assert_eq!(a.selected_unique_id().as_deref(), Some(FCT_S));
+    assert!(
+        a.column_focus.is_none(),
+        "history back re-rooted off the trace"
+    );
+
+    // Re-enter the trace on STG, then `f` forward — landing back on the
+    // traced model keeps the focus (trace_root == target).
+    a.column_focus_enter(ColumnRef::new(STG, "id"));
+    apply_action(&mut a, Action::HistoryForward);
+    assert_eq!(a.selected_unique_id().as_deref(), Some(STG));
+    assert!(
+        a.column_focus.is_some(),
+        "history forward lands on the trace's own model"
+    );
+
+    // Bookmark cycle to a DIFFERENT model is likewise a re-root.
+    a.bookmarks.insert(DEMO.to_string());
+    a.bookmarks.insert(FCT_S.to_string());
+    apply_action(&mut a, Action::BookmarkCycle);
+    assert_ne!(
+        a.selected_unique_id().as_deref(),
+        Some(STG),
+        "the cycle moved to another bookmark"
+    );
+    assert!(a.column_focus.is_none(), "the cycle re-root ends the trace");
+}
+
+#[test]
+fn column_focus_gates_view_filters_with_a_notice() {
+    // u/d/[/]/0 would silently mutate the rooted view — which the trace then
+    // reveals on Esc. Like the overview gate, they notice instead; the `v`
+    // density stays live (Compact legitimately hides the column rows).
+    let mut a = sample_app();
+    a.column_focus_enter(ColumnRef::new(DEMO, "order_id"));
+    let before = a.lineage_view.clone();
+    for action in [
+        Action::ToggleUpstream,
+        Action::ToggleDownstream,
+        Action::DepthDecrease,
+        Action::DepthIncrease,
+        Action::ResetView,
+    ] {
+        apply_action(&mut a, action);
+        assert_eq!(
+            a.lineage_view, before,
+            "{action:?} must not mutate the view under a trace"
+        );
+        assert_eq!(
+            a.take_notice().as_deref(),
+            Some("view filters are off while tracing a column (Esc to exit)"),
+            "{action:?} explains itself"
+        );
+    }
+    apply_action(&mut a, Action::ToggleDensity);
+    assert_ne!(
+        a.ui_state.density(),
+        crate::Density::Comfortable,
+        "v still toggles density under the trace"
+    );
+}
+
+#[test]
+fn column_impact_lens_skips_under_an_overview_suppressed_focus() {
+    // The overview suppresses the focus's DISPLAY but keeps its state — the
+    // dead-slot test must read the EFFECTIVE focus, or `t` lands on a
+    // tint-less ColumnImpact while the whole graph is up.
+    let mut a = sample_app();
+    a.column_focus_enter(ColumnRef::new(STG, "id"));
+    apply_action(&mut a, Action::ToggleOverview);
+    assert!(a.ui_state.overview());
+    a.ui_state.set_lens(LineageLens::RunTime);
+    apply_action(&mut a, Action::CycleLens);
+    assert_eq!(
+        a.ui_state.lens(),
+        LineageLens::Off,
+        "ColumnImpact is skipped while the overview suppresses the focus"
+    );
+}
+
+#[test]
+fn yank_column_lineage_falls_back_to_the_traced_column() {
+    // `y l` from Selection mid-trace has no `pending_col` (no modal cursor),
+    // but the trace names a column — yank ITS downstream closure instead of
+    // dead-ending on "no column selected".
+    let mut a = sample_app();
+    a.column_focus_enter(ColumnRef::new(STG, "id"));
+    apply_action(&mut a, Action::YankPrefix);
+    let out = apply_action(&mut a, Action::YankColumnLineage);
+    let text = match &out.effects[..] {
+        [Effect::Yank(t)] => t.clone(),
+        e => panic!("expected the yank effect, got {e:?}"),
+    };
+    assert!(
+        text.contains("order_id") || text.contains("cll_demo"),
+        "the traced column's closure made the clipboard: {text}"
+    );
+
+    // Unfocused, the fallback is gone — the pick-a-column notice returns.
+    let mut a = sample_app();
+    apply_action(&mut a, Action::YankPrefix);
+    let out = apply_action(&mut a, Action::YankColumnLineage);
+    assert!(out.effects.is_empty());
+    assert!(a.take_notice().is_some(), "the no-column notice survives");
 }

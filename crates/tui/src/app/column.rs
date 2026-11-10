@@ -35,10 +35,14 @@ pub(crate) struct ColumnFocus {
     /// `unique_id -> related column rows` inside that node's box — the
     /// [`layout_columns`](crate::layout_columns) input. Each list is already
     /// in display order (name-sorted: `on_trace` iterates `(node, column)`
-    /// order). The marks are resolved to the App's glyph mode at build time.
+    /// order). The rows carry the edge KIND, not a baked mark glyph — layout
+    /// resolves the mark against the draw's glyph mode.
     pub lines: BTreeMap<String, Vec<ColLine>>,
-    /// Column-closure sizes for the status chip: `(upstream, downstream)` —
-    /// counts of COLUMNS, not nodes (the trace is a column story).
+    /// The status chip's `(upstream, downstream)` counts: ONE-HOP column-edge
+    /// neighbours of the traced column — the same "direct parents in / direct
+    /// children out" rule as the structure modal's per-column `↑u ↓d`
+    /// ([`column_counts`](crate::ColumnLineage::column_counts)), NOT the
+    /// transitive closure the modal's section headers quote.
     pub counts: (usize, usize),
 }
 
@@ -52,21 +56,6 @@ fn kind_rank(kind: ColumnEdgeKind) -> u8 {
         ColumnEdgeKind::FilterOrJoin => 1,
         ColumnEdgeKind::Rename => 2,
         ColumnEdgeKind::Transform => 3,
-    }
-}
-
-/// The 1-cell row mark for an edge kind, mode-aware: `·` is East-Asian
-/// Ambiguous (width varies by terminal), so ASCII mode draws `-` instead —
-/// every other mark is already plain ASCII.
-fn col_mark(kind: ColumnEdgeKind, mode: crate::GlyphMode) -> char {
-    match kind {
-        ColumnEdgeKind::Passthrough => match mode {
-            crate::GlyphMode::Unicode => '·',
-            crate::GlyphMode::Ascii => '-',
-        },
-        ColumnEdgeKind::FilterOrJoin => '%',
-        ColumnEdgeKind::Rename => '~',
-        ColumnEdgeKind::Transform => '*',
     }
 }
 
@@ -152,7 +141,7 @@ impl App {
                         .iter()
                         .filter(|e| e.from == *cr || e.to == *cr)
                         .collect();
-                    let mark = inc
+                    let kind = inc
                         .iter()
                         .map(|e| e.kind)
                         .max_by_key(|k| kind_rank(*k))
@@ -160,13 +149,9 @@ impl App {
                     let target = *cr == *col;
                     ColLine {
                         name: cr.column.clone(),
-                        // The traced column reads `>` ("the trace starts
-                        // here") regardless of its incident edge kind.
-                        mark: if target {
-                            '>'
-                        } else {
-                            col_mark(mark, self.glyph_mode)
-                        },
+                        // The row carries the KIND — layout resolves the mark
+                        // glyph (`>` for the traced column overrides it).
+                        kind,
                         faint: !inc.is_empty()
                             && inc.iter().all(|e| e.confidence != Confidence::Exact),
                         target,
@@ -186,7 +171,9 @@ impl App {
             related,
             down_nodes,
             lines,
-            counts: (up.len(), down.len()),
+            // ONE-HOP counts — the `↑u ↓d` surfaces (structure modal, README)
+            // all speak direct-neighbour counts, so the status chip does too.
+            counts: (engine.upstream(col).len(), engine.downstream(col).len()),
         }
     }
 
@@ -268,8 +255,9 @@ impl App {
 
     /// The status-bar segment while a column is traced:
     /// `column:fct_orders.total_amount ↑3 ↓7` — the traced identity plus the
-    /// up/down column-closure sizes, in the Chrome badge glyphs (`^`/`v` in
-    /// ASCII mode, like the list's dependency badges).
+    /// ONE-HOP up/down column-edge counts (matching the structure modal's
+    /// per-column `↑u ↓d`), in the Chrome badge glyphs (`^`/`v` in ASCII
+    /// mode, like the list's dependency badges).
     pub fn column_status(&self) -> Option<String> {
         let f = self.active_column_focus()?;
         let name = self.node_name_or_uid(&f.col.node);

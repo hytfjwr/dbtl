@@ -210,9 +210,18 @@ pub fn event_loop(
                     app.active_list().len()
                 ))
             };
+            // The column-focus chip (`column:model.col ↑N ↓M`) and the lineage
+            // title's ` [col:name]` suffix — present only while a column is
+            // traced (and suppressed with the rest of the focus by the
+            // overview). Both are `None` otherwise: no focus, no footprint.
+            // Computed BEFORE the view surfaces: a live trace also suppresses
+            // them (the rooted-view filters the trace ignores must not
+            // advertise themselves on screen).
+            let column_s = app.column_status();
+            let col_suffix = app.column_focus_label();
             let view_seg = if app.ui_state.overview() {
                 Some("overview")
-            } else if app.lineage_view != LineageView::default() {
+            } else if column_s.is_none() && app.lineage_view != LineageView::default() {
                 Some(view_label.as_str())
             } else {
                 None
@@ -240,12 +249,6 @@ pub fn event_loop(
             // from the active glyph mode's Chrome badges — never hardcoded).
             // Built in App so the string source is single and unit-testable.
             let impact_s = app.impact_status();
-            // The column-focus chip (`column:model.col ↑N ↓M`) and the lineage
-            // title's ` [col:name]` suffix — present only while a column is
-            // traced (and suppressed with the rest of the focus by the
-            // overview). Both are `None` otherwise: no focus, no footprint.
-            let column_s = app.column_status();
-            let col_suffix = app.column_focus_label();
             // The baseline-diff chip (present only with a --diff baseline loaded).
             let diff_s = app.diff_status_label();
             // The run_results chip (coverage + freshness of the loaded artifact).
@@ -267,7 +270,15 @@ pub fn event_loop(
                 ctx.mode = &app.mode;
                 ctx.status = status_note.as_deref();
                 ctx.stats = Some(&app.stats);
-                ctx.lineage_label = Some(&view_label);
+                // The title's `[view]` suffix is a rooted-view label — while a
+                // column is traced the pane shows the filtered graph (whose
+                // shape ignores those filters), so the suffix drops with the
+                // status segment and ` [col:name]` takes the slot instead.
+                ctx.lineage_label = if column_s.is_some() {
+                    None
+                } else {
+                    Some(&view_label)
+                };
                 ctx.breadcrumb = breadcrumb.as_deref();
                 ctx.overview_title = overview_title.as_deref();
                 ctx.glyphs = app.glyph_mode;
@@ -397,7 +408,13 @@ fn handle_mouse(app: &mut App, me: MouseEvent, lineage: Option<&Layout>, area: R
                 let r = app.ui_state.offset() + (row - list_inner.y) as usize;
                 let mi = app.active_list().model_at_row(r);
                 if let Some(mi) = mi {
-                    app.ui_state.set_selected(mi);
+                    // A list click landing on a different model is a re-root,
+                    // so it runs the same "leave the column trace" rule as a
+                    // lineage click (`reroot_select` owns the contract).
+                    let uid = app.active_list().model_at(mi).map(|m| m.unique_id.clone());
+                    if let Some(uid) = uid {
+                        app.reroot_select(&uid);
+                    }
                 }
             } else if within(lin_inner, col, row) {
                 app.ui_state.set_focus(Focus::RightPane);

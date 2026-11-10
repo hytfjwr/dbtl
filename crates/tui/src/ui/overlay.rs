@@ -368,10 +368,18 @@ pub(crate) fn draw_detail(
     glyphs: crate::GlyphMode,
     t: &theme::Theme,
 ) {
+    // The column gestures only exist when the modal HAS a column cursor — a
+    // columnless node keeps Enter's plain close and has no h/l target, so the
+    // hints stay off the title too.
+    let col_hint = if dv.col_index == usize::MAX {
+        ""
+    } else {
+        ", h/l column, Enter/c trace"
+    };
     draw_scrollable_modal(
         frame,
         area,
-        format!(" {}  (Esc/q to close, j/k scroll, h/l column) ", dv.name),
+        format!(" {}  (Esc/q to close, j/k scroll{col_hint}) ", dv.name),
         detail_display_lines(dv, glyphs, t),
         dv.scroll,
         glyphs,

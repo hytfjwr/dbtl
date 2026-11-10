@@ -347,8 +347,10 @@ The default output is a deterministic Markdown table (`column | via | kind |
 confidence`) suitable for PR comments; `--format json` emits the same report as
 structured data. Inside the app, the `Enter` structure view shows `↑u ↓d`
 ONE-HOP edge counts beside every column (direct parents in / direct children
-out — not the transitive closure) — `h`/`l` move a cursor between them and
-`y l` copies the selected column's downstream closure as the same Markdown.
+out — not the transitive closure) — `h`/`l` move a cursor between them,
+`y l` copies the selected column's downstream closure as the same Markdown,
+and `Enter`/`c` **traces the column** in the lineage pane (see the
+`K` keybinding row below for the interactive surfaces).
 
 v0 matches columns **by name**, so it intentionally over-connects: `o.id`
 contributes every parent's `id`, and join keys / `WHERE` / `GROUP BY` columns
@@ -391,7 +393,8 @@ Press `?` inside the app for the full list. The most useful ones:
 | `b` `f` | Back / forward in re-root history |
 | `z` | Home the lineage cursor and re-center |
 | `r` | Reload the data source |
-| `t` | Cycle lineage lens (off → coverage → blast radius → layer → layer violation → diff → run status → runtime; lenses with no data are skipped) |
+| `t` | Cycle lineage lens (off → coverage → blast radius → layer → layer violation → diff → run status → runtime → column impact; lenses with no data are skipped — column impact only while a column is traced) |
+| `K` | Column-lineage modal for the traced column (or the structure view's cursored column): a scrollable upstream / this-column / downstream tree — `j`/`k` move the row cursor, `Enter` re-roots to a row's model |
 | `v` | Toggle compact lineage (1-row nodes — fits ~2x more graph on screen) |
 | `w` | Toggle whole-graph overview (the entire DAG in the lineage pane; Compact, minimap on) |
 | `M` | Toggle the lineage minimap |
@@ -413,7 +416,7 @@ Press `?` inside the app for the full list. The most useful ones:
 | `?` | Toggle the full help overlay |
 | `q` | Quit (`Ctrl-c` from anywhere) |
 
-Inside a scrollable modal, `j`/`k` scroll, `d`/`u`/`Ctrl-d`/`Ctrl-u`/`PgDn`/`PgUp` page, `g`/`G` jump to the top / bottom, and `Esc`/`Enter`/`q` (`?` too, for the help overlay) closes. In the structure view, `h`/`l` move a cursor across the column rows (each shows its `↑`/`↓` one-hop column-edge count) — the target of `y l`. Pressing `y` over the structure view aims every `y<key>` yank at *the modal's node*, not the list selection — `y l` yanks the column under its cursor. Known limitation: the yank menu is one-shot and closes to the list — `Esc`/`q` from it does NOT return to the modal (re-open with `Enter`); restoring the modal on cancel is a tracked follow-up. In a `/` search, `Up`/`Down` move between matches.
+Inside a scrollable modal, `j`/`k` scroll, `d`/`u`/`Ctrl-d`/`Ctrl-u`/`PgDn`/`PgUp` page, `g`/`G` jump to the top / bottom, and `Esc`/`Enter`/`q` (`?` too, for the help overlay) closes. In the structure view, `h`/`l` move a cursor across the column rows (each shows its `↑`/`↓` one-hop column-edge count) — the target of `y l` — and `Enter`/`c` commits the cursored column to the **column trace view**: the lineage filters to the column's related models, each box lists its related columns (`>` marks the traced one, the other marks name the edge kind), a `column:model.col ↑u ↓d` status chip (one-hop counts, like the modal) replaces the `[view]` label, and the title gains ` [col:name]`. While tracing, `h`/`l` step the traced column upstream/downstream, `K` opens the column modal, `t` reaches the column-impact lens (gold = the downstream closure), the rooted view filters `u`/`d`/`[`/`]`/`0` are gated (they would only apply after the trace), and `Esc` exits the trace. Pressing `y` over the structure view aims every `y<key>` yank at *the modal's node*, not the list selection — `y l` yanks the column under its cursor (or, mid-trace with no modal open, the traced column). Known limitation: the yank menu is one-shot and closes to the list — `Esc`/`q` from it does NOT return to the modal (re-open with `Enter`); restoring the modal on cancel is a tracked follow-up. In a `/` search, `Up`/`Down` move between matches.
 
 The mouse works too: click a lineage node to re-root, and use the wheel to scroll. The lineage pane pans in both directions. A horizontal wheel notch (trackpad swipe or tilt wheel) or `Shift`+wheel scrolls it sideways.
 

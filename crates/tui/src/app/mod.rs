@@ -694,9 +694,8 @@ impl App {
     /// re-root also ends any column focus: "jump to that model" means land on
     /// the model's own lineage, not keep the trace's filtered view.
     pub fn jump_to(&mut self, unique_id: &str) {
-        self.column_focus = None;
         let current = self.selected_unique_id();
-        if self.select_by_unique_id(unique_id) {
+        if self.reroot_select(unique_id) {
             // A successful re-root is the overview's drill-in gesture: leave the
             // whole-graph view and land on the rooted lineage of the target.
             if self.ui_state.overview() {
@@ -711,13 +710,34 @@ impl App {
         }
     }
 
+    /// The shared "land on this model" select: `select_by_unique_id` plus the
+    /// re-root contract — a successful move ends the column trace, UNLESS the
+    /// target IS the traced column's node (clicking/Entering the trace's own
+    /// root box is interacting WITH the trace, not leaving it). A failed
+    /// select (a non-model lineage node) leaves the focus alone — the same
+    /// rule the columns modal's Enter applies. [`jump_to`], history, search
+    /// close, the bookmark/gap cycles, and the mouse's list click all go
+    /// through here so the contract can't drift between paths.
+    ///
+    /// [`jump_to`]: App::jump_to
+    pub fn reroot_select(&mut self, unique_id: &str) -> bool {
+        let trace_root = self.column_focus.as_ref().map(|f| f.col.node.clone());
+        if !self.select_by_unique_id(unique_id) {
+            return false;
+        }
+        if trace_root.as_deref() != Some(unique_id) {
+            self.column_focus = None;
+        }
+        true
+    }
+
     /// Go back one step in the re-root history (pushes the current onto forward).
     pub fn history_back(&mut self) {
         if let Some(prev) = self.back.pop() {
             if let Some(cur) = self.selected_unique_id() {
                 self.forward.push(cur);
             }
-            self.select_by_unique_id(&prev);
+            self.reroot_select(&prev);
         }
     }
 
@@ -727,7 +747,7 @@ impl App {
             if let Some(cur) = self.selected_unique_id() {
                 self.back.push(cur);
             }
-            self.select_by_unique_id(&next);
+            self.reroot_select(&next);
         }
     }
 
@@ -1148,7 +1168,7 @@ impl App {
         // Back to the search's BASE (the persistent-filter view when active).
         self.ui_state.set_model_count(self.base_list().len());
         if let Some(uid) = restore_uid {
-            self.select_by_unique_id(&uid);
+            self.reroot_select(&uid);
         }
     }
 }

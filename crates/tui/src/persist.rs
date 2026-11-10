@@ -237,6 +237,7 @@ mod tests {
             LineageLens::Diff,
             LineageLens::RunStatus,
             LineageLens::RunTime,
+            LineageLens::ColumnImpact,
         ] {
             assert_eq!(lens_from_name(lens_name(lens)), Some(lens));
         }

@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::Subgraph;
+use crate::{ColumnEdgeKind, Subgraph};
 
 /// Which glyph repertoire the lineage grid (and the surrounding UI chrome) is
 /// drawn with.
@@ -194,23 +194,45 @@ pub enum LensTint {
 }
 
 /// One column row inside a node box (the column-focus view): the related
-/// column's normalized name, a 1-cell mark for the edge KIND that produced it
-/// within the traced set (or `>` for the traced column itself), and two flags
-/// driving the row's own render attr — `faint` dims it (the column's column
-/// edges never saw an [`crate::Confidence::Exact`] link, so the row is an
-/// inferred name) and `target` paints the on-path band (this row IS the traced
-/// column). `Eq`-safe plain data: computed Dag-side, consumed Dag-free here.
+/// column's normalized name, the edge KIND that produced it within the traced
+/// set (the 1-cell mark resolves against the CURRENT glyph mode at draw time
+/// — `>` for the traced column overrides it), and two flags driving the row's
+/// own render attr — `faint` dims it (the column's column edges never saw an
+/// [`crate::Confidence::Exact`] link, so the row is an inferred name) and
+/// `target` paints the on-path band (this row IS the traced column).
+/// `Eq`-safe plain data: computed Dag-side, consumed Dag-free here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColLine {
     /// The column's normalized name (the text after the mark).
     pub name: String,
-    /// The 1-cell edge-kind mark (`=`/`~`/`*`/`%`/`·`/`>`; the `·` swaps to `-`
-    /// in ASCII mode — resolved before construction, so layout is glyph-blind).
-    pub mark: char,
+    /// The heaviest edge kind incident to the column — kept as the KIND, not
+    /// a baked char, so a glyph-mode change re-resolves the mark glyph.
+    pub kind: ColumnEdgeKind,
     /// Dim the row (inferred-only provenance).
     pub faint: bool,
     /// The traced column — painted with the on-path band + the `>` mark.
     pub target: bool,
+}
+
+impl ColLine {
+    /// The 1-cell row mark in `mode`: `>` for the traced column, else the
+    /// edge-kind glyph — `·` passthrough is East-Asian Ambiguous (width varies
+    /// by terminal), so ASCII mode draws `-` instead; every other mark is
+    /// already plain ASCII.
+    fn mark(&self, mode: GlyphMode) -> char {
+        if self.target {
+            return '>';
+        }
+        match self.kind {
+            ColumnEdgeKind::Passthrough => match mode {
+                GlyphMode::Unicode => '·',
+                GlyphMode::Ascii => '-',
+            },
+            ColumnEdgeKind::FilterOrJoin => '%',
+            ColumnEdgeKind::Rename => '~',
+            ColumnEdgeKind::Transform => '*',
+        }
+    }
 }
 
 /// Per-cell render attributes, orthogonal to the char and the emphasis flag:
@@ -613,6 +635,7 @@ struct BoxBody<'a> {
 fn draw_box(
     grid: &mut CharGrid,
     g: &BoxGlyphs,
+    mode: GlyphMode,
     rect: NodeRect,
     body: &BoxBody<'_>,
     emph: bool,
@@ -668,8 +691,9 @@ fn draw_box(
             col_cells.insert((cx, ry));
         }
         // `{mark} {name}`, left-trimmed into the interior (the mark column is
-        // flush at bx+1 so edge kinds scan vertically down the box).
-        for (j, ch) in format!("{} {}", cl.mark, cl.name).chars().enumerate() {
+        // flush at bx+1 so edge kinds scan vertically down the box). The mark
+        // resolves against THIS draw's glyph mode.
+        for (j, ch) in format!("{} {}", cl.mark(mode), cl.name).chars().enumerate() {
             if j < inner {
                 grid.put(bx + 1 + j, ry, ch);
             }
@@ -1008,6 +1032,7 @@ fn layout_impl(
                 draw_box(
                     &mut grid,
                     g,
+                    mode,
                     rect,
                     &BoxBody {
                         label: label_of(node),
@@ -1120,7 +1145,7 @@ pub fn blit(grid: &CharGrid, off_x: usize, off_y: usize, view_w: usize, view_h: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Edge, NodeInfo, Subgraph};
+    use crate::{ColumnEdgeKind, Edge, NodeInfo, Subgraph};
 
     /// Build a NodeInfo with a model resource type and a name == unique_id tail.
     fn model(id: &str, name: &str) -> NodeInfo {
@@ -1727,13 +1752,13 @@ mod tests {
             vec![
                 ColLine {
                     name: "order_id".into(),
-                    mark: '>',
+                    kind: ColumnEdgeKind::Rename,
                     faint: false,
                     target: true,
                 },
                 ColLine {
                     name: "a_much_longer_column_name".into(),
-                    mark: '*',
+                    kind: ColumnEdgeKind::Transform,
                     faint: true,
                     target: false,
                 },
@@ -1789,13 +1814,13 @@ mod tests {
             vec![
                 ColLine {
                     name: "x".into(),
-                    mark: '=',
+                    kind: ColumnEdgeKind::Passthrough,
                     faint: false,
                     target: false,
                 },
                 ColLine {
                     name: "y".into(),
-                    mark: '=',
+                    kind: ColumnEdgeKind::Passthrough,
                     faint: false,
                     target: false,
                 },
@@ -1834,7 +1859,7 @@ mod tests {
             "c".to_string(),
             vec![ColLine {
                 name: "x".into(),
-                mark: '=',
+                kind: ColumnEdgeKind::Passthrough,
                 faint: false,
                 target: false,
             }],
@@ -1852,14 +1877,14 @@ mod tests {
     #[test]
     fn column_rows_have_identical_geometry_in_both_glyph_modes() {
         // Unicode and ASCII differ ONLY in the glyphs stamped — rects, columns,
-        // and the col_cells record are the same (the `·` vs `-` mark is a
-        // caller-side choice, baked into ColLine before layout sees it).
+        // and the col_cells record are the same (the `·` vs `-` mark resolves
+        // per draw from ColLine::kind + the draw's glyph mode).
         let sg = asymmetric_three();
         let cols = BTreeMap::from([(
             "c".to_string(),
             vec![ColLine {
                 name: "order_id".into(),
-                mark: '>',
+                kind: ColumnEdgeKind::Passthrough,
                 faint: false,
                 target: true,
             }],
@@ -1884,13 +1909,13 @@ mod tests {
             vec![
                 ColLine {
                     name: "target_col".into(),
-                    mark: '>',
+                    kind: ColumnEdgeKind::Rename,
                     faint: false,
                     target: true,
                 },
                 ColLine {
                     name: "inferred_col".into(),
-                    mark: '·',
+                    kind: ColumnEdgeKind::Passthrough,
                     faint: true,
                     target: false,
                 },
