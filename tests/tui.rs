@@ -1992,8 +1992,8 @@ fn reversed_runs_in(buffer: &Buffer, interior: ratatui::layout::Rect) -> Vec<Str
 
 /// The toast floats at the TOP-RIGHT: a 3-row bordered box inset 2 cols from
 /// the right edge and 1 row from the top, its text on the middle row. Absent
-/// `ctx.toast` (the default) the buffer is byte-identical to a plain render —
-/// every other test in this file implicitly asserts that.
+/// `ctx.toasts` (the default empty slice) the buffer is byte-identical to a
+/// plain render — every other test in this file implicitly asserts that.
 #[test]
 fn toast_renders_top_right_with_its_text() {
     let backend = TestBackend::new(100, 30);

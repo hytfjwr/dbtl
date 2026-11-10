@@ -365,6 +365,33 @@ fn docs_cli_prints_one_warning_per_unhandled_kind_to_stderr() {
     let _ = std::fs::remove_dir_all(&out_dir);
 }
 
+/// Issue 08: routing startup warnings into the TUI's notification log must
+/// not change what reaches stderr on the TUI path. Warnings are printed by
+/// `resolve_source` BEFORE terminal init, so they are visible even when this
+/// non-TTY run then fails at `try_init` — assert the lines, ignore the exit.
+#[test]
+fn tui_path_still_prints_startup_warnings_to_stderr() {
+    let result = Command::new(env!("CARGO_BIN_EXE_dbtl"))
+        .arg("--manifest")
+        .arg(FIXTURE)
+        .output()
+        .expect("failed to run dbtl");
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    for warning in [
+        "warning: unsupported resource_type 'fixture' (1 node)",
+        "warning: unsupported resource_type 'function' (1 node)",
+        "warning: unknown resource_type 'notebook' (1 node)",
+        "warning: unsupported resource_type 'rpc' (2 nodes)",
+        "warning: unsupported resource_type 'sql_operation' (1 node)",
+        "warning: 'functions' map (1 function): not displayed",
+    ] {
+        assert!(
+            stderr.contains(warning),
+            "stderr missing {warning:?}, got: {stderr:?}"
+        );
+    }
+}
+
 // ---- Fusion shape tolerance: extra maps/fields parse and are ignored ----
 
 #[test]
