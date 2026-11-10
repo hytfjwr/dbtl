@@ -188,14 +188,35 @@ pub fn event_loop(
             lineage = app.styled_lineage_layout();
             let (view_w, view_h) = lineage_viewport(terminal, &app.ui_state)?;
             let cursor = app.lineage_cursor_uid();
+            // The lineage-search overlays (§6/M4): every matching node's
+            // frame accents, the title rides `i/N`, and the viewport anchors
+            // on the cycled match — `Some` only while a Lineage-target search
+            // is open, computed ONCE for all three consumers. `match_idx`
+            // cycles mod the count so the position is the same 1-based index
+            // n/N step; `(0, 0)` while the query matches nothing.
+            let (search_matches, current_match, search_pos) = match &app.mode {
+                Mode::Search(s) if s.target == SearchTarget::Lineage => {
+                    let m = app.lineage_matches(&s.query);
+                    let pos = if m.is_empty() {
+                        (0, 0)
+                    } else {
+                        (s.match_idx % m.len() + 1, m.len())
+                    };
+                    let cur = if m.is_empty() {
+                        None
+                    } else {
+                        m.get(s.match_idx % m.len()).cloned()
+                    };
+                    (m, cur, Some(pos))
+                }
+                _ => (Vec::new(), None, None),
+            };
             if let Some(lay) = lineage.as_deref() {
                 // A lineage node-jump search anchors the viewport on the cycled match
                 // (size-aware), overriding the usual selection-based anchor/clamp.
-                // `current_lineage_match` is `None` for an empty query, so opening
+                // `current_match` is `None` for an empty query, so opening
                 // search never jolts the view off the rooted node.
-                let search_rect = app
-                    .current_lineage_match()
-                    .and_then(|uid| lay.rects.get(&uid).copied());
+                let search_rect = current_match.and_then(|uid| lay.rects.get(&uid).copied());
                 if let Some(rect) = search_rect {
                     app.ui_state
                         .anchor_lineage(Some(rect), &lay.grid, view_w, view_h);
@@ -448,43 +469,26 @@ pub fn event_loop(
                 mouse.track_hover(target);
             }
             // Issue 05's settled-hover reconcile: the tip arms only while the
-            // resolved hover rests on a lineage NODE and no button is held
-            // (a press — a click or the start of a pan — is not a hover).
-            // Any target change re-arms the delay; `visible` only ever flips
-            // on the idle-tick check above.
+            // resolved hover rests on a real lineage NODE with no button held
+            // (a press — a click or the start of a pan — is not a hover), and
+            // drops when the viewport moves under a same-node pointer.
             let hover_uid = match (mouse.hover(), mouse.press()) {
                 (Some(HitTarget::LineageNode(uid)), None) => Some(uid.clone()),
                 _ => None,
             };
-            match (&mut hover_tip, &hover_uid) {
-                (Some(t), Some(uid)) if t.uid == *uid => {}
-                (tip, armed) => {
-                    *tip = armed.clone().map(|uid| HoverTip {
-                        uid,
-                        since: Instant::now(),
-                        visible: false,
-                    });
-                }
-            }
+            reconcile_hover_tip(
+                &mut hover_tip,
+                mouse.hover(),
+                mouse.press().is_some(),
+                (
+                    app.ui_state.lineage_scroll_x(),
+                    app.ui_state.lineage_scroll_y(),
+                ),
+                &app.dag,
+            );
             let tip_view = match (&hover_tip, mouse.pointer()) {
                 (Some(t), Some(at)) if t.visible => app.tooltip_view(&t.uid, (at.x, at.y)),
                 _ => None,
-            };
-            // The lineage-search overlays (§6/M4): every matching node's
-            // frame accents and the title rides `i/N` — `Some` only while a
-            // Lineage-target search is open; `match_idx` cycles mod the
-            // count so the position is the same 1-based index n/N step.
-            let (search_matches, search_pos) = match &app.mode {
-                Mode::Search(s) if s.target == SearchTarget::Lineage => {
-                    let m = app.lineage_matches(&s.query);
-                    let pos = if m.is_empty() {
-                        (0, 0)
-                    } else {
-                        (s.match_idx % m.len() + 1, m.len())
-                    };
-                    (m, Some(pos))
-                }
-                _ => (Vec::new(), None),
             };
             // §5 splitter feedback: the accent border + a status hint. The
             // hint names the live saved width mid-drag; on hover it teaches
@@ -746,17 +750,56 @@ struct SplitterDrag {
 }
 
 /// The settled-hover tooltip's live state (Issue 05): which node's hover
-/// armed it, when the rest began, and whether the [`TOOLTIP_DELAY`] timer
-/// already fired. The loop owns the clock; both the reducer and the
-/// renderer stay clock-free.
+/// armed it, the lineage viewport at arm time, when the rest began, and
+/// whether the [`TOOLTIP_DELAY`] timer already fired. The loop owns the
+/// clock; both the reducer and the renderer stay clock-free.
 struct HoverTip {
     uid: String,
+    /// The `(scroll_x, scroll_y)` the arm read — a viewport move since then
+    /// left the anchored box pointing at stale content, so it re-arms.
+    scroll: (usize, usize),
     since: Instant,
     visible: bool,
 }
 
 /// The stationary-hover delay before the tooltip shows (§9).
 const TOOLTIP_DELAY: Duration = Duration::from_millis(500);
+
+/// Reconcile the settled-hover state against the freshest inputs (§9's
+/// "消す条件": press / drag / scroll / leave). The tip arms only while the
+/// resolved hover rests on a lineage node that is ALSO a real Dag node —
+/// a `+M more` marker is display chrome: it accents its frame but has no
+/// `dag.get`, so arming would just dirty the 500ms flip for a `tip_view`
+/// that is always `None`. A held button (press or pan), a viewport move
+/// under a same-node pointer (the anchor went stale), or a target change
+/// re-arms/drops; `visible` only ever flips on the idle-tick timer.
+fn reconcile_hover_tip(
+    hover_tip: &mut Option<HoverTip>,
+    hover: Option<&HitTarget>,
+    pressed: bool,
+    scroll: (usize, usize),
+    dag: &dbtl::Dag,
+) {
+    let hover_uid = match (hover, pressed) {
+        (Some(HitTarget::LineageNode(uid)), false) => Some(uid.clone()),
+        _ => None,
+    };
+    match (&mut *hover_tip, &hover_uid) {
+        // Same node AND the same viewport: the rest continues undisturbed.
+        (Some(t), Some(uid)) if t.uid == *uid && t.scroll == scroll => {}
+        (tip, armed) => {
+            *tip = armed
+                .clone()
+                .filter(|uid| dag.get(uid).is_some())
+                .map(|uid| HoverTip {
+                    uid,
+                    scroll,
+                    since: Instant::now(),
+                    visible: false,
+                });
+        }
+    }
+}
 
 /// Resolve a drag's press cell to the [`PaneDrag`] it starts — `None` on a
 /// surface with no drag meaning (the list, the strip, the status bar, pane
@@ -988,9 +1031,17 @@ fn handle_mouse(
                     outcome,
                 };
             };
+            // A press is gesture-less but not state-free: the held button is
+            // an input the hover reconcile reads (a settled tooltip drops on
+            // press — §9's "消す条件"). Without a dirty pass the reconcile
+            // would never observe `mouse.press()` — the router clears it on
+            // release before the Click gesture, so a whole click would slide
+            // under a visible tip. Deduped moves and stray events still cost
+            // nothing.
+            let pressed = matches!(input, MouseInput::Press { .. });
             let Some(gesture) = mouse.feed(input, Instant::now()) else {
                 return MouseHandled {
-                    dirty: false, // press / deduped move / stray event: nothing visible
+                    dirty: pressed,
                     reanchor: false,
                     outcome,
                 };
@@ -2644,5 +2695,87 @@ mod tests {
             "the modal mode abandoned the drag"
         );
         assert!(drag.is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // §9 Issue 05 review: the settled tooltip drops on press / scroll /
+    // leave, and never arms for a `+M more` display-chrome marker.
+    // ------------------------------------------------------------------
+
+    /// The reconcile's press half lives in `handle_mouse`: a Down feeds the
+    /// router no gesture, so the event must itself dirty — otherwise no
+    /// reconcile pass ever observes `mouse.press()` (the router clears it
+    /// on release before the Click gesture) and a click slides under a
+    /// visible tip.
+    #[test]
+    fn a_press_dirties_so_the_reconcile_observes_the_held_button() {
+        let mut app = fixture_app();
+        let mut router = MouseRouter::new();
+        let mut drag = None;
+        let lineage = app.styled_lineage_layout();
+        let handled = handle_mouse(
+            &mut app,
+            &mut router,
+            &mut drag,
+            mouse(MouseEventKind::Down(MouseButton::Left), 40, 12),
+            lineage.as_deref(),
+            Rect::new(0, 0, 100, 30),
+        );
+        assert!(
+            handled.dirty,
+            "a press dirties so the held button drops the tip"
+        );
+        assert!(router.press().is_some(), "the press is now observable");
+    }
+
+    /// §9's "消す条件": the tip drops on a press (even though the same node
+    /// still sits under the pointer) and on a viewport move that leaves the
+    /// SAME node under the pointer — the anchored box went stale.
+    #[test]
+    fn tooltip_clears_on_press_and_on_same_node_scroll() {
+        let app = fixture_app();
+        let node = HitTarget::LineageNode("seed.jaffle_finance.source_datetime_policy".to_string());
+        let mut tip = Some(HoverTip {
+            uid: "seed.jaffle_finance.source_datetime_policy".to_string(),
+            scroll: (0, 0),
+            since: Instant::now(),
+            visible: true,
+        });
+        // A held button: hover_uid would still resolve the node, but the
+        // pressed check drops the tip outright.
+        reconcile_hover_tip(&mut tip, Some(&node), true, (0, 0), &app.dag);
+        assert!(tip.is_none(), "a press drops the tip");
+
+        // Re-arm, settle, then scroll with the same node still hovered: the
+        // visible tip can't ride along at its stale anchor — it re-arms.
+        reconcile_hover_tip(&mut tip, Some(&node), false, (0, 0), &app.dag);
+        tip.as_mut().unwrap().visible = true;
+        reconcile_hover_tip(&mut tip, Some(&node), false, (4, 0), &app.dag);
+        let t = tip.as_ref().expect("a same-node hover re-arms");
+        assert!(
+            !t.visible,
+            "a scroll under the pointer drops the visible tip"
+        );
+        assert_eq!(t.scroll, (4, 0), "the re-arm tracked the new viewport");
+        // Same node AND same viewport: the rest continues undisturbed.
+        tip.as_mut().unwrap().visible = true;
+        reconcile_hover_tip(&mut tip, Some(&node), false, (4, 0), &app.dag);
+        assert!(tip.as_ref().unwrap().visible, "no scroll → the tip stays");
+    }
+
+    /// `+M more` markers hit-test as `LineageNode` but are display chrome —
+    /// `dag.get` has nothing to describe, so the tip must never arm (it
+    /// would only dirty the 500ms flip for a `tip_view` that is `None`).
+    #[test]
+    fn tooltip_never_arms_for_a_collapse_marker() {
+        let app = fixture_app();
+        let marker = HitTarget::LineageNode("model.jaffle_finance.stg_x+more".to_string());
+        let mut tip = None;
+        reconcile_hover_tip(&mut tip, Some(&marker), false, (0, 0), &app.dag);
+        assert!(tip.is_none(), "a marker uid arms no tooltip");
+        // And a REAL node arms normally — the guard doesn't over-filter.
+        let node = HitTarget::LineageNode("seed.jaffle_finance.source_datetime_policy".to_string());
+        reconcile_hover_tip(&mut tip, Some(&node), false, (0, 0), &app.dag);
+        assert!(tip.is_some(), "a real node still arms the tip");
     }
 }
