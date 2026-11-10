@@ -3,18 +3,18 @@
 //! Here: the `?` help overlay and the structure (detail) modal. Search has no
 //! modal — its query renders inline in the list / lineage pane titles.
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::action::{
-    palette_candidates, ColumnView, DetailView, DiffView, HelpView, ModeKind, NoticeLevel,
-    NotificationsView, PaletteRow, PaletteState, SqlView, StatsView,
+    palette_candidates, ColumnView, DetailView, DiffView, HelpView, MenuEntry, MenuState, ModeKind,
+    NoticeLevel, NotificationsView, PaletteRow, PaletteState, SqlView, StatsView,
 };
 
-use super::geom::centered_rect;
+use super::geom::{centered_rect, modal_rect};
 use super::render::ToastLine;
 use super::{header_style, selected_style, theme};
 
@@ -23,13 +23,8 @@ use super::{header_style, selected_style, theme};
 // All four overlays (help / detail / sql / stats) ARE the same widget: a
 // centered, bordered, scrollable box. Only their TITLE and their content
 // (`*_display_lines`) differ — those stay separate. The Clear+Block+pagination
-// +scrollbar scaffolding, the overlay rect, and the scroll clamp are shared
-// here so a change to any of them lands in ONE place.
-
-/// Every modal overlay's outer rect (80% × 80%, centered).
-fn modal_rect(area: Rect) -> Rect {
-    centered_rect(80, 80, area)
-}
+// +scrollbar scaffolding is shared here so a change lands in ONE place; the
+// overlay rect itself is `geom::modal_rect` (shared with the hit-test).
 
 /// A bordered modal's inner content width for `area` — two columns for the
 /// left/right borders. Line-list builders wrap to it (joined lists), and
@@ -1788,54 +1783,19 @@ pub(crate) fn draw_palette(
     super::stamp_scrollbar(frame, rect, total, off, view_h, glyphs, t);
 }
 
-/// Draw the `y` yank-prefix which-key menu: a compact box anchored bottom-center
-/// listing each `y<key>` binding. Rows are GENERATED from the `M::Yank` keymap
-/// entries (same source of truth as dispatch + `?` help), so the menu can't
-/// drift from what the keys actually do. The second-key label is prefixed with
-/// the `y` the user already pressed.
+/// Draw the `y` yank-prefix which-key menu into `rect` (precomputed by
+/// [`super::geom::yank_menu_rect`] so the hit-test targets the same box):
+/// a row per `y<key>` binding, GENERATED from the `M::Yank` keymap entries
+/// (same source of truth as dispatch + `?` help). `sel` is the pointer's
+/// highlighted row — reversed like any other selection marker.
 pub(crate) fn draw_yank_menu(
     frame: &mut Frame,
-    area: Rect,
+    rect: Rect,
+    sel: usize,
     glyphs: crate::GlyphMode,
     t: &theme::Theme,
 ) {
-    use crate::action::{ModeKind, BINDINGS};
-    let rows: Vec<Line> = BINDINGS
-        .iter()
-        .filter(|b| b.mode == ModeKind::Yank)
-        .map(|b| {
-            Line::from(vec![
-                Span::styled(
-                    format!("  y{:<3}", b.key_label()),
-                    Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(format!(" {}", b.help)),
-            ])
-        })
-        .collect();
-    if rows.is_empty() {
-        return;
-    }
-    // Size to content: borders + rows, width = longest row + padding, centered
-    // horizontally and hugging the bottom edge (which-key convention).
-    let width = rows
-        .iter()
-        .map(|l| l.width() as u16)
-        .max()
-        .unwrap_or(10)
-        .saturating_add(4)
-        .min(area.width.saturating_sub(2));
-    let height = (rows.len() as u16 + 2).min(area.height);
-    if width < 8 || height < 4 {
-        return;
-    }
-    let rect = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height + 1),
-        width,
-        height,
-    }
-    .intersection(area);
+    use crate::action::yank_bindings;
     let chrome = super::chrome(glyphs);
     frame.render_widget(Clear, rect);
     let block = Block::default()
@@ -1850,6 +1810,140 @@ pub(crate) fn draw_yank_menu(
         ));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
+    let rows: Vec<Line> = yank_bindings()
+        .enumerate()
+        .map(|(i, b)| {
+            let key = Span::styled(
+                format!("  y{:<3}", b.key_label()),
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+            );
+            let help = Span::raw(format!(" {}", b.help));
+            if i == sel {
+                Line::from(vec![
+                    key,
+                    Span::styled(format!(" {}", b.help), Style::default().fg(t.text_bright)),
+                ])
+                .style(selected_style(t))
+            } else {
+                Line::from(vec![key, help])
+            }
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(rows), inner);
+}
+
+/// Dim every buffer cell OUTSIDE `rect`: a style-only pass — `fg` becomes
+/// `text_faint`, glyphs untouched, so ASCII mode loses nothing (screen-spec
+/// §9's "モーダルの外側を暗く"). Runs right before the overlay paints, so the
+/// box itself keeps full colour. One buffer scan per frame while an overlay
+/// is up.
+pub(crate) fn dim_exterior(frame: &mut Frame, except: Rect, t: &theme::Theme) {
+    let buf = frame.buffer_mut();
+    let area = *buf.area();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if except.contains(Position { x, y }) {
+                continue;
+            }
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_fg(t.text_faint);
+            }
+        }
+    }
+}
+
+// ---- node context menu (Issue 06) ------------------------------------------
+
+/// Draw the node context menu into `rect` (precomputed by
+/// [`super::geom::menu_rect`] — the same rect the hit-test routes into):
+/// the target's name as the title, one row per [`MenuEntry`] (labels and key
+/// columns come from the [`MenuState`] snapshot, which was built off
+/// [`BINDINGS`](crate::action::BINDINGS) at open — nothing is re-resolved
+/// here). The selected item row is reversed; separators draw a full-width
+/// chrome rule (the `─`/`-` glyph pair from screen-spec §15).
+pub(crate) fn draw_menu(
+    frame: &mut Frame,
+    rect: Rect,
+    ms: &MenuState,
+    glyphs: crate::GlyphMode,
+    t: &theme::Theme,
+) {
+    let chrome = super::chrome(glyphs);
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(chrome.border)
+        .border_style(Style::default().fg(t.accent).add_modifier(Modifier::BOLD))
+        .title(Line::styled(
+            format!(" {} ", ms.name),
+            Style::default()
+                .fg(t.text_bright)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    // Row layout: `  label<pad>key` — the key column is right-aligned to the
+    // widest key label and dim (like the palette's); the separator is a
+    // rule of chrome glyphs across the inner width.
+    let label_w = ms
+        .items
+        .iter()
+        .map(|e| match e {
+            MenuEntry::Item { label, .. } => label.chars().count(),
+            MenuEntry::Separator => 0,
+        })
+        .max()
+        .unwrap_or(0);
+    let key_w = ms
+        .items
+        .iter()
+        .filter_map(|e| match e {
+            MenuEntry::Item { binding, .. } => Some(
+                crate::action::BINDINGS[*binding]
+                    .key_label()
+                    .chars()
+                    .count(),
+            ),
+            MenuEntry::Separator => None,
+        })
+        .max()
+        .unwrap_or(0);
+    let rows: Vec<Line> = ms
+        .items
+        .iter()
+        .enumerate()
+        .map(|(i, e)| match e {
+            MenuEntry::Separator => Line::styled(
+                chrome.rule.repeat(inner.width as usize),
+                Style::default().fg(t.text_faint),
+            ),
+            MenuEntry::Item { binding, label } => {
+                let selected = i == ms.selected;
+                let base = if selected {
+                    selected_style(t)
+                } else {
+                    Style::default()
+                };
+                let key_base = if selected {
+                    base
+                } else {
+                    Style::default().fg(t.text_dim)
+                };
+                Line::from(vec![
+                    Span::styled(format!("  {label:<label_w$}"), base),
+                    Span::styled("  ", base),
+                    Span::styled(
+                        format!("{:>key_w$}", crate::action::BINDINGS[*binding].key_label()),
+                        key_base,
+                    ),
+                ])
+            }
+        })
+        .collect();
     frame.render_widget(Paragraph::new(rows), inner);
 }
 

@@ -616,3 +616,33 @@ fn issue09_surfaces_are_all_ascii() {
     app.glyph_mode = GlyphMode::Ascii;
     assert_all_ascii(&render(&app, 200, 30), "empty project 200x30");
 }
+
+#[test]
+fn node_menu_overlay_is_all_ascii() {
+    // The `a` context menu: title, item labels, key column, separator rules
+    // and the box border must all stay pure ASCII in Ascii mode.
+    let mut app = ascii_app();
+    apply_action(&mut app, Action::MenuOpen);
+    assert_all_ascii(&render(&app, 100, 40), "node context menu 100x40");
+    assert_all_ascii(&render(&app, 80, 24), "node context menu 80x24");
+}
+
+#[test]
+fn yank_menu_overlay_is_all_ascii() {
+    // The `y` which-key menu (y<key> rows + box) in both sizes.
+    let mut app = ascii_app();
+    apply_action(&mut app, Action::YankPrefix);
+    assert_all_ascii(&render(&app, 100, 40), "yank menu 100x40");
+    assert_all_ascii(&render(&app, 80, 24), "yank menu 80x24");
+}
+
+#[test]
+fn menu_stacked_over_modal_is_all_ascii() {
+    // Nested overlay: menu over the structure modal — underlay + dimming +
+    // top box must introduce no ambiguous-width glyph.
+    let mut app = ascii_app();
+    apply_action(&mut app, Action::DetailOpen);
+    apply_action(&mut app, Action::MenuOpen);
+    assert_all_ascii(&render(&app, 100, 40), "menu over modal 100x40");
+    assert_all_ascii(&render(&app, 80, 24), "menu over modal 80x24");
+}

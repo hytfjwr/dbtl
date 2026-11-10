@@ -22,9 +22,10 @@ pub mod theme;
 
 pub use geom::{
     clamp_inspector_width, clamp_list_width, clip_edges, hit_target, hit_test,
-    lineage_content_rect, minimap_rect, pane_interior, pane_layout, splitter_drag_width, ClipEdges,
-    HitGeometry, HitTarget, PaneConfig, PaneRects, Splitter, DEFAULT_INSPECTOR_WIDTH,
-    DEFAULT_LIST_WIDTH, MIN_INSPECTOR_WIDTH, MIN_LINEAGE_WIDTH, MIN_LIST_WIDTH,
+    lineage_content_rect, menu_rect, minimap_rect, modal_rect, overlay_rect, pane_interior,
+    pane_layout, splitter_drag_width, underlay_mode, yank_menu_rect, ClipEdges, HitGeometry,
+    HitTarget, PaneConfig, PaneRects, Splitter, DEFAULT_INSPECTOR_WIDTH, DEFAULT_LIST_WIDTH,
+    MIN_INSPECTOR_WIDTH, MIN_LINEAGE_WIDTH, MIN_LIST_WIDTH,
 };
 pub use lineage::LayerBand;
 pub use mouse::{mouse_dirty, MouseInput, MouseOutcome, MouseRouter};

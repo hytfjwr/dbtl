@@ -3,8 +3,8 @@
 //! (yank-with-notice, the modal scroll slot, the wrap-around list cycle).
 
 use crate::action::{
-    Action, DetailView, Direction, HelpView, Mode, PaletteRow, PaletteState, SearchState,
-    SearchTarget, SqlView,
+    Action, DetailView, Direction, HelpView, MenuAnchor, MenuEntry, Mode, PaletteRow, PaletteState,
+    SearchState, SearchTarget, SqlView, BINDINGS,
 };
 use crate::effect::Effect;
 use crate::{build_model_list_grouped, reduce_selection, Focus, LineageLens};
@@ -136,7 +136,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
     // of it (a yank, the Esc/q cancel) closes it afterwards. Snapshotting the
     // mode BEFORE the match keeps the close logic in this one place instead of
     // duplicating it into every Yank-mode arm.
-    let in_yank_menu = matches!(app.mode, Mode::Yank);
+    let in_yank_menu = matches!(app.mode, Mode::Yank { .. });
     let outcome = match action {
         Action::Quit => Outcome::quit(),
         // Movement keys are focus-routed: lineage-pane focus moves the lineage
@@ -211,7 +211,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             // payload (cloned from the Dag side maps), so the render layer needs
             // no Dag.
             let root = app.selected_unique_id();
-            let Some(uid) = app.focus_target() else {
+            let Some(uid) = app.pending_or_focus() else {
                 return Outcome::cont();
             };
             // A `+M more` / `-M less` marker under the cursor TOGGLES its
@@ -234,19 +234,28 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             Outcome::cont()
         }
         Action::DetailClose => {
-            app.mode = Mode::Selection;
+            // Esc/q is mode-agnostic on purpose — whichever BINDINGS row named
+            // it, the close restores what the overlay stacked over: the yank
+            // which-key and the node menu carry their origin mode in `back`
+            // (so Structure -> y -> Esc lands back on the structure modal,
+            // not Selection), every other overlay closes to Selection.
+            app.mode = match std::mem::replace(&mut app.mode, Mode::Selection) {
+                Mode::Yank { back, .. } => back.map(|b| *b).unwrap_or(Mode::Selection),
+                Mode::Menu(ms) => ms.back.map(|b| *b).unwrap_or(Mode::Selection),
+                _ => Mode::Selection,
+            };
             Outcome::cont()
         }
         // Open the yank-prefix which-key (`y` + key). The menu itself is
         // rendered from the M::Yank BINDINGS rows; the one-shot close lives in
         // the post-match step at the bottom of this function. Over the Detail
-        // modal BOTH the modal's node and its column target are stashed — the
-        // which-key closes to Selection after any key, so the modal context
-        // must be captured BEFORE the mode swap, or every `y<key>` yank would
-        // silently act on the list selection instead of the modal's node.
-        // (The `y` row exists in Mode::Detail's bindings.)
+        // modal BOTH the modal's node and its column target are stashed — and
+        // the modal itself is stacked into `back` so the which-key's close
+        // RESTORES it instead of landing on Selection (Issue 06) — or every
+        // `y<key>` yank would silently act on the list selection instead of
+        // the modal's node. (The `y` row exists in Mode::Detail's bindings.)
         Action::YankPrefix => {
-            match &app.mode {
+            let back = match std::mem::replace(&mut app.mode, Mode::Selection) {
                 Mode::Detail(dv) => {
                     app.pending_node = Some(dv.model_id.clone());
                     app.pending_col = if dv.col_index != usize::MAX {
@@ -256,13 +265,158 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                     } else {
                         None
                     };
+                    Some(Box::new(Mode::Detail(dv)))
                 }
-                _ => {
+                m => {
                     app.pending_node = None;
                     app.pending_col = None;
+                    match m {
+                        // A non-overlay origin needs no restore slot: closing
+                        // lands on Selection by default anyway.
+                        Mode::Selection | Mode::Search(_) | Mode::Menu(_) => None,
+                        m => Some(Box::new(m)),
+                    }
+                }
+            };
+            app.mode = Mode::Yank { back, sel: 0 };
+            Outcome::cont()
+        }
+        // ---- node context menu (Issue 06) ----
+        // `a` (and the event loop's right-click, which goes through
+        // `App::open_menu` directly) opens the context menu for the CURRENT
+        // node: over a Detail/Sql modal that's the modal's own node (the same
+        // target rule `y` uses), in Selection the focus target. The box's
+        // origin mode rides in `MenuState.back` so Esc/execute restores it.
+        Action::MenuOpen => {
+            match app.menu_uid() {
+                Some(uid) => app.open_menu(&uid, MenuAnchor::Node),
+                None => app.set_notice("nothing to act on"),
+            }
+            Outcome::cont()
+        }
+        Action::MenuMove(dir) => {
+            // j/k walk the ITEM rows only — separators are unselectable. The
+            // cursor wraps at both ends (a menu is a ring, like the yank
+            // prefix's implicit "any key closes" ring of options).
+            if let Mode::Menu(ms) = &mut app.mode {
+                let n = ms.items.len();
+                if n > 0 {
+                    let mut i = ms.selected;
+                    for _ in 0..n {
+                        i = match dir {
+                            Direction::Up => (i + n - 1) % n,
+                            _ => (i + 1) % n,
+                        };
+                        if matches!(ms.items[i], MenuEntry::Item { .. }) {
+                            ms.selected = i;
+                            break;
+                        }
+                    }
                 }
             }
-            app.mode = Mode::Yank;
+            Outcome::cont()
+        }
+        Action::MenuConfirm => {
+            // Enter runs the highlighted row — the same path an item shortcut
+            // or a row double-click takes.
+            let sel = match &app.mode {
+                Mode::Menu(ms) => Some(ms.selected),
+                _ => None,
+            };
+            if let Some(i) = sel {
+                return apply_action(app, Action::MenuInvoke(i));
+            }
+            Outcome::cont()
+        }
+        Action::MenuInvoke(i) => {
+            // Resolve the items-row index to the BINDINGS row it points at —
+            // the action, key and help text all live there, so the menu
+            // literally cannot drift from the keymap. The menu is one-shot
+            // like the which-key: restore the stacked origin mode, retarget
+            // the selection at the menu's node (its execution contract:
+            // items act on the node they were opened for, never on wherever
+            // the selection happened to be), then apply the action itself.
+            let resolved = match &app.mode {
+                Mode::Menu(ms) => match ms.items.get(i) {
+                    Some(MenuEntry::Item { binding, .. }) => Some((
+                        BINDINGS[*binding].action,
+                        ms.back.clone(),
+                        ms.target.clone(),
+                    )),
+                    // A separator row (or a stale index) is inert — the menu
+                    // stays open rather than close on a mis-click.
+                    _ => None,
+                },
+                _ => None,
+            };
+            let Some((action, back, target)) = resolved else {
+                return Outcome::cont();
+            };
+            app.mode = back.map(|b| *b).unwrap_or(Mode::Selection);
+            app.move_selection_to(&target);
+            // Arm the overlay target stash for exactly this dispatch: the
+            // selection move above can't land on a non-model node (the list
+            // holds models only), so every producer that reads the selection
+            // — the yanks, bookmark/path, the editor open, `Enter`/`s` —
+            // must see the MENU's target instead or the item would act on
+            // whatever happened to be selected.
+            app.pending_node = Some(target);
+            let out = apply_action(app, action);
+            app.pending_node = None;
+            return out;
+        }
+        // ---- pointer row actions (Issue 06 mouse) ----
+        // A row click in a row-bearing overlay is a SELECTION first (per the
+        // modal-mouse rule); a double-click then fires the row's execute
+        // action. None of these are key-bound — the event loop produces them.
+        Action::MenuSelect(i) => {
+            // Hover highlight; separators never take the cursor.
+            if let Mode::Menu(ms) = &mut app.mode {
+                if matches!(ms.items.get(i), Some(MenuEntry::Item { .. })) {
+                    ms.selected = i;
+                }
+            }
+            Outcome::cont()
+        }
+        Action::YankPick(i) => {
+            if let Mode::Yank { sel, .. } = &mut app.mode {
+                if i < crate::action::yank_bindings().count() {
+                    *sel = i;
+                }
+            }
+            Outcome::cont()
+        }
+        Action::YankInvoke(i) => {
+            // Run the which-key row's own action through the same dispatch the
+            // key would take — the row IS its binding.
+            if let Some(action) = crate::action::yank_bindings().nth(i).map(|b| b.action) {
+                return apply_action(app, action);
+            }
+            Outcome::cont()
+        }
+        Action::PalettePick(i) => {
+            // `i` indexes the SELECTABLE rows (`palette_selectable_rows` —
+            // headers stripped), the same space `p.selected` and the
+            // confirm/move arms use.
+            let query = match &app.mode {
+                Mode::Palette(p) => p.query.clone(),
+                _ => return Outcome::cont(),
+            };
+            if i < app.palette_selectable_rows(&query).len() {
+                if let Mode::Palette(p) = &mut app.mode {
+                    p.selected = i;
+                }
+            }
+            Outcome::cont()
+        }
+        Action::ColumnPick(i) => {
+            // Same landing rule the j/k cursor follows: headers/separators
+            // (uid == None) are not selectable rows.
+            if let Mode::Columns(cv) = &mut app.mode {
+                if cv.rows.get(i).is_some_and(|r| r.uid.is_some()) {
+                    cv.cursor = i;
+                }
+            }
             Outcome::cont()
         }
         // The structure modal's column cursor (h/l): a SELECTION, not a scroll —
@@ -730,7 +884,10 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             Outcome::cont()
         }
         // ---- effects (performed by the loop, never here) ----
-        Action::OpenEditor => match app.selected_file_path() {
+        Action::OpenEditor => match app
+            .pending_or_selection()
+            .and_then(|uid| app.file_path_for(&uid))
+        {
             Some(path) => Outcome::effect(Effect::OpenEditor(path)),
             None => Outcome::cont(),
         },
@@ -887,9 +1044,11 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         // ---- SQL preview / stats dashboard modals ----
         Action::SqlOpen => {
             // Focus-aware target (`s` previews whatever the lineage cursor is on
-            // when the lineage pane is focused, else the list selection); unlike
-            // `Enter`, `s` only PREVIEWS — it never re-roots.
-            let Some(uid) = app.focus_target() else {
+            // when the lineage pane is focused, else the list selection — an
+            // armed overlay stash wins, so a menu-invoked `s` previews the
+            // MENU's node); unlike `Enter`, `s` only PREVIEWS — it never
+            // re-roots.
+            let Some(uid) = app.pending_or_focus() else {
                 return Outcome::cont();
             };
             // A collapse marker has no SQL — `s` previews nodes, not chrome.
@@ -1057,11 +1216,12 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         }
         // ---- bookmarks + list sort (Step C) — App-level data, so handled here
         // (never reduce_selection, which is UiState-only and can't reach them). ----
-        // Toggle a bookmark on the SELECTED model, regardless of focus: the list
-        // holds only models, so the selection always has a row to draw the badge
-        // on (a lineage-cursor source/seed/snapshot would have no list-row home).
+        // Toggle a bookmark on the SELECTED model, regardless of focus — an
+        // armed overlay stash wins, so a menu-invoked Bookmark toggles the
+        // menu's node (the menu hides this row for non-models anyway). The
+        // list holds only models, so the target always has a badge row.
         Action::BookmarkToggle => {
-            if let Some(uid) = app.selected_unique_id() {
+            if let Some(uid) = app.pending_or_selection() {
                 let name = app.node_name_or_uid(&uid);
                 if app.bookmarks.insert(uid.clone()) {
                     app.set_notice(format!("Bookmarked: {name}"));
@@ -1209,7 +1369,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             if let Some(uid) = app.path_anchor.take() {
                 let name = app.node_name_or_uid(&uid);
                 app.set_notice(format!("path anchor cleared ({name})"));
-            } else if let Some(uid) = app.selected_unique_id() {
+            } else if let Some(uid) = app.pending_or_selection() {
                 let name = app.node_name_or_uid(&uid);
                 app.path_anchor = Some(uid);
                 app.set_notice(format!(
@@ -1227,8 +1387,29 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             Outcome::cont()
         }
     };
-    if in_yank_menu && matches!(app.mode, Mode::Yank) {
-        app.mode = Mode::Selection;
+    if in_yank_menu
+        && !matches!(
+            action,
+            Action::YankPick(_)
+                | Action::DetailScroll(_)
+                | Action::DetailScrollPage(_)
+                | Action::DetailScrollHome
+                | Action::DetailScrollEnd
+        )
+    {
+        // A yank / an unhandled key closes the one-shot which-key: the mode it
+        // stacked over (`back`, e.g. the structure modal) comes back — NOT a
+        // jump to Selection (Issue 06's nested-overlay rule). Two gestures are
+        // exempt: `YankPick` (a pointer hover/row click only moves the
+        // highlight) and the DetailScroll family (a wheel over the which-key
+        // is a no-op — the menu has no scroll slot — and must not dismiss it).
+        if let Mode::Yank { back, .. } = &mut app.mode {
+            if let Some(back) = back.take() {
+                app.mode = *back;
+            } else {
+                app.mode = Mode::Selection;
+            }
+        }
     }
     // The yank stashes live only while the which-key is open — that INCLUDES
     // a `?` help layer sitting on top of it (`Help` whose `back` is `Yank`):
@@ -1238,9 +1419,10 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
     // Esc/q cancel — drops the modal context, so a stale
     // `pending_node`/`pending_col` can never leak into a later yank (both
     // are also rewritten on every `y` press; this just closes the stale-read
-    // window after a cancel).
-    let yank_still_open = matches!(app.mode, Mode::Yank)
-        || matches!(&app.mode, Mode::Help(h) if matches!(h.back.as_ref(), Mode::Yank));
+    // window after a cancel). `MenuInvoke` arms `pending_node` for its own
+    // dispatch window and clears it right after, so it never reaches here.
+    let yank_still_open = matches!(app.mode, Mode::Yank { .. })
+        || matches!(&app.mode, Mode::Help(h) if matches!(h.back.as_ref(), Mode::Yank { .. }));
     if !yank_still_open {
         app.pending_col = None;
         app.pending_node = None;

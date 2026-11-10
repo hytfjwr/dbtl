@@ -33,7 +33,10 @@ use std::rc::Rc;
 
 use anyhow::Result;
 
-use crate::action::{Mode, NoticeLevel, NotificationEntry, NotificationsView, SearchTarget};
+use crate::action::{
+    menu_slot_label, menu_slot_mark, MenuAnchor, MenuEntry, MenuSlot, MenuState, Mode, NoticeLevel,
+    NotificationEntry, NotificationsView, SearchTarget, NODE_MENU_LAYOUT,
+};
 use crate::effect::Effect;
 use crate::ui::theme::{self, Theme};
 use crate::{
@@ -330,10 +333,14 @@ pub struct App {
     /// `Action::YankPrefix` (the menu's entry point) and cleared the moment
     /// the menu closes, so it can never be consumed stale.
     pub(super) pending_col: Option<ColumnRef>,
-    /// The structure modal's `model_id`, stashed the same way — what every
-    /// OTHER `y`-menu yank (`yy`/`yY`/`yC`/`ym`/…) targets instead of the
-    /// list selection. Without it a yank dispatched over the modal would
-    /// silently copy the *selected* node's data, not the modal's.
+    /// The armed overlay target (`unique_id`), stashed the same way — what
+    /// every OTHER `y`-menu yank (`yy`/`yY`/`yC`/`ym`/…) targets instead of
+    /// the list selection, AND what a node-menu invoke targets while its
+    /// action dispatch runs (`MenuInvoke` arms it for just that window).
+    /// Without it a yank dispatched over the modal — or a menu item fired
+    /// on a node the selection can't land on — would silently copy the
+    /// *selected* node's data, not the target's. See
+    /// [`pending_or_selection`](App::pending_or_selection).
     pub(super) pending_node: Option<String>,
     /// The `p`-anchored path start (`unique_id`): while set, the lineage path
     /// highlight runs anchor↔cursor instead of root↔cursor — the two-node
@@ -959,18 +966,176 @@ impl App {
         self.selected_node().map(|n| n.unique_id.clone())
     }
 
+    /// The armed overlay target (`pending_node`) preferred over the list
+    /// selection. `pending_node` is armed ONLY for the duration an overlay
+    /// owns the action stream — `Mode::Yank`'s modal stash and the node
+    /// menu's invoke dispatch window — so selection-scoped actions (the
+    /// `y` yanks, bookmark, path anchor, editor open) must consult it or a
+    /// node the selection can never land on (a source/seed/snapshot: the
+    /// list holds models only) would silently act on the selected model
+    /// instead. It can never be read stale: `Mode::Yank`'s close clears it
+    /// and `MenuInvoke` clears it right after the apply.
+    pub(super) fn pending_or_selection(&self) -> Option<String> {
+        self.pending_node
+            .clone()
+            .or_else(|| self.selected_unique_id())
+    }
+
     /// The `unique_id` a `y`-menu yank should act on: the structure modal's
     /// node (`pending_node`, stashed when `y` opened the menu over the modal)
-    /// preferred over the list selection — ONLY while `Mode::Yank` is live;
-    /// the fields are cleared the moment the menu closes, so a single-key
-    /// yank outside the menu keeps the selection semantics.
+    /// preferred over the list selection.
     pub(super) fn yank_target_uid(&self) -> Option<String> {
-        if matches!(self.mode, Mode::Yank) {
-            self.pending_node
-                .clone()
-                .or_else(|| self.selected_unique_id())
+        self.pending_or_selection()
+    }
+
+    /// The uid the open/preview actions (`Enter`/`s`) should act on: the
+    /// armed overlay stash preferred over the focus target (lineage cursor
+    /// under right-pane focus, else the list selection). A menu opened on a
+    /// non-model node arms `pending_node` because `reroot_select` can't land
+    /// on it — without the stash the modal would open for the wrong node.
+    pub(super) fn pending_or_focus(&self) -> Option<String> {
+        self.pending_node.clone().or_else(|| self.focus_target())
+    }
+
+    // ---- node context menu (Issue 06) -------------------------------------
+
+    /// The `unique_id` the `a` key's node menu acts on: over the structure /
+    /// SQL modal the modal's own node (same rule `y` uses); in Selection the
+    /// focus target (the lineage cursor under right-pane focus, else the
+    /// list selection).
+    fn menu_uid(&self) -> Option<String> {
+        match &self.mode {
+            Mode::Detail(dv) => Some(dv.model_id.clone()),
+            Mode::Sql(sv) => Some(sv.model_id.clone()),
+            _ => self.focus_target(),
+        }
+    }
+
+    /// Which menu items are usable for `uid`: SQL preview only when the node
+    /// actually has SQL (a source has none — screen-spec §9's "unsupported
+    /// actions are omitted"; a seed's EMPTY `raw_code` preview would open a
+    /// blank modal, so blank counts as unavailable too), the editor row only
+    /// when the node has a file path, and Bookmark only for models — the
+    /// badge lives on a list row, which non-models don't have. Everything
+    /// else is universal.
+    fn menu_item_available(&self, uid: &str, action: crate::Action) -> bool {
+        match action {
+            crate::Action::SqlOpen | crate::Action::YankSql => self
+                .dag
+                .raw_code(uid)
+                .is_some_and(|code| !code.trim().is_empty()),
+            crate::Action::BookmarkToggle => self
+                .dag
+                .get(uid)
+                .is_some_and(|n| n.resource_type == "model"),
+            crate::Action::OpenEditor => self
+                .dag
+                .detail(uid)
+                .and_then(|d| d.original_file_path.as_deref())
+                .is_some(),
+            _ => true,
+        }
+    }
+
+    /// The menu rows for `uid`, generated from [`NODE_MENU_LAYOUT`]: every
+    /// item slot resolves to the `(mode, action)` [`BINDINGS`] row it names
+    /// (the action + key label + triggers all live there), separators are
+    /// kept only between surviving groups (no leading/trailing/double rules),
+    /// and unavailable items drop out first. An `uid` outside the Dag (a
+    /// `+N more` marker, a stale target) yields an empty list — `open_menu`
+    /// turns that into a notice instead of an empty box.
+    pub fn menu_entries(&self, uid: &str) -> Vec<MenuEntry> {
+        if !self.dag.contains(uid) {
+            return Vec::new();
+        }
+        // `Re-root here` is honest only when Enter would actually re-root —
+        // the target is a MODEL that isn't already the re-rooted node. On a
+        // non-model (or the root itself) `DetailOpen` opens the structure
+        // view instead, so the label says that.
+        let re_roots = self.selected_unique_id().as_deref() != Some(uid)
+            && self
+                .dag
+                .get(uid)
+                .is_some_and(|n| n.resource_type == "model");
+        let mut entries: Vec<MenuEntry> = Vec::new();
+        for slot in NODE_MENU_LAYOUT {
+            match slot {
+                MenuSlot::Separator => {
+                    if matches!(entries.last(), Some(MenuEntry::Item { .. })) {
+                        entries.push(MenuEntry::Separator);
+                    }
+                }
+                MenuSlot::Item(mode, action) => {
+                    if !self.menu_item_available(uid, *action) {
+                        continue;
+                    }
+                    let Some(binding) = crate::action::BINDINGS
+                        .iter()
+                        .position(|b| b.mode == *mode && b.action == *action)
+                    else {
+                        continue; // layout slot names a missing row — see tests
+                    };
+                    let label = menu_slot_label(menu_slot_mark(*action), re_roots);
+                    entries.push(MenuEntry::Item { binding, label });
+                }
+            }
+        }
+        // A trailing separator left by a fully-filtered final group.
+        if matches!(entries.last(), Some(MenuEntry::Separator)) {
+            entries.pop();
+        }
+        entries
+    }
+
+    /// Open the node context menu over `uid` at `anchor`: the rows come from
+    /// [`menu_entries`](Self::menu_entries) and the box's Esc/execute returns
+    /// to whatever mode was live (a modal stays its own `back` — the same
+    /// nested-restore mechanism `Mode::Yank` carries).
+    pub fn open_menu(&mut self, uid: &str, anchor: MenuAnchor) {
+        let items = self.menu_entries(uid);
+        if items.is_empty() {
+            self.set_notice("no actions for this node");
+            return;
+        }
+        let name = self.node_name_or_uid(uid).to_string();
+        let selected = items
+            .iter()
+            .position(|e| matches!(e, MenuEntry::Item { .. }))
+            .unwrap_or(0);
+        let back = match std::mem::replace(&mut self.mode, Mode::Selection) {
+            Mode::Yank { back, .. } => back, // re-open keeps the outer destination
+            Mode::Selection | Mode::Search(_) | Mode::Menu(_) => None,
+            m => Some(Box::new(m)),
+        };
+        self.mode = Mode::Menu(MenuState {
+            target: uid.to_string(),
+            name,
+            items,
+            selected,
+            back,
+            anchor,
+        });
+    }
+
+    /// A right-click opens the node menu for the clicked node — the same
+    /// open path `a` uses, with the pointer cell as the anchor.
+    fn open_menu_for(&mut self, uid: &str, col: u16, row: u16) {
+        self.open_menu(uid, MenuAnchor::Cell { col, row });
+    }
+
+    /// Move the selection/cursor to `uid` (the menu's execution contract:
+    /// act on the item's node, not wherever the selection happened to be).
+    /// Right-pane focus means "the lineage cursor" — a node absent from the
+    /// current subgraph can't take the cursor, so it re-roots instead; list
+    /// focus means the list selection (`reroot_select`, the shared land-on
+    /// path).
+    pub(crate) fn move_selection_to(&mut self, uid: &str) {
+        if self.ui_state.focus() == crate::ui::Focus::RightPane
+            && self.lineage_display_subgraph().contains(uid)
+        {
+            self.click_lineage_node(uid);
         } else {
-            self.selected_unique_id()
+            self.reroot_select(uid);
         }
     }
 
@@ -1009,18 +1174,16 @@ impl App {
             .unwrap_or_else(|| uid.to_string())
     }
 
-    /// The selected model's SQL file path, resolved against the project root
-    /// (`<root>/<original_file_path>`). `None` if nothing is selected, the node
-    /// has no recorded file path, or the recorded path would escape the
-    /// project root.
-    pub fn selected_file_path(&self) -> Option<String> {
-        let uid = self.selected_node()?.unique_id.clone();
-        let ofp = self.dag.detail(&uid)?.original_file_path.clone()?;
-        // `original_file_path` comes from an untrusted manifest.json: a crafted
-        // value (absolute, or with a `..` component) would point the `o`
-        // editor jump at an arbitrary file outside the project. Lexical check
-        // on purpose — `canonicalize` fails on not-yet-existing files, and a
-        // plain relative path must keep resolving exactly as before.
+    /// `uid`'s declaring file path, resolved against the project root
+    /// (`<root>/<original_file_path>`). `None` when the node has no recorded
+    /// file path or the recorded path would escape the project root:
+    /// `original_file_path` comes from an untrusted manifest.json — a crafted
+    /// value (absolute, or with a `..` component) would point the `o` editor
+    /// jump at an arbitrary file outside the project. Lexical check on
+    /// purpose — `canonicalize` fails on not-yet-existing files, and a plain
+    /// relative path must keep resolving exactly as before.
+    pub fn file_path_for(&self, uid: &str) -> Option<String> {
+        let ofp = self.dag.detail(uid)?.original_file_path.clone()?;
         let rel = Path::new(&ofp);
         if rel
             .components()
@@ -1029,6 +1192,13 @@ impl App {
             return None;
         }
         Some(self.project_root.join(rel).to_string_lossy().into_owned())
+    }
+
+    /// The selected model's SQL file path — [`file_path_for`] on the
+    /// selection. `None` if nothing is selected.
+    pub fn selected_file_path(&self) -> Option<String> {
+        self.selected_unique_id()
+            .and_then(|uid| self.file_path_for(&uid))
     }
 
     /// The list currently driving the left pane: the search view if a search

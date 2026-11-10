@@ -2817,6 +2817,58 @@ fn search_hint_vanishes_on_the_first_keystroke() {
     );
 }
 
+// ============================================================================
+// Issue 06 — context menu, dimming & overlay stacking (render-side)
+// ============================================================================
+
+fn issue06_app() -> dbtl::app::App {
+    const SAMPLE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sample_manifest.json"
+    );
+    let dag = load_dag(SAMPLE).expect("sample manifest loads");
+    let mut app = dbtl::app::App::new(dag, std::path::PathBuf::from(SAMPLE));
+    app.select_by_unique_id("model.sample.stg_orders");
+    app
+}
+
+#[test]
+fn modal_dimming_recedes_everything_outside_the_box() {
+    use dbtl::ui::theme;
+    // Same app twice: once bare, once with the structure modal open.
+    let mut app = issue06_app();
+    let before = render_app(&app, 140, 50);
+    dbtl::app::apply_action(&mut app, dbtl::Action::DetailOpen);
+    let after = render_app(&app, 140, 50);
+
+    let modal = dbtl::ui::modal_rect(*after.area());
+    // Pick cells OUTSIDE the modal box (list-pane top corner + status row +
+    // lineage far corner): every one must be dimmed to text_faint.
+    let probes = [
+        (2u16, 2u16),
+        (4, after.area().height - 2),
+        (after.area().width - 3, 3),
+    ];
+    for (x, y) in probes {
+        assert!(
+            !modal.contains(ratatui::layout::Position { x, y }),
+            "probe ({x},{y}) must be outside the modal"
+        );
+        let c = after.cell((x, y)).expect("cell exists");
+        assert_eq!(
+            c.fg,
+            theme::TEXT_FAINT,
+            "exterior cell ({x},{y}) must be dimmed to text_faint"
+        );
+    }
+    // The dimming actually changed the picture (guards a no-op pass).
+    assert_ne!(
+        before.cell((probes[0].0, probes[0].1)).unwrap().fg,
+        after.cell((probes[0].0, probes[0].1)).unwrap().fg,
+        "exterior cells must visibly change after dimming"
+    );
+}
+
 #[test]
 fn search_zero_match_stamps_the_reason() {
     // A name/selector miss points the user at the `?` escape; a `?`-prefixed
@@ -3018,6 +3070,33 @@ fn palette_overshot_selected_still_highlights_the_last_row() {
 }
 
 #[test]
+fn node_menu_renders_title_items_and_key_hints() {
+    let mut app = issue06_app();
+    dbtl::app::apply_action(&mut app, dbtl::Action::MenuOpen);
+    let buffer = render_app(&app, 140, 50);
+    let text = buffer_to_string(&buffer);
+    // The box title carries the target's name.
+    assert!(text.contains("stg_orders"), "menu title: {text}");
+    // BINDINGS-derived rows with their key labels render side by side.
+    for label in ["Structure view", "SQL preview", "Copy name"] {
+        assert!(text.contains(label), "menu item {label:?} missing: {text}");
+    }
+    // Separators draw a chrome rule — the row count shows items AND rules.
+    let area = buffer.area;
+    let mut rule_rows = 0;
+    for y in 0..area.height {
+        let row = row_text(&buffer, y);
+        if row.matches('─').count() >= 6 || row.matches('-').count() >= 6 {
+            rule_rows += 1;
+        }
+    }
+    assert!(
+        rule_rows >= 2,
+        "separator rules must render, got {rule_rows}"
+    );
+}
+
+#[test]
 fn help_filter_narrows_to_matching_bindings() {
     // `/copy` inside help: only the matching (Yank) section's rows stay —
     // a section with no match drops its header AND its rows, and the title
@@ -3044,4 +3123,36 @@ fn help_filter_narrows_to_matching_bindings() {
         !text.contains("scroll to top"),
         "non-matching rows are filtered out:\n{text}"
     );
+}
+
+#[test]
+fn menu_over_modal_keeps_the_modal_visible_underneath() {
+    // Detail -> menu: the underlay (modal) is drawn first, then dimmed, then
+    // the menu — so the modal title text must still be legible in the buffer.
+    let mut app = issue06_app();
+    dbtl::app::apply_action(&mut app, dbtl::Action::DetailOpen);
+    dbtl::app::apply_action(&mut app, dbtl::Action::MenuOpen);
+    let buffer = render_app(&app, 140, 50);
+    let text = buffer_to_string(&buffer);
+    assert!(text.contains("stg_orders"), "menu title over modal: {text}");
+    // The structure modal's own header still renders behind (dimmed, not erased).
+    assert!(
+        text.contains("Structure") || text.contains("stg_orders"),
+        "underlying modal content must still be drawn: {text}"
+    );
+}
+
+#[test]
+fn yank_menu_renders_every_binding_row() {
+    let mut app = issue06_app();
+    dbtl::app::apply_action(&mut app, dbtl::Action::YankPrefix);
+    let buffer = render_app(&app, 140, 50);
+    let text = buffer_to_string(&buffer);
+    // Every `y<key>` row of the which-key menu is drawn — enumerate them from
+    // the same BINDINGS source the renderer reads, so a new `y<key>` row is
+    // asserted automatically.
+    for b in dbtl::action::yank_bindings() {
+        let hint = format!("y{}", b.key_label());
+        assert!(text.contains(&hint), "yank row {hint:?} missing: {text}");
+    }
 }

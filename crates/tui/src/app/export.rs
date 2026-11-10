@@ -16,7 +16,7 @@ impl App {
     /// lives only while `Mode::Yank` is up, so this can't leak into a
     /// Selection-mode export (the `e` write / the docs yank path).
     fn yank_subgraph(&self) -> Subgraph {
-        if matches!(self.mode, Mode::Yank) {
+        if matches!(self.mode, Mode::Yank { .. }) {
             if let Some(uid) = &self.pending_node {
                 let v = &self.lineage_view;
                 return self
