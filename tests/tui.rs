@@ -1248,6 +1248,7 @@ fn status_bar_keeps_protected_core_and_appends_segments() {
         ctx.mode = &app.mode;
         ctx.segments = StatusSegments {
             impact: None,
+            column: None,
             focus: Some("list"),
             view: None,
             position: Some(pos.as_str()),
@@ -1288,6 +1289,7 @@ fn status_bar_drops_segments_but_never_the_core_on_a_narrow_line() {
         let mut ctx = RenderCtx::new(&list, &state, None);
         ctx.segments = StatusSegments {
             impact: None,
+            column: None,
             focus: Some("list"),
             view: None,
             position: Some("1/45"),
@@ -1335,6 +1337,7 @@ fn status_segments_render_at_80_cols() {
         ctx.status = status_note.as_deref();
         ctx.segments = StatusSegments {
             impact: None,
+            column: None,
             focus: Some("list"),
             view: None,
             position: Some("1/45"),
@@ -1385,6 +1388,7 @@ fn status_impact_segment_renders_and_survives_narrowest_droppable_line() {
         let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, None);
         ctx.segments = StatusSegments {
             impact: Some(impact.as_str()),
+            column: None,
             focus: Some("list"),
             view: Some("↑"),
             position: Some("3/45"),
@@ -1415,6 +1419,7 @@ fn status_impact_segment_renders_and_survives_narrowest_droppable_line() {
         let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, None);
         ctx.segments = StatusSegments {
             impact: Some(impact.as_str()),
+            column: None,
             focus: Some("list"),
             view: Some("↑"),
             position: Some("3/45"),
@@ -1461,6 +1466,7 @@ fn status_impact_segment_uses_ascii_badges_in_ascii_mode() {
         ctx.glyphs = GlyphMode::Ascii;
         ctx.segments = StatusSegments {
             impact: Some(impact.as_str()),
+            column: None,
             ..StatusSegments::default()
         };
         terminal.draw(|frame| draw(frame, &ctx)).expect("render");
@@ -1528,6 +1534,10 @@ fn render_app(app: &dbtl::app::App, width: u16, height: u16) -> Buffer {
     // The SAME memoized producer the event loop draws from, so the test
     // exercises the production pipeline (cache key -> styles -> layout).
     let lineage = app.styled_lineage_layout();
+    // The column-focus surfaces exactly as the event loop wires them (None
+    // outside a trace — both simply omit then).
+    let column_s = app.column_status();
+    let col_suffix = app.column_focus_label();
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
     {
@@ -1535,6 +1545,11 @@ fn render_app(app: &dbtl::app::App, width: u16, height: u16) -> Buffer {
         ctx.mode = &app.mode;
         ctx.glyphs = app.glyph_mode;
         ctx.minimap = app.ui_state.minimap_visible();
+        ctx.col_suffix = col_suffix.as_deref();
+        ctx.segments = dbtl::ui::StatusSegments {
+            column: column_s.as_deref(),
+            ..Default::default()
+        };
         terminal
             .draw(|frame| draw(frame, &ctx))
             .expect("draw must not panic");
@@ -2174,5 +2189,125 @@ fn status_diff_chip_renders_with_counts() {
     assert!(
         text.contains("[diff +2 ~1 -3]"),
         "diff chip rendered: {text}"
+    );
+}
+
+// ============================================================================
+// Column-level lineage (Issue 09): focus view, status chip, title suffix,
+// column modal — rendered through the real draw() pipeline.
+// ============================================================================
+
+/// The CLL-demo fixture: `raw.orders → stg_orders → fct_orders → cll_demo`.
+fn cll_sample_app() -> dbtl::app::App {
+    const SAMPLE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sample_manifest.json"
+    );
+    let dag = load_dag(SAMPLE).expect("sample fixture loads");
+    dbtl::app::App::new(dag, std::path::PathBuf::from(SAMPLE))
+}
+
+/// Enter column focus on `cll_demo.order_id` through the real gesture path:
+/// select the model, open its structure modal, move the column cursor off the
+/// first inferred column, and commit with the focus action.
+fn focus_order_id(app: &mut dbtl::app::App) {
+    use dbtl::app::apply_action;
+    use dbtl::Action;
+    app.select_by_unique_id("model.sample.cll_demo");
+    apply_action(app, Action::DetailOpen);
+    // col_names[0] is "n_orders" (sorted); one h/l step lands on "order_id".
+    apply_action(app, Action::DetailColumnMove(dbtl::Direction::Down));
+    apply_action(app, Action::ColumnFocusEnter);
+    assert!(app.column_status().is_some(), "the focus engaged");
+}
+
+/// Mirror the loop's re-anchor on `ColumnFocusEnter`: centre the traced
+/// model's box in a `w x h` frame (the event loop does this via `force_anchor`
+/// + `anchor_lineage` — the test harness owns its own scroll state).
+fn anchor_on_traced(app: &mut dbtl::app::App, w: u16, h: u16) {
+    let lay = app.styled_lineage_layout().expect("focused layout");
+    let area = ratatui::layout::Rect::new(0, 0, w, h);
+    let inner = dbtl::ui::pane_interior(dbtl::ui::pane_rects(area, true).lineage);
+    app.ui_state.anchor_lineage(
+        lay.selected_rect,
+        &lay.grid,
+        inner.width as usize,
+        inner.height as usize,
+    );
+}
+
+#[test]
+fn column_focus_draws_column_rows_status_chip_and_title_suffix() {
+    // The focused lineage: each box lists the trace's columns with edge-kind
+    // marks (`>` the traced column), the status chip reads
+    // `column:model.col ↑N ↓M`, and the lineage title carries ` [col:name]`.
+    // Exercised at the two canonical sizes.
+    let mut app = cll_sample_app();
+    focus_order_id(&mut app);
+    for (w, h) in [(80u16, 24u16), (100, 30)] {
+        anchor_on_traced(&mut app, w, h);
+        let buffer = render_app(&app, w, h);
+        let text = buffer_to_string(&buffer);
+        assert!(
+            text.contains("> order_id"),
+            "{w}x{h}: traced column row inside cll_demo's box: {text}"
+        );
+        assert!(
+            text.contains("~ id") || text.contains("% id"),
+            "{w}x{h}: an upstream column row inside a parent box: {text}"
+        );
+        // The status chip and title suffix (composed into the title's suffix
+        // slot — `[lens]` stays empty under the Off lens, so `[col:` rides it).
+        assert!(
+            text.contains("column:cll_demo.order_id"),
+            "{w}x{h}: the column chip renders: {text}"
+        );
+        assert!(
+            text.contains("[col:order_id]"),
+            "{w}x{h}: the title suffix names the column: {text}"
+        );
+    }
+}
+
+#[test]
+fn columns_modal_renders_the_trace_tree_and_its_cursor() {
+    // `K` over an active focus opens the column modal: section headers, the
+    // traced column's row (the cursor), and upstream/downstream entries.
+    use dbtl::app::apply_action;
+    use dbtl::Action;
+    let mut app = cll_sample_app();
+    focus_order_id(&mut app);
+    apply_action(&mut app, Action::ColumnsOpen);
+    let buffer = render_app(&app, 100, 30);
+    let text = buffer_to_string(&buffer);
+    for needle in [
+        "Column lineage - cll_demo.order_id",
+        "upstream (",
+        "this column:",
+        "stg_orders.id",
+        "Enter jump",
+    ] {
+        assert!(
+            text.contains(needle),
+            "columns modal shows {needle:?}: {text}"
+        );
+    }
+}
+
+#[test]
+fn column_focus_esc_returns_to_the_rooted_render() {
+    use dbtl::app::apply_action;
+    use dbtl::Action;
+    let mut app = cll_sample_app();
+    focus_order_id(&mut app);
+    apply_action(&mut app, Action::ColumnFocusExit);
+    let text = buffer_to_string(&render_app(&app, 80, 24));
+    assert!(
+        !text.contains("> order_id"),
+        "the column rows are gone after Esc: {text}"
+    );
+    assert!(
+        !text.contains("column:cll_demo.order_id"),
+        "the chip is gone after Esc: {text}"
     );
 }

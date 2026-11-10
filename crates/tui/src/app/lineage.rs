@@ -20,9 +20,15 @@ impl App {
     }
 
     /// The lineage cursor's `unique_id`: the stored cursor if it is still a
-    /// member of the current subgraph, else the rooted selection (the cursor's
-    /// home position — also covers a cursor dropped by a direction/depth
-    /// change). `None` only when nothing is selected.
+    /// member of the current subgraph, else the SUBGRAPH's own root (the
+    /// cursor's home position — also covers a cursor dropped by a
+    /// direction/depth change). `None` only when nothing is selected.
+    ///
+    /// The home comes from `sg.selected` rather than the list selection so a
+    /// column-focus graph homes the cursor to the TRACED model — the list
+    /// selection may sit outside the filtered graph and is never a valid
+    /// home there. For a normal rooted subgraph `sg.selected` IS the
+    /// selection, so existing behaviour is unchanged.
     pub fn lineage_cursor_uid(&self) -> Option<String> {
         let sg = self.subgraph_rc();
         if let Some(cur) = &self.lineage_cursor {
@@ -30,7 +36,11 @@ impl App {
                 return Some(cur.clone());
             }
         }
-        self.selected_unique_id()
+        if sg.selected.is_empty() {
+            self.selected_unique_id()
+        } else {
+            Some(sg.selected.clone())
+        }
     }
 
     /// Send the lineage cursor home (back to the rooted selection). Called by

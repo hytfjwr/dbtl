@@ -6,9 +6,9 @@
 //! maps, NOT against CharGrid text, which would false-positive on shared
 //! prefixes like `stg_payment__suppliers` vs `…supplier_departments`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::Subgraph;
+use crate::{ColumnEdgeKind, Subgraph};
 
 /// Which glyph repertoire the lineage grid (and the surrounding UI chrome) is
 /// drawn with.
@@ -188,6 +188,51 @@ pub enum LensTint {
     RunWarn,
     /// RunStatus lens: the node's last run was `skipped` (muted).
     RunSkip,
+    /// Column-impact lens (Issue 09): a node on the traced column's DOWNSTREAM
+    /// blast radius — gold, the "this column reaches it" answer.
+    ColumnImpact,
+}
+
+/// One column row inside a node box (the column-focus view): the related
+/// column's normalized name, the edge KIND that produced it within the traced
+/// set (the 1-cell mark resolves against the CURRENT glyph mode at draw time
+/// — `>` for the traced column overrides it), and two flags driving the row's
+/// own render attr — `faint` dims it (the column's column edges never saw an
+/// [`crate::Confidence::Exact`] link, so the row is an inferred name) and
+/// `target` paints the on-path band (this row IS the traced column).
+/// `Eq`-safe plain data: computed Dag-side, consumed Dag-free here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColLine {
+    /// The column's normalized name (the text after the mark).
+    pub name: String,
+    /// The heaviest edge kind incident to the column — kept as the KIND, not
+    /// a baked char, so a glyph-mode change re-resolves the mark glyph.
+    pub kind: ColumnEdgeKind,
+    /// Dim the row (inferred-only provenance).
+    pub faint: bool,
+    /// The traced column — painted with the on-path band + the `>` mark.
+    pub target: bool,
+}
+
+impl ColLine {
+    /// The 1-cell row mark in `mode`: `>` for the traced column, else the
+    /// edge-kind glyph — `·` passthrough is East-Asian Ambiguous (width varies
+    /// by terminal), so ASCII mode draws `-` instead; every other mark is
+    /// already plain ASCII.
+    fn mark(&self, mode: GlyphMode) -> char {
+        if self.target {
+            return '>';
+        }
+        match self.kind {
+            ColumnEdgeKind::Passthrough => match mode {
+                GlyphMode::Unicode => '·',
+                GlyphMode::Ascii => '-',
+            },
+            ColumnEdgeKind::FilterOrJoin => '%',
+            ColumnEdgeKind::Rename => '~',
+            ColumnEdgeKind::Transform => '*',
+        }
+    }
 }
 
 /// Per-cell render attributes, orthogonal to the char and the emphasis flag:
@@ -215,9 +260,10 @@ pub struct CellAttr {
 }
 
 /// A node's placement rectangle on the [`CharGrid`]: the full BOX rect (3 rows
-/// in [`Density::Comfortable`], 1 row in [`Density::Compact`]). Consumed by the
-/// non-intersection check, viewport anchoring/follow (which shows the whole
-/// box via `height`), and the mouse hit-test.
+/// plus one per [`ColLine`] in [`Density::Comfortable`], 1 row in
+/// [`Density::Compact`]). Consumed by the non-intersection check, viewport
+/// anchoring/follow (which shows the whole box via `height`), and the mouse
+/// hit-test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NodeRect {
     /// Left cell x (inclusive).
@@ -226,7 +272,7 @@ pub struct NodeRect {
     pub y: usize,
     /// Number of cells wide (== label char count).
     pub width: usize,
-    /// Number of cells tall (always 1 here).
+    /// Number of cells tall.
     pub height: usize,
 }
 
@@ -408,6 +454,13 @@ pub struct Layout {
     /// (Layout::apply_edge_styles) re-style a specific edge's run without the
     /// renderer re-deriving connector routes.
     pub edge_cells: HashMap<(String, String), Vec<(usize, usize)>>,
+    /// The interior cells of column rows (the column-focus view's per-column
+    /// text lines inside node boxes), where [`draw_box`] stamped per-ROW attrs
+    /// (`faint`/`target` from [`ColLine`]). [`apply_node_styles`] skips these
+    /// cells so a node's box-level attr never flattens a column row's own
+    /// styling. Empty whenever no column rows were drawn (every non-focus
+    /// layout — the skip is then a no-op and styling is byte-identical).
+    pub col_cells: HashSet<(usize, usize)>,
 }
 
 impl Layout {
@@ -422,6 +475,12 @@ impl Layout {
             if let Some(&rect) = self.rects.get(uid) {
                 for dy in 0..rect.height {
                     for dx in 0..rect.width {
+                        // Column-row interiors keep their per-ROW attr (faint /
+                        // target, stamped by `draw_box`); the box-level node
+                        // attr must not flatten them.
+                        if self.col_cells.contains(&(rect.x + dx, rect.y + dy)) {
+                            continue;
+                        }
                         self.grid.set_attr(rect.x + dx, rect.y + dy, *attr);
                     }
                 }
@@ -520,6 +579,17 @@ fn box_width_of_density(node: &crate::NodeInfo, density: Density) -> usize {
     }
 }
 
+/// The minimum box width a node's column rows demand: the interior is
+/// `{mark} {name}` (a 2-cell prefix + the widest related column name) plus the
+/// two side borders. `0` when the node has no column rows — every
+/// non-column-focus layout then gets the classic widths, byte-identical.
+fn col_width_of(cols: &[ColLine]) -> usize {
+    cols.iter()
+        .map(|c| c.name.chars().count())
+        .max()
+        .map_or(0, |w| w + 4)
+}
+
 /// Stamp a node's COMPACT representation: a single `│name│` row (the side
 /// borders in `g`'s glyph set). Only the name cells carry the emphasis flag,
 /// so the emphasis region spells exactly the node's name — the same contract
@@ -538,20 +608,45 @@ fn draw_compact_box(grid: &mut CharGrid, g: &BoxGlyphs, rect: NodeRect, label: &
     }
 }
 
-/// Stamp a node's box into the grid: a 3-row box (in `g`'s glyph set) with the
-/// materialization tag embedded in the top border, the single-line label on the
-/// middle row, and the optional `tests:N` label right-aligned in the bottom
-/// border. Only the LABEL cells carry the emphasis flag, so the emphasis region
-/// spells exactly the node's name.
+/// The per-box text payload [`draw_box`] stamps: the label row, the top-border
+/// tag, the bottom-border `tests:N` label, and the related-column rows
+/// ([`ColLine`]s — empty for every non-column-focus layout, the classic shape).
+struct BoxBody<'a> {
+    label: &'a str,
+    tag: &'a str,
+    tests: Option<&'a str>,
+    cols: &'a [ColLine],
+}
+
+/// Stamp a node's box into the grid: a `3 + body.cols.len()`-row box (in `g`'s
+/// glyph set) with the materialization tag embedded in the top border, the
+/// single-line label on the second row, one `│{mark} {name}…│` row per
+/// [`ColLine`] under it (empty for every non-column-focus layout — the box is
+/// then the classic 3-row shape, byte-identical), and the optional `tests:N`
+/// label right-aligned in the bottom border. Only the LABEL cells carry the
+/// emphasis flag, so the emphasis region spells exactly the node's name.
+///
+/// Each column row's INTERIOR cells are recorded in `col_cells` and stamped
+/// with the row's own attr (`faint` → dimmed, `target` → the on-path band) at
+/// draw time; [`Layout::apply_node_styles`] skips them so the box-level node
+/// attr (class / lens / focus dim) never flattens a row's own styling. The
+/// rows' SIDE borders stay un-recorded, so they inherit the node's class colour
+/// like every other border cell.
 fn draw_box(
     grid: &mut CharGrid,
     g: &BoxGlyphs,
+    mode: GlyphMode,
     rect: NodeRect,
-    label: &str,
-    tag: &str,
-    tests: Option<&str>,
+    body: &BoxBody<'_>,
     emph: bool,
+    col_cells: &mut HashSet<(usize, usize)>,
 ) {
+    let BoxBody {
+        label,
+        tag,
+        tests,
+        cols,
+    } = *body;
     let (bx, by, w) = (rect.x, rect.y, rect.width);
     if w < 2 {
         return;
@@ -578,12 +673,40 @@ fn draw_box(
         }
     }
 
+    // Column rows (column-focus only): `│{mark} {name}…│`, one per related
+    // column, between the label row and the bottom border.
+    for (i, cl) in cols.iter().enumerate() {
+        let ry = by + 2 + i;
+        grid.put(bx, ry, g.v);
+        grid.put(bx + w - 1, ry, g.v);
+        let row_attr = CellAttr {
+            dimmed: cl.faint,
+            on_path: cl.target,
+            ..CellAttr::default()
+        };
+        for j in 0..inner {
+            let cx = bx + 1 + j;
+            grid.put(cx, ry, ' ');
+            grid.set_attr(cx, ry, row_attr);
+            col_cells.insert((cx, ry));
+        }
+        // `{mark} {name}`, left-trimmed into the interior (the mark column is
+        // flush at bx+1 so edge kinds scan vertically down the box). The mark
+        // resolves against THIS draw's glyph mode.
+        for (j, ch) in format!("{} {}", cl.mark(mode), cl.name).chars().enumerate() {
+            if j < inner {
+                grid.put(bx + 1 + j, ry, ch);
+            }
+        }
+    }
+
     // Bottom border: bl + h… tests:N h + br (the tests label right-aligned with
     // one trailing border cell, so it cannot be misread as the NEXT box's tag).
-    grid.put(bx, by + 2, g.bl);
-    grid.put(bx + w - 1, by + 2, g.br);
+    let bb = by + 2 + cols.len();
+    grid.put(bx, bb, g.bl);
+    grid.put(bx + w - 1, bb, g.br);
     for i in 0..inner {
-        grid.put(bx + 1 + i, by + 2, g.h);
+        grid.put(bx + 1 + i, bb, g.h);
     }
     if let Some(t) = tests {
         let t_chars: Vec<char> = t.chars().collect();
@@ -591,7 +714,7 @@ fn draw_box(
         let start = (bx + w - 1).saturating_sub(1 + t_chars.len());
         for (i, ch) in t_chars.iter().enumerate() {
             if start + i > bx {
-                grid.put(start + i, by + 2, *ch);
+                grid.put(start + i, bb, *ch);
             }
         }
     }
@@ -652,8 +775,55 @@ pub fn layout_mode(sg: &Subgraph, mode: GlyphMode) -> Layout {
 /// deterministically (by `unique_id`), positions columns left-to-right with a
 /// fixed gutter, stamps connectors, then writes labels on top.
 pub fn layout_density(sg: &Subgraph, mode: GlyphMode, density: Density) -> Layout {
+    layout_impl(sg, mode, density, &BTreeMap::new())
+}
+
+/// Lay out a lineage subgraph like [`layout_density`], but draw each node's
+/// RELATED columns as extra `│{mark} {name}…│` rows inside its box (the
+/// Issue 09 column-focus view): `cols` maps `unique_id` → the node's related
+/// column rows, in display order. Nodes absent from the map (and every node
+/// when no focus is active) keep the classic 3-row shape.
+///
+/// Comfortable density only: a [`Density::Compact`] call (and an all-empty
+/// `cols` map) delegates straight to [`layout_density`] — compact boxes have
+/// no room for rows, and an empty map means "no focus", so the classic
+/// geometry is byte-identical in both cases.
+pub fn layout_columns(
+    sg: &Subgraph,
+    mode: GlyphMode,
+    density: Density,
+    cols: &BTreeMap<String, Vec<ColLine>>,
+) -> Layout {
+    if density == Density::Compact || cols.values().all(Vec::is_empty) {
+        return layout_density(sg, mode, density);
+    }
+    layout_impl(sg, mode, density, cols)
+}
+
+/// The shared layout pipeline behind [`layout_density`] and [`layout_columns`].
+/// `cols` is the column-focus row map (`unique_id` → related [`ColLine`]s);
+/// empty for every classic layout, so the frozen golden paths are untouched.
+fn layout_impl(
+    sg: &Subgraph,
+    mode: GlyphMode,
+    density: Density,
+    cols: &BTreeMap<String, Vec<ColLine>>,
+) -> Layout {
     let g = BoxGlyphs::for_mode(mode);
     let (box_h, box_mid) = box_metrics(density);
+    // Column rows are a Comfortable-only surface: Compact boxes are a single
+    // row, so the map reads empty there regardless of what the caller passed.
+    let empty_cols: BTreeMap<String, Vec<ColLine>> = BTreeMap::new();
+    let cols = if density == Density::Compact {
+        &empty_cols
+    } else {
+        cols
+    };
+    let col_rows = |uid: &str| -> &[ColLine] { cols.get(uid).map(Vec::as_slice).unwrap_or(&[]) };
+    let box_w = |node: &crate::NodeInfo| -> usize {
+        box_width_of_density(node, density).max(col_width_of(col_rows(&node.unique_id)))
+    };
+    let mut col_cells: HashSet<(usize, usize)> = HashSet::new();
     if sg.nodes.is_empty() {
         return Layout {
             grid: CharGrid::new(1, 1),
@@ -662,6 +832,7 @@ pub fn layout_density(sg: &Subgraph, mode: GlyphMode, density: Density) -> Layou
             selected_coord: None,
             selected_rect: None,
             edge_cells: HashMap::new(),
+            col_cells,
         };
     }
 
@@ -681,14 +852,7 @@ pub fn layout_density(sg: &Subgraph, mode: GlyphMode, density: Density) -> Layou
     // widths + gutters (the gutter carries the connector + arrowhead).
     let col_width: Vec<usize> = col_nodes
         .iter()
-        .map(|nodes| {
-            nodes
-                .iter()
-                .map(|n| box_width_of_density(n, density))
-                .max()
-                .unwrap_or(1)
-                .max(1)
-        })
+        .map(|nodes| nodes.iter().map(|n| box_w(n)).max().unwrap_or(1).max(1))
         .collect();
     let mut col_x: Vec<usize> = Vec::with_capacity(col_width.len());
     let mut x = 0usize;
@@ -701,32 +865,31 @@ pub fn layout_density(sg: &Subgraph, mode: GlyphMode, density: Density) -> Layou
     }
     let grid_width = x;
 
-    // Each node is a `box_h`-row box. Within a column, box i sits at
-    // y = i*(box_h+ROW_GAP). `rects` are the BOX rects (used for non-overlap,
-    // column order, anchoring, and mouse hit-testing). Grid height = tallest
-    // stacked column.
-    let stride = box_h + ROW_GAP;
+    // Each node is a `box_h`-row box plus its column rows (column-focus only;
+    // `col_rows` is empty otherwise, so heights stay the classic `box_h`).
+    // Within a column, boxes stack top-down with ROW_GAP between — running y
+    // rather than `i * stride` so a taller box pushes its column-mates down.
+    // `rects` are the BOX rects (used for non-overlap, column order, anchoring,
+    // and mouse hit-testing). Grid height = tallest stacked column's bottom.
     let mut rects: HashMap<String, NodeRect> = HashMap::new();
-    let mut max_rows = 0usize;
+    let mut grid_height = 1usize;
     for (c, nodes) in col_nodes.iter().enumerate() {
-        for (i, node) in nodes.iter().enumerate() {
+        let mut y = 0usize;
+        for node in nodes.iter() {
+            let height = box_h + col_rows(&node.unique_id).len();
             rects.insert(
                 node.unique_id.clone(),
                 NodeRect {
                     x: col_x[c],
-                    y: i * stride,
-                    width: box_width_of_density(node, density),
-                    height: box_h,
+                    y,
+                    width: box_w(node),
+                    height,
                 },
             );
-            max_rows = max_rows.max(i + 1);
+            grid_height = grid_height.max(y + height);
+            y += height + ROW_GAP;
         }
     }
-    let grid_height = if max_rows == 0 {
-        1
-    } else {
-        (max_rows - 1) * stride + box_h
-    };
 
     let mut grid = CharGrid::new(grid_width.max(1), grid_height);
 
@@ -869,11 +1032,16 @@ pub fn layout_density(sg: &Subgraph, mode: GlyphMode, density: Density) -> Layou
                 draw_box(
                     &mut grid,
                     g,
+                    mode,
                     rect,
-                    label_of(node),
-                    tag_of(node),
-                    tests.as_deref(),
+                    &BoxBody {
+                        label: label_of(node),
+                        tag: tag_of(node),
+                        tests: tests.as_deref(),
+                        cols: col_rows(&node.unique_id),
+                    },
                     emph,
+                    &mut col_cells,
                 );
             }
             Density::Compact => draw_compact_box(&mut grid, g, rect, label_of(node), emph),
@@ -890,6 +1058,7 @@ pub fn layout_density(sg: &Subgraph, mode: GlyphMode, density: Density) -> Layou
         selected_coord,
         selected_rect,
         edge_cells,
+        col_cells,
     }
 }
 
@@ -976,7 +1145,7 @@ pub fn blit(grid: &CharGrid, off_x: usize, off_y: usize, view_w: usize, view_h: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Edge, NodeInfo, Subgraph};
+    use crate::{ColumnEdgeKind, Edge, NodeInfo, Subgraph};
 
     /// Build a NodeInfo with a model resource type and a name == unique_id tail.
     fn model(id: &str, name: &str) -> NodeInfo {
@@ -1551,5 +1720,229 @@ mod tests {
                 assert_eq!(lay.grid.attr_at(x, y), CellAttr::default());
             }
         }
+    }
+
+    // ---- column rows (Issue 09's layout_columns) ----
+
+    /// Column 0 stacks a/b/z (all -> c in column 1): the fixture for
+    /// running-y stacking — a taller box must push its column-mates down.
+    fn stacked_parents() -> Subgraph {
+        let mut nodes = vec![
+            model("a", "a"),
+            model("b", "b"),
+            model("c", "c"),
+            model("z", "z"),
+        ];
+        nodes.sort_by(|x, y| x.unique_id.cmp(&y.unique_id));
+        Subgraph {
+            selected: "c".to_string(),
+            nodes,
+            edges: vec![edge("a", "c"), edge("b", "c"), edge("z", "c")],
+        }
+    }
+
+    #[test]
+    fn column_rows_grow_height_width_and_record_col_cells() {
+        // A box gains one row per related column, the box widens to the
+        // longest `{mark} {name}` row, the row interiors are recorded in
+        // `col_cells`, and the traced column reads `>`.
+        let sg = asymmetric_three();
+        let cols = BTreeMap::from([(
+            "c".to_string(),
+            vec![
+                ColLine {
+                    name: "order_id".into(),
+                    kind: ColumnEdgeKind::Rename,
+                    faint: false,
+                    target: true,
+                },
+                ColLine {
+                    name: "a_much_longer_column_name".into(),
+                    kind: ColumnEdgeKind::Transform,
+                    faint: true,
+                    target: false,
+                },
+            ],
+        )]);
+        let lay = layout_columns(&sg, GlyphMode::Unicode, Density::Comfortable, &cols);
+        let rc = lay.rects["c"];
+        assert_eq!(rc.height, 5, "3-row box + 2 column rows");
+        assert_eq!(
+            rc.width,
+            "a_much_longer_column_name".chars().count() + 4,
+            "the widest column row sets the box width"
+        );
+        // The classic boxes are untouched.
+        assert_eq!(lay.rects["a"].height, 3);
+        assert_eq!(lay.rects["b"].height, 3);
+        // The column rows draw `{mark} {name}` inside the box.
+        let text = lay.grid.to_text();
+        assert!(text.contains("> order_id"), "traced row: {text}");
+        assert!(
+            text.contains("* a_much_longer_column_name"),
+            "transform row: {text}"
+        );
+        // col_cells covers exactly the row interiors (between the side
+        // borders), for each of the two rows.
+        for dy in [2usize, 3] {
+            for dx in 1..rc.width - 1 {
+                assert!(
+                    lay.col_cells.contains(&(rc.x + dx, rc.y + dy)),
+                    "interior cell ({},{}) recorded",
+                    rc.x + dx,
+                    rc.y + dy
+                );
+            }
+            assert!(
+                !lay.col_cells.contains(&(rc.x, rc.y + dy)),
+                "the side border is NOT a column cell"
+            );
+        }
+        // Row attrs were stamped at draw time: `>` row on_path, `*` row dimmed.
+        assert!(lay.grid.attr_at(rc.x + 1, rc.y + 2).on_path);
+        assert!(lay.grid.attr_at(rc.x + 1, rc.y + 3).dimmed);
+    }
+
+    #[test]
+    fn column_rows_stack_with_running_y() {
+        // `a` gets 2 extra rows in column 0's stack: b and z must move down by
+        // that much (running y, not a fixed stride).
+        let sg = stacked_parents();
+        let classic = layout(&sg);
+        let cols = BTreeMap::from([(
+            "a".to_string(),
+            vec![
+                ColLine {
+                    name: "x".into(),
+                    kind: ColumnEdgeKind::Passthrough,
+                    faint: false,
+                    target: false,
+                },
+                ColLine {
+                    name: "y".into(),
+                    kind: ColumnEdgeKind::Passthrough,
+                    faint: false,
+                    target: false,
+                },
+            ],
+        )]);
+        let lay = layout_columns(&sg, GlyphMode::Unicode, Density::Comfortable, &cols);
+        let dy = 2usize;
+        assert_eq!(lay.rects["a"].height, 5);
+        for uid in ["b", "z"] {
+            assert_eq!(
+                lay.rects[uid].y,
+                classic.rects[uid].y + dy,
+                "{uid} pushed down by a's column rows"
+            );
+        }
+        // The child in the NEXT column is unaffected.
+        assert_eq!(lay.rects["c"].y, classic.rects["c"].y);
+        // Grid grew to the tallest stacked column's bottom.
+        assert_eq!(lay.grid.height(), classic.grid.height() + dy);
+    }
+
+    #[test]
+    fn layout_columns_degenerates_to_the_classic_layout() {
+        // No rows at all (or Compact, where rows can't draw) => byte-identical
+        // to the classic entry points.
+        let sg = asymmetric_three();
+        let with_empty = BTreeMap::from([("a".to_string(), Vec::new())]);
+        for cols in [&BTreeMap::new(), &with_empty] {
+            let lay = layout_columns(&sg, GlyphMode::Unicode, Density::Comfortable, cols);
+            let classic = layout(&sg);
+            assert_eq!(lay.grid, classic.grid, "empty map = classic grid");
+            assert_eq!(lay.rects, classic.rects);
+            assert!(lay.col_cells.is_empty());
+        }
+        let cols = BTreeMap::from([(
+            "c".to_string(),
+            vec![ColLine {
+                name: "x".into(),
+                kind: ColumnEdgeKind::Passthrough,
+                faint: false,
+                target: false,
+            }],
+        )]);
+        let compact = layout_columns(&sg, GlyphMode::Unicode, Density::Compact, &cols);
+        let classic_compact = layout_density(&sg, GlyphMode::Unicode, Density::Compact);
+        assert_eq!(
+            compact.grid, classic_compact.grid,
+            "compact ignores column rows"
+        );
+        assert_eq!(compact.rects, classic_compact.rects);
+        assert!(compact.col_cells.is_empty());
+    }
+
+    #[test]
+    fn column_rows_have_identical_geometry_in_both_glyph_modes() {
+        // Unicode and ASCII differ ONLY in the glyphs stamped — rects, columns,
+        // and the col_cells record are the same (the `·` vs `-` mark resolves
+        // per draw from ColLine::kind + the draw's glyph mode).
+        let sg = asymmetric_three();
+        let cols = BTreeMap::from([(
+            "c".to_string(),
+            vec![ColLine {
+                name: "order_id".into(),
+                kind: ColumnEdgeKind::Passthrough,
+                faint: false,
+                target: true,
+            }],
+        )]);
+        let uni = layout_columns(&sg, GlyphMode::Unicode, Density::Comfortable, &cols);
+        let asc = layout_columns(&sg, GlyphMode::Ascii, Density::Comfortable, &cols);
+        assert_eq!(uni.rects, asc.rects);
+        assert_eq!(uni.columns, asc.columns);
+        assert_eq!(uni.col_cells, asc.col_cells);
+        assert_eq!(uni.grid.width(), asc.grid.width());
+        assert_eq!(uni.grid.height(), asc.grid.height());
+    }
+
+    #[test]
+    fn apply_node_styles_preserves_column_row_attrs() {
+        // A node's box-level attr (class / lens / focus dim) must never flatten
+        // a column row's own `faint`/`target` attr — apply_node_styles skips
+        // `col_cells` while still styling the rest of the box.
+        let sg = asymmetric_three();
+        let cols = BTreeMap::from([(
+            "c".to_string(),
+            vec![
+                ColLine {
+                    name: "target_col".into(),
+                    kind: ColumnEdgeKind::Rename,
+                    faint: false,
+                    target: true,
+                },
+                ColLine {
+                    name: "inferred_col".into(),
+                    kind: ColumnEdgeKind::Passthrough,
+                    faint: true,
+                    target: false,
+                },
+            ],
+        )]);
+        let mut lay = layout_columns(&sg, GlyphMode::Unicode, Density::Comfortable, &cols);
+        let node_attr = CellAttr {
+            class: MaterializationClass::Ephemeral,
+            lens: LensTint::HeatHigh,
+            dimmed: false,
+            on_path: false,
+        };
+        lay.apply_node_styles(&BTreeMap::from([("c".to_string(), node_attr)]));
+        let rc = lay.rects["c"];
+        // The box's own cells take the node attr (label row, borders).
+        assert_eq!(lay.grid.attr_at(rc.x, rc.y), node_attr, "top-left border");
+        assert_eq!(
+            lay.grid.attr_at(rc.x + 1, rc.y + 1),
+            node_attr,
+            "label-row interior takes the node attr"
+        );
+        // Column-row interiors keep their per-row attr.
+        let target = lay.grid.attr_at(rc.x + 1, rc.y + 2);
+        assert!(target.on_path, "the target row keeps its band");
+        assert_eq!(target.lens, LensTint::None, "the node lens didn't flatten");
+        let inferred = lay.grid.attr_at(rc.x + 1, rc.y + 3);
+        assert!(inferred.dimmed, "the inferred row stays dim");
+        assert_eq!(inferred.lens, LensTint::None);
     }
 }

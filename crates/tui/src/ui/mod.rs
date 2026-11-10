@@ -24,7 +24,8 @@ pub use geom::{
 };
 pub use lineage::LayerBand;
 pub use overlay::{
-    clamp_detail_scroll, clamp_diff_scroll, clamp_help_scroll, clamp_sql_scroll, clamp_stats_scroll,
+    clamp_columns_scroll, clamp_detail_scroll, clamp_diff_scroll, clamp_help_scroll,
+    clamp_sql_scroll, clamp_stats_scroll,
 };
 pub use render::{draw, RenderCtx, StatusSegments};
 pub use state::{handle_key, reduce_selection, Focus, KeyOutcome, LineageLens, UiState};

@@ -25,15 +25,20 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::{layout_density, Density, GlyphMode, Layout, LineageLens, Subgraph};
+use crate::{layout_columns, layout_density, Density, GlyphMode, Layout, LineageLens, Subgraph};
 
 use super::{App, LineageView};
 
-/// Identity of a rooted subgraph: `(root, view, overview, dag generation)`.
+/// Identity of a rooted subgraph: `(root, view, column focus, overview, dag
+/// generation)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SubgraphKey {
     root: String,
     view: LineageView,
+    /// The effective column focus's identity — `(node uid, column)` — so a
+    /// focus enter / step / exit builds (and keys) a different subgraph than
+    /// the rooted view of the same selection.
+    col: Option<(String, String)>,
     overview: bool,
     generation: u64,
 }
@@ -46,6 +51,9 @@ struct LayoutKey {
     root: String,
     cursor: Option<String>,
     view: LineageView,
+    /// Same focus identity as `SubgraphKey.col` — the box column rows are a
+    /// layout input, so a focus change must miss the cached geometry too.
+    col: Option<(String, String)>,
     lens: LineageLens,
     glyphs: GlyphMode,
     density: Density,
@@ -79,6 +87,7 @@ impl App {
         let key = SubgraphKey {
             root,
             view: self.lineage_view.clone(),
+            col: self.column_focus_key(),
             overview: self.ui_state.overview(),
             generation: self.generation,
         };
@@ -93,6 +102,11 @@ impl App {
             let mut sg = self.dag.full_subgraph();
             sg.selected = key.root.clone();
             sg
+        } else if let Some(focus) = self.active_column_focus() {
+            // Column focus replaces the rooted view wholesale: the filtered
+            // related-models graph with the traced model as its home (the
+            // `col` key already names this exact focus).
+            self.column_subgraph(focus)
         } else if key.root.is_empty() {
             Subgraph {
                 selected: String::new(),
@@ -133,6 +147,7 @@ impl App {
             cursor: self.lineage_cursor_uid(),
             root,
             view: self.lineage_view.clone(),
+            col: self.column_focus_key(),
             lens: self.ui_state.lens(),
             glyphs: self.glyph_mode,
             density,
@@ -148,7 +163,14 @@ impl App {
         if sg.nodes.is_empty() {
             return None;
         }
-        let mut lay = layout_density(&sg, self.glyph_mode, density);
+        // Column focus feeds each box's related-column rows (`ColLine`s, marks
+        // resolved to the glyph mode at focus-enter); an all-empty map and a
+        // Compact density both fall back inside `layout_columns` to the classic
+        // `layout_density` geometry, byte-identical.
+        let mut lay = match self.active_column_focus() {
+            Some(focus) => layout_columns(&sg, self.glyph_mode, density, &focus.lines),
+            None => layout_density(&sg, self.glyph_mode, density),
+        };
         lay.apply_edge_styles(&self.lineage_edge_styles(&lay));
         let styles = self.lineage_styles(&lay);
         lay.apply_node_styles(&styles);

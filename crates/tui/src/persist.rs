@@ -103,6 +103,7 @@ pub fn lens_name(lens: LineageLens) -> &'static str {
         LineageLens::Diff => "diff",
         LineageLens::RunStatus => "run-status",
         LineageLens::RunTime => "run-time",
+        LineageLens::ColumnImpact => "column-impact",
     }
 }
 
@@ -118,6 +119,7 @@ pub fn lens_from_name(name: &str) -> Option<LineageLens> {
         "diff" => LineageLens::Diff,
         "run-status" => LineageLens::RunStatus,
         "run-time" => LineageLens::RunTime,
+        "column-impact" => LineageLens::ColumnImpact,
         _ => return None,
     })
 }
@@ -235,6 +237,7 @@ mod tests {
             LineageLens::Diff,
             LineageLens::RunStatus,
             LineageLens::RunTime,
+            LineageLens::ColumnImpact,
         ] {
             assert_eq!(lens_from_name(lens_name(lens)), Some(lens));
         }
