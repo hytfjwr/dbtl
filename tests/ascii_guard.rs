@@ -239,6 +239,22 @@ fn detail_modal_is_all_ascii() {
 }
 
 #[test]
+fn detail_modal_badges_and_tests_section_are_all_ascii() {
+    // Issue 11 surfaces: the `[NN U]`/`[NN R]` column badge trails, the
+    // `-> target` relationships row, the tests-section `> ` cursor, and the
+    // `Tab tests`/`Enter jump` title hints — every glyph pure ASCII in BOTH
+    // glyph modes by construction.
+    let mut app = ascii_app();
+    app.select_by_unique_id("model.jaffle_finance.pos_ord");
+    apply_action(&mut app, Action::DetailOpen);
+    assert_all_ascii(&render(&app, 100, 40), "detail badges + tests rows");
+    // Tab into the tests section: the title hint flips to `Tab cols` +
+    // `Enter jump` and the `> ` marker lands on the relationships row.
+    apply_action(&mut app, Action::DetailSectionToggle);
+    assert_all_ascii(&render(&app, 100, 40), "detail tests-section cursor");
+}
+
+#[test]
 fn sql_modal_is_all_ascii() {
     // pos_txn has clean ASCII SQL — the syntax-highlighting recolours bytes only,
     // so the modal stays pure ASCII (the keyword spans add no glyphs).
@@ -338,8 +354,9 @@ fn every_lens_with_off_root_cursor_is_all_ascii() {
         "precondition: the cursor walked off the root (path is non-empty)"
     );
     // Walk the live lens cycle (Off → Coverage → Heat → Layer → Violation →
-    // Lint → Off; Diff/Run* are skipped — no baseline or run_results here).
-    for step in 0..=5 {
+    // Lint → PrimaryKey → Off; Diff/Run* are skipped — no baseline or
+    // run_results here; PrimaryKey is data-free and never skipped).
+    for step in 0..=6 {
         // At 80x24 the diagram overflows (lens tint + dim + scroll markers + list
         // tint exercised); 200x60 fits (centred pad, no markers).
         assert_all_ascii(

@@ -3,7 +3,10 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use dbtl::{load_dag, load_manifest, run_rules, Dag, LintConfig, LintRule};
+use dbtl::{
+    column_coverage_counts, has_pk_guarantee, load_dag, load_manifest, run_rules, Dag, LintConfig,
+    LintRule,
+};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifest.json");
 const INVALID: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/invalid.json");
@@ -277,6 +280,84 @@ fn tests_are_captured_for_a_known_seed() {
         0,
         "tests excluded from the DAG"
     );
+}
+
+// ---- Issue 11: PK guarantees + column coverage + relationships metadata ----
+
+#[test]
+fn pk_guarantee_set_is_frozen() {
+    let dag = fixture_dag();
+    // Hand-verified against the fixture: every model/seed/snapshot's
+    // `has_pk_guarantee` verdict. The only testables WITHOUT a guarantee are
+    // the two int_*__combined models (the `missing_primary_key_tests` lint's
+    // 2 findings — the rule is model-scoped) plus the lone snapshot.
+    let mut guaranteed = 0usize;
+    let mut missing: Vec<&str> = Vec::new();
+    for n in dag.nodes().values() {
+        if !matches!(n.resource_type.as_str(), "model" | "seed" | "snapshot") {
+            continue;
+        }
+        if has_pk_guarantee(dag.tests(&n.unique_id)) {
+            guaranteed += 1;
+        } else {
+            missing.push(n.unique_id.as_str());
+        }
+    }
+    missing.sort();
+    assert_eq!(
+        missing,
+        vec![
+            "model.jaffle_finance.int_fiscal_years__combined",
+            "model.jaffle_finance.int_shoppers__combined",
+            "snapshot.jaffle_finance.delivery_lanes_snapshot",
+        ],
+        "the PK-guarantee-missing set drifted"
+    );
+    assert_eq!(guaranteed, 50, "PK-guaranteed testable count drifted");
+}
+
+#[test]
+fn column_coverage_counts_is_frozen() {
+    let dag = fixture_dag();
+    // Declared columns carrying >=1 attached test / declared columns, over the
+    // root-project testable set — the SAME numbers the stats dashboard and the
+    // docs README quote.
+    assert_eq!(column_coverage_counts(&dag), (212, 322));
+}
+
+#[test]
+fn relationships_tests_resolve_their_targets() {
+    let dag = fixture_dag();
+    // pos_ord's relationships test points at the pos_pay source — the
+    // `to:` dep is resolved out of `depends_on` minus the attached node.
+    let ord = dag.tests("model.jaffle_finance.pos_ord");
+    let rel = ord
+        .iter()
+        .find(|t| t.kind == "relationships")
+        .expect("pos_ord has a relationships test");
+    assert_eq!(
+        rel.ref_uid.as_deref(),
+        Some("source.jaffle_finance.lake_jaffle_payment.pos_pay")
+    );
+    assert_eq!(rel.ref_name.as_deref(), Some("pos_pay"));
+    // A model->model relationship resolves the same way (ref_name = the
+    // target's display name once the whole graph exists).
+    let dept = dag.tests("model.jaffle_finance.dim_supplier_departments");
+    let rel = dept
+        .iter()
+        .find(|t| t.kind == "relationships")
+        .expect("dim_supplier_departments has a relationships test");
+    assert_eq!(
+        rel.ref_uid.as_deref(),
+        Some("model.jaffle_finance.dim_suppliers")
+    );
+    assert_eq!(rel.ref_name.as_deref(), Some("dim_suppliers"));
+    // Non-relationships tests carry no target.
+    let nn = dept
+        .iter()
+        .find(|t| t.kind == "not_null")
+        .expect("a not_null test exists");
+    assert_eq!(nn.ref_uid, None);
 }
 
 // ---- Error handling: load_manifest returns Err (never panics) ----

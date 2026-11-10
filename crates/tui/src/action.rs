@@ -148,8 +148,14 @@ pub enum Action {
     /// Move the structure modal's column cursor one row (`Up` = previous
     /// column, `Down` = next) — the `yl` yank targets the column under it.
     /// Distinct from `DetailScroll`, which pans the viewport: this is a
-    /// SELECTION, and the loop's ensure-visible follows it.
+    /// SELECTION, and the loop's ensure-visible follows it. While the tests
+    /// section owns the cursor (`Tab`), the same move walks the jumpable
+    /// (relationships-target) test rows.
     DetailColumnMove(Direction),
+    /// Toggle the structure modal's h/l cursor between the columns section and
+    /// the tests section (`Tab`) — the tests side only offers rows Enter can
+    /// jump to (relationships `to:` targets).
+    DetailSectionToggle,
     /// Cycle the selection to the next / previous untested model (the
     /// `coverage_gap` set — same predicate as the Coverage lens).
     GapNext,
@@ -257,6 +263,12 @@ pub struct DetailView {
     /// The column cursor (h/l inside the modal) — an index into `col_names`,
     /// or `usize::MAX` when the list is empty.
     pub col_index: usize,
+    /// The tests-section cursor — an index into `tests`, or `usize::MAX` when
+    /// the COLUMNS section owns the h/l cursor (the default). `Tab` toggles
+    /// between the two; the cursor only lands on rows with a `ref_uid`
+    /// (relationships targets — the rows Enter can jump to), mirroring
+    /// [`ColumnView`]'s uid-gated cursor.
+    pub test_index: usize,
     /// `normalized column -> (one-hop upstream, one-hop downstream)` DIRECT
     /// column-edge counts, snapshotted from `ColumnLineage::column_counts` at
     /// open — the `↑u ↓d` numbers beside each column row (direct parents in /
@@ -342,6 +354,13 @@ pub struct StatsView {
     /// `cov` segment use — the three readouts can never disagree.
     pub testable_total: usize,
     pub testable_tested: usize,
+    /// Column-level test coverage (Issue 11): declared columns carrying ≥1
+    /// attached test / declared columns, over the same root-project testable
+    /// base — the SHARED [`column_coverage_counts`](crate::column_coverage_counts)
+    /// numbers `dbtl docs`' README quotes, so the dashboard and the generated
+    /// docs can never disagree.
+    pub col_declared: usize,
+    pub col_tested: usize,
     /// Top-5 hubs: (unique_id, name, parent+child degree), sorted desc. Answers
     /// "most directly-connected node"; distinct from `transitive_hubs`.
     pub top_hubs: Vec<(String, String, usize)>,
@@ -606,6 +625,7 @@ impl Trigger {
                 KeyCode::Enter => "Enter".into(),
                 KeyCode::Esc => "Esc".into(),
                 KeyCode::Tab => "Tab".into(),
+                KeyCode::BackTab => "S-Tab".into(),
                 KeyCode::Backspace => "Bksp".into(),
                 // ASCII names (arrow glyphs are ambiguous-width on CJK terminals).
                 KeyCode::Up => "Up".into(),
@@ -644,7 +664,7 @@ impl KeyBinding {
 }
 
 use Action as A;
-use KeyCode::{Backspace, Char, Down, Enter, Esc, Left, PageDown, PageUp, Right, Tab, Up};
+use KeyCode::{BackTab, Backspace, Char, Down, Enter, Esc, Left, PageDown, PageUp, Right, Tab, Up};
 use ModeKind as M;
 use Trigger::{Ctrl, Key, Super};
 
@@ -743,11 +763,13 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Detail, triggers: &[Key(Esc), Key(Char('q'))], action: A::DetailClose, help: "close" },
     // Enter/`c` commits the column under the h/l cursor to column focus (the
     // arm closes the modal instead when the node has no columns — the classic
-    // Enter-to-close survives there).
-    KeyBinding { mode: M::Detail, triggers: &[Key(Enter), Key(Char('c'))], action: A::ColumnFocusEnter, help: "trace this column's lineage" },
+    // Enter-to-close survives there). While the tests section owns the cursor
+    // (Tab), Enter re-roots to the relationships test's `to:` target instead.
+    KeyBinding { mode: M::Detail, triggers: &[Key(Enter), Key(Char('c'))], action: A::ColumnFocusEnter, help: "trace column / jump to test target" },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Tab), Key(BackTab)], action: A::DetailSectionToggle, help: "columns / tests section" },
     KeyBinding { mode: M::Detail, triggers: &[Key(Char('K'))], action: A::ColumnsOpen, help: "column lineage modal (this column)" },
-    KeyBinding { mode: M::Detail, triggers: &[Key(Char('h')), Key(Char('H'))], action: A::DetailColumnMove(Direction::Up), help: "previous column" },
-    KeyBinding { mode: M::Detail, triggers: &[Key(Char('l')), Key(Char('L'))], action: A::DetailColumnMove(Direction::Down), help: "next column" },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('h')), Key(Char('H'))], action: A::DetailColumnMove(Direction::Up), help: "previous column / test" },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('l')), Key(Char('L'))], action: A::DetailColumnMove(Direction::Down), help: "next column / test" },
     KeyBinding { mode: M::Detail, triggers: &[Key(Char('y'))], action: A::YankPrefix, help: "yank prefix menu" },
     KeyBinding { mode: M::Detail, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down" },
     KeyBinding { mode: M::Detail, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up" },
@@ -939,6 +961,7 @@ mod tests {
             catalog: vec![],
             col_names: vec![],
             col_index: usize::MAX,
+            test_index: usize::MAX,
             col_counts: std::collections::BTreeMap::new(),
             stale: false,
             scroll: 0,
@@ -977,6 +1000,8 @@ mod tests {
             by_materialization: vec![],
             testable_total: 0,
             testable_tested: 0,
+            col_declared: 0,
+            col_tested: 0,
             top_hubs: vec![],
             transitive_hubs: vec![],
             orphan_models: vec![],
@@ -1213,7 +1238,8 @@ mod tests {
             | Action::ColumnFocusExit
             | Action::ColumnsOpen
             | Action::ColumnRowMove(_)
-            | Action::ColumnJump => true,
+            | Action::ColumnJump
+            | Action::DetailSectionToggle => true,
             // Dynamic: produced without a fixed key binding (text input). Mouse
             // is handled in the event loop (size-aware), not via the keymap.
             Action::SearchType(_) => false,

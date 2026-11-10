@@ -96,7 +96,7 @@ The path from the root to the cursor lights up, including the connectors between
 <td valign="top">
 
 ### Coverage and impact lenses
-Lenses tint the lineage by test coverage, downstream blast radius, layer, layer violation, static lint findings, or `--diff` changes — and, with `run_results.json` loaded, by last-run status and runtime heat. There is also a stats dashboard, a key to jump between untested models, and one-key export to Mermaid, Graphviz, or a Markdown impact report.
+Lenses tint the lineage by test coverage, downstream blast radius, layer, layer violation, static lint findings, or `--diff` changes — and, with `run_results.json` loaded, by last-run status and runtime heat. The **primary-key lens** tints models whose columns lack a `unique` + `not_null` pair or a `unique_combination_of_columns` test — the same guarantee `dbtl check --lint`'s `missing_primary_key_tests` rule evaluates. There is also a stats dashboard, a key to jump between untested models, and one-key export to Mermaid, Graphviz, or a Markdown impact report.
 
 </td>
 </tr>
@@ -213,8 +213,8 @@ Two more dbt artifacts are picked up automatically when they sit next to the dat
 
 `dbtl docs --out <DIR>` never starts the TUI, so it runs in CI without a TTY. It writes a Markdown documentation tree that you can commit to a repo and read on GitHub or GitLab:
 
-- **One page per node** — model, source, seed, snapshot, exposure, plus semantic models, metrics, and saved queries from a compiled manifest. Each page has the description, materialization, schema, tags, a sorted `meta` table, a column table in dbt definition order, tests, direct and transitive upstream/downstream links, and a Mermaid lineage diagram.
-- **An index `README.md`** with a project summary enumerating every resource type in the graph (the counts always sum to the total), test coverage %, a list of orphan models, a linked table of every node, and a whole-project Mermaid diagram. Large projects get the diagram split by layer.
+- **One page per node** — model, source, seed, snapshot, exposure, plus semantic models, metrics, and saved queries from a compiled manifest. Each page has the description, materialization, schema, tags, a sorted `meta` table, a column table in dbt definition order, tests (with the `relationships` target linked and the unit-test `in:`/`given:`/`expect:` row counts where the manifest records them), direct and transitive upstream/downstream links, and a Mermaid lineage diagram.
+- **An index `README.md`** with a project summary enumerating every resource type in the graph (the counts always sum to the total), test coverage %, column-level coverage (tested declared columns — the same numbers the stats dashboard quotes), a list of orphan models, a linked table of every node, and a whole-project Mermaid diagram. Large projects get the diagram split by layer.
 
 The data source is chosen the same way as in the TUI (`--manifest` / `--source` / `--project` / auto-detect). The output is deterministic: regenerating from the same input produces byte-identical files.
 
@@ -397,7 +397,7 @@ Press `?` inside the app for the full list. The most useful ones:
 | `b` `f` | Back / forward in re-root history |
 | `z` | Home the lineage cursor and re-center |
 | `r` | Reload the data source |
-| `t` | Cycle lineage lens (off → coverage → blast radius → layer → layer violation → diff → run status → runtime → column impact; lenses with no data are skipped — column impact only while a column is traced) |
+| `t` | Cycle lineage lens (off → coverage → blast radius → layer → layer violation → diff → run status → runtime → column impact → primary key; lenses with no data are skipped — column impact only while a column is traced) |
 | `K` | Column-lineage modal for the traced column (or the structure view's cursored column): a scrollable upstream / this-column / downstream tree — `j`/`k` move the row cursor, `Enter` re-roots to a row's model |
 | `v` | Toggle compact lineage (1-row nodes — fits ~2x more graph on screen) |
 | `w` | Toggle whole-graph overview (the entire DAG in the lineage pane; Compact, minimap on) |
@@ -420,7 +420,7 @@ Press `?` inside the app for the full list. The most useful ones:
 | `?` | Toggle the full help overlay |
 | `q` | Quit (`Ctrl-c` from anywhere) |
 
-Inside a scrollable modal, `j`/`k` scroll, `d`/`u`/`Ctrl-d`/`Ctrl-u`/`PgDn`/`PgUp` page, `g`/`G` jump to the top / bottom, and `Esc`/`Enter`/`q` (`?` too, for the help overlay) closes. In the structure view, `h`/`l` move a cursor across the column rows (each shows its `↑`/`↓` one-hop column-edge count) — the target of `y l` — and `Enter`/`c` commits the cursored column to the **column trace view**: the lineage filters to the column's related models, each box lists its related columns (`>` marks the traced one, the other marks name the edge kind), a `column:model.col ↑u ↓d` status chip (one-hop counts, like the modal) replaces the `[view]` label, and the title gains ` [col:name]`. While tracing, `h`/`l` step the traced column upstream/downstream, `K` opens the column modal, `t` reaches the column-impact lens (gold = the downstream closure), the rooted view filters `u`/`d`/`[`/`]`/`0` are gated (they would only apply after the trace), and `Esc` exits the trace. Pressing `y` over the structure view aims every `y<key>` yank at *the modal's node*, not the list selection — `y l` yanks the column under its cursor (or, mid-trace with no modal open, the traced column). Known limitation: the yank menu is one-shot and closes to the list — `Esc`/`q` from it does NOT return to the modal (re-open with `Enter`); restoring the modal on cancel is a tracked follow-up. In a `/` search, `Up`/`Down` move between matches.
+Inside a scrollable modal, `j`/`k` scroll, `d`/`u`/`Ctrl-d`/`Ctrl-u`/`PgDn`/`PgUp` page, `g`/`G` jump to the top / bottom, and `Esc`/`Enter`/`q` (`?` too, for the help overlay) closes. In the structure view, each column row carries its test-kind badges (`NN` not_null, `U` unique, `R` relationships, `AV` accepted_values, `AR` accepted_range, `UC` unique_combination_of_columns, `*` other) next to its `↑`/`↓` one-hop column-edge count, and `h`/`l` move a cursor across the rows — the target of `y l` — and `Enter`/`c` commits the cursored column to the **column trace view**: the lineage filters to the column's related models, each box lists its related columns (`>` marks the traced one, the other marks name the edge kind), a `column:model.col ↑u ↓d` status chip (one-hop counts, like the modal) replaces the `[view]` label, and the title gains ` [col:name]`. While tracing, `h`/`l` step the traced column upstream/downstream, `K` opens the column modal, `t` reaches the column-impact lens (gold = the downstream closure), the rooted view filters `u`/`d`/`[`/`]`/`0` are gated (they would only apply after the trace), and `Esc` exits the trace. `Tab` moves that cursor between the column rows and the tests list — the tests side lands only on `relationships` rows, whose resolved `to:` target shows as `-> model.column`, and `Enter` there re-roots the lineage to the target. Pressing `y` over the structure view aims every `y<key>` yank at *the modal's node*, not the list selection — `y l` yanks the column under its cursor (or, mid-trace with no modal open, the traced column). Known limitation: the yank menu is one-shot and closes to the list — `Esc`/`q` from it does NOT return to the modal (re-open with `Enter`); restoring the modal on cancel is a tracked follow-up. In a `/` search, `Up`/`Down` move between matches.
 
 The mouse works too: click a lineage node to re-root (a `+N more` box expands instead), and use the wheel to scroll. The lineage pane pans in both directions. A horizontal wheel notch (trackpad swipe or tilt wheel) or `Shift`+wheel scrolls it sideways.
 
@@ -449,7 +449,7 @@ Defaults for a fresh project (or values a config can't express) come from `~/.co
 ```yaml
 # ~/.config/dbtl/config.yml — every field optional
 theme: ayu-mirage      # same names as --theme (CLI/env still wins)
-lens: coverage         # off|coverage|degree-heat|layer|layer-violation|lint|diff|run-status|run-time
+lens: coverage         # off|coverage|degree-heat|layer|layer-violation|lint|diff|run-status|run-time|column-impact|primary-key
 density: compact       # comfortable|compact
 sort: downstream       # layer|downstream|tests
 group_by_meta: owner   # group the model list by this meta key's value instead of layer dirs

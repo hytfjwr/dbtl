@@ -285,6 +285,20 @@ impl App {
                     LensTint::None
                 }
             }
+            // Primary-key guarantee (Issue 11): models lacking the SHARED
+            // `has_pk_guarantee` predicate — the same one
+            // `missing_primary_key_tests` evaluates, so a node this lens tints
+            // is exactly the set `dbtl check --lint` flags under that rule.
+            // Non-models keep their class colour (the rule is model-scoped).
+            LineageLens::PrimaryKey => match node {
+                Some(n)
+                    if n.resource_type == "model"
+                        && !crate::has_pk_guarantee(self.dag.tests(uid)) =>
+                {
+                    LensTint::Violation
+                }
+                _ => LensTint::None,
+            },
         }
     }
 }

@@ -483,6 +483,7 @@ mod tests {
                 column_name: Some("id".into()),
                 test_metadata: Some(RawTestMetadata {
                     name: Some("not_null".into()),
+                    ..Default::default()
                 }),
                 ..Default::default()
             },
@@ -593,6 +594,7 @@ mod tests {
                     column_name: Some(col.into()),
                     test_metadata: Some(RawTestMetadata {
                         name: Some("not_null".into()),
+                        ..Default::default()
                     }),
                     ..Default::default()
                 },

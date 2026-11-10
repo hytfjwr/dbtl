@@ -363,6 +363,57 @@ pub fn coverage_counts(dag: &Dag) -> (usize, usize) {
     (tested, total)
 }
 
+/// The `(covered, declared)` COLUMN-coverage pair, over the same testable base
+/// as [`coverage_counts`] (model / snapshot / seed, root project): `declared`
+/// counts every entry in the nodes' [`crate::NodeDetail::columns`] lists,
+/// `covered` counts the entries at least one attached test names
+/// (`test.column_name`, both sides compared through
+/// [`normalize_column`](crate::normalize_column)). A node with zero declared
+/// columns contributes nothing — the metric answers "of the columns the
+/// project actually documents, how many are test-guarded" (the Issue 11 spec:
+/// テストが 1 件以上ある列 / 宣言済みの列).
+///
+/// The ONE source for the stats dashboard's column gauge and `dbtl docs`'s
+/// README bullet, so the two surfaces can never disagree — the same shape
+/// [`coverage_counts`] gives the row-level coverage readouts.
+///
+/// Caveat: source mode fills seed columns from the CSV header (a documented
+/// superset of schema-declared columns), so `declared` can read slightly
+/// larger there than on the same project's compiled manifest — the same
+/// documented divergence the `columns` consistency assert already carries.
+pub fn column_coverage_counts(dag: &Dag) -> (usize, usize) {
+    let primary = dag.primary_package();
+    let mut declared = 0;
+    let mut covered = 0;
+    for n in dag.nodes().values() {
+        if !primary.as_deref().is_none_or(|p| in_package(n, p)) {
+            continue;
+        }
+        if !matches!(n.resource_type.as_str(), "model" | "snapshot" | "seed") {
+            continue;
+        }
+        let Some(d) = dag.detail(&n.unique_id) else {
+            continue;
+        };
+        if d.columns.is_empty() {
+            continue;
+        }
+        let tested: HashSet<String> = dag
+            .tests(&n.unique_id)
+            .iter()
+            .filter_map(|t| t.column_name.as_deref())
+            .map(crate::normalize_column)
+            .collect();
+        declared += d.columns.len();
+        covered += d
+            .columns
+            .iter()
+            .filter(|c| tested.contains(crate::normalize_column(c.name.as_str()).as_str()))
+            .count();
+    }
+    (covered, declared)
+}
+
 /// The parenthesised kind/owner suffix for one exposure line:
 /// `" (dashboard, owner: Finance <fin@example.com>)"`. Each part is optional;
 /// the kind falls back to the bare `exposure` so the line always names what it
@@ -765,6 +816,52 @@ mod tests {
     fn coverage_counts_matches_the_buildable_base() {
         let dag = Dag::build(&two_model_manifest());
         assert_eq!(coverage_counts(&dag), (0, 2), "two models, no tests");
+    }
+
+    #[test]
+    fn column_coverage_counts_counts_tested_declared_columns() {
+        // stg_x declares 2 columns (id tested, extra not); fct_x declares 1
+        // untested column; a third model declares none and drops out of the
+        // denominator entirely.
+        let mut m = two_model_manifest();
+        m.nodes.get_mut("model.p.stg_x").unwrap().columns = serde_json::json!({
+            "id": {"name": "id"},
+            "extra": {"name": "extra"},
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        m.nodes.get_mut("model.p.fct_x").unwrap().columns = serde_json::json!({
+            "amt": {"name": "amt"},
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        m.nodes.insert(
+            "model.p.empty".to_string(),
+            crate::RawNode {
+                name: "empty".into(),
+                resource_type: "model".into(),
+                ..Default::default()
+            },
+        );
+        m.nodes.insert(
+            "test.p.nn".to_string(),
+            crate::RawNode {
+                name: "nn".into(),
+                resource_type: "test".into(),
+                attached_node: Some("model.p.stg_x".into()),
+                column_name: Some("id".into()),
+                test_metadata: Some(crate::RawTestMetadata {
+                    name: Some("not_null".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        let dag = Dag::build(&m);
+        // 1 of 3 declared columns is tested; `empty` contributes 0/0.
+        assert_eq!(column_coverage_counts(&dag), (1, 3));
     }
 
     #[test]

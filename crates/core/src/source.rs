@@ -145,7 +145,6 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
     // `tree_mat` (the meta precedence chain is the same shape: in-file
     // config(meta=…) > schema.yml meta/config.meta > project tree).
     let mut tree_meta: HashMap<String, serde_json::Map<String, serde_json::Value>> = HashMap::new();
-    let mut test_seq = 0usize;
 
     // --- docs blocks (.md) ---
     // dbt renders `{{ doc('x') }}` in descriptions from `{% docs x %}…{% enddocs %}`
@@ -498,6 +497,14 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
     }
 
     // --- schema.yml: source nodes + metadata/tests for everything ---
+    // The test-synthesis context borrows `name_index` shared — build it only
+    // now that every resource discovery pass above has finished mutating it.
+    let mut test_ctx = TestCtx {
+        seq: 0,
+        proj: &proj,
+        pat: &pat,
+        name_index: &name_index,
+    };
     for (schema, file, yml_root) in &parsed {
         // dbt records a source's `path`/`original_file_path` as the declaring
         // schema file (project-root-relative) — match it so the detail modal
@@ -547,19 +554,10 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                         meta: source_meta(tree.meta, src, tbl, &mut warnings),
                     },
                 );
+                synth_tests(&mut nodes, &mut test_ctx, &uid, &tbl.name, None, &tbl.tests);
                 synth_tests(
                     &mut nodes,
-                    &mut test_seq,
-                    &proj,
-                    &uid,
-                    &tbl.name,
-                    None,
-                    &tbl.tests,
-                );
-                synth_tests(
-                    &mut nodes,
-                    &mut test_seq,
-                    &proj,
+                    &mut test_ctx,
                     &uid,
                     &tbl.name,
                     None,
@@ -568,8 +566,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                 for col in &tbl.columns {
                     synth_tests(
                         &mut nodes,
-                        &mut test_seq,
-                        &proj,
+                        &mut test_ctx,
                         &uid,
                         &tbl.name,
                         Some(&col.name),
@@ -577,8 +574,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                     );
                     synth_tests(
                         &mut nodes,
-                        &mut test_seq,
-                        &proj,
+                        &mut test_ctx,
                         &uid,
                         &tbl.name,
                         Some(&col.name),
@@ -638,8 +634,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
 
         apply_meta(
             &mut nodes,
-            &mut test_seq,
-            &proj,
+            &mut test_ctx,
             "model",
             &schema.models,
             &docs,
@@ -647,8 +642,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
         );
         apply_meta(
             &mut nodes,
-            &mut test_seq,
-            &proj,
+            &mut test_ctx,
             "seed",
             &schema.seeds,
             &docs,
@@ -656,8 +650,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
         );
         apply_meta(
             &mut nodes,
-            &mut test_seq,
-            &proj,
+            &mut test_ctx,
             "snapshot",
             &schema.snapshots,
             &docs,
@@ -717,21 +710,31 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
     ))
 }
 
+/// The shared context [`synth_tests`] and [`apply_meta`] thread through every
+/// schema-file test pass: the running synth-key counter, the project name, and
+/// the `ref()`/`source()` extractors + name index a `relationships` test's
+/// `to:` resolves against (the same lookups the .sql scan uses).
+struct TestCtx<'a> {
+    seq: usize,
+    proj: &'a str,
+    pat: &'a Patterns,
+    name_index: &'a HashMap<String, String>,
+}
+
 /// Attach schema-file metadata (description / materialization / tags / columns)
 /// and tests to already-discovered nodes, matched by `<type>.<proj>.<name>`. A
 /// schema entry with no matching node (e.g. a documented but absent model) is
 /// skipped — we never fabricate a node from docs alone.
 fn apply_meta(
     nodes: &mut HashMap<String, RawNode>,
-    seq: &mut usize,
-    proj: &str,
+    ctx: &mut TestCtx<'_>,
     type_prefix: &str,
     entries: &[SchemaModel],
     docs: &DocBlocks,
     warnings: &mut Vec<String>,
 ) {
     for entry in entries {
-        let uid = format!("{type_prefix}.{proj}.{}", entry.name);
+        let uid = format!("{type_prefix}.{}.{}", ctx.proj, entry.name);
         // Schema-level `config: enabled: false` parks the node like dbt's
         // `disabled`: drop it (its edges are pruned by Dag::build's
         // prune-first step) and record none of its docs/tests.
@@ -782,22 +785,13 @@ fn apply_meta(
             node.columns = columns_json(&entry.columns, docs, warnings);
         }
         // `node`'s borrow ends here; synth_tests re-borrows `nodes` mutably.
-        synth_tests(nodes, seq, proj, &uid, &entry.name, None, &entry.tests);
-        synth_tests(nodes, seq, proj, &uid, &entry.name, None, &entry.data_tests);
+        synth_tests(nodes, ctx, &uid, &entry.name, None, &entry.tests);
+        synth_tests(nodes, ctx, &uid, &entry.name, None, &entry.data_tests);
         for col in &entry.columns {
+            synth_tests(nodes, ctx, &uid, &entry.name, Some(&col.name), &col.tests);
             synth_tests(
                 nodes,
-                seq,
-                proj,
-                &uid,
-                &entry.name,
-                Some(&col.name),
-                &col.tests,
-            );
-            synth_tests(
-                nodes,
-                seq,
-                proj,
+                ctx,
                 &uid,
                 &entry.name,
                 Some(&col.name),
@@ -862,10 +856,17 @@ fn source_meta(
 /// the existing [`Dag::build`] captures it pre-prune. The map KEY uses a counter
 /// so two tests on the same (node, column) can never collide and silently drop;
 /// `attached_node` points the capture straight at the target.
+///
+/// A single-key-map entry's config value rides along as `test_metadata.kwargs`
+/// (the same shape a real manifest records), and a `relationships`-style `to:`
+/// is resolved through the SAME `ref()`/`source()` extractors the .sql scan
+/// uses into `depends_on.nodes` ([attached, ref] — the real manifest's shape),
+/// so `Dag::build` fills `TestInfo::ref_uid`/`ref_column` identically in both
+/// load modes. An unresolvable `to:` leaves only the attached dep — the test
+/// stays registered, just target-less.
 fn synth_tests(
     nodes: &mut HashMap<String, RawNode>,
-    seq: &mut usize,
-    proj: &str,
+    ctx: &mut TestCtx<'_>,
     target_uid: &str,
     target_name: &str,
     column: Option<&str>,
@@ -875,20 +876,53 @@ fn synth_tests(
         let Some(kind) = test_kind(test) else {
             continue;
         };
-        let key = format!("test.{proj}.{seq}");
-        *seq += 1;
+        let key = format!("test.{}.{}", ctx.proj, ctx.seq);
+        ctx.seq += 1;
         let name = match column {
             Some(c) => format!("{kind}_{target_name}_{c}"),
             None => format!("{kind}_{target_name}"),
         };
+        // The config map under `{kind: {...}}` — a `relationships` test's
+        // `to:`/`field:` live there; a bare-string test has none.
+        let kwargs: serde_json::Map<String, serde_json::Value> = match test {
+            serde_json::Value::Object(m) => m
+                .get(&kind)
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default(),
+            _ => Default::default(),
+        };
+        // `to:` is a Jinja-string reference — resolve through the same
+        // extractors the .sql scan uses. Unresolved refs (and non-ref values
+        // like `var('x')`) drop out, exactly like a model's.
+        let mut deps = vec![target_uid.to_string()];
+        if let Some(to) = kwargs.get("to").and_then(|v| v.as_str()) {
+            for ref_name in ctx.pat.refs(to) {
+                if let Some(uid) = ctx.name_index.get(&ref_name) {
+                    deps.push(uid.clone());
+                }
+            }
+            for (src, tbl) in ctx.pat.sources(to) {
+                deps.push(format!("source.{}.{}.{}", ctx.proj, src, tbl));
+            }
+        }
+        deps.sort();
+        deps.dedup();
         nodes.insert(
             key,
             RawNode {
                 name,
                 resource_type: "test".to_string(),
-                test_metadata: Some(RawTestMetadata { name: Some(kind) }),
+                test_metadata: Some(RawTestMetadata {
+                    name: Some(kind),
+                    kwargs: Some(kwargs),
+                }),
                 attached_node: Some(target_uid.to_string()),
                 column_name: column.map(str::to_string),
+                depends_on: RawDependsOn {
+                    nodes: deps,
+                    macros: vec![],
+                },
                 ..Default::default()
             },
         );

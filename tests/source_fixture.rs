@@ -759,6 +759,75 @@ fn tests_and_data_tests_merge_instead_of_dropping_the_file() {
 }
 
 #[test]
+fn schema_relationships_test_resolves_ref_and_source_targets() {
+    // Issue 11: `synth_tests` resolves a `relationships` test's `to:` through
+    // the same ref()/source() extractors the .sql scan uses, so `Dag::build`
+    // fills `ref_uid`/`ref_name`/`ref_column` identically in both load modes.
+    use std::fs;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    fs::write(
+        root.join("dbt_project.yml"),
+        "name: relp\nversion: \"1.0.0\"\nconfig-version: 2\nmodel-paths: [\"models\"]\n",
+    )
+    .unwrap();
+    let models = root.join("models");
+    fs::create_dir(&models).unwrap();
+    fs::write(
+        models.join("orders.sql"),
+        "select 1 as id, 'a' as customer_key, 2 as pay_key\n",
+    )
+    .unwrap();
+    fs::write(models.join("customers.sql"), "select 'a' as key\n").unwrap();
+    fs::write(
+        models.join("schema.yml"),
+        "version: 2\n\
+         sources:\n  - name: raw\n    tables:\n      - name: payments\n\
+         models:\n  - name: orders\n    columns:\n      - name: customer_key\n        \
+         tests:\n          - relationships:\n              to: ref('customers')\n              \
+         field: key\n      - name: pay_key\n        tests:\n          - relationships:\n              \
+         to: source('raw','payments')\n              field: id\n",
+    )
+    .unwrap();
+
+    let dag = load_dag_from_source(root).expect("project loads");
+    let tests = dag.tests("model.relp.orders");
+    let rel_ref = tests
+        .iter()
+        .find(|t| t.kind == "relationships" && t.column_name.as_deref() == Some("customer_key"))
+        .expect("ref relationships test captured");
+    assert_eq!(rel_ref.ref_uid.as_deref(), Some("model.relp.customers"));
+    assert_eq!(rel_ref.ref_name.as_deref(), Some("customers"));
+    assert_eq!(rel_ref.ref_column.as_deref(), Some("key"));
+
+    let rel_src = tests
+        .iter()
+        .find(|t| t.kind == "relationships" && t.column_name.as_deref() == Some("pay_key"))
+        .expect("source relationships test captured");
+    assert_eq!(rel_src.ref_uid.as_deref(), Some("source.relp.raw.payments"));
+    // ref_name is the target NODE's name — a source table's display name.
+    assert_eq!(rel_src.ref_name.as_deref(), Some("payments"));
+    assert_eq!(rel_src.ref_column.as_deref(), Some("id"));
+
+    // An unresolvable `to:` keeps the test registered, just target-less —
+    // matching the manifest path where a missing ref leaves ref_uid empty.
+    fs::write(
+        models.join("schema2.yml"),
+        "version: 2\nmodels:\n  - name: orders\n    columns:\n      - name: id\n        \
+         tests:\n          - relationships:\n              to: ref('ghost')\n              field: id\n",
+    )
+    .unwrap();
+    let dag = load_dag_from_source(root).expect("project reloads");
+    let ghost = dag
+        .tests("model.relp.orders")
+        .iter()
+        .find(|t| t.kind == "relationships" && t.column_name.as_deref() == Some("id"))
+        .expect("unresolved relationships test still captured");
+    assert_eq!(ghost.ref_uid, None, "unresolvable to: has no target");
+}
+
+#[test]
 fn invalid_yaml_emits_warning_but_project_loads() {
     let (dag, warnings) =
         load_dag_from_source_with_warnings(COLLISION_PROJECT).expect("project loads");

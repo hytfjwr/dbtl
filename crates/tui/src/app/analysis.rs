@@ -60,6 +60,9 @@ impl App {
         // `coverage_gap` base) so the dashboard, the `t` lens, and the status
         // `cov` segment always quote the same numbers.
         let (testable_tested, testable_total) = self.coverage_summary();
+        // Column-level coverage likewise: the SHARED `column_coverage_counts`
+        // `dbtl docs`' README also quotes — same root-project testable base.
+        let (col_tested, col_declared) = crate::column_coverage_counts(&self.dag);
         // Every count/list the dashboard reports describes the ROOT project —
         // the same [`Dag::is_root_project`] scope `coverage_counts` and
         // `dbtl check` share. Under the `All` package scope installed-package
@@ -155,6 +158,8 @@ impl App {
             by_materialization: by_mat.into_iter().collect(),
             testable_total,
             testable_tested,
+            col_declared,
+            col_tested,
             top_hubs: hubs,
             transitive_hubs,
             orphan_models: orphans,

@@ -3133,6 +3133,22 @@ fn stats_view_carries_the_lint_worklist_from_the_shared_findings() {
 }
 
 #[test]
+fn stats_view_column_coverage_matches_the_shared_counts() {
+    // The stats dashboard's column coverage is the SHARED
+    // `column_coverage_counts` — the exact numbers the docs README prints
+    // (frozen at 212/322 on the jaffle_finance fixture, asserted in
+    // tests/manifest_fixture.rs).
+    let a = app();
+    let sv = a.compute_stats_view();
+    assert_eq!(
+        (sv.col_tested, sv.col_declared),
+        crate::column_coverage_counts(&a.dag),
+        "the modal quotes the shared helper verbatim"
+    );
+    assert_eq!((sv.col_tested, sv.col_declared), (212, 322), "frozen");
+}
+
+#[test]
 fn malformed_dbtl_yml_warns_via_notice_in_both_modes() {
     // The TUI's malformed-config policy: warn + shipped defaults, never block
     // the screen. Manifest mode finds `.dbtl.yml` at the project root above
@@ -3266,12 +3282,13 @@ fn cycle_lens_advances_the_lens_as_a_noop_action() {
     );
     // Cycle through the rest and back to Off. The fixture has lint findings so
     // the Lint slot joins the ring (no baseline/run_results → Diff and the run
-    // lenses are skipped).
+    // lenses are skipped); PrimaryKey is data-free and never skipped.
     for expected in [
         LineageLens::DegreeHeat,
         LineageLens::Layer,
         LineageLens::LayerViolation,
         LineageLens::Lint,
+        LineageLens::PrimaryKey,
         LineageLens::Off,
     ] {
         apply_action(&mut a, Action::CycleLens);
@@ -3711,6 +3728,7 @@ fn cycle_lens_skips_diff_without_a_baseline_and_includes_it_with_one() {
         LineageLens::Layer,
         LineageLens::LayerViolation,
         LineageLens::Lint,
+        LineageLens::PrimaryKey,
         LineageLens::Off,
     ] {
         apply_action(&mut a, Action::CycleLens);
@@ -3726,6 +3744,7 @@ fn cycle_lens_skips_diff_without_a_baseline_and_includes_it_with_one() {
         LineageLens::LayerViolation,
         LineageLens::Lint,
         LineageLens::Diff,
+        LineageLens::PrimaryKey,
         LineageLens::Off,
     ] {
         apply_action(&mut a, Action::CycleLens);
@@ -5103,8 +5122,8 @@ fn column_impact_lens_skips_the_cycle_without_a_focus_and_tints_downstream() {
     apply_action(&mut a, Action::CycleLens);
     assert_eq!(
         a.ui_state.lens(),
-        LineageLens::Off,
-        "ColumnImpact is skipped unfocused"
+        LineageLens::PrimaryKey,
+        "ColumnImpact is skipped unfocused; PrimaryKey (data-free) is not"
     );
     // Focused, the cycle reaches it and it tints exactly the traced column's
     // downstream nodes.
@@ -5303,8 +5322,9 @@ fn column_impact_lens_skips_under_an_overview_suppressed_focus() {
     apply_action(&mut a, Action::CycleLens);
     assert_eq!(
         a.ui_state.lens(),
-        LineageLens::Off,
-        "ColumnImpact is skipped while the overview suppresses the focus"
+        LineageLens::PrimaryKey,
+        "ColumnImpact is skipped while the overview suppresses the focus; \
+         PrimaryKey (data-free) is not"
     );
 }
 
@@ -5899,5 +5919,251 @@ fn click_marker_toggles_and_parks_the_cursor_and_s_notices() {
         a.styled_lineage_layout().unwrap().rects.len(),
         1 + 8 + 1,
         "the second click collapsed the group"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue 11: per-column test badges, the tests-section cursor + relationships
+// jump, and the PrimaryKey lens.
+// ---------------------------------------------------------------------------
+
+/// A tiny Dag: `orders` is PK-guaranteed (unique + not_null on `id`) and
+/// carries a relationships test into `customers`; `customers` has only a
+/// lone not_null (no guarantee → the lens tints it); `loose` has no tests at
+/// all. `orders` declares 4 columns so the badge set differs per row.
+fn pk_dag() -> Dag {
+    use crate::{RawManifest, RawNode, RawTestMetadata};
+    use std::collections::HashMap;
+    let cols = |names: &[&str]| {
+        names
+            .iter()
+            .map(|n| (n.to_string(), serde_json::json!({"name": n})))
+            .collect::<serde_json::Map<_, _>>()
+    };
+    let mut nodes = HashMap::new();
+    nodes.insert(
+        "model.p.orders".to_string(),
+        RawNode {
+            name: "orders".into(),
+            resource_type: "model".into(),
+            path: Some("marts/orders.sql".into()),
+            columns: cols(&["id", "customer_id", "status", "total"]),
+            ..Default::default()
+        },
+    );
+    nodes.insert(
+        "model.p.customers".to_string(),
+        RawNode {
+            name: "customers".into(),
+            resource_type: "model".into(),
+            path: Some("marts/customers.sql".into()),
+            columns: cols(&["id", "name"]),
+            ..Default::default()
+        },
+    );
+    nodes.insert(
+        "model.p.loose".to_string(),
+        RawNode {
+            name: "loose".into(),
+            resource_type: "model".into(),
+            path: Some("marts/loose.sql".into()),
+            ..Default::default()
+        },
+    );
+    let mut test = |uid: &str, kind: &str, attached: &str, col: Option<&str>| {
+        nodes.insert(
+            uid.to_string(),
+            RawNode {
+                name: uid.into(),
+                resource_type: "test".into(),
+                attached_node: Some(attached.into()),
+                column_name: col.map(str::to_string),
+                test_metadata: Some(RawTestMetadata {
+                    name: Some(kind.into()),
+                    ..Default::default()
+                }),
+                depends_on: crate::RawDependsOn {
+                    macros: vec![],
+                    nodes: vec![attached.to_string()],
+                },
+                ..Default::default()
+            },
+        );
+    };
+    test("test.p.u_id", "unique", "model.p.orders", Some("id"));
+    test("test.p.nn_id", "not_null", "model.p.orders", Some("id"));
+    test(
+        "test.p.av",
+        "accepted_values",
+        "model.p.orders",
+        Some("status"),
+    );
+    test("test.p.nn_c", "not_null", "model.p.customers", Some("id"));
+    // The relationships test: attached to orders.customer_id, depends_on
+    // carries BOTH ends (the attached node + the `to:` target), `field:` the
+    // referenced column.
+    nodes.insert(
+        "test.p.rel".to_string(),
+        RawNode {
+            name: "rel".into(),
+            resource_type: "test".into(),
+            attached_node: Some("model.p.orders".into()),
+            column_name: Some("customer_id".into()),
+            test_metadata: Some(RawTestMetadata {
+                name: Some("relationships".into()),
+                kwargs: Some(serde_json::Map::from_iter([(
+                    "field".to_string(),
+                    serde_json::Value::String("id".to_string()),
+                )])),
+            }),
+            depends_on: crate::RawDependsOn {
+                macros: vec![],
+                nodes: vec![
+                    "model.p.orders".to_string(),
+                    "model.p.customers".to_string(),
+                ],
+            },
+            ..Default::default()
+        },
+    );
+    Dag::build(&RawManifest {
+        metadata: Default::default(),
+        nodes,
+        sources: HashMap::new(),
+        exposures: HashMap::new(),
+        semantic_models: HashMap::new(),
+        metrics: HashMap::new(),
+        saved_queries: HashMap::new(),
+        unit_tests: HashMap::new(),
+        functions: HashMap::new(),
+        parent_map: HashMap::from([(
+            "model.p.orders".to_string(),
+            vec!["model.p.customers".to_string()],
+        )]),
+        child_map: HashMap::from([(
+            "model.p.customers".to_string(),
+            vec!["model.p.orders".to_string()],
+        )]),
+        macros: HashMap::new(),
+    })
+}
+
+fn pk_app() -> App {
+    App::new(pk_dag(), PathBuf::from("/tmp/x/target/manifest.json"))
+}
+
+#[test]
+fn pk_lens_tints_only_models_without_a_guarantee() {
+    let mut a = pk_app();
+    // `customers` carries only a lone not_null — no guarantee → Violation.
+    assert_eq!(
+        tint_of(&mut a, LineageLens::PrimaryKey, "model.p.customers"),
+        LensTint::Violation,
+        "the not_null-only model is violation-tinted"
+    );
+    // `orders` has unique+not_null on `id` → guaranteed → no tint.
+    assert_eq!(
+        tint_of(&mut a, LineageLens::PrimaryKey, "model.p.orders"),
+        LensTint::None,
+        "the guaranteed model keeps its class colour"
+    );
+    // The fixture agrees: the two known PK-missing models tint, a guaranteed
+    // marts model does not — the SAME set `missing_primary_key_tests` flags.
+    let mut a = app();
+    assert_eq!(
+        tint_of(
+            &mut a,
+            LineageLens::PrimaryKey,
+            "model.jaffle_finance.int_shoppers__combined"
+        ),
+        LensTint::Violation,
+        "a fixture PK-missing model tints"
+    );
+    assert_eq!(
+        tint_of(
+            &mut a,
+            LineageLens::PrimaryKey,
+            "model.jaffle_finance.dim_delivery_lanes"
+        ),
+        LensTint::None,
+        "a fixture PK-guaranteed model does not"
+    );
+}
+
+#[test]
+fn cycle_lens_never_skips_primary_key() {
+    // PrimaryKey is data-independent: with NO lint findings, diff baseline,
+    // run_results, or column focus, the reducer's CycleLens arm still lands
+    // on it — it is not in the skippable set.
+    let mut a = pk_app();
+    for _ in 0..=10 {
+        apply_action(&mut a, Action::CycleLens);
+        if a.ui_state.lens() == LineageLens::PrimaryKey {
+            break;
+        }
+    }
+    assert_eq!(a.ui_state.lens(), LineageLens::PrimaryKey);
+    apply_action(&mut a, Action::CycleLens);
+    assert_eq!(a.ui_state.lens(), LineageLens::Off, "then wraps to Off");
+}
+
+#[test]
+fn detail_section_toggle_lands_only_on_jumpable_tests() {
+    let mut a = pk_app();
+    open_detail(&mut a, "model.p.orders");
+    // orders' tests sort by kind: accepted_values(0), not_null(1),
+    // relationships(2), unique(3) — only the relationships row is jumpable.
+    apply_action(&mut a, Action::DetailSectionToggle);
+    match &a.mode {
+        Mode::Detail(dv) => {
+            assert_eq!(dv.test_index, 2, "Tab lands on the relationships row");
+            assert_eq!(
+                dv.tests[dv.test_index].ref_uid.as_deref(),
+                Some("model.p.customers")
+            );
+        }
+        m => panic!("expected Detail, got {m:?}"),
+    }
+    // h/l stays put — the only jumpable row is the cursor's own.
+    apply_action(&mut a, Action::DetailColumnMove(Direction::Down));
+    apply_action(&mut a, Action::DetailColumnMove(Direction::Up));
+    match &a.mode {
+        Mode::Detail(dv) => assert_eq!(dv.test_index, 2, "clamped at the single jumpable row"),
+        m => panic!("expected Detail, got {m:?}"),
+    }
+    // Tab again hands the cursor back to the columns section.
+    apply_action(&mut a, Action::DetailSectionToggle);
+    match &a.mode {
+        Mode::Detail(dv) => assert_eq!(dv.test_index, usize::MAX),
+        m => panic!("expected Detail, got {m:?}"),
+    }
+}
+
+#[test]
+fn detail_enter_on_test_row_jumps_to_the_relationships_target() {
+    let mut a = pk_app();
+    open_detail(&mut a, "model.p.orders");
+    apply_action(&mut a, Action::DetailSectionToggle);
+    apply_action(&mut a, Action::ColumnFocusEnter);
+    assert_eq!(a.mode, Mode::Selection, "the modal closes on the jump");
+    assert_eq!(
+        a.selected_unique_id().as_deref(),
+        Some("model.p.customers"),
+        "Enter re-roots to the `to:` target"
+    );
+}
+
+#[test]
+fn detail_tab_notices_when_no_jumpable_test_exists() {
+    let mut a = pk_app();
+    open_detail(&mut a, "model.p.loose");
+    apply_action(&mut a, Action::DetailSectionToggle);
+    match &a.mode {
+        Mode::Detail(dv) => assert_eq!(dv.test_index, usize::MAX, "cursor stays on columns"),
+        m => panic!("expected Detail, got {m:?}"),
+    }
+    assert_eq!(
+        a.take_notice().as_deref(),
+        Some("no relationship test targets on this node")
     );
 }
