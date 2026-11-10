@@ -418,9 +418,11 @@ fn cll_syntax_covers_every_resolved_syntax() {
 fn parsed_edges_agree_between_source_and_manifest_modes() {
     // The parser resolves the manifest's raw_code (the fixture is parse-only)
     // and the source loader's rendered Jinja identically — `ref()` renders to
-    // the same relation names either way. fct_orders is included: its seed
-    // column list is unknown in BOTH modes (`columns` come from the CSV at
-    // run time), so the same "trust the qualification" edges appear.
+    // the same relation names either way. fct_orders is included: in manifest
+    // mode its seed column list is unknown (manifest `columns` are only what
+    // docs declare), while source mode reads the seed's CSV headers — so the
+    // column list is KNOWN there. Either mode yields the same
+    // "trust the qualification" edges for the columns the model selects.
     let m = load_dag(MANIFEST).expect("sample manifest loads");
     let s = load_dag_from_source(PROJECT).expect("sample project parses");
     let rm = SqlParseResolver::for_dag(None, &m);

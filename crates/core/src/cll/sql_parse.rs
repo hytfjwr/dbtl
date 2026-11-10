@@ -27,7 +27,16 @@
 //!   contributes nothing rather than guessing names.
 //! - An unqualified column that resolves to no binding but *could* come from
 //!   a binding with an unknown column list is attributed to that binding —
-//!   "can't disprove" beats silently dropping the edge.
+//!   "can't disprove" beats silently dropping the edge. Crediting is
+//!   LEVEL-scoped: an unknown binding is only credited when no KNOWN
+//!   binding at its own scope level — or any level OUTER of it — resolves
+//!   the ref (innermost-scope-wins; inner unknowns can't poison a provable
+//!   outer hit).
+//! - `EXCEPT`/`INTERSECT`/`MINUS` right arms contribute their refs to the
+//!   row-shaping pool (they shape WHICH rows survive, not the values);
+//!   `UNION` merges positionally, or by output name under `BY NAME`.
+//! - Lambda parameters (`x -> …`), `MATCH_RECOGNIZE` symbols, and
+//!   `named => value` argument names are LOCAL names — never column refs.
 //!
 //! Jinja handling (raw-SQL fallback only — compiled SQL is already
 //! rendered): `{{ ref('x') }}` / `{{ source('a','b') }}` render to the quoted
@@ -45,9 +54,9 @@ use sqlparser::ast::{
     AccessExpr, Distinct, ExcludeSelectItem, Expr, Function, FunctionArg, FunctionArgExpr,
     FunctionArgumentClause, FunctionArguments, GroupByExpr, Ident, InTarget, Join, JoinConstraint,
     JoinOperator, NamedWindowExpr, ObjectName, ObjectNamePart, OrderByKind, Query,
-    RenameSelectItem, Select, SelectItem, SelectItemQualifiedWildcardKind, SetExpr, Statement,
-    TableAliasColumnDef, TableFactor, TableWithJoins, WildcardAdditionalOptions, WindowSpec,
-    WindowType,
+    RenameSelectItem, Select, SelectItem, SelectItemQualifiedWildcardKind, SetExpr, SetOperator,
+    SetQuantifier, Statement, TableAliasColumnDef, TableFactor, TableWithJoins,
+    WildcardAdditionalOptions, WindowSpec, WindowType,
 };
 use sqlparser::dialect::{
     BigQueryDialect, ClickHouseDialect, DatabricksDialect, Dialect, DuckDbDialect, GenericDialect,
@@ -192,58 +201,158 @@ const THIS_RELATION: &str = "\"__dbtl_this__\"";
 /// as `NULL`, `{% %}`/`{# #}` drop. Compiled SQL needs nothing (dbt already
 /// rendered it) — this only runs on the raw fallback text, where the
 /// approximation is documented.
+///
+/// Markers are only recognized OUTSIDE SQL string literals and quoted
+/// identifiers: `'{{ x' AND y = 1 AND 'z }}'` would otherwise pair the
+/// in-literal `{{` with the in-literal `}}` and eat the predicate between
+/// them (real Jinja *would* render inside a SQL string, but a `{{`/`}}`
+/// pair spanning two separate literals is always our scanner misreading —
+/// shielding them keeps the surrounding SQL intact).
 fn render_jinja(sql: &str) -> String {
     let b = sql.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(b.len() + 16);
     let mut i = 0usize;
     while i < b.len() {
-        if b[i] == b'{' && matches!(b.get(i + 1), Some(&b'{') | Some(&b'%') | Some(&b'#')) {
-            let kind = b[i + 1];
-            let close: &[u8] = match kind {
-                b'{' => b"}}",
-                b'%' => b"%}",
-                _ => b"#}",
-            };
-            // Same depth tracking as v0's masker: `{{ a({'x':1}) }}` doesn't
-            // close at the inner `}}`. `{%`/`{#` close at the first tag end.
-            let tracked = kind == b'{';
-            let mut depth = 0usize;
-            let mut end = None;
-            let mut j = i + 2;
-            while j + 1 < b.len() {
-                if b[j] == close[0] && b[j + 1] == close[1] && (!tracked || depth == 0) {
-                    end = Some(j);
-                    break;
-                }
-                match b[j] {
-                    b'(' | b'[' | b'{' if tracked => depth += 1,
-                    b')' | b']' | b'}' if tracked => depth = depth.saturating_sub(1),
-                    _ => {}
-                }
-                j += 1;
+        match b[i] {
+            // `-- …` line comments and `/* … */` block comments pass
+            // through: a `{{` inside one must not pair with a `}}` in later
+            // real code (the same cross-region mispairing as literals).
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                let end = b[i..]
+                    .iter()
+                    .position(|&c| c == b'\n')
+                    .map_or(b.len(), |p| i + p);
+                out.extend_from_slice(&b[i..end]);
+                i = end;
             }
-            let (inner_end, advance) = match end {
-                Some(e) => (e, e + 2),
-                None => (b.len(), b.len()),
-            };
-            match kind {
-                b'{' => {
-                    let inner = &sql[i + 2..inner_end];
-                    out.extend_from_slice(render_jinja_expr(inner).as_bytes());
-                }
-                // `{% … %}` tags and `{# … #}` comments drop entirely — the
-                // tag's body (if/for branches) keeps flowing into the output.
-                _ => out.push(b' '),
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                let end = b[i + 2..]
+                    .windows(2)
+                    .position(|w| w == b"*/")
+                    .map_or(b.len(), |p| i + 2 + p + 2);
+                out.extend_from_slice(&b[i..end]);
+                i = end;
             }
-            i = advance;
-        } else {
-            out.push(b[i]);
-            i += 1;
+            // `'…'` string literals and `"…"`/`` `…` `` quoted identifiers
+            // pass through verbatim (doubled-quote escapes keep them open)
+            // — a `{`-pair inside is literal text, never a marker.
+            q @ (b'\'' | b'"' | b'`') => {
+                out.push(q);
+                i += 1;
+                while i < b.len() {
+                    out.push(b[i]);
+                    if b[i] == q {
+                        if b.get(i + 1) == Some(&q) {
+                            out.push(q); // '' escape stays inside the literal
+                            i += 2;
+                            continue;
+                        }
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            // Dollar-quoted strings (`$$…$$` / `$tag$…$tag$`) pass through —
+            // the same marker-shielding rule as other literals.
+            b'$' => match dollar_quote_open(b, i) {
+                Some(dlen) => {
+                    let from = i + dlen;
+                    let end =
+                        dollar_quote_close(b, from, &b[i..i + dlen]).map_or(b.len(), |c| c + dlen);
+                    out.extend_from_slice(&b[i..end]);
+                    i = end;
+                }
+                None => {
+                    out.push(b[i]);
+                    i += 1;
+                }
+            },
+            b'{' if matches!(b.get(i + 1), Some(&b'{') | Some(&b'%') | Some(&b'#')) => {
+                let kind = b[i + 1];
+                let close: &[u8] = match kind {
+                    b'{' => b"}}",
+                    b'%' => b"%}",
+                    _ => b"#}",
+                };
+                // Same depth tracking as v0's masker: `{{ a({'x':1}) }}` doesn't
+                // close at the inner `}}`. `{%`/`{#` close at the first tag end.
+                let tracked = kind == b'{';
+                let mut depth = 0usize;
+                let mut end = None;
+                let mut j = i + 2;
+                while j + 1 < b.len() {
+                    if b[j] == close[0] && b[j + 1] == close[1] && (!tracked || depth == 0) {
+                        end = Some(j);
+                        break;
+                    }
+                    match b[j] {
+                        b'(' | b'[' | b'{' if tracked => depth += 1,
+                        b')' | b']' | b'}' if tracked => depth = depth.saturating_sub(1),
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                match end {
+                    Some(e) => {
+                        match kind {
+                            b'{' => {
+                                let inner = &sql[i + 2..e];
+                                out.extend_from_slice(render_jinja_expr(inner).as_bytes());
+                            }
+                            // `{% … %}` tags and `{# … #}` comments drop
+                            // entirely — the tag's body (if/for branches)
+                            // keeps flowing into the output.
+                            _ => out.push(b' '),
+                        }
+                        i = e + 2;
+                    }
+                    // An unterminated marker is malformed Jinja: emit the
+                    // remainder verbatim rather than eating it — inside a
+                    // SQL comment it stays invisible to the parser; in real
+                    // SQL it fails the parse and the model falls back to
+                    // name-match. Swallowing the tail would fabricate a
+                    // shorter query that parses to wrong edges.
+                    None => {
+                        out.extend_from_slice(&b[i..]);
+                        i = b.len();
+                    }
+                }
+            }
+            _ => {
+                out.push(b[i]);
+                i += 1;
+            }
         }
     }
     // Jinja interiors are ASCII for anything we render; copied bytes keep
     // the original UTF-8 untouched.
     String::from_utf8(out).unwrap_or_default()
+}
+
+/// If `b[i]` opens a dollar-quoted string, the opening delimiter's byte
+/// length (`$$` → 2, `$tag$` → tag length + 2). Tags follow identifier
+/// rules (no leading digit) so a Postgres `$1` positional parameter or a
+/// `$`-identifier never opens one.
+fn dollar_quote_open(b: &[u8], i: usize) -> Option<usize> {
+    let mut j = i + 1;
+    while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
+        if j == i + 1 && b[j].is_ascii_digit() {
+            return None;
+        }
+        j += 1;
+    }
+    (j < b.len() && b[j] == b'$').then_some(j - i + 1)
+}
+
+/// The byte offset where the dollar-quoted string opened at `from - delim.len()`
+/// closes — the START of the closing delimiter, `None` when unterminated
+/// (the literal then runs to EOF, matching Postgres).
+fn dollar_quote_close(b: &[u8], from: usize, delim: &[u8]) -> Option<usize> {
+    b[from.min(b.len())..]
+        .windows(delim.len())
+        .position(|w| w == delim)
+        .map(|p| from + p)
 }
 
 /// What a `{{ … }}` expression renders to. `config(...)` disappears (it
@@ -332,6 +441,15 @@ fn jinja_call_args(e: &str, fname: &str) -> Option<Vec<String>> {
 /// `(parent uid, parent column)` — the resolved provenance of a reference.
 type ColSources = BTreeSet<(String, String)>;
 
+/// No lambda parameters in force — the shared empty `locals` set for
+/// every [`RefScope`]/[`Env`] outside a lambda body.
+static NO_LOCALS: BTreeSet<String> = BTreeSet::new();
+
+/// The placeholder name prefix for unnamed outputs — see
+/// [`OutCol::synthetic`]. (A parent column literally named `__col1` still
+/// resolves normally; the marker only suppresses INVENTED names.)
+const ANON_COL_PREFIX: &str = "__col";
+
 /// One output column of a resolved query.
 #[derive(Debug, Clone)]
 struct OutCol {
@@ -342,6 +460,11 @@ struct OutCol {
     bare: bool,
     /// Parent columns feeding this output.
     sources: ColSources,
+    /// `true` when `name` is an invented `__colN` placeholder for an
+    /// unnameable output (a literal, `(expr).*`, …). Synthetic names never
+    /// surface in `columns()` or the FilterOrJoin fan — they're positional
+    /// bookkeeping only — and they don't pair in `UNION BY NAME` merges.
+    synthetic: bool,
 }
 
 /// What a SELECT-level construct resolved to: positional output columns
@@ -387,20 +510,24 @@ struct Scope<'a> {
 }
 
 /// The environment visible while resolving a query: the outer scope for
-/// correlation plus the CTE names in force.
+/// correlation, the CTE names in force, and the enclosing lambda
+/// parameters (so a lambda body inside a subquery still shadows).
 #[derive(Clone, Copy)]
 struct Env<'a> {
     outer: Option<&'a Scope<'a>>,
     ctes: &'a HashMap<String, Rc<QueryRes>>,
+    locals: &'a BTreeSet<String>,
 }
 
 /// The context threaded through *expression* resolution: the scope chain
-/// (column binding + correlation) and the CTE table for subqueries that
-/// reference `WITH` names.
+/// (column binding + correlation), the CTE table for subqueries that
+/// reference `WITH` names, and the lambda-parameter names in force — those
+/// shadow same-named columns AND binding names inside the lambda body.
 #[derive(Clone, Copy)]
 struct RefScope<'a> {
     scope: Option<&'a Scope<'a>>,
     ctes: &'a HashMap<String, Rc<QueryRes>>,
+    locals: &'a BTreeSet<String>,
 }
 
 /// One direct parent of the model being resolved: the names SQL can call it
@@ -441,6 +568,7 @@ fn ref_scope<'a>(env: Env<'a>, scope: &'a Scope<'a>) -> RefScope<'a> {
     RefScope {
         scope: Some(scope),
         ctes: env.ctes,
+        locals: env.locals,
     }
 }
 
@@ -555,8 +683,14 @@ impl SqlParseResolver {
             }
         }
         if let Some(an) = self.analyzed(dag, uid) {
-            if !an.out.is_empty() {
-                return Some(Rc::new(an.out.iter().map(|o| o.name.clone()).collect()));
+            if an.out.iter().any(|o| !o.synthetic) {
+                return Some(Rc::new(
+                    an.out
+                        .iter()
+                        .filter(|o| !o.synthetic)
+                        .map(|o| o.name.clone())
+                        .collect(),
+                ));
             }
         }
         let cols = self.fallback.columns(dag, uid);
@@ -601,6 +735,7 @@ impl SqlParseResolver {
             let env = Env {
                 outer: None,
                 ctes: &ctes,
+                locals: &NO_LOCALS,
             };
             let (res, scope) = self.resolve_query_full(&ctx, env, query)?;
             Some(Rc::new(Analyzed {
@@ -709,6 +844,7 @@ impl SqlParseResolver {
                     Env {
                         outer: env.outer,
                         ctes: &ctes,
+                        locals: env.locals,
                     },
                     &cte.query,
                 )?;
@@ -719,26 +855,102 @@ impl SqlParseResolver {
         let inner = Env {
             outer: env.outer,
             ctes: &ctes,
+            locals: env.locals,
         };
         let (mut res, scope) = match &*q.body {
             SetExpr::Select(sel) => self.resolve_select(ctx, inner, sel)?,
             body => (self.resolve_set_expr(ctx, inner, body)?, Vec::new()),
         };
-        // Query-level ORDER BY over the body's outputs: `order by <name>`
-        // matching an output name shapes the row set → FilterOrJoin. (It
-        // can also see FROM columns, but the scope is gone here — documented
-        // under-resolution, never a wrong edge.)
+        // Query-level tail clauses all shape the row set → FilterOrJoin.
+        // ORDER BY / LIMIT BY can see BOTH the body's outputs (an
+        // unqualified `order by <alias>` binds the alias, shadowing a
+        // same-named FROM column) and the body's FROM scope (a qualified
+        // or never-projected column) — resolve exprs against a probe scope
+        // of the returned bindings, falling back to the output-name match
+        // when nothing in the FROM scope claims the ref.
+        let probe = Scope {
+            bindings: scope.clone(),
+            windows: HashMap::new(),
+            outer: env.outer,
+        };
+        let probe_refs = RefScope {
+            scope: Some(&probe),
+            ctes: inner.ctes,
+            locals: env.locals,
+        };
         if let Some(ob) = &q.order_by {
             if let OrderByKind::Expressions(exprs) = &ob.kind {
-                for e in exprs {
-                    for name in expr_ident_names(&e.expr) {
-                        if let Some(o) = res.out.iter().find(|o| o.name == name) {
+                for obe in exprs {
+                    let ex = &obe.expr;
+                    // `ORDER BY <alias>` (a bare identifier naming an
+                    // output) binds the alias — SQL shadows the FROM column.
+                    if let Expr::Identifier(i) = ex {
+                        if let Some(o) = res.out.iter().find(|o| o.name == norm_ident(i)) {
                             res.foj.extend(o.sources.iter().cloned());
+                            continue;
+                        }
+                    }
+                    let mut s = self.expr_refs(ctx, probe_refs, ex)?;
+                    if s.is_empty() {
+                        for name in expr_ident_names(ex) {
+                            if let Some(o) = res.out.iter().find(|o| o.name == name) {
+                                s.extend(o.sources.iter().cloned());
+                            }
+                        }
+                    }
+                    res.foj.extend(s);
+                    if let Some(wf) = &obe.with_fill {
+                        for e in [&wf.from, &wf.to, &wf.step].into_iter().flatten() {
+                            res.foj.extend(self.expr_refs(ctx, probe_refs, e)?);
                         }
                     }
                 }
             }
         }
+        if let Some(lc) = &q.limit_clause {
+            match lc {
+                sqlparser::ast::LimitClause::LimitOffset {
+                    limit,
+                    offset,
+                    limit_by,
+                } => {
+                    for e in limit.iter().chain(limit_by.iter()) {
+                        let mut s = self.expr_refs(ctx, probe_refs, e)?;
+                        if s.is_empty() {
+                            // `LIMIT BY` groups on select aliases too —
+                            // the same output-name fallback as ORDER BY.
+                            for name in expr_ident_names(e) {
+                                if let Some(o) = res.out.iter().find(|o| o.name == name) {
+                                    s.extend(o.sources.iter().cloned());
+                                }
+                            }
+                        }
+                        res.foj.extend(s);
+                    }
+                    if let Some(off) = offset {
+                        res.foj.extend(self.expr_refs(ctx, probe_refs, &off.value)?);
+                    }
+                }
+                sqlparser::ast::LimitClause::OffsetCommaLimit { offset, limit } => {
+                    for e in [offset, limit] {
+                        res.foj.extend(self.expr_refs(ctx, probe_refs, e)?);
+                    }
+                }
+            }
+        }
+        if let Some(f) = &q.fetch {
+            if let Some(qe) = &f.quantity {
+                res.foj.extend(self.expr_refs(ctx, probe_refs, qe)?);
+            }
+        }
+        if let Some(settings) = &q.settings {
+            for s in settings {
+                res.foj.extend(self.expr_refs(ctx, probe_refs, &s.value)?);
+            }
+        }
+        // `for_clause`/`format_clause`/`locks` carry no column expressions
+        // (output-format and lock-mode decorations) — nothing to walk.
+        self.resolve_pipe_operators(ctx, inner, &mut res, &q.pipe_operators)?;
         Some((res, scope))
     }
 
@@ -750,30 +962,65 @@ impl SqlParseResolver {
         match e {
             SetExpr::Select(sel) => self.resolve_select(ctx, env, sel).map(|(r, _)| r),
             SetExpr::Query(q) => self.resolve_query(ctx, env, q),
-            SetExpr::SetOperation { left, right, .. } => {
-                // UNION/INTERSECT/EXCEPT: positional merge — output i carries
-                // every arm's column-i sources; name/bare come from the left
-                // arm when present (SQL's own rule).
+            SetExpr::SetOperation {
+                left,
+                right,
+                op,
+                set_quantifier,
+            } => {
                 let l = self.resolve_set_expr(ctx, env, left)?;
                 let r = self.resolve_set_expr(ctx, env, right)?;
+                if !matches!(op, SetOperator::Union) {
+                    // EXCEPT / INTERSECT / MINUS: the right arm only shapes
+                    // WHICH of the left arm's rows survive — its refs join
+                    // the row-shaping pool (never value edges) and the
+                    // outputs come from the left arm alone.
+                    let mut foj = l.foj;
+                    foj.extend(r.foj.iter().cloned());
+                    for o in &r.out {
+                        foj.extend(o.sources.iter().cloned());
+                    }
+                    return Some(QueryRes { out: l.out, foj });
+                }
+                // UNION: positional merge — output i carries every arm's
+                // column-i sources; name/bare come from the left arm when
+                // present (SQL's own rule). `BY NAME` quantifiers pair on
+                // output names instead of position (DuckDB) — a
+                // single-arm name stands alone.
+                let by_name = matches!(
+                    set_quantifier,
+                    SetQuantifier::ByName
+                        | SetQuantifier::AllByName
+                        | SetQuantifier::DistinctByName
+                );
                 let mut out = Vec::new();
-                for i in 0..l.out.len().max(r.out.len()) {
-                    match (l.out.get(i), r.out.get(i)) {
-                        (Some(a), Some(b)) => out.push(OutCol {
-                            name: a.name.clone(),
-                            // An arm contributing no sources (a `null` arm)
-                            // doesn't touch the value's bareness — only real
-                            // contributors vote.
-                            bare: match (a.sources.is_empty(), b.sources.is_empty()) {
-                                (false, true) => a.bare,
-                                (true, false) => b.bare,
-                                _ => a.bare && b.bare,
-                            },
-                            sources: a.sources.union(&b.sources).cloned().collect(),
-                        }),
-                        (Some(a), None) => out.push(a.clone()),
-                        (None, Some(b)) => out.push(b.clone()),
-                        (None, None) => {}
+                if by_name {
+                    for a in &l.out {
+                        match r
+                            .out
+                            .iter()
+                            .find(|b| !a.synthetic && !b.synthetic && b.name == a.name)
+                        {
+                            Some(b) => out.push(union_out(a, b)),
+                            None => out.push(a.clone()),
+                        }
+                    }
+                    for b in &r.out {
+                        if l.out
+                            .iter()
+                            .all(|a| a.synthetic || b.synthetic || a.name != b.name)
+                        {
+                            out.push(b.clone());
+                        }
+                    }
+                } else {
+                    for i in 0..l.out.len().max(r.out.len()) {
+                        match (l.out.get(i), r.out.get(i)) {
+                            (Some(a), Some(b)) => out.push(union_out(a, b)),
+                            (Some(a), None) => out.push(a.clone()),
+                            (None, Some(b)) => out.push(b.clone()),
+                            (None, None) => {}
+                        }
                     }
                 }
                 Some(QueryRes {
@@ -788,6 +1035,7 @@ impl SqlParseResolver {
                 let refs = RefScope {
                     scope: env.outer,
                     ctes: env.ctes,
+                    locals: env.locals,
                 };
                 for row in &v.rows {
                     for e in &row.content {
@@ -800,12 +1048,344 @@ impl SqlParseResolver {
                         name: format!("column{i}"),
                         bare: false,
                         sources: ColSources::new(),
+                        synthetic: false,
                     })
                     .collect();
                 Some(QueryRes { out, foj })
             }
-            _ => Some(QueryRes::default()),
+            SetExpr::Table(t) => {
+                // `TABLE [sch.]name` — the whole relation's column list is
+                // the output (CTE names resolve like a FROM reference).
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(s) = &t.schema_name {
+                    parts.push(norm_ident(s));
+                }
+                if let Some(n) = &t.table_name {
+                    parts.push(norm_ident(n));
+                }
+                let mut out = Vec::new();
+                let mut foj = ColSources::new();
+                if let Some(last) = parts.last() {
+                    if parts.len() == 1 && env.ctes.get(last).is_some() {
+                        // CTE names are unqualified — `TABLE c` reads `c`.
+                        let q = env.ctes.get(last).expect("checked above");
+                        out = q.out.clone();
+                        foj.extend(q.foj.iter().cloned());
+                    } else if let Some(p) = Self::match_parent(ctx.parents, &parts) {
+                        if let Some(cs) = self.col_set(ctx.dag, &p.uid) {
+                            for c in cs.iter() {
+                                out.push(OutCol {
+                                    name: c.clone(),
+                                    bare: true,
+                                    sources: BTreeSet::from([(p.uid.clone(), c.clone())]),
+                                    synthetic: false,
+                                });
+                            }
+                        }
+                    }
+                }
+                Some(QueryRes { out, foj })
+            }
+            // Insert/Update/Delete/Merge bodies don't describe a model's
+            // SELECT — nothing to resolve (documented non-statement).
+            SetExpr::Insert(_) | SetExpr::Update(_) | SetExpr::Delete(_) | SetExpr::Merge(_) => {
+                Some(QueryRes::default())
+            }
         }
+    }
+
+    /// Apply the `|>` pipe-operator chain (DuckDB/BigQuery pipe syntax) to
+    /// the running result `res`, in order. The pipe input is the only
+    /// visible table: a synthetic Derived binding exposes the current
+    /// `res.out` so unqualified refs read the CURRENT outputs (renames /
+    /// `SELECT` lists keep their sources); `|> AS` names that binding for
+    /// qualified refs and `|> JOIN` adds real bindings beside it.
+    ///
+    /// Documented approximations: `|> PIVOT`/`UNPIVOT`/`CALL` reshape the
+    /// result in ways no column list can describe, so the output collapses
+    /// to one synthetic column carrying every prior source (the whole
+    /// input provably feeds it); `|> TABLESAMPLE` carries no column exprs.
+    fn resolve_pipe_operators(
+        &self,
+        ctx: &Ctx<'_>,
+        env: Env<'_>,
+        res: &mut QueryRes,
+        ops: &[sqlparser::ast::PipeOperator],
+    ) -> Option<()> {
+        use sqlparser::ast::PipeOperator as P;
+        // Slot 0 is the pipe input; `|> JOIN` appends bindings beside it.
+        let mut scope = Scope {
+            bindings: vec![Binding {
+                name: String::new(),
+                src: TableSrc::Derived(Rc::new(res.clone())),
+            }],
+            windows: HashMap::new(),
+            outer: env.outer,
+        };
+        for po in ops {
+            let refs = ref_scope(env, &scope);
+            match po {
+                P::Where { expr } => {
+                    res.foj.extend(self.expr_refs(ctx, refs, expr)?);
+                }
+                P::OrderBy { exprs } => {
+                    for e in exprs {
+                        res.foj.extend(self.expr_refs(ctx, refs, &e.expr)?);
+                    }
+                }
+                P::Limit { expr, offset } => {
+                    for e in [expr].into_iter().chain(offset.iter()) {
+                        res.foj.extend(self.expr_refs(ctx, refs, e)?);
+                    }
+                }
+                P::Select { exprs } => {
+                    let mut out = Vec::new();
+                    for item in exprs {
+                        self.resolve_select_item(ctx, refs, &scope, item, &mut out)?;
+                    }
+                    res.out = out;
+                }
+                P::Extend { exprs } => {
+                    for item in exprs {
+                        self.resolve_select_item(ctx, refs, &scope, item, &mut res.out)?;
+                    }
+                }
+                P::Set { assignments } => {
+                    for a in assignments {
+                        let sources = self.expr_refs(ctx, refs, &a.value)?;
+                        let names: Vec<String> = match &a.target {
+                            sqlparser::ast::AssignmentTarget::ColumnName(on) => {
+                                object_name_parts(on)
+                                    .into_iter()
+                                    .last()
+                                    .into_iter()
+                                    .collect()
+                            }
+                            sqlparser::ast::AssignmentTarget::Tuple(ons) => ons
+                                .iter()
+                                .filter_map(|on| object_name_parts(on).into_iter().last())
+                                .collect(),
+                        };
+                        for n in names {
+                            if let Some(o) = res.out.iter_mut().find(|o| o.name == n) {
+                                o.sources = sources.clone();
+                                o.bare = false;
+                            } else {
+                                // `SET x = expr` on a non-output name: the
+                                // refs were still evaluated — row-shaping.
+                                res.foj.extend(sources.iter().cloned());
+                            }
+                        }
+                    }
+                }
+                P::Drop { columns } => {
+                    let drop: BTreeSet<String> = columns.iter().map(norm_ident).collect();
+                    res.out.retain(|o| !drop.contains(&o.name));
+                }
+                P::As { alias } => {
+                    scope.bindings[0].name = norm_ident(alias);
+                }
+                P::Aggregate {
+                    full_table_exprs,
+                    group_by_expr,
+                } => {
+                    let mut out = Vec::new();
+                    for ewa in full_table_exprs.iter().chain(group_by_expr.iter()) {
+                        let sources = self.expr_refs(ctx, refs, &ewa.expr.expr)?;
+                        out.push(OutCol {
+                            name: ewa
+                                .expr
+                                .alias
+                                .as_ref()
+                                .map(norm_ident)
+                                .or_else(|| derive_name(&ewa.expr.expr))
+                                .unwrap_or_default(),
+                            bare: self.projection_bare(ctx, refs, &ewa.expr.expr),
+                            sources,
+                            synthetic: false,
+                        });
+                    }
+                    res.out = out;
+                }
+                P::Rename { mappings } => {
+                    let pairs: Vec<(String, String)> = mappings
+                        .iter()
+                        .map(|ia| (norm_ident(&ia.ident), norm_ident(&ia.alias)))
+                        .collect();
+                    for o in &mut res.out {
+                        if let Some((_, to)) = pairs.iter().find(|(from, _)| from == &o.name) {
+                            o.name = to.clone();
+                            o.synthetic = false;
+                        }
+                    }
+                }
+                P::Union {
+                    set_quantifier,
+                    queries,
+                } => {
+                    let by_name = matches!(
+                        set_quantifier,
+                        SetQuantifier::ByName
+                            | SetQuantifier::AllByName
+                            | SetQuantifier::DistinctByName
+                    );
+                    for sub in queries {
+                        let r = self.resolve_query(ctx, env, sub)?;
+                        res.foj.extend(r.foj.iter().cloned());
+                        if by_name {
+                            for a in &mut res.out {
+                                if let Some(b) = r
+                                    .out
+                                    .iter()
+                                    .find(|b| !a.synthetic && !b.synthetic && b.name == a.name)
+                                {
+                                    a.sources = a.sources.union(&b.sources).cloned().collect();
+                                }
+                            }
+                            for b in r.out {
+                                if res
+                                    .out
+                                    .iter()
+                                    .all(|a| a.synthetic || b.synthetic || a.name != b.name)
+                                {
+                                    res.out.push(b);
+                                }
+                            }
+                        } else {
+                            for i in 0..res.out.len().max(r.out.len()) {
+                                match (res.out.get(i), r.out.get(i)) {
+                                    (Some(a), Some(b)) => res.out[i] = union_out(a, b),
+                                    (None, Some(b)) => res.out.push(b.clone()),
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+                P::Intersect { queries, .. } | P::Except { queries, .. } => {
+                    // Like the binary EXCEPT/INTERSECT arms: each right-hand
+                    // query only shapes which pipe-input rows survive.
+                    for sub in queries {
+                        let r = self.resolve_query(ctx, env, sub)?;
+                        res.foj.extend(r.foj.iter().cloned());
+                        for o in &r.out {
+                            res.foj.extend(o.sources.iter().cloned());
+                        }
+                    }
+                }
+                P::Join(j) => {
+                    // `|> JOIN t ON …` — the relation binds beside the pipe
+                    // input; the constraint's refs are row-shaping.
+                    self.bind_relation(ctx, env, &mut scope, res, &j.relation)?;
+                    let refs = ref_scope(env, &scope);
+                    if let JoinOperator::AsOf {
+                        match_condition, ..
+                    } = &j.join_operator
+                    {
+                        res.foj.extend(self.expr_refs(ctx, refs, match_condition)?);
+                    }
+                    match join_constraint(j) {
+                        Some(JoinConstraint::On(e)) => {
+                            res.foj.extend(self.expr_refs(ctx, refs, e)?);
+                        }
+                        Some(JoinConstraint::Using(names))
+                        | Some(JoinConstraint::UsingAlias(names, _)) => {
+                            for on in names {
+                                let parts = object_name_parts(on);
+                                res.foj.extend(self.resolve_parts(ctx, refs, &parts));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                P::Call { function, .. } => {
+                    res.foj.extend(self.function_refs(ctx, refs, function)?);
+                    res.out = vec![collapse_pipe_output(res)];
+                }
+                P::Pivot {
+                    aggregate_functions,
+                    value_column,
+                    value_source,
+                    ..
+                } => {
+                    for ef in aggregate_functions {
+                        res.foj.extend(self.expr_refs(ctx, refs, &ef.expr)?);
+                    }
+                    for i in value_column {
+                        res.foj
+                            .extend(self.resolve_parts(ctx, refs, &[norm_ident(i)]));
+                    }
+                    self.pivot_value_source_refs(ctx, refs, value_source, &mut res.foj)?;
+                    res.out = vec![collapse_pipe_output(res)];
+                }
+                P::Unpivot {
+                    value_column,
+                    name_column,
+                    unpivot_columns,
+                    ..
+                } => {
+                    // The unpivoted columns' sources flow into the value
+                    // output; `name_column` carries the names themselves.
+                    let drop: BTreeSet<String> = unpivot_columns.iter().map(norm_ident).collect();
+                    let mut sources = ColSources::new();
+                    res.out.retain(|o| {
+                        if drop.contains(&o.name) {
+                            sources.extend(o.sources.iter().cloned());
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    res.out.push(OutCol {
+                        name: norm_ident(value_column),
+                        bare: false,
+                        sources,
+                        synthetic: false,
+                    });
+                    res.out.push(OutCol {
+                        name: norm_ident(name_column),
+                        bare: false,
+                        sources: ColSources::new(),
+                        synthetic: false,
+                    });
+                }
+                P::TableSample { .. } => {
+                    // Sampling quantities/seeds/buckets are numerics — no
+                    // column refs to walk.
+                }
+            }
+            // The input binding re-exposes the (possibly reshaped) outputs.
+            scope.bindings[0].src = TableSrc::Derived(Rc::new(res.clone()));
+        }
+        Some(())
+    }
+
+    /// The refs inside a pivot `IN (...)`/`ANY`/`(subquery)` value source —
+    /// shared by the `PIVOT` table factor and the `|> PIVOT` pipe operator.
+    fn pivot_value_source_refs(
+        &self,
+        ctx: &Ctx<'_>,
+        refs: RefScope<'_>,
+        vs: &sqlparser::ast::PivotValueSource,
+        foj: &mut ColSources,
+    ) -> Option<()> {
+        use sqlparser::ast::PivotValueSource as PVS;
+        match vs {
+            PVS::List(items) => {
+                for it in items {
+                    foj.extend(self.expr_refs(ctx, refs, &it.expr)?);
+                }
+            }
+            PVS::Any(order_by) => {
+                for ob in order_by {
+                    foj.extend(self.expr_refs(ctx, refs, &ob.expr)?);
+                }
+            }
+            PVS::Subquery(q) => {
+                foj.extend(self.subquery_refs(ctx, refs, q)?);
+            }
+        }
+        Some(())
     }
 
     /// Resolve one SELECT: FROM bindings → the row-shaping tail → the
@@ -831,19 +1411,67 @@ impl SqlParseResolver {
         }
 
         // Named windows (`WINDOW w AS (…)`) visible to `OVER w` — they live
-        // on this scope level so the function walker can find them.
+        // on this scope level so the function walker can find them. A
+        // `WINDOW w AS prev` alias chases the earlier def it points at.
         for def in &sel.named_window {
-            if let NamedWindowExpr::WindowSpec(spec) = &def.1 {
-                scope.windows.insert(norm_ident(&def.0), spec.clone());
+            let spec = match &def.1 {
+                NamedWindowExpr::WindowSpec(spec) => Some(spec.clone()),
+                NamedWindowExpr::NamedWindow(other) => {
+                    scope.windows.get(&norm_ident(other)).cloned()
+                }
+            };
+            if let Some(spec) = spec {
+                scope.windows.insert(norm_ident(&def.0), spec);
+            }
+        }
+
+        // LATERAL VIEWs explode a column into rows — their input expressions
+        // are row-shaping, and `… lv AS c1,c2` binds a derived relation of
+        // the exploded values (so `lv.c1` / bare `c1` in the projection
+        // resolve to the input expr's sources).
+        for lv in &sel.lateral_views {
+            let lv_refs = {
+                let r = ref_scope(env, &scope);
+                self.expr_refs(ctx, r, &lv.lateral_view)?
+            };
+            res.foj.extend(lv_refs.iter().cloned());
+            if let Some(name) = object_name_parts(&lv.lateral_view_name).last().cloned() {
+                let out = if lv.lateral_col_alias.is_empty() {
+                    vec![OutCol {
+                        name: String::new(),
+                        bare: false,
+                        sources: lv_refs,
+                        synthetic: true,
+                    }]
+                } else {
+                    lv.lateral_col_alias
+                        .iter()
+                        .map(|a| OutCol {
+                            name: norm_ident(a),
+                            bare: false,
+                            sources: lv_refs.clone(),
+                            synthetic: false,
+                        })
+                        .collect()
+                };
+                scope.bindings.push(Binding {
+                    name,
+                    src: TableSrc::Derived(Rc::new(QueryRes {
+                        out,
+                        foj: ColSources::new(),
+                    })),
+                });
             }
         }
 
         let refs = ref_scope(env, &scope);
 
-        // LATERAL VIEWs explode a column into rows — their input expressions
-        // are row-shaping.
-        for lv in &sel.lateral_views {
-            res.foj.extend(self.expr_refs(ctx, refs, &lv.lateral_view)?);
+        // `TOP (n)` — the quantity is row-shaping (usually a literal, but
+        // `TOP (expr)` can carry a column ref).
+        if let Some(top) = &sel.top {
+            if let Some(sqlparser::ast::TopQuantity::Expr(e)) = &top.quantity {
+                res.foj.extend(self.expr_refs(ctx, refs, e)?);
+            }
         }
 
         // The row-shaping tail: PREWHERE/WHERE/GROUP BY/HAVING/QUALIFY/
@@ -888,63 +1516,7 @@ impl SqlParseResolver {
         // The projection → output columns.
         let mut out: Vec<OutCol> = Vec::new();
         for item in &sel.projection {
-            match item {
-                SelectItem::UnnamedExpr(e) => {
-                    let sources = self.expr_refs(ctx, refs, e)?;
-                    out.push(OutCol {
-                        name: derive_name(e).unwrap_or_default(),
-                        bare: self.projection_bare(ctx, refs, e),
-                        sources,
-                    });
-                }
-                SelectItem::ExprWithAlias { expr, alias } => {
-                    let sources = self.expr_refs(ctx, refs, expr)?;
-                    out.push(OutCol {
-                        name: norm_ident(alias),
-                        bare: self.projection_bare(ctx, refs, expr),
-                        sources,
-                    });
-                }
-                SelectItem::ExprWithAliases { expr, aliases } => {
-                    let sources = self.expr_refs(ctx, refs, expr)?;
-                    for a in aliases {
-                        out.push(OutCol {
-                            name: norm_ident(a),
-                            bare: self.projection_bare(ctx, refs, expr),
-                            sources: sources.clone(),
-                        });
-                    }
-                }
-                SelectItem::Wildcard(opts) => {
-                    self.expand_wildcard(ctx, refs, &scope, None, opts, &mut out)?;
-                }
-                SelectItem::QualifiedWildcard(kind, opts) => match kind {
-                    SelectItemQualifiedWildcardKind::ObjectName(on) => {
-                        let parts = object_name_parts(on);
-                        if let Some(qual) = parts.last() {
-                            self.expand_wildcard(
-                                ctx,
-                                refs,
-                                &scope,
-                                Some(qual.clone()),
-                                opts,
-                                &mut out,
-                            )?;
-                        }
-                    }
-                    SelectItemQualifiedWildcardKind::Expr(e) => {
-                        // `(expr).*` — a struct expansion: the fields are
-                        // un-nameable, so only the expr's refs register… as
-                        // an unnamed output, skipped by name matching.
-                        let sources = self.expr_refs(ctx, refs, e)?;
-                        out.push(OutCol {
-                            name: String::new(),
-                            bare: false,
-                            sources,
-                        });
-                    }
-                },
-            }
+            self.resolve_select_item(ctx, refs, &scope, item, &mut out)?;
         }
 
         // SELECT-level EXCLUDE (Redshift `SELECT * EXCLUDE(col)` parses at
@@ -955,17 +1527,87 @@ impl SqlParseResolver {
         }
 
         // Unnamed outputs (literals, unnameable exprs) get a positional
-        // placeholder — `columns()` can list them without inventing names
-        // that collide with real ones.
+        // placeholder so positional merges stay aligned — but they're
+        // marked `synthetic` and never surface in `columns()`, the
+        // row-shaping fan, or `UNION BY NAME` matching (a real column
+        // literally named `__col1` is never marked).
         let mut anon = 0usize;
         for o in &mut out {
             if o.name.is_empty() {
                 anon += 1;
-                o.name = format!("__col{anon}");
+                o.name = format!("{ANON_COL_PREFIX}{anon}");
+                o.synthetic = true;
             }
         }
         res.out = out;
         Some((res, scope.bindings))
+    }
+
+    /// Resolve one projection item into output columns — shared by
+    /// `resolve_select` and the `|> SELECT`/`|> EXTEND` pipe operators.
+    fn resolve_select_item(
+        &self,
+        ctx: &Ctx<'_>,
+        refs: RefScope<'_>,
+        scope: &Scope<'_>,
+        item: &SelectItem,
+        out: &mut Vec<OutCol>,
+    ) -> Option<()> {
+        match item {
+            SelectItem::UnnamedExpr(e) => {
+                let sources = self.expr_refs(ctx, refs, e)?;
+                out.push(OutCol {
+                    name: derive_name(e).unwrap_or_default(),
+                    bare: self.projection_bare(ctx, refs, e),
+                    sources,
+                    synthetic: false,
+                });
+            }
+            SelectItem::ExprWithAlias { expr, alias } => {
+                let sources = self.expr_refs(ctx, refs, expr)?;
+                out.push(OutCol {
+                    name: norm_ident(alias),
+                    bare: self.projection_bare(ctx, refs, expr),
+                    sources,
+                    synthetic: false,
+                });
+            }
+            SelectItem::ExprWithAliases { expr, aliases } => {
+                let sources = self.expr_refs(ctx, refs, expr)?;
+                for a in aliases {
+                    out.push(OutCol {
+                        name: norm_ident(a),
+                        bare: self.projection_bare(ctx, refs, expr),
+                        sources: sources.clone(),
+                        synthetic: false,
+                    });
+                }
+            }
+            SelectItem::Wildcard(opts) => {
+                self.expand_wildcard(ctx, refs, scope, None, opts, out)?;
+            }
+            SelectItem::QualifiedWildcard(kind, opts) => match kind {
+                SelectItemQualifiedWildcardKind::ObjectName(on) => {
+                    let parts = object_name_parts(on);
+                    if let Some(qual) = parts.last() {
+                        self.expand_wildcard(ctx, refs, scope, Some(qual.clone()), opts, out)?;
+                    }
+                }
+                SelectItemQualifiedWildcardKind::Expr(e) => {
+                    // `(expr).*` — a struct expansion: the fields are
+                    // un-nameable, so only the expr's refs register… as
+                    // an unnamed output, skipped by name matching.
+                    let sources = self.expr_refs(ctx, refs, e)?;
+                    out.push(OutCol {
+                        name: String::new(),
+                        bare: false,
+                        sources,
+                        synthetic: false,
+                    });
+                }
+            },
+        }
+        Some(())
     }
 
     /// Bind a `TableWithJoins`: the base relation, then each join's relation
@@ -982,6 +1624,12 @@ impl SqlParseResolver {
         for j in &twj.joins {
             self.bind_relation(ctx, env, scope, res, &j.relation)?;
             let refs = ref_scope(env, scope);
+            if let JoinOperator::AsOf {
+                match_condition, ..
+            } = &j.join_operator
+            {
+                res.foj.extend(self.expr_refs(ctx, refs, match_condition)?);
+            }
             match join_constraint(j) {
                 Some(JoinConstraint::On(e)) => {
                     res.foj.extend(self.expr_refs(ctx, refs, e)?);
@@ -1062,6 +1710,7 @@ impl SqlParseResolver {
                         // far; a plain derived table sees only outer scopes.
                         outer: if *lateral { Some(&*scope) } else { env.outer },
                         ctes: env.ctes,
+                        locals: env.locals,
                     },
                     subquery,
                 )?;
@@ -1110,25 +1759,67 @@ impl SqlParseResolver {
                 self.bind_twj(ctx, env, scope, res, table_with_joins)?;
             }
             TableFactor::UNNEST {
-                alias, array_exprs, ..
+                alias,
+                array_exprs,
+                with_offset_alias,
+                with_ordinality,
+                ..
             } => {
-                let refs = ref_scope(env, scope);
+                // UNNEST explodes an array into rows — row-shaping input,
+                // and its alias binds a derived relation of the exploded
+                // value (`UNNEST(a) AS u` → `u` carries `a`'s refs).
+                let refs = ref_scope(env, &*scope);
+                let mut elem_sources = ColSources::new();
                 for e in array_exprs {
-                    res.foj.extend(self.expr_refs(ctx, refs, e)?);
+                    elem_sources.extend(self.expr_refs(ctx, refs, e)?);
+                }
+                res.foj.extend(elem_sources.iter().cloned());
+                let mut out: Vec<OutCol> = {
+                    let names: Vec<String> = alias
+                        .as_ref()
+                        .map(|a| a.columns.iter().map(|c| norm_ident(&c.name)).collect())
+                        .unwrap_or_else(|| vec!["unnest".to_string()]);
+                    names
+                        .into_iter()
+                        .map(|name| OutCol {
+                            name,
+                            bare: false,
+                            sources: elem_sources.clone(),
+                            synthetic: false,
+                        })
+                        .collect()
+                };
+                // Offsets/ordinality are generated, not read — no sources.
+                let ord_name = with_offset_alias
+                    .as_ref()
+                    .map(norm_ident)
+                    .or_else(|| with_ordinality.then(|| "ordinality".to_string()));
+                if let Some(name) = ord_name {
+                    out.push(OutCol {
+                        name,
+                        bare: false,
+                        sources: ColSources::new(),
+                        synthetic: false,
+                    });
                 }
                 scope.bindings.push(Binding {
                     name: alias
                         .as_ref()
                         .map(|a| norm_ident(&a.name))
                         .unwrap_or_else(|| "__unnest".to_string()),
-                    src: TableSrc::External,
+                    src: TableSrc::Derived(Rc::new(QueryRes {
+                        out,
+                        foj: ColSources::new(),
+                    })),
                 });
             }
             TableFactor::Pivot {
                 table,
                 aggregate_functions,
+                value_column,
+                value_source,
+                default_on_null,
                 alias,
-                ..
             } => {
                 // The inner table still binds (its columns feed the pivot
                 // values); the pivoted result itself binds un-nameable.
@@ -1136,6 +1827,13 @@ impl SqlParseResolver {
                 let refs = ref_scope(env, scope);
                 for ef in aggregate_functions {
                     res.foj.extend(self.expr_refs(ctx, refs, &ef.expr)?);
+                }
+                for e in value_column {
+                    res.foj.extend(self.expr_refs(ctx, refs, e)?);
+                }
+                self.pivot_value_source_refs(ctx, refs, value_source, &mut res.foj)?;
+                if let Some(e) = default_on_null {
+                    res.foj.extend(self.expr_refs(ctx, refs, e)?);
                 }
                 scope.bindings.push(Binding {
                     name: alias
@@ -1145,8 +1843,19 @@ impl SqlParseResolver {
                     src: TableSrc::External,
                 });
             }
-            TableFactor::Unpivot { table, alias, .. } => {
+            TableFactor::Unpivot {
+                table,
+                value,
+                columns,
+                alias,
+                ..
+            } => {
                 self.bind_relation(ctx, env, scope, res, table)?;
+                let refs = ref_scope(env, scope);
+                res.foj.extend(self.expr_refs(ctx, refs, value)?);
+                for c in columns {
+                    res.foj.extend(self.expr_refs(ctx, refs, &c.expr)?);
+                }
                 scope.bindings.push(Binding {
                     name: alias
                         .as_ref()
@@ -1155,24 +1864,148 @@ impl SqlParseResolver {
                     src: TableSrc::External,
                 });
             }
-            TableFactor::JsonTable {
-                json_expr, alias, ..
-            }
-            | TableFactor::OpenJsonTable {
-                json_expr, alias, ..
+            TableFactor::UnpivotExpr {
+                expression,
+                value_alias,
+                attribute_alias,
             } => {
-                res.foj
-                    .extend(self.expr_refs(ctx, ref_scope(env, scope), json_expr)?);
+                // `UNPIVOT expr AS v AT a` (Redshift SUPER): the exploded
+                // value/attribute columns read the input expression.
+                let sources = self.expr_refs(ctx, ref_scope(env, scope), expression)?;
+                res.foj.extend(sources.iter().cloned());
+                let mut out = vec![OutCol {
+                    name: norm_ident(value_alias),
+                    bare: false,
+                    sources: sources.clone(),
+                    synthetic: false,
+                }];
+                if let Some(a) = attribute_alias {
+                    out.push(OutCol {
+                        name: norm_ident(a),
+                        bare: false,
+                        sources,
+                        synthetic: false,
+                    });
+                }
+                scope.bindings.push(Binding {
+                    name: norm_ident(value_alias),
+                    src: TableSrc::Derived(Rc::new(QueryRes {
+                        out,
+                        foj: ColSources::new(),
+                    })),
+                });
+            }
+            TableFactor::JsonTable {
+                json_expr,
+                columns,
+                alias,
+                ..
+            } => {
+                // JSON_TABLE: the document expr is row-shaping input; the
+                // declared COLUMNS bind named outputs fed by it (paths and
+                // error-handling clauses carry no column refs).
+                let doc = self.expr_refs(ctx, ref_scope(env, scope), json_expr)?;
+                res.foj.extend(doc.iter().cloned());
+                let mut names: Vec<String> = Vec::new();
+                let mut stack: Vec<&sqlparser::ast::JsonTableColumn> = columns.iter().collect();
+                while let Some(c) = stack.pop() {
+                    match c {
+                        sqlparser::ast::JsonTableColumn::Named(n) => {
+                            names.push(norm_ident(&n.name));
+                        }
+                        sqlparser::ast::JsonTableColumn::ForOrdinality(i) => {
+                            names.push(norm_ident(i));
+                        }
+                        sqlparser::ast::JsonTableColumn::Nested(n) => {
+                            stack.extend(n.columns.iter());
+                        }
+                    }
+                }
+                let out = names
+                    .into_iter()
+                    .map(|name| OutCol {
+                        name,
+                        bare: false,
+                        sources: doc.clone(),
+                        synthetic: false,
+                    })
+                    .collect();
                 scope.bindings.push(Binding {
                     name: alias
                         .as_ref()
                         .map(|a| norm_ident(&a.name))
                         .unwrap_or_else(|| "__json".to_string()),
-                    src: TableSrc::External,
+                    src: TableSrc::Derived(Rc::new(QueryRes {
+                        out,
+                        foj: ColSources::new(),
+                    })),
                 });
             }
-            TableFactor::MatchRecognize { table, alias, .. } => {
+            TableFactor::OpenJsonTable {
+                json_expr,
+                columns,
+                alias,
+                ..
+            } => {
+                // Same shape as JSON_TABLE with the OpenJson column type.
+                let doc = self.expr_refs(ctx, ref_scope(env, scope), json_expr)?;
+                res.foj.extend(doc.iter().cloned());
+                let out = columns
+                    .iter()
+                    .map(|c| OutCol {
+                        name: norm_ident(&c.name),
+                        bare: false,
+                        sources: doc.clone(),
+                        synthetic: false,
+                    })
+                    .collect();
+                scope.bindings.push(Binding {
+                    name: alias
+                        .as_ref()
+                        .map(|a| norm_ident(&a.name))
+                        .unwrap_or_else(|| "__json".to_string()),
+                    src: TableSrc::Derived(Rc::new(QueryRes {
+                        out,
+                        foj: ColSources::new(),
+                    })),
+                });
+            }
+            TableFactor::MatchRecognize {
+                table,
+                partition_by,
+                order_by,
+                measures,
+                symbols,
+                alias,
+                ..
+            } => {
                 self.bind_relation(ctx, env, scope, res, table)?;
+                // DEFINE symbols are row variables (like lambda params):
+                // local names, never bindings — `A.price` still reaches the
+                // input column through the first-segment fallback.
+                let mut locals = env.locals.clone();
+                for sd in symbols {
+                    locals.insert(norm_ident(&sd.symbol));
+                }
+                let refs = RefScope {
+                    scope: Some(scope),
+                    ctes: env.ctes,
+                    locals: &locals,
+                };
+                for e in partition_by {
+                    res.foj.extend(self.expr_refs(ctx, refs, e)?);
+                }
+                for o in order_by {
+                    res.foj.extend(self.expr_refs(ctx, refs, &o.expr)?);
+                }
+                for m in measures {
+                    res.foj.extend(self.expr_refs(ctx, refs, &m.expr)?);
+                }
+                for sd in symbols {
+                    res.foj.extend(self.expr_refs(ctx, refs, &sd.definition)?);
+                }
+                // `rows_per_match`/`after_match_skip`/`pattern` carry no
+                // column exprs (row-count modes and a regex over symbols).
                 scope.bindings.push(Binding {
                     name: alias
                         .as_ref()
@@ -1181,11 +2014,82 @@ impl SqlParseResolver {
                     src: TableSrc::External,
                 });
             }
-            _ => {
-                // TableMethod / XmlTable / others we don't model: bind as
-                // External so qualified refs can't poison the scope.
+            TableFactor::XmlTable {
+                namespaces,
+                row_expression,
+                passing,
+                columns,
+                alias,
+            } => {
+                // XMLTABLE: namespaces/passing args read outer columns; the
+                // extracted COLUMNS bind named outputs fed by the passed
+                // document (the PATH/default exprs stay in the row-shaping
+                // pool — column-list lineage for them is unknowable).
+                let refs = ref_scope(env, scope);
+                res.foj.extend(self.expr_refs(ctx, refs, row_expression)?);
+                let mut doc = ColSources::new();
+                for ns in namespaces {
+                    doc.extend(self.expr_refs(ctx, refs, &ns.uri)?);
+                }
+                for arg in &passing.arguments {
+                    doc.extend(self.expr_refs(ctx, refs, &arg.expr)?);
+                }
+                res.foj.extend(doc.iter().cloned());
+                for c in columns {
+                    if let sqlparser::ast::XmlTableColumnOption::NamedInfo {
+                        path, default, ..
+                    } = &c.option
+                    {
+                        for e in [path, default].into_iter().flatten() {
+                            res.foj.extend(self.expr_refs(ctx, refs, e)?);
+                        }
+                    }
+                }
+                let out = columns
+                    .iter()
+                    .map(|c| OutCol {
+                        name: norm_ident(&c.name),
+                        bare: false,
+                        sources: doc.clone(),
+                        synthetic: false,
+                    })
+                    .collect();
                 scope.bindings.push(Binding {
-                    name: "__other".to_string(),
+                    name: alias
+                        .as_ref()
+                        .map(|a| norm_ident(&a.name))
+                        .unwrap_or_else(|| "__xml".to_string()),
+                    src: TableSrc::Derived(Rc::new(QueryRes {
+                        out,
+                        foj: ColSources::new(),
+                    })),
+                });
+            }
+            TableFactor::SemanticView {
+                dimensions,
+                metrics,
+                facts,
+                where_clause,
+                alias,
+                ..
+            } => {
+                // SEMANTIC_VIEW names objects inside a Snowflake semantic
+                // model — not lineage relations. Their refs can still land
+                // on same-named scope columns (the general qualified-name
+                // ambiguity), so they join the row-shaping pool and the
+                // view binds External.
+                let refs = ref_scope(env, scope);
+                for e in dimensions.iter().chain(metrics).chain(facts) {
+                    res.foj.extend(self.expr_refs(ctx, refs, e)?);
+                }
+                if let Some(e) = where_clause {
+                    res.foj.extend(self.expr_refs(ctx, refs, e)?);
+                }
+                scope.bindings.push(Binding {
+                    name: alias
+                        .as_ref()
+                        .map(|a| norm_ident(&a.name))
+                        .unwrap_or_else(|| "__semantic".to_string()),
                     src: TableSrc::External,
                 });
             }
@@ -1230,6 +2134,9 @@ impl SqlParseResolver {
             | Expr::IsNotUnknown(e)
             | Expr::Nested(e)
             | Expr::Prior(e)
+            | Expr::OuterJoin(e)
+            | Expr::IsJson { expr: e, .. }
+            | Expr::IsNormalized { expr: e, .. }
             | Expr::Collate { expr: e, .. }
             | Expr::Named { expr: e, .. }
             | Expr::Prefixed { value: e, .. }
@@ -1292,7 +2199,27 @@ impl SqlParseResolver {
                     InTarget::Unnest(e) => {
                         s.extend(self.expr_refs(ctx, refs, e)?);
                     }
-                    _ => {}
+                    InTarget::Table { name, args } => {
+                        // `x IN table_name` (SQLite) reads every row of the
+                        // named relation — like `IN (SELECT * FROM name)`:
+                        // all of that table's columns feed the test.
+                        for a in args.iter().flatten() {
+                            s.extend(self.function_arg_refs(ctx, refs, a)?);
+                        }
+                        let parts = object_name_parts(name);
+                        if let Some(last) = parts.last() {
+                            if let Some(q) = refs.ctes.get(last) {
+                                s.extend(q.foj.iter().cloned());
+                                for o in &q.out {
+                                    s.extend(o.sources.iter().cloned());
+                                }
+                            } else if let Some(p) = Self::match_parent(ctx.parents, &parts) {
+                                if let Some(cs) = self.col_set(ctx.dag, &p.uid) {
+                                    s.extend(cs.iter().map(|c| (p.uid.clone(), c.clone())));
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Expr::Convert { expr, styles, .. } => {
@@ -1418,11 +2345,31 @@ impl SqlParseResolver {
                 s.extend(self.expr_refs(ctx, refs, &m.array)?);
             }
             Expr::Lambda(l) => {
-                s.extend(self.expr_refs(ctx, refs, &l.body)?);
+                // Lambda params are LOCAL names: `x -> x > 0` never reads a
+                // column `x`. The body still sees every other in-scope
+                // column (`filter(arr, x -> x > y)` does read `y`).
+                let mut locals = refs.locals.clone();
+                for p in l.params.iter() {
+                    locals.insert(norm_ident(&p.name));
+                }
+                s.extend(self.expr_refs(
+                    ctx,
+                    RefScope {
+                        scope: refs.scope,
+                        ctes: refs.ctes,
+                        locals: &locals,
+                    },
+                    &l.body,
+                )?);
             }
-            // Literals, wildcards (handled by the projection), and every
-            // remaining variant contribute no column refs.
-            _ => {}
+            // Literals and wildcards contribute no column refs (wildcards
+            // are expanded by the projection path, not walked as exprs).
+            // The exhaustive match means a NEW sqlparser variant fails the
+            // build rather than silently under-resolving.
+            Expr::Value(_)
+            | Expr::TypedString { .. }
+            | Expr::Wildcard(_)
+            | Expr::QualifiedWildcard(..) => {}
         }
         Some(s)
     }
@@ -1438,6 +2385,7 @@ impl SqlParseResolver {
             Env {
                 outer: refs.scope,
                 ctes: refs.ctes,
+                locals: refs.locals,
             },
             q,
         )?;
@@ -1493,6 +2441,13 @@ impl SqlParseResolver {
                             FunctionArgumentClause::Limit(e) | FunctionArgumentClause::Where(e) => {
                                 s.extend(self.expr_refs(ctx, refs, e)?);
                             }
+                            // `HAVING MIN/MAX <expr>` on `ANY_VALUE`.
+                            FunctionArgumentClause::Having(bound) => {
+                                s.extend(self.expr_refs(ctx, refs, &bound.1)?);
+                            }
+                            // IgnoreOrRespectNulls/OnOverflow/Separator/
+                            // JsonNullClause/JsonReturningClause carry no
+                            // column exprs — documented no-walk.
                             _ => {}
                         }
                     }
@@ -1566,8 +2521,10 @@ impl SqlParseResolver {
                     s.extend(self.expr_refs(ctx, refs, e)?);
                 }
             }
-            FunctionArg::ExprNamed { name, arg, .. } => {
-                s.extend(self.expr_refs(ctx, refs, name)?);
+            FunctionArg::ExprNamed { arg, .. } => {
+                // `name => value` / `name := value`: the LHS expr is an
+                // argument NAME, not data — `named_struct(name => 'v')`
+                // never reads a column `name`. Only the value walks.
                 if let FunctionArgExpr::Expr(e) = arg {
                     s.extend(self.expr_refs(ctx, refs, e)?);
                 }
@@ -1587,24 +2544,44 @@ impl SqlParseResolver {
         if parts.len() >= 2 {
             let col = parts.last().expect("len >= 2");
             let qual = &parts[parts.len() - 2];
-            // `qual` names a binding in this scope or an outer one.
+            // `qual` names a binding in this scope or an outer one — but a
+            // LOCAL name (lambda param, MATCH_RECOGNIZE symbol) shadows it.
             let mut sc = Some(scope);
             while let Some(s) = sc {
                 if let Some(b) = s.bindings.iter().find(|b| b.name == *qual) {
-                    return self.resolve_in_binding(ctx, b, col);
+                    if !refs.locals.contains(qual) {
+                        return self.resolve_in_binding(ctx, b, col);
+                    }
                 }
                 sc = s.outer;
             }
-            // `a.b` where `a` isn't a binding: struct access on a column —
-            // the real source is column `a` (unqualified).
-            if parts.len() == 2 {
-                return self.resolve_unqualified(ctx, scope, qual);
+            if parts.len() >= 3 {
+                // `a.b.c…` — two readings, in order: `a` a bound table and
+                // `b` its struct column (deeper segments are field access),
+                // or `a` itself a column (a struct/map chain — `db.tbl.c`
+                // can't be told apart from `tbl.c` once `tbl` is unbound,
+                // documented).
+                let mut sc = Some(scope);
+                while let Some(s) = sc {
+                    if let Some(b) = s.bindings.iter().find(|b| b.name == parts[0]) {
+                        if !refs.locals.contains(&parts[0]) {
+                            return self.resolve_in_binding(ctx, b, &parts[1]);
+                        }
+                    }
+                    sc = s.outer;
+                }
             }
-            return ColSources::new();
+            if refs.locals.contains(&parts[0]) {
+                return ColSources::new();
+            }
+            return self.resolve_unqualified(ctx, scope, &parts[0]);
         }
         let Some(first) = parts.first() else {
             return ColSources::new();
         };
+        if refs.locals.contains(first) {
+            return ColSources::new();
+        }
         self.resolve_unqualified(ctx, scope, first)
     }
 
@@ -1639,13 +2616,17 @@ impl SqlParseResolver {
 
     /// An unqualified `col`: every binding in the innermost scope that HAS
     /// it contributes (ambiguous → all candidates, the documented
-    /// over-connection). A binding with an UNKNOWN column list can't
-    /// disprove the ref, so its (uid, col) also joins the candidates.
+    /// over-connection). Unknown-crediting is LEVEL-scoped: a binding with
+    /// an UNKNOWN column list is credited only when no KNOWN binding at its
+    /// own level — or any level OUTER of it — resolves the ref. (An inner
+    /// unknown can't poison a provable outer hit, and vice versa.)
     fn resolve_unqualified(&self, ctx: &Ctx<'_>, scope: &Scope<'_>, col: &str) -> ColSources {
-        let mut found = ColSources::new();
-        let mut unknown: BTreeSet<String> = BTreeSet::new();
+        // Collect per-level (known hits, unknown uids), innermost first.
+        let mut levels: Vec<(ColSources, BTreeSet<String>)> = Vec::new();
         let mut sc = Some(scope);
         while let Some(s) = sc {
+            let mut found = ColSources::new();
+            let mut unknown = BTreeSet::new();
             for b in &s.bindings {
                 match &b.src {
                     TableSrc::Parent(uid) => match self.col_set(ctx.dag, uid) {
@@ -1666,15 +2647,37 @@ impl SqlParseResolver {
                     TableSrc::External => {}
                 }
             }
-            if !found.is_empty() {
-                break; // inner scope wins — but unknowns still can't disprove
-            }
+            levels.push((found, unknown));
             sc = s.outer;
         }
-        for uid in unknown {
-            found.insert((uid, col.to_string()));
+        match levels.iter().position(|(found, _)| !found.is_empty()) {
+            Some(k) => {
+                let mut result = levels[k].0.clone();
+                // Unknowns OUTER of the outermost known level still can't be
+                // disproven — credit them; everything at or inside a
+                // resolving level is settled.
+                let m = levels
+                    .iter()
+                    .rposition(|(found, _)| !found.is_empty())
+                    .unwrap_or(k);
+                for (_, unknown) in &levels[m + 1..] {
+                    for uid in unknown {
+                        result.insert((uid.clone(), col.to_string()));
+                    }
+                }
+                result
+            }
+            // Nothing provable anywhere → every unknown stays a candidate.
+            None => {
+                let mut result = ColSources::new();
+                for (_, unknown) in &levels {
+                    for uid in unknown {
+                        result.insert((uid.clone(), col.to_string()));
+                    }
+                }
+                result
+            }
         }
-        found
     }
 
     /// Whether a projection stays *bare*: its expression is a column
@@ -1705,16 +2708,35 @@ impl SqlParseResolver {
             let mut sc = Some(scope);
             while let Some(s) = sc {
                 if let Some(b) = s.bindings.iter().find(|b| b.name == *qual) {
-                    return Self::bare_in_binding(b, col);
+                    if !refs.locals.contains(qual) {
+                        return Self::bare_in_binding(b, col);
+                    }
                 }
                 sc = s.outer;
             }
-            if parts.len() == 2 {
-                return self.bare_unqualified(ctx, scope, qual);
+            if parts.len() >= 3 {
+                // `a.b.c…` — mirrors `resolve_parts`: a bound `a` reads its
+                // column `b`; else `a` is the struct column itself.
+                let mut sc = Some(scope);
+                while let Some(s) = sc {
+                    if let Some(b) = s.bindings.iter().find(|b| b.name == parts[0]) {
+                        if !refs.locals.contains(&parts[0]) {
+                            return Self::bare_in_binding(b, &parts[1]);
+                        }
+                    }
+                    sc = s.outer;
+                }
             }
+            if refs.locals.contains(&parts[0]) {
+                return None;
+            }
+            return self.bare_unqualified(ctx, scope, &parts[0]);
+        }
+        let first = parts.first()?;
+        if refs.locals.contains(first) {
             return None;
         }
-        self.bare_unqualified(ctx, scope, parts.first()?)
+        self.bare_unqualified(ctx, scope, first)
     }
 
     /// `t.col`'s bare-ness: a parent column is always a raw value (any
@@ -1729,14 +2751,16 @@ impl SqlParseResolver {
     }
 
     /// Unqualified bare-ness — mirrors [`resolve_unqualified`](Self::resolve_unqualified):
-    /// the innermost scope's candidates win, and the ref stays bare only
-    /// when EVERY candidate is a bare column (ambiguous mixed sources keep
-    /// the conservative transform flag).
+    /// the innermost RESOLVING scope's candidates win (with the same
+    /// level-scoped unknown crediting), and the ref stays bare only when
+    /// EVERY candidate is a bare column (ambiguous mixed sources keep the
+    /// conservative transform flag).
     fn bare_unqualified(&self, ctx: &Ctx<'_>, scope: &Scope<'_>, col: &str) -> Option<bool> {
-        let mut bares: Vec<bool> = Vec::new();
-        let mut unknown = false;
+        let mut levels: Vec<(Vec<bool>, bool)> = Vec::new();
         let mut sc = Some(scope);
         while let Some(s) = sc {
+            let mut bares: Vec<bool> = Vec::new();
+            let mut unknown = false;
             for b in &s.bindings {
                 match &b.src {
                     TableSrc::Parent(uid) => match self.col_set(ctx.dag, uid) {
@@ -1755,16 +2779,31 @@ impl SqlParseResolver {
                     TableSrc::External => {}
                 }
             }
-            if !bares.is_empty() {
-                break;
-            }
+            levels.push((bares, unknown));
             sc = s.outer;
         }
-        if bares.is_empty() {
-            // Unknown parents can't disprove the ref (they'd resolve it raw).
-            return unknown.then_some(true);
+        match levels.iter().position(|(bares, _)| !bares.is_empty()) {
+            Some(k) => {
+                let mut all = levels[k].0.clone();
+                // The same outer-of-outermost-known unknowns get credited —
+                // they'd resolve raw, so they vote bare.
+                let m = levels
+                    .iter()
+                    .rposition(|(bares, _)| !bares.is_empty())
+                    .unwrap_or(k);
+                let outer_unknown = levels[m + 1..].iter().any(|(_, u)| *u);
+                if outer_unknown {
+                    all.push(true);
+                }
+                Some(all.iter().all(|b| *b))
+            }
+            None => {
+                // No provable hit anywhere: any unknown binding resolves
+                // raw; a fully-known miss resolves nothing.
+                let any_unknown = levels.iter().any(|(_, u)| *u);
+                any_unknown.then_some(true)
+            }
         }
-        Some(bares.iter().all(|b| *b))
     }
 
     /// `*` / `t.*` expansion: each binding's known columns become bare
@@ -1794,6 +2833,7 @@ impl SqlParseResolver {
                                 name: c.clone(),
                                 bare: true,
                                 sources: BTreeSet::from([(uid.clone(), c.clone())]),
+                                synthetic: false,
                             });
                         }
                     }
@@ -1837,6 +2877,9 @@ impl SqlParseResolver {
             for o in &mut cols {
                 if let Some((_, to)) = pairs.iter().find(|(from, _)| from == &o.name) {
                     o.name = to.clone();
+                    // An explicit rename names the output — no longer a
+                    // positional placeholder.
+                    o.synthetic = false;
                 }
             }
         }
@@ -1907,11 +2950,18 @@ impl SqlParseResolver {
         // The declared-column fallback probe (v0 parity): a visible output
         // column the projection couldn't name (behind a `*` of an unknown
         // parent, an unexpanded alias, …) still gets a Passthrough edge when
-        // the top-level scope can source it.
+        // the top-level scope can source it. Synthetic `__colN` placeholders
+        // are never "declared" — filtered out everywhere below.
         let out_cols: Vec<String> = self
             .col_set(dag, node)
             .map(|rc| (*rc).clone())
-            .unwrap_or_else(|| an.out.iter().map(|o| o.name.clone()).collect());
+            .unwrap_or_else(|| {
+                an.out
+                    .iter()
+                    .filter(|o| !o.synthetic)
+                    .map(|o| o.name.clone())
+                    .collect()
+            });
         let probe = Scope {
             bindings: an.scope.clone(),
             windows: HashMap::new(),
@@ -1933,9 +2983,15 @@ impl SqlParseResolver {
         }
 
         // FilterOrJoin: row-shaping sources with no value edge fan out to
-        // every visible output column (same attachment policy as v0).
+        // every visible output column (same attachment policy as v0) —
+        // synthetic placeholders are never visible targets.
         let mut foj_targets: BTreeSet<String> = out_cols.into_iter().collect();
-        foj_targets.extend(an.out.iter().map(|o| o.name.clone()));
+        foj_targets.extend(
+            an.out
+                .iter()
+                .filter(|o| !o.synthetic)
+                .map(|o| o.name.clone()),
+        );
         for (uid, col) in &an.foj {
             if direct_sources.contains(&(uid.clone(), col.clone())) {
                 continue;
@@ -2037,8 +3093,10 @@ fn derive_name(e: &Expr) -> Option<String> {
             .or_else(|| derive_name(root)),
         Expr::Nested(inner)
         | Expr::Cast { expr: inner, .. }
-        | Expr::Collate { expr: inner, .. }
-        | Expr::Named { expr: inner, .. } => derive_name(inner),
+        | Expr::Collate { expr: inner, .. } => derive_name(inner),
+        // `expr AS name` in expression position (MySQL-derived syntax):
+        // the declared name is the output name, like ExprWithAlias.
+        Expr::Named { name, .. } => Some(norm_ident(name)),
         Expr::Function(f) => object_name_parts(&f.name).last().cloned(),
         Expr::Case { .. } => Some("case".to_string()),
         Expr::Prefixed { value, .. } => derive_name(value),
@@ -2101,8 +3159,48 @@ fn rename_outputs(mut res: QueryRes, cols: &[TableAliasColumnDef]) -> QueryRes {
     }
     for (o, c) in res.out.iter_mut().zip(cols.iter()) {
         o.name = norm_ident(&c.name);
+        // `WITH c(a, b)` / `t(a, b)` gives the output a real name — a
+        // positional placeholder it lands on becomes declared.
+        o.synthetic = false;
     }
     res
+}
+
+/// Merge two positional (or `BY NAME`-matched) UNION arms' output columns:
+/// the left arm's name/bare when the left exists (SQL's naming rule), the
+/// union of both sides' sources. An arm contributing no sources (a literal
+/// `null` arm) doesn't vote on bareness.
+fn union_out(a: &OutCol, b: &OutCol) -> OutCol {
+    OutCol {
+        name: a.name.clone(),
+        bare: match (a.sources.is_empty(), b.sources.is_empty()) {
+            (false, true) => a.bare,
+            (true, false) => b.bare,
+            _ => a.bare && b.bare,
+        },
+        sources: a.sources.union(&b.sources).cloned().collect(),
+        // The kept name is `a`'s — its synthetic flag answers "is this name
+        // invented?" regardless of what the right arm called the column.
+        synthetic: a.synthetic,
+    }
+}
+
+/// The collapsed output of a `|> PIVOT`/`|> CALL` pipe step — one synthetic
+/// column carrying every source the input consumed (the reshape's real
+/// column list is unknowable).
+fn collapse_pipe_output(res: &QueryRes) -> OutCol {
+    let mut sources: ColSources = res
+        .out
+        .iter()
+        .flat_map(|o| o.sources.iter().cloned())
+        .collect();
+    sources.extend(res.foj.iter().cloned());
+    OutCol {
+        name: String::new(),
+        bare: false,
+        sources,
+        synthetic: true,
+    }
 }
 
 /// `rename_outputs` over an `Rc<QueryRes>` (clones the inner value — CTE
@@ -2703,5 +3801,589 @@ mod tests {
         ));
         let (ra, rb) = (resolver(), resolver());
         assert_eq!(ra.resolve(&dag, "model.t.m"), rb.resolve(&dag, "model.t.m"));
+    }
+
+    // -- EXCEPT/INTERSECT: the right arm shapes rows, never values ------------
+
+    #[test]
+    fn except_right_arm_shapes_rows_not_values() {
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.a", "select 1", &["id", "x"]),
+                model("model.t.b", "select 1", &["id", "y"]),
+                model(
+                    "model.t.m",
+                    "select id, x from \"a\" except select id, y from \"b\"",
+                    &[],
+                ),
+            ],
+            &[("model.t.a", "model.t.m"), ("model.t.b", "model.t.m")],
+        ));
+        let got = edge_set(&dag, &resolver(), "model.t.m");
+        let want: BTreeSet<_> = [
+            e("model.t.a.id", "id", ColumnEdgeKind::Passthrough),
+            e("model.t.a.x", "x", ColumnEdgeKind::Passthrough),
+            // `b`'s columns only decide which `a` rows survive — FilterOrJoin
+            // on every output, never a Passthrough/Rename value edge.
+            e("model.t.b.id", "id", ColumnEdgeKind::FilterOrJoin),
+            e("model.t.b.id", "x", ColumnEdgeKind::FilterOrJoin),
+            e("model.t.b.y", "id", ColumnEdgeKind::FilterOrJoin),
+            e("model.t.b.y", "x", ColumnEdgeKind::FilterOrJoin),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn intersect_right_arm_shapes_rows_not_values() {
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.a", "select 1", &["id"]),
+                model("model.t.b", "select 1", &["id"]),
+                model(
+                    "model.t.m",
+                    "select id from \"a\" intersect select id from \"b\"",
+                    &[],
+                ),
+            ],
+            &[("model.t.a", "model.t.m"), ("model.t.b", "model.t.m")],
+        ));
+        let got = edge_set(&dag, &resolver(), "model.t.m");
+        let want: BTreeSet<_> = [
+            e("model.t.a.id", "id", ColumnEdgeKind::Passthrough),
+            e("model.t.b.id", "id", ColumnEdgeKind::FilterOrJoin),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got, want);
+        // And never a value edge from the right arm.
+        assert!(got
+            .iter()
+            .all(|e| e.0 != "model.t.b.id" || e.2 == ColumnEdgeKind::FilterOrJoin));
+    }
+
+    #[test]
+    fn union_by_name_pairs_on_names_not_positions() {
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.a", "select 1", &["id", "x"]),
+                model("model.t.b", "select 1", &["x", "id"]),
+                model(
+                    "model.t.m",
+                    "select id, x from \"a\" \
+                     union all by name select x, id from \"b\"",
+                    &[],
+                ),
+            ],
+            &[("model.t.a", "model.t.m"), ("model.t.b", "model.t.m")],
+        ));
+        let got = edge_set(&dag, &resolver(), "model.t.m");
+        let want: BTreeSet<_> = [
+            e("model.t.a.id", "id", ColumnEdgeKind::Passthrough),
+            e("model.t.b.id", "id", ColumnEdgeKind::Passthrough),
+            e("model.t.a.x", "x", ColumnEdgeKind::Passthrough),
+            e("model.t.b.x", "x", ColumnEdgeKind::Passthrough),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    // -- wildcard options -----------------------------------------------------
+
+    #[test]
+    fn wildcard_except_and_exclude_drop_columns() {
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["id", "secret", "status"]),
+                model(
+                    "model.t.m_except",
+                    "select * except (secret) from \"up\"",
+                    &[],
+                ),
+                model(
+                    "model.t.m_exclude",
+                    "select * exclude (secret) from \"up\"",
+                    &[],
+                ),
+            ],
+            &[
+                ("model.t.up", "model.t.m_except"),
+                ("model.t.up", "model.t.m_exclude"),
+            ],
+        ));
+        let want: BTreeSet<_> = [
+            e("model.t.up.id", "id", ColumnEdgeKind::Passthrough),
+            e("model.t.up.status", "status", ColumnEdgeKind::Passthrough),
+        ]
+        .into_iter()
+        .collect();
+        let r = resolver();
+        for m in ["model.t.m_except", "model.t.m_exclude"] {
+            assert_eq!(edge_set(&dag, &r, m), want, "{m}");
+        }
+    }
+
+    #[test]
+    fn wildcard_rename_and_replace_reshape_columns() {
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["id", "status"]),
+                model(
+                    "model.t.m_rename",
+                    "select * rename status as state from \"up\"",
+                    &[],
+                ),
+                model(
+                    "model.t.m_replace",
+                    "select * replace (upper(status) as status) from \"up\"",
+                    &[],
+                ),
+            ],
+            &[
+                ("model.t.up", "model.t.m_rename"),
+                ("model.t.up", "model.t.m_replace"),
+            ],
+        ));
+        let r = resolver();
+        // `RENAME` keeps the column raw — a renamed passthrough.
+        let want_rename: BTreeSet<_> = [
+            e("model.t.up.id", "id", ColumnEdgeKind::Passthrough),
+            e("model.t.up.status", "state", ColumnEdgeKind::Rename),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(edge_set(&dag, &r, "model.t.m_rename"), want_rename);
+        // `REPLACE` recomputes the value — a Transform on the same name.
+        let want_replace: BTreeSet<_> = [
+            e("model.t.up.id", "id", ColumnEdgeKind::Passthrough),
+            e("model.t.up.status", "status", ColumnEdgeKind::Transform),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(edge_set(&dag, &r, "model.t.m_replace"), want_replace);
+    }
+
+    #[test]
+    fn wildcard_ilike_filters_by_name() {
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["id", "secret", "status"]),
+                model("model.t.m", "select * ilike 's%' from \"up\"", &[]),
+            ],
+            &[("model.t.up", "model.t.m")],
+        ));
+        let got = edge_set(&dag, &resolver(), "model.t.m");
+        let want: BTreeSet<_> = [
+            e("model.t.up.secret", "secret", ColumnEdgeKind::Passthrough),
+            e("model.t.up.status", "status", ColumnEdgeKind::Passthrough),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    // -- CTE column-alias lists and sequencing ---------------------------------
+
+    #[test]
+    fn cte_column_alias_list_renames_outputs() {
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["id", "k"]),
+                model(
+                    "model.t.m",
+                    "with c(a, b) as (select u.id, u.k * 2 from \"up\" u) \
+                     select c.a, c.b from c",
+                    &[],
+                ),
+            ],
+            &[("model.t.up", "model.t.m")],
+        ));
+        let got = edge_set(&dag, &resolver(), "model.t.m");
+        let want: BTreeSet<_> = [
+            e("model.t.up.id", "a", ColumnEdgeKind::Rename),
+            e("model.t.up.k", "b", ColumnEdgeKind::Transform),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn sequential_and_shadowing_ctes() {
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["id"]),
+                model("model.t.up2", "select 1", &["k"]),
+                model(
+                    "model.t.seq",
+                    "with a as (select u.id from \"up\" u), \
+                     b as (select a.id from a) \
+                     select b.id from b",
+                    &[],
+                ),
+                // The second `x` shadows the first — SQL binds the latest.
+                model(
+                    "model.t.sh",
+                    "with x as (select u.id as v from \"up\" u), \
+                     x as (select w.k as v from \"up2\" w) \
+                     select x.v from x",
+                    &[],
+                ),
+            ],
+            &[
+                ("model.t.up", "model.t.seq"),
+                ("model.t.up", "model.t.sh"),
+                ("model.t.up2", "model.t.sh"),
+            ],
+        ));
+        let r = resolver();
+        let want_seq: BTreeSet<_> = [e("model.t.up.id", "id", ColumnEdgeKind::Passthrough)]
+            .into_iter()
+            .collect();
+        assert_eq!(edge_set(&dag, &r, "model.t.seq"), want_seq);
+        let want_sh: BTreeSet<_> = [e("model.t.up2.k", "v", ColumnEdgeKind::Rename)]
+            .into_iter()
+            .collect();
+        assert_eq!(edge_set(&dag, &r, "model.t.sh"), want_sh);
+    }
+
+    // -- USING ------------------------------------------------------------------
+
+    #[test]
+    fn using_binds_both_sides_of_the_join() {
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.a", "select 1", &["id", "k"]),
+                model("model.t.b", "select 1", &["id", "k"]),
+                model(
+                    "model.t.m",
+                    "select a.id as aid from \"a\" a join \"b\" b using (k)",
+                    &[],
+                ),
+            ],
+            &[("model.t.a", "model.t.m"), ("model.t.b", "model.t.m")],
+        ));
+        let got = edge_set(&dag, &resolver(), "model.t.m");
+        let want: BTreeSet<_> = [
+            e("model.t.a.id", "aid", ColumnEdgeKind::Rename),
+            e("model.t.a.k", "aid", ColumnEdgeKind::FilterOrJoin),
+            e("model.t.b.k", "aid", ColumnEdgeKind::FilterOrJoin),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    // -- local names: lambda params and named-argument names -------------------
+
+    #[test]
+    fn lambda_params_never_read_columns() {
+        // DuckDB parses arrow lambdas (`x -> expr`): `x` inside the lambda is
+        // a LOCAL name — even when a same-named column exists upstream.
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["arr", "x", "thresh"]),
+                model(
+                    "model.t.m",
+                    "select list_filter(u.arr, x -> x > 0) as f, \
+                     list_filter(u.arr, x -> x > u.thresh) as g \
+                     from \"up\" u",
+                    &[],
+                ),
+            ],
+            &[("model.t.up", "model.t.m")],
+        ));
+        let r = SqlParseResolver::new(None, SqlDialect::DuckDb);
+        let got = edge_set(&dag, &r, "model.t.m");
+        let want: BTreeSet<_> = [
+            e("model.t.up.arr", "f", ColumnEdgeKind::Transform),
+            e("model.t.up.arr", "g", ColumnEdgeKind::Transform),
+            e("model.t.up.thresh", "g", ColumnEdgeKind::Transform),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got, want);
+        // The lambda param `x` drew NO edge to the real `x` column.
+        assert!(got.iter().all(|e| e.0 != "model.t.up.x"));
+    }
+
+    #[test]
+    fn expr_named_args_drop_the_name() {
+        // Postgres parses `f(x => v)` with the name as an arbitrary expr —
+        // `ExprNamed`. `x` is the argument's NAME, not a column read.
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["x", "v"]),
+                model("model.t.m", "select f(x => u.v) as s from \"up\" u", &[]),
+            ],
+            &[("model.t.up", "model.t.m")],
+        ));
+        let r = SqlParseResolver::new(None, SqlDialect::Postgres);
+        let got = edge_set(&dag, &r, "model.t.m");
+        let want: BTreeSet<_> = [e("model.t.up.v", "s", ColumnEdgeKind::Transform)]
+            .into_iter()
+            .collect();
+        assert_eq!(got, want);
+        assert!(got.iter().all(|e| e.0 != "model.t.up.x"));
+
+        // The `name := value` spelling (DuckDB) lands in `FunctionArg::Named`
+        // — same rule.
+        let dag2 = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["x", "v"]),
+                model("model.t.m", "select f(x := u.v) as s from \"up\" u", &[]),
+            ],
+            &[("model.t.up", "model.t.m")],
+        ));
+        let r2 = SqlParseResolver::new(None, SqlDialect::DuckDb);
+        let got2 = edge_set(&dag2, &r2, "model.t.m");
+        assert_eq!(got2, want);
+    }
+
+    // -- nested field access ----------------------------------------------------
+
+    #[test]
+    fn deep_field_access_reads_the_struct_column() {
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["cfg", "id"]),
+                model(
+                    "model.t.m",
+                    "select u.cfg.inner.deep as d, cfg.sub as s, \
+                     sch.tbl.no_such as n from \"up\" u",
+                    &[],
+                ),
+            ],
+            &[("model.t.up", "model.t.m")],
+        ));
+        let got = edge_set(&dag, &resolver(), "model.t.m");
+        // `u.cfg.inner.deep`: `u` is bound → its column `cfg`.
+        // `cfg.sub`: unqualified struct access → column `cfg`.
+        // `sch.tbl.no_such`: `sch` is neither a binding nor a column →
+        // nothing (catalog-qualified struct access can't be told apart —
+        // documented).
+        let want: BTreeSet<_> = [
+            e("model.t.up.cfg", "d", ColumnEdgeKind::Rename),
+            e("model.t.up.cfg", "s", ColumnEdgeKind::Rename),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    // -- query-level ORDER BY ---------------------------------------------------
+
+    #[test]
+    fn order_by_sees_unprojected_columns_and_aliases() {
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["id", "ts", "f"]),
+                model(
+                    "model.t.m",
+                    "select u.id as iid from \"up\" u order by u.ts, iid",
+                    &[],
+                ),
+            ],
+            &[("model.t.up", "model.t.m")],
+        ));
+        let got = edge_set(&dag, &resolver(), "model.t.m");
+        // `u.ts` was never projected — the ORDER BY probe still resolves it
+        // through the body's scope (this is the regression fix).
+        let want: BTreeSet<_> = [
+            e("model.t.up.id", "iid", ColumnEdgeKind::Rename),
+            e("model.t.up.ts", "iid", ColumnEdgeKind::FilterOrJoin),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got, want);
+        // `iid` in ORDER BY binds the output alias — but `up.id` already
+        // has a value edge, so it adds nothing.
+        assert!(got.iter().all(|e| e.0 != "model.t.up.f"));
+    }
+
+    // -- Jinja rendering: literal shielding and malformed input ------------------
+
+    #[test]
+    fn jinja_markers_inside_literals_and_comments_do_not_pair() {
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["id", "s", "t"]),
+                raw_model(
+                    "model.t.m",
+                    "select u.id from {{ ref('up') }} u \
+                     where u.s = '{{ not' and u.t = 'jinja }}' \
+                     -- {{ also_not }}",
+                    &[],
+                ),
+            ],
+            &[("model.t.up", "model.t.m")],
+        ));
+        let r = resolver();
+        let got = edge_set(&dag, &r, "model.t.m");
+        // The `{{`/`}}` in separate string literals never pair — the SQL
+        // parses instead of being eaten, so it must NOT fall back.
+        assert!(!r.is_fallback("model.t.m"));
+        let want: BTreeSet<_> = [
+            e("model.t.up.id", "id", ColumnEdgeKind::Passthrough),
+            e("model.t.up.s", "id", ColumnEdgeKind::FilterOrJoin),
+            e("model.t.up.t", "id", ColumnEdgeKind::FilterOrJoin),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn malformed_unterminated_jinja_falls_back_not_truncates() {
+        // An unterminated `{{` keeps the tail verbatim → the parse fails →
+        // per-model fallback. (Silently eating it would fabricate a shorter
+        // query with wrong edges.)
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["id"]),
+                raw_model(
+                    "model.t.m",
+                    "select u.id from {{ ref('up') }} u where u.k = {{ unclosed",
+                    &["id"],
+                ),
+            ],
+            &[("model.t.up", "model.t.m")],
+        ));
+        let r = resolver();
+        let edges = r.resolve(&dag, "model.t.m");
+        assert!(r.is_fallback("model.t.m"));
+        assert_eq!(r.fallback_nodes(), vec!["model.t.m".to_string()]);
+        assert!(edges.iter().all(|e| e.confidence == Confidence::NameMatch));
+    }
+
+    // -- synthetic `__colN` outputs never leak -----------------------------------
+
+    #[test]
+    fn synthetic_unnamed_outputs_never_leak() {
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["id", "k", "f", "__col1"]),
+                model(
+                    "model.t.m",
+                    "select u.id, u.k + 1 from \"up\" u where u.f",
+                    &[],
+                ),
+                // A REAL parent column named `__col1` resolves normally.
+                model("model.t.real", "select u.__col1 from \"up\" u", &[]),
+            ],
+            &[("model.t.up", "model.t.m"), ("model.t.up", "model.t.real")],
+        ));
+        let r = resolver();
+        // The unnamed `u.k + 1` output is `__col1` positionally — invisible:
+        // `columns()` never invents it, and the WHERE fan doesn't target it.
+        assert_eq!(r.columns(&dag, "model.t.m"), vec!["id".to_string()]);
+        let got = edge_set(&dag, &r, "model.t.m");
+        let want: BTreeSet<_> = [
+            e("model.t.up.id", "id", ColumnEdgeKind::Passthrough),
+            e("model.t.up.k", "__col1", ColumnEdgeKind::Transform),
+            // `u.f` fans ONLY to the real output — not the placeholder.
+            e("model.t.up.f", "id", ColumnEdgeKind::FilterOrJoin),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got, want);
+
+        let got_real = edge_set(&dag, &r, "model.t.real");
+        let want_real: BTreeSet<_> = [e(
+            "model.t.up.__col1",
+            "__col1",
+            ColumnEdgeKind::Passthrough,
+        )]
+        .into_iter()
+        .collect();
+        assert_eq!(got_real, want_real);
+        assert_eq!(r.columns(&dag, "model.t.real"), vec!["__col1".to_string()]);
+    }
+
+    // -- correlated unknown bindings vs. provable outer hits --------------------
+
+    #[test]
+    fn inner_unknowns_do_not_steal_provable_outer_hits() {
+        // `u`'s column list is unknown (nothing declared, unparseable SQL);
+        // `t`'s is known. Bare `z` inside the subquery resolves in the OUTER
+        // scope — the inner unknown binding must NOT also claim it.
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.t", "select 1", &["id", "z"]),
+                model("model.t.u", "", &[]),
+                model(
+                    "model.t.m",
+                    "select t.id as tid, \
+                     (select z from \"u\" where u.w = t.id) as q \
+                     from \"t\" t",
+                    &[],
+                ),
+            ],
+            &[("model.t.t", "model.t.m"), ("model.t.u", "model.t.m")],
+        ));
+        let got = edge_set(&dag, &resolver(), "model.t.m");
+        let want: BTreeSet<_> = [
+            e("model.t.t.id", "tid", ColumnEdgeKind::Rename),
+            e("model.t.t.id", "q", ColumnEdgeKind::Transform),
+            e("model.t.t.z", "q", ColumnEdgeKind::Transform),
+            // `u.w` stays a candidate — no provable hit exists for `w`.
+            e("model.t.u.w", "q", ColumnEdgeKind::Transform),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got, want);
+        assert!(got.iter().all(|e| e.0 != "model.t.u.z"));
+
+        // Same rule within one level: a KNOWN hit in one binding doesn't get
+        // joined by the sibling binding's unknown list.
+        let dag2 = Dag::build(&manifest(
+            vec![
+                model("model.t.t", "select 1", &["id", "x"]),
+                model("model.t.u", "", &[]),
+                model(
+                    "model.t.m",
+                    "select x from \"t\" t join \"u\" u on t.id = u.id",
+                    &[],
+                ),
+            ],
+            &[("model.t.t", "model.t.m"), ("model.t.u", "model.t.m")],
+        ));
+        let got2 = edge_set(&dag2, &resolver(), "model.t.m");
+        let want2: BTreeSet<_> = [
+            e("model.t.t.x", "x", ColumnEdgeKind::Passthrough),
+            e("model.t.t.id", "x", ColumnEdgeKind::FilterOrJoin),
+            e("model.t.u.id", "x", ColumnEdgeKind::FilterOrJoin),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got2, want2);
+        assert!(got2.iter().all(|e| e.0 != "model.t.u.x"));
+    }
+
+    // -- `TABLE name` bodies -----------------------------------------------------
+
+    #[test]
+    fn table_statement_reads_the_whole_relation() {
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["id", "k"]),
+                model(
+                    "model.t.m",
+                    "select x.id, x.k as kk from (table \"up\") x",
+                    &[],
+                ),
+            ],
+            &[("model.t.up", "model.t.m")],
+        ));
+        let got = edge_set(&dag, &resolver(), "model.t.m");
+        let want: BTreeSet<_> = [
+            e("model.t.up.id", "id", ColumnEdgeKind::Passthrough),
+            e("model.t.up.k", "kk", ColumnEdgeKind::Rename),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got, want);
     }
 }

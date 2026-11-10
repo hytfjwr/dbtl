@@ -1530,7 +1530,9 @@ pub fn closure_report(
             .iter()
             .map(|e| e.confidence)
             .max()
-            .unwrap_or(Confidence::NameMatch);
+            // An isolated column has no edges — its row inherits the
+            // report-level default (Exact = "v1 ran", not the v0 label).
+            .unwrap_or(Confidence::Exact);
         columns.push(ColumnRow {
             column: addr(t),
             via,
@@ -1543,7 +1545,7 @@ pub fn closure_report(
         .iter()
         .map(|r| r.confidence)
         .max()
-        .unwrap_or(Confidence::NameMatch);
+        .unwrap_or(Confidence::Exact);
     ColumnReport {
         target: addr(target),
         unique_id: target.node.clone(),
