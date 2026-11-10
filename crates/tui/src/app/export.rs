@@ -297,6 +297,7 @@ impl App {
             modified: dv.modified.clone(),
             edges_added: dv.edges_added.clone(),
             edges_removed: dv.edges_removed.clone(),
+            column_changes: dv.column_changes.clone(),
             pr: dv.pr.clone(),
         };
         crate::pr_impact_markdown(project, &report)

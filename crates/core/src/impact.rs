@@ -14,7 +14,8 @@ use serde::Serialize;
 
 use crate::layer::{first_dir, layer_rank};
 use crate::{
-    coverage_gap, in_package, is_exposure, Dag, DagDiff, ExposureInfo, NodeInfo, PackageScope,
+    coverage_gap, in_package, is_exposure, ColumnChange, ColumnChangeClass, ColumnChangeKind, Dag,
+    DagDiff, ExposureInfo, NodeInfo, PackageScope,
 };
 
 /// A changed node whose transitive downstream (buildable) closure is at least
@@ -44,6 +45,16 @@ pub struct PrImpact {
     /// The suggested `dbt build --select a+ b+ …` command over the changed
     /// buildable set, or `None` when nothing buildable changed.
     pub ci_command: Option<String>,
+    /// The column-level refinement of [`PrImpact::affected_models`]: the
+    /// distinct current-Dag `model`s a breaking/partial COLUMN change
+    /// actually reaches through column lineage — the narrower "who breaks"
+    /// count vs the model-granular blast radius.
+    pub column_affected_models: usize,
+    /// The column-narrowed `dbt build --select` suggestion: the changed
+    /// buildable nodes PLUS exactly the models the changed columns reach
+    /// (plain names — the column closure is already the downstream set, so
+    /// no `+` fan-out). `None` when nothing buildable changed.
+    pub ci_command_columns: Option<String>,
     /// Risk: changed nodes that carry no tests (the [`coverage_gap`]
     /// predicate), by name, sorted.
     pub untested_changes: Vec<String>,
@@ -81,6 +92,10 @@ pub struct DiffReport {
     pub edges_added: Vec<(String, String)>,
     /// Dependency edges present only in the baseline, same shape.
     pub edges_removed: Vec<(String, String)>,
+    /// The column-level findings of [`DagDiff::columns`], flattened and sorted
+    /// by `(node name, column, kind)` — the shared "Column changes" listing
+    /// every surface renders.
+    pub column_changes: Vec<ColumnChange>,
     /// The reviewer-shaped PR impact analysis over the changed set.
     pub pr: PrImpact,
 }
@@ -113,6 +128,14 @@ pub fn diff_report(
         .map(|(uid, reasons)| (pair(uid).0, reasons.join("; ")))
         .collect();
     modified.sort();
+    let mut column_changes: Vec<ColumnChange> = diff.columns.values().flatten().cloned().collect();
+    column_changes.sort_by(|a, b| {
+        (a.node_name.as_str(), a.column.as_str(), a.kind).cmp(&(
+            b.node_name.as_str(),
+            b.column.as_str(),
+            b.kind,
+        ))
+    });
     DiffReport {
         baseline: baseline.to_string(),
         scope,
@@ -121,6 +144,7 @@ pub fn diff_report(
         modified,
         edges_added: diff.edges_added.clone(),
         edges_removed: diff.edges_removed.clone(),
+        column_changes,
         pr: pr_impact(dag, base, diff, owner_key),
     }
 }
@@ -229,6 +253,61 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, owner_key: &str)
         Some(format!("dbt build --select {}", selectors.join(" ")))
     };
 
+    // The column-level narrowing: the distinct current-Dag models a
+    // breaking/partial COLUMN change actually reaches (vs the node-granular
+    // blast radius above). These are already the column-closure set, so the
+    // narrower selector names them plainly — no `+` fan-out — alongside the
+    // changed buildable nodes themselves.
+    let mut col_models: BTreeSet<String> = BTreeSet::new();
+    for changes in diff.columns.values() {
+        for ch in changes {
+            if ch.class == ColumnChangeClass::NonBreaking {
+                continue;
+            }
+            col_models.extend(ch.affected_models.iter().cloned());
+        }
+    }
+    let column_affected_models = col_models.len();
+    let ci_command_columns = if changed.is_empty() {
+        None
+    } else {
+        // A changed node narrows to just its name only when the column
+        // analysis SAW it (`columns_analyzed`) AND every reason it changed
+        // is accounted for by column-level rows. The opaque reasons —
+        // `SQL changed`, `macro:*`, `upstream deps changed` — can alter a
+        // model's whole downstream reach without producing a single column
+        // row: a WHERE/JOIN/GROUP BY edit, a set operation, a macro body
+        // swap, a new parent. When such a reason produced no rows the
+        // change escaped the column surface, so the `+` fan-out stays —
+        // `stg_orders+` after a `where u.disabled_flag = false -> true`
+        // edit keeps `fct_orders` building instead of going stale.
+        let column_accounted = |uid: &str| -> bool {
+            let reasons = diff.modified.get(uid).map(Vec::as_slice).unwrap_or(&[]);
+            let opaque = reasons.iter().any(|r| {
+                r == "SQL changed" || r.starts_with("macro:") || r == "upstream deps changed"
+            });
+            let rows = diff.columns.get(uid).is_some_and(|v| !v.is_empty());
+            diff.columns_analyzed.contains(uid) && (!opaque || rows)
+        };
+        let mut selectors: BTreeSet<String> = changed
+            .iter()
+            .filter_map(|uid| {
+                dag.get(uid).map(|n| {
+                    if column_accounted(uid) {
+                        n.name.clone()
+                    } else {
+                        format!("{}+", n.name)
+                    }
+                })
+            })
+            .collect();
+        selectors.extend(col_models.iter().cloned());
+        Some(format!(
+            "dbt build --select {}",
+            selectors.iter().cloned().collect::<Vec<_>>().join(" ")
+        ))
+    };
+
     // Risk: changed nodes that carry no tests (the coverage_gap predicate) —
     // scoped to the root project: an installed package's own test gaps are
     // its maintainers' problem, not a risk flag in YOUR diff.
@@ -286,6 +365,8 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, owner_key: &str)
         affected_exposures,
         affected_owners: affected_owners.into_iter().collect(),
         ci_command,
+        column_affected_models,
+        ci_command_columns,
         untested_changes,
         changed_hubs,
         new_layer_violations,
@@ -528,6 +609,70 @@ pub fn pr_impact_markdown(project: &str, report: &DiffReport) -> String {
         }
     }
 
+    // The column-level refinement — the reviewer's "which downstream columns
+    // / exposures break" section. One bullet per classified change, with the
+    // downstream columns (the via-list), affected models/marts, and
+    // exposures it reaches indented under it.
+    if !report.column_changes.is_empty() {
+        out.push_str(&format!(
+            "\n## Column changes ({})\n",
+            report.column_changes.len()
+        ));
+        for ch in &report.column_changes {
+            let name = match &ch.renamed_from {
+                Some(old) => format!("`{}.{} -> {}`", ch.node_name, old, ch.column),
+                None => format!("`{}.{}`", ch.node_name, ch.column),
+            };
+            let what = match ch.kind {
+                ColumnChangeKind::Removed => "removed".to_string(),
+                ColumnChangeKind::Renamed => "renamed".to_string(),
+                ColumnChangeKind::TypeChanged => format!(
+                    "type changed ({} -> {})",
+                    ch.type_from.as_deref().unwrap_or("(unknown)"),
+                    ch.type_to.as_deref().unwrap_or("(unknown)")
+                ),
+                ColumnChangeKind::ExprChanged => "expression changed".to_string(),
+                ColumnChangeKind::Added => "added".to_string(),
+            };
+            let class = match ch.class {
+                ColumnChangeClass::Breaking => "**breaking**".to_string(),
+                ColumnChangeClass::Partial => "*partial-breaking*".to_string(),
+                ColumnChangeClass::NonBreaking => "non-breaking".to_string(),
+            };
+            out.push_str(&format!("- {name}: {what} - {class}\n"));
+            if !ch.affected_columns.is_empty() {
+                let cols = ch
+                    .affected_columns
+                    .iter()
+                    .map(|c| format!("`{c}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                out.push_str(&format!(
+                    "  - downstream cols ({}): {cols}\n",
+                    ch.affected_columns.len()
+                ));
+            }
+            if !ch.affected_models.is_empty() {
+                out.push_str(&format!(
+                    "  - affected models: {}\n",
+                    ch.affected_models.join(", ")
+                ));
+            }
+            if !ch.affected_marts.is_empty() {
+                out.push_str(&format!(
+                    "  - affected marts: {}\n",
+                    ch.affected_marts.join(", ")
+                ));
+            }
+            if !ch.affected_exposures.is_empty() {
+                out.push_str(&format!(
+                    "  - exposures: {}\n",
+                    ch.affected_exposures.join(", ")
+                ));
+            }
+        }
+    }
+
     out.push_str(&format!(
         "\n## Blast radius ({} affected models)\n",
         pr.affected_models
@@ -568,6 +713,20 @@ pub fn pr_impact_markdown(project: &str, report: &DiffReport) -> String {
     match &pr.ci_command {
         Some(cmd) => out.push_str(&format!("```sh\n{cmd}\n```\n")),
         None => out.push_str("- no buildable changes\n"),
+    }
+    if let Some(cmd) = &pr.ci_command_columns {
+        // The column-narrowed selector: the changed nodes plus ONLY the
+        // models their changed columns reach — printed even when it equals
+        // the wide one, so the readout always shows the column analysis.
+        out.push_str(&format!(
+            "- column-level ({} model{} reached via changed columns): `{cmd}`\n",
+            pr.column_affected_models,
+            if pr.column_affected_models == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ));
     }
 
     // Risk flags — each subsection only when it has entries.

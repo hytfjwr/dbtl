@@ -32,7 +32,10 @@ pub use dag::{
     unhandled_resource_types, ColumnInfo, Dag, Edge, ExposureInfo, MacroInfo, NodeDetail, NodeInfo,
     PackageScope, ResourceTypeSupport, Subgraph, TestInfo, UnitTestShape,
 };
-pub use diff::{compute_diff, DagDiff, DiffStatus};
+pub use diff::{
+    compute_diff, compute_diff_with, ColumnChange, ColumnChangeClass, ColumnChangeKind, DagDiff,
+    DiffStatus,
+};
 pub use impact::{
     column_coverage_counts, coverage_counts, diff_report, exposure_note, layer_violation_edges,
     pr_impact, pr_impact_markdown, DiffReport, PrImpact, PR_HUB_MIN_DOWNSTREAM,

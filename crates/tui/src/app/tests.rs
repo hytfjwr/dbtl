@@ -1,5 +1,7 @@
 use super::*;
-use crate::action::{palette_candidates, Action, DetailView, Direction, Mode, SearchTarget};
+use crate::action::{
+    palette_candidates, Action, DetailView, DiffView, Direction, Mode, SearchTarget,
+};
 use crate::effect::Effect;
 use crate::{
     coverage_gap, load_dag, load_dag_from_source, reduce_selection, Dag, Focus, LensTint,
@@ -3864,6 +3866,26 @@ fn set_diff_base_invalidates_the_cached_styled_layout() {
 }
 
 #[test]
+fn set_sql_dialect_invalidates_the_cached_styled_layout() {
+    // `--sql-dialect` rebuilds BOTH resolvers and re-runs the diff: resolved
+    // columns feed the column trace and the diff feeds the Diff lens, so a
+    // layout cached under the old dialect must miss (generation bump).
+    let mut a = App::new(
+        diff_current_dag(),
+        PathBuf::from("/tmp/x/target/manifest.json"),
+    );
+    a.set_diff_base(diff_base_dag(), "base".to_string());
+    a.select_by_unique_id("model.p.b");
+    let before = a.styled_lineage_layout().expect("layout");
+    a.set_sql_dialect(crate::SqlDialect::Snowflake);
+    let after = a.styled_lineage_layout().expect("layout");
+    assert!(
+        !std::rc::Rc::ptr_eq(&before, &after),
+        "the cached styled layout misses after set_sql_dialect"
+    );
+}
+
+#[test]
 fn reload_recomputes_the_diff_against_the_kept_baseline() {
     // Fixture app + a synthetic baseline: everything in the fixture reads as
     // added. A reload (same file) must re-diff — not drop or stale the result.
@@ -4152,6 +4174,43 @@ fn yank_pr_selector_copies_the_ci_command_from_the_modal() {
     assert!(
         matches!(out.effects.as_slice(), [Effect::Yank(t)] if t == "dbt build --select b+ c+"),
         "yanks the changed-set selector: {:?}",
+        out.effects
+    );
+    // The fixture's nodes carry no column data — the narrowed selector keeps
+    // the same `+` fan-out, and the notice says which surface was copied.
+    assert_eq!(
+        a.take_notice().as_deref(),
+        Some("Copied column-level dbt build command")
+    );
+}
+
+#[test]
+fn yank_pr_selector_prefers_narrow_and_shift_y_copies_wide() {
+    // A modal whose narrowed selector differs from the wide one: `y` takes
+    // the column-level command, `Y` the wide fan-out.
+    let mut a = diff_app();
+    a.mode = Mode::Diff(DiffView {
+        pr: crate::PrImpact {
+            ci_command: Some("dbt build --select a+ b+".to_string()),
+            ci_command_columns: Some("dbt build --select a mart_b".to_string()),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let out = apply_action(&mut a, Action::YankPrSelector);
+    assert!(
+        matches!(out.effects.as_slice(), [Effect::Yank(t)] if t == "dbt build --select a mart_b"),
+        "`y` prefers the column-narrowed selector: {:?}",
+        out.effects
+    );
+    assert_eq!(
+        a.take_notice().as_deref(),
+        Some("Copied column-level dbt build command")
+    );
+    let out = apply_action(&mut a, Action::YankPrSelectorWide);
+    assert!(
+        matches!(out.effects.as_slice(), [Effect::Yank(t)] if t == "dbt build --select a+ b+"),
+        "`Y` always takes the wide command: {:?}",
         out.effects
     );
     assert_eq!(a.take_notice().as_deref(), Some("Copied dbt build command"));

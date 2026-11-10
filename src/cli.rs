@@ -194,6 +194,16 @@ pub enum Commands {
         /// not exist in the baseline gate.
         #[arg(long)]
         lint: bool,
+        /// Fail when the diff carries BREAKING column changes that
+        /// downstream columns still reference — removed or renamed columns
+        /// whose baseline consumers did not migrate (detected through
+        /// column-level lineage). Needs `--diff`. Partial-breaking changes
+        /// (data-type / expression moves) report in the impact pack but
+        /// never trip this gate. Without `--diff` the gate is skipped and a
+        /// note is printed — under `--format json` the note lands in `info`
+        /// (not `checks`, since no check ran).
+        #[arg(long)]
+        no_breaking: bool,
         /// Restrict linting to these rules (comma-separated rule names;
         /// implies --lint). Overrides `.dbtl.yml`'s per-rule enables — the
         /// flag is the authoritative rule selector; the file still supplies
@@ -613,10 +623,56 @@ fn owner_meta_key() -> String {
     }
 }
 
+/// The CLL resolver for a resolved CURRENT source, built exactly like the
+/// app's: the auto-detected `target/catalog.json` (when present) tops the
+/// column/type priority chain; `--sql-dialect` pins the parse dialect, else
+/// it auto-selects from the manifest's adapter (an unknown adapter lands on
+/// generic with a stderr notice — the override suppresses it). Shared by
+/// `columns`, `impact`, and `check` so every surface resolves identically.
+fn cll_resolver(
+    resolved: &ResolvedSource,
+    sql_dialect: Option<dbtl::SqlDialect>,
+) -> dbtl::SqlParseResolver {
+    let catalog_path = if resolved.is_source {
+        dbtl::default_catalog_path(None, Some(std::path::Path::new(&resolved.label)))
+    } else {
+        dbtl::default_catalog_path(Some(std::path::Path::new(&resolved.label)), None)
+    };
+    let catalog = catalog_path
+        .filter(|p| p.is_file())
+        .and_then(|p| dbtl::Catalog::load(&p).ok())
+        .map(std::rc::Rc::new);
+    let dialect = sql_dialect.unwrap_or_else(|| dbtl::SqlDialect::from_dag(&resolved.dag));
+    if sql_dialect.is_none() {
+        if let Some(a) = dbtl::SqlDialect::unrecognized_adapter(&resolved.dag) {
+            eprintln!(
+                "warning: column lineage: unknown adapter '{a}' — using the generic SQL dialect"
+            );
+        }
+    }
+    dbtl::SqlParseResolver::new(catalog, dialect)
+}
+
+/// The baseline side's diff resolver: no catalog (the baseline's warehouse
+/// record isn't loaded — its declared + CLL-inferred columns still resolve
+/// through the same priority chain); `--sql-dialect` pins BOTH sides'
+/// dialects, else [`dbtl::SqlDialect::for_diff_baseline`] shares the current
+/// side's dialect — one parse dialect per diff, or normalized expressions
+/// can't compare.
+fn baseline_resolver(
+    current: &dbtl::Dag,
+    base: &dbtl::Dag,
+    sql_dialect: Option<dbtl::SqlDialect>,
+) -> dbtl::SqlParseResolver {
+    let dialect = sql_dialect.unwrap_or_else(|| dbtl::SqlDialect::for_diff_baseline(current, base));
+    dbtl::SqlParseResolver::new(None, dialect)
+}
+
 /// Run the `impact` subcommand: resolve the current source + the `--diff`
 /// baseline, compute the shared [`dbtl::diff_report`] payload, and print it as
 /// Markdown (the same bytes the TUI's `D`→`e` export writes) or pretty JSON —
 /// to stdout, no TTY needed, so CI can post it as a PR comment.
+#[allow(clippy::too_many_arguments)]
 pub fn run_impact(
     diff_path: &str,
     format: ImpactFormat,
@@ -624,6 +680,7 @@ pub fn run_impact(
     source: &Option<String>,
     project: &str,
     include_packages: bool,
+    sql_dialect: Option<dbtl::SqlDialect>,
 ) -> Result<()> {
     let scope = if include_packages {
         dbtl::PackageScope::All
@@ -632,7 +689,12 @@ pub fn run_impact(
     };
     let resolved = resolve_source(manifest, source, project, scope)?;
     let (base, label) = load_baseline(diff_path, scope)?;
-    let diff = dbtl::compute_diff(&base, &resolved.dag);
+    // The same resolver pair the TUI diffs through (catalog-backed current,
+    // catalog-less baseline) so the report's column analysis matches the
+    // `D` modal byte-for-byte.
+    let cur_res = cll_resolver(&resolved, sql_dialect);
+    let base_res = baseline_resolver(&resolved.dag, &base, sql_dialect);
+    let diff = dbtl::compute_diff_with(&base, &resolved.dag, &base_res, &cur_res);
     let report = dbtl::diff_report(
         &resolved.dag,
         Some(&base),
@@ -680,16 +742,18 @@ struct CheckReportJson {
 /// Run the `check` subcommand: evaluate the CI gates over the resolved source
 /// and return `Err` (exit 1 via `main`) when any fails. Coverage below
 /// `--coverage-min` (when >0), and — only with `--diff` — newly introduced
-/// layer violations and changed buildable nodes without tests, all from the
-/// single [`dbtl::pr_impact`] analysis. `--lint` adds one PASS/FAIL line per
-/// static-lint rule (the shared [`dbtl::run_rules`] findings — the SAME
-/// vector the TUI lens/worklist and `dbtl docs` quote); under `--diff` the
-/// lint gate narrows to findings whose [`dbtl::Finding::key`] is absent from
-/// the baseline, so pre-existing violations never fail the gate. Prints one
-/// PASS/FAIL line per check to stdout (or the whole report as one JSON object
-/// under `--format json`), plus informational lines that never gate
-/// (`baseline:` and, when the blast radius has any, `affected owners:`);
-/// `--quiet` prints nothing (exit code only).
+/// layer violations, changed buildable nodes without tests, and (with
+/// `--no-breaking`) breaking column changes still referenced downstream, all
+/// from the single [`dbtl::pr_impact`] / [`dbtl::compute_diff_with`] analyses.
+/// `--lint` adds one PASS/FAIL line per static-lint rule (the shared
+/// [`dbtl::run_rules`] findings — the SAME vector the TUI lens/worklist and
+/// `dbtl docs` quote); under `--diff` the lint gate narrows to findings whose
+/// [`dbtl::Finding::key`] is absent from the baseline, so pre-existing
+/// violations never fail the gate. Prints one PASS/FAIL line per check to
+/// stdout (or the whole report as one JSON object under `--format json`),
+/// plus informational lines that never gate (`baseline:` and, when the blast
+/// radius has any, `affected owners:`); `--quiet` prints nothing (exit code
+/// only).
 #[allow(clippy::too_many_arguments)] // the subcommand's flat flag set
 pub fn run_check(
     diff_path: &Option<String>,
@@ -702,6 +766,8 @@ pub fn run_check(
     project: &str,
     quiet: bool,
     include_packages: bool,
+    no_breaking: bool,
+    sql_dialect: Option<dbtl::SqlDialect>,
 ) -> Result<()> {
     let scope = if include_packages {
         dbtl::PackageScope::All
@@ -762,7 +828,12 @@ pub fn run_check(
         None => None,
     };
     if let Some((base, label)) = &base_ctx {
-        let diff = dbtl::compute_diff(base, dag);
+        // Resolver-aware diff — the same pair `run_impact` and the TUI's `D`
+        // modal use — so `--no-breaking` gates on the identical column
+        // analysis the reviewer reads.
+        let cur_res = cll_resolver(&resolved, sql_dialect);
+        let base_res = baseline_resolver(dag, base, sql_dialect);
+        let diff = dbtl::compute_diff_with(base, dag, &base_res, &cur_res);
         let pr = dbtl::pr_impact(dag, Some(base), &diff, &owner_meta_key());
         lines.push(format!("baseline: {label}"));
         json_info.push(format!("baseline: {label}"));
@@ -825,6 +896,54 @@ pub fn run_check(
                 findings: Vec::new(),
             });
         }
+        // `--no-breaking`: fail only on BREAKING column changes whose
+        // downstream still references the old column (removed/renamed with
+        // unmigrated consumers). Partial moves (type/expr) report in the
+        // impact pack, never here. Renames print `old -> new` so the log
+        // shows the exact migration to ask for.
+        if no_breaking {
+            let breaking = diff.breaking_referenced();
+            if breaking.is_empty() {
+                let msg = "none".to_string();
+                lines.push(format!("PASS breaking column changes: {msg}"));
+                json_checks.push(CheckJsonItem {
+                    check: "breaking_columns".to_string(),
+                    status: "pass",
+                    message: msg,
+                    findings: Vec::new(),
+                });
+            } else {
+                let names = breaking
+                    .iter()
+                    .map(|ch| match &ch.renamed_from {
+                        Some(old) => format!("{}.{} -> {}", ch.node_name, old, ch.column),
+                        None => format!("{}.{}", ch.node_name, ch.column),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let msg = format!(
+                    "{} breaking column change(s) referenced downstream: {names}",
+                    breaking.len()
+                );
+                lines.push(format!("FAIL {msg}"));
+                failures.push(msg.clone());
+                json_checks.push(CheckJsonItem {
+                    check: "breaking_columns".to_string(),
+                    status: "fail",
+                    message: msg,
+                    findings: Vec::new(),
+                });
+            }
+        }
+    }
+    // `--no-breaking` is a diff gate — without a baseline there is nothing
+    // to classify. A silent no-op gate is the worst CI pattern, so say so.
+    // The note goes to `info`, not `checks`: no check ran, and a
+    // skipped-gate entry would look like a result to a CI parser.
+    if no_breaking && base_ctx.is_none() {
+        let note = "note: --no-breaking needs --diff; skipped".to_string();
+        lines.push(note.clone());
+        json_info.push(note);
     }
 
     // Static lint — the same `run_rules` findings the TUI's Lint lens/stats
@@ -1042,26 +1161,7 @@ pub fn run_columns(
     // parser-backed resolver resolves per model and falls back to the
     // name-match approximation whenever that model's SQL is missing or
     // unparseable — the count is reported on stderr below.
-    let catalog_path = if resolved.is_source {
-        dbtl::default_catalog_path(None, Some(std::path::Path::new(&resolved.label)))
-    } else {
-        dbtl::default_catalog_path(Some(std::path::Path::new(&resolved.label)), None)
-    };
-    let catalog = catalog_path
-        .filter(|p| p.is_file())
-        .and_then(|p| dbtl::Catalog::load(&p).ok())
-        .map(std::rc::Rc::new);
-    let dialect = sql_dialect.unwrap_or_else(|| dbtl::SqlDialect::from_dag(dag));
-    // An adapter_type we don't know parses as the generic dialect — say so
-    // (an explicit --sql-dialect suppresses the notice).
-    if sql_dialect.is_none() {
-        if let Some(a) = dbtl::SqlDialect::unrecognized_adapter(dag) {
-            eprintln!(
-                "warning: column lineage: unknown adapter '{a}' — using the generic SQL dialect"
-            );
-        }
-    }
-    let resolver = dbtl::SqlParseResolver::new(catalog, dialect);
+    let resolver = cll_resolver(&resolved, sql_dialect);
 
     let col = dbtl::ColumnRef::new(&uid, column);
     let known = resolver.columns(dag, &uid);
