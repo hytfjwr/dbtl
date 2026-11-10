@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
-use dbtl::action::{dispatch, reanchors_lineage};
+use dbtl::action::{dispatch, reanchors_lineage, Action};
 use dbtl::app::{apply_action, App, LineageView};
 use dbtl::effect::Effect;
 use dbtl::layout::Layout;

@@ -2779,7 +2779,9 @@ fn search_empty_query_stamps_the_syntax_hint() {
     use dbtl::Action;
     let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
     apply_action(&mut app, Action::SearchOpen);
-    // 200-wide: the 40%-wide list pane fits the whole hint line.
+    // The resizable list pane defaults to 34 cols — widen it (Issue 02's
+    // `set_list_width`) so the whole hint line fits inside the pane.
+    app.ui_state.set_list_width(60);
     let text = buffer_to_string(&render_app(&app, 200, 30));
     assert!(
         text.contains("!tag:x selector"),
@@ -2827,6 +2829,8 @@ fn search_zero_match_stamps_the_reason() {
         apply_action(&mut app, Action::SearchType(c));
     }
     assert!(app.active_list().is_empty(), "fixture has no zzzzqqq model");
+    // Widened past the 34-col default so the full reason string fits.
+    app.ui_state.set_list_width(60);
     let text = buffer_to_string(&render_app(&app, 200, 30));
     assert!(
         text.contains("no match — try ?text for full-text search"),
@@ -2866,7 +2870,9 @@ fn empty_list_stamps_the_scope_reason_and_ascii_dash() {
         child_map: HashMap::new(),
         macros: HashMap::new(),
     });
-    let app = App::new(empty, std::path::PathBuf::from(FIXTURE));
+    let mut app = App::new(empty, std::path::PathBuf::from(FIXTURE));
+    // The reason is longer than the 34-col default pane — widen to fit it.
+    app.ui_state.set_list_width(60);
     let text = buffer_to_string(&render_app(&app, 200, 30));
     assert!(
         text.contains("no models in scope — try --include-packages"),
@@ -2874,7 +2880,6 @@ fn empty_list_stamps_the_scope_reason_and_ascii_dash() {
     );
     // The lineage pane explains itself too (no model → nothing to draw).
     assert!(text.contains("no model"), "the lineage pane is explained");
-    let mut app = app;
     app.glyph_mode = dbtl::GlyphMode::Ascii;
     let ascii = buffer_to_string(&render_app(&app, 200, 30));
     assert!(
