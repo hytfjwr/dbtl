@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
-use dbtl::action::{dispatch, Action};
+use dbtl::action::{dispatch, reanchors_lineage};
 use dbtl::app::{apply_action, App, LineageView};
 use dbtl::effect::Effect;
 use dbtl::layout::Layout;
@@ -181,8 +181,8 @@ pub fn event_loop(
             // pure reducer records scroll intent, the loop bounds it to the screen.
             area = full_area(terminal)?;
             match &mut app.mode {
-                dbtl::Mode::Help { scroll } => {
-                    *scroll = dbtl::ui::clamp_help_scroll(area, *scroll);
+                dbtl::Mode::Help(h) => {
+                    h.scroll = dbtl::ui::clamp_help_scroll(area, h);
                 }
                 dbtl::Mode::Detail(dv) => {
                     dv.scroll = dbtl::ui::clamp_detail_scroll(area, dv);
@@ -343,6 +343,18 @@ pub fn event_loop(
                 ),
                 _ => (None, None),
             };
+            // The command palette's row model — Dag-aware (recent commands,
+            // `@`-search model results, availability marks), computed at the
+            // loop seam so `RenderCtx` stays Dag-free. Only built while the
+            // palette is open.
+            let palette_rows = match &app.mode {
+                dbtl::Mode::Palette(p) => Some(app.palette_rows(&p.query)),
+                _ => None,
+            };
+            // The empty-list reason (`no models in scope` / `no match` / the
+            // persistent-filter reason) — `Some` only while the active list is
+            // empty, so non-empty frames keep the legacy pane untouched.
+            let empty_reason = app.list_empty_reason();
             {
                 let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, lineage.as_deref());
                 ctx.mode = &app.mode;
@@ -385,6 +397,8 @@ pub fn event_loop(
                 ctx.filter_label = app.list_filter_label();
                 ctx.layer_bands = layer_bands.as_deref();
                 ctx.toasts = &toast_lines;
+                ctx.palette_rows = palette_rows.as_deref();
+                ctx.empty_reason = empty_reason.as_deref();
                 ctx.theme = app.active_theme();
                 terminal
                     .draw(|frame| draw(frame, &ctx))
@@ -433,25 +447,7 @@ pub fn event_loop(
                         // frame (a size-aware loop concern). Reload rebuilds the
                         // Dag and restores selection by id, so the reshaped graph
                         // must re-centre even when the selected id is unchanged.
-                        let reanchor = matches!(
-                            action,
-                            Action::Recenter
-                                | Action::ToggleUpstream
-                                | Action::ToggleDownstream
-                                | Action::DepthDecrease
-                                | Action::DepthIncrease
-                                | Action::ResetView
-                                | Action::Reload
-                                | Action::ToggleListPane
-                                | Action::DbtParse
-                                | Action::ToggleDensity
-                                | Action::ToggleOverview
-                                // Column focus swaps in a fresh (filtered)
-                                // subgraph homed on the traced model — the
-                                // anchor branch recentres it like a re-root.
-                                | Action::ColumnFocusEnter
-                                | Action::ColumnFocusExit
-                        );
+                        let reanchor = reanchors_lineage(action);
                         let outcome = apply_action(app, action);
                         // `<`/`>` stepped the saved width size-blind (the §1
                         // floor lives in `nudge_list_width`); the §1 max is
@@ -476,7 +472,10 @@ pub fn event_loop(
                         if outcome.quit {
                             return Ok(());
                         }
-                        if reanchor {
+                        // The dispatched action's own check OR the flag an
+                        // indirectly-applied action carries (a palette-run
+                        // command the dispatch only saw as SearchConfirm).
+                        if reanchor || outcome.reanchor {
                             force_anchor = true;
                         }
                     }

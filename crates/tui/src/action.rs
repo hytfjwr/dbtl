@@ -254,6 +254,11 @@ pub struct SearchState {
     /// For a lineage-target search: index into the (ordered) match list, advanced
     /// by Up/Down to cycle matches. Reset to 0 whenever the query changes.
     pub match_idx: usize,
+    /// For a LIST-target search: while `Some(i)`, the query is a recalled
+    /// `App::search_history` entry — the browse cursor Up/Down walk (entered
+    /// only from an EMPTY query). `None` = the live query the user is typing;
+    /// any edit drops the browse back to `None`.
+    pub hist: Option<usize>,
 }
 
 /// The structure-modal payload: cloned from the [`Dag`](crate::Dag) side maps
@@ -470,14 +475,81 @@ pub struct DiffView {
 }
 
 /// The command-palette state: the live query and the selected candidate index.
-/// The candidate LIST is derived on demand from [`palette_candidates`] (keyed off
+/// The candidate LIST is derived on demand ([`App::palette_rows`], keyed off
 /// [`BINDINGS`]), never stored — so the palette can't drift from the keymap. No
 /// scroll field: the render layer derives the scroll window from `selected`, so
 /// there is nothing for the event loop to clamp (it falls through unchanged).
+///
+/// `selected` indexes the SELECTABLE rows only — section headers are
+/// display-only chrome and never a target (the same rule the list pane's
+/// hint/empty rows follow).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PaletteState {
     pub query: String,
     pub selected: usize,
+}
+
+/// One row of the command palette's candidate list, computed by
+/// `App::palette_rows` (the Dag-aware producer — plain data, so the modal and
+/// the `RenderCtx` it travels through stay Dag-free).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaletteRow {
+    /// A non-selectable section header (`Recent` / `Commands`) — display-only,
+    /// never a selection target.
+    Header(&'static str),
+    /// A Selection-mode [`BINDINGS`] command. `help`/`keys` are the rendered
+    /// text (the SAME formatting `help_lines` produces); `unavailable` is the
+    /// shared `App::unavailable_reason` — `Some` greys the row, appends the
+    /// reason, and turns Enter into a toast instead of a run.
+    Command {
+        action: Action,
+        help: &'static str,
+        keys: String,
+        unavailable: Option<&'static str>,
+    },
+    /// An `@`-search model result: Enter re-roots to `uid` (the "active tab
+    /// root" the spec names — the current selection until tabs exist).
+    Model { name: String, uid: String },
+}
+
+/// The `?` help overlay's state: the scroll offset, the `/`-filter, and the
+/// mode it was opened OVER (`back` — `?` works inside the modals too, and
+/// Esc/`q`/`?` peel back to exactly that mode, payload and all).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelpView {
+    pub scroll: usize,
+    /// The `/`-filter text; `Some` once `/` has been pressed (an empty string
+    /// is a live filter that simply matches everything). `None` = no filter.
+    pub filter: Option<String>,
+    /// `true` while keys type INTO the filter — the palette/search rule:
+    /// printable chars are text (`j`/`q`/`?` edit, they do not scroll/close).
+    /// Enter commits (`editing=false` — the filter stays applied and plain
+    /// keys return to scrolling); Esc clears the filter outright.
+    pub editing: bool,
+    /// `back.kind()` — the mode the help was opened over; its section lists
+    /// FIRST in the layout (the spec's "開いた時点のモードの節を先頭に").
+    pub from: ModeKind,
+    /// The mode to restore when help closes — the overlay is a LAYER over
+    /// whatever was up (a modal keeps its snapshot and reappears on Esc).
+    pub back: Box<Mode>,
+}
+
+impl HelpView {
+    pub fn new(back: Mode) -> Self {
+        HelpView {
+            scroll: 0,
+            filter: None,
+            editing: false,
+            from: back.kind(),
+            back: Box::new(back),
+        }
+    }
+}
+
+impl Default for HelpView {
+    fn default() -> Self {
+        Self::new(Mode::Selection)
+    }
 }
 
 /// One row of the column-lineage modal (`Mode::Columns`, Issue 09 C): either a
@@ -621,9 +693,8 @@ pub enum Mode {
     /// The `y` yank-prefix which-key menu: any key dispatched here runs its
     /// yank action and closes the menu (one-shot); `Esc`/`q` cancel.
     Yank,
-    Help {
-        scroll: usize,
-    },
+    /// The `?` keybindings overlay (scrollable, `/`-filterable).
+    Help(HelpView),
 }
 
 /// The mode discriminant, used for keymap lookup (the binding table keys on this,
@@ -656,7 +727,7 @@ impl Mode {
             Mode::Notifications(_) => ModeKind::Notifications,
             Mode::Palette(_) => ModeKind::Palette,
             Mode::Yank => ModeKind::Yank,
-            Mode::Help { .. } => ModeKind::Help,
+            Mode::Help(_) => ModeKind::Help,
         }
     }
 }
@@ -832,6 +903,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Yank, triggers: &[Key(Char('l'))], action: A::YankColumnLineage, help: "copy column lineage (Markdown)" },
     KeyBinding { mode: M::Yank, triggers: &[Key(Char('!'))], action: A::YankSelector, help: "copy dbt --select command" },
     KeyBinding { mode: M::Yank, triggers: &[Key(Esc), Key(Char('q'))], action: A::DetailClose, help: "cancel" },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "help" },
     // ---- Search mode (printable chars are handled dynamically -> SearchType) ----
     KeyBinding { mode: M::Search, triggers: &[Key(Esc)], action: A::SearchCancel, help: "cancel search" },
     KeyBinding { mode: M::Search, triggers: &[Key(Enter)], action: A::SearchConfirm, help: "confirm" },
@@ -847,6 +919,9 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Palette, triggers: &[Key(Down)], action: A::SearchMove(Direction::Down), help: "next command" },
     // ---- Detail modal ----
     KeyBinding { mode: M::Detail, triggers: &[Key(Esc), Key(Char('q'))], action: A::DetailClose, help: "close" },
+    // `?` opens help over the modal (HelpView.back restores it) — the
+    // structure-modal section then leads the layout.
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "help" },
     // Enter/`c` commits the column under the h/l cursor to column focus (the
     // arm closes the modal instead when the node has no columns — the classic
     // Enter-to-close survives there). While the tests section owns the cursor
@@ -865,6 +940,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Detail, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom" },
     // ---- SQL preview modal (reuses DetailClose + DetailScroll) ----
     KeyBinding { mode: M::Sql, triggers: &[Key(Esc), Key(Enter), Key(Char('q'))], action: A::DetailClose, help: "close" },
+    KeyBinding { mode: M::Sql, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "help" },
     KeyBinding { mode: M::Sql, triggers: &[Key(Char('c'))], action: A::SqlToggleCompiled, help: "toggle raw / compiled SQL" },
     KeyBinding { mode: M::Sql, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down" },
     KeyBinding { mode: M::Sql, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up" },
@@ -874,6 +950,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Sql, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom" },
     // ---- Stats dashboard modal (reuses DetailClose + DetailScroll) ----
     KeyBinding { mode: M::Stats, triggers: &[Key(Esc), Key(Enter), Key(Char('q'))], action: A::DetailClose, help: "close" },
+    KeyBinding { mode: M::Stats, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "help" },
     KeyBinding { mode: M::Stats, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down" },
     KeyBinding { mode: M::Stats, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up" },
     KeyBinding { mode: M::Stats, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down" },
@@ -882,6 +959,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Stats, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom" },
     // ---- Diff summary modal (reuses DetailClose + DetailScroll) ----
     KeyBinding { mode: M::Diff, triggers: &[Key(Esc), Key(Enter), Key(Char('q'))], action: A::DetailClose, help: "close" },
+    KeyBinding { mode: M::Diff, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "help" },
     KeyBinding { mode: M::Diff, triggers: &[Key(Char('e'))], action: A::ExportPrImpact, help: "export PR impact report (Markdown)" },
     KeyBinding { mode: M::Diff, triggers: &[Key(Char('y'))], action: A::YankPrSelector, help: "copy dbt build --select (column-narrowed)" },
     KeyBinding { mode: M::Diff, triggers: &[Key(Char('Y'))], action: A::YankPrSelectorWide, help: "copy dbt build --select (wide)" },
@@ -895,6 +973,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     // selection the loop scroll-follows), d/u/g/G page the viewport like every
     // other modal, Enter re-roots to the row's model. ----
     KeyBinding { mode: M::Columns, triggers: &[Key(Esc), Key(Char('q'))], action: A::DetailClose, help: "close" },
+    KeyBinding { mode: M::Columns, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "help" },
     KeyBinding { mode: M::Columns, triggers: &[Key(Enter)], action: A::ColumnJump, help: "jump to this model" },
     KeyBinding { mode: M::Columns, triggers: &[Key(Char('j')), Key(Down)], action: A::ColumnRowMove(Direction::Down), help: "next column row" },
     KeyBinding { mode: M::Columns, triggers: &[Key(Char('k')), Key(Up)], action: A::ColumnRowMove(Direction::Up), help: "previous column row" },
@@ -919,17 +998,47 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Help, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up" },
     KeyBinding { mode: M::Help, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top" },
     KeyBinding { mode: M::Help, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom" },
+    // `/` opens the line filter. While the filter is being edited, printable
+    // keys are TEXT (they route through the Search* editing actions — the same
+    // reuse the palette/search rows use), so `?`/`q` close is suspended until
+    // the filter is committed (Enter) or cleared (Esc); see dispatch().
+    KeyBinding { mode: M::Help, triggers: &[Key(Char('/'))], action: A::SearchOpen, help: "filter help lines" },
 ];
 
 /// Map `(Mode, KeyEvent)` to an [`Action`], or `None` if the key is unbound.
 ///
-/// Ctrl-C always quits (any mode). Then the [`BINDINGS`] table is consulted for
-/// the mode; finally, in `Search` mode, any plain printable char becomes
+/// Ctrl-C always quits (any mode). While the help `/`-filter is being edited,
+/// printable/Backspace/Enter keys route to the `Search*` editing actions BEFORE
+/// the table. Then [`BINDINGS`] is consulted for the mode; finally, in Search
+/// or Palette mode, any leftover plain printable char becomes
 /// [`Action::SearchType`].
 pub fn dispatch(mode: &Mode, key: KeyEvent) -> Option<Action> {
     // Global: Ctrl-C quits regardless of mode (never a printable char).
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         return Some(Action::Quit);
+    }
+    // While the help `/`-filter is being edited, printable text types INTO it
+    // and Backspace/Enter edit/commit it — the same "printable is text"
+    // contract Search/Palette live by, reusing the Search* actions. This runs
+    // BEFORE the BINDINGS table so `j`/`q`/`?`/`g`/`/` edit the filter instead
+    // of scrolling or closing; Esc isn't printable, so it still reaches
+    // HelpToggle (which the reducer reads as "clear the filter first").
+    if let Mode::Help(h) = mode {
+        if h.editing {
+            match key.code {
+                KeyCode::Char(c) => {
+                    let plain = !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT)
+                        && !key.modifiers.contains(KeyModifiers::SUPER);
+                    if plain {
+                        return Some(Action::SearchType(c));
+                    }
+                }
+                KeyCode::Backspace => return Some(Action::SearchBackspace),
+                KeyCode::Enter => return Some(Action::SearchConfirm),
+                _ => {}
+            }
+        }
     }
     let mk = mode.kind();
     for b in BINDINGS {
@@ -966,6 +1075,9 @@ pub struct HelpLine {
 /// The drift test asserts these are exactly the non-`BINDINGS` actions.
 static DYNAMIC_HELP: &[(ModeKind, &str, &str)] = &[
     (ModeKind::Search, "a-z..", "type to filter / search"),
+    (ModeKind::Palette, "a-z..", "type to filter commands"),
+    (ModeKind::Palette, "@name", "search models / re-root"),
+    (ModeKind::Help, "a-z..", "type to filter help lines"),
     (
         ModeKind::Selection,
         "left click",
@@ -1025,6 +1137,42 @@ pub fn palette_candidates(query: &str) -> Vec<&'static KeyBinding> {
         .collect()
 }
 
+/// "This action reshapes or recentres the lineage without moving the
+/// selection" — the event loop forces the anchor branch after it (the loop's
+/// dispatched-key check AND the `Outcome.reanchor` flag a palette-confirmed
+/// command carries: one list, no drift between the key and palette paths).
+pub fn reanchors_lineage(action: Action) -> bool {
+    matches!(
+        action,
+        Action::Recenter
+            | Action::ToggleUpstream
+            | Action::ToggleDownstream
+            | Action::DepthDecrease
+            | Action::DepthIncrease
+            | Action::ResetView
+            | Action::Reload
+            | Action::ToggleListPane
+            | Action::DbtParse
+            | Action::ToggleDensity
+            | Action::ToggleOverview
+            | Action::ColumnFocusEnter
+            | Action::ColumnFocusExit
+    )
+}
+
+/// Resolve a persisted palette-recent NAME back to its live [`BINDINGS`] row.
+/// Recents are stored as `Action`'s `Debug` name (`"ToggleMinimap"`); a name no
+/// longer present in the Selection-mode keymap (renamed/removed action) drops
+/// rather than pointing at a dead row — the Recent section mirrors [`BINDINGS`],
+/// it never becomes a second command source.
+pub fn palette_binding_named(name: &str) -> Option<&'static KeyBinding> {
+    BINDINGS.iter().find(|b| {
+        b.mode == ModeKind::Selection
+            && b.action != Action::PaletteOpen
+            && format!("{:?}", b.action) == name
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1044,7 +1192,11 @@ mod tests {
             query: String::new(),
             origin_uid: None,
             match_idx: 0,
+            hist: None,
         })
+    }
+    fn help_mode() -> Mode {
+        Mode::Help(HelpView::new(Mode::Selection))
     }
     fn detail_mode() -> Mode {
         Mode::Detail(DetailView {
@@ -1252,7 +1404,7 @@ mod tests {
             Some(Action::DetailClose)
         );
         assert_eq!(
-            dispatch(&Mode::Help { scroll: 0 }, press(Char('q'))),
+            dispatch(&help_mode(), press(Char('q'))),
             Some(Action::HelpToggle)
         );
         assert_eq!(
@@ -1375,7 +1527,7 @@ mod tests {
                 ModeKind::Notifications => notifications_mode(),
                 ModeKind::Palette => palette_mode(),
                 ModeKind::Yank => Mode::Yank,
-                ModeKind::Help => Mode::Help { scroll: 0 },
+                ModeKind::Help => help_mode(),
             };
             for t in b.triggers {
                 let key = match t {

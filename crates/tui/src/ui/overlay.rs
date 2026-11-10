@@ -10,8 +10,8 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::action::{
-    palette_candidates, ColumnView, DetailView, DiffView, NoticeLevel, NotificationsView,
-    PaletteState, SqlView, StatsView,
+    palette_candidates, ColumnView, DetailView, DiffView, HelpView, ModeKind, NoticeLevel,
+    NotificationsView, PaletteRow, PaletteState, SqlView, StatsView,
 };
 
 use super::geom::centered_rect;
@@ -114,10 +114,13 @@ fn draw_scrollable_modal(
 /// The help overlay content as display lines, GENERATED from the keymap's
 /// [`help_lines`](crate::action::help_lines) — the single source of truth — so
 /// the `?` overlay can never drift from what the keys actually do. Grouped by
-/// mode with section headers.
-fn help_display_lines(t: &theme::Theme) -> Vec<Line<'static>> {
-    use crate::action::{help_lines, ModeKind};
-    let sections = [
+/// mode with section headers; the section for `from` (the mode the overlay was
+/// opened over) leads, the rest keep table order. A non-empty `filter`
+/// fuzzy-matches each row's keys+desc — a fully filtered-out section leaves no
+/// dangling header, and a zero-match filter shows a one-line message.
+fn help_display_lines(t: &theme::Theme, filter: &str, from: ModeKind) -> Vec<Line<'static>> {
+    use crate::action::{help_lines, HelpLine};
+    let mut sections: Vec<(ModeKind, &str)> = vec![
         (ModeKind::Selection, "Normal"),
         (ModeKind::Search, "Search / filter"),
         (ModeKind::Detail, "Structure modal"),
@@ -130,11 +133,25 @@ fn help_display_lines(t: &theme::Theme) -> Vec<Line<'static>> {
         (ModeKind::Yank, "Yank (y + key)"),
         (ModeKind::Help, "Help"),
     ];
+    if let Some(i) = sections.iter().position(|(mk, _)| *mk == from) {
+        let lead = sections.remove(i);
+        sections.insert(0, lead);
+    }
+    let pat = filter.trim();
     let all = help_lines();
+    let matches = |hl: &HelpLine| {
+        pat.is_empty()
+            || !crate::model_list::match_indices(&hl.desc, pat).is_empty()
+            || !crate::model_list::match_indices(&hl.keys, pat).is_empty()
+    };
     let mut out: Vec<Line> = Vec::new();
     for (mk, title) in sections {
+        let rows: Vec<&HelpLine> = all.iter().filter(|l| l.mode == mk && matches(l)).collect();
+        if !pat.is_empty() && rows.is_empty() {
+            continue;
+        }
         out.push(Line::styled(format!("{title}:"), header_style(t)));
-        for hl in all.iter().filter(|l| l.mode == mk) {
+        for hl in rows {
             // The key column in the accent, the description default — same text.
             out.push(Line::from(vec![
                 Span::styled(format!("  {:<10} ", hl.keys), Style::default().fg(t.accent)),
@@ -143,6 +160,12 @@ fn help_display_lines(t: &theme::Theme) -> Vec<Line<'static>> {
         }
         out.push(Line::from(""));
     }
+    if !pat.is_empty() && out.is_empty() {
+        out.push(Line::styled(
+            "  no matching bindings".to_string(),
+            Style::default().fg(t.text_faint),
+        ));
+    }
     out
 }
 
@@ -150,8 +173,12 @@ fn help_display_lines(t: &theme::Theme) -> Vec<Line<'static>> {
 /// the event loop calls this on the stored scroll, mirroring `clamp_lineage`).
 /// Counts with the DEFAULT theme — the line COUNT is theme-independent (a theme
 /// only recolours), so the clamp never needs the active one.
-pub fn clamp_help_scroll(area: Rect, scroll: usize) -> usize {
-    clamp_modal_scroll(area, help_display_lines(&theme::DEFAULT).len(), scroll)
+pub fn clamp_help_scroll(area: Rect, hv: &HelpView) -> usize {
+    clamp_modal_scroll(
+        area,
+        help_display_lines(&theme::DEFAULT, hv.filter.as_deref().unwrap_or(""), hv.from).len(),
+        hv.scroll,
+    )
 }
 
 /// Draw the `?` help overlay: a centered, scrollable box listing every binding
@@ -160,20 +187,32 @@ pub fn clamp_help_scroll(area: Rect, scroll: usize) -> usize {
 pub(crate) fn draw_help(
     frame: &mut Frame,
     area: Rect,
-    scroll: usize,
+    hv: &HelpView,
     glyphs: crate::GlyphMode,
     t: &theme::Theme,
 ) {
+    let ver = env!("CARGO_PKG_VERSION");
+    let title = match &hv.filter {
+        // While the `/`-filter is live its text rides the title — the caret
+        // only while keys are still typing into it.
+        Some(f) => {
+            let chrome = super::chrome(glyphs);
+            let caret = if hv.editing { chrome.caret } else { "" };
+            let hint = if hv.editing {
+                "(Enter to apply, Esc to clear)"
+            } else {
+                "(/ to edit, Esc to clear)"
+            };
+            format!(" Keybindings - dbtl v{ver}  /{f}{caret}  {hint} ")
+        }
+        None => format!(" Keybindings - dbtl v{ver}  (?/Esc/q to close, j/k to scroll) "),
+    };
     draw_scrollable_modal(
         frame,
         area,
-        concat!(
-            " Keybindings - dbtl v",
-            env!("CARGO_PKG_VERSION"),
-            "  (?/Esc/q to close, j/k to scroll) "
-        ),
-        help_display_lines(t),
-        scroll,
+        title,
+        help_display_lines(t, hv.filter.as_deref().unwrap_or(""), hv.from),
+        hv.scroll,
         glyphs,
         t,
     );
@@ -1507,6 +1546,7 @@ pub(crate) fn draw_palette(
     frame: &mut Frame,
     area: Rect,
     state: &PaletteState,
+    rows: Option<&[PaletteRow]>,
     glyphs: crate::GlyphMode,
     t: &theme::Theme,
 ) {
@@ -1552,83 +1592,184 @@ pub(crate) fn draw_palette(
         ..inner
     };
     let view_h = list_rect.height as usize;
-    let candidates = palette_candidates(&state.query);
-    let total = candidates.len();
+    // The Dag-aware row model is precomputed at the loop seam (`App::palette_rows`
+    // → `RenderCtx::palette_rows`). Headless renders that never computed it fall
+    // back to plain keymap command rows (no recents, no availability marks) so
+    // they still draw something.
+    let fallback;
+    let rows: &[PaletteRow] = match rows {
+        Some(r) => r,
+        None => {
+            fallback = palette_candidates(&state.query)
+                .iter()
+                .map(|b| PaletteRow::Command {
+                    action: b.action,
+                    help: b.help,
+                    keys: b.key_label(),
+                    unavailable: None,
+                })
+                .collect::<Vec<_>>();
+            &fallback
+        }
+    };
+    // `@` model search: the query text after `@` is the name pattern rows were
+    // built from (`App::palette_rows` trims it); it is also the string the
+    // match highlight measures against.
+    let model_q = state
+        .query
+        .strip_prefix('@')
+        .map(str::trim)
+        .unwrap_or(&state.query);
     if view_h == 0 {
         return;
     }
-    // Derive the scroll window from `selected`: keep it visible, never past the end.
-    let off = state
-        .selected
+    // `selected` indexes the SELECTABLE rows (headers never count); find its
+    // display position for the scroll window.
+    let mut sel_i = 0usize;
+    let mut sel_display = 0usize;
+    for (di, r) in rows.iter().enumerate() {
+        if !matches!(r, PaletteRow::Header(_)) {
+            if sel_i == state.selected {
+                sel_display = di;
+            }
+            sel_i += 1;
+        }
+    }
+    let selectable = sel_i;
+    let total = rows.len();
+    let off = sel_display
         .saturating_sub(view_h - 1)
         .min(total.saturating_sub(view_h));
 
     let label_w = list_rect.width as usize;
+    let hi = Style::default().fg(t.gold).add_modifier(Modifier::BOLD);
     let mut lines: Vec<Line> = Vec::with_capacity(view_h);
-    for (i, b) in candidates.iter().enumerate().skip(off).take(view_h) {
-        let selected = i == state.selected;
-        let base = if selected {
-            selected_style(t)
-        } else {
-            Style::default()
-        };
-        // The help text, with matched query chars highlighted (yellow+bold). The
-        // highlight wins over the base except for the reversed selected row, which
-        // keeps the reverse (selection cue beats the match cue).
-        let hits = crate::model_list::match_indices(b.help, &state.query);
-        let hi = Style::default().fg(t.gold).add_modifier(Modifier::BOLD);
-        let mut spans: Vec<Span> = Vec::new();
-        spans.push(Span::styled("  ", base));
-        for (ci, ch) in b.help.chars().enumerate() {
-            let st = if hits.contains(&ci) && !selected {
-                base.patch(hi)
-            } else {
-                base
-            };
-            spans.push(Span::styled(ch.to_string(), st));
+    let mut sel_i = 0usize;
+    for (di, row) in rows.iter().enumerate() {
+        let header = matches!(row, PaletteRow::Header(_));
+        let selected = !header && sel_i == state.selected;
+        if !header {
+            sel_i += 1;
         }
-        // Right-align the dim key label within the row width (best-effort: pad
-        // between help and key when there is room; ratatui clips an overlong row).
-        let key = b.key_label();
-        let used = 2 + b.help.chars().count() + key.chars().count();
-        if label_w > used {
-            spans.push(Span::styled(" ".repeat(label_w - used), base));
-        } else {
-            spans.push(Span::styled(" ", base));
+        if di < off || di >= off + view_h {
+            continue;
         }
-        let key_base = if selected {
-            base
-        } else {
-            Style::default().fg(t.text_dim)
-        };
-        // A row can be admitted by a KEY-LABEL match (e.g. "tab" matches the "Tab"
-        // label, not the help text — see `palette_candidates`). When the help has
-        // NO hits but the query is non-empty, highlight the matched key-label chars
-        // so that row's match cue is visible too. Match the EXACT `key_label()`
-        // string `palette_candidates` matched (the "/"-joined form). The selected
-        // (reversed) row keeps its reverse, like the help highlight above.
-        let key_hits = if hits.is_empty() && !state.query.trim().is_empty() {
-            crate::model_list::match_indices(&key, &state.query)
-        } else {
-            Vec::new()
-        };
-        if key_hits.is_empty() {
-            spans.push(Span::styled(key, key_base));
-        } else {
-            for (ci, ch) in key.chars().enumerate() {
-                let st = if key_hits.contains(&ci) && !selected {
-                    key_base.patch(hi)
+        match row {
+            PaletteRow::Header(label) => {
+                lines.push(Line::styled(format!(" {label}"), header_style(t)));
+            }
+            PaletteRow::Command {
+                help,
+                keys,
+                unavailable,
+                ..
+            } => {
+                // Grey = "would do nothing right now": the whole row (help, key,
+                // appended reason) is faint; the reversed selected row still
+                // reads as the cursor.
+                let grey = unavailable.is_some();
+                let base = if selected {
+                    selected_style(t)
+                } else if grey {
+                    Style::default().fg(t.text_faint)
                 } else {
-                    key_base
+                    Style::default()
                 };
-                spans.push(Span::styled(ch.to_string(), st));
+                // The help text, with matched query chars highlighted
+                // (yellow+bold). The highlight wins over the base except for the
+                // reversed selected row, which keeps the reverse.
+                let hits = if state.query.starts_with('@') {
+                    Vec::new()
+                } else {
+                    crate::model_list::match_indices(help, &state.query)
+                };
+                let mut spans: Vec<Span> = vec![Span::styled("  ", base)];
+                for (ci, ch) in help.chars().enumerate() {
+                    let st = if hits.contains(&ci) && !selected && !grey {
+                        base.patch(hi)
+                    } else {
+                        base
+                    };
+                    spans.push(Span::styled(ch.to_string(), st));
+                }
+                // Right-align the dim key label within the row width
+                // (best-effort: pad between help and key when there is room).
+                let reason = unavailable.map(|r| format!(" ({r})")).unwrap_or_default();
+                let used = 2 + help.chars().count() + keys.chars().count() + reason.chars().count();
+                if label_w > used {
+                    spans.push(Span::styled(" ".repeat(label_w - used), base));
+                } else {
+                    spans.push(Span::styled(" ", base));
+                }
+                let key_base = if selected {
+                    base
+                } else if grey {
+                    Style::default().fg(t.text_faint)
+                } else {
+                    Style::default().fg(t.text_dim)
+                };
+                // A row can be admitted by a KEY-LABEL match (e.g. "tab" matches
+                // the "Tab" label, not the help text). When the help has NO hits
+                // but the query is non-empty, highlight the matched key-label
+                // chars so that row's match cue is visible too.
+                let key_hits = if hits.is_empty() && !state.query.trim().is_empty() && !grey {
+                    crate::model_list::match_indices(keys, &state.query)
+                } else {
+                    Vec::new()
+                };
+                if key_hits.is_empty() {
+                    spans.push(Span::styled(keys.clone(), key_base));
+                } else {
+                    for (ci, ch) in keys.chars().enumerate() {
+                        let st = if key_hits.contains(&ci) && !selected {
+                            key_base.patch(hi)
+                        } else {
+                            key_base
+                        };
+                        spans.push(Span::styled(ch.to_string(), st));
+                    }
+                }
+                if !reason.is_empty() {
+                    spans.push(Span::styled(reason, Style::default().fg(t.text_faint)));
+                }
+                lines.push(Line::from(spans));
+            }
+            PaletteRow::Model { name, .. } => {
+                let base = if selected {
+                    selected_style(t)
+                } else {
+                    Style::default()
+                };
+                let hits = crate::model_list::match_indices(name, model_q);
+                let mut spans: Vec<Span> = vec![Span::styled("  ", base)];
+                for (ci, ch) in name.chars().enumerate() {
+                    let st = if hits.contains(&ci) && !selected {
+                        base.patch(hi)
+                    } else {
+                        base
+                    };
+                    spans.push(Span::styled(ch.to_string(), st));
+                }
+                lines.push(Line::from(spans));
             }
         }
-        lines.push(Line::from(spans));
+    }
+    if selectable == 0 {
+        // No candidates at all — the spec's one-line zero-match message.
+        let msg = if state.query.starts_with('@') {
+            "no matching models"
+        } else {
+            "no matching commands"
+        };
+        lines.push(Line::styled(
+            format!("  {msg}"),
+            Style::default().fg(t.text_faint),
+        ));
     }
     frame.render_widget(Paragraph::new(lines), list_rect);
 
-    // Right-border scrollbar thumb on overflow (candidate-list units).
+    // Right-border scrollbar thumb on overflow (display-row units — header rows
+    // scroll with the commands).
     super::stamp_scrollbar(frame, rect, total, off, view_h, glyphs, t);
 }
 
