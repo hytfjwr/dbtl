@@ -108,24 +108,38 @@ pub enum SqlDialect {
 }
 
 impl SqlDialect {
-    /// Every `--sql-dialect` value `parse_name` accepts (for `--help`/tests).
+    /// Every `--sql-dialect` value `parse_name` accepts (for `--help`/tests
+    /// and the CLI error message) — canonical names AND aliases, so the
+    /// advertised list can never drift from what actually parses.
     pub const NAMES: &'static [&'static str] = &[
+        "ansi",
+        "auto",
+        "big_query",
         "bigquery",
+        "bq",
         "clickhouse",
         "databricks",
         "duckdb",
+        "fabric",
         "generic",
         "hive",
+        "hive2",
+        "mariadb",
         "mssql",
         "mysql",
         "oracle",
+        "pg",
         "postgres",
         "postgresql",
         "redshift",
         "snowflake",
         "spark",
+        "sparksql",
         "sqlite",
+        "sqlite3",
+        "sqlserver",
         "teradata",
+        "tsql",
     ];
 
     /// A dbt `metadata.adapter_type` string → dialect (`"duckdb"`,
@@ -163,6 +177,14 @@ impl SqlDialect {
     /// applied by the caller before this is consulted).
     pub fn from_dag(dag: &Dag) -> Self {
         dag.adapter_type().map_or(Self::Generic, Self::from_adapter)
+    }
+
+    /// The manifest's `adapter_type` when it doesn't name a known dialect —
+    /// [`from_dag`](Self::from_dag) maps it to `Generic` and the caller
+    /// decides how to surface the warning (a notice/toast in the TUI,
+    /// stderr in the CLI). `None` when the adapter is absent or recognized.
+    pub fn unrecognized_adapter(dag: &Dag) -> Option<&str> {
+        dag.adapter_type().filter(|a| Self::parse_name(a).is_none())
     }
 
     /// The concrete `sqlparser` dialect object.
@@ -302,7 +324,28 @@ fn render_jinja(sql: &str) -> String {
                             }
                             // `{% … %}` tags and `{# … #}` comments drop
                             // entirely — the tag's body (if/for branches)
-                            // keeps flowing into the output.
+                            // keeps flowing into the output. A
+                            // `{% else %}`/`{% elif %}` branch split becomes
+                            // a `,` instead of a space: inside a select list
+                            // `a , b` covers BOTH branches as separate
+                            // items (the documented branch union), where
+                            // `a b` would parse as `a AS b` — the false
+                            // branch's name stealing the true branch's
+                            // value. An adjacent literal comma (the
+                            // `{% if %}, b{% else %}, c{% endif %}`
+                            // conditional-column idiom) already separates
+                            // the items, so a space there — and clause-level
+                            // splits (`select 1 , select 2`) just fail to
+                            // parse → the safe per-model fallback.
+                            b'%' => {
+                                let split = jinja_branch_split(&sql[i + 2..e]);
+                                let literal_comma = split
+                                    && (out.iter().rev().find(|c| !c.is_ascii_whitespace())
+                                        == Some(&b',')
+                                        || b[e + 2..].iter().find(|c| !c.is_ascii_whitespace())
+                                            == Some(&b','));
+                                out.push(if split && !literal_comma { b',' } else { b' ' });
+                            }
                             _ => out.push(b' '),
                         }
                         i = e + 2;
@@ -328,6 +371,23 @@ fn render_jinja(sql: &str) -> String {
     // Jinja interiors are ASCII for anything we render; copied bytes keep
     // the original UTF-8 untouched.
     String::from_utf8(out).unwrap_or_default()
+}
+
+/// Is `body` (the inside of a `{% … %}` tag, whitespace-control dashes and
+/// spaces stripped) a Jinja branch split — `else`, `elif`, or `elseif`? The
+/// keyword must be followed by nothing or a non-identifier char so
+/// `{%- else -%}` matches but an identifier like `elsewhere` can't.
+fn jinja_branch_split(body: &str) -> bool {
+    let body = body.trim_matches(|c: char| c.is_whitespace() || c == '-' || c == '+');
+    ["elseif", "else", "elif"].iter().any(|kw| {
+        body.strip_prefix(kw).is_some_and(|rest| {
+            rest.is_empty()
+                || !rest
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+    })
 }
 
 /// If `b[i]` opens a dollar-quoted string, the opening delimiter's byte
@@ -552,6 +612,12 @@ struct Analyzed {
     scope: Vec<Binding>,
     out: Vec<OutCol>,
     foj: ColSources,
+    /// `true` when an output-producing projection contained a `*`/`t.*` —
+    /// the only way a declared column can be carried without appearing in
+    /// `out` (behind a wildcard no binding's column list could expand).
+    /// Without one, every output is explicitly named and probing an
+    /// unproduced declared name can only fabricate edges.
+    unbounded_wildcard: bool,
 }
 
 /// Per-query context: the `Dag`, the model's direct-parent matcher table,
@@ -682,7 +748,8 @@ impl SqlParseResolver {
                 return Some(Rc::new(cols));
             }
         }
-        if let Some(an) = self.analyzed(dag, uid) {
+        let analyzed = self.analyzed(dag, uid);
+        if let Some(an) = &analyzed {
             if an.out.iter().any(|o| !o.synthetic) {
                 return Some(Rc::new(
                     an.out
@@ -693,6 +760,13 @@ impl SqlParseResolver {
                 ));
             }
         }
+        if analyzed.is_none() && resolution_sql(dag, uid).is_some() {
+            // Same flag `compute_resolve` sets: a node whose SQL exists but
+            // didn't parse IS a fallback node — including when only its
+            // `columns()` path took the name-match route (`resolve` never
+            // invoked).
+            self.fallbacks.borrow_mut().insert(uid.to_string());
+        }
         let cols = self.fallback.columns(dag, uid);
         (!cols.is_empty()).then(|| Rc::new(cols))
     }
@@ -701,6 +775,12 @@ impl SqlParseResolver {
 
     /// The model's analyzed SQL, memoized (`None` = couldn't analyze → the
     /// caller takes the name-match path). Cycle-guarded.
+    ///
+    /// Recursion budget: `Ctx::depth` (256) bounds nesting INSIDE one
+    /// model's query tree; the `analyzing` set bounds recursion ACROSS
+    /// models (`resolve_in_binding` → `col_set(parent)` → `analyzed`) to
+    /// one frame per DAG edge along a linear chain — memoized results and
+    /// the cycle guard make it proportional to path length, not graph size.
     fn analyzed(&self, dag: &Dag, node: &str) -> Option<Rc<Analyzed>> {
         if let Some(v) = self.analyzed_memo.borrow().get(node) {
             return v.clone();
@@ -742,6 +822,7 @@ impl SqlParseResolver {
                 scope,
                 out: res.out,
                 foj: res.foj,
+                unbounded_wildcard: query_has_output_wildcard(query),
             }))
         })();
         self.analyzing.borrow_mut().remove(node);
@@ -1295,6 +1376,9 @@ impl SqlParseResolver {
                                 res.foj.extend(self.resolve_parts(ctx, refs, &parts));
                             }
                         }
+                        Some(JoinConstraint::Natural) => {
+                            res.foj.extend(self.natural_join_sources(ctx, &scope));
+                        }
                         _ => {}
                     }
                 }
@@ -1484,6 +1568,9 @@ impl SqlParseResolver {
         }
         if let GroupByExpr::Expressions(exprs, _) = &sel.group_by {
             for e in exprs {
+                // `GROUP BY 1` positional ordinals stay unresolved — a
+                // literal int never names a column (documented degenerate
+                // case; the output at that position is untouched).
                 res.foj.extend(self.expr_refs(ctx, refs, e)?);
             }
         }
@@ -1513,7 +1600,11 @@ impl SqlParseResolver {
             }
         }
 
-        // The projection → output columns.
+        // The projection → output columns. Items resolve against the FROM
+        // scope alone: a same-SELECT alias is NOT visible to sibling items
+        // (`select p.y as z, z + 1` reads `z` from the FROM scope, matching
+        // the SQL standard — dialect-local alias visibility like Postgres'
+        // LATERAL isn't modeled).
         let mut out: Vec<OutCol> = Vec::new();
         for item in &sel.projection {
             self.resolve_select_item(ctx, refs, &scope, item, &mut out)?;
@@ -1640,6 +1731,9 @@ impl SqlParseResolver {
                         res.foj.extend(self.resolve_parts(ctx, refs, &parts));
                     }
                 }
+                Some(JoinConstraint::Natural) => {
+                    res.foj.extend(self.natural_join_sources(ctx, scope));
+                }
                 _ => {}
             }
         }
@@ -1679,16 +1773,46 @@ impl SqlParseResolver {
                     .as_ref()
                     .map(|a| norm_ident(&a.name))
                     .unwrap_or_else(|| last.clone());
-                let src = if let Some(q) = env.ctes.get(&last) {
+                // A CTE is only ever addressable UNqualified — `sch.c` is a
+                // real relation (compiled `ref('c')` → `analytics.c`), never
+                // the CTE `c`.
+                let cte = if parts.len() == 1 {
+                    env.ctes.get(&last)
+                } else {
+                    None
+                };
+                let alias_cols = alias.as_ref().map(|a| a.columns.as_slice()).unwrap_or(&[]);
+                let src = if let Some(q) = cte {
                     // The CTE's own row-shaping deps (WHERE/JOIN inside it)
                     // shape every row this select reads — merge them.
                     res.foj.extend(q.foj.iter().cloned());
-                    TableSrc::Derived(rename_rc(
-                        q,
-                        alias.as_ref().map(|a| a.columns.as_slice()).unwrap_or(&[]),
-                    ))
+                    TableSrc::Derived(rename_rc(q, alias_cols))
                 } else if let Some(p) = Self::match_parent(ctx.parents, &parts) {
-                    TableSrc::Parent(p.uid.clone())
+                    if let (Some(cols), false) =
+                        (self.col_set(ctx.dag, &p.uid), alias_cols.is_empty())
+                    {
+                        // `FROM up t(a, b)` positionally renames the parent's
+                        // outputs — same alias-list semantics as a CTE, so
+                        // `t.b` reads the parent's second column.
+                        let out = cols
+                            .iter()
+                            .map(|c| OutCol {
+                                name: c.clone(),
+                                bare: true,
+                                sources: BTreeSet::from([(p.uid.clone(), c.clone())]),
+                                synthetic: false,
+                            })
+                            .collect();
+                        TableSrc::Derived(Rc::new(rename_outputs(
+                            QueryRes {
+                                out,
+                                foj: ColSources::new(),
+                            },
+                            alias_cols,
+                        )))
+                    } else {
+                        TableSrc::Parent(p.uid.clone())
+                    }
                 } else {
                     TableSrc::External
                 };
@@ -2208,7 +2332,15 @@ impl SqlParseResolver {
                         }
                         let parts = object_name_parts(name);
                         if let Some(last) = parts.last() {
-                            if let Some(q) = refs.ctes.get(last) {
+                            // Same rule as FROM position: a CTE is only ever
+                            // addressable UNqualified (`sch.c` is a real
+                            // relation, never the CTE `c`).
+                            let cte = if parts.len() == 1 {
+                                refs.ctes.get(last)
+                            } else {
+                                None
+                            };
+                            if let Some(q) = cte {
                                 s.extend(q.foj.iter().cloned());
                                 for o in &q.out {
                                     s.extend(o.sources.iter().cloned());
@@ -2548,7 +2680,9 @@ impl SqlParseResolver {
             // LOCAL name (lambda param, MATCH_RECOGNIZE symbol) shadows it.
             let mut sc = Some(scope);
             while let Some(s) = sc {
-                if let Some(b) = s.bindings.iter().find(|b| b.name == *qual) {
+                // `rfind`: a duplicated binding name (`FROM a t, b t`) —
+                // the rightmost binding shadows, per SQL semantics.
+                if let Some(b) = s.bindings.iter().rfind(|b| b.name == *qual) {
                     if !refs.locals.contains(qual) {
                         return self.resolve_in_binding(ctx, b, col);
                     }
@@ -2563,7 +2697,7 @@ impl SqlParseResolver {
                 // documented).
                 let mut sc = Some(scope);
                 while let Some(s) = sc {
-                    if let Some(b) = s.bindings.iter().find(|b| b.name == parts[0]) {
+                    if let Some(b) = s.bindings.iter().rfind(|b| b.name == parts[0]) {
                         if !refs.locals.contains(&parts[0]) {
                             return self.resolve_in_binding(ctx, b, &parts[1]);
                         }
@@ -2610,6 +2744,49 @@ impl SqlParseResolver {
                 }
             }
             TableSrc::External => {}
+        }
+        s
+    }
+
+    /// The enumerable output names a binding exposes — `None` when its
+    /// column list is unknowable (a parent nothing names, an External
+    /// relation).
+    fn binding_col_names(&self, ctx: &Ctx<'_>, b: &Binding) -> Option<BTreeSet<String>> {
+        match &b.src {
+            TableSrc::Parent(uid) => self
+                .col_set(ctx.dag, uid)
+                .map(|cs| cs.iter().cloned().collect()),
+            TableSrc::Derived(q) => Some(
+                q.out
+                    .iter()
+                    .filter(|o| !o.synthetic)
+                    .map(|o| o.name.clone())
+                    .collect(),
+            ),
+            TableSrc::External => None,
+        }
+    }
+
+    /// `NATURAL JOIN` keys on every column name BOTH sides share — so both
+    /// sides' shared columns are row-shaping. Computable only where the
+    /// just-bound (right) relation and an earlier binding each expose a
+    /// known column list.
+    fn natural_join_sources(&self, ctx: &Ctx<'_>, scope: &Scope<'_>) -> ColSources {
+        let mut s = ColSources::new();
+        let Some((right, prior)) = scope.bindings.split_last() else {
+            return s;
+        };
+        let Some(right_cols) = self.binding_col_names(ctx, right) else {
+            return s;
+        };
+        for lb in prior {
+            let Some(left_cols) = self.binding_col_names(ctx, lb) else {
+                continue;
+            };
+            for c in left_cols.intersection(&right_cols) {
+                s.extend(self.resolve_in_binding(ctx, lb, c));
+                s.extend(self.resolve_in_binding(ctx, right, c));
+            }
         }
         s
     }
@@ -2707,7 +2884,9 @@ impl SqlParseResolver {
             let qual = &parts[parts.len() - 2];
             let mut sc = Some(scope);
             while let Some(s) = sc {
-                if let Some(b) = s.bindings.iter().find(|b| b.name == *qual) {
+                // `rfind` like `resolve_parts` — a duplicated binding name
+                // resolves through the rightmost `FROM a t, b t` binding.
+                if let Some(b) = s.bindings.iter().rfind(|b| b.name == *qual) {
                     if !refs.locals.contains(qual) {
                         return Self::bare_in_binding(b, col);
                     }
@@ -2719,7 +2898,7 @@ impl SqlParseResolver {
                 // column `b`; else `a` is the struct column itself.
                 let mut sc = Some(scope);
                 while let Some(s) = sc {
-                    if let Some(b) = s.bindings.iter().find(|b| b.name == parts[0]) {
+                    if let Some(b) = s.bindings.iter().rfind(|b| b.name == parts[0]) {
                         if !refs.locals.contains(&parts[0]) {
                             return Self::bare_in_binding(b, &parts[1]);
                         }
@@ -2928,7 +3107,11 @@ impl SqlParseResolver {
         };
 
         for o in &an.out {
-            produced.insert(o.name.clone());
+            // Lowercase-canonical: `AS "User_ID"` and documented `user_id`
+            // name the same column in the normalized space — comparing raw
+            // would call the declared name "unproduced" and probe a phantom
+            // edge for it.
+            produced.insert(o.name.to_lowercase());
             for (uid, col) in &o.sources {
                 direct_sources.insert((uid.clone(), col.clone()));
                 let kind = if !o.bare {
@@ -2948,10 +3131,14 @@ impl SqlParseResolver {
         }
 
         // The declared-column fallback probe (v0 parity): a visible output
-        // column the projection couldn't name (behind a `*` of an unknown
-        // parent, an unexpanded alias, …) still gets a Passthrough edge when
-        // the top-level scope can source it. Synthetic `__colN` placeholders
-        // are never "declared" — filtered out everywhere below.
+        // column the projection couldn't name still gets a Passthrough edge
+        // — but ONLY when it could genuinely hide behind a `*`: the
+        // projection must contain a wildcard (`an.unbounded_wildcard`) AND
+        // only a binding whose column list is UNKNOWN can have carried the
+        // name. A known-list binding's columns were all enumerated by the
+        // wildcard already — crediting one fabricates edges to
+        // documented-but-never-selected columns (schema.yml drift), and
+        // probing without a wildcard fabricates them unconditionally.
         let out_cols: Vec<String> = self
             .col_set(dag, node)
             .map(|rc| (*rc).clone())
@@ -2962,23 +3149,24 @@ impl SqlParseResolver {
                     .map(|o| o.name.clone())
                     .collect()
             });
-        let probe = Scope {
-            bindings: an.scope.clone(),
-            windows: HashMap::new(),
-            outer: None,
-        };
-        for c in &out_cols {
-            if produced.contains(c) {
-                continue;
-            }
-            for (uid, col) in self.resolve_unqualified(&ctx, &probe, c) {
-                direct_sources.insert((uid.clone(), col.clone()));
-                edges.insert(ColumnEdge {
-                    from: ColumnRef::new(uid, &col),
-                    to: ColumnRef::new(node, c),
-                    kind: ColumnEdgeKind::Passthrough,
-                    confidence,
-                });
+        if an.unbounded_wildcard {
+            for c in &out_cols {
+                if produced.contains(&c.to_lowercase()) {
+                    continue;
+                }
+                for b in &an.scope {
+                    if let TableSrc::Parent(uid) = &b.src {
+                        if self.col_set(ctx.dag, uid).is_none() {
+                            direct_sources.insert((uid.clone(), c.clone()));
+                            edges.insert(ColumnEdge {
+                                from: ColumnRef::new(uid.clone(), c),
+                                to: ColumnRef::new(node, c),
+                                kind: ColumnEdgeKind::Passthrough,
+                                confidence,
+                            });
+                        }
+                    }
+                }
             }
         }
 
@@ -3149,6 +3337,48 @@ fn expr_ident_names(e: &Expr) -> BTreeSet<String> {
         _ => {}
     }
     out
+}
+
+/// Could this query's output carry columns no projection enumerated? A
+/// `*`/`t.*` over a binding whose column list is unknown leaves carried
+/// columns invisible to `Analyzed::out` — the only case the declared-column
+/// probe can legitimately fill (without a wildcard every output is named,
+/// so an unproduced declared name was never selected).
+fn query_has_output_wildcard(q: &Query) -> bool {
+    set_expr_has_wildcard(&q.body)
+        || q.pipe_operators.iter().any(|po| {
+            use sqlparser::ast::PipeOperator as P;
+            match po {
+                P::Select { exprs } | P::Extend { exprs } => {
+                    exprs.iter().any(select_item_is_wildcard)
+                }
+                P::Union { queries, .. } => queries.iter().any(query_has_output_wildcard),
+                _ => false,
+            }
+        })
+}
+
+fn set_expr_has_wildcard(e: &SetExpr) -> bool {
+    match e {
+        SetExpr::Select(sel) => sel.projection.iter().any(select_item_is_wildcard),
+        SetExpr::SetOperation {
+            left, right, op, ..
+        } => {
+            // Only UNION arms merge outputs; an EXCEPT/INTERSECT right arm
+            // shapes rows, never output names.
+            set_expr_has_wildcard(left)
+                || (*op == SetOperator::Union && set_expr_has_wildcard(right))
+        }
+        SetExpr::Query(q) => query_has_output_wildcard(q),
+        _ => false,
+    }
+}
+
+fn select_item_is_wildcard(i: &SelectItem) -> bool {
+    matches!(
+        i,
+        SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..)
+    )
 }
 
 /// A resolved query whose outputs are positionally renamed by a
@@ -4385,5 +4615,296 @@ mod tests {
         .into_iter()
         .collect();
         assert_eq!(got, want);
+    }
+
+    // -- declared-column probe gating (schema.yml drift can't fabricate) ---------
+
+    #[test]
+    fn declared_but_unselected_columns_do_not_fabricate_edges() {
+        // `region` is documented on `m` (schema drift) but the projection
+        // provably never produced it — there is no `*` it could hide
+        // behind. The old probe credited `up.region` anyway and emitted an
+        // Exact Passthrough edge for a column that was never selected.
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["id", "name", "region"]),
+                model(
+                    "model.t.m",
+                    "select u.id as order_id, u.name as customer_name from \"up\" u",
+                    &["order_id", "customer_name", "region"],
+                ),
+            ],
+            &[("model.t.up", "model.t.m")],
+        ));
+        let got = edge_set(&dag, &resolver(), "model.t.m");
+        let want: BTreeSet<_> = [
+            e("model.t.up.id", "order_id", ColumnEdgeKind::Rename),
+            e("model.t.up.name", "customer_name", ColumnEdgeKind::Rename),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn wildcard_probe_still_covers_columns_behind_an_unknown_star() {
+        // The legitimate probe case: `select *` CAN carry a declared
+        // column the analyzer couldn't enumerate when the parent's column
+        // list is unknowable — the gate admits exactly that binding.
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "", &[]),
+                model("model.t.m", "select * from \"up\"", &["id", "region"]),
+            ],
+            &[("model.t.up", "model.t.m")],
+        ));
+        let got = edge_set(&dag, &resolver(), "model.t.m");
+        let want: BTreeSet<_> = [
+            e("model.t.up.id", "id", ColumnEdgeKind::Passthrough),
+            e("model.t.up.region", "region", ColumnEdgeKind::Passthrough),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn quoted_alias_case_matches_the_declared_name() {
+        // `AS "User_ID"` produces `User_ID`; documented `user_id` is the
+        // same column in the normalized space — it must count as produced
+        // (a raw compare would probe a phantom `up.user_id → user_id`
+        // edge). `region` stays a real `*`-carried probe hit.
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "", &[]),
+                model(
+                    "model.t.m",
+                    "select u.x as \"User_ID\", u.* from \"up\" u",
+                    &["user_id", "region"],
+                ),
+            ],
+            &[("model.t.up", "model.t.m")],
+        ));
+        let got = edge_set(&dag, &resolver(), "model.t.m");
+        let want: BTreeSet<_> = [
+            // Edge targets fold through `ColumnRef`'s normalization too —
+            // the declared `user_id` spelling is the one that lands.
+            e("model.t.up.x", "user_id", ColumnEdgeKind::Rename),
+            e("model.t.up.region", "region", ColumnEdgeKind::Passthrough),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    // -- qualified names never bind CTEs -----------------------------------------
+
+    #[test]
+    fn qualified_relation_name_never_binds_a_cte() {
+        // `sch.c` is a real relation — compiled `ref('c')` prints
+        // `analytics.c` — and can never address the CTE `c`. The parent's
+        // `z2` resolves; the CTE's `z` stays unreferenced.
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["id"]),
+                model("model.t.c", "select 1", &["z2"]),
+                model(
+                    "model.t.m",
+                    "with c as (select u.id as z from \"up\" u) \
+                     select sch.c.z2 from sch.c",
+                    &[],
+                ),
+            ],
+            &[("model.t.up", "model.t.m"), ("model.t.c", "model.t.m")],
+        ));
+        let got = edge_set(&dag, &resolver(), "model.t.m");
+        let want: BTreeSet<_> = [e("model.t.c.z2", "z2", ColumnEdgeKind::Passthrough)]
+            .into_iter()
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    // -- Jinja branch splits ------------------------------------------------------
+
+    #[test]
+    fn jinja_else_and_elif_split_select_items_into_the_branch_union() {
+        // `{% else %}`/`{% elif %}` render as `,` so every branch stays a
+        // separate select item — union coverage — instead of fusing into
+        // `a AS b` (the false branch's name stealing the true branch's
+        // value). Whitespace-control dashes parse the same.
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["id", "name", "status"]),
+                raw_model(
+                    "model.t.m",
+                    "select {% if x %}a.id{%- elif y -%}a.name{% else %}a.status{% endif %} \
+                     from {{ ref('up') }} a",
+                    &[],
+                ),
+            ],
+            &[("model.t.up", "model.t.m")],
+        ));
+        let got = edge_set(&dag, &resolver(), "model.t.m");
+        let want: BTreeSet<_> = [
+            e("model.t.up.id", "id", ColumnEdgeKind::Passthrough),
+            e("model.t.up.name", "name", ColumnEdgeKind::Passthrough),
+            e("model.t.up.status", "status", ColumnEdgeKind::Passthrough),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn jinja_else_preserves_the_conditional_comma_idiom() {
+        // `{% if %}, b{% else %}, c{% endif %}` — the else sits BETWEEN two
+        // literal commas; another `,` there would render `, ,` and kill
+        // the parse into a whole-model fallback.
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["a", "b", "c"]),
+                raw_model(
+                    "model.t.m",
+                    "select a {% if x %}, b{% else %}, c{% endif %} from {{ ref('up') }}",
+                    &[],
+                ),
+            ],
+            &[("model.t.up", "model.t.m")],
+        ));
+        let got = edge_set(&dag, &resolver(), "model.t.m");
+        let want: BTreeSet<_> = [
+            e("model.t.up.a", "a", ColumnEdgeKind::Passthrough),
+            e("model.t.up.b", "b", ColumnEdgeKind::Passthrough),
+            e("model.t.up.c", "c", ColumnEdgeKind::Passthrough),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    // -- table alias column lists -------------------------------------------------
+
+    #[test]
+    fn parent_table_alias_columns_rename_positionally() {
+        // `FROM up t(a, b)` renames the parent's outputs positionally —
+        // `t.b` reads the parent's SECOND column (`status`), like a CTE
+        // alias list.
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["id", "status"]),
+                model("model.t.m", "select t.b from \"up\" t(a, b)", &[]),
+            ],
+            &[("model.t.up", "model.t.m")],
+        ));
+        let got = edge_set(&dag, &resolver(), "model.t.m");
+        let want: BTreeSet<_> = [e("model.t.up.status", "b", ColumnEdgeKind::Rename)]
+            .into_iter()
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    // -- NATURAL JOIN ----------------------------------------------------------------
+
+    #[test]
+    fn natural_join_fans_out_the_shared_columns() {
+        // `NATURAL JOIN` keys on every same-named column of both sides:
+        // shared {id, k} is row-shaping — `a.id` is already a value source
+        // so only the other shared names fan out.
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.a", "select 1", &["id", "k"]),
+                model("model.t.b", "select 1", &["id", "k"]),
+                model(
+                    "model.t.m",
+                    "select a.id from \"a\" a natural join \"b\" b",
+                    &[],
+                ),
+            ],
+            &[("model.t.a", "model.t.m"), ("model.t.b", "model.t.m")],
+        ));
+        let got = edge_set(&dag, &resolver(), "model.t.m");
+        let want: BTreeSet<_> = [
+            e("model.t.a.id", "id", ColumnEdgeKind::Passthrough),
+            e("model.t.b.id", "id", ColumnEdgeKind::FilterOrJoin),
+            e("model.t.a.k", "id", ColumnEdgeKind::FilterOrJoin),
+            e("model.t.b.k", "id", ColumnEdgeKind::FilterOrJoin),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    // -- duplicate binding names -----------------------------------------------------
+
+    #[test]
+    fn a_later_binding_shadows_an_earlier_same_name() {
+        // `FROM a t, b t`: the rightmost `t` wins — `t.x` must not reach
+        // the earlier binding's `x` column.
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.a", "select 1", &["x"]),
+                model("model.t.b", "select 1", &["y"]),
+                model(
+                    "model.t.m",
+                    "select t.x as ox, t.y as oy from \"a\" t, \"b\" t",
+                    &[],
+                ),
+            ],
+            &[("model.t.a", "model.t.m"), ("model.t.b", "model.t.m")],
+        ));
+        let got = edge_set(&dag, &resolver(), "model.t.m");
+        let want: BTreeSet<_> = [e("model.t.b.y", "oy", ColumnEdgeKind::Rename)]
+            .into_iter()
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    // -- adapter dialect reporting ---------------------------------------------------
+
+    #[test]
+    fn unknown_adapter_maps_to_generic_and_is_reported() {
+        let mut m = manifest(vec![model("model.t.m", "select 1", &[])], &[]);
+        m.metadata.adapter_type = Some("not_a_dialect".to_string());
+        let dag = Dag::build(&m);
+        assert_eq!(SqlDialect::from_dag(&dag), SqlDialect::Generic);
+        assert_eq!(
+            SqlDialect::unrecognized_adapter(&dag),
+            Some("not_a_dialect")
+        );
+        m.metadata.adapter_type = Some("postgres".to_string());
+        let dag = Dag::build(&m);
+        assert_eq!(SqlDialect::from_dag(&dag), SqlDialect::Postgres);
+        assert_eq!(SqlDialect::unrecognized_adapter(&dag), None);
+    }
+
+    #[test]
+    fn every_advertised_dialect_name_parses() {
+        // `NAMES` feeds `--help` and the `--sql-dialect` error message — it
+        // must be a subset of what `parse_name` actually accepts.
+        for n in SqlDialect::NAMES {
+            assert!(
+                SqlDialect::parse_name(n).is_some(),
+                "NAMES lists '{n}' but parse_name rejects it"
+            );
+        }
+    }
+
+    // -- columns()-only fallback flagging --------------------------------------------
+
+    #[test]
+    fn columns_only_fallback_still_marks_the_node() {
+        // A caller that only asks `columns()` (never `resolve()`) must see
+        // the same `[name-match]` marking — the flag isn't resolve-only.
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["id"]),
+                model("model.t.m", "select from where (", &[]),
+            ],
+            &[("model.t.up", "model.t.m")],
+        ));
+        let r = resolver();
+        let _ = r.columns(&dag, "model.t.m");
+        assert!(r.is_fallback("model.t.m"));
+        assert_eq!(r.fallback_nodes(), vec!["model.t.m".to_string()]);
     }
 }

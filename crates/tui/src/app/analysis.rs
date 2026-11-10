@@ -212,7 +212,7 @@ impl App {
     /// The per-column `(upstream, downstream)` ONE-HOP column-edge counts for
     /// a node — the structure modal's `↑u ↓d` counts beside each column row
     /// (direct parents in / direct children out, per the Issue 07 spec).
-    /// Drives the app-owned [`NameMatchResolver`](crate::NameMatchResolver)
+    /// Drives the app-owned [`SqlParseResolver`](crate::SqlParseResolver)
     /// through a fresh lazy [`ColumnLineage`](crate::ColumnLineage) (the
     /// resolver's own per-uid memos persist; the engine's per-node memo is
     /// one-shot by design). Keyed by normalized column name; deterministic.

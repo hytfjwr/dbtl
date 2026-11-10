@@ -17,9 +17,8 @@ use dbtl::{load_dag_from_source_with_warnings, load_dag_with_warnings, ColumnRes
 fn parse_sql_dialect(s: &str) -> std::result::Result<dbtl::SqlDialect, String> {
     dbtl::SqlDialect::parse_name(s).ok_or_else(|| {
         format!(
-            "unknown SQL dialect '{s}' (accepted: auto, generic, postgres, redshift, snowflake, \
-             bigquery, mysql, sqlite, duckdb, spark, hive, mssql, oracle, teradata, clickhouse, \
-             databricks)"
+            "unknown SQL dialect '{s}' (accepted: {})",
+            dbtl::SqlDialect::NAMES.join(", ")
         )
     })
 }
@@ -407,8 +406,14 @@ pub fn build_app(cli: &Cli) -> Result<App> {
     app.set_scope(scope);
     // An explicit --sql-dialect pins the column-lineage parser dialect;
     // otherwise the resolver auto-selects from the manifest's adapter_type.
+    // An adapter_type we don't know lands on the generic dialect — say so
+    // as the startup toast (the override suppresses it).
     if let Some(dialect) = cli.sql_dialect {
         app.set_sql_dialect(dialect);
+    } else if let Some(a) = dbtl::SqlDialect::unrecognized_adapter(&app.dag) {
+        app.set_notice(format!(
+            "column lineage: unknown adapter '{a}' — using the generic SQL dialect"
+        ));
     }
     // An explicit --run-results overrides the auto-detected sibling; its load
     // error IS user-facing (unlike the silent auto-detect).
@@ -1047,6 +1052,15 @@ pub fn run_columns(
         .and_then(|p| dbtl::Catalog::load(&p).ok())
         .map(std::rc::Rc::new);
     let dialect = sql_dialect.unwrap_or_else(|| dbtl::SqlDialect::from_dag(dag));
+    // An adapter_type we don't know parses as the generic dialect — say so
+    // (an explicit --sql-dialect suppresses the notice).
+    if sql_dialect.is_none() {
+        if let Some(a) = dbtl::SqlDialect::unrecognized_adapter(dag) {
+            eprintln!(
+                "warning: column lineage: unknown adapter '{a}' — using the generic SQL dialect"
+            );
+        }
+    }
     let resolver = dbtl::SqlParseResolver::new(catalog, dialect);
 
     let col = dbtl::ColumnRef::new(&uid, column);

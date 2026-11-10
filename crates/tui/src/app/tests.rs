@@ -4910,6 +4910,7 @@ const STG: &str = "model.sample.stg_orders";
 const FCT_S: &str = "model.sample.fct_orders";
 const DEMO: &str = "model.sample.cll_demo";
 const RAW_ORDERS: &str = "source.sample.raw.orders";
+const CODES: &str = "seed.sample.country_codes";
 
 #[test]
 fn column_focus_enter_filters_the_subgraph_to_the_trace() {
@@ -4943,18 +4944,19 @@ fn column_focus_enter_filters_the_subgraph_to_the_trace() {
     let focus = a.column_focus.as_ref().expect("column focus is active");
     assert_eq!(focus.col.node, DEMO);
     assert_eq!(focus.col.column, "order_id");
-    // The trace's related models = the three models + the raw source the
-    // column reaches (agg/seeds/snapshots are filtered out). `related` is a
-    // BTreeSet — uid-sorted iteration order.
+    // The trace's related models = the three models + the raw source + the
+    // country_codes seed the v1 parser reaches through fct_orders' join
+    // (v0's name-match couldn't see it). `related` is a BTreeSet —
+    // uid-sorted iteration order.
     assert_eq!(
         focus.related.iter().map(String::as_str).collect::<Vec<_>>(),
-        vec![DEMO, FCT_S, STG, RAW_ORDERS],
+        vec![DEMO, FCT_S, STG, CODES, RAW_ORDERS],
     );
     let sg = a.lineage_subgraph();
     assert_eq!(sg.selected, DEMO, "the traced model is the graph's home");
     assert_eq!(
         sg.nodes.len(),
-        4,
+        5,
         "the filtered subgraph keeps only related nodes"
     );
     // The status chip reads `column:model.col ↑N ↓M` with ONE-HOP counts —
@@ -4997,16 +4999,16 @@ fn column_focus_layout_draws_related_columns_inside_the_boxes() {
 #[test]
 fn column_focus_step_walks_the_column_along_its_lineage() {
     // h = upstream hop, l = downstream hop; the deterministic pick prefers a
-    // same-named column (the passthrough continuation).
+    // same-named column (the passthrough continuation). Under the v1 parser
+    // `cll_demo.status` comes from stg_orders ONLY — v0's name-match also
+    // bound fct_orders.status (documented over-connection), so the chain no
+    // longer detours through fct.
     let mut a = sample_app();
     a.column_focus_enter(ColumnRef::new(DEMO, "status"));
     apply_action(&mut a, Action::MoveLeft);
     let f = a.column_focus.as_ref().unwrap();
-    assert_eq!(f.col.node, FCT_S, "h steps upstream (fct sorts before stg)");
+    assert_eq!(f.col.node, STG, "h steps upstream to the real source");
     assert_eq!(f.col.column, "status");
-    apply_action(&mut a, Action::MoveLeft);
-    let f = a.column_focus.as_ref().unwrap();
-    assert_eq!(f.col.node, STG);
     apply_action(&mut a, Action::MoveLeft);
     let f = a.column_focus.as_ref().unwrap();
     assert_eq!(f.col.node, RAW_ORDERS, "the chain reaches the raw source");

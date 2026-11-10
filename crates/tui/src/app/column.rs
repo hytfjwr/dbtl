@@ -12,8 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::action::{ColumnRow, ColumnView, Direction};
 use crate::{
-    ColLine, ColumnEdge, ColumnEdgeKind, ColumnLineage, ColumnRef, Confidence, Edge, Focus,
-    NameMatchResolver, NodeInfo, Subgraph,
+    ColLine, ColumnEdge, ColumnEdgeKind, ColumnLineage, ColumnRef, ColumnResolver, Confidence,
+    Edge, Focus, NodeInfo, Subgraph,
 };
 
 use super::App;
@@ -319,7 +319,7 @@ impl App {
     /// `seen` is the shared dedupe across both directions.
     fn column_modal_side(
         &self,
-        engine: &ColumnLineage<'_, NameMatchResolver>,
+        engine: &ColumnLineage<'_, impl ColumnResolver>,
         col: &ColumnRef,
         seen: &mut BTreeSet<ColumnRef>,
         down: bool,

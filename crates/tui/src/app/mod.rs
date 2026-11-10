@@ -1108,6 +1108,16 @@ impl App {
         let dialect = self
             .sql_dialect
             .unwrap_or_else(|| SqlDialect::from_dag(&self.dag));
+        // Same generic-dialect notice as first load — a recompiled manifest
+        // can change adapter_type between reloads (an explicit
+        // --sql-dialect suppresses it).
+        if self.sql_dialect.is_none() {
+            if let Some(a) = SqlDialect::unrecognized_adapter(&self.dag) {
+                warnings.push(format!(
+                    "column lineage: unknown adapter '{a}' — using the generic SQL dialect"
+                ));
+            }
+        }
         self.cll = SqlParseResolver::new(self.catalog.clone(), dialect);
         // `.dbtl.yml` reloads alongside the graph like the other side maps —
         // an edit mid-session applies on the next reload, and a file created
