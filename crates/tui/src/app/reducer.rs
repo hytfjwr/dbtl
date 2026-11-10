@@ -700,7 +700,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             };
             // A collapse marker has no SQL — `s` previews nodes, not chrome.
             if app.collapse_group(&uid).is_some() {
-                app.set_notice("no SQL for a collapse marker (Enter expands it)");
+                app.set_notice("no SQL for a collapse marker (Enter toggles it)");
                 return Outcome::cont();
             }
             let name = app.node_name_or_uid(&uid);

@@ -61,15 +61,17 @@ impl App {
         self.lineage_cursor = None;
     }
 
-    /// Handle a lineage-pane click on `uid`: a `+M more` marker TOGGLES its
-    /// sibling group (expand, or collapse back on the `-M less` marker); a
-    /// model RE-ROOTS to it (recording history, and the cursor goes home with
-    /// it — also when clicking the current root); a non-selectable node
-    /// (source/seed/snapshot) just MOVES THE CURSOR there, so Enter can open
-    /// its structure modal. The domain half of the mouse path
-    /// (`main::handle_mouse` does the size-aware hit-test).
+    /// Handle a lineage-pane click on `uid`: a `+M more` / `-M less` marker
+    /// TOGGLES its sibling group AND takes the cursor (same focus-the-click
+    /// as a source/seed/snapshot — the marker uid is keep-set stable, so it
+    /// stays a live position across the toggle); a model RE-ROOTS to it
+    /// (recording history, and the cursor goes home with it — also when
+    /// clicking the current root); a non-selectable node just MOVES THE
+    /// CURSOR there, so Enter can open its structure modal. The domain half
+    /// of the mouse path (`main::handle_mouse` does the size-aware hit-test).
     pub fn click_lineage_node(&mut self, uid: &str) {
         if let Some(group) = self.collapse_group(uid) {
+            self.lineage_cursor = Some(uid.to_string());
             self.toggle_collapse(&group.key);
             return;
         }
@@ -91,6 +93,10 @@ impl App {
     /// the cursor with no new render code. Root semantics (pane title,
     /// Mermaid/DOT exports, search matches, hit-test re-root) keep reading
     /// [`lineage_subgraph`](App::lineage_subgraph).
+    ///
+    /// Production drawing goes through [`styled_lineage_layout`](App::styled_lineage_layout)
+    /// (which styles + memoizes on top of this view) — this accessor stays
+    /// `pub` as the raw-view seam tests assert on.
     pub fn lineage_display_subgraph(&self) -> Subgraph {
         self.collapsed_view().subgraph.clone()
     }
@@ -100,12 +106,26 @@ impl App {
     /// [`collapsed_view`](App::collapsed_view) (the memoized pane view) and
     /// [`lineage_ascii`](App::lineage_ascii) (the screen-equivalent yank).
     ///
-    /// The keep-alive set — the nodes a collapse can never hide — is: the
-    /// subgraph's subject (`base.selected`, the root on the pane), the raw
-    /// lineage cursor, the anchor↔cursor path nodes (over `base`'s edges), and
-    /// the bookmarks that are members. A marker uid in `lineage_cursor` simply
-    /// fails the `base.contains` filter — markers aren't keep targets.
+    /// The keep-alive set comes from [`collapse_keep_set`](App::collapse_keep_set)
+    /// — the CURRENT root's keep-alives — so only call this for a `base` rooted
+    /// on the selection (or accept that foreign roots leak no cursor/path state,
+    /// since out-of-subgraph priorities simply match no member).
     pub(super) fn collapse_view_of(&self, base: &Subgraph) -> Collapsed {
+        collapse_siblings(
+            base,
+            self.collapse_threshold,
+            &self.collapse_expanded,
+            &self.collapse_keep_set(base),
+        )
+    }
+
+    /// The keep-alive set for the CURRENT root's collapse view — the nodes a
+    /// collapse can never hide: the subgraph's subject (`base.selected`, the
+    /// root on the pane), the raw lineage cursor, the anchor↔cursor path
+    /// nodes (over `base`'s edges), and the bookmarks that are members. A
+    /// marker uid in `lineage_cursor` simply fails the `base.contains` filter
+    /// — markers aren't keep targets.
+    fn collapse_keep_set(&self, base: &Subgraph) -> HashSet<String> {
         let mut priority: HashSet<String> = HashSet::new();
         priority.insert(base.selected.clone());
         if let Some(anchor) = &self.path_anchor {
@@ -127,11 +147,22 @@ impl App {
             }
         }
         priority.extend(self.bookmarks.iter().filter(|b| base.contains(b)).cloned());
+        priority
+    }
+
+    /// The collapse applied to a base rooted on a DIFFERENT subject (the
+    /// `y`-over-modal `pending_node` path): keep-set = the subject alone —
+    /// the cursor, path anchor, and bookmark keep-alives belong to the
+    /// CURRENT root's view and must not leak into another root's keep-set
+    /// (a leaked cursor would draw itself visible in the export the screen
+    /// hides). Expansion state still applies: group keys are global parent
+    /// `unique_id`s, meaningful under any root that draws the group.
+    pub(super) fn collapse_view_bare(&self, base: &Subgraph) -> Collapsed {
         collapse_siblings(
             base,
             self.collapse_threshold,
             &self.collapse_expanded,
-            &priority,
+            &HashSet::from([base.selected.clone()]),
         )
     }
 
@@ -145,13 +176,9 @@ impl App {
     /// Toggle the expansion of the collapse group `key` (a hub parent's
     /// `unique_id`) under the current root: collapsed → expanded shows every
     /// member behind a `-M less` marker; expanded → collapsed puts them back.
-    /// Returns whether the group is now expanded.
-    pub(super) fn toggle_collapse(&mut self, key: &str) -> bool {
-        if self.collapse_expanded.remove(key) {
-            false
-        } else {
+    pub(super) fn toggle_collapse(&mut self, key: &str) {
+        if !self.collapse_expanded.remove(key) {
             self.collapse_expanded.insert(key.to_string());
-            true
         }
     }
 
@@ -362,12 +389,13 @@ impl App {
     }
 
     /// The set of node `unique_id`s on the path from the rooted selection to the
-    /// lineage cursor, over the CURRENT [`lineage_subgraph`](App::lineage_subgraph)
-    /// treated as UNDIRECTED (the cursor can be up- OR downstream of the root).
-    /// Empty when the cursor is home (`== selection`) or nothing is selected — so
-    /// a home cursor highlights nothing.
+    /// lineage cursor, over the current DRAWN (collapsed) lineage view treated
+    /// as UNDIRECTED (the cursor can be up- OR downstream of the root — and can
+    /// be a `+M more` marker, which only exists in that view). Empty when the
+    /// cursor is home (`== selection`) or nothing is selected — so a home
+    /// cursor highlights nothing.
     ///
-    /// Deterministic: `lineage_subgraph().edges` are already sorted, the
+    /// Deterministic: the collapsed view's edges are already sorted, the
     /// undirected adjacency is built in that order, and the BFS records the
     /// first-found predecessor — so two calls produce the identical set. The set
     /// is only ever read via `.contains(uid)` (in [`lineage_styles`]), never

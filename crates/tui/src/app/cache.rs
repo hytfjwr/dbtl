@@ -27,9 +27,7 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use crate::collapse::Collapsed;
-use crate::{
-    layout_columns, layout_density, Density, GlyphMode, Layout, LineageLens, Subgraph,
-};
+use crate::{layout_columns, layout_density, Density, GlyphMode, Layout, LineageLens, Subgraph};
 
 use super::{App, LineageView};
 

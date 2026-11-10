@@ -5305,6 +5305,9 @@ fn column_impact_lens_skips_under_an_overview_suppressed_focus() {
         a.ui_state.lens(),
         LineageLens::Off,
         "ColumnImpact is skipped while the overview suppresses the focus"
+    );
+}
+
 // ---- sibling collapse (`+N more`) ----
 
 /// The Issue-13 acceptance fixture: `hub -> c00..c{kids-1}`, all models, plus an
@@ -5542,6 +5545,9 @@ fn yank_column_lineage_falls_back_to_the_traced_column() {
     let out = apply_action(&mut a, Action::YankColumnLineage);
     assert!(out.effects.is_empty());
     assert!(a.take_notice().is_some(), "the no-column notice survives");
+}
+
+#[test]
 fn cursor_moves_onto_the_marker_like_any_node() {
     let mut a = collapse_app(20, 8);
     a.ui_state.set_focus(Focus::RightPane);
@@ -5675,5 +5681,223 @@ fn exports_keep_the_semantic_graph_but_ascii_mirrors_the_screen() {
     assert!(
         !ascii.contains("c19"),
         "hidden members stay hidden in ascii"
+    );
+}
+
+/// The nested-hub collapse `App`: `hub → m00..m15` plus `m10 → d00..d15` —
+/// two collapsible groups, the second's parent hidden behind the first's
+/// marker.
+fn nested_hub_app(threshold: usize) -> App {
+    use std::collections::HashMap;
+    let mut node_map = HashMap::new();
+    let mut parent_map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut child_map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut edge = |p: &str, c: &str| {
+        child_map
+            .entry(p.to_string())
+            .or_default()
+            .push(c.to_string());
+        parent_map
+            .entry(c.to_string())
+            .or_default()
+            .push(p.to_string());
+    };
+    node_map.insert(
+        "model.p.hub".to_string(),
+        pr_model("hub", "marts", "select 0"),
+    );
+    for i in 0..16 {
+        let m = format!("model.p.m{i:02}");
+        let d = format!("model.p.d{i:02}");
+        node_map.insert(
+            m.clone(),
+            pr_model(&format!("m{i:02}"), "marts", "select 1"),
+        );
+        node_map.insert(
+            d.clone(),
+            pr_model(&format!("d{i:02}"), "marts", "select 2"),
+        );
+        edge("model.p.hub", &m);
+        edge("model.p.m10", &d);
+    }
+    let dag = Dag::build(&crate::RawManifest {
+        metadata: Default::default(),
+        nodes: node_map,
+        sources: HashMap::new(),
+        exposures: HashMap::new(),
+        semantic_models: HashMap::new(),
+        metrics: HashMap::new(),
+        saved_queries: HashMap::new(),
+        unit_tests: HashMap::new(),
+        functions: HashMap::new(),
+        parent_map,
+        child_map,
+        macros: HashMap::new(),
+    });
+    let mut a = App::new(dag, PathBuf::from("/p/target/manifest.json"));
+    a.set_collapse_threshold(threshold);
+    assert!(a.select_by_unique_id("model.p.hub"), "hub is a list member");
+    a
+}
+
+#[test]
+fn expanded_nested_marker_stays_wired_through_the_hidden_parents_marker() {
+    // hub → m00..m15 collapses behind `m08+more`; the hidden m10 owns the
+    // d-group `d08+more`. Expanding that marker (the Enter path) must keep it
+    // wired to the OUTER marker — before the fix, the `-M less` edge hung off
+    // the missing m10 and the marker dropped to column 1, connector-less.
+    let mut a = nested_hub_app(8);
+    a.ui_state.set_focus(Focus::RightPane);
+    let lay = a.styled_lineage_layout().expect("collapsed layout");
+    assert_eq!(
+        lay.columns.get("model.p.d08+more").copied(),
+        Some(2),
+        "the nested group's marker draws under the outer marker"
+    );
+
+    // Enter on the nested marker expands it in place.
+    a.lineage_cursor = Some("model.p.d08+more".to_string());
+    apply_action(&mut a, Action::DetailOpen);
+    let lay = a.styled_lineage_layout().expect("expanded layout");
+    assert!(
+        lay.rects.contains_key("model.p.d00"),
+        "expansion draws the members"
+    );
+    assert_eq!(
+        lay.columns.get("model.p.d08+more").copied(),
+        Some(2),
+        "the -M less marker stays in its column — no orphan"
+    );
+    let cv = a.collapsed_view();
+    let es: std::collections::BTreeSet<(&str, &str)> = cv
+        .subgraph
+        .edges
+        .iter()
+        .map(|e| (e.parent.as_str(), e.child.as_str()))
+        .collect();
+    assert!(
+        es.contains(&("model.p.m08+more", "model.p.d08+more")),
+        "the marker edge resolves through the hidden parent's marker: {es:?}"
+    );
+    assert!(
+        !es.iter().any(|(p, _)| *p == "model.p.m10"),
+        "no edge dangles to a hidden node: {es:?}"
+    );
+}
+
+#[test]
+fn modal_yank_ascii_does_not_inherit_the_current_roots_keep_set() {
+    // The `y`-over-modal base is rooted on the modal's node (`pending_node`).
+    // When that subject is NOT the pane's root — e.g. Enter on a source opens
+    // the modal without re-rooting — the current root's cursor/path keep-alive
+    // must not leak into its collapse: the foreign root keeps only its own
+    // subject. `gp → hub → m00..m15`: rooted on gp, the hub's group collapses.
+    use std::collections::HashMap;
+    let mut node_map = HashMap::new();
+    let mut parent_map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut child_map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut edge = |p: &str, c: &str| {
+        child_map
+            .entry(p.to_string())
+            .or_default()
+            .push(c.to_string());
+        parent_map
+            .entry(c.to_string())
+            .or_default()
+            .push(p.to_string());
+    };
+    node_map.insert(
+        "model.p.gp".to_string(),
+        pr_model("gp", "marts", "select 0"),
+    );
+    node_map.insert(
+        "model.p.hub".to_string(),
+        pr_model("hub", "marts", "select 0"),
+    );
+    edge("model.p.gp", "model.p.hub");
+    for i in 0..16 {
+        let m = format!("model.p.m{i:02}");
+        node_map.insert(
+            m.clone(),
+            pr_model(&format!("m{i:02}"), "marts", "select 1"),
+        );
+        edge("model.p.hub", &m);
+    }
+    let dag = Dag::build(&crate::RawManifest {
+        metadata: Default::default(),
+        nodes: node_map,
+        sources: HashMap::new(),
+        exposures: HashMap::new(),
+        semantic_models: HashMap::new(),
+        metrics: HashMap::new(),
+        saved_queries: HashMap::new(),
+        unit_tests: HashMap::new(),
+        functions: HashMap::new(),
+        parent_map,
+        child_map,
+        macros: HashMap::new(),
+    });
+    let mut a = App::new(dag, PathBuf::from("/p/target/manifest.json"));
+    a.set_collapse_threshold(8);
+    assert!(a.select_by_unique_id("model.p.hub"));
+    a.ui_state.set_focus(Focus::RightPane);
+    // Under the CURRENT root (hub) the cursor keeps the tail member drawn.
+    a.lineage_cursor = Some("model.p.m15".to_string());
+    assert!(a
+        .styled_lineage_layout()
+        .unwrap()
+        .rects
+        .contains_key("model.p.m15"));
+
+    // The modal-yank base (pending_node = gp ≠ the pane root) keeps only its
+    // own subject: m15 goes back behind the marker.
+    a.pending_node = Some("model.p.gp".to_string());
+    a.mode = Mode::Yank;
+    let ascii = a.lineage_ascii().expect("ascii");
+    assert!(
+        ascii.contains("+8 more"),
+        "the group still collapses under the modal root:\n{ascii}"
+    );
+    assert!(
+        !ascii.contains("m15"),
+        "the pane root's cursor keep-alive must not leak into the foreign \
+         root's export:\n{ascii}"
+    );
+}
+
+#[test]
+fn click_marker_toggles_and_parks_the_cursor_and_s_notices() {
+    let mut a = collapse_app(20, 8);
+    a.ui_state.set_focus(Focus::RightPane);
+    let marker = the_marker(&a);
+    // A click toggles the group AND parks the cursor on the marker — the same
+    // focus-the-click behaviour a source/seed/snapshot node gets.
+    a.click_lineage_node(&marker);
+    assert_eq!(
+        a.lineage_cursor_uid().as_deref(),
+        Some(marker.as_str()),
+        "the marker click takes the cursor"
+    );
+    assert_eq!(
+        a.styled_lineage_layout().unwrap().rects.len(),
+        1 + 20 + 1,
+        "the click expanded the group"
+    );
+    // `s` on a collapse marker: a notice, never a preview modal.
+    apply_action(&mut a, Action::SqlOpen);
+    assert!(
+        matches!(a.mode, Mode::Selection),
+        "no sql preview for collapse chrome"
+    );
+    assert_eq!(
+        a.take_notice().as_deref(),
+        Some("no SQL for a collapse marker (Enter toggles it)")
+    );
+    // A second click collapses back.
+    a.click_lineage_node(&marker);
+    assert_eq!(
+        a.styled_lineage_layout().unwrap().rects.len(),
+        1 + 8 + 1,
+        "the second click collapsed the group"
     );
 }

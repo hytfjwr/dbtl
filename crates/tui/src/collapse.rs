@@ -225,7 +225,16 @@ pub fn collapse_siblings(
         }
     }
     for e in expanded_edges {
-        edges.insert((e.parent, e.child));
+        // The `-M less` marker's parent can itself hide behind ANOTHER
+        // group's marker — resolve it through `hidden_marker` like every
+        // other edge (the map is complete by now), or the marker would hang
+        // off a missing node: column 1, no connectors, a phantom in
+        // `path_between`'s adjacency.
+        let p = hidden_marker
+            .get(e.parent.as_str())
+            .cloned()
+            .unwrap_or(e.parent);
+        edges.insert((p, e.child));
     }
 
     // Nodes: the survivors plus every marker, re-sorted — the `+` suffix lands
@@ -430,6 +439,65 @@ mod tests {
         let c = collapse_siblings(&sg, 0, &BTreeSet::new(), &HashSet::new());
         assert!(c.groups.is_empty());
         assert_eq!(c.subgraph.nodes.len(), 21, "every sibling stays");
+    }
+
+    #[test]
+    fn expanded_marker_edge_resolves_through_a_hidden_parents_marker() {
+        // hub -> m00..m15 (collapse), m10 -> d00..d15 (collapse). Expanding
+        // the d-group while its parent m10 hides behind `m08+more` must wire
+        // the `-M less` marker to THAT marker — not to the missing m10 (which
+        // would leave it a connector-less orphan in column 1).
+        let mut nodes = vec![NodeInfo {
+            unique_id: "model.p.hub".to_string(),
+            name: "hub".to_string(),
+            resource_type: "model".to_string(),
+            ..Default::default()
+        }];
+        let mut edges = Vec::new();
+        for i in 0..16 {
+            for (uid, parent) in [
+                (format!("model.p.m{i:02}"), "model.p.hub"),
+                (format!("model.p.d{i:02}"), "model.p.m10"),
+            ] {
+                nodes.push(NodeInfo {
+                    unique_id: uid.clone(),
+                    name: uid.rsplit('.').next().unwrap().to_string(),
+                    resource_type: "model".to_string(),
+                    ..Default::default()
+                });
+                edges.push(Edge {
+                    parent: parent.to_string(),
+                    child: uid,
+                });
+            }
+        }
+        nodes.sort_by(|a, b| a.unique_id.cmp(&b.unique_id));
+        let sg = Subgraph {
+            selected: "model.p.hub".to_string(),
+            nodes,
+            edges,
+        };
+        let expanded: BTreeSet<String> = ["model.p.m10".to_string()].into_iter().collect();
+        let c = collapse_siblings(&sg, 8, &expanded, &HashSet::new());
+        let es: BTreeSet<(&str, &str)> = c
+            .subgraph
+            .edges
+            .iter()
+            .map(|e| (e.parent.as_str(), e.child.as_str()))
+            .collect();
+        assert!(
+            es.contains(&("model.p.m08+more", "model.p.d08+more")),
+            "the -M less marker's edge resolves through the hidden parent's marker: {es:?}"
+        );
+        assert!(
+            !es.iter().any(|(p, _)| *p == "model.p.m10"),
+            "no edge dangles to a hidden node: {es:?}"
+        );
+        // ...and the marker lands in the column its parent marker sets (col
+        // 2), not the rootless column 1 an unresolved edge would produce.
+        let cols = crate::layout::longest_path_columns(&c.subgraph);
+        assert_eq!(cols["model.p.d08+more"], 2);
+        assert_eq!(cols["model.p.m08+more"], 1);
     }
 
     #[test]
