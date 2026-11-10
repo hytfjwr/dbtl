@@ -70,10 +70,31 @@ impl App {
     /// lineage node runs [`click_lineage_node`](App::click_lineage_node), a
     /// list header / blank interior / lineage blank just takes that pane's
     /// focus (what clicking those cells did before), and the minimap and
-    /// reserved targets do literally nothing. Only `MouseButton::Left` acts —
-    /// right and middle clicks do nothing yet (Issues 05/06 give them
-    /// meaning). The size-aware half (point → target) is `ui::hit_target`.
-    pub fn click_target(&mut self, target: &HitTarget, button: MouseButton) {
+    /// reserved targets do literally nothing. `MouseButton::Right` on a node
+    /// opens its context menu at `at` (Issue 06); middle clicks do nothing
+    /// yet (Issue 05 gives them meaning). The size-aware half (point →
+    /// target) is `ui::hit_target`.
+    pub fn click_target(&mut self, target: &HitTarget, button: MouseButton, at: (u16, u16)) {
+        if button == MouseButton::Right {
+            match target {
+                HitTarget::ListRow(index) => {
+                    self.ui_state.set_focus(Focus::List);
+                    if let Some(uid) = self
+                        .active_list()
+                        .model_at(*index)
+                        .map(|m| m.unique_id.clone())
+                    {
+                        self.open_menu_for(&uid, at.0, at.1);
+                    }
+                }
+                HitTarget::LineageNode(uid) => {
+                    self.ui_state.set_focus(Focus::RightPane);
+                    self.open_menu_for(uid, at.0, at.1);
+                }
+                _ => {} // elsewhere a right-click carries no meaning yet
+            }
+            return;
+        }
         if button != MouseButton::Left {
             return;
         }
@@ -110,6 +131,7 @@ impl App {
             HitTarget::Minimap
             | HitTarget::PaneBorder(_)
             | HitTarget::StatusBar
+            | HitTarget::OverlayRow(_)
             | HitTarget::ModalInterior
             | HitTarget::ModalExterior => {}
         }

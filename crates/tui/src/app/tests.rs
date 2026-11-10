@@ -250,7 +250,10 @@ fn unread_chip_survives_eviction_of_read_entries() {
 fn yank_prefix_opens_menu_and_second_key_executes_then_closes() {
     let mut a = app();
     apply_action(&mut a, Action::YankPrefix);
-    assert_eq!(a.mode, Mode::Yank, "y opens the which-key menu");
+    assert!(
+        matches!(a.mode, Mode::Yank { .. }),
+        "y opens the which-key menu"
+    );
     // The second key dispatches the yank AND closes the menu (one-shot).
     let out = apply_action(&mut a, Action::YankMermaid);
     assert!(matches!(out.effects.as_slice(), [Effect::Yank(_)]));
@@ -269,24 +272,25 @@ fn yank_prefix_keymap_routes_second_keys() {
     let press = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
     // `y` in Selection opens the prefix; the same letters then dispatch the
     // yank actions from Mode::Yank.
+    let yank = Mode::Yank { back: None, sel: 0 };
     assert_eq!(
         dispatch(&Mode::Selection, press(KeyCode::Char('y'))),
         Some(Action::YankPrefix)
     );
     assert_eq!(
-        dispatch(&Mode::Yank, press(KeyCode::Char('m'))),
+        dispatch(&yank, press(KeyCode::Char('m'))),
         Some(Action::YankMermaid)
     );
     assert_eq!(
-        dispatch(&Mode::Yank, press(KeyCode::Char('y'))),
+        dispatch(&yank, press(KeyCode::Char('y'))),
         Some(Action::YankId)
     );
     assert_eq!(
-        dispatch(&Mode::Yank, press(KeyCode::Esc)),
+        dispatch(&yank, press(KeyCode::Esc)),
         Some(Action::DetailClose)
     );
     // Unbound second keys don't dispatch (menu stays open until a valid key).
-    assert_eq!(dispatch(&Mode::Yank, press(KeyCode::Char('z'))), None);
+    assert_eq!(dispatch(&yank, press(KeyCode::Char('z'))), None);
 }
 
 #[test]
@@ -2520,7 +2524,10 @@ fn sql_and_yank_compiled_keys_dispatch() {
     );
     // …and `ys` inside the yank prefix copies the compiled SQL.
     assert_eq!(
-        dispatch(&Mode::Yank, press(KeyCode::Char('s'))),
+        dispatch(
+            &Mode::Yank { back: None, sel: 0 },
+            press(KeyCode::Char('s'))
+        ),
         Some(Action::YankCompiledSql)
     );
 }
@@ -5729,7 +5736,7 @@ fn yank_column_lineage_copies_the_selected_columns_downstream_closure() {
     assert_eq!(dv.col_index, 0);
     assert_eq!(dv.col_names[0], "id", "the declared order starts at id");
     apply_action(&mut a, Action::YankPrefix);
-    assert_eq!(a.mode, Mode::Yank);
+    assert!(matches!(a.mode, Mode::Yank { .. }));
     assert_eq!(
         a.pending_col
             .as_ref()
@@ -5751,7 +5758,9 @@ fn yank_column_lineage_copies_the_selected_columns_downstream_closure() {
     assert!(text.contains("## Downstream columns (14)"));
     assert!(text.contains("`fct_orders.id`"));
     assert_eq!(a.take_notice().as_deref(), Some("Copied column lineage"));
-    assert_eq!(a.mode, Mode::Selection, "the which-key is one-shot");
+    // One-shot close RESTORES the structure modal the which-key stacked over
+    // (Issue 06's nested-overlay rule — `back` is the Detail mode).
+    assert!(matches!(a.mode, Mode::Detail(_)), "returns to the modal");
 }
 
 #[test]
@@ -5782,7 +5791,7 @@ fn yank_column_lineage_without_a_column_explains_instead_of_yanking() {
     let mut a = sample_app();
     // `y` from Selection mode: no column under a cursor → nothing to yank.
     apply_action(&mut a, Action::YankPrefix);
-    assert_eq!(a.mode, Mode::Yank);
+    assert!(matches!(a.mode, Mode::Yank { .. }));
     let out = apply_action(&mut a, Action::YankColumnLineage);
     assert!(out.effects.is_empty(), "no clipboard write");
     assert_eq!(
@@ -5802,7 +5811,7 @@ fn yank_menu_over_the_modal_targets_the_modal_node_not_the_selection() {
     // Move the LIST selection elsewhere (the modal stays open on stg_orders).
     a.select_by_unique_id("model.sample.fct_orders");
     apply_action(&mut a, Action::YankPrefix);
-    assert_eq!(a.mode, Mode::Yank);
+    assert!(matches!(a.mode, Mode::Yank { .. }));
     assert_eq!(
         a.pending_node.as_deref(),
         Some("model.sample.stg_orders"),
@@ -5817,7 +5826,9 @@ fn yank_menu_over_the_modal_targets_the_modal_node_not_the_selection() {
         text, "model.sample.stg_orders",
         "yy copies the modal's uid, not the list selection's fct_orders"
     );
-    assert_eq!(a.mode, Mode::Selection, "the which-key is one-shot");
+    // One-shot close restores the stacked modal (nested-overlay rule), and
+    // the stash dies with the which-key either way.
+    assert!(matches!(a.mode, Mode::Detail(_)), "returns to the modal");
     assert!(a.pending_node.is_none(), "the stash dies with the menu");
 }
 
@@ -5881,7 +5892,7 @@ fn yank_without_the_modal_keeps_the_selection_semantics() {
     let mut a = sample_app();
     a.select_by_unique_id("model.sample.fct_orders");
     apply_action(&mut a, Action::YankPrefix);
-    assert_eq!(a.mode, Mode::Yank);
+    assert!(matches!(a.mode, Mode::Yank { .. }));
     assert!(a.pending_node.is_none(), "no modal → nothing stashed");
     let out = apply_action(&mut a, Action::YankId);
     let text = match out.effects.as_slice() {
@@ -5899,7 +5910,12 @@ fn a_stale_modal_stash_cannot_leak_into_a_later_selection_yank() {
     let mut a = sample_app();
     open_detail(&mut a, "model.sample.stg_orders");
     apply_action(&mut a, Action::YankPrefix);
-    apply_action(&mut a, Action::DetailClose); // the cancel path closes the menu
+    apply_action(&mut a, Action::DetailClose); // cancel: back to the stacked modal
+    assert!(
+        matches!(a.mode, Mode::Detail(_)),
+        "Esc on the which-key restores the modal it stacked over"
+    );
+    apply_action(&mut a, Action::DetailClose); // then close the modal itself
     assert_eq!(a.mode, Mode::Selection);
     assert!(a.pending_node.is_none(), "cancel drops the stash");
     a.select_by_unique_id("model.sample.fct_orders");
@@ -5929,7 +5945,10 @@ fn help_over_the_yank_menu_keeps_the_modal_stash_alive() {
     );
     apply_action(&mut a, Action::HelpToggle);
     match &a.mode {
-        Mode::Help(h) => assert_eq!(*h.back, Mode::Yank, "help layers over the menu"),
+        Mode::Help(h) => assert!(
+            matches!(h.back.as_ref(), Mode::Yank { .. }),
+            "help layers over the menu"
+        ),
         _ => panic!("expected Help mode"),
     }
     assert_eq!(
@@ -5939,7 +5958,7 @@ fn help_over_the_yank_menu_keeps_the_modal_stash_alive() {
     );
     // Esc peels back to the menu — which still knows its target.
     apply_action(&mut a, Action::HelpToggle);
-    assert_eq!(a.mode, Mode::Yank);
+    assert!(matches!(a.mode, Mode::Yank { .. }));
     let out = apply_action(&mut a, Action::YankId);
     let text = match out.effects.as_slice() {
         [Effect::Yank(t)] => t.clone(),
@@ -6986,7 +7005,7 @@ fn modal_yank_ascii_does_not_inherit_the_current_roots_keep_set() {
     // The modal-yank base (pending_node = gp ≠ the pane root) keeps only its
     // own subject: m15 goes back behind the marker.
     a.pending_node = Some("model.p.gp".to_string());
-    a.mode = Mode::Yank;
+    a.mode = Mode::Yank { back: None, sel: 0 };
     let ascii = a.lineage_ascii().expect("ascii");
     assert!(
         ascii.contains("+8 more"),
@@ -7299,6 +7318,7 @@ fn hit_geom<'a>(a: &'a App, lay: Option<&'a Layout>, area: Rect) -> HitGeometry<
         scroll_x: a.ui_state.lineage_scroll_x(),
         scroll_y: a.ui_state.lineage_scroll_y(),
         minimap: a.ui_state.minimap_visible(),
+        overlay: None,
     }
 }
 
@@ -7488,7 +7508,7 @@ fn click_target_left_click_behaves_like_the_old_down_click() {
     let second = a.active_list().model_at(1).unwrap().unique_id.clone();
 
     // A list row: selects via the same reroot_select contract a keypress uses.
-    a.click_target(&HitTarget::ListRow(1), MouseButton::Left);
+    a.click_target(&HitTarget::ListRow(1), MouseButton::Left, (0, 0));
     assert_eq!(a.selected_unique_id().as_deref(), Some(second.as_str()));
     assert_eq!(a.ui_state.focus(), Focus::List);
 
@@ -7497,6 +7517,7 @@ fn click_target_left_click_behaves_like_the_old_down_click() {
     a.click_target(
         &HitTarget::LineageNode("model.sample.stg_orders".to_string()),
         MouseButton::Left,
+        (0, 0),
     );
     assert_eq!(
         a.selected_unique_id().as_deref(),
@@ -7512,10 +7533,11 @@ fn click_target_left_click_behaves_like_the_old_down_click() {
     a.click_target(
         &HitTarget::ListHeader("staging".to_string()),
         MouseButton::Left,
+        (0, 0),
     );
     assert_eq!(a.ui_state.focus(), Focus::List);
     assert_eq!(a.selected_unique_id(), sel, "a header selects nothing");
-    a.click_target(&HitTarget::Minimap, MouseButton::Left);
+    a.click_target(&HitTarget::Minimap, MouseButton::Left, (0, 0));
     assert_eq!(
         a.ui_state.focus(),
         Focus::List,
@@ -7526,8 +7548,12 @@ fn click_target_left_click_behaves_like_the_old_down_click() {
         sel,
         "the minimap swallows its click"
     );
-    a.click_target(&HitTarget::PaneBorder(Splitter::List), MouseButton::Left);
-    a.click_target(&HitTarget::StatusBar, MouseButton::Left);
+    a.click_target(
+        &HitTarget::PaneBorder(Splitter::List),
+        MouseButton::Left,
+        (0, 0),
+    );
+    a.click_target(&HitTarget::StatusBar, MouseButton::Left, (0, 0));
     assert_eq!(a.selected_unique_id(), sel, "chrome stays inert");
 }
 
@@ -7588,7 +7614,7 @@ fn click_target_blank_surfaces_only_focus_and_modals_are_inert() {
     let sel = a.selected_unique_id();
     a.ui_state.set_focus(Focus::RightPane);
 
-    a.click_target(&HitTarget::ListBlank, MouseButton::Left);
+    a.click_target(&HitTarget::ListBlank, MouseButton::Left, (0, 0));
     assert_eq!(
         a.ui_state.focus(),
         Focus::List,
@@ -7596,7 +7622,7 @@ fn click_target_blank_surfaces_only_focus_and_modals_are_inert() {
     );
     assert_eq!(a.selected_unique_id(), sel, "no selection change");
 
-    a.click_target(&HitTarget::LineageBlank, MouseButton::Left);
+    a.click_target(&HitTarget::LineageBlank, MouseButton::Left, (0, 0));
     assert_eq!(
         a.ui_state.focus(),
         Focus::RightPane,
@@ -7604,40 +7630,578 @@ fn click_target_blank_surfaces_only_focus_and_modals_are_inert() {
     );
     assert_eq!(a.selected_unique_id(), sel, "no selection change");
 
-    // The reserved modal targets are unreachable today (Selection gating runs
-    // first) and must be inert regardless — not even a focus change.
+    // The overlay targets are unreachable from the panes (an overlay owns the
+    // screen while present) and must be inert regardless — not even a focus
+    // change.
     for t in [HitTarget::ModalInterior, HitTarget::ModalExterior] {
-        a.click_target(&t, MouseButton::Left);
+        a.click_target(&t, MouseButton::Left, (0, 0));
         assert_eq!(a.ui_state.focus(), Focus::RightPane, "{t:?} must be inert");
         assert_eq!(a.selected_unique_id(), sel, "{t:?} selects nothing");
     }
 }
 
 #[test]
-fn click_target_right_and_middle_click_do_nothing() {
+fn click_target_right_click_opens_the_node_menu_at_the_pointer() {
+    // Issue 06: a right-click on a list row or a lineage node opens the
+    // node context menu anchored at the POINTER cell; middle-clicks and
+    // right-clicks elsewhere stay inert.
     let mut a = sample_app();
+    let uid = a.active_list().model_at(1).unwrap().unique_id.clone();
+
+    a.click_target(&HitTarget::ListRow(1), MouseButton::Right, (11, 7));
+    match &a.mode {
+        Mode::Menu(ms) => {
+            assert_eq!(ms.target, uid, "the menu acts on the clicked row's node");
+            assert_eq!(
+                ms.anchor,
+                crate::action::MenuAnchor::Cell { col: 11, row: 7 },
+                "the box anchors at the pointer cell"
+            );
+            assert!(
+                ms.items.iter().all(|e| matches!(
+                    e,
+                    crate::action::MenuEntry::Item { .. } | crate::action::MenuEntry::Separator
+                )),
+                "items are BINDINGS-resolved entries"
+            );
+        }
+        m => panic!("expected Mode::Menu, got {m:?}"),
+    }
+    assert_eq!(a.ui_state.focus(), Focus::List);
+    // The menu's Esc restores Selection (nothing stacked under it).
+    apply_action(&mut a, Action::DetailClose);
+    assert_eq!(a.mode, Mode::Selection);
+
+    // Same for a lineage node — focus moves to the right pane, the menu
+    // targets the clicked node.
+    a.click_target(
+        &HitTarget::LineageNode("model.sample.stg_orders".to_string()),
+        MouseButton::Right,
+        (40, 9),
+    );
+    match &a.mode {
+        Mode::Menu(ms) => assert_eq!(ms.target, "model.sample.stg_orders"),
+        m => panic!("expected Mode::Menu, got {m:?}"),
+    }
+    assert_eq!(a.ui_state.focus(), Focus::RightPane);
+    apply_action(&mut a, Action::DetailClose);
+
+    // Right-clicks on chrome/blank surfaces and ANY middle click are inert.
     let initial = a.selected_unique_id();
     let initial_focus = a.ui_state.focus();
-    for b in [MouseButton::Right, MouseButton::Middle] {
-        a.click_target(&HitTarget::ListRow(1), b);
-        assert_eq!(
-            a.selected_unique_id(),
-            initial,
-            "{b:?} click must not select"
-        );
-        a.click_target(
-            &HitTarget::LineageNode("model.sample.stg_orders".to_string()),
-            b,
-        );
-        assert_eq!(
-            a.selected_unique_id(),
-            initial,
-            "{b:?} click must not re-root"
-        );
-        assert_eq!(
-            a.ui_state.focus(),
-            initial_focus,
-            "{b:?} click doesn't even re-focus a pane"
+    a.click_target(
+        &HitTarget::ListHeader("staging".to_string()),
+        MouseButton::Right,
+        (5, 3),
+    );
+    a.click_target(&HitTarget::Minimap, MouseButton::Right, (5, 3));
+    a.click_target(&HitTarget::StatusBar, MouseButton::Right, (5, 3));
+    a.click_target(&HitTarget::ListRow(1), MouseButton::Middle, (5, 3));
+    a.click_target(
+        &HitTarget::LineageNode("model.sample.stg_orders".to_string()),
+        MouseButton::Middle,
+        (5, 3),
+    );
+    assert_eq!(
+        a.selected_unique_id(),
+        initial,
+        "non-node surfaces select nothing"
+    );
+    assert_eq!(
+        a.ui_state.focus(),
+        initial_focus,
+        "inert clicks don't even re-focus a pane"
+    );
+    assert_eq!(a.mode, Mode::Selection, "no menu from inert targets");
+}
+
+// ---- Issue 06: node context menu + nested overlay returns -------------------
+//
+// `a` (or a right-click — `App::click_target` covers that path above) opens the
+// BINDINGS-derived context menu for the node under the cursor / modal; the menu
+// and the `y` which-key stack over a modal and restore it on close.
+
+/// The MenuState for the currently-open menu (panics otherwise).
+fn menu_state(a: &App) -> &crate::action::MenuState {
+    match &a.mode {
+        Mode::Menu(ms) => ms,
+        m => panic!("expected Mode::Menu, got {m:?}"),
+    }
+}
+
+/// The labels of a menu's Item rows, in display order.
+fn menu_labels(items: &[crate::action::MenuEntry]) -> Vec<&str> {
+    items
+        .iter()
+        .filter_map(|e| match e {
+            crate::action::MenuEntry::Item { label, .. } => Some(label.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn menu_open_from_selection_targets_the_focus_node() {
+    let mut a = sample_app();
+    a.select_by_unique_id("model.sample.stg_orders");
+    apply_action(&mut a, Action::MenuOpen);
+    let ms = menu_state(&a);
+    assert_eq!(ms.target, "model.sample.stg_orders");
+    assert_eq!(ms.anchor, crate::action::MenuAnchor::Node);
+    assert!(ms.back.is_none(), "nothing stacked under a Selection menu");
+    // The first selectable row is highlighted on open.
+    assert!(matches!(
+        ms.items[ms.selected],
+        crate::action::MenuEntry::Item { .. }
+    ));
+}
+
+#[test]
+fn menu_open_over_detail_and_sql_targets_the_modal_node() {
+    // List selection sits on B; the modal shows A. The `a` menu acts on A —
+    // the same hostile case the yank-stash tests cover.
+    let mut a = sample_app();
+    open_detail(&mut a, "model.sample.stg_orders");
+    a.select_by_unique_id("model.sample.fct_orders");
+    apply_action(&mut a, Action::MenuOpen);
+    let ms = menu_state(&a);
+    assert_eq!(
+        ms.target, "model.sample.stg_orders",
+        "the menu acts on the modal's node, not the list selection"
+    );
+    assert!(
+        matches!(ms.back.as_deref(), Some(Mode::Detail(_))),
+        "the structure modal rides in `back`"
+    );
+    // Esc closes the menu and restores the stacked modal — Issue 06's
+    // nested-overlay return rule.
+    apply_action(&mut a, Action::DetailClose);
+    match &a.mode {
+        Mode::Detail(dv) => assert_eq!(dv.model_id, "model.sample.stg_orders"),
+        m => panic!("expected the Detail modal back, got {m:?}"),
+    }
+
+    // Same for the SQL modal — `s` previews the SELECTION (focus_target), so
+    // open it while stg_orders is selected, then move the selection away.
+    apply_action(&mut a, Action::DetailClose); // close Detail first
+    a.select_by_unique_id("model.sample.stg_orders");
+    apply_action(&mut a, Action::SqlOpen);
+    assert!(matches!(a.mode, Mode::Sql(_)), "s opens the SQL modal");
+    a.select_by_unique_id("model.sample.fct_orders");
+    apply_action(&mut a, Action::MenuOpen);
+    assert_eq!(menu_state(&a).target, "model.sample.stg_orders");
+    apply_action(&mut a, Action::DetailClose);
+    assert!(
+        matches!(a.mode, Mode::Sql(_)),
+        "Esc returns to the SQL modal"
+    );
+}
+
+#[test]
+fn menu_move_wraps_and_never_lands_on_separators() {
+    let mut a = sample_app();
+    a.select_by_unique_id("model.sample.stg_orders");
+    apply_action(&mut a, Action::MenuOpen);
+    // Count the selectable rows, then walk a full lap + 1: every landing is an
+    // Item, and the last step wraps back to the start.
+    let items = menu_state(&a)
+        .items
+        .iter()
+        .filter(|e| matches!(e, crate::action::MenuEntry::Item { .. }))
+        .count();
+    assert!(items >= 3, "the fixture menu has several items");
+    let first = menu_state(&a).selected;
+    for _ in 0..items {
+        apply_action(&mut a, Action::MenuMove(Direction::Down));
+        let ms = menu_state(&a);
+        assert!(
+            matches!(ms.items[ms.selected], crate::action::MenuEntry::Item { .. }),
+            "cursor must never sit on a separator"
         );
     }
+    assert_eq!(
+        menu_state(&a).selected,
+        first,
+        "a full lap wraps to the start"
+    );
+    apply_action(&mut a, Action::MenuMove(Direction::Up));
+    assert_ne!(menu_state(&a).selected, first, "up wraps backward too");
+}
+
+#[test]
+fn menu_confirm_runs_the_highlighted_item_and_restores_back() {
+    // Open the menu over the structure modal and confirm the FIRST item — the
+    // layout's head row is the structure-view Enter ("Structure view" here,
+    // since the modal's node IS the root) → runs DetailOpen on the modal's
+    // node, restoring a fresh Detail mode.
+    let mut a = sample_app();
+    open_detail(&mut a, "model.sample.stg_orders");
+    apply_action(&mut a, Action::MenuOpen);
+    let labels = menu_labels(&menu_state(&a).items);
+    assert_eq!(labels[0], "Structure view", "Enter on the rooted node");
+    let out = apply_action(&mut a, Action::MenuConfirm);
+    assert!(
+        matches!(a.mode, Mode::Detail(_)),
+        "Enter re-opens the structure view on the target, got {:?}",
+        a.mode
+    );
+    assert!(out.effects.is_empty());
+}
+
+#[test]
+fn menu_invoke_moves_the_selection_to_the_target_then_runs() {
+    // Menu opened on A while the selection sits on B: running "Copy name"
+    // yanks A's name — the menu's contract is that items act on THEIR node.
+    let mut a = sample_app();
+    open_detail(&mut a, "model.sample.stg_orders");
+    a.select_by_unique_id("model.sample.fct_orders");
+    apply_action(&mut a, Action::MenuOpen);
+    let idx = menu_state(&a)
+        .items
+        .iter()
+        .position(
+            |e| matches!(e, crate::action::MenuEntry::Item { label, .. } if label == "Copy name"),
+        )
+        .expect("Copy name exists for a model");
+    let out = apply_action(&mut a, Action::MenuInvoke(idx));
+    let text = match out.effects.as_slice() {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert_eq!(text, "stg_orders", "the item acted on the menu's node");
+    assert_eq!(
+        a.selected_unique_id().as_deref(),
+        Some("model.sample.stg_orders"),
+        "execution moves the selection to the menu target"
+    );
+    // The stacked modal it came from is restored after the run.
+    assert!(matches!(a.mode, Mode::Detail(_)), "back restored");
+}
+
+#[test]
+fn an_items_own_key_invokes_it_directly_via_dispatch() {
+    use crate::dispatch;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let press = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+
+    let mut a = sample_app();
+    a.select_by_unique_id("model.sample.stg_orders");
+    apply_action(&mut a, Action::MenuOpen);
+    // The "SQL preview" item carries BINDINGS' `s` row — pressing `s` inside
+    // the menu dispatches MenuInvoke on ITS index, not the cursored one.
+    let (idx, _) = menu_state(&a)
+        .items
+        .iter()
+        .enumerate()
+        .find(|(_, e)| matches!(e, crate::action::MenuEntry::Item { label, .. } if label == "SQL preview"))
+        .expect("SQL preview exists for a model");
+    assert_eq!(
+        dispatch(&a.mode, press(KeyCode::Char('s'))),
+        Some(Action::MenuInvoke(idx))
+    );
+    let out = apply_action(&mut a, Action::MenuInvoke(idx));
+    assert!(out.effects.is_empty());
+    assert!(matches!(a.mode, Mode::Sql(_)), "s opened the SQL preview");
+}
+
+#[test]
+fn menu_entries_omit_unsupported_items_and_orphan_separators() {
+    let a = sample_app();
+    // A seed has no SQL in the side-map: its menu drops both SQL rows, and
+    // the separator that only separated them must not go adjacent/leading.
+    let entries = a.menu_entries("seed.sample.country_codes");
+    assert!(
+        !entries.is_empty(),
+        "a Dag node still has universal actions"
+    );
+    let labels = menu_labels(&entries);
+    assert!(
+        !labels
+            .iter()
+            .any(|l| *l == "SQL preview" || *l == "Copy raw SQL"),
+        "a seed has no SQL rows, got {labels:?}"
+    );
+    // No leading / trailing / adjacent separators survive the filtering.
+    assert!(!matches!(
+        entries.first(),
+        Some(crate::action::MenuEntry::Separator)
+    ));
+    assert!(!matches!(
+        entries.last(),
+        Some(crate::action::MenuEntry::Separator)
+    ));
+    assert!(!entries.windows(2).any(|w| matches!(
+        (&w[0], &w[1]),
+        (
+            crate::action::MenuEntry::Separator,
+            crate::action::MenuEntry::Separator
+        )
+    )));
+}
+
+#[test]
+fn menu_open_for_a_stale_or_marker_target_notices_without_boxing() {
+    let mut a = sample_app();
+    assert!(
+        a.menu_entries("+8 more").is_empty(),
+        "a non-Dag uid yields no rows"
+    );
+    // `a` on a marker target can never produce the phantom box — the focus
+    // target itself is a real node here, so drive the stale path directly.
+    a.open_menu("+8 more", crate::action::MenuAnchor::Node);
+    assert_eq!(a.mode, Mode::Selection);
+    assert_eq!(a.take_notice().as_deref(), Some("no actions for this node"));
+}
+
+#[test]
+fn menu_enter_label_is_context_sensitive() {
+    // On the rooted node the Enter row says "Structure view"; on a different
+    // node it honestly says "Re-root here" — the label can't lie about what
+    // Enter does.
+    let mut a = sample_app();
+    a.select_by_unique_id("model.sample.fct_orders");
+    let rooted = a.menu_entries("model.sample.fct_orders");
+    let other = a.menu_entries("model.sample.stg_orders");
+    let first_label = |entries: &Vec<crate::action::MenuEntry>| match &entries[0] {
+        crate::action::MenuEntry::Item { label, .. } => label.clone(),
+        _ => panic!("first entry must be an item"),
+    };
+    assert_eq!(first_label(&rooted), "Structure view");
+    assert_eq!(first_label(&other), "Re-root here");
+}
+
+#[test]
+fn detail_yank_esc_returns_to_the_modal() {
+    // Structure -> y -> Esc: the which-key's close restores the modal it
+    // stacked over (the `back` slot), not the bare panes.
+    let mut a = sample_app();
+    open_detail(&mut a, "model.sample.stg_orders");
+    apply_action(&mut a, Action::YankPrefix);
+    match &a.mode {
+        Mode::Yank { back, .. } => assert!(
+            matches!(back.as_deref(), Some(Mode::Detail(_))),
+            "the modal is stacked in `back`"
+        ),
+        m => panic!("expected Mode::Yank, got {m:?}"),
+    }
+    apply_action(&mut a, Action::DetailClose); // Esc on the which-key
+    match &a.mode {
+        Mode::Detail(dv) => assert_eq!(dv.model_id, "model.sample.stg_orders"),
+        m => panic!("expected the Detail modal back, got {m:?}"),
+    }
+    // …and a second Esc closes the modal itself.
+    apply_action(&mut a, Action::DetailClose);
+    assert_eq!(a.mode, Mode::Selection);
+}
+
+#[test]
+fn menu_opened_over_the_whichkey_keeps_the_outer_destination() {
+    // `a` while `y` is up over a modal: the menu takes the which-key's back
+    // (the modal), so Esc on the menu still lands on the modal — the
+    // intermediate which-key does not become a mode of its own.
+    let mut a = sample_app();
+    open_detail(&mut a, "model.sample.stg_orders");
+    apply_action(&mut a, Action::YankPrefix);
+    a.open_menu("model.sample.stg_orders", crate::action::MenuAnchor::Node);
+    match &a.mode {
+        Mode::Menu(ms) => assert!(
+            matches!(ms.back.as_deref(), Some(Mode::Detail(_))),
+            "the menu inherits the which-key's outer destination"
+        ),
+        m => panic!("expected Mode::Menu, got {m:?}"),
+    }
+    apply_action(&mut a, Action::DetailClose);
+    assert!(
+        matches!(a.mode, Mode::Detail(_)),
+        "Esc returns to the modal, skipping the dead which-key"
+    );
+}
+
+// ---- Issue 06: overlay hit-testing + geometry -------------------------------
+
+#[test]
+fn hit_target_overlay_owns_rows_frame_and_the_whole_exterior() {
+    let a = sample_app();
+    let area = Rect::new(0, 0, 160, 44);
+    let overlay = Rect::new(30, 10, 60, 20);
+    let g = HitGeometry {
+        overlay: Some(overlay),
+        ..hit_geom(&a, None, area)
+    };
+    let inner = pane_interior(overlay);
+    // Interior cells are rows (0-based inside the border).
+    assert_eq!(
+        hit_target(&g, inner.x + 3, inner.y + 2),
+        Some(HitTarget::OverlayRow(2))
+    );
+    assert_eq!(
+        hit_target(&g, inner.x, inner.y + inner.height - 1),
+        Some(HitTarget::OverlayRow((inner.height - 1) as usize))
+    );
+    // The frame (border/title) is inert chrome — not a row, not a dismissal.
+    assert_eq!(
+        hit_target(&g, overlay.x, overlay.y),
+        Some(HitTarget::ModalInterior)
+    );
+    assert_eq!(
+        hit_target(
+            &g,
+            overlay.x + overlay.width - 1,
+            overlay.y + overlay.height - 1
+        ),
+        Some(HitTarget::ModalInterior)
+    );
+    // EVERYTHING outside is the click-outside target — panes, status bar,
+    // the whole dimmed backdrop.
+    assert_eq!(hit_target(&g, 1, 1), Some(HitTarget::ModalExterior));
+    assert_eq!(
+        hit_target(&g, area.width - 1, area.height - 1),
+        Some(HitTarget::ModalExterior)
+    );
+}
+
+#[test]
+fn modal_rect_caps_width_at_120_and_centers() {
+    use crate::ui::modal_rect;
+    // min(80% of 160 = 128, 120) → 120; height = 80% of 44 ≈ 35.
+    let r = modal_rect(Rect::new(0, 0, 160, 44));
+    assert_eq!(r.width, 120, "the 120-col cap wins on wide terminals");
+    assert_eq!(r.height, 35);
+    assert_eq!(r.x, (160 - 120) / 2, "horizontally centred");
+    assert_eq!(r.y, (44 - 35) / 2, "vertically centred");
+    // 80% on a normal terminal: 100 → 80.
+    let r = modal_rect(Rect::new(0, 0, 100, 40));
+    assert_eq!((r.width, r.height), (80, 32));
+    // Ultra-wide 240: still capped at 120, centred.
+    let r = modal_rect(Rect::new(0, 0, 240, 60));
+    assert_eq!(r.width, 120, "240-wide terminal still caps at 120");
+    assert_eq!(r.x, (240 - 120) / 2);
+    // Tiny terminals never panic and stay inside the area.
+    let r = modal_rect(Rect::new(0, 0, 2, 2));
+    assert!(r.width >= 1 && r.width <= 2);
+    assert!(r.height >= 1 && r.height <= 2);
+    assert!(area_contains(Rect::new(0, 0, 2, 2), r));
+}
+
+fn area_contains(area: Rect, r: Rect) -> bool {
+    r.x >= area.x
+        && r.y >= area.y
+        && r.x + r.width <= area.x + area.width
+        && r.y + r.height <= area.y + area.height
+}
+
+#[test]
+fn menu_rect_anchors_at_the_pointer_and_flips_inside_the_screen() {
+    use crate::ui::menu_rect;
+    let a = sample_app();
+    let entries = a.menu_entries("model.sample.stg_orders");
+    let ms = crate::action::MenuState {
+        target: "model.sample.stg_orders".to_string(),
+        name: "stg_orders".to_string(),
+        items: entries,
+        selected: 0,
+        back: None,
+        anchor: crate::action::MenuAnchor::Cell { col: 10, row: 5 },
+    };
+    let area = Rect::new(0, 0, 120, 40);
+    let lin_inner = Rect::new(40, 1, 80, 38);
+    // Mid-screen anchor: the box grows down-right of the cell.
+    let r = menu_rect(area, lin_inner, None, 0, 0, &ms);
+    assert!(area_contains(area, r));
+    assert_eq!(r.x, 11, "anchored one cell right of the pointer");
+    assert_eq!(r.y, 6, "anchored one cell below the pointer");
+
+    // A right-edge anchor flips the box to the pointer's LEFT side.
+    let ms_right = crate::action::MenuState {
+        anchor: crate::action::MenuAnchor::Cell { col: 118, row: 5 },
+        ..ms.clone()
+    };
+    let r = menu_rect(area, lin_inner, None, 0, 0, &ms_right);
+    assert!(area_contains(area, r));
+    assert!(
+        r.x + r.width <= 119,
+        "flipped left of the pointer, got {r:?}"
+    );
+
+    // A bottom-edge anchor flips the box UP above the pointer.
+    let ms_bottom = crate::action::MenuState {
+        anchor: crate::action::MenuAnchor::Cell { col: 10, row: 38 },
+        ..ms.clone()
+    };
+    let r = menu_rect(area, lin_inner, None, 0, 0, &ms_bottom);
+    assert!(area_contains(area, r));
+    assert!(r.y + r.height <= 39, "flipped above the pointer, got {r:?}");
+
+    // A corner anchor: both flips at once, still fully inside.
+    let ms_corner = crate::action::MenuState {
+        anchor: crate::action::MenuAnchor::Cell { col: 119, row: 39 },
+        ..ms
+    };
+    let r = menu_rect(area, lin_inner, None, 0, 0, &ms_corner);
+    assert!(area_contains(area, r));
+}
+
+#[test]
+fn detail_yank_execute_returns_to_the_modal() {
+    // Structure -> y -> y (copy unique_id): the action runs AND the modal it
+    // stacked over is restored — the which-key is one-shot with a `back`.
+    let mut a = sample_app();
+    open_detail(&mut a, "model.sample.stg_orders");
+    apply_action(&mut a, Action::YankPrefix);
+    let out = apply_action(&mut a, Action::YankId);
+    assert!(
+        out.effects.iter().any(|e| matches!(e, Effect::Yank(_))),
+        "y yanks the uid"
+    );
+    match &a.mode {
+        Mode::Detail(dv) => assert_eq!(dv.model_id, "model.sample.stg_orders"),
+        m => panic!("expected the Detail modal back, got {m:?}"),
+    }
+}
+
+#[test]
+fn pointer_row_picks_move_the_overlay_cursor() {
+    let mut a = sample_app();
+    a.select_by_unique_id("model.sample.stg_orders");
+    // Yank which-key: YankPick moves the highlighted row.
+    apply_action(&mut a, Action::YankPrefix);
+    apply_action(&mut a, Action::YankPick(2));
+    match &a.mode {
+        Mode::Yank { sel, .. } => assert_eq!(*sel, 2),
+        m => panic!("expected Mode::Yank, got {m:?}"),
+    }
+    // Menu: MenuSelect hovers a row without running it, skips separators.
+    apply_action(&mut a, Action::DetailClose); // close which-key -> Selection
+    apply_action(&mut a, Action::MenuOpen);
+    let pick = menu_state(&a)
+        .items
+        .iter()
+        .rposition(|e| matches!(e, crate::action::MenuEntry::Item { .. }))
+        .expect("at least one item row");
+    apply_action(&mut a, Action::MenuSelect(pick));
+    assert_eq!(menu_state(&a).selected, pick);
+    // A separator row refuses the cursor — hover must not land on a rule.
+    let sep = menu_state(&a)
+        .items
+        .iter()
+        .position(|e| matches!(e, crate::action::MenuEntry::Separator))
+        .expect("a separator row");
+    apply_action(&mut a, Action::MenuSelect(sep));
+    assert_eq!(menu_state(&a).selected, pick);
+}
+
+#[test]
+fn outside_click_action_is_the_same_as_esc() {
+    // The event loop maps a ModalExterior click to `esc_action(mode)` — the
+    // exact Action the Esc key dispatches. Assert that action really closes
+    // a menu back to its stacked modal (the mouse == keyboard contract).
+    let mut a = sample_app();
+    open_detail(&mut a, "model.sample.stg_orders");
+    apply_action(&mut a, Action::MenuOpen);
+    let esc = crate::action::esc_action(&a.mode).expect("menu has an Esc row");
+    apply_action(&mut a, esc);
+    assert!(
+        matches!(a.mode, Mode::Detail(_)),
+        "outside-click action restores the modal"
+    );
 }

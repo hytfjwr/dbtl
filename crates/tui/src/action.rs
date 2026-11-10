@@ -232,6 +232,34 @@ pub enum Action {
     /// Opening it is the read gesture that zeroes the `!N` unread-warning
     /// count.
     NotificationsOpen,
+    // --- node context menu (Issue 06) ---
+    /// Open the node context menu (`a`, or a right-click on a node): a
+    /// BINDINGS-derived action list over the node under the cursor/pointer.
+    /// Over the structure / SQL modal the menu targets the modal's node.
+    MenuOpen,
+    /// Move the node menu's selection cursor (j/k, ↑/↓).
+    MenuMove(Direction),
+    /// Execute the cursored menu item.
+    MenuConfirm,
+    /// Execute the menu item at `items` index `i` — produced by the
+    /// dispatcher's in-menu shortcut lookup (an item's own key fires it) and
+    /// by a click on that row; never a fixed BINDINGS row.
+    MenuInvoke(usize),
+    /// Highlight the menu item at `items` index `i` (pointer hover) — pure
+    /// cursor move, no execution.
+    MenuSelect(usize),
+    /// Highlight the `y` which-key row `i` (a row click selects, per the
+    /// row-bearing-modal rule) — the index into [`yank_bindings`].
+    YankPick(usize),
+    /// Execute the `y` which-key row `i` (a double-click), resolving through
+    /// the same [`yank_bindings`] table the renderer draws.
+    YankInvoke(usize),
+    /// Highlight palette candidate `i` (a row click; double-click then fires
+    /// the existing [`SearchConfirm`](Action::SearchConfirm)).
+    PalettePick(usize),
+    /// Move the columns modal's row cursor to `i` (a row click; double-click
+    /// then fires the existing [`ColumnJump`](Action::ColumnJump)).
+    ColumnPick(usize),
 }
 
 /// Which pane a search targets (decided from focus when search opens).
@@ -646,6 +674,119 @@ impl NoticeLevel {
     }
 }
 
+/// A `menu` annotation resolved per node-menu item: the label the row shows.
+/// The menu never invents actions — every item resolves through the
+/// [`BINDINGS`] row its [`MenuSlot`] names, so the action, its key label, and
+/// its triggers stay the single source of truth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuMark {
+    /// Show the row with this display label.
+    Label(&'static str),
+    /// The `Enter` row, whose honest label depends on the target: "Re-root
+    /// here" when `Enter` would re-root to a different node, plain
+    /// "Structure view" when the target is already the re-rooted node (the
+    /// re-root is a no-op — the Enter really just opens the structure view).
+    EnterContext,
+}
+
+/// One row inside the node context menu: either a separator rule or an
+/// actionable item. Items carry NO action — `binding` indexes [`BINDINGS`]
+/// (the row's action, trigger, and `key_label` are all read from there), so
+/// the menu can never drift from the keymap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MenuEntry {
+    /// A rule between item groups.
+    Separator,
+    /// A selectable row: `binding` is the [`BINDINGS`] index the row was
+    /// resolved from; `label` is the [`MenuMark`] text resolved against the
+    /// target at open.
+    Item { binding: usize, label: String },
+}
+
+/// Where the menu box anchors (screen-spec §9): the pointer cell it was
+/// right-clicked on, or the target node's drawn box for the `a` keyboard
+/// path. The box grows down-right of the anchor and flips on overflow —
+/// the actual cells are computed by the size-aware layer (draw / hit-test).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuAnchor {
+    /// The screen cell the menu opened on (the right-click point).
+    Cell { col: u16, row: u16 },
+    /// The target node's lineage box — resolved to cells at draw/hit time
+    /// (the event loop owns screen geometry).
+    Node,
+}
+
+/// The node context menu's state (the `Mode::Menu` payload). Everything the
+/// renderer needs is snapshotted here — the render layer never consults a
+/// `Dag`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuState {
+    /// The `unique_id` every item acts on (the clicked / cursored node).
+    pub target: String,
+    /// The node's display name — the box's title.
+    pub name: String,
+    /// The rows (items + separators), already filtered for availability —
+    /// e.g. a source node omits "SQL preview" because it has no SQL.
+    pub items: Vec<MenuEntry>,
+    /// The selection cursor: an index into `items`, always lands on `Item`
+    /// rows.
+    pub selected: usize,
+    /// The mode restored on Esc/execute (`None` = Selection) — the same
+    /// return mechanism `Mode::Yank` carries for nested overlays.
+    pub back: Option<Box<Mode>>,
+    /// Where the box anchors on screen.
+    pub anchor: MenuAnchor,
+}
+
+/// One slot in the node menu's layout table ([`NODE_MENU_LAYOUT`]): the
+/// ORDER and grouping only. Each item slot names the `(mode, action)` pair
+/// its [`BINDINGS`] row carries — the action, key label, and triggers all
+/// come from that row, so a layout reorder can never fork the keymap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuSlot {
+    /// An actionable item resolved from the `(ModeKind, Action)` row.
+    Item(ModeKind, Action),
+    /// A group separator.
+    Separator,
+}
+
+/// The node context menu's layout — the screen-spec §9 shape: open/view
+/// actions, a rule, the yanks, a rule, the bookmarks/path toggles. This table
+/// carries NO item data; `menu_layout_resolves` asserts every item slot names
+/// a real `(mode, action)` [`BINDINGS`] row.
+///
+/// `Copy unique_id` resolves the `y` row from `ModeKind::Yank` (its trigger
+/// is plain `y` — the second-key of the yank prefix); every other item names
+/// its `ModeKind::Selection` row.
+pub static NODE_MENU_LAYOUT: &[MenuSlot] = &[
+    MenuSlot::Item(ModeKind::Selection, Action::DetailOpen),
+    MenuSlot::Item(ModeKind::Selection, Action::SqlOpen),
+    MenuSlot::Item(ModeKind::Selection, Action::OpenEditor),
+    MenuSlot::Separator,
+    MenuSlot::Item(ModeKind::Selection, Action::YankName),
+    MenuSlot::Item(ModeKind::Yank, Action::YankId),
+    MenuSlot::Item(ModeKind::Selection, Action::YankSql),
+    MenuSlot::Separator,
+    MenuSlot::Item(ModeKind::Selection, Action::BookmarkToggle),
+    MenuSlot::Item(ModeKind::Selection, Action::PathToggle),
+];
+
+/// The display label a menu slot resolves to — `re_roots` is whether the
+/// target differs from the current re-rooted node (see
+/// [`MenuMark::EnterContext`]).
+pub(crate) fn menu_slot_label(mark: MenuMark, re_roots: bool) -> String {
+    match mark {
+        MenuMark::Label(l) => l.to_string(),
+        MenuMark::EnterContext => {
+            if re_roots {
+                "Re-root here".to_string()
+            } else {
+                "Structure view".to_string()
+            }
+        }
+    }
+}
+
 /// One logged notification (Issue 08): the wall-clock `HH:MM:SS` stamp applied
 /// by the event loop — `App` and the reducer keep no clock — the severity, and
 /// the text. Logged newest-last in `App::notifications` (capped at
@@ -666,6 +807,23 @@ pub struct NotificationEntry {
 pub struct NotificationsView {
     pub rows: Vec<NotificationEntry>,
     pub scroll: usize,
+}
+
+/// The mark each layout slot displays — kept next to the layout so the label
+/// choice lives in one place (the `MenuSlot` stays a pure `(mode, action)`
+/// key into [`BINDINGS`]).
+pub(crate) fn menu_slot_mark(action: Action) -> MenuMark {
+    match action {
+        Action::DetailOpen => MenuMark::EnterContext,
+        Action::SqlOpen => MenuMark::Label("SQL preview"),
+        Action::OpenEditor => MenuMark::Label("Open in editor"),
+        Action::YankName => MenuMark::Label("Copy name"),
+        Action::YankId => MenuMark::Label("Copy unique_id"),
+        Action::YankSql => MenuMark::Label("Copy raw SQL"),
+        Action::BookmarkToggle => MenuMark::Label("Bookmark"),
+        Action::PathToggle => MenuMark::Label("Path anchor here"),
+        _ => MenuMark::Label("item"),
+    }
 }
 
 /// The interaction mode. Overlays are plain enum variants (not boxed trait
@@ -691,9 +849,18 @@ pub enum Mode {
     /// Command palette: a fuzzy finder over every Selection-mode command.
     Palette(PaletteState),
     /// The `y` yank-prefix which-key menu: any key dispatched here runs its
-    /// yank action and closes the menu (one-shot); `Esc`/`q` cancel.
-    Yank,
-    /// The `?` keybindings overlay (scrollable, `/`-filterable).
+    /// yank action and closes the menu (one-shot); `Esc`/`q` cancel. `back`
+    /// restores the overlay it was opened over (structure modal → `y` → Esc
+    /// returns to the structure modal, not the panes); `sel` is the
+    /// pointer-selectable row index (a click selects, a double-click runs).
+    Yank {
+        back: Option<Box<Mode>>,
+        sel: usize,
+    },
+    /// The node context menu (Issue 06): right-click on a node or `a`.
+    Menu(MenuState),
+    /// The `?` keybindings overlay (scrollable, `/`-filterable; `back`
+    /// restores the mode it was opened over — Issue 09).
     Help(HelpView),
 }
 
@@ -711,6 +878,7 @@ pub enum ModeKind {
     Notifications,
     Palette,
     Yank,
+    Menu,
     Help,
 }
 
@@ -726,9 +894,19 @@ impl Mode {
             Mode::Columns(_) => ModeKind::Columns,
             Mode::Notifications(_) => ModeKind::Notifications,
             Mode::Palette(_) => ModeKind::Palette,
-            Mode::Yank => ModeKind::Yank,
+            Mode::Yank { .. } => ModeKind::Yank,
+            Mode::Menu(_) => ModeKind::Menu,
             Mode::Help(_) => ModeKind::Help,
         }
+    }
+
+    /// Whether pointer input is live in this mode: clicks route to the
+    /// panes (Selection) or the modal/menu hit-test (everything else with a
+    /// surface). `Search` keeps mouse inert — its query renders inline in
+    /// the pane titles and typing owns the keys, so a stray click must not
+    /// hijack the search.
+    pub fn mouse_live(&self) -> bool {
+        !matches!(self, Mode::Search(_))
     }
 }
 
@@ -884,6 +1062,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('w'))], action: A::ToggleOverview, help: "toggle whole-graph overview" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('p'))], action: A::PathToggle, help: "anchor/clear two-node path" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('K'))], action: A::ColumnsOpen, help: "column lineage modal (traced column)" },
+    KeyBinding { mode: M::Selection, triggers: &[Key(Char('a'))], action: A::MenuOpen, help: "node actions menu" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Esc)], action: A::ColumnFocusExit, help: "exit column focus" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('<'))], action: A::PaneNarrow, help: "narrow pane 4 cols" },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('>'))], action: A::PaneWiden, help: "widen pane 4 cols" },
@@ -932,6 +1111,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Detail, triggers: &[Key(Char('h')), Key(Char('H'))], action: A::DetailColumnMove(Direction::Up), help: "previous column / test" },
     KeyBinding { mode: M::Detail, triggers: &[Key(Char('l')), Key(Char('L'))], action: A::DetailColumnMove(Direction::Down), help: "next column / test" },
     KeyBinding { mode: M::Detail, triggers: &[Key(Char('y'))], action: A::YankPrefix, help: "yank prefix menu" },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('a'))], action: A::MenuOpen, help: "node actions menu" },
     KeyBinding { mode: M::Detail, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down" },
     KeyBinding { mode: M::Detail, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up" },
     KeyBinding { mode: M::Detail, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down" },
@@ -942,6 +1122,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Sql, triggers: &[Key(Esc), Key(Enter), Key(Char('q'))], action: A::DetailClose, help: "close" },
     KeyBinding { mode: M::Sql, triggers: &[Key(Char('?'))], action: A::HelpToggle, help: "help" },
     KeyBinding { mode: M::Sql, triggers: &[Key(Char('c'))], action: A::SqlToggleCompiled, help: "toggle raw / compiled SQL" },
+    KeyBinding { mode: M::Sql, triggers: &[Key(Char('a'))], action: A::MenuOpen, help: "node actions menu" },
     KeyBinding { mode: M::Sql, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down" },
     KeyBinding { mode: M::Sql, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up" },
     KeyBinding { mode: M::Sql, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down" },
@@ -990,6 +1171,14 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Notifications, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up" },
     KeyBinding { mode: M::Notifications, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top" },
     KeyBinding { mode: M::Notifications, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom" },
+    // ---- Node context menu (Issue 06): only nav / run / close live here —
+    // an item's OWN shortcut (the trigger of the BINDINGS row its layout
+    // slot names) is resolved by the dispatcher's item lookup, never a
+    // fixed row. ----
+    KeyBinding { mode: M::Menu, triggers: &[Key(Char('j')), Key(Down)], action: A::MenuMove(Direction::Down), help: "next item" },
+    KeyBinding { mode: M::Menu, triggers: &[Key(Char('k')), Key(Up)], action: A::MenuMove(Direction::Up), help: "previous item" },
+    KeyBinding { mode: M::Menu, triggers: &[Key(Enter)], action: A::MenuConfirm, help: "run the selected action" },
+    KeyBinding { mode: M::Menu, triggers: &[Key(Esc), Key(Char('q'))], action: A::DetailClose, help: "close menu" },
     // ---- Help overlay ----
     KeyBinding { mode: M::Help, triggers: &[Key(Esc), Key(Char('?')), Key(Char('q'))], action: A::HelpToggle, help: "close help" },
     KeyBinding { mode: M::Help, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down" },
@@ -1060,7 +1249,45 @@ pub fn dispatch(mode: &Mode, key: KeyEvent) -> Option<Action> {
             }
         }
     }
+    // Dynamic: inside the node menu, an item's OWN shortcut invokes it
+    // directly (the trigger of the BINDINGS row its layout slot resolved to —
+    // `s` runs SQL preview, `Space` bookmarks, without moving the cursor).
+    // The nav/close keys all matched M::Menu rows above, so only item keys
+    // reach here.
+    if let Mode::Menu(ms) = mode {
+        for (i, entry) in ms.items.iter().enumerate() {
+            if let MenuEntry::Item { binding, .. } = entry {
+                if BINDINGS[*binding].triggers.iter().any(|t| t.matches(key)) {
+                    return Some(Action::MenuInvoke(i));
+                }
+            }
+        }
+    }
     None
+}
+
+/// The [`Action`] `Esc` produces in `mode` — resolved through [`BINDINGS`], so
+/// an outside click sends literally the same action the key sends ("Esc と同
+/// じ", screen-spec §6). `None` for modes with no `Esc` trigger.
+pub fn esc_action(mode: &Mode) -> Option<Action> {
+    let mk = mode.kind();
+    BINDINGS
+        .iter()
+        .find(|b| {
+            b.mode == mk
+                && b.triggers
+                    .iter()
+                    .any(|t| matches!(t, Trigger::Key(KeyCode::Esc)))
+        })
+        .map(|b| b.action)
+}
+
+/// The which-key menu's BINDINGS rows (`ModeKind::Yank`, in table order) —
+/// the single enumeration the which-key renderer, the event loop's click→row
+/// map, and the tests all share, so a new `y<key>` binding rows every surface
+/// at once.
+pub fn yank_bindings() -> impl Iterator<Item = &'static KeyBinding> {
+    BINDINGS.iter().filter(|b| b.mode == ModeKind::Yank)
 }
 
 /// One line of the `?` help overlay.
@@ -1086,8 +1313,24 @@ static DYNAMIC_HELP: &[(ModeKind, &str, &str)] = &[
     ),
     (
         ModeKind::Selection,
+        "dbl click",
+        "open the structure view for a node",
+    ),
+    (ModeKind::Selection, "right click", "node actions menu"),
+    (
+        ModeKind::Selection,
         "wheel",
         "scroll the pane under the cursor",
+    ),
+    (
+        ModeKind::Menu,
+        "item key",
+        "an item's own key runs it directly",
+    ),
+    (
+        ModeKind::Menu,
+        "click item",
+        "run the action (outside click closes)",
     ),
 ];
 
@@ -1231,6 +1474,22 @@ mod tests {
     }
     fn palette_mode() -> Mode {
         Mode::Palette(PaletteState::default())
+    }
+    fn yank_mode() -> Mode {
+        Mode::Yank { back: None, sel: 0 }
+    }
+    fn menu_mode() -> Mode {
+        Mode::Menu(MenuState {
+            target: "m".into(),
+            name: "m".into(),
+            items: vec![MenuEntry::Item {
+                binding: 0,
+                label: "item".into(),
+            }],
+            selected: 0,
+            back: None,
+            anchor: MenuAnchor::Cell { col: 0, row: 0 },
+        })
     }
     fn diff_mode() -> Mode {
         Mode::Diff(DiffView::default())
@@ -1539,10 +1798,20 @@ mod tests {
             | Action::PaneWiden
             | Action::PaneWidthsReset
             | Action::DetailSectionToggle
-            | Action::NotificationsOpen => true,
-            // Dynamic: produced without a fixed key binding (text input). Mouse
-            // is handled in the event loop (size-aware), not via the keymap.
-            Action::SearchType(_) => false,
+            | Action::NotificationsOpen
+            | Action::MenuOpen
+            | Action::MenuMove(_)
+            | Action::MenuConfirm => true,
+            // Dynamic: produced without a fixed key binding (text input, a
+            // resolved menu item, mouse row picks/invokes). Mouse is handled
+            // in the event loop (size-aware), not via the keymap.
+            Action::SearchType(_)
+            | Action::MenuInvoke(_)
+            | Action::MenuSelect(_)
+            | Action::YankPick(_)
+            | Action::YankInvoke(_)
+            | Action::PalettePick(_)
+            | Action::ColumnPick(_) => false,
         }
     }
 
@@ -1565,7 +1834,8 @@ mod tests {
                 ModeKind::Columns => columns_mode(),
                 ModeKind::Notifications => notifications_mode(),
                 ModeKind::Palette => palette_mode(),
-                ModeKind::Yank => Mode::Yank,
+                ModeKind::Yank => yank_mode(),
+                ModeKind::Menu => menu_mode(),
                 ModeKind::Help => help_mode(),
             };
             for t in b.triggers {
@@ -1667,6 +1937,9 @@ mod tests {
             Action::ColumnRowMove(Direction::Down),
             Action::ColumnJump,
             Action::NotificationsOpen,
+            Action::MenuOpen,
+            Action::MenuMove(Direction::Down),
+            Action::MenuConfirm,
         ];
         for a in samples {
             assert!(
@@ -1684,6 +1957,14 @@ mod tests {
         assert!(
             BINDINGS.iter().all(|b| b.action != dynamic),
             "SearchType is dynamic, not a fixed binding"
+        );
+        // The dynamic menu-invoke action must NOT be in the table either —
+        // it is produced by the dispatcher's item lookup and mouse clicks.
+        let dynamic = Action::MenuInvoke(0);
+        assert!(!is_key_bound(&dynamic));
+        assert!(
+            BINDINGS.iter().all(|b| b.action != dynamic),
+            "MenuInvoke is dynamic, not a fixed binding"
         );
     }
 
@@ -1855,5 +2136,189 @@ mod tests {
                 b.action
             );
         }
+    }
+
+    // ---- node context menu (Issue 06) ----
+
+    fn menu_mode_with(items: Vec<MenuEntry>) -> Mode {
+        Mode::Menu(MenuState {
+            target: "m".into(),
+            name: "m".into(),
+            items,
+            selected: 0,
+            back: None,
+            anchor: MenuAnchor::Cell { col: 0, row: 0 },
+        })
+    }
+
+    /// Resolve every [`NODE_MENU_LAYOUT`] slot to its `(mode, action)`
+    /// BINDINGS row index — the same lookup `App::menu_entries` performs.
+    fn slot_binding(mode: ModeKind, action: Action) -> Option<usize> {
+        BINDINGS
+            .iter()
+            .position(|b| b.mode == mode && b.action == action)
+    }
+
+    #[test]
+    fn menu_layout_slots_resolve_to_real_bindings() {
+        // The layout↔keymap drift guard: every item slot names a `(mode,
+        // action)` pair that exists in BINDINGS — a renamed action or a
+        // re-keyed row fails here, never silently drops a menu item.
+        for slot in NODE_MENU_LAYOUT {
+            let MenuSlot::Item(mode, action) = slot else {
+                continue;
+            };
+            let idx = slot_binding(*mode, *action)
+                .unwrap_or_else(|| panic!("no BINDINGS row for {mode:?}/{action:?}"));
+            assert_eq!(
+                BINDINGS[idx].action, *action,
+                "the resolved row carries the slot's action"
+            );
+        }
+    }
+
+    #[test]
+    fn menu_layout_has_no_orphaned_separators() {
+        // A menu that starts/ends on a rule or carries two adjacent rules
+        // would draw a degenerate box — the layout is screened at open time,
+        // so keep the shape clean statically.
+        assert!(!matches!(
+            NODE_MENU_LAYOUT.first(),
+            Some(MenuSlot::Separator)
+        ));
+        assert!(!matches!(
+            NODE_MENU_LAYOUT.last(),
+            Some(MenuSlot::Separator)
+        ));
+        for w in NODE_MENU_LAYOUT.windows(2) {
+            assert!(
+                !(matches!(w[0], MenuSlot::Separator) && matches!(w[1], MenuSlot::Separator)),
+                "adjacent separators"
+            );
+        }
+    }
+
+    #[test]
+    fn a_opens_the_menu_in_selection_detail_and_sql() {
+        assert_eq!(
+            dispatch(&Mode::Selection, press(Char('a'))),
+            Some(Action::MenuOpen)
+        );
+        assert_eq!(
+            dispatch(&detail_mode(), press(Char('a'))),
+            Some(Action::MenuOpen)
+        );
+        assert_eq!(
+            dispatch(&sql_mode(), press(Char('a'))),
+            Some(Action::MenuOpen)
+        );
+    }
+
+    #[test]
+    fn menu_nav_and_close_dispatch() {
+        let m = menu_mode_with(vec![]);
+        assert_eq!(
+            dispatch(&m, press(Char('j'))),
+            Some(Action::MenuMove(Direction::Down))
+        );
+        assert_eq!(
+            dispatch(&m, press(KeyCode::Up)),
+            Some(Action::MenuMove(Direction::Up))
+        );
+        assert_eq!(dispatch(&m, press(Enter)), Some(Action::MenuConfirm));
+        assert_eq!(dispatch(&m, press(Esc)), Some(Action::DetailClose));
+        assert_eq!(dispatch(&m, press(Char('q'))), Some(Action::DetailClose));
+    }
+
+    #[test]
+    fn an_items_own_key_invokes_it_inside_the_menu() {
+        // A menu with two items built from REAL bindings rows: `Space`
+        // (BookmarkToggle) and `p` (PathToggle). Pressing either key inside
+        // the menu invokes that item directly — the same key the row labels.
+        let space = slot_binding(ModeKind::Selection, Action::BookmarkToggle).unwrap();
+        let path = slot_binding(ModeKind::Selection, Action::PathToggle).unwrap();
+        let m = menu_mode_with(vec![
+            MenuEntry::Item {
+                binding: space,
+                label: "Bookmark".into(),
+            },
+            MenuEntry::Item {
+                binding: path,
+                label: "Path anchor here".into(),
+            },
+        ]);
+        assert_eq!(
+            dispatch(&m, press(Char(' '))),
+            Some(Action::MenuInvoke(0)),
+            "Space invokes the bookmark item"
+        );
+        assert_eq!(
+            dispatch(&m, press(Char('p'))),
+            Some(Action::MenuInvoke(1)),
+            "p invokes the path-anchor item"
+        );
+        // An unrelated key stays unbound (items don't leak each other's keys).
+        assert_eq!(dispatch(&m, press(Char('x'))), None);
+        // Separators are skipped by the lookup.
+        let m = menu_mode_with(vec![
+            MenuEntry::Separator,
+            MenuEntry::Item {
+                binding: path,
+                label: "Path anchor here".into(),
+            },
+        ]);
+        assert_eq!(
+            dispatch(&m, press(Char('p'))),
+            Some(Action::MenuInvoke(1)),
+            "the items index (not the item ordinal) is returned"
+        );
+    }
+
+    #[test]
+    fn esc_action_mirrors_each_modes_esc_binding() {
+        assert_eq!(
+            esc_action(&detail_mode()),
+            Some(Action::DetailClose),
+            "the structure modal's Esc is DetailClose"
+        );
+        assert_eq!(
+            esc_action(&help_mode()),
+            Some(Action::HelpToggle),
+            "help's Esc is HelpToggle, not DetailClose"
+        );
+        assert_eq!(
+            esc_action(&palette_mode()),
+            Some(Action::SearchCancel),
+            "the palette's Esc is SearchCancel"
+        );
+        assert_eq!(
+            esc_action(&yank_mode()),
+            Some(Action::DetailClose),
+            "the which-key menu's Esc cancels it"
+        );
+        assert_eq!(
+            esc_action(&menu_mode_with(vec![])),
+            Some(Action::DetailClose),
+            "the node menu's Esc closes it"
+        );
+        assert_eq!(
+            esc_action(&search_mode()),
+            Some(Action::SearchCancel),
+            "search's Esc cancels the query"
+        );
+    }
+
+    #[test]
+    fn yank_bindings_lists_only_the_prefix_rows() {
+        let rows: Vec<_> = yank_bindings().collect();
+        assert!(
+            !rows.is_empty() && rows.iter().all(|b| b.mode == ModeKind::Yank),
+            "only ModeKind::Yank rows, in table order"
+        );
+        // The first row is `yy` (copy unique_id); the cancel row, then `?`
+        // (Issue 09's help layer) close the table.
+        assert_eq!(rows[0].action, Action::YankId);
+        assert_eq!(rows[rows.len() - 2].action, Action::DetailClose);
+        assert_eq!(rows.last().unwrap().action, Action::HelpToggle);
     }
 }

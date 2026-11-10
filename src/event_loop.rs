@@ -10,13 +10,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
-use dbtl::action::{dispatch, reanchors_lineage, Action};
-use dbtl::app::{apply_action, App, LineageView};
+use dbtl::action::{dispatch, esc_action, reanchors_lineage, Action, Direction, PaletteRow};
+use dbtl::app::{apply_action, App, LineageView, Outcome};
 use dbtl::effect::Effect;
 use dbtl::layout::Layout;
 use dbtl::ui::{
-    draw, hit_target, mouse_dirty, pane_interior, pane_layout, splitter_drag_width, Focus,
-    HitGeometry, HitTarget, LineageLens, MouseInput, MouseOutcome, MouseRouter, RenderCtx,
+    draw, hit_target, mouse_dirty, overlay_rect, pane_interior, pane_layout, splitter_drag_width,
+    Focus, HitGeometry, HitTarget, LineageLens, MouseInput, MouseOutcome, MouseRouter, RenderCtx,
     Splitter, StatusSegments,
 };
 use dbtl::{Mode, SortMode};
@@ -310,8 +310,21 @@ pub fn event_loop(
             // highlight/tooltip overlay — keep it out of CharGrid and every
             // cache key (a post-blit overlay input only).
             if let Some(cell) = mouse.pointer() {
-                let target = if matches!(app.mode, Mode::Selection) {
-                    let g = hit_geometry(app, lineage.as_deref(), area);
+                let target = if app.mode.mouse_live() {
+                    let overlay = if matches!(app.mode, Mode::Selection) {
+                        None
+                    } else {
+                        let rects = pane_layout(area, &app.ui_state.pane_config());
+                        overlay_rect(
+                            &app.mode,
+                            area,
+                            pane_interior(rects.lineage),
+                            lineage.as_deref(),
+                            app.ui_state.lineage_scroll_x(),
+                            app.ui_state.lineage_scroll_y(),
+                        )
+                    };
+                    let g = hit_geometry(app, lineage.as_deref(), area, overlay);
                     hit_target(&g, cell.x, cell.y)
                 } else {
                     None
@@ -481,7 +494,10 @@ pub fn event_loop(
                     }
                 }
                 Event::Mouse(me) => {
-                    dirty |= handle_mouse(
+                    // Overlay surfaces can produce real reducer outcomes
+                    // (a menu row invoke, an outside-click Esc): run their
+                    // effects and honor quit exactly like the key path.
+                    let handled = handle_mouse(
                         app,
                         &mut mouse,
                         &mut splitter_drag,
@@ -489,6 +505,24 @@ pub fn event_loop(
                         lineage.as_deref(),
                         area,
                     );
+                    dirty |= handled.dirty;
+                    for effect in handled.outcome.effects {
+                        run_effect(terminal, app, effect)?;
+                    }
+                    // Same watch re-baseline as the key path: a palette-run
+                    // `dbt parse` (double-click confirm) can swap the source.
+                    if let Some(w) = watch.as_mut() {
+                        let (root, recursive) = app.watch_root();
+                        if w.root != root || w.recursive != recursive {
+                            *w = Watch::new(root.to_path_buf(), recursive);
+                        }
+                    }
+                    if handled.outcome.quit {
+                        return Ok(());
+                    }
+                    if handled.reanchor {
+                        force_anchor = true;
+                    }
                 }
                 // Resize / focus / paste and any other delivered event may
                 // change the frame.
@@ -518,7 +552,7 @@ fn begin_splitter_drag(
     area: Rect,
     origin: ratatui::layout::Position,
 ) -> Option<SplitterDrag> {
-    let g = hit_geometry(app, lineage, area);
+    let g = hit_geometry(app, lineage, area, None);
     let HitTarget::PaneBorder(which) = hit_target(&g, origin.x, origin.y)? else {
         return None;
     };
@@ -547,16 +581,36 @@ fn apply_splitter_drag(app: &mut App, drag: SplitterDrag, pointer_x: u16, area: 
     app.ui_state.set_pane_width(drag.which, w, area.width);
 }
 
+/// What one mouse event produced: the frame-dirty flag plus the accumulated
+/// reducer [`Outcome`] (overlay surfaces fire real actions — a menu row
+/// invoke, an outside-click Esc — whose effects the caller must run) and the
+/// reanchor flag a resolved palette action may need.
+struct MouseHandled {
+    dirty: bool,
+    reanchor: bool,
+    outcome: Outcome,
+}
+
+/// Apply `action` and merge its [`Outcome`] into the running accumulation —
+/// one mouse gesture can legitimately chain two applies (a columns row's
+/// double-click = pick + jump; a palette row's = pick + confirm).
+fn apply_mouse(app: &mut App, outcome: &mut Outcome, action: Action) {
+    let o = apply_action(app, action);
+    outcome.quit |= o.quit;
+    outcome.effects.extend(o.effects);
+    outcome.reanchor |= o.reanchor;
+}
+
 /// Handle a mouse event (size-aware, so it lives in the loop, not the reducer).
 /// Raw kinds go through the [`MouseRouter`] (release-confirmed clicks, the
 /// double-click window, the ≥1-cell drag threshold, hover dedup); the
 /// resulting point maps to a [`HitTarget`] via the pure [`hit_target`] — the
-/// same geometry the renderer draws — and dispatches through `App`.
-/// Acts only in `Selection` mode — overlays own the screen.
+/// same geometry the renderer draws.
 ///
-/// Returns whether the event may change the frame (the caller's `dirty`
-/// contribution): every kind except `Moved` may; `Moved` only when the
-/// hovered target CHANGED, so pointer motion doesn't repaint the screen.
+/// `Selection` routes points to the panes (clicks dispatch through
+/// [`App::click_target`]); every other mouse-live mode routes through the
+/// covering overlay's rect — its interior rows, its inert frame, and the
+/// click-outside dismissal ([`overlay_click`]). `Search` stays pointer-inert.
 fn handle_mouse(
     app: &mut App,
     mouse: &mut MouseRouter,
@@ -564,31 +618,56 @@ fn handle_mouse(
     me: MouseEvent,
     lineage: Option<&Layout>,
     area: Rect,
-) -> bool {
+) -> MouseHandled {
+    let mut outcome = Outcome::cont();
     match me.kind {
         MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
-            if !matches!(app.mode, Mode::Selection) {
-                return false;
+            if matches!(app.mode, Mode::Search(_)) {
+                return MouseHandled {
+                    dirty: false,
+                    reanchor: false,
+                    outcome,
+                };
             }
             let rects = pane_layout(area, &app.ui_state.pane_config());
             let down = me.kind == MouseEventKind::ScrollDown;
-            let shift = me.modifiers.contains(KeyModifiers::SHIFT);
-            wheel(
-                app,
-                pane_interior(rects.list),
-                pane_interior(rects.lineage),
-                me.column,
-                me.row,
-                down,
-                shift,
-            );
-            true
+            if matches!(app.mode, Mode::Selection) {
+                let shift = me.modifiers.contains(KeyModifiers::SHIFT);
+                wheel(
+                    app,
+                    pane_interior(rects.list),
+                    pane_interior(rects.lineage),
+                    me.column,
+                    me.row,
+                    down,
+                    shift,
+                );
+            } else {
+                // A covering overlay owns the screen, so the wheel scrolls
+                // the modal's own content regardless of the pointer cell —
+                // the shared DetailScroll arm (non-scrollable overlays
+                // no-op it; the per-frame clamp bounds the result).
+                apply_mouse(
+                    app,
+                    &mut outcome,
+                    Action::DetailScroll(if down { Direction::Down } else { Direction::Up }),
+                );
+            }
+            MouseHandled {
+                dirty: true,
+                reanchor: false,
+                outcome,
+            }
         }
         // A native horizontal notch (trackpad swipe / tilt wheel). Only the
-        // lineage diagram scrolls horizontally; the list pane ignores it.
+        // lineage diagram scrolls horizontally; overlays ignore it.
         MouseEventKind::ScrollRight | MouseEventKind::ScrollLeft => {
             if !matches!(app.mode, Mode::Selection) {
-                return false;
+                return MouseHandled {
+                    dirty: false,
+                    reanchor: false,
+                    outcome,
+                };
             }
             let rects = pane_layout(area, &app.ui_state.pane_config());
             wheel_x(
@@ -598,57 +677,101 @@ fn handle_mouse(
                 me.row,
                 me.kind == MouseEventKind::ScrollRight,
             );
-            true
+            MouseHandled {
+                dirty: true,
+                reanchor: false,
+                outcome,
+            }
         }
         _ => {
             let Some(input) = MouseInput::from_kind(me.kind, me.column, me.row) else {
-                return true; // an unclassified kind — conservatively redraw
+                return MouseHandled {
+                    dirty: true, // an unclassified kind — conservatively redraw
+                    reanchor: false,
+                    outcome,
+                };
             };
-            let Some(outcome) = mouse.feed(input, Instant::now()) else {
-                return false; // press / deduped move / stray event: nothing visible
+            let Some(gesture) = mouse.feed(input, Instant::now()) else {
+                return MouseHandled {
+                    dirty: false, // press / deduped move / stray event: nothing visible
+                    reanchor: false,
+                    outcome,
+                };
             };
+            let live = app.mode.mouse_live();
             let sel = matches!(app.mode, Mode::Selection);
+            // The covering overlay's outer rect — the hit-test routes by it
+            // (interior rows / frame / exterior), computed from the SAME
+            // layout + scroll the frame drew.
+            let overlay = if sel {
+                None
+            } else {
+                let rects = pane_layout(area, &app.ui_state.pane_config());
+                overlay_rect(
+                    &app.mode,
+                    area,
+                    pane_interior(rects.lineage),
+                    lineage,
+                    app.ui_state.lineage_scroll_x(),
+                    app.ui_state.lineage_scroll_y(),
+                )
+            };
             let mut target_changed = false;
-            match &outcome {
-                MouseOutcome::Hover { at } => {
-                    // Non-Selection modes own the screen: the panes report no
-                    // hover target (modal hit-testing is Issue 06).
-                    let target = if sel {
-                        let g = hit_geometry(app, lineage, area);
+            let mut reanchor = false;
+            match &gesture {
+                MouseOutcome::Hover { at } if live => {
+                    let target = {
+                        let g = hit_geometry(app, lineage, area, overlay);
                         hit_target(&g, at.x, at.y)
-                    } else {
-                        None
                     };
+                    // Menu rows take a hover cursor — the pointer visibly
+                    // selects (separators are skipped by the arm).
+                    if let (Mode::Menu(_), Some(HitTarget::OverlayRow(i))) =
+                        (&app.mode, target.as_ref())
+                    {
+                        apply_mouse(app, &mut outcome, Action::MenuSelect(*i));
+                    }
                     target_changed = mouse.track_hover(target);
                 }
-                MouseOutcome::Click { button, at } if sel => {
+                MouseOutcome::Click { button, at } | MouseOutcome::DoubleClick { button, at }
+                    if live =>
+                {
                     let target = {
-                        let g = hit_geometry(app, lineage, area);
+                        let g = hit_geometry(app, lineage, area, overlay);
                         hit_target(&g, at.x, at.y)
                     };
                     if let Some(t) = target.as_ref() {
-                        app.click_target(t, *button);
-                    }
-                }
-                MouseOutcome::DoubleClick { button, at } if sel => {
-                    let target = {
-                        let g = hit_geometry(app, lineage, area);
-                        hit_target(&g, at.x, at.y)
-                    };
-                    match target.as_ref() {
-                        // §5: a splitter double-click resets that pane's saved
-                        // width to default — it is NOT the click action twice.
-                        Some(HitTarget::PaneBorder(which)) if *button == MouseButton::Left => {
-                            app.ui_state.reset_pane_width(*which);
+                        if sel {
+                            match t {
+                                // §5: a splitter double-click resets that
+                                // pane's saved width to default — it is NOT
+                                // the click action twice.
+                                HitTarget::PaneBorder(which)
+                                    if matches!(gesture, MouseOutcome::DoubleClick { .. })
+                                        && *button == MouseButton::Left =>
+                                {
+                                    app.ui_state.reset_pane_width(*which);
+                                }
+                                // Everywhere else a double-click performs the
+                                // click action again — today's click actions
+                                // are idempotent (re-rooting the same node,
+                                // re-selecting the same row), so the effect
+                                // matches the old two-clicks-in-a-row
+                                // behaviour until Issue 05 gives double-click
+                                // its own meaning.
+                                _ => app.click_target(t, *button, (at.x, at.y)),
+                            }
+                        } else {
+                            overlay_click(
+                                app,
+                                &mut outcome,
+                                &mut reanchor,
+                                t,
+                                *button,
+                                matches!(gesture, MouseOutcome::DoubleClick { .. }),
+                                overlay,
+                            );
                         }
-                        // Everywhere else a double-click performs the click
-                        // action again — today's click actions are idempotent
-                        // (re-rooting the same node, re-selecting the same
-                        // row), so the effect matches the old
-                        // two-clicks-in-a-row behaviour until Issue 05 gives
-                        // double-click its own meaning.
-                        Some(t) => app.click_target(t, *button),
-                        None => {}
                     }
                 }
                 // §5: a drag that began on a pane boundary resizes that pane.
@@ -687,16 +810,156 @@ fn handle_mouse(
                 // Issue 05 (lineage pan) gives them meaning.
                 _ => {}
             }
-            mouse_dirty(Some(&outcome), sel, target_changed)
+            MouseHandled {
+                dirty: mouse_dirty(Some(&gesture), live, target_changed),
+                reanchor,
+                outcome,
+            }
         }
+    }
+}
+
+/// Route a release-confirmed click on a covering overlay's surface — the
+/// `hit_target` result while `overlay` owns the screen. Row semantics follow
+/// the modal-mouse rule: a row CLICK selects/highlights; a row DOUBLE-CLICK
+/// (or the menu's single click, an execute surface) runs the row's action;
+/// the border/title/padding is inert; anything outside dismisses through the
+/// mode's OWN Esc binding ([`esc_action`] — BINDINGS-derived, so it can't
+/// drift from what the key does).
+fn overlay_click(
+    app: &mut App,
+    outcome: &mut Outcome,
+    reanchor: &mut bool,
+    t: &HitTarget,
+    button: MouseButton,
+    double: bool,
+    overlay: Option<Rect>,
+) {
+    match t {
+        HitTarget::OverlayRow(r) => {
+            if button != MouseButton::Left {
+                return; // row actions are left-click only
+            }
+            match &app.mode {
+                Mode::Menu(_) => {
+                    // A menu row is an execute surface — click and
+                    // double-click alike fire the item (nothing to select).
+                    apply_mouse(app, outcome, Action::MenuInvoke(*r));
+                }
+                Mode::Yank { .. } => {
+                    if double {
+                        apply_mouse(app, outcome, Action::YankInvoke(*r));
+                    } else {
+                        apply_mouse(app, outcome, Action::YankPick(*r));
+                    }
+                }
+                Mode::Palette(p) => {
+                    // Interior row 0 is the query line; below it the display
+                    // row at `off + r - 1` in `palette_rows` space — the same
+                    // window math `draw_palette` uses. The drawn rows include
+                    // non-selectable headers, while `selected` indexes the
+                    // selectable-only list, so the click maps display →
+                    // selectable before `PalettePick`. (Copy the state out:
+                    // the applies below need `app` mutably.)
+                    let inner_h = overlay.map(|o| pane_interior(o).height).unwrap_or(0);
+                    let view_h = inner_h.saturating_sub(1) as usize;
+                    let query = p.query.clone();
+                    let selected = p.selected;
+                    if *r >= 1 && view_h > 0 {
+                        let rows = app.palette_rows(&query);
+                        let selectable = rows
+                            .iter()
+                            .filter(|r| !matches!(r, PaletteRow::Header(_)))
+                            .count();
+                        let sel = if selectable == 0 {
+                            usize::MAX
+                        } else {
+                            selected.min(selectable - 1)
+                        };
+                        // The clamped selection's DISPLAY position — draw's
+                        // scroll window homes on it.
+                        let mut si = 0usize;
+                        let mut sel_display = 0usize;
+                        for (di, row) in rows.iter().enumerate() {
+                            if !matches!(row, PaletteRow::Header(_)) {
+                                if si == sel {
+                                    sel_display = di;
+                                }
+                                si += 1;
+                            }
+                        }
+                        let total = rows.len();
+                        let off = sel_display
+                            .saturating_sub(view_h - 1)
+                            .min(total.saturating_sub(view_h));
+                        let di = off + r - 1;
+                        // Display index → selectable index; a header cell is
+                        // chrome, not a row — the click is inert there.
+                        let pick = rows.get(di).and_then(|row| {
+                            if matches!(row, PaletteRow::Header(_)) {
+                                return None;
+                            }
+                            Some(
+                                rows.iter()
+                                    .take(di)
+                                    .filter(|r| !matches!(r, PaletteRow::Header(_)))
+                                    .count(),
+                            )
+                        });
+                        if let Some(i) = pick {
+                            apply_mouse(app, outcome, Action::PalettePick(i));
+                            if double {
+                                // Peek at what SearchConfirm resolves to so a
+                                // reshaping pick can flag the anchor BEFORE
+                                // the apply hides which action ran.
+                                let resolved = match rows.get(di) {
+                                    Some(PaletteRow::Command { action, .. }) => Some(*action),
+                                    _ => None,
+                                };
+                                *reanchor = resolved.is_some_and(reanchors_lineage);
+                                apply_mouse(app, outcome, Action::SearchConfirm);
+                            }
+                        }
+                    }
+                }
+                Mode::Columns(cv) => {
+                    // Interior rows ARE `cv.rows` offset by the drawn scroll
+                    // (per-frame clamped), so `scroll + r` is the line index.
+                    let i = cv.scroll + *r;
+                    if i < cv.rows.len() {
+                        apply_mouse(app, outcome, Action::ColumnPick(i));
+                        if double {
+                            apply_mouse(app, outcome, Action::ColumnJump);
+                        }
+                    }
+                }
+                // Scrollable text modals (help/detail/sql/stats/diff): rows
+                // are content, not commands — clicking them is inert.
+                _ => {}
+            }
+        }
+        HitTarget::ModalInterior => {} // frame chrome: inert by design
+        HitTarget::ModalExterior => {
+            if let Some(a) = esc_action(&app.mode) {
+                apply_mouse(app, outcome, a);
+            }
+        }
+        // The overlay owns the whole screen — pane targets can't be produced.
+        _ => {}
     }
 }
 
 /// Bundle the frame's hit-test inputs, all from the SAME sources the draw
 /// uses: `pane_layout` on the live area + `pane_config`, the last styled
 /// `Layout`, and `UiState`'s scroll offsets — so a click lands on what the
-/// screen shows.
-fn hit_geometry<'a>(app: &'a App, lineage: Option<&'a Layout>, area: Rect) -> HitGeometry<'a> {
+/// screen shows. `overlay` is the covering overlay's outer rect
+/// ([`overlay_rect`]'s output) — `None` while the panes are the surface.
+fn hit_geometry<'a>(
+    app: &'a App,
+    lineage: Option<&'a Layout>,
+    area: Rect,
+    overlay: Option<Rect>,
+) -> HitGeometry<'a> {
     HitGeometry {
         panes: pane_layout(area, &app.ui_state.pane_config()),
         list: app.active_list(),
@@ -705,6 +968,7 @@ fn hit_geometry<'a>(app: &'a App, lineage: Option<&'a Layout>, area: Rect) -> Hi
         scroll_x: app.ui_state.lineage_scroll_x(),
         scroll_y: app.ui_state.lineage_scroll_y(),
         minimap: app.ui_state.minimap_visible(),
+        overlay,
     }
 }
 

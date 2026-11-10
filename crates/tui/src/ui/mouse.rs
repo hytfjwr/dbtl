@@ -314,14 +314,15 @@ impl MouseRouter {
 /// - `Hover` dirties iff the resolved target changed (`target_changed` is
 ///   [`track_hover`](MouseRouter::track_hover)'s return) — even outside
 ///   `Selection`, so a stale hover is allowed to clear exactly once.
-/// - Click / DoubleClick / Drag* dirty iff the panes are live
-///   (`selection_mode`); overlay modes ignore them entirely.
+/// - Click / DoubleClick / Drag* dirty iff pointer input is live
+///   ([`Mode::mouse_live`](crate::action::Mode::mouse_live): the panes in
+///   `Selection`, the overlay surface in modal/menu modes; `Search` is inert).
 ///
 /// Unclassified raw kinds never reach the router — the loop dirties
 /// conservatively for those without calling this.
 pub fn mouse_dirty(
     outcome: Option<&MouseOutcome>,
-    selection_mode: bool,
+    pointer_live: bool,
     target_changed: bool,
 ) -> bool {
     match outcome {
@@ -333,7 +334,7 @@ pub fn mouse_dirty(
             | MouseOutcome::DragStart { .. }
             | MouseOutcome::DragMove { .. }
             | MouseOutcome::DragEnd { .. },
-        ) => selection_mode,
+        ) => pointer_live,
     }
 }
 

@@ -307,41 +307,79 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         ctx.theme,
     );
 
-    match ctx.mode {
-        crate::action::Mode::Help(h) => {
-            super::overlay::draw_help(frame, area, h, ctx.glyphs, ctx.theme)
-        }
-        crate::action::Mode::Detail(dv) => {
-            super::overlay::draw_detail(frame, area, dv, ctx.glyphs, ctx.theme)
-        }
-        crate::action::Mode::Sql(sv) => {
-            super::overlay::draw_sql(frame, area, sv, ctx.glyphs, ctx.theme)
-        }
-        crate::action::Mode::Stats(sv) => {
-            super::overlay::draw_stats(frame, area, sv, ctx.glyphs, ctx.theme)
-        }
-        crate::action::Mode::Diff(dv) => {
-            super::overlay::draw_diff(frame, area, dv, ctx.glyphs, ctx.theme)
-        }
-        crate::action::Mode::Columns(cv) => {
-            super::overlay::draw_columns(frame, area, cv, ctx.glyphs, ctx.theme)
-        }
-        crate::action::Mode::Notifications(nv) => {
-            super::overlay::draw_notifications(frame, area, nv, ctx.glyphs, ctx.theme)
-        }
-        crate::action::Mode::Palette(p) => {
-            super::overlay::draw_palette(frame, area, p, ctx.palette_rows, ctx.glyphs, ctx.theme)
-        }
-        crate::action::Mode::Yank => {
-            super::overlay::draw_yank_menu(frame, area, ctx.glyphs, ctx.theme)
-        }
-        crate::action::Mode::Selection | crate::action::Mode::Search(_) => {}
+    // Overlays: a stacked mode (the `y` which-key / the node menu / help over
+    // a modal) draws its origin's overlay UNDER itself first, then the whole
+    // screen minus the top box is dimmed to `text_faint` (screen-spec §9),
+    // then the top overlay paints. `overlay_rect` is the single rect
+    // authority — the hit-test routes clicks by the same box.
+    let lin_inner = super::geom::pane_interior(rects.lineage);
+    if let Some(under) = super::geom::underlay_mode(ctx.mode) {
+        draw_overlay(frame, area, lin_inner, under, ctx);
+    }
+    if let Some(or) = super::geom::overlay_rect(
+        ctx.mode,
+        area,
+        lin_inner,
+        ctx.lineage,
+        ctx.state.lineage_scroll_x(),
+        ctx.state.lineage_scroll_y(),
+    ) {
+        super::overlay::dim_exterior(frame, or, ctx.theme);
+        draw_overlay(frame, area, lin_inner, ctx.mode, ctx);
     }
 
     // The toast stack floats above EVERYTHING (panes and modals alike), so a
     // yank fired from inside the SQL modal is acknowledged too — drawn last.
     if !ctx.toasts.is_empty() {
         super::overlay::draw_toasts(frame, area, ctx.toasts, ctx.glyphs, ctx.theme);
+    }
+}
+
+/// Draw one overlay `mode` (the modal / menu / palette the mode paints). A
+/// stacked mode's `back` is drawn through the same function — it never nests
+/// deeper (backs are modals or base modes by construction). `lin_inner` is the
+/// lineage pane's interior, needed to anchor the node menu to the target's
+/// drawn box.
+fn draw_overlay(
+    frame: &mut Frame,
+    area: Rect,
+    lin_inner: Rect,
+    mode: &crate::action::Mode,
+    ctx: &RenderCtx,
+) {
+    use crate::action::Mode;
+    match mode {
+        Mode::Help(h) => super::overlay::draw_help(frame, area, h, ctx.glyphs, ctx.theme),
+        Mode::Detail(dv) => super::overlay::draw_detail(frame, area, dv, ctx.glyphs, ctx.theme),
+        Mode::Sql(sv) => super::overlay::draw_sql(frame, area, sv, ctx.glyphs, ctx.theme),
+        Mode::Stats(sv) => super::overlay::draw_stats(frame, area, sv, ctx.glyphs, ctx.theme),
+        Mode::Diff(dv) => super::overlay::draw_diff(frame, area, dv, ctx.glyphs, ctx.theme),
+        Mode::Columns(cv) => super::overlay::draw_columns(frame, area, cv, ctx.glyphs, ctx.theme),
+        Mode::Notifications(nv) => {
+            super::overlay::draw_notifications(frame, area, nv, ctx.glyphs, ctx.theme)
+        }
+        Mode::Palette(p) => {
+            super::overlay::draw_palette(frame, area, p, ctx.palette_rows, ctx.glyphs, ctx.theme)
+        }
+        Mode::Yank { sel, .. } => {
+            if let Some(r) = super::geom::yank_menu_rect(area) {
+                super::overlay::draw_yank_menu(frame, r, *sel, ctx.glyphs, ctx.theme)
+            }
+        }
+        Mode::Menu(ms) => {
+            let r = super::geom::menu_rect(
+                area,
+                lin_inner,
+                ctx.lineage,
+                ctx.state.lineage_scroll_x(),
+                ctx.state.lineage_scroll_y(),
+                ms,
+            );
+            super::overlay::draw_menu(frame, r, ms, ctx.glyphs, ctx.theme)
+        }
+        // A search's "overlay" is the inline query in the pane titles — the
+        // panes themselves already drew it.
+        Mode::Selection | Mode::Search(_) => {}
     }
 }
 
