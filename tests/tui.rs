@@ -3956,3 +3956,185 @@ fn wide_char_names_truncate_cell_exactly() {
     // No lone halves — every char survives whole.
     assert!("テーブル名".chars().any(|c| text.contains(c)));
 }
+
+// ============================================================================
+// §12 responsive layout: too-small screen, narrow band, the list drawer
+// ============================================================================
+
+/// Render `draw` with a `UiState` mutated by `f`, at `width x height`.
+fn render_with(width: u16, height: u16, f: impl FnOnce(&mut UiState)) -> Buffer {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    let list = fixture_list();
+    let mut state = UiState::new(list.len());
+    f(&mut state);
+    let ctx = RenderCtx::new(&list, &state, None);
+    terminal
+        .draw(|frame| draw(frame, &ctx))
+        .expect("draw must not panic");
+    terminal.backend().buffer().clone()
+}
+
+#[test]
+fn too_small_screen_shows_only_the_message() {
+    // §12: below 50x12 the whole frame is the one message — no pane, status,
+    // tab strip, or overlay cell may leak through.
+    let backend = TestBackend::new(48, 11);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| {
+            dbtl::ui::draw_too_small(
+                frame,
+                dbtl::layout::GlyphMode::Unicode,
+                &dbtl::ui::theme::DEFAULT,
+            )
+        })
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    let text = buffer_to_string(&buffer);
+    assert!(
+        text.contains("terminal too small: 48\u{d7}11 (need 50\u{d7}12)"),
+        "the current size and the floor both report"
+    );
+    // `Clear` wiped the whole buffer: every non-message cell is blank.
+    let msg_row = 11 / 2;
+    for y in 0..11u16 {
+        for x in 0..48u16 {
+            let cell = buffer.cell((x, y)).unwrap();
+            if y != msg_row {
+                assert_eq!(cell.symbol(), " ", "({x},{y}) must be blank");
+            }
+        }
+    }
+    // Nothing pane-like survived the clear pass.
+    assert!(!text.contains('╭') && !text.contains('│') && !text.contains("sel:"));
+}
+
+#[test]
+fn narrow_band_hides_the_inline_list() {
+    // §12: below 80 columns the list never sits inline — `pane_layout` zeroes
+    // its rect regardless of the pref, so the lineage owns the whole body.
+    let buffer = render(70, 24);
+    let text = buffer_to_string(&buffer);
+    assert_eq!(buffer.cell((0, 0)).unwrap().symbol(), "╭");
+    assert_eq!(
+        buffer.cell((69, 0)).unwrap().symbol(),
+        "╮",
+        "the lineage border reaches the right edge"
+    );
+    assert!(
+        !text.contains("Staging"),
+        "no group header draws while the inline list is gone"
+    );
+    assert!(
+        !text.lines().any(|l| l.contains("> ")),
+        "no selection marker draws inline"
+    );
+    // Exactly 80 restores the inline pane — the band edge is `<`, not `<=`.
+    let buffer = render(80, 24);
+    assert_eq!(
+        buffer.cell((0, 0)).unwrap().symbol(),
+        "╭",
+        "the list pane's own corner is back"
+    );
+    assert_eq!(buffer.cell((33, 0)).unwrap().symbol(), "╮");
+    assert!(buffer_to_string(&buffer).contains("Staging"));
+}
+
+#[test]
+fn narrow_band_drawer_renders_the_list_over_the_lineage() {
+    // §12: `Ctrl-b` in the band floats the SAME list pane — `min(34, 60%)`
+    // wide, the body's full height — over the lineage's left edge.
+    let buffer = render_with(70, 24, |s| {
+        s.set_list_auto_hidden(true); // the loop's <80 verdict
+        s.set_list_drawer(true);
+    });
+    let text = buffer_to_string(&buffer);
+    // The drawer's border claims x=0..33; the lineage's top border continues
+    // to the right edge behind it.
+    assert_eq!(buffer.cell((0, 0)).unwrap().symbol(), "╭");
+    assert_eq!(buffer.cell((33, 0)).unwrap().symbol(), "╮");
+    assert_eq!(
+        buffer.cell((69, 0)).unwrap().symbol(),
+        "╮",
+        "the lineage's own right edge still shows"
+    );
+    // The drawer's content is the list itself — group header and a model row.
+    assert!(text.contains("Staging"));
+    assert!(text.contains("stg_finance__budgets"));
+    // And it draws with the list's focused border — the drawer IS the list
+    // surface in the band (set_list_drawer parked Focus::List there).
+    assert_eq!(
+        buffer.cell((0, 1)).unwrap().fg,
+        dbtl::ui::theme::DEFAULT.accent,
+        "the focused-pane accent border is on the drawer"
+    );
+}
+
+#[test]
+fn leaving_the_band_restores_the_inline_list() {
+    // A stale drawer flag is inert above 80 — `pane_layout` ignores it, the
+    // pref's inline pane simply returns where it was.
+    let buffer = render_with(100, 30, |s| {
+        s.set_list_drawer(true); // leftover from a narrower frame
+        s.set_list_auto_hidden(false);
+    });
+    let text = buffer_to_string(&buffer);
+    assert_eq!(
+        buffer.cell((33, 0)).unwrap().symbol(),
+        "╮",
+        "the inline list's right edge is back at x=33"
+    );
+    assert!(
+        text.contains("Staging"),
+        "the list rows render inline again"
+    );
+}
+
+#[test]
+fn inspector_auto_boundary_publishes_into_pane_config() {
+    use dbtl::ui::{pane_layout, InspectorPolicy};
+    // The event loop's publish seam: `policy.shown_at(width)` →
+    // `set_inspector_shown` → `pane_config` → `pane_layout`. At 159 the
+    // region is never carved…
+    let mut state = UiState::new(45);
+    state.set_inspector_shown(InspectorPolicy::Auto.shown_at(159));
+    assert!(!state.inspector_shown());
+    let p = pane_layout(
+        ratatui::layout::Rect::new(0, 0, 159, 30),
+        &state.pane_config(),
+    );
+    assert_eq!(p.inspector.width, 0, "auto hides below 160");
+    // …and at 160 it is.
+    state.set_inspector_shown(InspectorPolicy::Auto.shown_at(160));
+    assert!(state.inspector_shown());
+    let p = pane_layout(
+        ratatui::layout::Rect::new(0, 0, 160, 30),
+        &state.pane_config(),
+    );
+    assert_eq!(p.inspector.width, 42, "auto shows at 160");
+}
+
+#[test]
+fn band_transitions_preserve_selection_and_pref() {
+    // §12's preservation rule, at the state level: band publishes and drawer
+    // open/close cycles are overlay operations — the selection, the saved
+    // list pref, and the focus semantics must all survive a round trip.
+    let mut state = UiState::new(45);
+    handle_key(
+        &mut state,
+        KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+    );
+    let selected = state.selected();
+    state.set_list_auto_hidden(true);
+    state.set_list_drawer(true);
+    state.set_list_drawer(false);
+    state.set_list_auto_hidden(false);
+    assert_eq!(state.selected(), selected, "the selection never moved");
+    assert!(state.list_visible(), "the inline pref survived untouched");
+    // The focus pin is one-directional (same rule the inspector hide keeps):
+    // it parks `Focus::List` on the lineage while no list surface exists, and
+    // leaving the band does NOT hand it back — the pinned value IS the state
+    // that survives.
+    assert_eq!(state.focus(), dbtl::ui::Focus::RightPane);
+}

@@ -27,6 +27,42 @@ const LIST_MAX_PCT: u16 = 60;
 /// The inspector pane's maximum width: 50% of the terminal width.
 const INSPECTOR_MAX_PCT: u16 = 50;
 
+/// The smallest terminal the normal UI renders on (§12): below this in
+/// either dimension the event loop draws only the `terminal too small`
+/// screen — no panes, no overlays, no pointer routing.
+pub const MIN_TERMINAL_W: u16 = 50;
+/// The minimum terminal height, paired with [`MIN_TERMINAL_W`].
+pub const MIN_TERMINAL_H: u16 = 12;
+
+/// Below this terminal width the list never sits inline (§12): the saved
+/// `list_visible` pref is overridden and the list exists only as the
+/// overlay drawer `Ctrl-b` opens. The band edge is exclusive — at exactly
+/// [`LIST_AUTO_HIDE_W`] columns the inline pane layout applies again.
+pub const LIST_AUTO_HIDE_W: u16 = 80;
+/// The list drawer's share cap in the narrow band: `min(34, 60%)` —
+/// the default list width, bounded by the same 60% the inline pane caps at.
+const LIST_DRAWER_PCT: u16 = 60;
+
+/// The `inspector: auto` visibility floor (§4/§12): the auto pref shows the
+/// pane at this many columns or wider, never below it.
+pub const INSPECTOR_AUTO_W: u16 = 160;
+
+/// Whether the terminal falls under §12's minimum usable size — the
+/// whole-UI yield condition the event loop checks before drawing or
+/// routing any input.
+pub fn terminal_too_small(area: Rect) -> bool {
+    area.width < MIN_TERMINAL_W || area.height < MIN_TERMINAL_H
+}
+
+/// The narrow-band list drawer's width for a body `body_w` columns wide:
+/// `min(34, 60%)` per §12 — the default list width, capped by the same
+/// terminal share the inline pane gets. Never called above the band
+/// ([`pane_layout`] gates the rect itself).
+pub fn list_drawer_width(body_w: u16) -> u16 {
+    // u32 math like `clamp_list_width`: `w * 60` overflows u16 past ~1000.
+    DEFAULT_LIST_WIDTH.min((body_w as u32 * LIST_DRAWER_PCT as u32 / 100) as u16)
+}
+
 /// Which pane boundary a screen point sits on — the drag target's identity
 /// (which saved width the drag edits).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,11 +101,16 @@ pub struct PaneConfig {
     /// Show the one-row tab bar above the body (Issue 03 fills it; until then
     /// the field exists so turning it on is a flag flip, not a redesign).
     pub tab_bar: bool,
+    /// Open the list as the narrow-band overlay drawer (the <80-columns
+    /// meaning of `Ctrl-b`, §12). Inert above the band — `pane_layout` only
+    /// ever carves the rect while `body.width < LIST_AUTO_HIDE_W`, so a stale
+    /// flag is ignored rather than honoured.
+    pub list_drawer: bool,
 }
 
 impl Default for PaneConfig {
     /// The spec §1 defaults: list shown at 34, inspector hidden at a saved 42,
-    /// no tab bar.
+    /// no tab bar, no drawer.
     fn default() -> Self {
         PaneConfig {
             list_visible: true,
@@ -77,6 +118,7 @@ impl Default for PaneConfig {
             inspector_visible: false,
             inspector_width: DEFAULT_INSPECTOR_WIDTH,
             tab_bar: false,
+            list_drawer: false,
         }
     }
 }
@@ -106,6 +148,12 @@ pub struct PaneRects {
     /// The lineage|inspector splitter strip — `None` while the inspector is
     /// hidden (everywhere today; Issue 04 turns it on).
     pub inspector_splitter: Option<Rect>,
+    /// The narrow-band list drawer (§12): the same bordered list, floating
+    /// over the lineage pane's left edge at `min(34, 60%)` of the body.
+    /// `Some` only while the body is narrower than [`LIST_AUTO_HIDE_W`] AND
+    /// `cfg.list_drawer` is set — above the band the flag is ignored, and
+    /// below it the inline `list` rect is always zero-width instead.
+    pub list_drawer: Option<Rect>,
 }
 
 impl PaneRects {
@@ -176,8 +224,11 @@ pub fn pane_layout(area: Rect, cfg: &PaneConfig) -> PaneRects {
     let (tab_bar, body, status) = (chunks[0], chunks[1], chunks[2]);
 
     // Desired widths: saved values clamped to each pane's §1 floor and
-    // terminal-width cap.
-    let mut list_w = if cfg.list_visible {
+    // terminal-width cap. §12's narrow band overrides the list pref FIRST:
+    // below `LIST_AUTO_HIDE_W` columns the pane never sits inline — the
+    // drawer below is the only list surface there, so the explicit `Ctrl-b`
+    // pref wins everywhere except the mandatory drawer band.
+    let mut list_w = if cfg.list_visible && body.width >= LIST_AUTO_HIDE_W {
         clamp_list_width(cfg.list_width, body.width)
     } else {
         0
@@ -232,6 +283,16 @@ pub fn pane_layout(area: Rect, cfg: &PaneConfig) -> PaneRects {
             height: body.height,
         })
     };
+    // §12's list drawer: the narrow band's only list surface — the same
+    // bordered pane floated over the lineage's left edge, full body height,
+    // `min(34, 60%)` wide. Gated on the band itself so a stale flag at ≥80
+    // columns resolves to `None` exactly like a closed one.
+    let list_drawer = (cfg.list_drawer && body.width < LIST_AUTO_HIDE_W).then(|| Rect {
+        x: body.x,
+        y: body.y,
+        width: list_drawer_width(body.width).min(body.width),
+        height: body.height,
+    });
     PaneRects {
         tab_bar,
         list,
@@ -240,6 +301,7 @@ pub fn pane_layout(area: Rect, cfg: &PaneConfig) -> PaneRects {
         status,
         list_splitter: strip(list, lineage),
         inspector_splitter: strip(lineage, inspector),
+        list_drawer,
     }
 }
 
@@ -1139,6 +1201,23 @@ pub fn hit_target(g: &HitGeometry, col: u16, row: u16) -> Option<HitTarget> {
             HitTarget::ModalExterior
         });
     }
+    // §12's list drawer is a covering surface too, one band narrower in
+    // scope: while it floats, its interior rows resolve exactly like the
+    // inline list's (the SAME row/offset space), its frame is inert chrome,
+    // and every other cell — panes, tab strip, status — reports
+    // `ModalExterior`, the click-outside-to-dismiss surface the loop closes
+    // on. Only reachable in the panes-owning modes: a real covering
+    // overlay above already won the return.
+    if let Some(dr) = p.list_drawer {
+        let inner = pane_interior(dr);
+        return Some(if inner.contains(at) {
+            list_cell_target(g, inner, row)
+        } else if dr.contains(at) {
+            HitTarget::ModalInterior
+        } else {
+            HitTarget::ModalExterior
+        });
+    }
     // The tab strip claims row 0 — checked before the panes (its cells never
     // overlap a pane, but the early-out keeps the priority readable: chrome
     // above content, like the splitters over pane interiors below).
@@ -1206,23 +1285,7 @@ pub fn hit_target(g: &HitGeometry, col: u16, row: u16) -> Option<HitTarget> {
     }
     let list_inner = pane_interior(p.list);
     if list_inner.contains(at) {
-        // The sticky header (§10) is drawn OVER the first interior row while
-        // scrolling mid-group — that row reports the PINNED header's target,
-        // not the model row the pin covers: the pointer sees a header, so a
-        // click must fold it. Everything below row 0 resolves normally.
-        if row == list_inner.y {
-            if let Some(DisplayRow::Header { layer, .. }) =
-                g.list.sticky_header(g.list_offset, g.list_selected)
-            {
-                return Some(HitTarget::ListHeader(layer.clone()));
-            }
-        }
-        let r = g.list_offset + (row - list_inner.y) as usize;
-        return Some(match g.list.rows.get(r) {
-            Some(DisplayRow::Model { model_index, .. }) => HitTarget::ListRow(*model_index),
-            Some(DisplayRow::Header { layer, .. }) => HitTarget::ListHeader(layer.clone()),
-            None => HitTarget::ListBlank,
-        });
+        return Some(list_cell_target(g, list_inner, row));
     }
     let lin_inner = pane_interior(p.lineage);
     if lin_inner.contains(at) {
@@ -1254,6 +1317,30 @@ pub fn hit_target(g: &HitGeometry, col: u16, row: u16) -> Option<HitTarget> {
         return Some(HitTarget::InspectorRow((row - ins_inner.y) as usize));
     }
     None
+}
+
+/// The list-interior cell → target resolution the inline pane and the
+/// narrow-band drawer share (§12): the sticky pin claims interior row 0 when
+/// it covers a mid-group row, everything below resolves by display row —
+/// identical on both surfaces so a row means the same thing either way.
+fn list_cell_target(g: &HitGeometry, inner: Rect, row: u16) -> HitTarget {
+    // The sticky header (§10) is drawn OVER the first interior row while
+    // scrolling mid-group — that row reports the PINNED header's target,
+    // not the model row the pin covers: the pointer sees a header, so a
+    // click must fold it. Everything below row 0 resolves normally.
+    if row == inner.y {
+        if let Some(DisplayRow::Header { layer, .. }) =
+            g.list.sticky_header(g.list_offset, g.list_selected)
+        {
+            return HitTarget::ListHeader(layer.clone());
+        }
+    }
+    let r = g.list_offset + (row - inner.y) as usize;
+    match g.list.rows.get(r) {
+        Some(DisplayRow::Model { model_index, .. }) => HitTarget::ListRow(*model_index),
+        Some(DisplayRow::Header { layer, .. }) => HitTarget::ListHeader(layer.clone()),
+        None => HitTarget::ListBlank,
+    }
 }
 
 /// The screen row (0-based inside the list interior) a list `HitTarget`
@@ -1476,16 +1563,149 @@ mod tests {
     #[test]
     fn pane_layout_squeezes_displayed_width_below_floor_when_narrow() {
         // §5: the saved value is untouched while the DISPLAYED width shrinks.
-        // body 50: desired 34 + 0 leaves lineage 16 < 40 — the list gives up
-        // first its surplus to the floor, then below it.
+        // Below §12's 80-column band edge the LIST never sits inline — the
+        // squeeze can't demonstrate on it (its only surface there is the
+        // drawer), so the INSPECTOR carries the below-floor demo: body 55,
+        // saved 42 → 50%-cap 27 → floor 30, then the deficit squeezes the
+        // displayed width to 15 — below the floor, the saved value intact.
         let cfg = PaneConfig {
-            list_width: 34,
+            inspector_visible: true,
             ..cfg()
         };
-        let p = pane_layout(Rect::new(0, 0, 50, 30), &cfg);
-        assert_eq!(p.list.width, 10, "50 - 40 = a 10-column list display");
+        let p = pane_layout(Rect::new(0, 0, 55, 30), &cfg);
+        assert_eq!(p.list.width, 0, "§12's band hides the inline list");
+        assert_eq!(p.inspector.width, 15, "55 - 40 = a 15-column inspector");
         assert_eq!(p.lineage.width, MIN_LINEAGE_WIDTH);
-        assert_eq!(cfg.list_width, 34, "the saved width never changes");
+        assert_eq!(cfg.inspector_width, 42, "the saved width never changes");
+    }
+
+    #[test]
+    fn terminal_too_small_boundary() {
+        // §12's usable floor: EITHER axis below it gates the app.
+        let small = |w: u16, h: u16| terminal_too_small(Rect::new(0, 0, w, h));
+        assert!(small(49, 12), "one column under the width floor");
+        assert!(small(50, 11), "one row under the height floor");
+        assert!(small(0, 0) && small(1, 30), "degenerate areas count too");
+        assert!(!small(50, 12), "exactly the floor is usable");
+        assert!(!small(200, 60), "a comfortable terminal is usable");
+    }
+
+    #[test]
+    fn pane_layout_narrow_band_hides_inline_list() {
+        // §12: below 80 columns the list never sits inline — even with the
+        // pref on — because the drawer is its only surface there. The pref's
+        // saved width is not consulted at all (not even squeezed).
+        for w in [50u16, 60, 79] {
+            let p = pane_layout(Rect::new(0, 0, w, 30), &cfg());
+            assert_eq!(p.list.width, 0, "{w}: the band zeroes the inline list");
+            assert_eq!(p.lineage.width, w, "{w}: lineage takes the whole body");
+            assert_eq!(p.list_splitter, None, "{w}: no boundary to grab");
+        }
+        // Exactly 80 restores the inline pane — the band edge is `<`, not `<=`.
+        let p = pane_layout(Rect::new(0, 0, LIST_AUTO_HIDE_W, 30), &cfg());
+        assert_eq!(p.list.width, DEFAULT_LIST_WIDTH, "80: inline list returns");
+    }
+
+    #[test]
+    fn pane_layout_drawer_only_floats_in_the_band() {
+        // §12: `min(34, 60%)` wide, the body's full height, over its left edge.
+        let open = PaneConfig {
+            list_drawer: true,
+            ..cfg()
+        };
+        let p = pane_layout(Rect::new(0, 0, 70, 30), &open);
+        // body is 29 rows (30 - status); min(34, 60% of 70 = 42) = 34.
+        assert_eq!(p.list_drawer, Some(Rect::new(0, 0, 34, 29)));
+        // The 60% cap binds before the 34-col default on the narrowest bands.
+        let p = pane_layout(Rect::new(0, 0, 50, 30), &open);
+        assert_eq!(
+            p.list_drawer,
+            Some(Rect::new(0, 0, 30, 29)),
+            "60% of 50 = 30 < 34"
+        );
+        // Above the band the flag is inert — the same `true` resolves None.
+        let p = pane_layout(Rect::new(0, 0, LIST_AUTO_HIDE_W, 30), &open);
+        assert_eq!(p.list_drawer, None, "80+: no drawer, inline list instead");
+        assert_eq!(p.list.width, DEFAULT_LIST_WIDTH);
+        // And a closed drawer allocates nothing anywhere.
+        let p = pane_layout(Rect::new(0, 0, 70, 30), &cfg());
+        assert_eq!(p.list_drawer, None);
+    }
+
+    #[test]
+    fn hit_target_drawer_routes_interior_chrome_and_exterior() {
+        let dag = crate::load_dag(HIT_FIXTURE).expect("fixture loads");
+        let list = crate::model_list::build_model_list(&dag, crate::SortMode::Layer);
+        let g = HitGeometry {
+            panes: pane_layout(
+                Rect::new(0, 0, 70, 24),
+                &PaneConfig {
+                    list_drawer: true,
+                    ..cfg()
+                },
+            ),
+            tab_bar: None,
+            list: &list,
+            list_offset: 0,
+            list_selected: 0,
+            layout: None,
+            scroll_x: 0,
+            scroll_y: 0,
+            minimap: false,
+            overlay: None,
+            status: None,
+            title: None,
+        };
+        // The drawer floats at x 0..34 over the body's 23 rows; its interior
+        // (x 1..33, y 1..22) resolves EXACTLY like the inline list's — header
+        // on row 0, the first model on row 1 (the same display-row space).
+        let layer = match &list.rows[0] {
+            DisplayRow::Header { layer, .. } => layer.clone(),
+            other => panic!("row 0 must be a header, got {other:?}"),
+        };
+        assert_eq!(hit_target(&g, 2, 1), Some(HitTarget::ListHeader(layer)));
+        assert_eq!(hit_target(&g, 2, 2), Some(HitTarget::ListRow(0)));
+        // Its border is inert chrome — the click neither acts nor dismisses.
+        for (x, y) in [(0, 2), (33, 2), (2, 0), (2, 22)] {
+            assert_eq!(
+                hit_target(&g, x, y),
+                Some(HitTarget::ModalInterior),
+                "{x},{y} on the drawer frame"
+            );
+        }
+        // Everything outside dismisses: the covered lineage cells, the
+        // (zero-height) tab row's band, and the status line alike.
+        for (x, y) in [(40, 2), (40, 0), (40, 23), (0, 23)] {
+            assert_eq!(
+                hit_target(&g, x, y),
+                Some(HitTarget::ModalExterior),
+                "{x},{y} outside the drawer"
+            );
+        }
+        // A covering overlay still outranks it — the modal surface wins.
+        let g = HitGeometry {
+            overlay: Some(Rect::new(10, 5, 30, 10)),
+            ..HitGeometry {
+                panes: g.panes,
+                tab_bar: None,
+                list: &list,
+                list_offset: 0,
+                list_selected: 0,
+                layout: None,
+                scroll_x: 0,
+                scroll_y: 0,
+                minimap: false,
+                overlay: None,
+                status: None,
+                title: None,
+            }
+        };
+        assert_eq!(
+            hit_target(&g, 12, 6),
+            Some(HitTarget::OverlayRow(0)),
+            "a real modal's row beats the drawer"
+        );
+        assert_eq!(hit_target(&g, 2, 2), Some(HitTarget::ModalExterior));
     }
 
     #[test]
@@ -1714,24 +1934,43 @@ mod tests {
             "surplus shed in inspector->list order, floors held"
         );
         // 80 cols: floors can't all hold — the inspector's own floor breaks
-        // first (the least essential pane), the list keeps 18.
+        // first (the least essential pane), the list keeps 18. (80 is also
+        // §12's band edge — the inline list still exists at exactly 80.)
         let p = pane_layout(Rect::new(0, 0, 80, 30), &cfg);
         assert_eq!(
             (p.list.width, p.lineage.width, p.inspector.width),
             (18, 40, 22),
             "inspector dips below its floor before the list does"
         );
-        // 55 cols: inspector is squeezed to nothing, then the list.
+        // 55 cols — inside §12's band: the inline list is gone entirely (its
+        // only surface is the drawer), so the squeeze never touches it; the
+        // inspector dips below its floor to 15 and the lineage keeps its 40.
         let p = pane_layout(Rect::new(0, 0, 55, 30), &cfg);
-        assert_eq!(p.inspector.width, 0, "inspector is fully squeezed first");
-        assert_eq!(p.inspector_splitter, None, "no edge to grab on a 0 pane");
-        assert_eq!((p.list.width, p.lineage.width), (15, 40));
+        assert_eq!(p.list.width, 0, "§12's band hides the inline list");
+        assert_eq!((p.lineage.width, p.inspector.width), (40, 15));
+        // Narrower still the inspector too is squeezed away.
+        let p = pane_layout(Rect::new(0, 0, 50, 30), &cfg);
+        assert_eq!(p.inspector.width, 10);
+        assert_eq!(p.inspector_splitter, Some(Rect::new(39, 0, 2, 29)));
     }
 
     #[test]
     fn pane_layout_max_cap_interacts_with_squeeze() {
         // A saved width past the cap on a narrow terminal: cap first, then the
-        // squeeze decides (cap 60% of 60 = 36, then lineage floor shrinks it).
+        // squeeze decides (cap 60% of 80 = 48, then lineage floor shrinks it).
+        // Uses 80 — the narrowest terminal where the inline list exists at all
+        // under §12's band rule.
+        let p = pane_layout(
+            Rect::new(0, 0, 80, 30),
+            &PaneConfig {
+                list_width: 80,
+                ..cfg()
+            },
+        );
+        assert_eq!(p.list.width, 40, "80 - 40; the cap already held it to 48");
+        assert_eq!(p.lineage.width, 40);
+        // Inside the band the saved width is not consulted at all — a 200-col
+        // pref displays exactly like the default: zero.
         let p = pane_layout(
             Rect::new(0, 0, 60, 30),
             &PaneConfig {
@@ -1739,8 +1978,8 @@ mod tests {
                 ..cfg()
             },
         );
-        assert_eq!(p.list.width, 20, "60 - 40; the cap already held it to 36");
-        assert_eq!(p.lineage.width, 40);
+        assert_eq!(p.list.width, 0, "§12's band overrides even a huge pref");
+        assert_eq!(p.lineage.width, 60);
     }
 
     #[test]

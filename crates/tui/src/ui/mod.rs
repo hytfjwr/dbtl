@@ -23,12 +23,13 @@ pub mod theme;
 
 pub use geom::{
     clamp_inspector_width, clamp_list_width, clip_edges, hit_target, hit_test,
-    lineage_content_rect, menu_rect, minimap_rect, minimap_scroll_to, modal_rect, overlay_rect,
-    pan_offset, pane_interior, pane_layout, splitter_drag_width, status_layout, tab_bar_layout,
-    tooltip_rect, underlay_mode, yank_menu_rect, ClipEdges, HitGeometry, HitTarget, PaneConfig,
-    PaneRects, Splitter, StatusChip, StatusLayout, StatusSpan, TabBarLayout, TabCell, TitleKind,
-    TitleLayout, TitleSpan, DEFAULT_INSPECTOR_WIDTH, DEFAULT_LIST_WIDTH, MIN_INSPECTOR_WIDTH,
-    MIN_LINEAGE_WIDTH, MIN_LIST_WIDTH, TOOLTIP_MAX_W,
+    lineage_content_rect, list_drawer_width, menu_rect, minimap_rect, minimap_scroll_to,
+    modal_rect, overlay_rect, pan_offset, pane_interior, pane_layout, splitter_drag_width,
+    status_layout, tab_bar_layout, terminal_too_small, tooltip_rect, underlay_mode, yank_menu_rect,
+    ClipEdges, HitGeometry, HitTarget, PaneConfig, PaneRects, Splitter, StatusChip, StatusLayout,
+    StatusSpan, TabBarLayout, TabCell, TitleKind, TitleLayout, TitleSpan, DEFAULT_INSPECTOR_WIDTH,
+    DEFAULT_LIST_WIDTH, INSPECTOR_AUTO_W, LIST_AUTO_HIDE_W, MIN_INSPECTOR_WIDTH, MIN_LINEAGE_WIDTH,
+    MIN_LIST_WIDTH, MIN_TERMINAL_H, MIN_TERMINAL_W, TOOLTIP_MAX_W,
 };
 pub use inspector::{
     clamp_inspector_scroll, draw_inspector_pane, inspector_column_at, inspector_columns_line0,
@@ -40,7 +41,9 @@ pub use overlay::{
     clamp_columns_scroll, clamp_detail_scroll, clamp_diff_scroll, clamp_help_scroll,
     clamp_notifications_scroll, clamp_sql_scroll, clamp_stats_scroll, TooltipView,
 };
-pub use render::{draw, status_chips, RenderCtx, StatusSegments, TabBarView, ToastLine};
+pub use render::{
+    draw, draw_too_small, status_chips, RenderCtx, StatusSegments, TabBarView, ToastLine,
+};
 pub use state::{
     handle_key, reduce_selection, Focus, InspectorPolicy, KeyOutcome, LineageLens, UiState,
 };
@@ -101,6 +104,10 @@ pub(crate) struct Chrome {
     pub dash: &'static str,
     /// The tab cell's close glyph (`×` Unicode / `x` ASCII — §15).
     pub tab_close: &'static str,
+    /// The multiplication sign in prose chrome — the too-small screen's
+    /// `50×12` / `WxH` shape (`×` Unicode / `x` ASCII — §12, same
+    /// ambiguous-width swap as `tab_close`).
+    pub times: &'static str,
     /// The tab bar's scroll-back overflow arrow (`‹` Unicode / `<` ASCII).
     pub tab_prev: &'static str,
     /// The tab bar's scroll-forward overflow arrow (`›` Unicode / `>` ASCII).
@@ -151,6 +158,7 @@ static UNICODE_CHROME: Chrome = Chrome {
     // §15: `×` and `‹`/`›` are East-Asian-Ambiguous — ASCII mode swaps to
     // `x` / `<` / `>` so the cells stay one column on CJK terminals.
     tab_close: "×",
+    times: "×",
     tab_prev: "‹",
     tab_next: "›",
     run_ok: "✓",
@@ -178,6 +186,7 @@ static ASCII_CHROME: Chrome = Chrome {
     mm_view: "+",
     dash: "-",
     tab_close: "x",
+    times: "x",
     tab_prev: "<",
     tab_next: ">",
     run_ok: "v",

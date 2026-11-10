@@ -5,7 +5,7 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::coverage_gap;
@@ -332,7 +332,12 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         }
         _ => None,
     };
-    if ctx.state.list_visible() {
+    // The inline list draws iff `pane_layout` allocated it columns — the
+    // resolved rect, not the raw pref: §12's narrow band zeroes the rect
+    // while `list_visible` stays true (the list then lives as the drawer).
+    // The rect test is the same one `hit_target` reports list targets under,
+    // so "drawn == hit-testable" holds by construction.
+    if rects.list.width > 0 {
         draw_list(
             frame,
             rects.list,
@@ -375,6 +380,30 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
     // the pane is on screen, has a nonzero rect, and has a node to describe.
     if let Some(view) = ctx.inspector {
         super::inspector::draw_inspector_pane(frame, rects.inspector, ctx, view);
+    }
+
+    // §12's narrow-band drawer: the SAME list pane floated over the lineage's
+    // left edge — the same `draw_list` pass (same offset/sticky/fold/chrome)
+    // the inline pane gets, so a row means the same thing on either surface.
+    // Drawn AFTER the panes it covers (the buffer's later-wins order IS the
+    // covering), before the modal/toast overlays that must top it.
+    if let Some(dr) = rects.list_drawer {
+        draw_list(
+            frame,
+            dr,
+            ctx.list,
+            ctx.state,
+            list_query,
+            ctx.stats,
+            ctx.glyphs,
+            ctx.bookmarks,
+            ctx.full_model_count,
+            ctx.filter_label,
+            ctx.empty_reason,
+            ctx.folded_groups,
+            ctx.list_hover,
+            ctx.theme,
+        );
     }
 
     // Restamp the splitter's border columns with the accent while it's
@@ -430,6 +459,35 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
     if !ctx.toasts.is_empty() {
         super::overlay::draw_toasts(frame, area, ctx.toasts, ctx.glyphs, ctx.theme);
     }
+}
+
+/// Render ONLY the §12 too-small screen: below
+/// [`MIN_TERMINAL_W`](super::geom::MIN_TERMINAL_W)×[`MIN_TERMINAL_H`](super::geom::MIN_TERMINAL_H)
+/// every pane, status line, tab strip, and overlay is suppressed — the whole
+/// frame is the one centered message `terminal too small: WxH (need 50x12)`.
+/// `q` / `Ctrl-c` stay live (the event loop routes them before this draws);
+/// no other surface may leak through, so the buffer gets the message alone.
+/// The `×` comes from [`chrome`](super::chrome): pure `x` in ASCII mode.
+pub fn draw_too_small(frame: &mut Frame, glyphs: crate::GlyphMode, t: &theme::Theme) {
+    let area = frame.area();
+    // The back buffer still holds the last normal frame — without this pass
+    // the panes would ghost through around the message. `Clear` resets every
+    // cell, so the message below is literally the whole frame.
+    frame.render_widget(Clear, area);
+    let x = super::chrome(glyphs).times;
+    let msg = format!(
+        "terminal too small: {w}{x}{h} (need {mw}{x}{mh})",
+        w = area.width,
+        h = area.height,
+        mw = super::geom::MIN_TERMINAL_W,
+        mh = super::geom::MIN_TERMINAL_H,
+    );
+    frame.render_widget(
+        Paragraph::new(msg)
+            .alignment(ratatui::layout::Alignment::Center)
+            .style(Style::default().fg(t.text_dim)),
+        Rect::new(area.x, area.y + area.height / 2, area.width, 1),
+    );
 }
 
 /// Draw one overlay `mode` (the modal / menu / palette the mode paints). A

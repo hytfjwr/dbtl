@@ -18,16 +18,16 @@ use dbtl::app::{apply_action, App, LineageView, Outcome};
 use dbtl::effect::Effect;
 use dbtl::layout::Layout;
 use dbtl::ui::{
-    draw, hit_target, lineage_content_rect, minimap_rect, minimap_scroll_to, mouse_dirty,
-    overlay_rect, pan_offset, pane_interior, pane_layout, splitter_drag_width, status_chips,
-    status_layout, Focus, HitGeometry, HitTarget, LineageLens, MouseInput, MouseOutcome,
-    MouseRouter, PaneRects, RenderCtx, Splitter, StatusLayout, StatusSegments, TabBarView,
-    TitleLayout,
+    draw, draw_too_small, hit_target, lineage_content_rect, minimap_rect, minimap_scroll_to,
+    mouse_dirty, overlay_rect, pan_offset, pane_interior, pane_layout, splitter_drag_width,
+    status_chips, status_layout, terminal_too_small, Focus, HitGeometry, HitTarget, LineageLens,
+    MouseInput, MouseOutcome, MouseRouter, PaneRects, RenderCtx, Splitter, StatusLayout,
+    StatusSegments, TabBarView, TitleLayout, LIST_AUTO_HIDE_W,
 };
 use dbtl::{Mode, SortMode};
 
 use ratatui::crossterm::event::{
-    self, Event, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::layout::Rect;
 use ratatui::DefaultTerminal;
@@ -100,6 +100,42 @@ pub fn event_loop(
     let mut last_tab_count = 0usize;
 
     loop {
+        // §12's size gates, resolved once per iteration in the ONLY size-aware
+        // layer: below the usable floor the whole app suspends behind the
+        // too-small screen; below the narrow band the list exists only as its
+        // overlay drawer.
+        let cur_area = full_area(terminal)?;
+        if terminal_too_small(cur_area) {
+            // Nothing but the message draws and nothing but `q`/`Ctrl-c`
+            // acts — the reducer never sees the session while it lasts, so
+            // whatever screen and state the shrink interrupted resurface
+            // verbatim once the terminal grows.
+            if dirty {
+                terminal
+                    .draw(|frame| draw_too_small(frame, app.glyph_mode, app.active_theme()))
+                    .context("failed to draw frame")?;
+                dirty = false;
+            }
+            if event::poll(Duration::from_millis(250)).context("event poll failed")? {
+                if let Event::Key(key) = event::read().context("event read failed")? {
+                    if key.kind == KeyEventKind::Press
+                        && matches!(dispatch(&Mode::Selection, key), Some(Action::Quit))
+                    {
+                        return Ok(());
+                    }
+                }
+                // Any delivered event may change the message itself (the
+                // current `WxH` it reports), so the next pass redraws.
+                dirty = true;
+            }
+            continue;
+        }
+        // Publish the narrow-band verdict — the ONLY writer (the reducer and
+        // the prefs stay size-blind). In the band the inline list is always
+        // hidden and `Ctrl-b` reroutes to the drawer (see `drawer_shortcut`).
+        app.ui_state
+            .set_list_auto_hidden(cur_area.width < LIST_AUTO_HIDE_W);
+
         // Drain the pending notice WITH its level: it becomes BOTH a toast and
         // a stamped notification-log entry (the centre's HH:MM:SS comes from
         // this wall clock — `App` itself never reads a clock).
@@ -151,20 +187,18 @@ pub fn event_loop(
 
             // The inspector's effective visibility for THIS frame — resolved
             // in two phases, both in this size-aware seam. Phase 1 publishes
-            // the INTENT: the `auto` pref against the terminal width (>=160
-            // per §4; Issue 12 refines the under-160 policy), so `pane_config`
-            // (the layout below) knows whether to carve the region at all.
+            // the INTENT: the pref resolved against the terminal width
+            // (`on`/`off` answer for themselves; `auto` shows at §12's >=160
+            // columns — `InspectorPolicy::shown_at` is the single pure
+            // predicate the boundary lives behind), so `pane_config` (the
+            // layout below) knows whether to carve the region at all.
             // Phase 2 — after `pane_layout` + the view build — publishes the
             // ANSWER: `want && width>0 && a view exists`, so `hit_target` and
             // the focus ring never meet an invisible or content-less pane.
             // `inspector_target` then re-homes the pane's scroll + column
             // cursor the moment the inspected node changes (the
             // follow-the-cursor rule).
-            let want = match app.ui_state.inspector_policy() {
-                dbtl::InspectorPolicy::On => true,
-                dbtl::InspectorPolicy::Off => false,
-                dbtl::InspectorPolicy::Auto => terminal.size()?.width >= 160,
-            };
+            let want = app.ui_state.inspector_policy().shown_at(cur_area.width);
             app.ui_state.set_inspector_shown(want);
             if let Some(uid) = app.inspector_target() {
                 app.ui_state.set_inspector_target(&uid);
@@ -263,7 +297,7 @@ pub fn event_loop(
 
             // Overlay scroll clamp (size-aware), same seam as the lineage clamp: the
             // pure reducer records scroll intent, the loop bounds it to the screen.
-            area = full_area(terminal)?;
+            area = cur_area;
             // The tab strip's resolved cells — the same `pane_layout` +
             // `tab_bar_layout` the hit-test replays. `ensure_active` fires on
             // a switch or a strip-size change (open/close) — never on a
@@ -689,6 +723,14 @@ pub fn event_loop(
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     dirty = true; // a keypress may change the frame
                     if let Some(action) = dispatch(&app.mode, key) {
+                        // §12's narrow band owns two keys itself — `Ctrl-b`
+                        // toggles the overlay drawer (the inline pref it flips
+                        // above the band governs a surface that cannot exist
+                        // here, so it stays untouched) and `Esc` closes the
+                        // open drawer. Consumed keys never reach the reducer.
+                        if drawer_shortcut(app, key, action) {
+                            continue;
+                        }
                         // Actions that change the lineage *shape/centring* without
                         // moving the selection must force the anchor branch next
                         // frame (a size-aware loop concern). Reload rebuilds the
@@ -1075,7 +1117,7 @@ fn handle_mouse(
             } else {
                 wheel_x(
                     app,
-                    pane_interior(rects.lineage),
+                    &rects,
                     me.column,
                     me.row,
                     me.kind == MouseEventKind::ScrollRight,
@@ -1250,6 +1292,32 @@ fn handle_mouse(
                                 // Left only, like every pane gesture.
                                 HitTarget::Minimap if *button == MouseButton::Left => {
                                     minimap_scroll_at(app, lineage, area, at.x, at.y);
+                                }
+                                // §12: a pick on a drawer row IS "selecting a
+                                // model from the drawer" — the same
+                                // `click_target` arm the inline list runs —
+                                // then the surface's job is done and it
+                                // closes. A right-click's context menu keeps
+                                // it open (a menu is not a selection).
+                                HitTarget::ListRow(_)
+                                    if app.ui_state.list_drawer()
+                                        && *button != MouseButton::Right =>
+                                {
+                                    let o = app.click_target(t, *button, (at.x, at.y));
+                                    outcome.quit |= o.quit;
+                                    outcome.effects.extend(o.effects);
+                                    outcome.reanchor |= o.reanchor;
+                                    app.ui_state.set_list_drawer(false);
+                                }
+                                // A click outside the open drawer dismisses
+                                // it — the band's modal-exterior surface
+                                // (interior/frame/exterior are the only
+                                // targets the drawer hit-test can produce;
+                                // `ModalExterior` is unreachable otherwise
+                                // in `sel`, where no covering overlay owns
+                                // the screen).
+                                HitTarget::ModalExterior if app.ui_state.list_drawer() => {
+                                    app.ui_state.set_list_drawer(false);
                                 }
                                 _ => {
                                     // §8/§6's clickable chrome returns a
@@ -1516,6 +1584,28 @@ fn hit_geometry<'a>(
     }
 }
 
+/// Route §12's drawer-owned keys in the narrow band — `Esc` closes an open
+/// drawer, `Ctrl-b` toggles it. Returns `true` when the key was consumed
+/// HERE, so the caller leaves the reducer (and the inline-list pref
+/// `Ctrl-b` guards) untouched. Outside the band the keys keep their
+/// ordinary meanings; inside it only Selection's `Esc` reaches the drawer
+/// (a covering modal owns its own `Esc` while it's up).
+fn drawer_shortcut(app: &mut App, key: event::KeyEvent, action: Action) -> bool {
+    if !app.ui_state.list_auto_hidden() {
+        return false;
+    }
+    if matches!(app.mode, Mode::Selection) && key.code == KeyCode::Esc && app.ui_state.list_drawer()
+    {
+        app.ui_state.set_list_drawer(false);
+        return true;
+    }
+    if matches!(action, Action::ToggleListPane) {
+        app.ui_state.toggle_list_drawer();
+        return true;
+    }
+    false
+}
+
 /// Whether screen cell `(x, y)` is inside `r`.
 fn within(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
@@ -1526,6 +1616,23 @@ fn within(r: Rect, x: u16, y: u16) -> bool {
 /// the usual convention for mice without a horizontal wheel; over the list,
 /// Shift changes nothing (the list has no horizontal axis).
 fn wheel(app: &mut App, rects: &PaneRects, col: u16, row: u16, down: bool, shift: bool) {
+    // §12's drawer owns the wheel while it floats: its interior IS the list
+    // surface (the same notch→cursor+adopt the inline pane gets) and its
+    // frame is inert chrome. Cells OUTSIDE it keep their pane meaning — the
+    // lineage to the right of the drawer stays scrollable; only clicks
+    // outside dismiss it.
+    if let Some(dr) = rects.list_drawer {
+        if within(dr, col, row) {
+            if within(pane_interior(dr), col, row) {
+                let before = app.ui_state.selected();
+                app.ui_state.wheel_list(down);
+                if app.ui_state.selected() != before {
+                    app.adopt_list_selection();
+                }
+            }
+            return;
+        }
+    }
     if within(pane_interior(rects.list), col, row) {
         // §2 T1: a wheel notch over the list moves the CURSOR — adopt it as
         // the active tab's root exactly like a j/k move (guarded on the
@@ -1550,8 +1657,13 @@ fn wheel(app: &mut App, rects: &PaneRects, col: u16, row: u16, down: bool, shift
 /// Route a horizontal wheel notch to the lineage pane — the only horizontally
 /// scrollable surface. The saturating pan intent is bounded by the loop's
 /// `clamp_lineage` next frame, same as the vertical wheel.
-fn wheel_x(app: &mut App, lin_inner: Rect, col: u16, row: u16, right: bool) {
-    if within(lin_inner, col, row) {
+fn wheel_x(app: &mut App, rects: &PaneRects, col: u16, row: u16, right: bool) {
+    // The drawer swallows every wheel kind over its surface — a notch there
+    // must never reach the lineage it covers.
+    if rects.list_drawer.is_some_and(|dr| within(dr, col, row)) {
+        return;
+    }
+    if within(pane_interior(rects.lineage), col, row) {
         app.ui_state.wheel_lineage_x(right);
     }
 }
