@@ -8,7 +8,7 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::{NodeDetail, PackageScope, PrImpact, TestInfo};
+use crate::{ColumnChange, NodeDetail, PackageScope, PrImpact, TestInfo};
 
 /// A movement / scroll direction, reused across actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -438,6 +438,10 @@ pub struct DiffView {
     pub edges_added: Vec<(String, String)>,
     /// Dependency edges present only in the baseline, same shape.
     pub edges_removed: Vec<(String, String)>,
+    /// The column-level findings (the "Column changes" section — what moved
+    /// and what it breaks downstream), the same [`DiffReport::column_changes`]
+    /// data the Markdown/JSON surfaces emit.
+    pub column_changes: Vec<ColumnChange>,
     /// The reviewer-shaped PR impact analysis over the changed set (blast
     /// radius / exposures / CI command / risk flags), snapshotted at open.
     pub pr: PrImpact,

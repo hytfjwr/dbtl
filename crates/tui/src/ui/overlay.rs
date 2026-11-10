@@ -1202,6 +1202,56 @@ fn diff_display_lines(dv: &DiffView, t: &theme::Theme) -> Vec<Line<'static>> {
         &mut out,
     );
 
+    // ---- Column changes: the CLL refinement of the diff -------------------
+    // One tinted head row per classified change plus dim detail rows for the
+    // downstream columns (the "via" list) and exposures it reaches — the
+    // same data the `e` export / `dbtl impact` "Column changes" section emits.
+    if !dv.column_changes.is_empty() {
+        out.push(Line::from(""));
+        out.push(Line::styled(
+            format!("Column changes ({}):", dv.column_changes.len()),
+            header_style(t),
+        ));
+        for ch in &dv.column_changes {
+            let (mark, color) = match ch.class {
+                crate::ColumnChangeClass::Breaking => ('x', t.danger),
+                crate::ColumnChangeClass::Partial => ('~', t.warn),
+                crate::ColumnChangeClass::NonBreaking => ('+', t.diff_add),
+            };
+            let name = match &ch.renamed_from {
+                Some(old) => format!("{}.{} -> {}", ch.node_name, old, ch.column),
+                None => format!("{}.{}", ch.node_name, ch.column),
+            };
+            let what = match ch.kind {
+                crate::ColumnChangeKind::Removed => "removed".to_string(),
+                crate::ColumnChangeKind::Renamed => "renamed".to_string(),
+                crate::ColumnChangeKind::TypeChanged => format!(
+                    "type {} -> {}",
+                    ch.type_from.as_deref().unwrap_or("?"),
+                    ch.type_to.as_deref().unwrap_or("?")
+                ),
+                crate::ColumnChangeKind::ExprChanged => "expression changed".to_string(),
+                crate::ColumnChangeKind::Added => "added".to_string(),
+            };
+            out.push(Line::styled(
+                format!("  {mark} {name}: {what} [{}]", ch.class.label()),
+                Style::default().fg(color),
+            ));
+            if !ch.affected_columns.is_empty() {
+                out.push(Line::styled(
+                    format!("      cols: {}", ch.affected_columns.join(", ")),
+                    Style::default().fg(t.text_dim),
+                ));
+            }
+            if !ch.affected_exposures.is_empty() {
+                out.push(Line::styled(
+                    format!("      exposures: {}", ch.affected_exposures.join(", ")),
+                    Style::default().fg(t.text_dim),
+                ));
+            }
+        }
+    }
+
     // ---- PR impact pack: blast radius / exposures / CI command / risks ----
     // Appended after the diff sections so the modal IS the reviewer's report.
     // Reached only when there ARE changes (the no-change case returned above).
@@ -1212,6 +1262,12 @@ fn diff_display_lines(dv: &DiffView, t: &theme::Theme) -> Vec<Line<'static>> {
         "  affected models: {}",
         pr.affected_models
     )));
+    if pr.column_affected_models > 0 {
+        out.push(Line::from(format!(
+            "  column-affected models: {}",
+            pr.column_affected_models
+        )));
+    }
     if !pr.affected_marts.is_empty() {
         out.push(Line::from(format!(
             "  affected marts: {}",
@@ -1232,6 +1288,14 @@ fn diff_display_lines(dv: &DiffView, t: &theme::Theme) -> Vec<Line<'static>> {
             Style::default().fg(t.accent),
         )),
         None => out.push(Line::from("  CI: no buildable changes")),
+    }
+    // The column-narrowed sibling of `CI:` — the changed nodes plus exactly
+    // the models their changed columns reach (no `+` fan-out).
+    if let Some(cmd) = &pr.ci_command_columns {
+        out.push(Line::styled(
+            format!("  CI columns: {cmd}"),
+            Style::default().fg(t.accent),
+        ));
     }
 
     if !pr.affected_exposures.is_empty() {

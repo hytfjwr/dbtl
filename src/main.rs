@@ -116,12 +116,14 @@ fn run(cli: &Cli) -> Result<()> {
                 source,
                 project,
                 cli.include_packages,
+                cli.sql_dialect,
             );
         }
         Some(Commands::Check {
             diff,
             coverage_min,
             lint,
+            no_breaking,
             rules,
             format,
             manifest,
@@ -140,6 +142,8 @@ fn run(cli: &Cli) -> Result<()> {
                 project,
                 *quiet,
                 cli.include_packages,
+                *no_breaking,
+                cli.sql_dialect,
             );
         }
         Some(Commands::Columns {

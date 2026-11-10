@@ -43,6 +43,34 @@ fn sample_manifest() -> PathBuf {
         .join("sample_manifest.json")
 }
 
+/// The source-mode dbt project fixture (`stg_orders -> fct_orders ->
+/// agg_country_orders`, plus the `orders_dashboard` exposure).
+fn sample_project() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("sample_project")
+}
+
+/// A recursive directory copy — `std::fs` has none, and the diff tests need
+/// an editable twin of the fixture (same `name: sample` → same unique_ids).
+fn copy_dir(src: &std::path::Path, dst: &std::path::Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for e in std::fs::read_dir(src).unwrap() {
+        let e = e.unwrap();
+        let to = dst.join(e.file_name());
+        if e.file_type().unwrap().is_dir() {
+            copy_dir(&e.path(), &to);
+        } else {
+            std::fs::copy(e.path(), &to).unwrap();
+        }
+    }
+}
+
+/// The `- name: status` block inside `stg_orders`'s declared columns — the
+/// exact bytes the source fixture carries, so `replace` can't drift.
+const STG_STATUS_DECL: &str = "      - name: status\n        tests:\n          - accepted_values:\n              values: [\"new\", \"shipped\"]\n";
+
 #[test]
 fn impact_prints_markdown_report_to_stdout() {
     let m = fixture_manifest();
@@ -81,11 +109,13 @@ fn impact_json_is_a_serializable_diff_report() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
     for key in [
         "baseline",
+        "scope",
         "added",
         "removed",
         "modified",
         "edges_added",
         "edges_removed",
+        "column_changes",
         "pr",
     ] {
         assert!(v.get(key).is_some(), "DiffReport field {key:?} present");
@@ -95,7 +125,10 @@ fn impact_json_is_a_serializable_diff_report() {
         "affected_models",
         "affected_marts",
         "affected_exposures",
+        "affected_owners",
         "ci_command",
+        "column_affected_models",
+        "ci_command_columns",
         "untested_changes",
         "changed_hubs",
         "new_layer_violations",
@@ -506,4 +539,225 @@ fn check_lint_dbtl_yml_disables_rules() {
         "a disabled rule prints no line, got: {stdout:?}"
     );
     assert!(stdout.contains("PASS lint undocumented_models: none"));
+}
+
+// ---- `impact`/`check` column-level diff -----------------------------------
+
+/// A sample_project copy with `stg_orders.status` REMOVED (the declared
+/// column is the resolver's top tier — dropping the schema.yml entry drops
+/// the output). `fct_orders`'s own declared `status` survives but its
+/// `select o.*` no longer carries one in: the broken consumer.
+fn project_without_stg_status(tmp: &tempfile::TempDir) -> PathBuf {
+    let proj = tmp.path().join("proj");
+    copy_dir(&sample_project(), &proj);
+    let schema = proj.join("models/staging/schema.yml");
+    let text = std::fs::read_to_string(&schema).unwrap();
+    assert!(
+        text.contains(STG_STATUS_DECL),
+        "the fixture's status block is intact"
+    );
+    std::fs::write(&schema, text.replace(STG_STATUS_DECL, "")).unwrap();
+    proj
+}
+
+#[test]
+fn impact_markdown_renders_the_column_changes_section() {
+    // Golden-ish coverage of the shared report payload: the same
+    // `pr_impact_markdown` the `D` modal's `e` export writes, driven by a
+    // real column removal through the source-mode resolver.
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = project_without_stg_status(&tmp);
+    let out = run(&[
+        "impact",
+        "--source",
+        proj.to_str().unwrap(),
+        "--diff",
+        sample_project().to_str().unwrap(),
+    ]);
+    assert!(
+        out.status.success(),
+        "impact exits 0, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for needle in [
+        "## Column changes (1)",
+        "- `stg_orders.status`: removed - **breaking**",
+        "  - downstream cols (6): `cll_demo.status`, `cll_demo.status_upper`, \
+         `cll_syntax.order_id_next`, `cll_syntax.status`, `cll_syntax.status_upper`, \
+         `fct_orders.status`",
+        "  - affected models: cll_demo, cll_syntax, fct_orders",
+        "  - exposures: orders_dashboard",
+        // agg_country_orders (blast-radius member) is NOT column-affected —
+        // it reads `country`/`count(*)`, never `status`. That's the
+        // narrowing the column analysis buys.
+        "column-level (3 models reached via changed columns)",
+        "dbt build --select cll_demo cll_syntax fct_orders stg_orders",
+    ] {
+        assert!(stdout.contains(needle), "missing {needle:?} in:\n{stdout}");
+    }
+}
+
+#[test]
+fn impact_json_carries_column_changes_and_the_narrow_selector() {
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = project_without_stg_status(&tmp);
+    let out = run(&[
+        "impact",
+        "--source",
+        proj.to_str().unwrap(),
+        "--diff",
+        sample_project().to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    let changes = v["column_changes"].as_array().expect("column_changes");
+    assert_eq!(changes.len(), 1, "one classified row: {changes:?}");
+    let row = &changes[0];
+    assert_eq!(row["node_name"], "stg_orders");
+    assert_eq!(row["column"], "status");
+    assert_eq!(row["kind"], "removed");
+    assert_eq!(row["class"], "breaking");
+    assert_eq!(row["affected_columns"].as_array().unwrap().len(), 6);
+    assert_eq!(
+        row["affected_columns"].as_array().unwrap().last().unwrap(),
+        "fct_orders.status"
+    );
+    assert!(row["affected_exposures"][0]
+        .as_str()
+        .unwrap()
+        .starts_with("orders_dashboard"));
+    // The narrowed selector: the changed node PLUS exactly the
+    // column-reached models (not the `+` fan-out the model-granular command
+    // emits — agg_country_orders drops out entirely).
+    assert_eq!(v["pr"]["column_affected_models"], 3);
+    assert_eq!(
+        v["pr"]["ci_command_columns"].as_str().unwrap(),
+        "dbt build --select cll_demo cll_syntax fct_orders stg_orders"
+    );
+}
+
+#[test]
+fn check_no_breaking_fails_on_a_referenced_column_removal() {
+    // The same removal: `--no-breaking` gates on exactly the dangling set.
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = project_without_stg_status(&tmp);
+    let out = run(&[
+        "check",
+        "--source",
+        proj.to_str().unwrap(),
+        "--diff",
+        sample_project().to_str().unwrap(),
+        "--no-breaking",
+    ]);
+    assert!(
+        !out.status.success(),
+        "the gate must fail, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout
+            .contains("FAIL 1 breaking column change(s) referenced downstream: stg_orders.status"),
+        "the failing line names the column, got: {stdout:?}"
+    );
+}
+
+#[test]
+fn check_no_breaking_passes_when_nothing_dangles() {
+    // A `data_type` move is partial-breaking — reported, never gated. The
+    // same copy shape: only stg_orders.id's declared type changes.
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = tmp.path().join("proj");
+    copy_dir(&sample_project(), &proj);
+    let schema = proj.join("models/staging/schema.yml");
+    let text = std::fs::read_to_string(&schema).unwrap();
+    std::fs::write(
+        &schema,
+        text.replacen("data_type: integer", "data_type: bigint", 1),
+    )
+    .unwrap();
+    let out = run(&[
+        "check",
+        "--source",
+        proj.to_str().unwrap(),
+        "--diff",
+        sample_project().to_str().unwrap(),
+        "--no-breaking",
+    ]);
+    assert!(
+        out.status.success(),
+        "a partial change never trips the gate, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("PASS breaking column changes: none"),
+        "the pass line, got: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("FAIL breaking column"),
+        "no breaking FAIL, got: {stdout:?}"
+    );
+}
+
+#[test]
+fn check_no_breaking_without_diff_notes_the_skip() {
+    // A silent no-op gate is the worst CI pattern — say what was skipped.
+    let m = fixture_manifest();
+    let out = run(&["check", "--manifest", m.to_str().unwrap(), "--no-breaking"]);
+    assert!(
+        out.status.success(),
+        "no gates engaged, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("note: --no-breaking needs --diff"),
+        "the skip note, got: {stdout:?}"
+    );
+}
+
+#[test]
+fn check_no_breaking_rename_prints_old_to_new() {
+    // `status -> order_status` via an explicit alias: fct_orders reads
+    // `o.*`, so its declared `status` output dangles under the old name →
+    // the gate fires, and the FAIL line prints `old -> new` so the log
+    // shows the migration to ask for.
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = tmp.path().join("proj");
+    copy_dir(&sample_project(), &proj);
+    let schema = proj.join("models/staging/schema.yml");
+    let text = std::fs::read_to_string(&schema).unwrap();
+    std::fs::write(
+        &schema,
+        text.replace(STG_STATUS_DECL, "      - name: order_status\n"),
+    )
+    .unwrap();
+    let sql = proj.join("models/staging/stg_orders.sql");
+    std::fs::write(
+        &sql,
+        "select\n    id,\n    status as order_status,\n    country_code,\n    disabled_flag\nfrom {{ source('raw', 'orders') }}\n",
+    )
+    .unwrap();
+    let out = run(&[
+        "check",
+        "--source",
+        proj.to_str().unwrap(),
+        "--diff",
+        sample_project().to_str().unwrap(),
+        "--no-breaking",
+    ]);
+    assert!(
+        !out.status.success(),
+        "an unmigrated rename gates, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("stg_orders.status -> order_status"),
+        "old -> new in the failure line, got: {stdout:?}"
+    );
 }

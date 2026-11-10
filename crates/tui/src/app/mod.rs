@@ -37,7 +37,7 @@ use crate::action::{Mode, SearchTarget};
 use crate::effect::Effect;
 use crate::ui::theme::{self, Theme};
 use crate::{
-    build_filtered_model_list, build_model_list, build_model_list_grouped, compute_diff,
+    build_filtered_model_list, build_model_list, build_model_list_grouped, compute_diff_with,
     coverage_gap, default_catalog_path, default_run_results_path,
     load_dag_from_source_with_warnings, load_dag_with_warnings, ColumnRef, Dag, DagDiff, ModelList,
     NodeDetail, NodeInfo, RunResults, SortMode, SqlDialect, SqlParseResolver, UiState,
@@ -237,6 +237,13 @@ pub struct App {
     /// [`reload`](App::reload) can re-diff the rebuilt current Dag against it.
     /// `None` = no baseline (the Diff lens is skipped, `D` toasts a hint).
     diff_base: Option<Dag>,
+    /// The baseline side's CLL resolver — what the diff's column analysis
+    /// reads the baseline's columns/provenance/expressions through (its own
+    /// adapter dialect, or the pinned `--sql-dialect`; no catalog — the
+    /// baseline's warehouse record isn't loaded). Built once in
+    /// [`set_diff_base`](App::set_diff_base) since the baseline never
+    /// changes: its per-uid memos stay valid across every `reload`.
+    diff_cll: Option<SqlParseResolver>,
     /// Where the baseline came from (the `--diff` argument), for titles/toasts.
     diff_label: String,
     /// The computed baseline↔current diff. Derived state: recomputed by
@@ -447,6 +454,7 @@ impl App {
             project_root,
             generation: 0,
             diff_base: None,
+            diff_cll: None,
             diff_label: String::new(),
             diff: None,
             caches: LineageCaches::default(),
@@ -580,13 +588,20 @@ impl App {
         Some(format!("run {covered}/{total} @{date}"))
     }
 
-    /// Load a `--diff` baseline: store it (with its display label), compute the
-    /// diff against the current Dag, and bump the cache generation — the diff is
-    /// a style input (the Diff lens reads it), so any cached styled layout from
-    /// before the baseline landed must miss. Recomputed on every reload; the
-    /// baseline itself never changes after startup.
+    /// Load a `--diff` baseline: store it (with its display label AND the
+    /// baseline-side CLL resolver the column analysis reads through — the
+    /// baseline's own adapter dialect, or the pinned `--sql-dialect`), compute
+    /// the diff against the current Dag, and bump the cache generation — the
+    /// diff is a style input (the Diff lens reads it), so any cached styled
+    /// layout from before the baseline landed must miss. Recomputed on every
+    /// reload; the baseline itself never changes after startup.
     pub fn set_diff_base(&mut self, base: Dag, label: String) {
-        self.diff = Some(compute_diff(&base, &self.dag));
+        let dialect = self
+            .sql_dialect
+            .unwrap_or_else(|| SqlDialect::from_dag(&base));
+        let base_res = SqlParseResolver::new(None, dialect);
+        self.diff = Some(compute_diff_with(&base, &self.dag, &base_res, &self.cll));
+        self.diff_cll = Some(base_res);
         self.diff_base = Some(base);
         self.diff_label = label;
         self.generation += 1;
@@ -663,11 +678,17 @@ impl App {
     }
 
     /// Pin the column-lineage SQL dialect (`--sql-dialect`); rebuilds the
-    /// resolver on the spot. `reload` re-derives the auto dialect when none
-    /// was pinned.
+    /// resolver on the spot — and the baseline side's, then the diff, since
+    /// the pinned dialect applies to both parse surfaces. `reload` re-derives
+    /// the auto dialect when none was pinned.
     pub fn set_sql_dialect(&mut self, dialect: SqlDialect) {
         self.sql_dialect = Some(dialect);
         self.cll = SqlParseResolver::new(self.catalog.clone(), dialect);
+        if let Some(base) = &self.diff_base {
+            let base_res = SqlParseResolver::new(None, dialect);
+            self.diff = Some(compute_diff_with(base, &self.dag, &base_res, &self.cll));
+            self.diff_cll = Some(base_res);
+        }
     }
 
     /// The status-bar diff chip: `"diff +A ~M -R"` (added / modified / removed
@@ -1155,7 +1176,18 @@ impl App {
         self.collapse_expanded.clear();
         // Re-diff the rebuilt Dag against the (unchanged) --diff baseline, so
         // the Diff lens / chip / modal always describe the CURRENT graph.
-        self.diff = self.diff_base.as_ref().map(|b| compute_diff(b, &self.dag));
+        // The baseline resolver's per-uid memos stay valid (the baseline never
+        // changes); the CURRENT side reads the just-rebuilt `self.cll`.
+        self.diff = match (&self.diff_base, &self.diff_cll) {
+            (Some(b), Some(res)) => Some(compute_diff_with(b, &self.dag, res, &self.cll)),
+            // `diff_cll` is always set alongside `diff_base` — a stray baseline
+            // without its resolver (a test that poked the field) re-derives one.
+            (Some(b), None) => {
+                let res = SqlParseResolver::for_dag(None, b);
+                Some(compute_diff_with(b, &self.dag, &res, &self.cll))
+            }
+            (None, _) => None,
+        };
         // Recompute the persistent-filter view over the rebuilt list (it also
         // sets the model count to the active list's length).
         self.apply_list_filter();

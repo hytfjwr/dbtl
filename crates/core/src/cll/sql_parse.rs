@@ -642,6 +642,11 @@ fn ref_scope<'a>(env: Env<'a>, scope: &'a Scope<'a>) -> RefScope<'a> {
 // The resolver
 // ---------------------------------------------------------------------------
 
+/// uid → the node's per-column normalized SELECT expressions (`None` = no
+/// expression-level view: missing or unparseable SQL) — the
+/// [`SqlParseResolver::exprs_memo`] shape.
+type ExprMap = BTreeMap<String, Option<Rc<BTreeMap<String, String>>>>;
+
 /// The Issue 08 resolver: parses each model's SQL (compiled first, raw as
 /// the documented fallback) with `sqlparser`, resolves column references
 /// against a real FROM/JOIN/CTE scope, and classifies edges passthrough /
@@ -659,6 +664,10 @@ pub struct SqlParseResolver {
     resolved_memo: RefCell<BTreeMap<String, Rc<Vec<ColumnEdge>>>>,
     /// uid → the node's *column list* (`Some` = known, `None` = unknown).
     cols_memo: RefCell<BTreeMap<String, Option<Rc<Vec<String>>>>>,
+    /// uid → the node's per-column SELECT expressions (`None` = no
+    /// expression-level view: missing or unparseable SQL) — the `--diff`
+    /// expression-diff input, memoized like the column list.
+    exprs_memo: RefCell<ExprMap>,
     /// uids whose resolution went through `NameMatchResolver` — the
     /// `[name-match]` tag / CLI fallback count source.
     fallbacks: RefCell<BTreeSet<String>>,
@@ -678,6 +687,7 @@ impl SqlParseResolver {
             analyzed_memo: RefCell::new(BTreeMap::new()),
             resolved_memo: RefCell::new(BTreeMap::new()),
             cols_memo: RefCell::new(BTreeMap::new()),
+            exprs_memo: RefCell::new(BTreeMap::new()),
             fallbacks: RefCell::new(BTreeSet::new()),
             analyzing: RefCell::new(BTreeSet::new()),
         }
@@ -769,6 +779,62 @@ impl SqlParseResolver {
         }
         let cols = self.fallback.columns(dag, uid);
         (!cols.is_empty()).then(|| Rc::new(cols))
+    }
+
+    // -- per-column expressions (the --diff expression-diff input) ----------
+
+    /// The node's outermost-SELECT output expressions, normalized for
+    /// cross-manifest comparison (`None` = no expression-level view:
+    /// missing or unparseable SQL — "unknown", never "changed").
+    fn expr_map(&self, dag: &Dag, uid: &str) -> Option<Rc<BTreeMap<String, String>>> {
+        if let Some(v) = self.exprs_memo.borrow().get(uid) {
+            return v.clone();
+        }
+        let out = self.compute_expr_map(dag, uid).map(Rc::new);
+        self.exprs_memo
+            .borrow_mut()
+            .insert(uid.to_string(), out.clone());
+        out
+    }
+
+    /// Map each named output column of the node's outermost SELECT to its
+    /// canonical expression text. Jinja is rendered like `compute_analyzed`
+    /// does, then `expr.to_string()` canonicalizes whitespace/quoting and
+    /// `fold_expr_text` folds unquoted identifier case — formatting- and
+    /// comment-only edits can never reach the comparison.
+    ///
+    /// Only `SetExpr::Select` bodies contribute per-column expressions: a
+    /// set-operation arm's projection can't be attributed to output columns
+    /// without positional/name merge logic, so UNION-shaped models yield an
+    /// empty map (no expression-diff flags — the model-level "SQL changed"
+    /// reason still catches the edit).
+    fn compute_expr_map(&self, dag: &Dag, uid: &str) -> Option<BTreeMap<String, String>> {
+        let (text, _) = resolution_sql(dag, uid)?;
+        let sql = render_jinja(text);
+        let dialect = self.dialect.sqlparser();
+        let stmts = Parser::parse_sql(&*dialect, &sql).ok()?;
+        let query = stmts.iter().find_map(|s| match s {
+            Statement::Query(q) => Some(&**q),
+            _ => None,
+        })?;
+        let SetExpr::Select(sel) = &*query.body else {
+            return Some(BTreeMap::new());
+        };
+        let mut out = BTreeMap::new();
+        for item in &sel.projection {
+            // Wildcards carry no per-column expression — the expanded names
+            // live in `resolve`/`columns`, not here.
+            let (name, expr) = match item {
+                SelectItem::ExprWithAlias { expr, alias } => (norm_ident(alias), expr),
+                SelectItem::UnnamedExpr(expr) => match derive_name(expr) {
+                    Some(n) => (n, expr),
+                    None => continue,
+                },
+                _ => continue,
+            };
+            out.insert(name, fold_expr_text(&expr.to_string()));
+        }
+        Some(out)
     }
 
     // -- the analyze pass ---------------------------------------------------
@@ -3215,6 +3281,19 @@ impl ColumnResolver for SqlParseResolver {
             .insert(node.to_string(), rc.clone());
         rc.as_ref().clone()
     }
+
+    /// Same catalog → declared priority as `columns` (shared with the
+    /// name-match fallback, which owns the same catalog handle).
+    fn column_type(&self, dag: &Dag, node: &str, column: &str) -> Option<String> {
+        self.fallback.column_type(dag, node, column)
+    }
+
+    /// Per-column normalized SELECT expressions — `None` (not an empty map)
+    /// when the node's SQL is missing or unparseable, so the diff can tell
+    /// "no expression data" apart from "no named expressions".
+    fn column_exprs(&self, dag: &Dag, node: &str) -> Option<BTreeMap<String, String>> {
+        self.expr_map(dag, node).map(|rc| (*rc).clone())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3230,6 +3309,36 @@ fn norm_ident(i: &Ident) -> String {
     } else {
         i.value.to_lowercase()
     }
+}
+
+/// Case-fold a canonical `expr.to_string()` for cross-manifest comparison:
+/// bytes inside single/double/back-quoted spans copy verbatim (string
+/// literals AND quoted identifiers keep their case — the [`norm_ident`]
+/// rule), everything else folds to lowercase so `STATUS`, `Status`, and
+/// `status` compare equal — as do `SUM(x)`/`sum(x)`. Deterministic
+/// byte-scanning; no re-lexing, so escapes can't desync the two sides.
+fn fold_expr_text(text: &str) -> String {
+    let b = text.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            q @ (b'\'' | b'"' | b'`') => {
+                let start = i;
+                i += 1;
+                while i < b.len() && b[i] != q {
+                    i += 1;
+                }
+                i = (i + 1).min(b.len());
+                out.extend_from_slice(&b[start..i]);
+            }
+            c => {
+                out.push(c.to_ascii_lowercase());
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).unwrap_or_default()
 }
 
 /// `ObjectName` → normalized dotted segments.

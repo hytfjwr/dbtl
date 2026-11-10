@@ -198,6 +198,35 @@ pub trait ColumnResolver {
     /// sorted and deduplicated. `dag` supplies the topology (direct parents),
     /// declared columns, catalog side-map, and SQL text.
     fn resolve(&self, dag: &Dag, node: &str) -> Vec<ColumnEdge>;
+
+    /// The best-known `data_type` for `column` (a normalized name) of `node`,
+    /// following the same source priority as [`columns`](ColumnResolver::columns):
+    /// catalog → declared. `None` when nothing records a type. Default: the
+    /// declared (`schema.yml` / manifest `columns`) type only — resolvers
+    /// holding a catalog overlay it. The `--diff` column analysis uses this
+    /// for type-change classification.
+    fn column_type(&self, dag: &Dag, node: &str, column: &str) -> Option<String> {
+        dag.detail(node).and_then(|d| {
+            d.columns
+                .iter()
+                .find(|c| normalize_column(&c.name) == column)
+                .and_then(|c| c.data_type.clone())
+        })
+    }
+
+    /// The node's output-column SELECT expressions, normalized for
+    /// cross-manifest comparison: `output name -> canonical expression text`
+    /// (identifier case folded like [`normalize_column`], formatting and
+    /// comments erased by the parse). `None` when the resolver has no
+    /// expression-level view of the node — missing/unparseable SQL, or a
+    /// strategy without an AST (the [`NameMatchResolver`] default) — which
+    /// callers must treat as "unknown", never "changed". The `--diff` column
+    /// analysis uses this for expression-change classification; a
+    /// formatting-only edit leaves every expression identical.
+    fn column_exprs(&self, dag: &Dag, node: &str) -> Option<BTreeMap<String, String>> {
+        let _ = (dag, node);
+        None
+    }
 }
 
 /// Lazy, memoized column lineage over a [`Dag`] + [`ColumnResolver`]: resolves
@@ -648,6 +677,22 @@ impl ColumnResolver for NameMatchResolver {
             .borrow_mut()
             .insert(node.to_string(), rc.clone());
         rc.as_ref().clone()
+    }
+
+    /// Catalog warehouse type first (same top priority as `columns`), then
+    /// the declared type — the diff's type-change classification reads it.
+    fn column_type(&self, dag: &Dag, node: &str, column: &str) -> Option<String> {
+        if let Some(cat) = &self.catalog {
+            if let Some(ty) = cat.get(node).and_then(|n| n.column_type(column)) {
+                return Some(ty.to_string());
+            }
+        }
+        dag.detail(node).and_then(|d| {
+            d.columns
+                .iter()
+                .find(|c| normalize_column(&c.name) == column)
+                .and_then(|c| c.data_type.clone())
+        })
     }
 }
 

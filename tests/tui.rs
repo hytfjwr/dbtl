@@ -2141,6 +2141,7 @@ fn diff_modal_lists_sections_with_counts_marks_and_more_cap() {
         modified: vec![("fct_orders".into(), "materialized: view -> table".into())],
         edges_added: vec![("stg_a".into(), "fct_orders".into())],
         edges_removed: vec![],
+        column_changes: vec![],
         pr: dbtl::PrImpact::default(),
         scroll: 0,
     };
@@ -2221,6 +2222,8 @@ fn diff_modal_renders_the_pr_impact_pack_sections() {
             affected_exposures: vec!["exec_dash (dashboard, owner: Finance)".into()],
             affected_owners: vec!["alice".into(), "bob".into()],
             ci_command: Some("dbt build --select stg_a+".into()),
+            column_affected_models: 0,
+            ci_command_columns: None,
             untested_changes: vec!["stg_a".into()],
             changed_hubs: vec![("stg_a".into(), 7)],
             new_layer_violations: vec![("fct_x".into(), "stg_z".into())],
@@ -2240,6 +2243,82 @@ fn diff_modal_renders_the_pr_impact_pack_sections() {
     assert!(
         text.contains("new layer violation: fct_x -> stg_z"),
         "{text}"
+    );
+}
+
+#[test]
+fn diff_modal_renders_the_column_changes_section() {
+    // The CLL refinement sits between the diff sections and the PR pack:
+    // one marked row per classified change (x breaking / ~ partial /
+    // + non-breaking), dim detail rows for the dangling columns and the
+    // exposures they reach.
+    let dv = dbtl::DiffView {
+        baseline: "main".into(),
+        modified: vec![("stg_orders".into(), "columns changed".into())],
+        column_changes: vec![
+            dbtl::ColumnChange {
+                node: "model.p.stg_orders".into(),
+                node_name: "stg_orders".into(),
+                column: "status".into(),
+                renamed_from: None,
+                kind: dbtl::ColumnChangeKind::Removed,
+                class: dbtl::ColumnChangeClass::Breaking,
+                type_from: None,
+                type_to: None,
+                affected_columns: vec!["fct_orders.status".into()],
+                affected_models: vec!["fct_orders".into()],
+                affected_marts: vec!["fct_orders".into()],
+                affected_exposures: vec!["orders_dash (dashboard)".into()],
+            },
+            dbtl::ColumnChange {
+                node: "model.p.stg_orders".into(),
+                node_name: "stg_orders".into(),
+                column: "order_status".into(),
+                renamed_from: Some("status_old".into()),
+                kind: dbtl::ColumnChangeKind::Renamed,
+                class: dbtl::ColumnChangeClass::NonBreaking,
+                type_from: None,
+                type_to: None,
+                affected_columns: vec![],
+                affected_models: vec![],
+                affected_marts: vec![],
+                affected_exposures: vec![],
+            },
+        ],
+        pr: dbtl::PrImpact {
+            affected_models: 1,
+            column_affected_models: 1,
+            ci_command: Some("dbt build --select stg_orders+".into()),
+            ci_command_columns: Some("dbt build --select fct_orders stg_orders".into()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let text = buffer_to_string(&render_diff_modal(dv, 100, 60));
+    assert!(text.contains("Column changes (2):"), "{text}");
+    assert!(
+        text.contains("x stg_orders.status: removed [breaking]"),
+        "the breaking row: {text}"
+    );
+    assert!(
+        text.contains("cols: fct_orders.status"),
+        "the dangling columns list: {text}"
+    );
+    assert!(
+        text.contains("exposures: orders_dash (dashboard)"),
+        "the reached exposure: {text}"
+    );
+    assert!(
+        text.contains("+ stg_orders.status_old -> order_status: renamed [non-breaking]"),
+        "a migrated rename prints old -> new: {text}"
+    );
+    assert!(
+        text.contains("column-affected models: 1"),
+        "the column-narrow count: {text}"
+    );
+    assert!(
+        text.contains("CI columns: dbt build --select fct_orders stg_orders"),
+        "the column-narrowed selector: {text}"
     );
 }
 

@@ -35,6 +35,7 @@ impl App {
             modified: report.modified,
             edges_added: report.edges_added,
             edges_removed: report.edges_removed,
+            column_changes: report.column_changes,
             pr: report.pr,
             scroll: 0,
         })

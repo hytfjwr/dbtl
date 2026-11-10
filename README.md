@@ -176,6 +176,7 @@ $ dbtl impact --diff /path/to/main-checkout                       # PR impact pa
 $ dbtl impact --diff target/manifest.prod.json --format json      # same payload as JSON
 $ dbtl check --coverage-min 80                                    # fail under 80% test coverage
 $ dbtl check --diff /path/to/main-checkout --coverage-min 80      # + new violations & untested changes
+$ dbtl check --diff /path/to/main-checkout --no-breaking          # + breaking column changes still read downstream
 $ dbtl check --lint                                               # + static structure lint (one gate per rule)
 $ dbtl check --lint --diff /path/to/main-checkout                 # lint gates on NEW violations only
 $ dbtl check --rules root_models,undocumented_models              # a subset of rules (implies --lint)
@@ -187,6 +188,18 @@ $ dbtl check --lint --format json                                 # the whole re
 The diff identifies nodes by `unique_id`, so a rename shows up as one node removed and another added — which is also how every downstream `ref()` sees it. It compares the surfaces a dbt change actually moves: materialization, direct dependencies, columns, tests, and model SQL.
 
 When both sides are compiled manifests, a change inside a shared **macro** is caught too: the diff reads each manifest's `macros` plus every node's `depends_on.macros` and marks callers of a changed macro — including transitive macro→macro calls — with a `macro:<name>` reason. That is the one surface raw SQL can't show.
+
+#### Column-level breaking changes
+
+On top of the node-level comparison, every `modified` node gets a **column diff** through the same column-level-lineage engine `dbtl columns` uses (catalog → declared `schema.yml`/manifest columns → SQL-derived outputs, so the diff resolves columns exactly like every other surface). Each changed column is classified:
+
+- **removed** — a baseline output name no current column carries;
+- **renamed** — detected when a dropped name and a new name draw from the same upstream column (`status as order_status`);
+- **type changed** — `data_type` differs (catalog first, then declared);
+- **expression changed** — the normalized SELECT expression differs (formatting, comments, and keyword casing never count);
+- **added** — a new output column.
+
+Severity is what the downstream picture proves: a removed or renamed column that still has readers — consumers whose reference now resolves to nothing, or that remain linked to the changed node — is **breaking**; type and expression moves are **partial-breaking**; added columns and unreferenced removals are **non-breaking**. Each finding lists the downstream columns, models, marts, and exposures it reaches, so the `D` modal and the impact report answer "which downstream columns and dashboards break" precisely — and a narrower `dbt build --select` lists exactly the models the changed columns reach (a column-clean change keeps its `+` fan-out only while the analysis can't prove otherwise). All of it is the same `column_changes` payload in the modal, the Markdown, and `--format json`.
 
 Both sides of a diff are loaded under the same package scope, so a compiled-manifest baseline and a source-parsed current side now compare cleanly by default — see the next section.
 
@@ -231,9 +244,12 @@ terminal init, just like `dbtl docs`). They compute the *same*
 comment can never disagree with the screen.
 
 - **`dbtl impact --diff <BASELINE>`** prints the PR impact pack — the diff
-  listings (added / removed / modified / edge changes), the aggregate blast
-  radius, affected marts, exposures, and owners, a suggested `dbt build --select …`
-  command, and the risk flags — as **Markdown** (the exact bytes the `D`→`e`
+  listings (added / removed / modified / edge changes), the **Column changes**
+  section (per-column classification + the downstream columns/models/marts/
+  exposures each reaches), the aggregate blast radius, affected marts,
+  exposures, and owners, suggested `dbt build --select …` commands
+  (model-granular *and* the column-narrowed one), and the risk flags — as
+  **Markdown** (the exact bytes the `D`→`e`
   export writes; paste or post as a PR comment). `--format json` emits the
   `DiffReport` payload verbatim for automation. The "Affected owners" section
   collects distinct values of a `meta` key (default `owner`, set
@@ -242,9 +258,13 @@ comment can never disagree with the screen.
 - **`dbtl check`** prints one `PASS`/`FAIL` line per gate and exits 1 when any
   fails. Gates: **`--coverage-min <pct>`** (test coverage below the
   threshold — the same `coverage_gap` counts the status `cov%` shows), and —
-  with `--diff <BASELINE>` — **newly introduced layer violations** and
+  with `--diff <BASELINE>` — **newly introduced layer violations**,
   **changed models/seeds/snapshots without tests** (the impact pack's risk
-  flags). **`--lint`** adds one gate per static structure rule (see the next
+  flags), and with **`--no-breaking`** any **breaking column change still
+  referenced downstream** (removed/renamed columns whose readers didn't
+  migrate — the failure line names each `model.column`, `old -> new` for
+  renames; partial-breaking type/expression moves report but never trip it).
+  **`--lint`** adds one gate per static structure rule (see the next
   section) — and under `--diff` only violations that did not exist in the
   baseline fail it. **`--rules a,b,c`** runs a named subset (implies
   `--lint`), **`--format json`** serializes the whole report for automation.
