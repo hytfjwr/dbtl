@@ -6,7 +6,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -15,8 +15,8 @@ use dbtl::app::{apply_action, App, LineageView};
 use dbtl::effect::Effect;
 use dbtl::layout::Layout;
 use dbtl::ui::{
-    draw, hit_test, lineage_content_rect, pane_interior, pane_rects, Focus, LineageLens, RenderCtx,
-    StatusSegments,
+    draw, hit_target, mouse_dirty, pane_interior, pane_rects, Focus, HitGeometry, LineageLens,
+    MouseInput, MouseOutcome, MouseRouter, RenderCtx, StatusSegments,
 };
 use dbtl::{Mode, SortMode};
 
@@ -54,7 +54,12 @@ pub fn event_loop(
     // replaces the current toast, and an expired one clears on the next
     // iteration — the 250ms idle tick guarantees that redraw happens promptly.
     const TOAST_TTL: Duration = Duration::from_millis(2500);
-    let mut toast: Option<(String, std::time::Instant)> = None;
+    let mut toast: Option<(String, Instant)> = None;
+    // The mouse gesture router: tracks the live press (release-confirmed
+    // clicks, the double-click window, the drag threshold) and the last
+    // reported hover target — the `Moved` redraw gate. The loop owns the
+    // clock; the router only compares `Instant`s it is handed.
+    let mut mouse = MouseRouter::new();
     // Dirty-flag redraw: the frame work below only runs when something
     // actually changed (first frame, any event, a toast flip, a --watch
     // reload). An idle 250ms tick with none of those skips straight back to
@@ -69,7 +74,7 @@ pub fn event_loop(
 
     loop {
         if let Some(text) = app.take_notice() {
-            toast = Some((text, std::time::Instant::now()));
+            toast = Some((text, Instant::now()));
             dirty = true;
         }
         if toast
@@ -269,6 +274,23 @@ pub fn event_loop(
                 (Some(lay), LineageLens::Layer) => Some(app.layer_bands(lay)),
                 _ => None,
             };
+            // The frame is being redrawn for a non-hover reason (a click
+            // re-root, a wheel pan, a resize, a reload): the cell under the
+            // pointer may now sit on a different surface. Re-resolve the
+            // remembered hover target against the FRESH geometry so it can't
+            // go stale between `Moved` events.
+            // TODO(05): Issues 05/07 read `mouse.hover()` for the frame-buffer
+            // highlight/tooltip overlay — keep it out of CharGrid and every
+            // cache key (a post-blit overlay input only).
+            if let Some(cell) = mouse.pointer() {
+                let target = if matches!(app.mode, Mode::Selection) {
+                    let g = hit_geometry(app, lineage.as_deref(), area);
+                    hit_target(&g, cell.x, cell.y)
+                } else {
+                    None
+                };
+                mouse.track_hover(target);
+            }
             {
                 let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, lineage.as_deref());
                 ctx.mode = &app.mode;
@@ -336,9 +358,9 @@ pub fn event_loop(
             continue;
         }
         {
-            dirty = true; // any delivered event may change the frame
             match event::read().context("event read failed")? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    dirty = true; // a keypress may change the frame
                     if let Some(action) = dispatch(&app.mode, key) {
                         // Actions that change the lineage *shape/centring* without
                         // moving the selection must force the anchor branch next
@@ -385,75 +407,127 @@ pub fn event_loop(
                         }
                     }
                 }
-                Event::Mouse(me) => handle_mouse(app, me, lineage.as_deref(), area),
-                _ => {}
+                Event::Mouse(me) => {
+                    dirty |= handle_mouse(app, &mut mouse, me, lineage.as_deref(), area);
+                }
+                // Resize / focus / paste and any other delivered event may
+                // change the frame.
+                _ => dirty = true,
             }
         }
     }
 }
 
 /// Handle a mouse event (size-aware, so it lives in the loop, not the reducer).
-/// Click selects the model under the cursor in the list, or re-roots to the
-/// clicked lineage node (via the pure [`hit_test`]); the wheel scrolls the pane
-/// under the cursor. Acts only in `Selection` mode — overlays own the screen.
-fn handle_mouse(app: &mut App, me: MouseEvent, lineage: Option<&Layout>, area: Rect) {
-    if !matches!(app.mode, Mode::Selection) {
-        return;
-    }
-    let rects = pane_rects(area, app.ui_state.list_visible());
-    let list_inner = pane_interior(rects.list);
-    let lin_inner = pane_interior(rects.lineage);
-    let (col, row) = (me.column, me.row);
-
+/// Raw kinds go through the [`MouseRouter`] (release-confirmed clicks, the
+/// double-click window, the ≥1-cell drag threshold, hover dedup); the
+/// resulting point maps to a [`HitTarget`] via the pure [`hit_target`] — the
+/// same geometry the renderer draws — and dispatches through `App`.
+/// Acts only in `Selection` mode — overlays own the screen.
+///
+/// Returns whether the event may change the frame (the caller's `dirty`
+/// contribution): every kind except `Moved` may; `Moved` only when the
+/// hovered target CHANGED, so pointer motion doesn't repaint the screen.
+fn handle_mouse(
+    app: &mut App,
+    mouse: &mut MouseRouter,
+    me: MouseEvent,
+    lineage: Option<&Layout>,
+    area: Rect,
+) -> bool {
     match me.kind {
-        MouseEventKind::Down(_) => {
-            if within(list_inner, col, row) {
-                app.ui_state.set_focus(Focus::List);
-                let r = app.ui_state.offset() + (row - list_inner.y) as usize;
-                let mi = app.active_list().model_at_row(r);
-                if let Some(mi) = mi {
-                    // A list click landing on a different model is a re-root,
-                    // so it runs the same "leave the column trace" rule as a
-                    // lineage click (`reroot_select` owns the contract).
-                    let uid = app.active_list().model_at(mi).map(|m| m.unique_id.clone());
-                    if let Some(uid) = uid {
-                        app.reroot_select(&uid);
-                    }
-                }
-            } else if within(lin_inner, col, row) {
-                app.ui_state.set_focus(Focus::RightPane);
-                if let Some(lay) = lineage {
-                    // Hit-test against the SAME centered content rect the renderer
-                    // draws into, so a click lands on the node actually under it.
-                    let content =
-                        lineage_content_rect(lin_inner, lay.grid.width(), lay.grid.height());
-                    let hit = hit_test(
-                        &lay.rects,
-                        app.ui_state.lineage_scroll_x(),
-                        app.ui_state.lineage_scroll_y(),
-                        content,
-                        col,
-                        row,
-                    );
-                    if let Some(uid) = hit {
-                        // Re-root for a model (records history) / move the
-                        // cursor for a source-seed-snapshot; the domain method
-                        // also re-homes the cursor when the root is clicked.
-                        app.click_lineage_node(&uid);
-                    }
-                }
-            }
-        }
         MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+            if !matches!(app.mode, Mode::Selection) {
+                return false;
+            }
+            let rects = pane_rects(area, app.ui_state.list_visible());
             let down = me.kind == MouseEventKind::ScrollDown;
             let shift = me.modifiers.contains(KeyModifiers::SHIFT);
-            wheel(app, list_inner, lin_inner, col, row, down, shift);
+            wheel(
+                app,
+                pane_interior(rects.list),
+                pane_interior(rects.lineage),
+                me.column,
+                me.row,
+                down,
+                shift,
+            );
+            true
         }
         // A native horizontal notch (trackpad swipe / tilt wheel). Only the
         // lineage diagram scrolls horizontally; the list pane ignores it.
-        MouseEventKind::ScrollRight => wheel_x(app, lin_inner, col, row, true),
-        MouseEventKind::ScrollLeft => wheel_x(app, lin_inner, col, row, false),
-        _ => {}
+        MouseEventKind::ScrollRight | MouseEventKind::ScrollLeft => {
+            if !matches!(app.mode, Mode::Selection) {
+                return false;
+            }
+            let rects = pane_rects(area, app.ui_state.list_visible());
+            wheel_x(
+                app,
+                pane_interior(rects.lineage),
+                me.column,
+                me.row,
+                me.kind == MouseEventKind::ScrollRight,
+            );
+            true
+        }
+        _ => {
+            let Some(input) = MouseInput::from_kind(me.kind, me.column, me.row) else {
+                return true; // an unclassified kind — conservatively redraw
+            };
+            let Some(outcome) = mouse.feed(input, Instant::now()) else {
+                return false; // press / deduped move / stray event: nothing visible
+            };
+            let sel = matches!(app.mode, Mode::Selection);
+            let mut target_changed = false;
+            match &outcome {
+                MouseOutcome::Hover { at } => {
+                    // Non-Selection modes own the screen: the panes report no
+                    // hover target (modal hit-testing is Issue 06).
+                    let target = if sel {
+                        let g = hit_geometry(app, lineage, area);
+                        hit_target(&g, at.x, at.y)
+                    } else {
+                        None
+                    };
+                    target_changed = mouse.track_hover(target);
+                }
+                MouseOutcome::Click { button, at } | MouseOutcome::DoubleClick { button, at }
+                    if sel =>
+                {
+                    let target = {
+                        let g = hit_geometry(app, lineage, area);
+                        hit_target(&g, at.x, at.y)
+                    };
+                    if let Some(t) = target.as_ref() {
+                        // A double-click performs the click action again —
+                        // today's click actions are idempotent (re-rooting the
+                        // same node, re-selecting the same row), so the effect
+                        // matches the old two-clicks-in-a-row behaviour until
+                        // Issue 05 gives double-click its own meaning.
+                        app.click_target(t, *button);
+                    }
+                }
+                // Drags are recognized by the router but inert until Issues 02
+                // (pane-resize) and 05 (lineage pan) give them meaning.
+                _ => {}
+            }
+            mouse_dirty(Some(&outcome), sel, target_changed)
+        }
+    }
+}
+
+/// Bundle the frame's hit-test inputs, all from the SAME sources the draw
+/// uses: `pane_rects` on the live area, the last styled `Layout`, and
+/// `UiState`'s scroll offsets — so a click lands on what the screen shows.
+fn hit_geometry<'a>(app: &'a App, lineage: Option<&'a Layout>, area: Rect) -> HitGeometry<'a> {
+    HitGeometry {
+        panes: pane_rects(area, app.ui_state.list_visible()),
+        list: app.active_list(),
+        list_offset: app.ui_state.offset(),
+        layout: lineage,
+        scroll_x: app.ui_state.lineage_scroll_x(),
+        scroll_y: app.ui_state.lineage_scroll_y(),
+        minimap: app.ui_state.minimap_visible(),
     }
 }
 

@@ -182,15 +182,23 @@ pub(crate) fn draw_lineage_pane(
     stamp_scroll_markers(frame, area, edges, chrome, t);
 
     // Opt-in minimap inset (default OFF, so every existing lineage render is
-    // untouched). Only when the diagram OVERFLOWS the pane (a minimap of a
-    // fully-visible diagram is noise) AND the interior is big enough to hold the
-    // inset without smothering the content. Drawn AFTER the blit + markers — it
+    // untouched). `minimap_rect` is the single source of BOTH the draw guard
+    // (enabled + diagram overflows + interior big enough) and the rect — the
+    // mouse hit-test reads the same one, so a click under the inset can never
+    // disagree with what was drawn. Drawn AFTER the blit + markers — it
     // overwrites a corner of the interior, which is acceptable for an opt-in
     // overview. Writes ONLY to the frame buffer (never CharGrid).
-    if minimap && edges.any() && inner.width >= MM_W + 2 && inner.height >= MM_H + 2 {
+    if let Some(mm) = super::minimap_rect(
+        inner,
+        lay.grid.width(),
+        lay.grid.height(),
+        state.lineage_scroll_x(),
+        state.lineage_scroll_y(),
+        minimap,
+    ) {
         draw_minimap(
             frame,
-            inner,
+            mm,
             lay,
             state.lineage_scroll_x(),
             state.lineage_scroll_y(),
@@ -202,20 +210,16 @@ pub(crate) fn draw_lineage_pane(
     }
 }
 
-/// Minimap inset dimensions (cells). A fixed small sketch in the top-right of the
-/// lineage interior.
-const MM_W: u16 = 16;
-const MM_H: u16 = 6;
-
-/// Stamp the lineage minimap: a fixed `MM_W x MM_H` occupancy sketch of the WHOLE
-/// grid in the top-right corner of the lineage interior, with the current viewport
-/// drawn as a `mm_view` rectangle. Pure frame-buffer writes (`buffer_mut`), never
-/// CharGrid — so the layout goldens are untouched. Occupancy is a per-minimap-cell
-/// boolean OR over `lay.rects` (order-independent ⇒ deterministic, no sort needed).
+/// Stamp the lineage minimap into `mm` (the rect [`super::geom::minimap_rect`]
+/// computed): a fixed-size occupancy sketch of the WHOLE grid in the top-right
+/// of the lineage interior, with the current viewport drawn as a `mm_view`
+/// rectangle. Pure frame-buffer writes (`buffer_mut`), never CharGrid — so the
+/// layout goldens are untouched. Occupancy is a per-minimap-cell boolean OR
+/// over `lay.rects` (order-independent ⇒ deterministic, no sort needed).
 #[allow(clippy::too_many_arguments)]
 fn draw_minimap(
     frame: &mut Frame,
-    inner: Rect,
+    mm: Rect,
     lay: &crate::Layout,
     scroll_x: usize,
     scroll_y: usize,
@@ -226,17 +230,17 @@ fn draw_minimap(
 ) {
     let grid_w = lay.grid.width();
     let grid_h = lay.grid.height();
-    if grid_w == 0 || grid_h == 0 {
+    let mm_w = mm.width;
+    let mm_h = mm.height;
+    if grid_w == 0 || grid_h == 0 || mm_w == 0 || mm_h == 0 {
         return;
     }
-    // The inset rect: top-right of the interior. `draw_lineage_pane` guards
-    // `inner.width >= MM_W + 2`, so this subtraction never underflows.
-    let x0 = inner.x + inner.width - MM_W;
-    let y0 = inner.y;
+    let x0 = mm.x;
+    let y0 = mm.y;
 
     // Grid cells per minimap cell (ceil, so the whole grid maps inside the inset).
-    let sx = grid_w.div_ceil(MM_W as usize).max(1);
-    let sy = grid_h.div_ceil(MM_H as usize).max(1);
+    let sx = grid_w.div_ceil(mm_w as usize).max(1);
+    let sy = grid_h.div_ceil(mm_h as usize).max(1);
 
     let node_style = Style::default().fg(t.text_faint);
     let view_style = Style::default().fg(t.gold).add_modifier(Modifier::BOLD);
@@ -245,8 +249,8 @@ fn draw_minimap(
     //    region it covers, else `.`. (Stamp `.` too, so the inset reads as a
     //    distinct sketch rather than leaking the underlying diagram cells.)
     let buf = frame.buffer_mut();
-    for my in 0..MM_H {
-        for mx in 0..MM_W {
+    for my in 0..mm_h {
+        for mx in 0..mm_w {
             let gx0 = mx as usize * sx;
             let gx1 = gx0 + sx; // exclusive
             let gy0 = my as usize * sy;
@@ -269,8 +273,8 @@ fn draw_minimap(
     // 2. Viewport rectangle: map (scroll, content size) → minimap coords, clamp
     //    into the inset, force >=1x1 so a degenerate viewport still draws a `+`,
     //    then stamp the full perimeter.
-    let map_x = |gx: usize| ((gx / sx).min(MM_W as usize - 1)) as u16;
-    let map_y = |gy: usize| ((gy / sy).min(MM_H as usize - 1)) as u16;
+    let map_x = |gx: usize| ((gx / sx).min(mm_w as usize - 1)) as u16;
+    let map_y = |gy: usize| ((gy / sy).min(mm_h as usize - 1)) as u16;
     let vx0 = map_x(scroll_x);
     let vy0 = map_y(scroll_y);
     // The viewport spans [scroll, scroll+content); its last shown cell is

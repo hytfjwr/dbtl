@@ -895,8 +895,8 @@ static DYNAMIC_HELP: &[(ModeKind, &str, &str)] = &[
     (ModeKind::Search, "a-z..", "type to filter / search"),
     (
         ModeKind::Selection,
-        "click",
-        "re-root / move cursor to a node",
+        "left click",
+        "re-root / move cursor to a node (release confirms)",
     ),
     (
         ModeKind::Selection,

@@ -14,15 +14,18 @@ use ratatui::style::{Modifier, Style};
 
 mod geom;
 mod lineage;
+mod mouse;
 mod overlay;
 mod render;
 mod state;
 pub mod theme;
 
 pub use geom::{
-    clip_edges, hit_test, lineage_content_rect, pane_interior, pane_rects, ClipEdges, PaneRects,
+    clip_edges, hit_target, hit_test, lineage_content_rect, minimap_rect, pane_interior,
+    pane_rects, ClipEdges, HitGeometry, HitTarget, PaneRects,
 };
 pub use lineage::LayerBand;
+pub use mouse::{mouse_dirty, MouseInput, MouseOutcome, MouseRouter};
 pub use overlay::{
     clamp_columns_scroll, clamp_detail_scroll, clamp_diff_scroll, clamp_help_scroll,
     clamp_sql_scroll, clamp_stats_scroll,
