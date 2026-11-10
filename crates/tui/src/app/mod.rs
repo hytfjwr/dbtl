@@ -29,6 +29,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
+use std::rc::Rc;
 
 use anyhow::Result;
 
@@ -37,8 +38,8 @@ use crate::effect::Effect;
 use crate::ui::theme::{self, Theme};
 use crate::{
     build_filtered_model_list, build_model_list, compute_diff, coverage_gap, default_catalog_path,
-    default_run_results_path, load_dag, load_dag_from_source_with_warnings, Dag, DagDiff,
-    ModelList, NodeDetail, NodeInfo, RunResults, SortMode, UiState,
+    default_run_results_path, load_dag, load_dag_from_source_with_warnings, ColumnRef, Dag,
+    DagDiff, ModelList, NameMatchResolver, NodeDetail, NodeInfo, RunResults, SortMode, UiState,
 };
 
 mod analysis;
@@ -234,10 +235,28 @@ pub struct App {
     run_results_path: Option<PathBuf>,
     /// The `dbt docs generate` warehouse record (`catalog.json`), keyed by
     /// `unique_id` — real column types, row counts, byte sizes, and the
-    /// schema.yml↔warehouse drift check for the detail modal.
-    catalog: Option<crate::Catalog>,
+    /// schema.yml↔warehouse drift check for the detail modal. `Rc`-shared
+    /// with the CLL resolver (its top-priority column source) so both read
+    /// the ONE loaded copy.
+    catalog: Option<Rc<crate::Catalog>>,
     /// Where `catalog` was auto-detected — `reload` re-reads it.
     catalog_path: Option<PathBuf>,
+    /// The column-level-lineage resolver (Issue 07's name-match
+    /// approximation). Owns its own per-uid memos, so it must be rebuilt
+    /// whenever the Dag/catalog can change — `reload` does that. The
+    /// `ColumnResolver` trait is the consumer-facing boundary: the Issue 08
+    /// exact parser swaps in here without touching callers.
+    pub(super) cll: NameMatchResolver,
+    /// The column target `y` stashed while opening the yank menu over the
+    /// structure modal — what `yl` copies. Always rewritten on
+    /// `Action::YankPrefix` (the menu's entry point) and cleared the moment
+    /// the menu closes, so it can never be consumed stale.
+    pub(super) pending_col: Option<ColumnRef>,
+    /// The structure modal's `model_id`, stashed the same way — what every
+    /// OTHER `y`-menu yank (`yy`/`yY`/`yC`/`ym`/…) targets instead of the
+    /// list selection. Without it a yank dispatched over the modal would
+    /// silently copy the *selected* node's data, not the modal's.
+    pub(super) pending_node: Option<String>,
     /// The `p`-anchored path start (`unique_id`): while set, the lineage path
     /// highlight runs anchor↔cursor instead of root↔cursor — the two-node
     /// "why does X reach Y" answer. `None` = normal root↔cursor pathing.
@@ -301,12 +320,15 @@ impl App {
             .filter(|p| p.is_file())
             .and_then(|p| RunResults::load(p).ok());
         // Same auto-detect for target/catalog.json — warehouse truth for the
-        // detail modal (real types, row counts, schema.yml drift).
+        // detail modal (real types, row counts, schema.yml drift) AND the
+        // CLL resolver's top-priority column list (the Rc shares one copy).
         let catalog_path = source.default_catalog_path();
         let catalog = catalog_path
             .as_ref()
             .filter(|p| p.is_file())
-            .and_then(|p| crate::Catalog::load(p).ok());
+            .and_then(|p| crate::Catalog::load(p).ok())
+            .map(Rc::new);
+        let cll = NameMatchResolver::new(catalog.clone());
         App {
             dag,
             model_list,
@@ -340,6 +362,9 @@ impl App {
             run_results_path,
             catalog,
             catalog_path,
+            cll,
+            pending_col: None,
+            pending_node: None,
             path_anchor: None,
         }
     }
@@ -363,7 +388,7 @@ impl App {
     /// The loaded `catalog.json` side-map, if any — the detail modal reads it
     /// for real column types, row counts, byte sizes, and doc↔warehouse drift.
     pub fn catalog(&self) -> Option<&crate::Catalog> {
-        self.catalog.as_ref()
+        self.catalog.as_deref()
     }
 
     /// The detail-modal catalog block for a node: `catalog:` stats line (rows,
@@ -551,6 +576,21 @@ impl App {
     /// The selected node's `unique_id`, if any.
     pub fn selected_unique_id(&self) -> Option<String> {
         self.selected_node().map(|n| n.unique_id.clone())
+    }
+
+    /// The `unique_id` a `y`-menu yank should act on: the structure modal's
+    /// node (`pending_node`, stashed when `y` opened the menu over the modal)
+    /// preferred over the list selection — ONLY while `Mode::Yank` is live;
+    /// the fields are cleared the moment the menu closes, so a single-key
+    /// yank outside the menu keeps the selection semantics.
+    pub(super) fn yank_target_uid(&self) -> Option<String> {
+        if matches!(self.mode, Mode::Yank) {
+            self.pending_node
+                .clone()
+                .or_else(|| self.selected_unique_id())
+        } else {
+            self.selected_unique_id()
+        }
     }
 
     /// The selected node's display name, if any.
@@ -800,9 +840,17 @@ impl App {
             .catalog_path
             .as_ref()
             .filter(|p| p.is_file())
-            .and_then(|p| crate::Catalog::load(p).ok());
+            .and_then(|p| crate::Catalog::load(p).ok())
+            .map(Rc::new);
+        // The CLL resolver memoizes column lists/SQL parses PER UID — over a
+        // replaced Dag those memos are poison, so rebuild (memos inside the
+        // engine are per-call and die with it anyway).
+        self.cll = NameMatchResolver::new(self.catalog.clone());
         self.filter = None;
         self.mode = Mode::Selection;
+        // Any yank-menu context stashed against the OLD graph dies here too.
+        self.pending_col = None;
+        self.pending_node = None;
         // Cursor home: selection is restored BY ID, so the loop's
         // selection-change chokepoint won't fire — reset here or a pre-reload
         // cursor would survive into the rebuilt graph.

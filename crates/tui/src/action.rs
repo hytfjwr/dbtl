@@ -120,6 +120,13 @@ pub enum Action {
     /// `target/compiled/` / `compiled_code` counterpart of [`YankSql`], which
     /// stays raw-only. Bound as `ys` inside the yank-prefix menu.
     YankCompiledSql,
+    /// Inside the yank menu (`yl`): copy the selected column's DOWNSTREAM
+    /// column-level lineage closure as a deterministic Markdown table (the
+    /// same [`ColumnReport`](crate::ColumnReport) `dbtl columns` prints). The
+    /// "selected column" is the structure modal's column cursor, stashed on
+    /// the App when `y` opened the menu; without it the action explains how
+    /// to pick one instead of writing noise to the clipboard.
+    YankColumnLineage,
     /// Open the yank prefix menu (a which-key over `Mode::Yank`): every yank
     /// action is also reachable as `y` + the same letter it always used
     /// (`ym` = Mermaid, `yi` = impact, `yy` = unique_id). The single-key
@@ -138,6 +145,11 @@ pub enum Action {
     /// `usize::MAX`; the loop's per-frame clamp bounds it to the content).
     DetailScrollHome,
     DetailScrollEnd,
+    /// Move the structure modal's column cursor one row (`Up` = previous
+    /// column, `Down` = next) — the `yl` yank targets the column under it.
+    /// Distinct from `DetailScroll`, which pans the viewport: this is a
+    /// SELECTION, and the loop's ensure-visible follows it.
+    DetailColumnMove(Direction),
     /// Cycle the selection to the next / previous untested model (the
     /// `coverage_gap` set — same predicate as the Coverage lens).
     GapNext,
@@ -210,6 +222,30 @@ pub struct DetailView {
     /// types, row count, byte size, doc↔warehouse drift) — snapshotted at open
     /// like every other field; empty without catalog coverage.
     pub catalog: Vec<String>,
+    /// The cursor-addressable column list: the declared column names in
+    /// declared order when `detail.columns` is non-empty, else the CLL
+    /// resolver's inferred list (so a model with no documented columns still
+    /// gets a cursor). `col_index` indexes this; when declared columns exist
+    /// they render with type/description rows, otherwise this list IS the
+    /// rows. Declared names render verbatim; the resolver's inferred names are
+    /// already normalized + deduped.
+    pub col_names: Vec<String>,
+    /// The column cursor (h/l inside the modal) — an index into `col_names`,
+    /// or `usize::MAX` when the list is empty.
+    pub col_index: usize,
+    /// `normalized column -> (one-hop upstream, one-hop downstream)` DIRECT
+    /// column-edge counts, snapshotted from `ColumnLineage::column_counts` at
+    /// open — the `↑u ↓d` numbers beside each column row (direct parents in /
+    /// direct children out, per the Issue 07 spec — NOT the transitive
+    /// closure). `BTreeMap` keeps the render order deterministic; empty when
+    /// the resolver sees no columns. Keys are the resolver's normalized names,
+    /// so a declared `col_names` entry looks itself up through
+    /// `norm_column` — an un-normalizable name (rare: declared names come
+    /// from manifest keys, which dbt already lowers) just gets no count.
+    pub col_counts: std::collections::BTreeMap<String, (usize, usize)>,
+    /// Any of this node's column edges was resolved against compiled SQL
+    /// older than its source — the columns header gets a `[stale]` tag.
+    pub stale: bool,
     pub scroll: usize,
 }
 
@@ -571,6 +607,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Yank, triggers: &[Key(Char('C'))], action: A::YankSql, help: "copy raw SQL" },
     KeyBinding { mode: M::Yank, triggers: &[Key(Char('s'))], action: A::YankCompiledSql, help: "copy compiled SQL" },
     KeyBinding { mode: M::Yank, triggers: &[Key(Char('i'))], action: A::YankImpact, help: "copy impact report (Markdown)" },
+    KeyBinding { mode: M::Yank, triggers: &[Key(Char('l'))], action: A::YankColumnLineage, help: "copy column lineage (Markdown)" },
     KeyBinding { mode: M::Yank, triggers: &[Key(Char('!'))], action: A::YankSelector, help: "copy dbt --select command" },
     KeyBinding { mode: M::Yank, triggers: &[Key(Esc), Key(Char('q'))], action: A::DetailClose, help: "cancel" },
     // ---- Search mode (printable chars are handled dynamically -> SearchType) ----
@@ -588,6 +625,9 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Palette, triggers: &[Key(Down)], action: A::SearchMove(Direction::Down), help: "next command" },
     // ---- Detail modal ----
     KeyBinding { mode: M::Detail, triggers: &[Key(Esc), Key(Enter), Key(Char('q'))], action: A::DetailClose, help: "close" },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('h')), Key(Char('H'))], action: A::DetailColumnMove(Direction::Up), help: "previous column" },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('l')), Key(Char('L'))], action: A::DetailColumnMove(Direction::Down), help: "next column" },
+    KeyBinding { mode: M::Detail, triggers: &[Key(Char('y'))], action: A::YankPrefix, help: "yank prefix menu" },
     KeyBinding { mode: M::Detail, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down" },
     KeyBinding { mode: M::Detail, triggers: &[Key(Char('k')), Key(Up)], action: A::DetailScroll(Direction::Up), help: "scroll up" },
     KeyBinding { mode: M::Detail, triggers: &[Key(Char('d')), Key(PageDown), Ctrl('d')], action: A::DetailScrollPage(Direction::Down), help: "page down" },
@@ -765,6 +805,10 @@ mod tests {
             downstream_count: 0,
             upstream_count: 0,
             catalog: vec![],
+            col_names: vec![],
+            col_index: usize::MAX,
+            col_counts: std::collections::BTreeMap::new(),
+            stale: false,
             scroll: 0,
         })
     }
@@ -1001,6 +1045,7 @@ mod tests {
             | Action::YankAscii
             | Action::YankSql
             | Action::YankCompiledSql
+            | Action::YankColumnLineage
             | Action::YankImpact
             | Action::YankSelector
             | Action::YankPrefix
@@ -1010,6 +1055,7 @@ mod tests {
             | Action::DetailScrollPage(_)
             | Action::DetailScrollHome
             | Action::DetailScrollEnd
+            | Action::DetailColumnMove(_)
             | Action::GapNext
             | Action::GapPrev
             | Action::BookmarkCycleBack
@@ -1117,6 +1163,7 @@ mod tests {
             Action::YankAscii,
             Action::YankSql,
             Action::YankCompiledSql,
+            Action::YankColumnLineage,
             Action::YankImpact,
             Action::YankSelector,
             Action::YankPrefix,
@@ -1126,6 +1173,7 @@ mod tests {
             Action::DetailScrollPage(Direction::Down),
             Action::DetailScrollHome,
             Action::DetailScrollEnd,
+            Action::DetailColumnMove(Direction::Down),
             Action::GapNext,
             Action::GapPrev,
             Action::BookmarkCycleBack,

@@ -5,9 +5,29 @@
 use dbtl_core::mermaid::{node_kind, subgraph_mermaid};
 
 use super::App;
+use crate::action::Mode;
+use crate::Subgraph;
 
 impl App {
-    /// Render the current lineage subgraph as a Mermaid `graph LR` diagram
+    /// The subgraph a lineage yank renders: the current view's — EXCEPT
+    /// inside the `y` menu opened over the structure modal, where the modal's
+    /// node is the subject: the yank then draws ITS rooted lineage under the
+    /// same direction/depth view, not the list selection's. `pending_node`
+    /// lives only while `Mode::Yank` is up, so this can't leak into a
+    /// Selection-mode export (the `e` write / the docs yank path).
+    fn yank_subgraph(&self) -> Subgraph {
+        if matches!(self.mode, Mode::Yank) {
+            if let Some(uid) = &self.pending_node {
+                let v = &self.lineage_view;
+                return self
+                    .dag
+                    .subgraph_view(uid, v.upstream, v.downstream, v.depth);
+            }
+        }
+        self.lineage_subgraph()
+    }
+
+    /// Render the yank-target lineage subgraph as a Mermaid `graph LR` diagram
     /// (deterministic: the subgraph's nodes/edges are already sorted). Node IDs
     /// come from a per-export [`mermaid_ids`] map — the sanitized `unique_id`,
     /// with deterministic numeric suffixes when two uids sanitize to the same
@@ -22,18 +42,18 @@ impl App {
     /// mermaid.live wants the body without the fence — strip the first/last line
     /// there.)
     pub fn lineage_mermaid(&self) -> Option<String> {
-        let sg = self.lineage_subgraph();
+        let sg = self.yank_subgraph();
         if sg.nodes.is_empty() {
             return None;
         }
         Some(subgraph_mermaid(&sg))
     }
 
-    /// Render the current lineage subgraph as a Graphviz DOT digraph (`rankdir=LR`).
-    /// Node ids are the quoted `unique_id`; labels carry name + materialization.
-    /// `None` when nothing is selected / the subgraph is empty.
+    /// Render the yank-target lineage subgraph as a Graphviz DOT digraph
+    /// (`rankdir=LR`). Node ids are the quoted `unique_id`; labels carry name +
+    /// materialization. `None` when nothing is selected / the subgraph is empty.
     pub fn lineage_dot(&self) -> Option<String> {
-        let sg = self.lineage_subgraph();
+        let sg = self.yank_subgraph();
         if sg.nodes.is_empty() {
             return None;
         }
@@ -58,12 +78,12 @@ impl App {
         Some(out)
     }
 
-    /// Render the current lineage subgraph as plain text — the exact diagram
-    /// the lineage pane draws (same `layout_mode` + glyph repertoire), minus
-    /// colours. Pasteable into tickets/docs as a monospace block. `None` when
-    /// nothing is selected / the subgraph is empty.
+    /// Render the yank-target lineage subgraph as plain text — the exact
+    /// diagram the lineage pane draws (same `layout_mode` + glyph repertoire),
+    /// minus colours. Pasteable into tickets/docs as a monospace block. `None`
+    /// when nothing is selected / the subgraph is empty.
     pub fn lineage_ascii(&self) -> Option<String> {
-        let sg = self.lineage_subgraph();
+        let sg = self.yank_subgraph();
         if sg.nodes.is_empty() {
             return None;
         }
@@ -74,28 +94,43 @@ impl App {
         )
     }
 
-    /// The selected node's raw (uncompiled) SQL, cloned from the `Dag::sql`
-    /// side map. `None` for nodes without source SQL — manifests record seeds
-    /// with `raw_code: ""`, so blank SQL is treated as absent (an empty yank
-    /// would silently clobber the clipboard with nothing).
+    /// The selected node's raw (uncompiled) SQL — [`App::raw_sql_for`] applied
+    /// to the current selection.
     pub fn selected_raw_sql(&self) -> Option<String> {
-        let uid = self.selected_unique_id()?;
+        self.selected_unique_id()
+            .and_then(|uid| self.raw_sql_for(&uid))
+    }
+
+    /// A node's raw (uncompiled) SQL, cloned from the `Dag::sql` side map.
+    /// `None` for nodes without source SQL — manifests record seeds with
+    /// `raw_code: ""`, so blank SQL is treated as absent (an empty yank would
+    /// silently clobber the clipboard with nothing). The explicit-uid form the
+    /// `y` menu's modal target needs.
+    pub fn raw_sql_for(&self, uid: &str) -> Option<String> {
         self.dag
-            .raw_code(&uid)
+            .raw_code(uid)
             .filter(|code| !code.trim().is_empty())
             .map(str::to_string)
     }
 
-    /// A runnable `dbt build --select …` command for the current lineage view:
+    /// A runnable `dbt build --select …` command for the current lineage view
+    /// — [`App::dbt_selector_command_for`] applied to the selection.
+    pub fn dbt_selector_command(&self) -> Option<String> {
+        self.selected_unique_id()
+            .and_then(|uid| self.dbt_selector_command_for(&uid))
+    }
+
+    /// A runnable `dbt build --select …` command for `uid`'s lineage view:
     /// the rooted node expressed through dbt's graph operators, mirroring the
     /// pane exactly — the upstream toggle becomes a `+` prefix, the downstream
     /// toggle a `+` suffix, and a hop-depth limit becomes the `N+`/`+N` bounded
-    /// forms, so what the user yanks is what the pane shows. The root is always
-    /// a model (the list holds only models, and `jump_to` re-roots only to list
-    /// members), so the bare name is always a valid node selector — no
-    /// `source:` method needed. `None` when nothing is selected.
-    pub fn dbt_selector_command(&self) -> Option<String> {
-        let base = self.selected_name()?;
+    /// forms, so what the user yanks is what the pane shows. The root is almost
+    /// always a model (the list holds only models, and `jump_to` re-roots only
+    /// to list members), so the bare name is a valid node selector — for the
+    /// yank menu's modal target (possibly a source/seed) it is still the
+    /// nearest name form v0 emits. `None` for an unknown uid.
+    pub fn dbt_selector_command_for(&self, uid: &str) -> Option<String> {
+        let base = &self.dag.get(uid)?.name;
         let view = &self.lineage_view;
         let prefix = match (view.upstream, view.depth) {
             (false, _) => String::new(),
@@ -110,16 +145,23 @@ impl App {
         Some(format!("dbt build --select {prefix}{base}{suffix}"))
     }
 
-    /// A Markdown blast-radius report for the selected node: direct +
-    /// transitive up/down counts, the sorted member name lists, and — when any
-    /// exist — the downstream exposures (the "who cares" endpoints), with kind
-    /// and owner. Exposures are split OUT of the Downstream list into their own
-    /// section, so the up/down numbers keep matching the status chip. The
-    /// closures come from `HashSet`s, so every list is sorted here — two yanks
-    /// of the same selection are byte-identical. `None` when nothing is selected.
+    /// A Markdown blast-radius report for the selected node —
+    /// [`App::impact_report_for`] applied to the current selection.
     pub fn impact_report(&self) -> Option<String> {
-        let uid = self.selected_unique_id()?;
-        let node = self.dag.get(&uid)?;
+        self.selected_unique_id()
+            .and_then(|uid| self.impact_report_for(&uid))
+    }
+
+    /// A Markdown blast-radius report for `uid`: direct + transitive up/down
+    /// counts, the sorted member name lists, and — when any exist — the
+    /// downstream exposures (the "who cares" endpoints), with kind and owner.
+    /// Exposures are split OUT of the Downstream list into their own section,
+    /// so the up/down numbers keep matching the status chip. The closures come
+    /// from `HashSet`s, so every list is sorted here — two yanks of the same
+    /// target are byte-identical. `None` for an unknown uid. The explicit-uid
+    /// form the `y` menu's modal target needs.
+    pub fn impact_report_for(&self, uid: &str) -> Option<String> {
+        let node = self.dag.get(uid)?;
         let names = |uids: std::collections::HashSet<String>| -> Vec<String> {
             let mut v: Vec<String> = uids
                 .into_iter()
@@ -130,9 +172,9 @@ impl App {
             v.sort();
             v
         };
-        let down = names(self.dag.downstream(&uid));
-        let up = names(self.dag.upstream(&uid));
-        let exposures = self.downstream_exposures(&uid);
+        let down = names(self.dag.downstream(uid));
+        let up = names(self.dag.upstream(uid));
+        let exposures = self.downstream_exposures(uid);
         let mut out = format!("# Impact: {}\n\n", node.name);
         out.push_str(&format!("- unique_id: `{uid}`\n"));
         out.push_str(&format!(
@@ -164,6 +206,20 @@ impl App {
             }
         }
         Some(out)
+    }
+
+    /// The `yl` payload: `col`'s column-level lineage closure as a
+    /// deterministic Markdown table — literally
+    /// [`closure_report`](crate::closure_report)'s `Display`, so the yank and
+    /// `dbtl columns` print the same bytes for the same target. Drives the
+    /// app-owned [`NameMatchResolver`](crate::NameMatchResolver); the report
+    /// labels columns `model.column` (display names).
+    pub fn column_lineage_markdown(
+        &self,
+        col: &crate::ColumnRef,
+        direction: crate::ClosureDirection,
+    ) -> String {
+        crate::closure_report(&self.dag, &self.cll, col, direction).to_string()
     }
 
     /// Render the `--diff` baseline comparison as a reviewer-shaped "PR Impact

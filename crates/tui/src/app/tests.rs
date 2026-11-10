@@ -1,5 +1,5 @@
 use super::*;
-use crate::action::{palette_candidates, Action, Direction, Mode, SearchTarget};
+use crate::action::{palette_candidates, Action, DetailView, Direction, Mode, SearchTarget};
 use crate::effect::Effect;
 use crate::{
     coverage_gap, load_dag_from_source, reduce_selection, Dag, Focus, LensTint, LineageLens,
@@ -854,7 +854,7 @@ fn modal_page_scroll_and_home_end_record_intent() {
 fn gap_next_and_prev_cycle_through_untested_models() {
     // The big fixture has zero untested MODELS, so it pins the no-op side;
     // the sample manifest (dim_customers / agg_country_orders /
-    // fct_customer_history untested) exercises the cycle itself.
+    // fct_customer_history / cll_demo untested) exercises the cycle itself.
     let mut full = app();
     apply_action(&mut full, Action::GapNext);
     assert_eq!(full.ui_state.selected(), 0, "no gaps -> selection unmoved");
@@ -875,7 +875,7 @@ fn gap_next_and_prev_cycle_through_untested_models() {
         .filter(|(_, m)| crate::coverage_gap(m))
         .map(|(i, _)| i)
         .collect();
-    assert_eq!(gaps.len(), 3, "sample manifest has three untested models");
+    assert_eq!(gaps.len(), 4, "sample manifest has four untested models");
     apply_action(&mut a, Action::GapNext);
     let first = a.ui_state.selected();
     assert!(gaps.contains(&first), "n lands on a coverage gap");
@@ -939,14 +939,14 @@ fn untested_filter_narrows_the_list_and_toggles_off() {
     let full = a.model_list.len();
     apply_action(&mut a, Action::ToggleUntestedFilter);
     assert_eq!(a.list_filter, ListFilter::Untested);
-    assert_eq!(a.active_list().len(), 3, "only the three untested models");
+    assert_eq!(a.active_list().len(), 4, "only the four untested models");
     assert!(
         a.active_list().models.iter().all(crate::coverage_gap),
         "every visible model is untested"
     );
     assert_eq!(
         a.ui_state.model_count(),
-        3,
+        4,
         "selection space follows the filtered view"
     );
     assert_eq!(a.list_filter_label(), Some("untested"));
@@ -4283,4 +4283,285 @@ fn full_text_search_matches_desc_columns_and_sql() {
         vec!["model.jaffle_finance.pos_files__assignment"],
         "column hit: {ids:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Column-level lineage (Issue 07): the structure modal's column rows carry
+// up/down ONE-HOP edge counts, h/l walks a column cursor, and `y l` yanks the
+// selected column's downstream closure as the shared ColumnReport markdown.
+// The sample fixture's `cll_demo` is the predictable end: it declares no
+// columns (so the rows come from the resolver's SQL extraction) and every
+// output has the same 4-edge one-hop upstream / 0 downstream.
+// ---------------------------------------------------------------------------
+
+const SAMPLE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../tests/fixtures/sample_manifest.json"
+);
+
+fn sample_app() -> App {
+    let dag = load_dag(SAMPLE).expect("sample manifest loads");
+    App::new(dag, PathBuf::from(SAMPLE))
+}
+
+fn open_detail<'a>(a: &'a mut App, uid: &str) -> &'a DetailView {
+    a.select_by_unique_id(uid);
+    apply_action(a, Action::DetailOpen);
+    match &a.mode {
+        Mode::Detail(dv) => {
+            assert_eq!(dv.model_id, uid);
+            dv
+        }
+        m => panic!("expected Detail for {uid}, got {m:?}"),
+    }
+}
+
+#[test]
+fn detail_open_snapshots_column_counts_and_inferred_names() {
+    let mut a = sample_app();
+    let dv = open_detail(&mut a, "model.sample.cll_demo").clone();
+    assert_eq!(
+        dv.col_names,
+        vec!["n_orders", "order_id", "status", "status_upper"],
+        "no declared columns → the resolver's sorted inferred names"
+    );
+    assert_eq!(dv.col_index, 0, "cursor homes to the first column");
+    for c in &dv.col_names {
+        // One-hop counts (direct parents in / direct children out) — the
+        // Issue 07 spec, NOT the transitive closure (which was 6 here).
+        assert_eq!(dv.col_counts[c], (4, 0), "{c} one-hop counts");
+    }
+    assert!(!dv.stale, "the frozen fixture's compiled SQL is fresh");
+}
+
+#[test]
+fn detail_column_move_clamps_at_both_ends() {
+    let mut a = sample_app();
+    open_detail(&mut a, "model.sample.cll_demo");
+    for _ in 0..10 {
+        apply_action(&mut a, Action::DetailColumnMove(Direction::Down));
+    }
+    match &a.mode {
+        Mode::Detail(dv) => assert_eq!(dv.col_index, 3, "clamped at the last column"),
+        m => panic!("got {m:?}"),
+    }
+    for _ in 0..10 {
+        apply_action(&mut a, Action::DetailColumnMove(Direction::Up));
+    }
+    match &a.mode {
+        Mode::Detail(dv) => assert_eq!(dv.col_index, 0, "clamped at the first column"),
+        m => panic!("got {m:?}"),
+    }
+}
+
+#[test]
+fn detail_column_move_noops_when_the_node_has_no_columns() {
+    let mut a = sample_app();
+    // The seed records no columns in the manifest and emits no SQL — the one
+    // genuinely columnless node in the fixture. (It's upstream of fct_orders,
+    // so a lineage click homes the cursor there.)
+    a.select_by_unique_id("model.sample.fct_orders");
+    a.ui_state.set_focus(Focus::RightPane);
+    a.click_lineage_node("seed.sample.country_codes");
+    apply_action(&mut a, Action::DetailOpen);
+    match &a.mode {
+        Mode::Detail(dv) => {
+            assert!(dv.col_names.is_empty(), "source shows no column rows");
+            assert_eq!(dv.col_index, usize::MAX, "no cursor without columns");
+        }
+        m => panic!("expected Detail, got {m:?}"),
+    }
+    apply_action(&mut a, Action::DetailColumnMove(Direction::Down));
+    match &a.mode {
+        Mode::Detail(dv) => assert_eq!(dv.col_index, usize::MAX, "still no cursor"),
+        m => panic!("got {m:?}"),
+    }
+}
+
+#[test]
+fn yank_column_lineage_copies_the_selected_columns_downstream_closure() {
+    let mut a = sample_app();
+    let dv = open_detail(&mut a, "model.sample.stg_orders").clone();
+    assert_eq!(dv.col_index, 0);
+    assert_eq!(dv.col_names[0], "id", "the declared order starts at id");
+    apply_action(&mut a, Action::YankPrefix);
+    assert_eq!(a.mode, Mode::Yank);
+    assert_eq!(
+        a.pending_col
+            .as_ref()
+            .map(|c| (c.node.as_str(), c.column.as_str())),
+        Some(("model.sample.stg_orders", "id")),
+        "the column under the cursor is stashed for `yl`"
+    );
+    let out = apply_action(&mut a, Action::YankColumnLineage);
+    let text = match out.effects.as_slice() {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert!(
+        text.contains("# Column lineage: `stg_orders.id` (downstream)"),
+        "same ColumnReport markdown as the CLI, got: {text:?}"
+    );
+    assert!(text.contains("## Downstream columns (4)"));
+    assert!(text.contains("`fct_orders.id`"));
+    assert_eq!(a.take_notice().as_deref(), Some("Copied column lineage"));
+    assert_eq!(a.mode, Mode::Selection, "the which-key is one-shot");
+}
+
+#[test]
+fn yank_column_lineage_follows_the_column_cursor() {
+    // Move the cursor first: `y l` must yank the column the cursor ENDED on,
+    // not the first row.
+    let mut a = sample_app();
+    open_detail(&mut a, "model.sample.cll_demo");
+    apply_action(&mut a, Action::DetailColumnMove(Direction::Down));
+    apply_action(&mut a, Action::YankPrefix);
+    let out = apply_action(&mut a, Action::YankColumnLineage);
+    let text = match out.effects.as_slice() {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert!(
+        text.contains("# Column lineage: `cll_demo.order_id` (downstream)"),
+        "col_index 1 = order_id, got: {text:?}"
+    );
+    assert!(
+        text.contains("## Downstream columns (0)"),
+        "terminal column"
+    );
+}
+
+#[test]
+fn yank_column_lineage_without_a_column_explains_instead_of_yanking() {
+    let mut a = sample_app();
+    // `y` from Selection mode: no column under a cursor → nothing to yank.
+    apply_action(&mut a, Action::YankPrefix);
+    assert_eq!(a.mode, Mode::Yank);
+    let out = apply_action(&mut a, Action::YankColumnLineage);
+    assert!(out.effects.is_empty(), "no clipboard write");
+    assert_eq!(
+        a.take_notice().as_deref(),
+        Some("no column selected — Enter, h/l pick a column, then y l")
+    );
+}
+
+#[test]
+fn yank_menu_over_the_modal_targets_the_modal_node_not_the_selection() {
+    // The hostile-review finding: open the modal on node A while the list
+    // selection sits on node B — EVERY `y<key>` yank must act on A (the
+    // modal's node), never silently on B.
+    let mut a = sample_app();
+    let dv = open_detail(&mut a, "model.sample.stg_orders").clone();
+    assert_eq!(dv.model_id, "model.sample.stg_orders");
+    // Move the LIST selection elsewhere (the modal stays open on stg_orders).
+    a.select_by_unique_id("model.sample.fct_orders");
+    apply_action(&mut a, Action::YankPrefix);
+    assert_eq!(a.mode, Mode::Yank);
+    assert_eq!(
+        a.pending_node.as_deref(),
+        Some("model.sample.stg_orders"),
+        "the modal's node is stashed as the yank target"
+    );
+    let out = apply_action(&mut a, Action::YankId);
+    let text = match out.effects.as_slice() {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert_eq!(
+        text, "model.sample.stg_orders",
+        "yy copies the modal's uid, not the list selection's fct_orders"
+    );
+    assert_eq!(a.mode, Mode::Selection, "the which-key is one-shot");
+    assert!(a.pending_node.is_none(), "the stash dies with the menu");
+}
+
+#[test]
+fn yank_name_and_impact_over_the_modal_also_follow_the_modal_node() {
+    // (The which-key is one-shot, so each yank gets its own modal-open pass.)
+    let mut a = sample_app();
+    open_detail(&mut a, "model.sample.stg_orders");
+    a.select_by_unique_id("model.sample.fct_orders");
+    apply_action(&mut a, Action::YankPrefix);
+    let out = apply_action(&mut a, Action::YankName);
+    let text = match out.effects.as_slice() {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert_eq!(text, "stg_orders", "yY copies the modal node's name");
+
+    // The impact report is the second selection-based surface — same flow:
+    // modal on stg_orders, selection on fct_orders, `yi` reports the MODAL
+    // node's blast radius.
+    open_detail(&mut a, "model.sample.stg_orders");
+    a.select_by_unique_id("model.sample.fct_orders");
+    apply_action(&mut a, Action::YankPrefix);
+    let out = apply_action(&mut a, Action::YankImpact);
+    let text = match out.effects.as_slice() {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert!(
+        text.starts_with("# Impact: stg_orders\n"),
+        "yi reports the modal node, got: {text:?}"
+    );
+    assert!(text.contains("`model.sample.stg_orders`"));
+}
+
+#[test]
+fn yank_mermaid_over_the_modal_draws_the_modal_nodes_lineage() {
+    // Discriminating case: `country_codes` is upstream of fct_orders ONLY —
+    // it appears in fct_orders' rooted lineage but nowhere in stg_orders'.
+    // If the yank silently used the list selection it could never contain it.
+    let mut a = sample_app();
+    open_detail(&mut a, "model.sample.fct_orders");
+    a.select_by_unique_id("model.sample.stg_orders");
+    apply_action(&mut a, Action::YankPrefix);
+    let out = apply_action(&mut a, Action::YankMermaid);
+    let text = match out.effects.as_slice() {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert!(
+        text.contains("country_codes"),
+        "the diagram is the MODAL node's (fct_orders') lineage — country_codes \
+         is upstream of fct_orders but absent from stg_orders' lineage: {text:?}"
+    );
+}
+
+#[test]
+fn yank_without_the_modal_keeps_the_selection_semantics() {
+    // Guard the fallback: `y` opened from Selection mode stashes no modal
+    // node, so the yank target stays the list selection.
+    let mut a = sample_app();
+    a.select_by_unique_id("model.sample.fct_orders");
+    apply_action(&mut a, Action::YankPrefix);
+    assert_eq!(a.mode, Mode::Yank);
+    assert!(a.pending_node.is_none(), "no modal → nothing stashed");
+    let out = apply_action(&mut a, Action::YankId);
+    let text = match out.effects.as_slice() {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert_eq!(text, "model.sample.fct_orders");
+}
+
+#[test]
+fn a_stale_modal_stash_cannot_leak_into_a_later_selection_yank() {
+    // Open the modal on A, press `y`, cancel with an unbound key (closes the
+    // menu), move the selection, press `y` again from Selection — the second
+    // yank must target the SELECTION, not the cancelled modal's node.
+    let mut a = sample_app();
+    open_detail(&mut a, "model.sample.stg_orders");
+    apply_action(&mut a, Action::YankPrefix);
+    apply_action(&mut a, Action::DetailClose); // the cancel path closes the menu
+    assert_eq!(a.mode, Mode::Selection);
+    assert!(a.pending_node.is_none(), "cancel drops the stash");
+    a.select_by_unique_id("model.sample.fct_orders");
+    apply_action(&mut a, Action::YankPrefix);
+    let out = apply_action(&mut a, Action::YankId);
+    let text = match out.effects.as_slice() {
+        [Effect::Yank(t)] => t.clone(),
+        other => panic!("expected one Yank effect, got {other:?}"),
+    };
+    assert_eq!(text, "model.sample.fct_orders", "no stale modal target");
 }

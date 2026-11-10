@@ -145,6 +145,22 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             // source/seed/snapshot the lineage cursor sits on, NOT the root).
             let (downstream_count, upstream_count) = app.impact_counts_for(&uid);
             let catalog = app.catalog_note(&uid, &detail);
+            // Column-level lineage snapshot (lazy + memoized in the resolver;
+            // resolving THIS node + its direct children is the only cost).
+            // `col_names` is the cursor-addressable list — declared columns,
+            // else the resolver's inferred names so an undocumented model
+            // still gets a cursor + counts.
+            let col_counts = app.column_counts_for(&uid);
+            let col_names: Vec<String> = if detail.columns.is_empty() {
+                col_counts.keys().cloned().collect()
+            } else {
+                detail.columns.iter().map(|c| c.name.clone()).collect()
+            };
+            let col_index = if col_names.is_empty() { usize::MAX } else { 0 };
+            let stale = matches!(
+                crate::resolution_sql(&app.dag, &uid),
+                Some((_, crate::Confidence::Stale))
+            );
             app.mode = Mode::Detail(DetailView {
                 model_id: uid,
                 name,
@@ -153,6 +169,10 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                 downstream_count,
                 upstream_count,
                 catalog,
+                col_names,
+                col_index,
+                col_counts,
+                stale,
                 scroll: 0,
             });
             Outcome::cont()
@@ -163,9 +183,47 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         }
         // Open the yank-prefix which-key (`y` + key). The menu itself is
         // rendered from the M::Yank BINDINGS rows; the one-shot close lives in
-        // the post-match step at the bottom of this function.
+        // the post-match step at the bottom of this function. Over the Detail
+        // modal BOTH the modal's node and its column target are stashed — the
+        // which-key closes to Selection after any key, so the modal context
+        // must be captured BEFORE the mode swap, or every `y<key>` yank would
+        // silently act on the list selection instead of the modal's node.
+        // (The `y` row exists in Mode::Detail's bindings.)
         Action::YankPrefix => {
+            match &app.mode {
+                Mode::Detail(dv) => {
+                    app.pending_node = Some(dv.model_id.clone());
+                    app.pending_col = if dv.col_index != usize::MAX {
+                        dv.col_names
+                            .get(dv.col_index)
+                            .map(|c| crate::ColumnRef::new(&dv.model_id, c))
+                    } else {
+                        None
+                    };
+                }
+                _ => {
+                    app.pending_node = None;
+                    app.pending_col = None;
+                }
+            }
             app.mode = Mode::Yank;
+            Outcome::cont()
+        }
+        // The structure modal's column cursor (h/l): a SELECTION, not a scroll —
+        // the loop's per-frame `clamp_detail_scroll` does the ensure-visible.
+        // (`Direction::Up`/`Down` here mean previous/next ROW of the column
+        // list — the enum is reused for a vertical cursor, not for the
+        // lineage's upstream/downstream axes.)
+        Action::DetailColumnMove(dir) => {
+            if let Mode::Detail(dv) = &mut app.mode {
+                if dv.col_index != usize::MAX && !dv.col_names.is_empty() {
+                    let last = dv.col_names.len() - 1;
+                    dv.col_index = match dir {
+                        Direction::Up | Direction::Left => dv.col_index.saturating_sub(1),
+                        _ => (dv.col_index + 1).min(last),
+                    };
+                }
+            }
             Outcome::cont()
         }
         // Overlay scroll: acts inside whichever scrollable overlay is open. The
@@ -364,11 +422,11 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             None => Outcome::cont(),
         },
         Action::YankId => {
-            let text = app.selected_unique_id();
+            let text = app.yank_target_uid();
             yank_with_notice(app, text, "Copied unique_id")
         }
         Action::YankName => {
-            let text = app.selected_name();
+            let text = app.yank_target_uid().map(|uid| app.node_name_or_uid(&uid));
             yank_with_notice(app, text, "Copied model name")
         }
         Action::YankMermaid => {
@@ -384,15 +442,15 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             yank_with_notice(app, text, "Copied ASCII lineage")
         }
         Action::YankSql => {
-            let text = app.selected_raw_sql();
+            let text = app.yank_target_uid().and_then(|uid| app.raw_sql_for(&uid));
             yank_with_notice(app, text, "Copied raw SQL")
         }
         Action::YankCompiledSql => {
-            // The selection's compiled SQL (`yC` stays raw-only). Same
+            // The yank target's compiled SQL (`yC` stays raw-only). Same
             // blank-is-absent rule as `selected_raw_sql` — an empty expansion
             // must not clobber the clipboard with nothing.
             let text = app
-                .selected_unique_id()
+                .yank_target_uid()
                 .and_then(|uid| app.dag.compiled(&uid).map(|c| (c.code.clone(), c.stale)))
                 .filter(|(code, _)| !code.trim().is_empty());
             match text {
@@ -410,12 +468,33 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                 }
             }
         }
+        Action::YankColumnLineage => {
+            // `pending_col` is rewritten on every YankPrefix: `Some` = the
+            // menu opened over the structure modal's column cursor; `None` =
+            // it came from selection (no column under a cursor), so explain
+            // how to pick one instead of writing noise to the clipboard.
+            match app.pending_col.take() {
+                Some(col) => {
+                    let text =
+                        app.column_lineage_markdown(&col, crate::ClosureDirection::Downstream);
+                    yank_with_notice(app, Some(text), "Copied column lineage")
+                }
+                None => {
+                    app.set_notice("no column selected — Enter, h/l pick a column, then y l");
+                    Outcome::cont()
+                }
+            }
+        }
         Action::YankImpact => {
-            let text = app.impact_report();
+            let text = app
+                .yank_target_uid()
+                .and_then(|uid| app.impact_report_for(&uid));
             yank_with_notice(app, text, "Copied impact report")
         }
         Action::YankSelector => {
-            let text = app.dbt_selector_command();
+            let text = app
+                .yank_target_uid()
+                .and_then(|uid| app.dbt_selector_command_for(&uid));
             yank_with_notice(app, text, "Copied dbt selector")
         }
         Action::ExportLineage => {
@@ -766,6 +845,15 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
     };
     if in_yank_menu && matches!(app.mode, Mode::Yank) {
         app.mode = Mode::Selection;
+    }
+    // The yank stashes live only while the which-key is open: once the mode is
+    // anything else — after a yank, or an Esc/q cancel — the modal context is
+    // dropped, so a stale `pending_node`/`pending_col` can never leak into a
+    // later yank (both are also rewritten on every `y` press; this just closes
+    // the stale-read window after a cancel).
+    if !matches!(app.mode, Mode::Yank) {
+        app.pending_col = None;
+        app.pending_node = None;
     }
     outcome
 }

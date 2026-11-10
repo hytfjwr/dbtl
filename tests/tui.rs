@@ -423,6 +423,50 @@ fn detail_modal_impact_line_targets_the_cursored_node_not_the_root() {
 }
 
 #[test]
+fn detail_modal_renders_column_counts_cursor_and_inferred_tag() {
+    // Column-level lineage (Issue 07): the structure modal's column rows carry
+    // `↑u ↓d` ONE-HOP edge-count badges and an h/l cursor; a model with no
+    // declared columns renders the resolver's inferred names under a [from
+    // SQL] tag. `cll_demo` is the predictable case: every output has
+    // upstream=4 / down=0 (direct edges, not the transitive closure).
+    use dbtl::app::{apply_action, App};
+    use dbtl::Action;
+    const SAMPLE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sample_manifest.json"
+    );
+    let mut app = App::new(
+        load_dag(SAMPLE).expect("sample manifest loads"),
+        std::path::PathBuf::from(SAMPLE),
+    );
+    app.select_by_unique_id("model.sample.cll_demo");
+    apply_action(&mut app, Action::DetailOpen);
+
+    let text = buffer_to_string(&render_app(&app, 140, 40));
+    assert!(
+        text.contains("columns (4) [from SQL]:"),
+        "inferred-column header tag, got: {text}"
+    );
+    assert!(
+        text.contains("> n_orders"),
+        "cursor marker on the first row: {text}"
+    );
+    assert!(
+        text.contains("↑4 ↓0"),
+        "one-hop edge-count badges on the rows: {text}"
+    );
+
+    // h/l move the ROW cursor (a selection), so the marker follows.
+    apply_action(
+        &mut app,
+        dbtl::Action::DetailColumnMove(dbtl::Direction::Down),
+    );
+    let text = buffer_to_string(&render_app(&app, 140, 40));
+    assert!(text.contains("> order_id"), "cursor moved down: {text}");
+    assert!(!text.contains("> n_orders"), "marker left the first row");
+}
+
+#[test]
 fn sql_modal_titles_the_active_variant() {
     // End-to-end through the REAL draw path against the compiled fixture:
     // `s` opens on [raw] with the toggle hint, `c` flips to [compiled] showing
