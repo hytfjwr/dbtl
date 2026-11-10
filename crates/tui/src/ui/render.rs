@@ -135,6 +135,19 @@ pub struct RenderCtx<'a> {
     /// (crate::App::take_notice) + a stamp); `None` (the default) draws
     /// nothing, so headless renders are untouched.
     pub toast: Option<&'a str>,
+    /// The command palette's candidate rows (commands, `Recent`/`Commands`
+    /// section headers, `@`-search model results, availability marks) —
+    /// Dag-aware data precomputed at the loop seam via
+    /// [`App::palette_rows`](crate::App::palette_rows) so the modal stays
+    /// Dag-free. `None` falls back to plain `palette_candidates` rows
+    /// (headless renders that never computed them still draw).
+    pub palette_rows: Option<&'a [crate::PaletteRow]>,
+    /// The one-line reason stamped on the list pane's FIRST interior row when
+    /// the active list is empty (`no models in scope — …` / `no match — …` /
+    /// the persistent-filter reason) — Dag-aware, computed at the loop seam
+    /// via [`App::list_empty_reason`](crate::App::list_empty_reason). `None`
+    /// in headless renders (or whenever the list has models).
+    pub empty_reason: Option<&'a str>,
     /// The active colour [`Theme`](theme::Theme) every surface paints with.
     /// Defaults to [`theme::DEFAULT`] (so headless renders and the
     /// style-asserting tests keep the legacy palette); the event loop sets the
@@ -174,6 +187,8 @@ impl<'a> RenderCtx<'a> {
             layer_bands: None,
             col_suffix: None,
             toast: None,
+            palette_rows: None,
+            empty_reason: None,
             theme: &theme::DEFAULT,
         }
     }
@@ -216,6 +231,7 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
             ctx.bookmarks,
             ctx.full_model_count,
             ctx.filter_label,
+            ctx.empty_reason,
             ctx.theme,
         );
     }
@@ -246,8 +262,8 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
     );
 
     match ctx.mode {
-        crate::action::Mode::Help { scroll } => {
-            super::overlay::draw_help(frame, area, *scroll, ctx.glyphs, ctx.theme)
+        crate::action::Mode::Help(h) => {
+            super::overlay::draw_help(frame, area, h, ctx.glyphs, ctx.theme)
         }
         crate::action::Mode::Detail(dv) => {
             super::overlay::draw_detail(frame, area, dv, ctx.glyphs, ctx.theme)
@@ -265,7 +281,7 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
             super::overlay::draw_columns(frame, area, cv, ctx.glyphs, ctx.theme)
         }
         crate::action::Mode::Palette(p) => {
-            super::overlay::draw_palette(frame, area, p, ctx.glyphs, ctx.theme)
+            super::overlay::draw_palette(frame, area, p, ctx.palette_rows, ctx.glyphs, ctx.theme)
         }
         crate::action::Mode::Yank => {
             super::overlay::draw_yank_menu(frame, area, ctx.glyphs, ctx.theme)
@@ -300,6 +316,7 @@ fn draw_list(
     bookmarks: Option<&std::collections::BTreeSet<String>>,
     full_count: Option<usize>,
     filter_label: Option<&str>,
+    empty_reason: Option<&str>,
     t: &theme::Theme,
 ) {
     let chrome = super::chrome(glyphs);
@@ -439,6 +456,37 @@ fn draw_list(
     }
 
     frame.render_widget(Paragraph::new(lines), inner);
+
+    // The empty-state / search-hint line: display-only chrome stamped onto the
+    // FIRST interior row AFTER the rows render — never an injected DisplayRow,
+    // so model-space and display-row-space stay untouched (the two-coordinate
+    // invariant). An EMPTY list shows the reason (`empty_reason`); a live list
+    // search with an EMPTY query shows the syntax hint on a non-empty list
+    // (it covers the top row for that frame only — it vanishes on the first
+    // keystroke, per the spec's "while the input is empty").
+    let stamp: Option<String> = if list.is_empty() {
+        empty_reason.map(str::to_string)
+    } else if search == Some("") {
+        Some(format!(
+            "!tag:x selector  ?text full-text  {} history",
+            chrome.badge_up
+        ))
+    } else {
+        None
+    };
+    if let Some(text) = stamp {
+        if inner.height > 0 {
+            let row = Rect { height: 1, ..inner };
+            frame.render_widget(ratatui::widgets::Clear, row);
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    format!(" {text}"),
+                    Style::default().fg(t.text_faint),
+                )),
+                row,
+            );
+        }
+    }
 
     // Right-border scrollbar thumb. DISPLAY-ROW space (row_count / offset /
     // inner.height) — using model count would reintroduce the two-coordinate

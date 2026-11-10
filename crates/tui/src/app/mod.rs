@@ -48,6 +48,9 @@ mod cache;
 mod column;
 mod export;
 mod lineage;
+// `pub(crate)`: the persisted-state layer reads its cap constants; the
+// palette surface itself reaches `App` through the `impl App` methods.
+pub(crate) mod palette;
 mod reducer;
 mod styles;
 #[cfg(test)]
@@ -73,6 +76,12 @@ use column::ColumnFocus;
 pub struct Outcome {
     pub quit: bool,
     pub effects: Vec<Effect>,
+    /// "The applied action reshapes or recentres the lineage" — the event loop
+    /// ORs this into its anchor decision (its own dispatched-key check covers
+    /// the direct path; the flag exists for actions applied INDIRECTLY — a
+    /// palette-confirmed command the loop only ever sees as `SearchConfirm`).
+    /// Set from [`crate::action::reanchors_lineage`], the single list.
+    pub reanchor: bool,
 }
 
 impl Outcome {
@@ -84,14 +93,14 @@ impl Outcome {
     pub fn quit() -> Self {
         Outcome {
             quit: true,
-            effects: Vec::new(),
+            ..Default::default()
         }
     }
     /// Keep running and request one effect.
     pub fn effect(e: Effect) -> Self {
         Outcome {
-            quit: false,
             effects: vec![e],
+            ..Default::default()
         }
     }
 }
@@ -323,6 +332,17 @@ pub struct App {
     /// (a re-root means "leave the trace"), and by `reload` (the rebuilt Dag
     /// may not carry the column).
     pub(super) column_focus: Option<ColumnFocus>,
+    /// Confirmed list-search queries, most-recent-first, deduped, capped at
+    /// [`palette::SEARCH_HISTORY_MAX`] — what the `/`-mode Up/Down recall
+    /// browses. Persisted as `search_history` (recorded by
+    /// [`record_search_query`](App::record_search_query) on `SearchConfirm`).
+    pub search_history: Vec<String>,
+    /// Recently-run palette commands as `Action` Debug names,
+    /// most-recent-first, capped at [`palette::PALETTE_RECENT_MAX`] — the
+    /// Recent section's source. Persisted as `palette_recent`; names whose
+    /// action is gone from `BINDINGS` drop on apply and on render (see
+    /// [`palette_binding_named`](crate::action::palette_binding_named)).
+    pub palette_recent: Vec<String>,
     /// The package scope the Dag was loaded under (`--include-packages` ⇒
     /// `All`): [`reload`](App::reload) re-applies it to the freshly loaded
     /// graph, the status bar prints its tag, and the diff/impact report
@@ -476,6 +496,8 @@ impl App {
             pending_node: None,
             path_anchor: None,
             column_focus: None,
+            search_history: Vec::new(),
+            palette_recent: Vec::new(),
             // CONTRACT: every App starts recorded as `Root` — the scope is a
             // record of how the Dag was LOADED, and App can never recover it
             // from the already-pruned graph. The load path (`cli::build_app`)
@@ -1228,8 +1250,18 @@ impl App {
         // `?`-prefixed queries are FULL-TEXT: match description, column names,
         // and raw SQL — "who references this table/column" (`/?raw_events`).
         let filtered = if let Some(spec) = query.strip_prefix('!') {
-            let set = crate::select::select(&self.dag, self.diff(), spec);
-            crate::model_list::filter_model_list(self.base_list(), |m| set.contains(&m.unique_id))
+            if spec.trim().is_empty() {
+                // A bare `!` is the selector PREFIX, not a query — keep the
+                // full list while the user is still typing (`select("")`
+                // would be a zero-term empty set and flash a wrong
+                // "no match" reason at the first keystroke).
+                build_filtered_model_list(self.base_list(), "")
+            } else {
+                let set = crate::select::select(&self.dag, self.diff(), spec);
+                crate::model_list::filter_model_list(self.base_list(), |m| {
+                    set.contains(&m.unique_id)
+                })
+            }
         } else if let Some(needle) = query.strip_prefix('?') {
             let needle = needle.to_lowercase();
             crate::model_list::filter_model_list(self.base_list(), |m| {

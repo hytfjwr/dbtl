@@ -9,7 +9,7 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::layout::{CellAttr, LensTint, MaterializationClass};
@@ -97,7 +97,26 @@ pub(crate) fn draw_lineage_pane(
     frame.render_widget(block, area);
 
     let Some(lay) = lineage else {
-        return; // No subgraph to draw (empty list); leave the pane blank.
+        // No subgraph to draw: stamp the one-line reason on the first interior
+        // row — the same display-only chrome the list pane's empty/hint rows
+        // use (never a layout row).
+        if inner.height > 0 && inner.width > 0 {
+            let msg = if list.is_empty() {
+                "no model selected"
+            } else {
+                "no lineage to show"
+            };
+            let row = Rect { height: 1, ..inner };
+            frame.render_widget(Clear, row);
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    format!(" {msg}"),
+                    Style::default().fg(t.text_faint),
+                )),
+                row,
+            );
+        }
+        return;
     };
 
     let view_w = inner.width as usize;

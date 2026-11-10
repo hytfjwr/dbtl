@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::app::App;
-use crate::{build_model_list_grouped, Density, LineageLens, SortMode};
+use crate::{build_model_list_grouped, Action, Density, LineageLens, SortMode};
 
 /// The `App` state that survives a restart (saved per project).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +32,16 @@ pub struct PersistedState {
     pub sort: Option<String>,
     /// The `unique_id` selected when the app exited; `None` = unset.
     pub last_selected: Option<String>,
+    /// Confirmed list-search queries, most-recent-first (max 20 — what the
+    /// `/`-mode Up/Down recall browses). `None` = absent (apply keeps the
+    /// current list — same "None keeps" contract every other field follows,
+    /// so a sparse layer like `Config::as_prefs` can't wipe the recall lists).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_history: Option<Vec<String>>,
+    /// Recently-run palette commands as `Action` names, most-recent-first
+    /// (max 5). Names gone from `BINDINGS` are dropped on apply.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub palette_recent: Option<Vec<String>>,
 }
 
 /// User defaults from `~/.config/dbtl/config.yml` — every field optional, so a
@@ -176,6 +186,8 @@ impl App {
             density: Some(density_name(self.ui_state.density()).to_string()),
             sort: Some(sort_name(self.sort).to_string()),
             last_selected: self.selected_unique_id(),
+            search_history: Some(self.search_history.clone()),
+            palette_recent: Some(self.palette_recent.clone()),
         }
     }
 
@@ -213,6 +225,35 @@ impl App {
         }
         if let Some(uid) = &prefs.last_selected {
             self.select_by_unique_id(uid);
+        }
+        // The recall lists restore with the same normalization record-time
+        // applies (dedup + cap + no blanks), so a hand-edited state file can't
+        // inject shape the live path never produces. Palette names whose
+        // action is gone from BINDINGS drop — the Recent section mirrors the
+        // live keymap, never a stale command source. `None` = the layer says
+        // nothing about the list: keep the current value like every Option
+        // field above.
+        if let Some(history) = &prefs.search_history {
+            let mut seen = std::collections::HashSet::new();
+            self.search_history = history
+                .iter()
+                .filter(|q| !q.trim().is_empty() && seen.insert((*q).clone()))
+                .take(crate::app::palette::SEARCH_HISTORY_MAX)
+                .cloned()
+                .collect();
+        }
+        if let Some(recent) = &prefs.palette_recent {
+            let mut seen = std::collections::HashSet::new();
+            self.palette_recent = recent
+                .iter()
+                .filter(|n| {
+                    crate::action::palette_binding_named(n)
+                        .is_some_and(|b| !matches!(b.action, Action::Quit))
+                        && seen.insert((*n).clone())
+                })
+                .take(crate::app::palette::PALETTE_RECENT_MAX)
+                .cloned()
+                .collect();
         }
     }
 }
@@ -274,6 +315,8 @@ mod tests {
         a.sort = SortMode::Tests;
         a.model_list = build_model_list_grouped(&a.dag, a.sort, None);
         a.select_by_unique_id("model.jaffle_finance.rpt_delivery_base_metrics");
+        a.search_history = vec!["?order".to_string(), "stg_".to_string()];
+        a.palette_recent = vec!["ToggleMinimap".to_string()];
 
         let snap = a.prefs_snapshot();
         let mut b = fixture_app();
@@ -287,6 +330,66 @@ mod tests {
         assert_eq!(
             b.selected_unique_id().as_deref(),
             Some("model.jaffle_finance.rpt_delivery_base_metrics")
+        );
+        // The Issue-09 recall lists ride the same snapshot/apply round-trip.
+        assert_eq!(
+            b.search_history,
+            vec!["?order".to_string(), "stg_".to_string()]
+        );
+        assert_eq!(b.palette_recent, vec!["ToggleMinimap".to_string()]);
+    }
+
+    #[test]
+    fn apply_prefs_normalizes_the_recall_lists() {
+        // The restore path applies the same dedup/cap/no-blank normalization
+        // record-time uses, and drops palette names whose action left
+        // BINDINGS — a hand-edited state file can't inject stale commands.
+        let mut a = fixture_app();
+        let prefs = PersistedState {
+            bookmarks: Default::default(),
+            lens: None,
+            density: None,
+            sort: None,
+            last_selected: None,
+            search_history: Some(
+                (0..30)
+                    .map(|i| format!("q{i:02}"))
+                    .chain(["  ".to_string(), "q00".to_string()])
+                    .collect(),
+            ),
+            palette_recent: Some(
+                [
+                    "ToggleMinimap",
+                    "NoSuchAction",  // stale: not an Action in BINDINGS
+                    "ToggleMinimap", // dup folds into the first occurrence
+                    "Quit",          // record-time skips it → restore drops it too
+                    "ThemeCycle",
+                    "StatsOpen",
+                    "DbtParse",
+                    "Reload",
+                ]
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            ),
+        };
+        a.apply_prefs(&prefs);
+        assert_eq!(a.search_history.len(), 20, "search history caps at 20");
+        assert_eq!(a.search_history[0], "q00");
+        assert!(
+            a.search_history.iter().all(|q| !q.trim().is_empty()),
+            "blanks dropped"
+        );
+        assert_eq!(
+            a.palette_recent,
+            vec![
+                "ToggleMinimap".to_string(),
+                "ThemeCycle".to_string(),
+                "StatsOpen".to_string(),
+                "DbtParse".to_string(),
+                "Reload".to_string(),
+            ],
+            "stale name + Quit dropped, dup folded, cap at 5 — order preserved"
         );
     }
 
@@ -305,6 +408,8 @@ mod tests {
             density: None,
             sort: None,
             last_selected: Some("model.gone.nope".to_string()),
+            search_history: None,
+            palette_recent: None,
         };
         a.apply_prefs(&prefs);
         assert!(a
@@ -338,6 +443,8 @@ mod tests {
             density: None,
             sort: Some("tests".to_string()),
             last_selected: None,
+            search_history: Some(vec!["?order".to_string()]),
+            palette_recent: Some(vec!["ToggleMinimap".to_string()]),
         };
         let json = serde_json::to_string(&p).unwrap();
         let back: PersistedState = serde_json::from_str(&json).unwrap();
