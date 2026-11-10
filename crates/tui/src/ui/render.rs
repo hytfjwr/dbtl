@@ -198,6 +198,13 @@ pub struct RenderCtx<'a> {
     /// App's active theme (`--theme` / Ctrl-t). A borrow, like every other
     /// field — themes are data, never a global.
     pub theme: &'a theme::Theme,
+    /// The inspector pane's snapshot (Issue 04): the cached
+    /// [`InspectorView`](crate::InspectorView) for the lineage cursor's node,
+    /// `as_deref()`'d from `App::inspector_view` at the loop seam. `None` in
+    /// headless renders or when the Dag is empty — the pane then draws
+    /// nothing (its rect may not even be allocated). Dag-free, like every
+    /// other field.
+    pub inspector: Option<&'a crate::InspectorView>,
 }
 
 /// One visible toast in the top-right stack (Issue 08): the severity drives
@@ -245,6 +252,7 @@ impl<'a> RenderCtx<'a> {
             palette_rows: None,
             empty_reason: None,
             theme: &theme::DEFAULT,
+            inspector: None,
         }
     }
 }
@@ -315,6 +323,14 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         ctx.col_suffix,
         ctx.theme,
     );
+    // The right inspector pane (Issue 04): drawn when the loop published a
+    // snapshot AND `pane_layout` allocated it a visible rect (a width-clamped
+    // `On` at a tiny terminal can yield zero — §1's clamp rule, not an error).
+    if ctx.state.inspector_shown() && rects.inspector.width > 0 {
+        if let Some(view) = ctx.inspector {
+            super::inspector::draw_inspector_pane(frame, rects.inspector, ctx, view);
+        }
+    }
 
     // Restamp the splitter's border columns with the accent while it's
     // hovered/dragged — cheap chrome-level feedback over both panes' drawn

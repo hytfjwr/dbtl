@@ -16,8 +16,8 @@ use dbtl::effect::Effect;
 use dbtl::layout::Layout;
 use dbtl::ui::{
     draw, hit_target, mouse_dirty, overlay_rect, pane_interior, pane_layout, splitter_drag_width,
-    Focus, HitGeometry, HitTarget, LineageLens, MouseInput, MouseOutcome, MouseRouter, RenderCtx,
-    Splitter, StatusSegments, TabBarView,
+    Focus, HitGeometry, HitTarget, LineageLens, MouseInput, MouseOutcome, MouseRouter, PaneRects,
+    RenderCtx, Splitter, StatusSegments, TabBarView,
 };
 use dbtl::{Mode, SortMode};
 
@@ -121,6 +121,24 @@ pub fn event_loop(
                 // per-root state (a group key means nothing across a re-root),
                 // so they re-initialise on every selection change.
                 app.clear_collapse_expansions();
+            }
+
+            // The inspector's effective visibility for THIS frame — the only
+            // size-aware seam resolves the `auto` pref against the terminal
+            // width (>=160 per §4; Issue 12 refines the under-160 policy) and
+            // publishes the answer into UiState so `pane_config` (the layout
+            // below), `hit_target`, and the focus ring all read one resolved
+            // value. `inspector_target` then re-homes the pane's scroll +
+            // column cursor the moment the inspected node changes (the
+            // follow-the-cursor rule).
+            let shown = match app.ui_state.inspector_policy() {
+                dbtl::InspectorPolicy::On => true,
+                dbtl::InspectorPolicy::Off => false,
+                dbtl::InspectorPolicy::Auto => terminal.size()?.width >= 160,
+            };
+            app.ui_state.set_inspector_shown(shown);
+            if let Some(uid) = app.inspector_target() {
+                app.ui_state.set_inspector_target(&uid);
             }
 
             // Follow list scroll BEFORE drawing (display-row space) so a jump never
@@ -236,6 +254,33 @@ pub fn event_loop(
                 _ => {}
             }
 
+            // The inspector snapshot for the draw seam: the (uid,
+            // generation)-cached `Rc` clone `RenderCtx` borrows as
+            // `Option<&InspectorView>` — `None` keeps the pane's field empty
+            // (and the loop never pays the build cost for a hidden pane).
+            let inspector = if app.ui_state.inspector_shown() {
+                app.inspector_view()
+            } else {
+                None
+            };
+            // Clamp the pane's scroll to the fresh content + interior (the
+            // same size-aware seam the modal scrolls use — the reducer's
+            // scroll intents land unclamped; this bounds them). The column
+            // cursor's ensure-visible rides the same call.
+            if let Some(view) = inspector.as_deref() {
+                let inner = pane_interior(panes.inspector);
+                let scroll = dbtl::ui::clamp_inspector_scroll(
+                    view,
+                    app.glyph_mode,
+                    app.active_theme(),
+                    inner.width as usize,
+                    inner.height as usize,
+                    app.ui_state.inspector_scroll(),
+                    app.ui_state.inspector_col(),
+                );
+                app.ui_state.set_inspector_scroll(scroll);
+            }
+
             // Precompute Dag-aware strings so RenderCtx stays Dag-free; the borrows
             // live for the draw call below.
             let status_note = app.selected_status_note();
@@ -254,6 +299,7 @@ pub fn event_loop(
             let focus_s = match app.ui_state.focus() {
                 Focus::List => "list",
                 Focus::RightPane => "lineage",
+                Focus::Inspector => "inspector",
             };
             // Position is meaningful only when the active list has selectable models;
             // an empty project or a zero-match search omits the segment entirely
@@ -451,6 +497,7 @@ pub fn event_loop(
                 ctx.palette_rows = palette_rows.as_deref();
                 ctx.empty_reason = empty_reason.as_deref();
                 ctx.theme = app.active_theme();
+                ctx.inspector = inspector.as_deref();
                 terminal
                     .draw(|frame| draw(frame, &ctx))
                     .context("failed to draw frame")?;
@@ -677,15 +724,7 @@ fn handle_mouse(
                 if within(rects.tab_bar, me.column, me.row) {
                     app.scroll_tab_bar(if down { 1 } else { -1 });
                 } else {
-                    wheel(
-                        app,
-                        pane_interior(rects.list),
-                        pane_interior(rects.lineage),
-                        me.column,
-                        me.row,
-                        down,
-                        shift,
-                    );
+                    wheel(app, &rects, me.column, me.row, down, shift);
                 }
             } else {
                 // A covering overlay owns the screen, so the wheel scrolls
@@ -825,11 +864,45 @@ fn handle_mouse(
                                 HitTarget::ListRow(_) if double_left => {
                                     apply_mouse(app, &mut outcome, Action::DetailOpen);
                                 }
+                                // An inspector row's single click: focus the
+                                // pane (the universal interior-click meaning
+                                // via `click_target`), then pick the column
+                                // row under the point when the line IS one —
+                                // the loop owns the screen→row mapping
+                                // (content + scroll are live loop data).
+                                // Enter then traces the picked column.
+                                HitTarget::InspectorRow(y) if !double_left => {
+                                    app.click_target(t, *button, (at.x, at.y));
+                                    if *button == MouseButton::Left {
+                                        if let Some(view) = app.inspector_view() {
+                                            let inner = pane_interior(
+                                                pane_layout(area, &app.ui_state.pane_config())
+                                                    .inspector,
+                                            );
+                                            if let Some(i) = dbtl::ui::inspector_column_at(
+                                                &view,
+                                                app.glyph_mode,
+                                                app.active_theme(),
+                                                inner.width as usize,
+                                                app.ui_state.inspector_scroll(),
+                                                *y as u16,
+                                            ) {
+                                                apply_mouse(
+                                                    app,
+                                                    &mut outcome,
+                                                    Action::InspectorColumnPick(i),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
                                 // §6 marks double-click "—" everywhere else:
-                                // tabs, `×`, `+`, arrows, blanks, the minimap
-                                // and the status bar take no second action (a
-                                // `×` double-click must NOT close the tab
-                                // that slid under the pointer).
+                                // tabs, `×`, `+`, arrows, inspector rows,
+                                // blanks, the minimap and the status bar take
+                                // no second action (a `×` double-click must
+                                // NOT close the tab that slid under the
+                                // pointer; Issue 05 gives inspector rows
+                                // theirs).
                                 _ if double_left => {}
                                 _ => app.click_target(t, *button, (at.x, at.y)),
                             }
@@ -1058,16 +1131,8 @@ fn within(r: Rect, x: u16, y: u16) -> bool {
 /// lineage pane, Shift remaps the notch to a horizontal pan (down = right) —
 /// the usual convention for mice without a horizontal wheel; over the list,
 /// Shift changes nothing (the list has no horizontal axis).
-fn wheel(
-    app: &mut App,
-    list_inner: Rect,
-    lin_inner: Rect,
-    col: u16,
-    row: u16,
-    down: bool,
-    shift: bool,
-) {
-    if within(list_inner, col, row) {
+fn wheel(app: &mut App, rects: &PaneRects, col: u16, row: u16, down: bool, shift: bool) {
+    if within(pane_interior(rects.list), col, row) {
         // §2 T1: a wheel notch over the list moves the CURSOR — adopt it as
         // the active tab's root exactly like a j/k move (guarded on the
         // index actually changing, so a clamped notch at the boundary
@@ -1077,7 +1142,9 @@ fn wheel(
         if app.ui_state.selected() != before {
             app.adopt_list_selection();
         }
-    } else if within(lin_inner, col, row) {
+    } else if within(pane_interior(rects.inspector), col, row) {
+        app.ui_state.wheel_inspector(down);
+    } else if within(pane_interior(rects.lineage), col, row) {
         if shift {
             app.ui_state.wheel_lineage_x(down);
         } else {

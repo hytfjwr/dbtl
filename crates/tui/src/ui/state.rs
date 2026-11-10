@@ -83,21 +83,83 @@ impl LineageLens {
     }
 }
 
-/// Which pane currently has focus: the left model list or the right lineage pane.
+/// The inspector pane's visibility pref (screen-spec §4): what `I` cycles and
+/// what persists — NOT the effective on-screen state, which the event loop
+/// resolves per frame from this value + the terminal width (the only
+/// size-aware layer) and stores back via [`UiState::set_inspector_shown`].
+///
+/// Cycle order (`I`): Auto → On → Off → Auto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InspectorPolicy {
+    /// Width-driven (the default): the pane shows itself at terminals
+    /// ≥160 columns — Issue 12 refines the under-160 behaviour; this Issue
+    /// implements exactly the §4 "160 列以上で自動" rule.
+    #[default]
+    Auto,
+    /// Always request the pane — `pane_layout` still display-clamps its
+    /// width when the terminal can't fit it, so `On` at a tiny terminal can
+    /// still yield a zero-width pane (never an error, by §1's clamp rule).
+    On,
+    /// Never show the pane (and never accept its focus).
+    Off,
+}
+
+impl InspectorPolicy {
+    /// The next pref in the `I` cycle (`auto → on → off → auto`).
+    pub fn next(self) -> InspectorPolicy {
+        match self {
+            InspectorPolicy::Auto => InspectorPolicy::On,
+            InspectorPolicy::On => InspectorPolicy::Off,
+            InspectorPolicy::Off => InspectorPolicy::Auto,
+        }
+    }
+
+    /// The persisted/config spelling (`inspector: auto|on|off` — kebab-free,
+    /// matching the other pref names).
+    pub fn name(self) -> &'static str {
+        match self {
+            InspectorPolicy::Auto => "auto",
+            InspectorPolicy::On => "on",
+            InspectorPolicy::Off => "off",
+        }
+    }
+
+    /// Parse a [`InspectorPolicy::name`] string; `None` on unknown values —
+    /// the pref-apply seam skips rather than errors, like every prefs field.
+    pub fn from_name(name: &str) -> Option<InspectorPolicy> {
+        Some(match name {
+            "auto" => InspectorPolicy::Auto,
+            "on" => InspectorPolicy::On,
+            "off" => InspectorPolicy::Off,
+            _ => return None,
+        })
+    }
+}
+
+/// Which pane currently has focus: the left model list, the center lineage
+/// pane, or the right inspector pane (Issue 04).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     /// The left model list pane.
     List,
-    /// The right lineage pane.
+    /// The center lineage pane.
     RightPane,
+    /// The right inspector pane (Issue 04) — reachable via `Tab` only while
+    /// the pane is shown; `j`/`k`/`d`/`u`/`g`/`G`/`h`/`l` and the wheel act
+    /// on its content while focused.
+    Inspector,
 }
 
 impl Focus {
-    /// Toggle between the two panes.
-    fn toggled(self) -> Self {
+    /// The next pane in the `Tab` ring (the ORDER — visibility filtering is
+    /// [`UiState::toggle_focus`]'s job, since only UiState knows which panes
+    /// are on screen). `List → RightPane → Inspector → List` (§4's
+    /// 一覧 → Lineage → インスペクタ → 一覧).
+    fn next(self) -> Self {
         match self {
             Focus::List => Focus::RightPane,
-            Focus::RightPane => Focus::List,
+            Focus::RightPane => Focus::Inspector,
+            Focus::Inspector => Focus::List,
         }
     }
 }
@@ -171,6 +233,25 @@ pub struct UiState {
     /// The inspector pane's saved width in columns. Stored ahead of Issue
     /// 04's pane so `=` and the persisted state already carry it.
     inspector_width: u16,
+    /// The inspector visibility pref (`I` cycles it; persisted). Pure data —
+    /// the width-aware `auto` resolution happens in the event loop, which
+    /// then publishes the result through [`UiState::set_inspector_shown`].
+    inspector_policy: InspectorPolicy,
+    /// Whether the inspector pane is actually ON SCREEN this frame — the
+    /// event loop's resolved value, not a user toggle. Only the loop writes
+    /// it; `pane_layout`/`hit_test`/focus-filtering read it.
+    inspector_shown: bool,
+    /// The inspector pane's scroll offset in content lines (loop-clamped,
+    /// like every scroll slot).
+    inspector_scroll: usize,
+    /// The inspector's column-row cursor — an index into
+    /// [`InspectorView::detail`]'s `col_names`, or `usize::MAX` when no row
+    /// is cursored (the default — `j`/`k` then scroll instead of moving a
+    /// cursor, per §4's "cursor stays a mouse/pick affordance" reading).
+    inspector_col: usize,
+    /// The unique_id the currently-built [`InspectorView`] describes, so the
+    /// reducer can reset scroll + cursor when the inspected node changes.
+    inspector_target: String,
 }
 
 impl UiState {
@@ -191,6 +272,11 @@ impl UiState {
             overview: false,
             list_width: super::geom::DEFAULT_LIST_WIDTH,
             inspector_width: super::geom::DEFAULT_INSPECTOR_WIDTH,
+            inspector_policy: InspectorPolicy::default(),
+            inspector_shown: false,
+            inspector_scroll: 0,
+            inspector_col: usize::MAX,
+            inspector_target: String::new(),
         }
     }
 
@@ -214,15 +300,18 @@ impl UiState {
         self.list_visible
     }
 
-    /// Show / hide the left model-list pane. Hiding pins focus to the lineage
-    /// pane (the only one left on screen); showing hands it back to the list
-    /// (the reason you bring it back is to use it).
+    /// Show / hide the left model-list pane. Hiding moves focus off the list
+    /// (to the lineage, or keeps the inspector if that's where it was);
+    /// showing hands it back to the list (the reason you bring it back is
+    /// to use it).
     pub fn toggle_list_pane(&mut self) {
         self.list_visible = !self.list_visible;
         self.focus = if self.list_visible {
             Focus::List
-        } else {
+        } else if self.focus == Focus::List {
             Focus::RightPane
+        } else {
+            self.focus
         };
     }
 
@@ -327,6 +416,16 @@ impl UiState {
             as u16;
     }
 
+    /// `<`/`>` on a focused inspector: the inspector-side counterpart of
+    /// [`nudge_list_width`](UiState::nudge_list_width) — same fixed step,
+    /// same size-blind floor-only clamp.
+    pub fn nudge_inspector_width(&mut self, delta: i32) {
+        self.inspector_width = (i32::from(self.inspector_width) + delta).clamp(
+            i32::from(super::geom::MIN_INSPECTOR_WIDTH),
+            i32::from(u16::MAX),
+        ) as u16;
+    }
+
     /// Apply a splitter drag's resolved width to the pane pref, clamped to the
     /// §1 min/max for `terminal_w` — the size-aware caller (the event loop, or
     /// a headless test) resolves the pointer to `w` via
@@ -355,6 +454,87 @@ impl UiState {
         }
     }
 
+    /// The inspector visibility pref (`I` cycles it; a persisted view-pref).
+    /// NOT the on-screen state — see [`inspector_shown`](UiState::inspector_shown).
+    pub fn inspector_policy(&self) -> InspectorPolicy {
+        self.inspector_policy
+    }
+
+    /// Set the inspector pref directly (state restore / config default).
+    pub fn set_inspector_policy(&mut self, policy: InspectorPolicy) {
+        self.inspector_policy = policy;
+    }
+
+    /// `I`: cycle the inspector pref `auto → on → off`. Pure pref mutation —
+    /// the width-aware resolution happens in the event loop, which then
+    /// publishes the result through [`set_inspector_shown`](UiState::set_inspector_shown).
+    pub fn cycle_inspector(&mut self) {
+        self.inspector_policy = self.inspector_policy.next();
+    }
+
+    /// Whether the inspector pane is ON SCREEN right now — the value the
+    /// event loop publishes per frame after resolving the pref against the
+    /// terminal width. `pane_layout`, `hit_test`, and the focus ring read it.
+    pub fn inspector_shown(&self) -> bool {
+        self.inspector_shown
+    }
+
+    /// Publish the event loop's resolved inspector visibility (the ONLY
+    /// writer — reducers and prefs never touch this directly). Hiding the
+    /// pane moves focus off it so no key can drive an invisible pane, the
+    /// same pin `toggle_list_pane` keeps on the list.
+    pub fn set_inspector_shown(&mut self, shown: bool) {
+        self.inspector_shown = shown;
+        if !shown && self.focus == Focus::Inspector {
+            // Land on the lineage — the pane you were inspecting INTO — never
+            // the list (which may itself be hidden).
+            self.focus = Focus::RightPane;
+        }
+    }
+
+    /// The inspector pane's scroll offset (content lines).
+    pub fn inspector_scroll(&self) -> usize {
+        self.inspector_scroll
+    }
+
+    /// Set the inspector scroll offset directly — the wheel/key scroll
+    /// intent, a home/end jump's target, and the event loop's clamp + the
+    /// cursor's ensure-visible all write here (same size-blind split as
+    /// `wheel_lineage`: intents land unclamped; the loop bounds them).
+    pub fn set_inspector_scroll(&mut self, scroll: usize) {
+        self.inspector_scroll = scroll;
+    }
+
+    /// The inspector's column-row cursor (an index into the built
+    /// `InspectorView`'s `col_names`), or `usize::MAX` for "no row cursored".
+    pub fn inspector_col(&self) -> usize {
+        self.inspector_col
+    }
+
+    /// Set the column-row cursor directly (a mouse pick — the index comes
+    /// from the event loop's screen→row mapping). `usize::MAX` clears it.
+    pub fn set_inspector_col(&mut self, index: usize) {
+        self.inspector_col = index;
+    }
+
+    /// The unique_id the current `InspectorView` describes ("" = none yet).
+    pub fn inspector_target(&self) -> &str {
+        &self.inspector_target
+    }
+
+    /// Record the inspected node's uid; a CHANGE resets scroll + column
+    /// cursor (the new node's content starts at the top — the alternative,
+    /// carrying a stale offset into different-length content, reads as a
+    /// bug). Loop-written every frame.
+    pub fn set_inspector_target(&mut self, uid: &str) {
+        if self.inspector_target != uid {
+            self.inspector_target.clear();
+            self.inspector_target.push_str(uid);
+            self.inspector_scroll = 0;
+            self.inspector_col = usize::MAX;
+        }
+    }
+
     /// Set list-pane visibility directly (state restore), reusing the toggle's
     /// focus pinning so a hidden list can never keep the cursor.
     pub fn set_list_visible(&mut self, visible: bool) {
@@ -371,23 +551,35 @@ impl UiState {
 
     /// The `geom::PaneConfig` for the current view prefs — the ONE derivation
     /// every `pane_layout` caller (draw, hit-test, viewport math) shares. The
-    /// tab bar claims its row (Issue 03); the inspector stays off until
-    /// Issue 04.
+    /// tab bar claims its row (Issue 03); the inspector reads the loop's
+    /// RESOLVED `inspector_shown` (the width-aware answer), never the raw
+    /// pref.
     pub fn pane_config(&self) -> super::geom::PaneConfig {
         super::geom::PaneConfig {
             list_visible: self.list_visible,
             list_width: self.list_width,
-            inspector_visible: false,
+            inspector_visible: self.inspector_shown,
             inspector_width: self.inspector_width,
             tab_bar: true,
         }
     }
 
-    /// Toggle the focused pane — a no-op while the list pane is hidden (the
-    /// lineage is the only focusable pane then).
+    /// Advance focus one step in the `Tab` ring (`List → RightPane →
+    /// Inspector → List`), skipping any pane that isn't on screen — so a
+    /// hidden list still yields the lineage↔inspector pair, and a hidden
+    /// inspector collapses the ring back to the original two-pane toggle.
     fn toggle_focus(&mut self) {
-        if self.list_visible {
-            self.focus = self.focus.toggled();
+        // The `Tab` ring walks the FIXED `List → RightPane → Inspector` order,
+        // skipping panes that aren't on screen (`Focus::Inspector` is skipped
+        // while the pane is hidden, `Focus::List` while the list is hidden) —
+        // §4's 一覧 → Lineage → インスペクタ → 一覧.
+        for _ in 0..3 {
+            self.focus = self.focus.next();
+            match self.focus {
+                Focus::List if !self.list_visible => continue,
+                Focus::Inspector if !self.inspector_shown => continue,
+                _ => return,
+            }
         }
     }
 
@@ -464,6 +656,17 @@ impl UiState {
             self.lineage_scroll_y.saturating_add(WHEEL_STEP)
         } else {
             self.lineage_scroll_y.saturating_sub(WHEEL_STEP)
+        };
+    }
+
+    /// Scroll the inspector pane vertically by a wheel notch (focus-independent;
+    /// the loop's `clamp_inspector_scroll` bounds it next frame). Used by a
+    /// wheel over the inspector pane.
+    pub fn wheel_inspector(&mut self, down: bool) {
+        self.inspector_scroll = if down {
+            self.inspector_scroll.saturating_add(WHEEL_STEP)
+        } else {
+            self.inspector_scroll.saturating_sub(WHEEL_STEP)
         };
     }
 

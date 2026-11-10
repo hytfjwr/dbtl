@@ -95,6 +95,12 @@ type ImpactKey = (String, u64);
 /// `(downstream sans exposures, upstream, downstream exposures)` closure sizes.
 type ImpactCounts = (usize, usize, usize);
 
+/// Identity of the inspector snapshot: `(inspected uid, generation)` — the
+/// generation already covers every input [`inspector_view_for`] reads (the
+/// `Dag` + its side maps, the diff, lint findings, run results, and the
+/// catalog — all style inputs, all generation-bumped).
+type InspectorKey = (String, u64);
+
 /// The per-`App` cache slots. One entry each — the loop only ever needs the
 /// CURRENT frame's values, so an LRU would buy nothing.
 #[derive(Default)]
@@ -103,6 +109,7 @@ pub(super) struct LineageCaches {
     collapsed: RefCell<Option<(CollapsedKey, Rc<Collapsed>)>>,
     layout: RefCell<Option<(LayoutKey, Rc<Layout>)>>,
     impact: RefCell<Option<(ImpactKey, ImpactCounts)>>,
+    inspector: RefCell<Option<(InspectorKey, Rc<crate::InspectorView>)>>,
 }
 
 impl App {
@@ -273,5 +280,26 @@ impl App {
         let counts = self.impact_breakdown_for(uid);
         *self.caches.impact.borrow_mut() = Some((key, counts));
         counts
+    }
+
+    /// The inspector pane's snapshot for the current target (the lineage
+    /// cursor or the rooted selection — [`inspector_target`]), memoized by
+    /// `(uid, generation)` so every idle-tick redraw is an `Rc` clone, not a
+    /// `detail_view_for` rebuild + lint/diff/run scans. `None` when the Dag
+    /// has no selectable node at all. The event loop hands `as_deref()` to
+    /// `RenderCtx` — the render layer stays `Dag`-free.
+    ///
+    /// [`inspector_target`]: App::inspector_target
+    pub fn inspector_view(&self) -> Option<Rc<crate::InspectorView>> {
+        let uid = self.inspector_target()?;
+        let key = (uid.clone(), self.generation);
+        if let Some((k, v)) = self.caches.inspector.borrow().as_ref() {
+            if *k == key {
+                return Some(Rc::clone(v));
+            }
+        }
+        let v = Rc::new(super::reducer::inspector_view_for(self, uid));
+        *self.caches.inspector.borrow_mut() = Some((key, Rc::clone(&v)));
+        Some(v)
     }
 }

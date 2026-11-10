@@ -38,8 +38,9 @@ fn modal_content_width(area: Rect) -> usize {
 /// greedily, continuation lines re-indent under the first token so a
 /// wrapped list still reads as one block. A token wider than the line
 /// stands alone rather than splitting mid-name. `width == 0` (a
-/// degenerate terminal) yields the unwrapped single line.
-fn wrap_prefixed(prefix: &str, text: &str, width: usize) -> Vec<String> {
+/// degenerate terminal) yields the unwrapped single line. `pub(crate)`:
+/// the inspector pane wraps its Description/Lint/Diff text the same way.
+pub(crate) fn wrap_prefixed(prefix: &str, text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![format!("{prefix}{text}")];
     }
@@ -429,6 +430,51 @@ fn detail_column_lines(
     out
 }
 
+/// One test's display text — `kind(col)` plus the resolved `-> target.col`
+/// jump hint for relationships and the `name in:N given:M expect:K` shape
+/// for unit tests. Shared by the structure modal's tests section and the
+/// inspector pane (Issue 04): one row spelling, never two.
+pub(crate) fn test_row_text(test: &crate::TestInfo) -> String {
+    let col = test
+        .column_name
+        .as_deref()
+        .map(|c| format!("({c})"))
+        .unwrap_or_default();
+    // The relationships target: the resolved display name when the node
+    // survived pruning, else the raw uid (still informative); `->` is
+    // pure ASCII in both glyph modes.
+    let target = if test.ref_uid.is_some() {
+        let name = test
+            .ref_name
+            .as_deref()
+            .or(test.ref_uid.as_deref())
+            .unwrap_or("?");
+        let rcol = test
+            .ref_column
+            .as_deref()
+            .map(|c| format!(".{c}"))
+            .unwrap_or_default();
+        format!(" -> {name}{rcol}")
+    } else {
+        String::new()
+    };
+    // The unit-test shape: the test's own name (a unit test's identity —
+    // the `kind` alone is just `unit`), the input-table count, and the
+    // inline row counts the manifest carries (a `fixture:`/CSV side
+    // shows no number).
+    let unit = test.unit.as_ref().map_or(String::new(), |u| {
+        let mut s = format!(" {} in:{}", test.name, u.inputs);
+        if let Some(g) = u.given_rows {
+            s.push_str(&format!(" given:{g}"));
+        }
+        if let Some(e) = u.expect_rows {
+            s.push_str(&format!(" expect:{e}"));
+        }
+        s
+    });
+    format!("{}{}{}{}", test.kind, col, target, unit)
+}
+
 /// The tests section: header + one row per attached test — the plain
 /// `kind(col)` for schema tests, a `-> target.col` jump hint for resolved
 /// `relationships` targets, and the `in:N given:M expect:K` shape for unit
@@ -441,50 +487,13 @@ fn detail_test_lines(dv: &DetailView, t: &theme::Theme) -> Vec<Line<'static>> {
         header_style(t),
     )];
     for (i, test) in dv.tests.iter().enumerate() {
-        let col = test
-            .column_name
-            .as_deref()
-            .map(|c| format!("({c})"))
-            .unwrap_or_default();
-        // The relationships target: the resolved display name when the node
-        // survived pruning, else the raw uid (still informative); `->` is
-        // pure ASCII in both glyph modes.
-        let target = if test.ref_uid.is_some() {
-            let name = test
-                .ref_name
-                .as_deref()
-                .or(test.ref_uid.as_deref())
-                .unwrap_or("?");
-            let rcol = test
-                .ref_column
-                .as_deref()
-                .map(|c| format!(".{c}"))
-                .unwrap_or_default();
-            format!(" -> {name}{rcol}")
-        } else {
-            String::new()
-        };
-        // The unit-test shape: the test's own name (a unit test's identity —
-        // the `kind` alone is just `unit`), the input-table count, and the
-        // inline row counts the manifest carries (a `fixture:`/CSV side
-        // shows no number).
-        let unit = test.unit.as_ref().map_or(String::new(), |u| {
-            let mut s = format!(" {} in:{}", test.name, u.inputs);
-            if let Some(g) = u.given_rows {
-                s.push_str(&format!(" given:{g}"));
-            }
-            if let Some(e) = u.expect_rows {
-                s.push_str(&format!(" expect:{e}"));
-            }
-            s
-        });
         let selected = i == dv.test_index;
         let mark = if selected {
             super::SELECTED_MARKER
         } else {
             "  "
         };
-        let text = format!("  {mark}{}{}{}{}", test.kind, col, target, unit);
+        let text = format!("  {mark}{}", test_row_text(test));
         out.push(if selected {
             Line::styled(text, selected_style(t))
         } else {

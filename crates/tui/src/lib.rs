@@ -22,8 +22,8 @@ pub mod persist;
 pub mod ui;
 
 pub use action::{
-    dispatch, help_lines, Action, DiffView, Direction, HelpLine, HelpView, Mode, ModeKind,
-    NoticeLevel, NotificationEntry, NotificationsView, PaletteRow, SearchTarget, SqlView,
+    dispatch, help_lines, Action, DiffView, Direction, HelpLine, HelpView, InspectorView, Mode,
+    ModeKind, NoticeLevel, NotificationEntry, NotificationsView, PaletteRow, SearchTarget, SqlView,
     StatsView,
 };
 pub use app::{apply_action, layer_violation_edges, App, AppStats, ListFilter, Outcome};
@@ -39,6 +39,6 @@ pub use model_list::{
 };
 pub use persist::{Config, PersistedState};
 pub use ui::{
-    draw, handle_key, reduce_selection, Focus, KeyOutcome, LineageLens, RenderCtx, ToastLine,
-    UiState,
+    draw, handle_key, reduce_selection, Focus, InspectorPolicy, KeyOutcome, LineageLens, RenderCtx,
+    ToastLine, UiState,
 };

@@ -13,6 +13,7 @@
 use ratatui::style::{Modifier, Style};
 
 mod geom;
+mod inspector;
 mod lineage;
 mod mouse;
 mod overlay;
@@ -28,6 +29,10 @@ pub use geom::{
     DEFAULT_INSPECTOR_WIDTH, DEFAULT_LIST_WIDTH, MIN_INSPECTOR_WIDTH, MIN_LINEAGE_WIDTH,
     MIN_LIST_WIDTH,
 };
+pub use inspector::{
+    clamp_inspector_scroll, draw_inspector_pane, inspector_column_at, inspector_columns_line0,
+    INSPECTOR_PAGE_STEP,
+};
 pub use lineage::LayerBand;
 pub use mouse::{mouse_dirty, MouseInput, MouseOutcome, MouseRouter};
 pub use overlay::{
@@ -35,7 +40,9 @@ pub use overlay::{
     clamp_notifications_scroll, clamp_sql_scroll, clamp_stats_scroll,
 };
 pub use render::{draw, RenderCtx, StatusSegments, TabBarView, ToastLine};
-pub use state::{handle_key, reduce_selection, Focus, KeyOutcome, LineageLens, UiState};
+pub use state::{
+    handle_key, reduce_selection, Focus, InspectorPolicy, KeyOutcome, LineageLens, UiState,
+};
 
 // ---- shared render styles (used across the list / lineage / overlay panes) ----
 
@@ -97,6 +104,12 @@ pub(crate) struct Chrome {
     pub tab_prev: &'static str,
     /// The tab bar's scroll-forward overflow arrow (`›` Unicode / `>` ASCII).
     pub tab_next: &'static str,
+    /// The inspector pane's run/test result markers (Issue 04): `✓`/`!`/`✗`
+    /// in Unicode mode; `v`/`!`/`x` in ASCII — `!` is already pure ASCII in
+    /// both. Only the glyph swaps; the status word does the real talking.
+    pub run_ok: &'static str,
+    pub run_warn: &'static str,
+    pub run_fail: &'static str,
 }
 
 /// The chrome for a [`GlyphMode`](crate::GlyphMode).
@@ -131,6 +144,9 @@ static UNICODE_CHROME: Chrome = Chrome {
     tab_close: "×",
     tab_prev: "‹",
     tab_next: "›",
+    run_ok: "✓",
+    run_warn: "!",
+    run_fail: "✗",
 };
 
 static ASCII_CHROME: Chrome = Chrome {
@@ -152,6 +168,9 @@ static ASCII_CHROME: Chrome = Chrome {
     tab_close: "x",
     tab_prev: "<",
     tab_next: ">",
+    run_ok: "v",
+    run_warn: "!",
+    run_fail: "x",
 };
 
 /// Highlight style for the selected row / emphasized lineage label: an
