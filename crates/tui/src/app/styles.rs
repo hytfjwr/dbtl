@@ -49,6 +49,17 @@ impl App {
             } else {
                 std::collections::HashSet::new()
             };
+        // The Lint lens tints each finding's violating node (the same
+        // `run_rules` output `dbtl check --lint` gates on) — the set is O(1)
+        // per lookup, so it's built once per style pass.
+        let lint_nodes: std::collections::HashSet<String> = if lens == LineageLens::Lint {
+            self.lint_findings()
+                .iter()
+                .map(|f| f.node_uid.clone())
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
         lay.rects
             .keys()
             .map(|uid| {
@@ -57,7 +68,7 @@ impl App {
                 let mat = self.dag.detail(uid).and_then(|d| d.materialized.as_deref());
                 let attr = CellAttr {
                     class: MaterializationClass::classify(rt, mat),
-                    lens: self.lens_tint(lens, uid, node, &violation_nodes),
+                    lens: self.lens_tint(lens, uid, node, &violation_nodes, &lint_nodes),
                     // Off-path nodes dim only while a path exists (cursor off-root).
                     dimmed: dimming && !path.contains(uid),
                     on_path: path.contains(uid),
@@ -158,15 +169,17 @@ impl App {
 
     /// The [`LensTint`] for one node under the ACTIVE `lens`. The single place each
     /// lens's per-node metric is mapped to a semantic tint (the render layer turns
-    /// the tint into a `Color`); `violation_nodes` is the precomputed project-wide
-    /// incident set (empty unless the lens is `LayerViolation`). Returns
-    /// `LensTint::None` for `Off` and for nodes a lens doesn't tint.
+    /// the tint into a `Color`); `violation_nodes` / `lint_nodes` are the
+    /// precomputed project-wide incident sets (empty unless the lens is
+    /// `LayerViolation` / `Lint`). Returns `LensTint::None` for `Off` and for
+    /// nodes a lens doesn't tint.
     pub(super) fn lens_tint(
         &self,
         lens: LineageLens,
         uid: &str,
         node: Option<&NodeInfo>,
         violation_nodes: &std::collections::HashSet<String>,
+        lint_nodes: &std::collections::HashSet<String>,
     ) -> LensTint {
         match lens {
             LineageLens::Off => LensTint::None,
@@ -200,6 +213,16 @@ impl App {
             // Layer violations: tint any node incident to a backward edge.
             LineageLens::LayerViolation => {
                 if violation_nodes.contains(uid) {
+                    LensTint::Violation
+                } else {
+                    LensTint::None
+                }
+            }
+            // Lint: tint each finding's violating node — the run_rules output
+            // `dbtl check --lint` gates on, so the screen can never disagree
+            // with the CI gate.
+            LineageLens::Lint => {
+                if lint_nodes.contains(uid) {
                     LensTint::Violation
                 } else {
                     LensTint::None

@@ -121,6 +121,9 @@ fn run(cli: &Cli) -> Result<()> {
         Some(Commands::Check {
             diff,
             coverage_min,
+            lint,
+            rules,
+            format,
             manifest,
             source,
             project,
@@ -129,6 +132,9 @@ fn run(cli: &Cli) -> Result<()> {
             return run_check(
                 diff,
                 *coverage_min,
+                *lint,
+                rules,
+                *format,
                 manifest,
                 source,
                 project,

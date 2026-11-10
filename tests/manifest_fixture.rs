@@ -1,9 +1,9 @@
 //! Integration tests against the committed fixture (the synthetic
 //! jaffle_finance manifest), asserting frozen expected values.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
-use dbtl::{load_dag, load_manifest, Dag};
+use dbtl::{load_dag, load_manifest, run_rules, Dag, LintConfig, LintRule};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifest.json");
 const INVALID: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/invalid.json");
@@ -156,6 +156,60 @@ fn closure_deep_multihop_fct_subscription_process() {
     assert_eq!(dag.upstream(start).len(), 27, "fct upstream count");
     assert_eq!(dag.upstream(start), expected_up, "fct upstream set");
     assert_eq!(dag.downstream(start), expected_down, "fct downstream set");
+}
+
+// ---- static lint findings, frozen against the fixture ----
+//
+// The counts were computed by hand against the fixture's structure: the
+// `utilities/pos_prep` models each join a raw POS source with
+// `pos_files__assignment` (16 direct_join_to_source), 4 POS sources each feed
+// their own `pos_*` model plus the assignment model (source_fanout), the
+// assignment model joins 4 sources and feeds 16 leaf pos_* models
+// (multiple_sources_joined / model_fanout), and
+// `fct_delivery_shopper_monthly_visits` is a redundant hop between
+// `dim_fiscal_years` and `rpt_delivery_shopper_monthly_visits`
+// (rejoining_upstream). The two `int_*__combined` models carry no
+// unique+not_null pair. Everything else scores 0: all models are documented,
+// none declare access/contract, every model has a parent, no marts or
+// intermediate model reads a source, no backward edge exists, and
+// `utilities/` has no default naming prefix.
+
+#[test]
+fn lint_findings_match_frozen_fixture_counts() {
+    let dag = fixture_dag();
+    let findings = run_rules(&dag, &LintConfig::default());
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for f in &findings {
+        *counts.entry(f.rule.name()).or_default() += 1;
+    }
+    let expected: BTreeMap<&str, usize> = BTreeMap::from([
+        ("direct_join_to_source", 16),
+        ("multiple_sources_joined", 1),
+        ("source_fanout", 4),
+        ("model_fanout", 1),
+        ("rejoining_upstream", 1),
+        ("missing_primary_key_tests", 2),
+    ]);
+    assert_eq!(
+        counts, expected,
+        "per-rule finding counts drifted from the frozen fixture values"
+    );
+    assert_eq!(findings.len(), 25, "total findings");
+    // Zero-count rules still produce no findings at all.
+    for rule in [
+        LintRule::RootModels,
+        LintRule::MartsDependOnSource,
+        LintRule::PublicModelsWithoutContract,
+        LintRule::UndocumentedModels,
+        LintRule::NamingConventions,
+        LintRule::LayerViolation,
+    ] {
+        assert!(
+            findings.iter().all(|f| f.rule != rule),
+            "{} must not fire on this fixture",
+            rule.name()
+        );
+    }
 }
 
 // ---- Dag side maps (detail + tests), frozen against the fixture ----

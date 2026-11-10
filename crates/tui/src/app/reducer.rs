@@ -690,10 +690,12 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         Action::CycleLens => {
             app.ui_state.cycle_lens();
             // Data-less lenses look identical to Off — skip them so the cycle
-            // never lands on a dead slot: Diff without a --diff baseline,
-            // RunStatus/RunTime without a loaded run_results.json.
+            // never lands on a dead slot: Lint with no findings, Diff without a
+            // --diff baseline, RunStatus/RunTime without a loaded
+            // run_results.json.
             loop {
                 let dead = match app.ui_state.lens() {
+                    LineageLens::Lint => app.lint_findings().is_empty(),
                     LineageLens::Diff => app.diff().is_none(),
                     LineageLens::RunStatus | LineageLens::RunTime => app.run_results().is_none(),
                     _ => false,

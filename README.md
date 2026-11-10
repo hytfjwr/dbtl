@@ -92,7 +92,7 @@ The path from the root to the cursor lights up, including the connectors between
 <td valign="top">
 
 ### Coverage and impact lenses
-Lenses tint the lineage by test coverage, downstream blast radius, layer, layer violation, or `--diff` changes — and, with `run_results.json` loaded, by last-run status and runtime heat. There is also a stats dashboard, a key to jump between untested models, and one-key export to Mermaid, Graphviz, or a Markdown impact report.
+Lenses tint the lineage by test coverage, downstream blast radius, layer, layer violation, static lint findings, or `--diff` changes — and, with `run_results.json` loaded, by last-run status and runtime heat. There is also a stats dashboard, a key to jump between untested models, and one-key export to Mermaid, Graphviz, or a Markdown impact report.
 
 </td>
 </tr>
@@ -172,6 +172,10 @@ $ dbtl impact --diff /path/to/main-checkout                       # PR impact pa
 $ dbtl impact --diff target/manifest.prod.json --format json      # same payload as JSON
 $ dbtl check --coverage-min 80                                    # fail under 80% test coverage
 $ dbtl check --diff /path/to/main-checkout --coverage-min 80      # + new violations & untested changes
+$ dbtl check --lint                                               # + static structure lint (one gate per rule)
+$ dbtl check --lint --diff /path/to/main-checkout                 # lint gates on NEW violations only
+$ dbtl check --rules root_models,undocumented_models              # a subset of rules (implies --lint)
+$ dbtl check --lint --format json                                 # the whole report as JSON
 ```
 
 ### How `--diff` compares
@@ -236,9 +240,13 @@ comment can never disagree with the screen.
   threshold — the same `coverage_gap` counts the status `cov%` shows), and —
   with `--diff <BASELINE>` — **newly introduced layer violations** and
   **changed models/seeds/snapshots without tests** (the impact pack's risk
-  flags). A `--diff` run also prints informational (non-gating) lines — the
-  resolved baseline label and the same `affected owners:` set the impact
-  report lists. `--quiet` suppresses the report for an exit-code-only check.
+  flags). **`--lint`** adds one gate per static structure rule (see the next
+  section) — and under `--diff` only violations that did not exist in the
+  baseline fail it. **`--rules a,b,c`** runs a named subset (implies
+  `--lint`), **`--format json`** serializes the whole report for automation.
+  A `--diff` run also prints informational (non-gating) lines — the resolved
+  baseline label and the same `affected owners:` set the impact report lists.
+  `--quiet` suppresses the report for an exit-code-only check.
 
 Example GitHub-Actions shape:
 
@@ -246,8 +254,71 @@ Example GitHub-Actions shape:
 dbtl impact --manifest target/manifest.json --diff "$BASE/target/manifest.json" \
     >> "$GITHUB_STEP_SUMMARY"
 dbtl check  --manifest target/manifest.json --diff "$BASE/target/manifest.json" \
-    --coverage-min 80
+    --coverage-min 80 --lint
 ```
+
+### Static project lint (`dbtl check --lint`, `.dbtl.yml`)
+
+The `dbt_project_evaluator`-style best-practice checks — the ones that package
+normally materializes in your warehouse — evaluated **statically** against the
+same `Dag` everything else reads. No warehouse connection, no `dbt run`, and in
+source mode not even `dbt parse`/`dbt compile`: a CI run is seconds, and the
+results are deterministic.
+
+One `run_rules` findings vector feeds every surface, so the numbers can never
+drift apart: `dbtl check --lint` gates on it, the TUI's **Lint** `t`-lens tints
+every violating node violation-red and the `S` dashboard adds a per-rule
+worklist, and `dbtl docs` puts a Lint summary in the generated README plus a
+"Lint violations" section on each node's page.
+
+The initial rule set (all enabled by default):
+
+| Rule | Flags |
+| --- | --- |
+| `direct_join_to_source` | a model directly depends on both a source and a model |
+| `multiple_sources_joined` | a model directly depends on 2+ sources |
+| `source_fanout` | a source directly feeds ≥ `source_fanout_threshold` models (default 2) |
+| `model_fanout` | a model directly feeds ≥ `model_fanout_threshold` leaf models (default 5, the hub threshold) |
+| `root_models` | a model has no parents |
+| `rejoining_upstream` | a redundant hop: A→B→C while A→C also exists and B is otherwise unused |
+| `marts_depend_on_source` | a marts/intermediate model directly depends on a source |
+| `missing_primary_key_tests` | a model lacks `unique`+`not_null` on the same column or `unique_combination_of_columns` |
+| `public_models_without_contract` | `access: public` without `contract: enforced` |
+| `undocumented_models` | a model has no description |
+| `naming_conventions` | a model's name misses its layer's prefix (`stg_`, `int_`, `fct_`/`dim_`/`rpt_`) |
+| `layer_violation` | a backward edge between logical layers — the shared `layer_violation_edges` predicate |
+
+Rule policy lives in the **project-local `.dbtl.yml`** (next to
+`dbt_project.yml`, or the project root above `target/` in manifest mode) —
+deliberately *not* `~/.config/dbtl/config.yml`, because a CI gate must not
+depend on the developer's machine. A malformed file is an error for `check`
+and `docs` (the TUI warns and falls back to defaults).
+
+```yaml
+# .dbtl.yml — every key optional; absent rules stay enabled
+lint:
+  rules:
+    model_fanout: false        # disable individual rules
+    naming_conventions: false
+  model_fanout_threshold: 4    # flag models feeding 4+ leaf models
+  source_fanout_threshold: 3
+  naming_prefixes:             # per-layer merge over the defaults
+    staging: [stg_, base_]     # staging/ also accepts base_
+    marts: []                  # marts/ is unchecked
+```
+
+`dbtl check --lint --diff <BASELINE>` compares finding *keys* against the
+baseline's — only **newly introduced** violations gate (the same "new only"
+idea as the layer-violation gate), so adopting lint on a large existing
+project doesn't force a flag day: land `.dbtl.yml`, keep `main` green, and PRs
+fail only on the violations they add.
+
+Differences from `dbt_project_evaluator`: dbtl evaluates the pruned in-scope
+graph (root project by default — installed-package neighbours still count as
+dependency context but are never flagged), `model_fanout` defaults to ≥5
+aligned with dbtl's hub threshold (the evaluator uses >3) and `source_fanout`
+to ≥2 (the evaluator's >1), and SQL-content rules the evaluator ships
+(hard-coded references, etc.) are out of scope — they need compiled SQL.
 
 ### Column lineage (`dbtl columns`)
 
@@ -362,7 +433,7 @@ Defaults for a fresh project (or values a config can't express) come from `~/.co
 ```yaml
 # ~/.config/dbtl/config.yml — every field optional
 theme: ayu-mirage      # same names as --theme (CLI/env still wins)
-lens: coverage         # off|coverage|degree-heat|layer|layer-violation|diff|run-status|run-time
+lens: coverage         # off|coverage|degree-heat|layer|layer-violation|lint|diff|run-status|run-time
 density: compact       # comfortable|compact
 sort: downstream       # layer|downstream|tests
 group_by_meta: owner   # group the model list by this meta key's value instead of layer dirs
@@ -372,6 +443,8 @@ owner_meta_key: owner  # the meta key the impact report counts as "affected owne
 `group_by_meta` swaps the left pane's layer grouping for `key=value` groups (alphabetical, models missing the key land in a `(no <key>)` group last — e.g. `(no owner)` when grouping by `owner`); the `.` sort cycle still orders models *within* each group. Leave it unset for the default layer grouping. `owner_meta_key` changes which `meta` key `dbtl impact` and the `D` modal read for their "Affected owners" list; `dbtl check --diff` prints them as an informational `affected owners:` line (never a gate).
 
 Precedence is `config.yml` < saved project state < explicit CLI flags — so `dbtl --theme x` always wins over a configured theme, and a project you already visited restores its saved lens rather than the configured one. A malformed `config.yml` prints a warning and is ignored; a stale state file can reference models that no longer exist — those bookmarks are simply dropped.
+
+Project-level lint policy is a different file — `.dbtl.yml` in the dbt project itself (see **Static project lint** above): rule enables, the fanout thresholds, and the naming prefixes. It is auto-detected next to the data source and re-read on `r` reload, like `run_results.json`.
 
 ## Troubleshooting
 

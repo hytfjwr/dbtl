@@ -19,10 +19,12 @@ use ratatui::crossterm::event::KeyEvent;
 /// reproduces the muscle-memory coverage view (and keeps the status-bar cov%).
 ///
 /// Cycle order (`cycle_lens`): Off → Coverage → DegreeHeat → Layer → LayerViolation
-/// → Diff → RunStatus → RunTime → Off. The Diff lens needs a `--diff` baseline
-/// and the Run* lenses need a loaded `run_results.json` to show anything, so
-/// the `apply_action` CycleLens arm SKIPS them when the App lacks the data —
-/// the raw [`cycle_lens`](UiState::cycle_lens) here stays a pure, App-blind step.
+/// → Lint → Diff → RunStatus → RunTime → Off. The Lint lens needs at least one
+/// static-lint [`Finding`](crate::Finding), the Diff lens needs a `--diff`
+/// baseline, and the Run* lenses need a loaded `run_results.json` to show
+/// anything, so the `apply_action` CycleLens arm SKIPS them when the App lacks
+/// the data — the raw [`cycle_lens`](UiState::cycle_lens) here stays a pure,
+/// App-blind step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LineageLens {
     /// No lens — node boxes show their materialization-class colour.
@@ -37,6 +39,9 @@ pub enum LineageLens {
     Layer,
     /// Layer violations: nodes incident to a backward (e.g. marts→staging) edge.
     LayerViolation,
+    /// Static-lint findings: nodes flagged by `dbtl_core::run_rules` (the same
+    /// findings `dbtl check --lint` gates on) are violation-coloured.
+    Lint,
     /// Diff vs the `--diff` baseline: added nodes green, modified nodes amber.
     Diff,
     /// Last-run status from `run_results.json`: error/fail red, warn yellow,
@@ -55,7 +60,8 @@ impl LineageLens {
             LineageLens::Coverage => LineageLens::DegreeHeat,
             LineageLens::DegreeHeat => LineageLens::Layer,
             LineageLens::Layer => LineageLens::LayerViolation,
-            LineageLens::LayerViolation => LineageLens::Diff,
+            LineageLens::LayerViolation => LineageLens::Lint,
+            LineageLens::Lint => LineageLens::Diff,
             LineageLens::Diff => LineageLens::RunStatus,
             LineageLens::RunStatus => LineageLens::RunTime,
             LineageLens::RunTime => LineageLens::Off,
@@ -845,6 +851,8 @@ mod tests {
         assert_eq!(s.lens(), LineageLens::Layer);
         s.cycle_lens();
         assert_eq!(s.lens(), LineageLens::LayerViolation);
+        s.cycle_lens();
+        assert_eq!(s.lens(), LineageLens::Lint);
         s.cycle_lens();
         assert_eq!(s.lens(), LineageLens::Diff);
         s.cycle_lens();

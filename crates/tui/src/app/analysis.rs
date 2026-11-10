@@ -119,6 +119,27 @@ impl App {
             })
             .collect();
         layer_violations.sort();
+        // The lint worklist from the shared `run_rules` findings (computed
+        // once on the App): per-rule violating NODE NAMES, in LintRule::ALL
+        // order, names sorted — the dashboard and `dbtl check --lint` quote
+        // the same source, so they can never disagree.
+        let lint_findings: Vec<(String, Vec<String>)> = crate::LintRule::ALL
+            .iter()
+            .filter_map(|rule| {
+                let mut names: Vec<String> = self
+                    .lint_findings()
+                    .iter()
+                    .filter(|f| f.rule == *rule)
+                    .map(|f| {
+                        self.dag
+                            .get(&f.node_uid)
+                            .map_or_else(|| f.node_uid.clone(), |n| n.name.clone())
+                    })
+                    .collect();
+                names.sort();
+                (!names.is_empty()).then(|| (rule.name().to_string(), names))
+            })
+            .collect();
         let critical_path = longest_chain(&self.dag);
         // The runtime-weighted critical path, only when run_results is loaded:
         // the chain that costs the most wall-clock time (unweighted sibling of
@@ -138,6 +159,7 @@ impl App {
             transitive_hubs,
             orphan_models: orphans,
             layer_violations,
+            lint_findings,
             critical_path,
             critical_path_runtime,
             untested_testable: testable_total - testable_tested,

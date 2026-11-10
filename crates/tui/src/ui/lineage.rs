@@ -543,6 +543,7 @@ fn lens_title_suffix(lens: LineageLens) -> &'static str {
         LineageLens::DegreeHeat => " [lens:heat]",
         LineageLens::Layer => " [lens:layer]",
         LineageLens::LayerViolation => " [lens:violation]",
+        LineageLens::Lint => " [lens:lint]",
         LineageLens::Diff => " [lens:diff]",
         LineageLens::RunStatus => " [lens:run]",
         LineageLens::RunTime => " [lens:time]",

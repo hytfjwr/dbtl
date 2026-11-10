@@ -3022,6 +3022,109 @@ fn violation_lens_tints_both_incident_nodes_and_spares_the_rest() {
     );
 }
 
+// ---- the Lint lens ----------------------------------------------------------
+
+#[test]
+fn lint_findings_are_computed_once_from_the_shared_rules() {
+    // The fixture has 25 findings under the shipped defaults (frozen counts in
+    // tests/manifest_fixture.rs) — the App computes them once at construction
+    // and every surface (lens, stats worklist) reads that one vector.
+    let a = app();
+    assert_eq!(a.lint_findings().len(), 25, "the frozen fixture count");
+    assert!(
+        a.lint_findings()
+            .iter()
+            .any(|f| f.node_uid == "model.jaffle_finance.pos_cat"),
+        "pos_cat is a violating node"
+    );
+}
+
+#[test]
+fn lint_lens_tints_every_finding_node_and_spares_the_rest() {
+    // The same violation red as the LayerViolation lens: every finding's
+    // node_uid tints, a lint-clean model keeps its class colour.
+    let mut a = app();
+    assert_eq!(
+        tint_of(&mut a, LineageLens::Lint, "model.jaffle_finance.pos_cat"),
+        LensTint::Violation,
+        "a finding's node tints"
+    );
+    let linted: std::collections::HashSet<&str> = a
+        .lint_findings()
+        .iter()
+        .map(|f| f.node_uid.as_str())
+        .collect();
+    let clean = a
+        .dag
+        .nodes()
+        .values()
+        .find(|n| n.resource_type == "model" && !linted.contains(n.unique_id.as_str()))
+        .expect("the fixture has lint-clean models")
+        .unique_id
+        .clone();
+    assert_eq!(
+        tint_of(&mut a, LineageLens::Lint, &clean),
+        LensTint::None,
+        "{clean} has no findings → untinted"
+    );
+}
+
+#[test]
+fn lint_lens_is_skipped_in_the_cycle_when_no_findings_exist() {
+    // Same dead-slot skip as Diff/RunStatus: with every rule disabled there are
+    // no findings, so the cycle never lands on the Lint lens.
+    let mut a = app();
+    let mut cfg = crate::LintConfig::default();
+    for r in crate::LintRule::ALL {
+        cfg.rules.insert(r.name().to_string(), false);
+    }
+    a.set_lint_config(cfg);
+    assert!(a.lint_findings().is_empty(), "all rules off → no findings");
+    for _ in 0..12 {
+        apply_action(&mut a, Action::CycleLens);
+        assert_ne!(
+            a.ui_state.lens(),
+            LineageLens::Lint,
+            "Lint is skipped without findings"
+        );
+    }
+    // And findings come back when a rule is re-enabled (set_lint_config
+    // recomputes — the seam `reload` rides too).
+    let mut on = crate::LintConfig::default();
+    for r in crate::LintRule::ALL {
+        on.rules.insert(r.name().to_string(), false);
+    }
+    on.rules.insert("undocumented_models".to_string(), true);
+    a.set_lint_config(on);
+    assert!(
+        a.lint_findings().is_empty(),
+        "undocumented_models is clean on the fixture"
+    );
+}
+
+#[test]
+fn stats_view_carries_the_lint_worklist_from_the_shared_findings() {
+    // The stats modal's worklist groups the SAME `run_rules` vector per rule —
+    // the numbers can never drift from `dbtl check --lint` or the lens.
+    let a = app();
+    let sv = a.compute_stats_view();
+    assert_eq!(sv.lint_findings.len(), 6, "6 rules have findings (frozen)");
+    assert_eq!(sv.lint_findings[0].0, "direct_join_to_source");
+    assert_eq!(
+        sv.lint_findings[0].1.len(),
+        16,
+        "the frozen count, sorted names"
+    );
+    assert!(sv.lint_findings[0].1.contains(&"pos_cat".to_string()));
+    // Every group is sorted and non-empty by construction.
+    for (rule, names) in &sv.lint_findings {
+        assert!(!names.is_empty(), "{rule} groups only list violations");
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(*names, sorted, "{rule} names are sorted");
+    }
+}
+
 #[test]
 fn lineage_styles_sets_on_path_for_an_off_root_cursor() {
     // With an off-root cursor, exactly the root↔cursor path nodes carry
@@ -3116,11 +3219,14 @@ fn cycle_lens_advances_the_lens_as_a_noop_action() {
         LineageLens::Coverage,
         "advanced to Coverage"
     );
-    // Cycle through the rest and back to Off.
+    // Cycle through the rest and back to Off. The fixture has lint findings so
+    // the Lint slot joins the ring (no baseline/run_results → Diff and the run
+    // lenses are skipped).
     for expected in [
         LineageLens::DegreeHeat,
         LineageLens::Layer,
         LineageLens::LayerViolation,
+        LineageLens::Lint,
         LineageLens::Off,
     ] {
         apply_action(&mut a, Action::CycleLens);
@@ -3551,19 +3657,21 @@ fn diff_open_without_baseline_toasts_a_hint() {
 
 #[test]
 fn cycle_lens_skips_diff_without_a_baseline_and_includes_it_with_one() {
-    // Without a baseline the apply_action cycle is the legacy 5-step ring.
+    // Without a baseline the apply_action cycle skips the Diff slot (the
+    // fixture's lint findings keep the Lint slot live).
     let mut a = app();
     for expected in [
         LineageLens::Coverage,
         LineageLens::DegreeHeat,
         LineageLens::Layer,
         LineageLens::LayerViolation,
+        LineageLens::Lint,
         LineageLens::Off,
     ] {
         apply_action(&mut a, Action::CycleLens);
         assert_eq!(a.ui_state.lens(), expected, "Diff is skipped");
     }
-    // With a baseline the Diff slot joins the ring after LayerViolation.
+    // With a baseline the Diff slot joins the ring after Lint.
     let mut a = diff_app();
     a.ui_state.set_lens(LineageLens::Off);
     for expected in [
@@ -3571,6 +3679,7 @@ fn cycle_lens_skips_diff_without_a_baseline_and_includes_it_with_one() {
         LineageLens::DegreeHeat,
         LineageLens::Layer,
         LineageLens::LayerViolation,
+        LineageLens::Lint,
         LineageLens::Diff,
         LineageLens::Off,
     ] {
@@ -4206,7 +4315,7 @@ fn run_status_lens_tints_by_last_run_outcome() {
     let uid = "model.p.stg_a";
     let node = a.dag.get(uid);
     assert_eq!(
-        a.lens_tint(crate::LineageLens::RunStatus, uid, node, &none),
+        a.lens_tint(crate::LineageLens::RunStatus, uid, node, &none, &none),
         crate::LensTint::Violation,
         "error → violation red"
     );
@@ -4215,6 +4324,7 @@ fn run_status_lens_tints_by_last_run_outcome() {
             crate::LineageLens::RunStatus,
             "model.p.fct_b",
             a.dag.get("model.p.fct_b"),
+            &none,
             &none
         ),
         crate::LensTint::RunWarn,
@@ -4225,6 +4335,7 @@ fn run_status_lens_tints_by_last_run_outcome() {
             crate::LineageLens::RunStatus,
             "model.p.mart_c",
             a.dag.get("model.p.mart_c"),
+            &none,
             &none
         ),
         crate::LensTint::RunSkip,
@@ -4244,7 +4355,15 @@ fn run_time_lens_buckets_by_execution_seconds() {
         ]}"#,
     );
     let none = std::collections::HashSet::new();
-    let tint = |uid: &str| a.lens_tint(crate::LineageLens::RunTime, uid, a.dag.get(uid), &none);
+    let tint = |uid: &str| {
+        a.lens_tint(
+            crate::LineageLens::RunTime,
+            uid,
+            a.dag.get(uid),
+            &none,
+            &none,
+        )
+    };
     assert_eq!(tint("model.p.stg_a"), crate::LensTint::None, "sub-second");
     assert_eq!(tint("model.p.fct_b"), crate::LensTint::HeatMid, "30s");
     assert_eq!(tint("model.p.mart_c"), crate::LensTint::HeatHigh, "2min");

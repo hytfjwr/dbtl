@@ -535,9 +535,10 @@ fn render_stats_modal(sv: dbtl::StatsView, width: u16, height: u16) -> Buffer {
     terminal.backend().buffer().clone()
 }
 
-/// A `StatsView` literal with `n_orphans` orphan names and `n_viol` layer
-/// violations — built to exercise the render caps without a Dag.
-fn stats_view_with(n_orphans: usize, n_viol: usize) -> dbtl::StatsView {
+/// A `StatsView` literal with `n_orphans` orphan names, `n_viol` layer
+/// violations, and `n_lint` lint findings on one rule — built to exercise the
+/// render caps without a Dag.
+fn stats_view_with(n_orphans: usize, n_viol: usize, n_lint: usize) -> dbtl::StatsView {
     dbtl::StatsView {
         project: "proj".into(),
         by_resource_type: vec![("model".into(), 8), ("source".into(), 3)],
@@ -550,6 +551,14 @@ fn stats_view_with(n_orphans: usize, n_viol: usize) -> dbtl::StatsView {
         layer_violations: (0..n_viol)
             .map(|i| (format!("mart_{i:02}"), format!("stg_{i:02}")))
             .collect(),
+        lint_findings: if n_lint == 0 {
+            vec![]
+        } else {
+            vec![(
+                "undocumented_models".to_string(),
+                (0..n_lint).map(|i| format!("nodoc_{i:02}")).collect(),
+            )]
+        },
         critical_path: vec!["src_a".into(), "stg_a".into(), "mart_a".into()],
         critical_path_runtime: None,
         untested_testable: 1,
@@ -566,7 +575,7 @@ fn stats_modal_gauge_has_graded_fill_over_dark_track() {
     // cell with the graded fill bg and a cell with the track bg, proving the
     // two-span gauge rendered (coordinate-free, per the advisor).
     use dbtl::ui::theme;
-    let buffer = render_stats_modal(stats_view_with(0, 0), 100, 40);
+    let buffer = render_stats_modal(stats_view_with(0, 0, 0), 100, 40);
     // Scan ONLY the coverage row (the line carrying "tested") so the green fill
     // can't be confused with the green transitive-hub mini-bar elsewhere.
     let area = buffer.area;
@@ -603,7 +612,7 @@ fn stats_modal_gauge_has_graded_fill_over_dark_track() {
 #[test]
 fn stats_modal_low_coverage_gauge_is_red() {
     use dbtl::ui::theme;
-    let mut sv = stats_view_with(0, 0);
+    let mut sv = stats_view_with(0, 0, 0);
     sv.testable_tested = 2; // 2/10 = 20% → danger grade
     let buffer = render_stats_modal(sv, 100, 40);
     let red = (0..buffer.area.height).any(|y| {
@@ -614,9 +623,10 @@ fn stats_modal_low_coverage_gauge_is_red() {
 
 #[test]
 fn stats_modal_shows_new_sections_and_more_cap() {
-    // 12 orphans + 11 violations → both worklists hit the cap-10 + "+K more".
-    // Tall buffer so the whole (unscrolled) dashboard fits the modal interior.
-    let buffer = render_stats_modal(stats_view_with(12, 11), 100, 80);
+    // 12 orphans + 11 violations + 13 lint findings → all three worklists hit
+    // the cap-10 + "+K more". Tall buffer so the whole (unscrolled) dashboard
+    // fits the modal interior.
+    let buffer = render_stats_modal(stats_view_with(12, 11, 13), 100, 120);
     let text = buffer_to_string(&buffer);
     assert!(
         text.contains("Orphans (12)"),
@@ -625,6 +635,14 @@ fn stats_modal_shows_new_sections_and_more_cap() {
     assert!(
         text.contains("Layer violations (11)"),
         "violations header with full count"
+    );
+    assert!(
+        text.contains("Lint findings (13)"),
+        "lint worklist header with the total"
+    );
+    assert!(
+        text.contains("undocumented_models (13):"),
+        "per-rule lint sub-list with count"
     );
     assert!(
         text.contains("Hubs (transitive"),
@@ -637,6 +655,10 @@ fn stats_modal_shows_new_sections_and_more_cap() {
     assert!(
         text.contains("+1 more"),
         "violations overflow rolls into +K more"
+    );
+    assert!(
+        text.contains("+3 more"),
+        "lint worklist overflow rolls into +K more"
     );
     assert!(
         text.contains("mart_00 -> stg_00"),
@@ -1536,8 +1558,10 @@ fn lineage_title_shows_lens_suffix_per_lens_and_nothing_when_off() {
     assert!(off.contains("Lineage:"), "lineage title present");
     assert!(!off.contains("[lens:"), "Off lens adds no suffix");
 
-    // One suffix per lens across the cycle.
-    for expected in ["coverage", "heat", "layer", "violation"] {
+    // One suffix per lens across the cycle. The fixture has lint findings so
+    // the Lint lens lands between LayerViolation and Off (no baseline or
+    // run_results → Diff and the run lenses are skipped).
+    for expected in ["coverage", "heat", "layer", "violation", "lint"] {
         apply_action(&mut app, Action::CycleLens);
         let text = buffer_to_string(&render_app(&app, 120, 24));
         assert!(

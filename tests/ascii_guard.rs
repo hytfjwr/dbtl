@@ -330,7 +330,8 @@ fn every_lens_with_off_root_cursor_is_all_ascii() {
         Some(FCT),
         "precondition: the cursor walked off the root (path is non-empty)"
     );
-    // Walk the full lens cycle (Off → Coverage → Heat → Layer → Violation → Off).
+    // Walk the live lens cycle (Off → Coverage → Heat → Layer → Violation →
+    // Lint → Off; Diff/Run* are skipped — no baseline or run_results here).
     for step in 0..=5 {
         // At 80x24 the diagram overflows (lens tint + dim + scroll markers + list
         // tint exercised); 200x60 fits (centred pad, no markers).
