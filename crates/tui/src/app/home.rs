@@ -413,11 +413,21 @@ impl App {
             .iter()
             .filter(|b| b.home)
             .filter(|b| self.unavailable_reason(b.action).is_none())
-            .map(|b| HomeRow {
-                item: HomeItem::Command { action: b.action },
-                label: b.help.to_string(),
-                detail: b.key_label(),
-                tone: HomeTone::Normal,
+            .map(|b| {
+                // The label prefers the Home-mode binding's own help when
+                // the action has one (`/` reads "search models" here, not
+                // the Selection row's "search (list filter / lineage jump)").
+                let help = BINDINGS
+                    .iter()
+                    .find(|h| h.mode == crate::ModeKind::Home && h.action == b.action)
+                    .map(|h| h.help)
+                    .unwrap_or(b.help);
+                HomeRow {
+                    item: HomeItem::Command { action: b.action },
+                    label: help.to_string(),
+                    detail: b.key_label(),
+                    tone: HomeTone::Normal,
+                }
             })
             .collect();
         selectable.extend(actions.iter().map(|r| r.item.clone()));

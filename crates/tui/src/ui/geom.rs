@@ -1586,7 +1586,7 @@ pub fn tooltip_rect(at: Position, w: u16, h: u16, area: Rect) -> Rect {
 /// One line in the home body's vertical plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HomeLine {
-    /// `dbtl home — {project} · {source} · scope:{scope}`.
+    /// `dbtl home - {project} · {source} · scope:{scope}`.
     Title,
     /// A blank spacer row.
     Pad,

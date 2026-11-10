@@ -725,6 +725,8 @@ impl App {
         // layer-keyed folds would pin phantoms. Same prune `reload` runs.
         self.folded_groups
             .retain(|k| self.model_list.groups.iter().any(|g| &g.layer == k));
+        // A rebuilt model_list is a home-search input — stamp the cache.
+        self.home_stamp += 1;
         self.apply_list_filter();
         if let Some(uid) = &current {
             self.select_by_unique_id(uid);

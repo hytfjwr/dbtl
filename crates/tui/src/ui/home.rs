@@ -199,7 +199,7 @@ pub(crate) fn draw_home(frame: &mut Frame, area: Rect, data: &crate::HomeData, c
                     ]),
                     None => {
                         // §3's syntax hint sits right-aligned in the row.
-                        let hint = "search models - Enter opens a tab";
+                        let hint = format!("search models{sep}Enter opens a tab");
                         let syntax = "!selector  ?full-text";
                         let used = 3 + hint.chars().count() + syntax.chars().count();
                         let pad = (area.width as usize).saturating_sub(used);
@@ -240,7 +240,7 @@ pub(crate) fn draw_home(frame: &mut Frame, area: Rect, data: &crate::HomeData, c
             HomeLine::Note => {
                 frame.render_widget(
                     Paragraph::new(Line::from(Span::styled(
-                        "   no matches - Esc to clear",
+                        &format!("   no matches{sep}Esc to clear"),
                         Style::default().fg(t.text_faint),
                     ))),
                     row,
@@ -259,7 +259,9 @@ pub(crate) fn draw_home(frame: &mut Frame, area: Rect, data: &crate::HomeData, c
                 // §3's fixed closing line — ASCII-safe in both glyph modes.
                 frame.render_widget(
                     Paragraph::new(Line::from(Span::styled(
-                        " Tip: right-click a node for actions - drag a pane border to resize",
+                        &format!(
+                            " Tip: right-click a node for actions{sep}drag a pane border to resize"
+                        ),
                         Style::default().fg(t.text_faint),
                     ))),
                     row,
@@ -327,7 +329,8 @@ fn draw_home_row(
         HomeTone::Bad => t.danger,
         HomeTone::Warn => t.warn,
     };
-    // Middle-truncate a too-long label (the `…`/`..` repertoire is chrome's).
+    // Middle-truncate a too-long label — `..`, matching the tab bar's
+    // repertoire (ambiguous-width safe in both modes).
     let label = truncate_label(label, label_w, ellipsis);
     let base = if sel {
         super::selected_style(t)

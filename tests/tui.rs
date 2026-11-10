@@ -4144,7 +4144,10 @@ fn home_screen_renders_title_health_sections_cursor_and_home_cell() {
     let text = buffer_to_string(&buffer);
 
     assert!(text.contains("dbtl home"), "the title row renders");
-    assert!(text.contains("models"), "the health strip renders");
+    assert!(
+        text.contains("[Health]") && text.contains("coverage"),
+        "the health info section renders"
+    );
     assert!(text.contains("[Actions]"), "the actions section renders");
     assert!(text.contains("[Recent]"), "the recent section renders");
     assert!(
