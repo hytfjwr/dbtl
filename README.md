@@ -63,6 +63,8 @@ If `target/manifest.json` exists, `dbtl` uses it. Otherwise it parses the projec
 
 Source mode infers lineage from the raw SQL without rendering Jinja, so a compiled manifest is always more accurate. If `dbt` is on your `PATH`, press `P` inside the app to run `dbt parse` and switch to the generated manifest in place.
 
+A manifest (including a dbt Fusion–written one) that carries resource types `dbtl` does not handle still loads: unsupported/unknown `resource_type`s are kept as generic lineage nodes and a non-empty `functions` map is reported — each surfaces as one stderr/`r`-toast warning per kind rather than dropping silently.
+
 ## Features
 
 <table>
@@ -194,7 +196,7 @@ Two more dbt artifacts are picked up automatically when they sit next to the dat
 `dbtl docs --out <DIR>` never starts the TUI, so it runs in CI without a TTY. It writes a Markdown documentation tree that you can commit to a repo and read on GitHub or GitLab:
 
 - **One page per node** — model, source, seed, snapshot, exposure, plus semantic models, metrics, and saved queries from a compiled manifest. Each page has the description, materialization, schema, tags, a column table in dbt definition order, tests, direct and transitive upstream/downstream links, and a Mermaid lineage diagram.
-- **An index `README.md`** with a project summary, test coverage %, a list of orphan models, a linked table of every node, and a whole-project Mermaid diagram. Large projects get the diagram split by layer.
+- **An index `README.md`** with a project summary enumerating every resource type in the graph (the counts always sum to the total), test coverage %, a list of orphan models, a linked table of every node, and a whole-project Mermaid diagram. Large projects get the diagram split by layer.
 
 The data source is chosen the same way as in the TUI (`--manifest` / `--source` / `--project` / auto-detect). The output is deterministic: regenerating from the same input produces byte-identical files.
 

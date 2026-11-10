@@ -293,11 +293,7 @@ pub fn event_loop(
                     // running on the old data; the reshaped graph re-centres.
                     let note = match app.reload() {
                         Ok(w) if w.is_empty() => "Reloaded (source changed)".to_string(),
-                        Ok(w) => format!(
-                            "Reloaded (source changed) — {} warning(s): {}",
-                            w.len(),
-                            w[0]
-                        ),
+                        Ok(w) => format!("Reloaded (source changed) — {}", warnings_tail(&w)),
                         Err(_) => "Reload failed (kept previous data)".to_string(),
                     };
                     app.set_notice(note);
@@ -475,7 +471,7 @@ fn run_effect(terminal: &mut DefaultTerminal, app: &mut App, effect: Effect) -> 
             // mutating), so we keep running on the old data.
             let note = match app.reload() {
                 Ok(w) if w.is_empty() => "Reloaded".to_string(),
-                Ok(w) => format!("Reloaded — {} warning(s): {}", w.len(), w[0]),
+                Ok(w) => format!("Reloaded — {}", warnings_tail(&w)),
                 Err(_) => "Reload failed (kept previous data)".to_string(),
             };
             app.set_notice(note);
@@ -537,13 +533,27 @@ fn run_dbt_parse(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
         return Ok(());
     }
     // On a load error `adopt_manifest` restores the previous source, so the
-    // app keeps running on the pre-parse data.
+    // app keeps running on the pre-parse data. Load warnings (unknown
+    // resource_types) ride the toast like a manual reload.
     let note = match app.adopt_manifest(manifest) {
-        Ok(()) => "dbt parse OK: now reading target/manifest.json",
-        Err(_) => "dbt parse OK but the manifest failed to load (kept current data)",
+        Ok(w) if w.is_empty() => "dbt parse OK: now reading target/manifest.json".to_string(),
+        Ok(w) => format!("dbt parse OK — {}", warnings_tail(&w)),
+        Err(_) => "dbt parse OK but the manifest failed to load (kept current data)".to_string(),
     };
     app.set_notice(note);
     Ok(())
+}
+
+/// The reload/`dbt parse` toast tail for a non-empty load-warnings vec:
+/// every warning joined (`"1 warning: <w>"` / `"N warnings: <w1>; <w2>"`) —
+/// quoting only the first would hide the rest of what the manifest carries.
+fn warnings_tail(warnings: &[String]) -> String {
+    format!(
+        "{} warning{}: {}",
+        warnings.len(),
+        if warnings.len() == 1 { "" } else { "s" },
+        warnings.join("; ")
+    )
 }
 
 /// Locate the `dbt` executable on `PATH`, cross-platform. Returns the full
@@ -839,6 +849,23 @@ mod tests {
     fn restore_is_idempotent_and_tty_free() {
         ratatui::restore();
         ratatui::restore();
+    }
+
+    /// The warnings toast tail pluralizes correctly and joins EVERY warning —
+    /// a manifest carrying several unknown kinds must not quietly drop all
+    /// but the first line.
+    #[test]
+    fn warnings_tail_pluralizes_and_joins_all() {
+        assert_eq!(
+            warnings_tail(&["w1".to_string()]),
+            "1 warning: w1",
+            "singular"
+        );
+        assert_eq!(
+            warnings_tail(&["w1".to_string(), "w2".to_string(), "w3".to_string()]),
+            "3 warnings: w1; w2; w3",
+            "plural, all warnings joined"
+        );
     }
 
     #[test]

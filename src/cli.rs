@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use dbtl::app::App;
-use dbtl::{load_dag, load_dag_from_source_with_warnings, ColumnResolver};
+use dbtl::{load_dag_from_source_with_warnings, load_dag_with_warnings, ColumnResolver};
 
 /// dbtl: browse dbt models and their lineage — from a compiled manifest.json
 /// or straight from project source (no `dbt compile`).
@@ -235,7 +235,10 @@ pub fn resolve_source(
     project: &str,
 ) -> Result<ResolvedSource> {
     if let Some(path) = manifest {
-        let dag = load_dag(path)?;
+        let (dag, warnings) = load_dag_with_warnings(path)?;
+        for w in &warnings {
+            eprintln!("warning: {w}");
+        }
         return Ok(ResolvedSource {
             dag,
             label: path.clone(),
@@ -256,7 +259,10 @@ pub fn resolve_source(
     let project = PathBuf::from(project);
     let manifest = project.join("target").join("manifest.json");
     if manifest.is_file() {
-        let dag = load_dag(&manifest)?;
+        let (dag, warnings) = load_dag_with_warnings(&manifest)?;
+        for w in &warnings {
+            eprintln!("warning: {w}");
+        }
         Ok(ResolvedSource {
             dag,
             label: manifest.display().to_string(),
@@ -716,14 +722,21 @@ fn docs_project_name(dag: &dbtl::Dag, label: &str) -> String {
 pub fn load_baseline(path: &str) -> Result<(dbtl::Dag, String)> {
     let p = PathBuf::from(path);
     if p.is_file() {
-        let dag = load_dag(&p).with_context(|| format!("--diff: failed to load {path}"))?;
+        let (dag, warnings) =
+            load_dag_with_warnings(&p).with_context(|| format!("--diff: failed to load {path}"))?;
+        for w in &warnings {
+            eprintln!("warning (--diff baseline): {w}");
+        }
         return Ok((dag, path.to_string()));
     }
     if p.is_dir() {
         let manifest = p.join("target").join("manifest.json");
         if manifest.is_file() {
-            let dag = load_dag(&manifest)
+            let (dag, warnings) = load_dag_with_warnings(&manifest)
                 .with_context(|| format!("--diff: failed to load {}", manifest.display()))?;
+            for w in &warnings {
+                eprintln!("warning (--diff baseline): {w}");
+            }
             return Ok((dag, manifest.display().to_string()));
         }
         if p.join("dbt_project.yml").is_file() {
@@ -776,6 +789,7 @@ mod tests {
             metrics: HashMap::new(),
             saved_queries: HashMap::new(),
             unit_tests: HashMap::new(),
+            functions: HashMap::new(),
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
         })

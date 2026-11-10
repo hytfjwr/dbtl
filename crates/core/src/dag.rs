@@ -1,7 +1,8 @@
 //! The pruned dependency DAG and its value types: merge a parsed manifest's
-//! `nodes` (excluding `test` / `operation`), `sources`, and `exposures` into a
-//! single `unique_id -> NodeInfo` map, build pruned adjacency over the kept
-//! set, and compute upstream / downstream transitive closures (cycle-safe).
+//! `nodes` (excluding `test` / `operation` / `analysis` / `check`), `sources`,
+//! and `exposures` into a single `unique_id -> NodeInfo` map, build pruned
+//! adjacency over the kept set, and compute upstream / downstream transitive
+//! closures (cycle-safe).
 //! Side maps (`details` / `tests` / `sql` / `compiled` / `exposures`) are
 //! captured pre-prune as data only — they never touch the topology.
 
@@ -161,8 +162,8 @@ impl Subgraph {
 /// The internal DAG model built from a parsed manifest.
 ///
 /// - `nodes`: unified `unique_id -> NodeInfo` map (every resource type except
-///   the excluded `test` / `operation` — models, sources, seeds, snapshots,
-///   and exposures).
+///   the excluded `test` / `operation` / `analysis` / `check` — models,
+///   sources, seeds, snapshots, and exposures).
 /// - `parents` / `children`: adjacency lists pruned to the kept node set, so
 ///   neither keys nor neighbours ever reference an excluded node.
 /// - `details`: per-node detail (materialized/schema/columns/…) for the
@@ -226,24 +227,155 @@ pub struct MacroInfo {
     pub depends_on: Vec<String>,
 }
 
-/// Resource types that are excluded from the unified map and the DAG.
+/// `nodes` `resource_type`s deliberately dropped from the unified map and the
+/// DAG — the SINGLE exclusion set: [`is_excluded`] is plain membership here,
+/// and [`unhandled_resource_types`] treats every member as handled so an
+/// excluded kind never warns.
 ///
-/// `analysis` is excluded alongside `test`/`operation` because `source.rs`
-/// never parses `analyses/` at all — showing it only in manifest mode would
-/// break the manifest↔source consistency contract (the same graph either way).
+/// - `test`: folded into the `tests` side map pre-prune.
+/// - `operation` / `analysis`: non-buildable; `analysis` is also dropped for
+///   the manifest↔source consistency contract (`source.rs` never parses
+///   `analyses/`).
+/// - `check` (dbt Fusion's validation resource, `check.<pkg>.<name>`): the
+///   same fate as `test` — a check declares a validation over models, not a
+///   buildable lineage step, and its payload is dropped entirely (NOT folded
+///   into `tests`, so `tests:N` counts and coverage are unmoved).
+const EXCLUDED_NODE_RESOURCE_TYPES: &[&str] = &["test", "operation", "analysis", "check"];
+
+/// `nodes` `resource_type`s kept and drawn deliberately — the buildable
+/// lineage kinds.
+const KEPT_NODE_RESOURCE_TYPES: &[&str] = &["model", "seed", "snapshot"];
+
+/// The remaining `resource_type`s the dbt manifest schema defines (the v12
+/// enum's `nodes` members plus the types the shared enum lists for the
+/// surface maps) — real dbt types dbtl does not handle inside `nodes`.
+/// They are KEPT as generic graph nodes — `sql_operation`/`rpc`/`function`
+/// CAN carry `depends_on` adjacency (a run-operation's `ref()` edges are
+/// real topology), so excluding them like [`EXCLUDED_NODE_RESOURCE_TYPES`]
+/// would hide lineage — but [`unhandled_resource_types`] reports them as
+/// "unsupported" so the box is never drawn silently.
+const UNSUPPORTED_NODE_RESOURCE_TYPES: &[&str] = &[
+    "doc",
+    "exposure",
+    "fixture",
+    "function",
+    "group",
+    "macro",
+    "metric",
+    "rpc",
+    "saved_query",
+    "semantic_model",
+    "source",
+    "sql_operation",
+    "unit_test",
+];
+
+/// Whether a `resource_type` is dropped from the graph. Membership in
+/// [`EXCLUDED_NODE_RESOURCE_TYPES`] — keep the rationale there; the two stay
+/// in sync by construction (one const, one predicate).
 fn is_excluded(resource_type: &str) -> bool {
-    resource_type == "test" || resource_type == "operation" || resource_type == "analysis"
+    EXCLUDED_NODE_RESOURCE_TYPES.contains(&resource_type)
+}
+
+/// Whether a `manifest.nodes` `resource_type` dbtl does not handle is a real
+/// dbt type or something outside the schema entirely — the split behind the
+/// two load warnings ("known but unsupported" vs "truly unknown").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceTypeSupport {
+    /// A real dbt type ([`UNSUPPORTED_NODE_RESOURCE_TYPES`]) that lands in
+    /// `nodes` — warned as `unsupported resource_type`.
+    Known,
+    /// A `resource_type` outside the dbt schema (a plugin type, a newer
+    /// schema than this build) — warned as `unknown resource_type`.
+    Unknown,
+}
+
+/// `None` for the handled types (kept buildable kinds and the deliberately
+/// excluded kinds); otherwise which warning class a `nodes` type falls in.
+fn unhandled_support(resource_type: &str) -> Option<ResourceTypeSupport> {
+    if KEPT_NODE_RESOURCE_TYPES.contains(&resource_type) || is_excluded(resource_type) {
+        None
+    } else if UNSUPPORTED_NODE_RESOURCE_TYPES.contains(&resource_type) {
+        Some(ResourceTypeSupport::Known)
+    } else {
+        Some(ResourceTypeSupport::Unknown)
+    }
+}
+
+/// `(resource_type, count, support)` for every `manifest.nodes` type dbtl
+/// does not handle, sorted by type for determinism: [`ResourceTypeSupport::Known`]
+/// is a real dbt type dbtl does not classify (`unsupported` warning), and
+/// [`ResourceTypeSupport::Unknown`] is outside the schema entirely (`unknown`
+/// warning). Both kinds are KEPT as generic graph nodes. The surface maps
+/// (`sources`/`exposures`/`semantic_models`/…) carry a fixed type by
+/// construction, so only `nodes` is scanned.
+pub fn unhandled_resource_types(
+    manifest: &RawManifest,
+) -> Vec<(String, usize, ResourceTypeSupport)> {
+    // A kind maps to exactly one support class, so the support rides the
+    // value while the kind stays the unique sort key.
+    let mut counts: BTreeMap<&str, (usize, ResourceTypeSupport)> = BTreeMap::new();
+    for node in manifest.nodes.values() {
+        if let Some(support) = unhandled_support(&node.resource_type) {
+            counts
+                .entry(node.resource_type.as_str())
+                .or_insert((0, support))
+                .0 += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .map(|(kind, (n, support))| (kind.to_string(), n, support))
+        .collect()
 }
 
 /// Convenience: load a manifest from disk and build its DAG in one call.
+/// Discards load-time warnings — see [`load_dag_with_warnings`].
 ///
 /// Also auto-detects the compiled-SQL side map: `target/compiled/` next to
 /// the manifest (same sibling-artifact pattern as `run_results.json` /
 /// `catalog.json`). Missing dirs/files are simply "no compiled SQL", never
 /// an error.
 pub fn load_dag<P: AsRef<Path>>(path: P) -> Result<Dag> {
+    load_dag_with_warnings(path).map(|(dag, _)| dag)
+}
+
+/// Like [`load_dag`], but also returns load-time warnings: one line per
+/// unhandled `resource_type` found in `manifest.nodes` (see
+/// [`unhandled_resource_types`] — `unsupported` for a real dbt type dbtl
+/// does not classify, `unknown` for a type outside the schema), plus one
+/// line for a non-empty `functions` map (UDFs are never graph nodes). All
+/// of these are KEPT as generic graph nodes and the warnings say so — dbtl
+/// is a viewer, so silently dropping a resource it does not understand
+/// would hide real topology, while silently keeping it would draw an
+/// unexplained plain box.
+pub fn load_dag_with_warnings<P: AsRef<Path>>(path: P) -> Result<(Dag, Vec<String>)> {
     let path = path.as_ref();
     let manifest = load_manifest(path)?;
+    let mut warnings: Vec<String> = unhandled_resource_types(&manifest)
+        .into_iter()
+        .map(|(kind, n, support)| {
+            let class = match support {
+                ResourceTypeSupport::Known => "unsupported",
+                ResourceTypeSupport::Unknown => "unknown",
+            };
+            format!(
+                "{class} resource_type '{kind}' ({n} node{}): kept as generic graph nodes",
+                if n == 1 { "" } else { "s" }
+            )
+        })
+        .collect();
+    if !manifest.functions.is_empty() {
+        warnings.push(format!(
+            "'functions' map ({} function{}): not displayed",
+            manifest.functions.len(),
+            if manifest.functions.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ));
+    }
     let mut dag = Dag::build(&manifest);
     if let Some(compiled_dir) = crate::compiled::default_compiled_dir(Some(path), None) {
         // The staleness root is the project root = the manifest dir's parent
@@ -259,14 +391,14 @@ pub fn load_dag<P: AsRef<Path>>(path: P) -> Result<Dag> {
             .and_then(|d| d.parent());
         dag.ingest_compiled(&compiled_dir, root);
     }
-    Ok(dag)
+    Ok((dag, warnings))
 }
 
 impl Dag {
     /// Build the DAG from a parsed manifest.
     ///
-    /// Excludes `test` / `operation` / `analysis` nodes, merges `nodes` +
-    /// `sources` into a single map, and prunes `parent_map` / `child_map` down
+    /// Excludes `test` / `operation` / `analysis` / `check` nodes, merges
+    /// `nodes` + `sources` into a single map, and prunes `parent_map` / `child_map` down
     /// to the kept set
     /// (both keys and neighbour lists) so traversal never touches an excluded
     /// node as an endpoint or as an intermediate hop.
@@ -1247,6 +1379,7 @@ mod tests {
             metrics: HashMap::new(),
             saved_queries: HashMap::new(),
             unit_tests: HashMap::new(),
+            functions: HashMap::new(),
             parent_map,
             child_map,
         }
@@ -1299,6 +1432,7 @@ mod tests {
             metrics: HashMap::new(),
             saved_queries: HashMap::new(),
             unit_tests: HashMap::new(),
+            functions: HashMap::new(),
             parent_map,
             child_map,
             macros: HashMap::new(),
@@ -1398,6 +1532,7 @@ mod tests {
             metrics: HashMap::new(),
             saved_queries: HashMap::new(),
             unit_tests: HashMap::new(),
+            functions: HashMap::new(),
             parent_map: HashMap::new(),
             child_map,
             macros: HashMap::new(),
@@ -1692,6 +1827,7 @@ mod tests {
             metrics: HashMap::new(),
             saved_queries: HashMap::new(),
             unit_tests: HashMap::new(),
+            functions: HashMap::new(),
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
         }
