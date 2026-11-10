@@ -343,7 +343,7 @@ fn help_overlay_renders_keybindings_from_keymap() {
     // representative binding description must render.
     let list = fixture_list();
     let state = UiState::new(list.len());
-    let mode = dbtl::Mode::Help { scroll: 0 };
+    let mode = dbtl::Mode::Help(dbtl::HelpView::new(dbtl::Mode::Selection));
     let mut ctx = RenderCtx::new(&list, &state, None);
     ctx.mode = &mode;
     let backend = TestBackend::new(100, 40);
@@ -1698,8 +1698,17 @@ fn render_app(app: &dbtl::app::App, width: u16, height: u16) -> Buffer {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
     {
+        // The palette rows + empty-list reason the EVENT LOOP prepares (the
+        // same App-side helpers; RenderCtx itself stays Dag-free).
+        let palette_rows = match &app.mode {
+            dbtl::Mode::Palette(p) => Some(app.palette_rows(&p.query)),
+            _ => None,
+        };
+        let empty_reason = app.list_empty_reason();
         let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, lineage.as_deref());
         ctx.mode = &app.mode;
+        ctx.palette_rows = palette_rows.as_deref();
+        ctx.empty_reason = empty_reason.as_deref();
         ctx.glyphs = app.glyph_mode;
         ctx.minimap = app.ui_state.minimap_visible();
         ctx.col_suffix = col_suffix.as_deref();
@@ -2163,7 +2172,7 @@ fn toast_floats_above_modal_overlays() {
     let list = fixture_list();
     let state = UiState::new(list.len());
     let mut ctx = RenderCtx::new(&list, &state, None);
-    let mode = dbtl::Mode::Help { scroll: 0 };
+    let mode = dbtl::Mode::Help(dbtl::HelpView::new(dbtl::Mode::Selection));
     ctx.mode = &mode;
     ctx.toasts = &[ToastLine {
         level: NoticeLevel::Info,
@@ -2753,5 +2762,286 @@ fn column_focus_esc_returns_to_the_rooted_render() {
     assert!(
         !text.contains("column:cll_demo.order_id"),
         "the chip is gone after Esc: {text}"
+    );
+}
+
+// ============================================================================
+// Issue 09 — search hint/zero-match, palette Recent/@/unavailable/no-match,
+// help /-filter, empty-list + empty-lineage reasons
+// ============================================================================
+
+#[test]
+fn search_empty_query_stamps_the_syntax_hint() {
+    // With `/` open and the query EMPTY, the first interior row carries the
+    // `!`-selector / `?`-full-text / Up-history hint — display-only chrome
+    // stamped over the top row, never an injected DisplayRow.
+    use dbtl::app::{apply_action, App};
+    use dbtl::Action;
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    apply_action(&mut app, Action::SearchOpen);
+    // The resizable list pane defaults to 34 cols — widen it (Issue 02's
+    // `set_list_width`) so the whole hint line fits inside the pane.
+    app.ui_state.set_list_width(60);
+    let text = buffer_to_string(&render_app(&app, 200, 30));
+    assert!(
+        text.contains("!tag:x selector"),
+        "the selector hint renders on an empty query:\n{text}"
+    );
+    assert!(
+        text.contains("?text full-text"),
+        "the full-text hint renders:\n{text}"
+    );
+    // The arrow comes from Chrome: ↑ in Unicode mode, ^ in ASCII.
+    assert!(text.contains("↑ history"), "the history hint renders");
+
+    // Same hint in ASCII mode — pure-ASCII substitutions only.
+    app.glyph_mode = dbtl::GlyphMode::Ascii;
+    let ascii = buffer_to_string(&render_app(&app, 200, 30));
+    assert!(ascii.contains("^ history"), "ASCII arrow: {ascii:?}");
+    assert!(!ascii.contains('↑'), "no ambiguous-width arrow in ASCII");
+}
+
+#[test]
+fn search_hint_vanishes_on_the_first_keystroke() {
+    // The hint is a while-the-input-is-empty affordance: once a char lands the
+    // stamped row is gone and the normal filtered rows occupy every line.
+    use dbtl::app::{apply_action, App};
+    use dbtl::Action;
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    apply_action(&mut app, Action::SearchOpen);
+    apply_action(&mut app, Action::SearchType('p'));
+    let text = buffer_to_string(&render_app(&app, 100, 30));
+    assert!(
+        !text.contains("!tag:x selector"),
+        "hint gone once the query is live:\n{text}"
+    );
+}
+
+#[test]
+fn search_zero_match_stamps_the_reason() {
+    // A name/selector miss points the user at the `?` escape; a `?`-prefixed
+    // full-text miss already knows — it stamps the bare "no match".
+    use dbtl::app::{apply_action, App};
+    use dbtl::Action;
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    apply_action(&mut app, Action::SearchOpen);
+    for c in "zzzzqqq".chars() {
+        apply_action(&mut app, Action::SearchType(c));
+    }
+    assert!(app.active_list().is_empty(), "fixture has no zzzzqqq model");
+    // Widened past the 34-col default so the full reason string fits.
+    app.ui_state.set_list_width(60);
+    let text = buffer_to_string(&render_app(&app, 200, 30));
+    assert!(
+        text.contains("no match — try ?text for full-text search"),
+        "name miss advertises the ? escape:\n{text}"
+    );
+    // `?` full-text query → bare "no match" (the escape was already used).
+    apply_action(&mut app, Action::SearchCancel);
+    apply_action(&mut app, Action::SearchOpen);
+    for c in "?zzzzqqq".chars() {
+        apply_action(&mut app, Action::SearchType(c));
+    }
+    let text = buffer_to_string(&render_app(&app, 200, 30));
+    assert!(text.contains("no match"), "the miss stamps:\n{text}");
+    assert!(
+        !text.contains("full-text"),
+        "no redundant hint on a ? query:\n{text}"
+    );
+}
+
+#[test]
+fn empty_list_stamps_the_scope_reason_and_ascii_dash() {
+    // A project with NO models in scope explains how to widen it — and honours
+    // the ASCII dash in ASCII glyph mode.
+    use dbtl::app::App;
+    use std::collections::HashMap;
+    let empty = Dag::build(&dbtl::RawManifest {
+        metadata: Default::default(),
+        nodes: HashMap::new(),
+        sources: HashMap::new(),
+        exposures: HashMap::new(),
+        semantic_models: HashMap::new(),
+        metrics: HashMap::new(),
+        saved_queries: HashMap::new(),
+        unit_tests: HashMap::new(),
+        functions: HashMap::new(),
+        parent_map: HashMap::new(),
+        child_map: HashMap::new(),
+        macros: HashMap::new(),
+    });
+    let mut app = App::new(empty, std::path::PathBuf::from(FIXTURE));
+    // The reason is longer than the 34-col default pane — widen to fit it.
+    app.ui_state.set_list_width(60);
+    let text = buffer_to_string(&render_app(&app, 200, 30));
+    assert!(
+        text.contains("no models in scope — try --include-packages"),
+        "the scope reason stamps on an empty list:\n{text}"
+    );
+    // The lineage pane explains itself too (no model → nothing to draw).
+    assert!(text.contains("no model"), "the lineage pane is explained");
+    app.glyph_mode = dbtl::GlyphMode::Ascii;
+    let ascii = buffer_to_string(&render_app(&app, 200, 30));
+    assert!(
+        ascii.contains("no models in scope - try --include-packages"),
+        "ASCII mode uses the '-' dash: {ascii:?}"
+    );
+    assert!(!ascii.contains('—'), "no em-dash in ASCII mode");
+}
+
+#[test]
+fn palette_recent_section_and_commands_header_render() {
+    // After a run, reopening at an empty query renders `Recent` first, then a
+    // `Commands` header over the full list — section headers are display rows.
+    use dbtl::app::{apply_action, App};
+    use dbtl::Action;
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    apply_action(&mut app, Action::PaletteOpen);
+    for c in "minimap".chars() {
+        apply_action(&mut app, Action::SearchType(c));
+    }
+    apply_action(&mut app, Action::SearchConfirm); // records ToggleMinimap
+    apply_action(&mut app, Action::PaletteOpen); // reopen at empty query
+    let text = buffer_to_string(&render_app(&app, 100, 40));
+    assert!(text.contains("Recent"), "the Recent section header renders");
+    assert!(
+        text.contains("Commands"),
+        "the Commands section header renders"
+    );
+    assert!(
+        text.contains("toggle minimap"),
+        "the recent command row renders:\n{text}"
+    );
+    // Recent precedes Commands on screen.
+    let ri = text.find("Recent").unwrap();
+    let ci = text.find("Commands").unwrap();
+    assert!(ri < ci, "Recent section leads: {text}");
+}
+
+#[test]
+fn palette_at_search_shows_model_rows() {
+    // `@` switches the palette to model search: matching model NAMES render.
+    use dbtl::app::{apply_action, App};
+    use dbtl::Action;
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    apply_action(&mut app, Action::PaletteOpen);
+    for c in "@pos_txn".chars() {
+        apply_action(&mut app, Action::SearchType(c));
+    }
+    let text = buffer_to_string(&render_app(&app, 100, 40));
+    assert!(
+        text.contains("pos_txn"),
+        "the @-search's model row renders:\n{text}"
+    );
+    // No command rows under `@` — command help strings are gone (the modal
+    // title itself still reads "commands" — that is the palette's name).
+    assert!(
+        !text.contains("toggle minimap") && !text.contains("Recent"),
+        "command rows are gone under @:\n{text}"
+    );
+}
+
+#[test]
+fn palette_zero_candidates_stamps_no_match() {
+    use dbtl::app::{apply_action, App};
+    use dbtl::Action;
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    apply_action(&mut app, Action::PaletteOpen);
+    for c in "zzzzqqq".chars() {
+        apply_action(&mut app, Action::SearchType(c));
+    }
+    let text = buffer_to_string(&render_app(&app, 100, 40));
+    assert!(
+        text.contains("no matching commands"),
+        "the zero-candidate stamp renders:\n{text}"
+    );
+}
+
+#[test]
+fn palette_unavailable_row_renders_the_reason() {
+    // `D` "diff vs baseline" needs a loaded baseline: the fixture App has
+    // none, so the row must carry its reason text.
+    use dbtl::app::{apply_action, App};
+    use dbtl::Action;
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    apply_action(&mut app, Action::PaletteOpen);
+    for c in "baseline".chars() {
+        apply_action(&mut app, Action::SearchType(c));
+    }
+    let text = buffer_to_string(&render_app(&app, 110, 40));
+    assert!(
+        text.contains("needs --diff"),
+        "the unavailable reason renders next to the command:\n{text}"
+    );
+}
+
+#[test]
+fn palette_overshot_selected_still_highlights_the_last_row() {
+    // `selected` can outlive a shrinking candidate set (the reducer clamps on
+    // mutation, not on draw — e.g. a --watch reload mid-palette). The renderer
+    // must clamp too, or NO row carries the cursor and the highlight vanishes.
+    use dbtl::app::{apply_action, App};
+    use dbtl::Action;
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    apply_action(&mut app, Action::PaletteOpen);
+    for c in "minimap".chars() {
+        apply_action(&mut app, Action::SearchType(c));
+    }
+    if let dbtl::Mode::Palette(p) = &mut app.mode {
+        p.selected = 99; // out of range — draw must clamp to the last row
+    }
+    let buffer = render_app(&app, 100, 40);
+    let text = buffer_to_string(&buffer);
+    // The palette's cursor row is the REVERSED line inside the modal — find
+    // whichever reversed row carries the command's help text (the list
+    // pane's own selection marker is reversed too, so scan every row).
+    let mut hit = false;
+    for y in 0..buffer.area.height {
+        let line: String = (0..buffer.area.width)
+            .filter_map(|x| buffer.cell((x, y)))
+            .map(|c| c.symbol())
+            .collect();
+        let reversed = (0..buffer.area.width).any(|x| {
+            buffer
+                .cell((x, y))
+                .is_some_and(|c| c.modifier.contains(Modifier::REVERSED))
+        });
+        if reversed && line.contains("minimap") {
+            hit = true;
+            break;
+        }
+    }
+    assert!(
+        hit,
+        "the clamped LAST candidate keeps the cursor highlight:\n{text}"
+    );
+}
+
+#[test]
+fn help_filter_narrows_to_matching_bindings() {
+    // `/copy` inside help: only the matching (Yank) section's rows stay —
+    // a section with no match drops its header AND its rows, and the title
+    // shows the live filter.
+    use dbtl::app::{apply_action, App};
+    use dbtl::Action;
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    apply_action(&mut app, Action::HelpToggle);
+    apply_action(&mut app, Action::SearchOpen); // `/` inside help
+    for c in "copy".chars() {
+        apply_action(&mut app, Action::SearchType(c));
+    }
+    let text = buffer_to_string(&render_app(&app, 100, 45));
+    assert!(
+        text.contains("/copy"),
+        "the help title echoes the filter:\n{text}"
+    );
+    assert!(
+        text.contains("copy unique_id"),
+        "a matching binding row renders:\n{text}"
+    );
+    // A non-matching section (e.g. Detail's "scroll") is gone entirely.
+    assert!(
+        !text.contains("scroll to top"),
+        "non-matching rows are filtered out:\n{text}"
     );
 }

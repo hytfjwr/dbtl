@@ -86,6 +86,9 @@ pub(crate) struct Chrome {
     pub mm_node: &'static str,
     pub mm_empty: &'static str,
     pub mm_view: &'static str,
+    /// The em dash inside prose chrome (empty-state / no-match lines):
+    /// `—` Unicode / `-` ASCII.
+    pub dash: &'static str,
 }
 
 /// The chrome for a [`GlyphMode`](crate::GlyphMode).
@@ -114,6 +117,7 @@ static UNICODE_CHROME: Chrome = Chrome {
     mm_node: "#",
     mm_empty: ".",
     mm_view: "+",
+    dash: "—",
 };
 
 static ASCII_CHROME: Chrome = Chrome {
@@ -131,6 +135,7 @@ static ASCII_CHROME: Chrome = Chrome {
     mm_node: "#",
     mm_empty: ".",
     mm_view: "+",
+    dash: "-",
 };
 
 /// Highlight style for the selected row / emphasized lineage label: an

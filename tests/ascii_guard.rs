@@ -106,8 +106,17 @@ fn render_with_toasts(app: &App, width: u16, height: u16, toasts: &[ToastLine]) 
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
     {
+        // The palette rows + empty-list reason the EVENT LOOP prepares (the
+        // same App-side helpers; RenderCtx itself stays Dag-free).
+        let palette_rows = match &app.mode {
+            dbtl::Mode::Palette(p) => Some(app.palette_rows(&p.query)),
+            _ => None,
+        };
+        let empty_reason = app.list_empty_reason();
         let mut ctx = RenderCtx::new(app.active_list(), &app.ui_state, lineage.as_deref());
         ctx.mode = &app.mode;
+        ctx.palette_rows = palette_rows.as_deref();
+        ctx.empty_reason = empty_reason.as_deref();
         ctx.status = status.as_deref();
         ctx.stats = Some(&app.stats);
         ctx.lineage_label = Some(&label);
@@ -534,4 +543,76 @@ fn column_focus_and_columns_modal_are_all_ascii() {
     // The column modal over the trace.
     apply_action(&mut app, Action::ColumnsOpen);
     assert_all_ascii(&render(&app, 100, 30), "columns modal 100x30");
+}
+
+#[test]
+fn issue09_surfaces_are_all_ascii() {
+    // Every NEW Issue-09 surface, in ASCII glyph mode: the empty-query search
+    // hint's `^ history` arrow, the zero-match line's `-` dash, the empty
+    // list's scope reason, the empty lineage's reason, the palette's Recent/
+    // Commands headers + unavailable reason + `@` model rows, and the help
+    // `/`-filter title — no surface may leak an ambiguous-width glyph.
+    let mut app = ascii_app();
+
+    // Empty-query list search: `!tag:x selector  ?text full-text  ^ history`.
+    apply_action(&mut app, Action::SearchOpen);
+    assert_all_ascii(&render(&app, 200, 30), "search hint 200x30");
+
+    // Zero-match: `no match - try ?text for full-text search` (ASCII dash).
+    for c in "zzzzqqq".chars() {
+        apply_action(&mut app, Action::SearchType(c));
+    }
+    assert_all_ascii(&render(&app, 200, 30), "search zero-match 200x30");
+    apply_action(&mut app, Action::SearchCancel);
+
+    // Command palette: a Recent row + Commands header + an UNAVAILABLE row's
+    // reason (no baseline -> `D` greyed) + the `@` model rows, all scanned.
+    apply_action(&mut app, Action::PaletteOpen);
+    for c in "minimap".chars() {
+        apply_action(&mut app, Action::SearchType(c));
+    }
+    apply_action(&mut app, Action::SearchConfirm); // records the Recent
+    apply_action(&mut app, Action::PaletteOpen);
+    assert_all_ascii(&render(&app, 110, 40), "palette Recent+Commands");
+    for c in "baseline".chars() {
+        apply_action(&mut app, Action::SearchType(c));
+    }
+    assert_all_ascii(&render(&app, 110, 40), "palette unavailable reason");
+    app.mode = dbtl::Mode::Palette(dbtl::action::PaletteState {
+        query: "@pos".to_string(),
+        selected: 0,
+    });
+    assert_all_ascii(&render(&app, 110, 40), "palette @-model rows");
+    app.mode = dbtl::Mode::Selection;
+
+    // Help `/`-filter live: the `/copy` title + narrowed sections.
+    apply_action(&mut app, Action::HelpToggle);
+    apply_action(&mut app, Action::SearchOpen);
+    for c in "copy".chars() {
+        apply_action(&mut app, Action::SearchType(c));
+    }
+    assert_all_ascii(&render(&app, 110, 45), "help /-filter");
+    apply_action(&mut app, Action::HelpToggle); // clear filter
+    apply_action(&mut app, Action::HelpToggle); // close help
+
+    // Empty project: `no models in scope - try --include-packages` + the
+    // lineage pane's own one-line reason, in ASCII (dash must be `-`).
+    use std::collections::HashMap;
+    let empty = dbtl::Dag::build(&dbtl::RawManifest {
+        metadata: Default::default(),
+        nodes: HashMap::new(),
+        sources: HashMap::new(),
+        exposures: HashMap::new(),
+        semantic_models: HashMap::new(),
+        metrics: HashMap::new(),
+        saved_queries: HashMap::new(),
+        unit_tests: HashMap::new(),
+        functions: HashMap::new(),
+        parent_map: HashMap::new(),
+        child_map: HashMap::new(),
+        macros: HashMap::new(),
+    });
+    let mut app = App::new(empty, std::path::PathBuf::from(FIXTURE));
+    app.glyph_mode = GlyphMode::Ascii;
+    assert_all_ascii(&render(&app, 200, 30), "empty project 200x30");
 }
