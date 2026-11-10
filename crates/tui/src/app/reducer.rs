@@ -1697,8 +1697,8 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             Outcome::cont()
         }
         // Enter / a row click: open the row's model AS A TAB (T2 dedupes to
-        // the open one), or run its command — a greyed command toasts the
-        // shared `unavailable_reason` instead of applying.
+        // the open one), or run its command — §3 drops the unavailable ones
+        // at build, so a drawn command always runs.
         Action::HomeOpen | Action::HomePick(_) => {
             let idx = match action {
                 Action::HomePick(i) => i,
@@ -1709,15 +1709,8 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                     let uid = uid.clone();
                     app.open_node_as_tab(&uid);
                 }
-                Some(HomeItem::Command {
-                    action: a,
-                    unavailable,
-                }) => {
-                    if let Some(reason) = unavailable.clone() {
-                        app.set_notice(reason);
-                    } else {
-                        return apply_action(app, *a);
-                    }
+                Some(HomeItem::Command { action: a }) => {
+                    return apply_action(app, *a);
                 }
                 None => {}
             }

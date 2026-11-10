@@ -1769,39 +1769,62 @@ fn tab_bar_renders_cells_plus_and_project_on_row_zero() {
     app.select_by_unique_id("model.jaffle_finance.fct_subscription_process");
     app.open_node_as_tab("model.jaffle_finance.rpt_delivery_base_metrics");
 
-    // The spec's probe sizes — the strip reads identically at both.
-    for (w, h) in [(80u16, 24u16), (160, 44)] {
-        let buf = render_app(&app, w, h);
-        let row0 = row_text(&buf, 0);
-        assert!(
-            row0.contains("1 fct_subscription_process"),
-            "{w}x{h} tab 1 cell on the strip: {row0}"
-        );
-        assert!(
-            row0.contains("2 rpt_deliver..ase_metrics"),
-            "{w}x{h} tab 2's name middle-truncates at 24: {row0}"
-        );
-        assert!(row0.contains("+"), "{w}x{h} the new-tab cell: {row0}");
-        assert!(
-            row0.trim_end().ends_with("jaffle_finance"),
-            "{w}x{h} the project name pins to the strip's right edge: {row0}"
-        );
-        // The strip claims row 0 — the panes start at row 1.
-        assert!(
-            row_text(&buf, 1).contains("Lineage:"),
-            "{w}x{h} the lineage title moved off row 0"
-        );
-        assert!(!row0.contains("Lineage:"));
-    }
+    // §2: `⌂` pins at the strip's left edge like `+` pins at the right —
+    // model tabs window between them. At 80 cols the window only fits one
+    // model tab, so the active one shows and `‹` marks the scrolled-away
+    // side; at 160 both fit with no arrows.
+    let buf = render_app(&app, 80, 24);
+    let row0 = row_text(&buf, 0);
+    assert!(
+        row0.starts_with(" ⌂") || row0.contains("⌂"),
+        "the home cell pins at the strip's left edge: {row0}"
+    );
+    assert!(
+        row0.contains("‹"),
+        "hidden model tabs mark the left edge: {row0}"
+    );
+    assert!(
+        row0.contains("2 rpt_deliver..ase_metrics"),
+        "the active tab stays in the window: {row0}"
+    );
+    assert!(row0.contains("+"), "the new-tab cell: {row0}");
+    assert!(
+        row0.trim_end().ends_with("jaffle_finance"),
+        "the project name pins to the strip's right edge: {row0}"
+    );
 
-    // ASCII mode swaps the close/scroll chrome for `x`/`<`/`>` — the cell
-    // layout is geometrically identical (the guard's identity invariant).
+    let buf = render_app(&app, 160, 44);
+    let row0 = row_text(&buf, 0);
+    assert!(row0.contains("⌂"), "160: the pinned home cell: {row0}");
+    assert!(
+        row0.contains("1 fct_subscription_process"),
+        "160: tab 1 cell on the strip: {row0}"
+    );
+    assert!(
+        row0.contains("2 rpt_deliver..ase_metrics"),
+        "160: tab 2's name middle-truncates at 24: {row0}"
+    );
+    assert!(row0.contains("+"), "160: the new-tab cell: {row0}");
+    assert!(
+        row0.trim_end().ends_with("jaffle_finance"),
+        "160: the project name pins to the strip's right edge: {row0}"
+    );
+    // The strip claims row 0 — the panes start at row 1.
+    assert!(
+        row_text(&buf, 1).contains("Lineage:"),
+        "the lineage title moved off row 0"
+    );
+    assert!(!row0.contains("Lineage:"));
+
+    // ASCII mode swaps the home/close/scroll chrome for `~`/`x`/`<`/`>` —
+    // the cell layout is geometrically identical (the guard's identity
+    // invariant).
     app.glyph_mode = GlyphMode::Ascii;
     let buf = render_app(&app, 80, 24);
     let row0 = row_text(&buf, 0);
     assert!(
-        row0.contains("1 fct_subscription_process x"),
-        "ASCII mode draws `x`, same cell: {row0}"
+        row0.contains("~ < 2 rpt_deliver..ase_metrics x"),
+        "ASCII mode draws `~`+`<`+`x`, same cells: {row0}"
     );
 }
 

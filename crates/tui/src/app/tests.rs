@@ -9088,9 +9088,10 @@ fn home_data_sections_order_and_flat_selectable() {
     assert_eq!(titles.first(), Some(&"Resume"), "Resume heads the page");
     assert_eq!(titles.last(), Some(&"Actions"), "Actions always exists");
     let pos = |t: &str| titles.iter().position(|x| x == &t);
+    // §3's fixed order: Resume → Recent → Bookmarks → Attention → Actions.
     assert!(
-        pos("Bookmarks").unwrap() < pos("Recent").unwrap(),
-        "fixed order: Bookmarks before Recent: {titles:?}"
+        pos("Recent").unwrap() < pos("Bookmarks").unwrap(),
+        "fixed order: Recent before Bookmarks: {titles:?}"
     );
     // `selectable` IS the sections' rows flattened — the cursor/click
     // indexing can't drift from what's drawn.
@@ -9132,7 +9133,7 @@ fn home_move_clamps_never_wraps_and_open_dedupes() {
 }
 
 #[test]
-fn home_command_rows_run_or_explain_why_not() {
+fn home_command_rows_run_and_unavailable_ones_are_filtered() {
     let mut a = app();
     a.enter_home();
     let stats_i = a
@@ -9144,7 +9145,6 @@ fn home_command_rows_run_or_explain_why_not() {
                 it,
                 HomeItem::Command {
                     action: Action::StatsOpen,
-                    unavailable: None,
                 }
             )
         })
@@ -9158,29 +9158,18 @@ fn home_command_rows_run_or_explain_why_not() {
     apply_action(&mut a, Action::DetailClose);
     assert!(matches!(a.mode, Mode::Home));
 
-    // `D` without a baseline is greyed: Enter toasts the shared reason
-    // rather than dispatching (and the row can't have run — still home).
-    let diff_i = a
-        .home_data()
-        .selectable
-        .iter()
-        .position(|it| {
-            matches!(
-                it,
-                HomeItem::Command {
-                    action: Action::DiffOpen,
-                    unavailable: Some(_),
-                }
-            )
-        })
-        .expect("the diff row is greyed without a baseline");
-    apply_action(&mut a, Action::HomePick(diff_i));
-    assert_eq!(
-        a.take_notice().as_deref(),
-        Some("needs --diff"),
-        "the unavailable reason toasted"
+    // §3's 使えない行は出さない: `D` without a baseline is NOT a row at
+    // all — the shared `unavailable_reason` filters it at build time, so a
+    // drawn command can never toast instead of running.
+    assert!(
+        !a.home_data().selectable.iter().any(|it| matches!(
+            it,
+            HomeItem::Command {
+                action: Action::DiffOpen,
+            }
+        )),
+        "the baseline-less diff row is filtered out of Actions"
     );
-    assert!(a.home_active());
 }
 
 #[test]

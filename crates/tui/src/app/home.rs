@@ -2,11 +2,12 @@
 //! builds once per `(generation, home_stamp, search)` key and hands the
 //! renderer as plain data, keeping `RenderCtx` Dag-free.
 //!
-//! The section order is FIXED (§3: Resume → Attention → Bookmarks → Recent
-//! → Actions — the search bar is separate chrome, not a section); empty
-//! sections drop except `Actions`, which always carries the runnable set.
-//! Every row resolves to a [`HomeItem`] — the flattened `selectable` list is
-//! what `App::home_sel`, `j`/`k`, Enter, and the mouse's row hits index.
+//! The section order is FIXED (§3: Resume → Recent → Bookmarks → Attention
+//! → Actions — the search bar and the health strip are chrome, not
+//! sections, and a fixed `Tip` line closes the plan); empty sections drop
+//! except `Actions`, which always carries the runnable set. Every row
+//! resolves to a [`HomeItem`] — the flattened `selectable` list is what
+//! `App::home_sel`, `j`/`k`, Enter, and the mouse's row hits index.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -15,6 +16,10 @@ use crate::action::{Action, Mode, SearchTarget, BINDINGS};
 use crate::model_list::match_indices;
 use crate::App;
 use crate::RunStatus;
+
+/// §3's per-section cap — `Recent`, `Bookmarks`, and `Attention` each show
+/// at most this many rows (the overflow reads `+N more`).
+const SECTION_CAP: usize = 5;
 
 /// A selectable home row's semantics — what Enter (`HomeOpen`) / a row click
 /// (`HomePick`) does with it. Deliberately tiny: everything that names a
@@ -25,24 +30,20 @@ pub enum HomeItem {
     /// Opens `uid` as a model tab — activating the existing tab when one is
     /// already open (§2/T2, identical to `O` and palette `@`-new-tab).
     Model { uid: String },
-    /// Dispatches a `home`-flagged [`BINDINGS`] action. `unavailable` is the
-    /// shared [`App::unavailable_reason`](crate::App::unavailable_reason):
-    /// `Some` draws the row dim and turns Enter into the reason toast.
-    Command {
-        action: Action,
-        unavailable: Option<String>,
-    },
+    /// Dispatches a `home`-flagged [`BINDINGS`] action — the builder already
+    /// filtered the unavailable ones out (§3: 使えない行は出さない), so the
+    /// row always runs.
+    Command { action: Action },
 }
 
 /// A row's emphasis — the renderer maps these onto theme tones. `Bad` marks
 /// the failure-class attention rows (run errors, lint), `Warn` the softer
-/// ones (orphans, layer violations), `Dim` a greyed-out command.
+/// ones (orphans, layer violations, untested models).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HomeTone {
     Normal,
     Bad,
     Warn,
-    Dim,
 }
 
 /// One drawn row under a section: display strings only (`label` = the model
@@ -57,11 +58,14 @@ pub struct HomeRow {
 
 /// A fixed-order section: `title` renders the `[Attention]`-style header,
 /// `rows` its items (all selectable — headers live on the section, never
-/// inside `rows`, so `selectable` is a plain concatenation).
+/// inside `rows`, so `selectable` is a plain concatenation). `tail` is the
+/// cap's hidden count — the plan draws it as a non-selectable `+N more`
+/// line after the rows.
 #[derive(Debug, Clone)]
 pub struct HomeSection {
     pub title: &'static str,
     pub rows: Vec<HomeRow>,
+    pub tail: Option<usize>,
 }
 
 /// The open `/`-search's live state — `Some` while `Mode::Search` carries
@@ -204,19 +208,22 @@ impl App {
 
         let mut sections = Vec::new();
         let mut selectable = Vec::new();
+        let push_section = |sections: &mut Vec<HomeSection>,
+                            selectable: &mut Vec<HomeItem>,
+                            title: &'static str,
+                            rows: Vec<HomeRow>,
+                            tail: Option<usize>| {
+            if rows.is_empty() {
+                return;
+            }
+            selectable.extend(rows.iter().map(|r| r.item.clone()));
+            sections.push(HomeSection { title, rows, tail });
+        };
 
         // ---- Attention is computed first: the health strip reads the same
-        // counts (failures/violations/lint) instead of recomputing them. ----
-        let attention = self.attention_rows(&stats, &name_to_uid);
-        let (run_fails, lint_total) = attention.iter().fold((0usize, 0usize), |(f, l), r| {
-            if r.detail.starts_with("run ") {
-                (f + 1, l)
-            } else if r.detail.starts_with("lint") {
-                (f, l + 1)
-            } else {
-                (f, l)
-            }
-        });
+        // counts (failures/lint) instead of recomputing them. ----
+        let (attention, att_tail, run_fails, lint_total) =
+            self.attention_rows(&stats, &name_to_uid);
 
         // Resume — the last model tab's root (§3 "前回のアクティブタブ").
         if let Some(row) = self
@@ -228,73 +235,65 @@ impl App {
             sections.push(HomeSection {
                 title: "Resume",
                 rows: vec![row],
+                tail: None,
             });
         }
 
-        if !attention.is_empty() {
-            selectable.extend(attention.iter().map(|r| r.item.clone()));
-            sections.push(HomeSection {
-                title: "Attention",
-                rows: attention,
-            });
-        }
+        // Recent — the Issue 03 MRU verbatim (newest first), §3-capped at 5
+        // of its 10 entries (the MRU drawer/palette still sees them all).
+        let recent: Vec<HomeRow> = self
+            .recent
+            .iter()
+            .take(SECTION_CAP)
+            .filter_map(|uid| self.model_row(uid, "", HomeTone::Normal))
+            .collect();
+        push_section(&mut sections, &mut selectable, "Recent", recent, None);
 
-        // Bookmarks — `BTreeSet` iteration is already uid-sorted; names show
-        // sorted-by-uid order (deterministic, the spec's only requirement).
+        // Bookmarks — `BTreeSet` iteration is already uid-sorted (the spec's
+        // determinism rule); capped at 5, the overflow reads `+N more`.
         let bookmarks: Vec<HomeRow> = self
             .bookmarks
             .iter()
             .filter_map(|uid| self.model_row(uid, "", HomeTone::Normal))
             .collect();
-        if !bookmarks.is_empty() {
-            selectable.extend(bookmarks.iter().map(|r| r.item.clone()));
-            sections.push(HomeSection {
-                title: "Bookmarks",
-                rows: bookmarks,
-            });
-        }
+        let (bookmarks, extra) = cap_rows(bookmarks);
+        push_section(
+            &mut sections,
+            &mut selectable,
+            "Bookmarks",
+            bookmarks,
+            extra,
+        );
 
-        // Recent — the Issue 03 MRU verbatim (newest first, already ≤10).
-        let recent: Vec<HomeRow> = self
-            .recent
-            .iter()
-            .filter_map(|uid| self.model_row(uid, "", HomeTone::Normal))
-            .collect();
-        if !recent.is_empty() {
-            selectable.extend(recent.iter().map(|r| r.item.clone()));
-            sections.push(HomeSection {
-                title: "Recent",
-                rows: recent,
-            });
-        }
+        // Attention — §3's worklist (computed above for the health counts);
+        // capped at 5, the overflow reads `+N more` (`S` shows the rest).
+        push_section(
+            &mut sections,
+            &mut selectable,
+            "Attention",
+            attention,
+            att_tail,
+        );
 
-        // Actions — the `home`-flagged BINDINGS rows, availability through
-        // the shared `unavailable_reason` so a greyed row can never disagree
-        // with what the key would do.
+        // Actions — the `home`-flagged BINDINGS rows minus the unavailable
+        // ones (§3: 使えない行は出さない — a baseline-less `D` is dropped,
+        // never greyed, so a drawn row always runs).
         let actions: Vec<HomeRow> = BINDINGS
             .iter()
             .filter(|b| b.home)
-            .map(|b| {
-                let reason = self.unavailable_reason(b.action);
-                let (detail, tone) = match &reason {
-                    Some(r) => (r.clone(), HomeTone::Dim),
-                    None => (b.key_label(), HomeTone::Normal),
-                };
-                HomeRow {
-                    item: HomeItem::Command {
-                        action: b.action,
-                        unavailable: reason,
-                    },
-                    label: b.help.to_string(),
-                    detail,
-                    tone,
-                }
+            .filter(|b| self.unavailable_reason(b.action).is_none())
+            .map(|b| HomeRow {
+                item: HomeItem::Command { action: b.action },
+                label: b.help.to_string(),
+                detail: b.key_label(),
+                tone: HomeTone::Normal,
             })
             .collect();
         selectable.extend(actions.iter().map(|r| r.item.clone()));
         sections.push(HomeSection {
             title: "Actions",
             rows: actions,
+            tail: None,
         });
 
         // ---- the health strip: fixed-order cells, `-` for absent sources ----
@@ -365,17 +364,33 @@ impl App {
         })
     }
 
-    /// The §3 worklist, deterministic order: run failures → orphans → layer
-    /// violations → lint findings; name-sorted inside each class. A model
-    /// appearing in two classes keeps its FIRST (worst) row.
+    /// The §3 worklist — returns `(rows, tail, run_fails, lint_total)`:
+    /// `rows` are the §3-capped selectable entries, `tail` the overflow
+    /// count the plan draws as `+N more`, and the counts are UNCAPPED
+    /// structured numbers (the health strip reads them instead of parsing
+    /// rendered `detail` strings).
+    ///
+    /// Class order (§3): last-run error/fail (name order) → models with no
+    /// tests sorted by downstream count desc → then the softer classes
+    /// (orphans → layer violations → lint findings). A model appearing in
+    /// two classes keeps its FIRST (worst) row.
     fn attention_rows(
         &self,
         stats: &crate::StatsView,
         name_to_uid: &HashMap<&str, &str>,
-    ) -> Vec<HomeRow> {
+    ) -> (Vec<HomeRow>, Option<usize>, usize, usize) {
         let mut rows: Vec<(u8, HomeRow)> = Vec::new();
         let mut seen: Vec<&str> = Vec::new();
-        // 0 — failed last run (run_results.json present).
+        let model_row = |uid: &str, label: &str, detail: String, tone: HomeTone| HomeRow {
+            item: HomeItem::Model {
+                uid: uid.to_string(),
+            },
+            label: label.to_string(),
+            detail,
+            tone,
+        };
+        // 0 — failed last run (run_results.json present); name-sorted.
+        let mut run_fails = 0;
         if let Some(rr) = self.run_results() {
             let mut fails: Vec<(&str, &str, &RunStatus)> = self
                 .dag
@@ -391,6 +406,7 @@ impl App {
             fails.sort_by(|a, b| a.0.cmp(b.0).then(a.1.cmp(b.1)));
             for (name, uid, status) in fails {
                 seen.push(uid);
+                run_fails += 1;
                 let status = match status {
                     RunStatus::Error => "error",
                     RunStatus::Fail => "fail",
@@ -398,18 +414,44 @@ impl App {
                 };
                 rows.push((
                     0,
-                    HomeRow {
-                        item: HomeItem::Model {
-                            uid: uid.to_string(),
-                        },
-                        label: name.to_string(),
-                        detail: format!("run {status}"),
-                        tone: HomeTone::Bad,
-                    },
+                    model_row(uid, name, format!("run {status}"), HomeTone::Bad),
                 ));
             }
         }
-        // 1 — orphans (the stats dashboard's exact list — names).
+        // 1 — models with no tests, most-depended-on first (§3's second
+        // class): `coverage_gap` is the same predicate the Coverage lens
+        // and the stats gauge read. Ties break on the name.
+        let mut untested: Vec<(&str, &str, usize)> = self
+            .dag
+            .nodes()
+            .values()
+            .filter(|n| {
+                n.resource_type == "model"
+                    && crate::coverage_gap(n)
+                    && !seen.contains(&n.unique_id.as_str())
+            })
+            .map(|n| {
+                (
+                    n.name.as_str(),
+                    n.unique_id.as_str(),
+                    self.dag.downstream(&n.unique_id).len(),
+                )
+            })
+            .collect();
+        untested.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(b.0)).then(a.1.cmp(b.1)));
+        for (name, uid, down) in untested {
+            seen.push(uid);
+            rows.push((
+                1,
+                model_row(
+                    uid,
+                    name,
+                    format!("untested ({down} downstream)"),
+                    HomeTone::Warn,
+                ),
+            ));
+        }
+        // 2 — orphans (the stats dashboard's exact list — names).
         for name in &stats.orphan_models {
             if let Some(uid) = name_to_uid.get(name.as_str()) {
                 if seen.contains(uid) {
@@ -417,19 +459,17 @@ impl App {
                 }
                 seen.push(uid);
                 rows.push((
-                    1,
-                    HomeRow {
-                        item: HomeItem::Model {
-                            uid: (*uid).to_string(),
-                        },
-                        label: name.clone(),
-                        detail: "orphan - no upstream or downstream".to_string(),
-                        tone: HomeTone::Warn,
-                    },
+                    2,
+                    model_row(
+                        uid,
+                        name,
+                        "orphan - no upstream or downstream".to_string(),
+                        HomeTone::Warn,
+                    ),
                 ));
             }
         }
-        // 2 — layer violations: the CHILD is the mislayered model (the tab
+        // 3 — layer violations: the CHILD is the mislayered model (the tab
         // Enter opens); the detail names the violating edge.
         for (parent, child) in &stats.layer_violations {
             if let Some(uid) = name_to_uid.get(child.as_str()) {
@@ -438,19 +478,18 @@ impl App {
                 }
                 seen.push(uid);
                 rows.push((
-                    2,
-                    HomeRow {
-                        item: HomeItem::Model {
-                            uid: (*uid).to_string(),
-                        },
-                        label: child.clone(),
-                        detail: format!("layer violation: {parent} -> {child}"),
-                        tone: HomeTone::Warn,
-                    },
+                    3,
+                    model_row(
+                        uid,
+                        child,
+                        format!("layer violation: {parent} -> {child}"),
+                        HomeTone::Warn,
+                    ),
                 ));
             }
         }
-        // 3 — lint findings (rule name + node, stats order = LintRule::ALL).
+        // 4 — lint findings (rule name + node, stats order = LintRule::ALL).
+        let mut lint_total = 0;
         for (rule, names) in &stats.lint_findings {
             for name in names {
                 if let Some(uid) = name_to_uid.get(name.as_str()) {
@@ -458,33 +497,59 @@ impl App {
                         continue;
                     }
                     seen.push(uid);
+                    lint_total += 1;
                     rows.push((
-                        3,
-                        HomeRow {
-                            item: HomeItem::Model {
-                                uid: (*uid).to_string(),
-                            },
-                            label: name.clone(),
-                            detail: format!("lint: {rule}"),
-                            tone: HomeTone::Bad,
-                        },
+                        4,
+                        model_row(uid, name, format!("lint: {rule}"), HomeTone::Bad),
                     ));
                 }
             }
         }
-        rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.label.cmp(&b.1.label)));
-        rows.into_iter().map(|(_, r)| r).collect()
+        // Stable class sort keeps each class's own order (name for most,
+        // downstream-desc for untested).
+        rows.sort_by_key(|a| a.0);
+        let mut out: Vec<HomeRow> = rows.into_iter().map(|(_, r)| r).collect();
+        let extra = out.len().saturating_sub(SECTION_CAP);
+        out.truncate(SECTION_CAP);
+        (out, (extra > 0).then_some(extra), run_fails, lint_total)
     }
 
-    /// The `/`-search's model rows — fuzzy name match over the UNFILTERED
-    /// model list (home search reaches models a list filter hid), empty
-    /// query = all models (palette `@`'s contract).
+    /// The `/`-search's model rows over the UNFILTERED model list (home
+    /// search reaches models a list filter hid), empty query = all models
+    /// (palette `@`'s contract). The syntax IS the list `/`'s (§3: 構文は
+    /// 一覧の / と同じ): `!spec` routes through `select::select`'s dbt
+    /// selectors, `?needle` through the full-text match (descriptions,
+    /// columns, raw SQL), anything else through fuzzy name matching.
     fn home_search_rows(&self, query: &str) -> Vec<HomeRow> {
         let q = query.trim();
-        self.base_list()
-            .models
-            .iter()
-            .filter(|m| q.is_empty() || !match_indices(&m.name, q).is_empty())
+        let base = self.base_list();
+        let matched: Vec<&crate::NodeInfo> = if let Some(spec) = q.strip_prefix('!') {
+            if spec.trim().is_empty() {
+                // A bare `!` is the selector PREFIX, not a query — keep the
+                // full result set while the user is still typing (same rule
+                // `refilter` applies to the list).
+                base.models.iter().collect()
+            } else {
+                let set = crate::select::select(&self.dag, self.diff(), spec);
+                base.models
+                    .iter()
+                    .filter(|m| set.contains(&m.unique_id))
+                    .collect()
+            }
+        } else if let Some(needle) = q.strip_prefix('?') {
+            let needle = needle.to_lowercase();
+            base.models
+                .iter()
+                .filter(|m| self.full_text_match(&m.unique_id, &needle))
+                .collect()
+        } else {
+            base.models
+                .iter()
+                .filter(|m| q.is_empty() || !match_indices(&m.name, q).is_empty())
+                .collect()
+        };
+        matched
+            .into_iter()
             .map(|m| HomeRow {
                 item: HomeItem::Model {
                     uid: m.unique_id.clone(),
@@ -495,6 +560,15 @@ impl App {
             })
             .collect()
     }
+}
+
+/// §3's per-section cap: keep the first [`SECTION_CAP`] rows and report the
+/// hidden remainder (the `+N more` tail) as `Some(n)` — `None` when nothing
+/// clipped, so the plan emits no tail line.
+fn cap_rows(mut rows: Vec<HomeRow>) -> (Vec<HomeRow>, Option<usize>) {
+    let extra = rows.len().saturating_sub(SECTION_CAP);
+    rows.truncate(SECTION_CAP);
+    (rows, (extra > 0).then_some(extra))
 }
 
 impl HomeData {

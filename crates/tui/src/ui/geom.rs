@@ -752,14 +752,42 @@ pub fn tab_bar_layout(
         ..area
     };
     // The scrollable zone between the bar's left edge and the `+`.
-    let zone_l = area.x;
+    let mut zone_l = area.x;
     let zone_r = out.plus.x;
-    let zone_w = zone_r.saturating_sub(zone_l) as usize;
+    let mut zone_w = zone_r.saturating_sub(zone_l) as usize;
 
-    // First visible index: the stored intent clamped to the strip — and, on
-    // an ensure pass, never right of the active tab.
-    let mut first = scroll.min(count - 1);
-    if ensure_active && active < first {
+    // §2's pinned `⌂`: a leading unclosable cell (the home tab) sits fixed
+    // at the strip's left edge like `+` sits at the right — the scroll
+    // window then windows only the tabs after it, so it can never scroll
+    // off or gain a left arrow.
+    let pinned = usize::from(count > 0 && !closable.first().copied().unwrap_or(true));
+    for (i, w) in widths.iter().enumerate().take(pinned) {
+        let w = (*w as u16).min(zone_r.saturating_sub(zone_l));
+        if w == 0 {
+            break;
+        }
+        out.tabs.push(TabCell {
+            index: i,
+            rect: Rect {
+                x: zone_l,
+                width: w,
+                ..area
+            },
+            close_x: None,
+        });
+        zone_l += w;
+        zone_w = zone_w.saturating_sub(w as usize);
+    }
+
+    // First visible index: the stored intent clamped to the scrollable
+    // range `pinned..count` — and, on an ensure pass, never right of the
+    // active tab (a pinned active is always in view already).
+    let mut first = if count > pinned {
+        scroll.clamp(pinned, count - 1)
+    } else {
+        count
+    };
+    if ensure_active && active >= pinned && active < first {
         first = active;
     }
     // How many consecutive whole tabs fit from `first` under a given arrow
@@ -768,7 +796,7 @@ pub fn tab_bar_layout(
         let mut x = usize::from(left);
         let budget = zone_w.saturating_sub(usize::from(right));
         let mut n = 0;
-        for w in &widths[first..] {
+        for w in &widths[first.min(count)..] {
             if x + w > budget {
                 break;
             }
@@ -780,21 +808,26 @@ pub fn tab_bar_layout(
     // The window: pack whole cells; a right arrow is needed iff the rest
     // don't all fit (and eats a column itself). `ensure_active` then bumps
     // `first` right until the window contains the active tab (or `first ==
-    // active` — a lone too-wide tab draws clipped to the zone).
+    // active` — a lone too-wide tab draws clipped to the zone; a pinned
+    // active is already visible).
     let (shown, right) = loop {
-        let left = first > 0;
+        let left = first > pinned;
         let (shown, right) = if first + fits(first, left, false) >= count {
             (fits(first, left, false), false)
         } else {
             (fits(first, left, true), true)
         };
-        if !ensure_active || (first..first + shown).contains(&active) || first == active {
+        if !ensure_active
+            || active < pinned
+            || (first..first + shown).contains(&active)
+            || first == active
+        {
             break (shown, right);
         }
         first += 1;
     };
-    out.scroll = first;
-    if first > 0 {
+    out.scroll = first.min(count.saturating_sub(1));
+    if first > pinned {
         out.left_arrow = Some(Rect {
             x: zone_l,
             width: 1,
@@ -808,7 +841,7 @@ pub fn tab_bar_layout(
             ..area
         });
     }
-    let mut x = zone_l + u16::from(first > 0);
+    let mut x = zone_l + u16::from(first > pinned);
     for (i, w) in widths.iter().enumerate().skip(first).take(shown) {
         let w = *w as u16;
         out.tabs.push(TabCell {
@@ -828,11 +861,11 @@ pub fn tab_bar_layout(
         });
         x += w;
     }
-    if shown == 0 && zone_w > usize::from(first > 0) + usize::from(right) {
+    if shown == 0 && first < count && zone_w > usize::from(first > pinned) + usize::from(right) {
         // A lone tab wider than the whole zone: draw it clipped to the zone
         // (the alternative — no tab at all — leaves the bar looking empty
         // while a tab is open).
-        let x0 = zone_l + u16::from(first > 0);
+        let x0 = zone_l + u16::from(first > pinned);
         let x1 = zone_r.saturating_sub(u16::from(right));
         out.tabs.push(TabCell {
             index: first,
@@ -1235,6 +1268,21 @@ pub fn hit_target(g: &HitGeometry, col: u16, row: u16) -> Option<HitTarget> {
             HitTarget::ModalExterior
         });
     }
+    // The home body owns the whole pane band (Issue 10): every interior cell
+    // routes through the line plan — a drawn `Row(i)` is clickable, the
+    // title/health/headers/blank lines are dead chrome. Checked before the
+    // drawer/tab strip arms: the band union is disjoint from both anyway,
+    // but a stale `list_drawer` flag must never shadow home's surface (draw
+    // never paints the drawer over home).
+    if let Some(lines) = &g.home {
+        let body = p.list.union(p.lineage).union(p.inspector);
+        if body.contains(at) {
+            return match lines.get((row - body.y) as usize) {
+                Some(HomeLine::Row(i)) => Some(HitTarget::HomeRow(*i)),
+                _ => None,
+            };
+        }
+    }
     // §12's list drawer is a covering surface too, one band narrower in
     // scope: while it floats, its interior rows resolve exactly like the
     // inline list's (the SAME row/offset space), its frame is inert chrome,
@@ -1292,18 +1340,6 @@ pub fn hit_target(g: &HitGeometry, col: u16, row: u16) -> Option<HitTarget> {
             }
         }
         return Some(HitTarget::StatusBar);
-    }
-    // The home body owns the whole pane band (Issue 10): every interior cell
-    // routes through the line plan — a drawn `Row(i)` is clickable, the
-    // title/health/headers/blank lines are dead chrome.
-    if let Some(lines) = &g.home {
-        let body = p.list.union(p.lineage).union(p.inspector);
-        if body.contains(at) {
-            return match lines.get((row - body.y) as usize) {
-                Some(HomeLine::Row(i)) => Some(HitTarget::HomeRow(*i)),
-                _ => None,
-            };
-        }
     }
     // The lineage pane's title row (its top border, between the corner
     // glyphs): cells the shared `TitleLayout` covers report their span target;
@@ -1567,8 +1603,13 @@ pub enum HomeLine {
     Row(usize),
     /// A dim note row (`no matches — Esc to clear`).
     Note,
+    /// A capped section's `+{n} more` overflow line — non-selectable
+    /// (`S`/`'` reach the full sets; §3's Attention overflow points at `S`).
+    Tail(usize),
     /// The trailing `+{n} more` elision when the body clipped rows.
     More(usize),
+    /// §3's fixed `Tip:` line — closes the plan (never selectable).
+    Tip,
 }
 
 /// The home body's FULL line sequence (unclipped) — the plan
@@ -1606,7 +1647,14 @@ pub fn home_lines(data: &crate::app::HomeData) -> Vec<HomeLine> {
                     lines.push(HomeLine::Row(flat));
                     flat += 1;
                 }
+                if let Some(n) = sec.tail {
+                    lines.push(HomeLine::Tail(n));
+                }
             }
+            // §3's fixed closing line (`Actions` always exists, so the pad
+            // before it can never lead the plan).
+            lines.push(HomeLine::Pad);
+            lines.push(HomeLine::Tip);
         }
     }
     lines
@@ -1662,6 +1710,7 @@ mod tests {
             sections: vec![HomeSection {
                 title: "Recent",
                 rows: (0..rows).map(make_row).collect(),
+                tail: None,
             }],
             selectable: (0..rows).map(|i| make_row(i).item).collect(),
         }
@@ -1670,7 +1719,8 @@ mod tests {
     #[test]
     fn home_lines_orders_chrome_then_sections() {
         // §3's fixed plan: title, health, pad, search bar, pad — then one
-        // header per section followed by its flat-indexed rows.
+        // header per section followed by its flat-indexed rows, and the
+        // fixed `Tip` line closes the plan (search replaces it all).
         let lines = home_lines(&home_fixture(2));
         assert_eq!(
             lines,
@@ -1683,28 +1733,30 @@ mod tests {
                 HomeLine::SectionHeader("Recent"),
                 HomeLine::Row(0),
                 HomeLine::Row(1),
+                HomeLine::Pad,
+                HomeLine::Tip,
             ]
         );
     }
 
     #[test]
     fn home_window_clips_and_counts_dropped_rows() {
-        // A 7-row window into a 9-line plan keeps the top chrome and folds
+        // A 7-row window into an 11-line plan keeps the top chrome and folds
         // the overflow into `+N more` (the count names every dropped row —
         // the one it replaced included).
-        let plan = home_lines(&home_fixture(3)); // 9 lines
+        let plan = home_lines(&home_fixture(3)); // 11 lines
         let w = home_window(&plan, 7, 0);
         assert_eq!(w.len(), 7);
-        assert_eq!(w.last(), Some(&HomeLine::More(3)), "3 of the 9 lines clip");
+        assert_eq!(w.last(), Some(&HomeLine::More(5)), "5 of the 11 lines clip");
         // Scrolling to the cursor's line shows the tail instead.
         let w = home_window(&plan, 7, 1);
         assert_eq!(w.first(), Some(&HomeLine::Health));
-        assert_eq!(w.last(), Some(&HomeLine::More(2)));
+        assert_eq!(w.last(), Some(&HomeLine::More(4)));
         // `home_line_of` maps a flat row index to its plan position — the
         // ensure-visible input the loop scrolls to.
         assert_eq!(home_line_of(&plan, 0), 6);
         assert_eq!(home_line_of(&plan, 2), 8);
-        assert_eq!(home_line_of(&plan, 99), 8, "stale cursors land at the end");
+        assert_eq!(home_line_of(&plan, 99), 10, "stale cursors land at the end");
     }
 
     #[test]
@@ -1727,7 +1779,7 @@ mod tests {
                 },
             ),
             tab_bar: None,
-            home: Some(home_window(&plan, 8, 0)),
+            home: Some(home_window(&plan, 9, 0)),
             list: &list,
             list_offset: 0,
             list_selected: 0,
@@ -1740,10 +1792,12 @@ mod tests {
             title: None,
         };
         // Body starts under the tab strip (row 1): plan line 0 (Title) is
-        // dead, line 6 (Row 0) hits, line 7 (Row 1) hits.
+        // dead, line 6 (Row 0) hits, line 7 (Row 1) hits; the window's last
+        // line collapses the still-hidden Pad+Tip into `More` (inert).
         assert_eq!(hit_target(&g, 2, 1), None, "the title line is inert");
         assert_eq!(hit_target(&g, 2, 7), Some(HitTarget::HomeRow(0)));
         assert_eq!(hit_target(&g, 2, 8), Some(HitTarget::HomeRow(1)));
+        assert_eq!(hit_target(&g, 2, 9), None, "the +N more line is inert");
         // The search bar and headers never click.
         assert_eq!(hit_target(&g, 2, 4), None);
         assert_eq!(hit_target(&g, 2, 6), None);

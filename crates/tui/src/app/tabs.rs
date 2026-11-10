@@ -370,6 +370,12 @@ impl App {
     /// (`Home` on the home tab, `Selection` on a model tab — overlays open
     /// over a forced re-entry keep their mode).
     fn enter_active_tab(&mut self) {
+        if self.home_active() {
+            // The home body owns the whole band — §12's list drawer has no
+            // surface over it (draw never paints it there, and a stale flag
+            // would still feed the hit-test the shadow targets).
+            self.ui_state.set_list_drawer(false);
+        }
         if let Some((x, y)) = self.tab().scroll {
             self.ui_state.set_lineage_scroll(x, y);
         }
@@ -416,7 +422,7 @@ impl App {
     /// Re-home the whole app onto tab `i` after a restore or reload replaced
     /// the tab list under it: clamp the index, then `enter_active_tab`.
     pub(crate) fn enter_tab_forced(&mut self) {
-        self.active = self.active.min(self.tabs.len() - 1);
+        self.active = self.active.min(self.tabs.len().saturating_sub(1));
         self.enter_active_tab();
     }
 

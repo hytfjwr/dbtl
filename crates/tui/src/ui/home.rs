@@ -174,10 +174,20 @@ pub(crate) fn draw_home(frame: &mut Frame, area: Rect, data: &crate::HomeData, c
                     row,
                 );
             }
-            HomeLine::More(n) => {
+            HomeLine::Tail(n) | HomeLine::More(n) => {
                 frame.render_widget(
                     Paragraph::new(Line::from(Span::styled(
                         format!("   +{n} more"),
+                        Style::default().fg(t.text_faint),
+                    ))),
+                    row,
+                );
+            }
+            HomeLine::Tip => {
+                // §3's fixed closing line — ASCII-safe in both glyph modes.
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        " Tip: right-click a node for actions - drag a pane border to resize",
                         Style::default().fg(t.text_faint),
                     ))),
                     row,
@@ -244,7 +254,6 @@ fn draw_home_row(
         HomeTone::Normal => t.text_bright,
         HomeTone::Bad => t.danger,
         HomeTone::Warn => t.warn,
-        HomeTone::Dim => t.text_faint,
     };
     // Middle-truncate a too-long label (the `…`/`..` repertoire is chrome's).
     let label = truncate_label(label, label_w, ellipsis);
@@ -282,8 +291,10 @@ fn truncate_label(label: &str, w: usize, ellipsis: &str) -> String {
     if w <= ew + 1 {
         return label.chars().take(w).collect();
     }
-    let head = (w - ew).div_ceil(2);
-    let tail = w - ew - head;
+    // Tail-biased like the tab strip's middle-truncate: the name's tail is
+    // the identifying half, so the odd column goes to it, not the head.
+    let tail = (w - ew).div_ceil(2);
+    let head = w - ew - tail;
     format!(
         "{}{}{}",
         label.chars().take(head).collect::<String>(),
