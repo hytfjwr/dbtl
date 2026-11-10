@@ -118,6 +118,7 @@ fn help_display_lines(t: &theme::Theme, filter: &str, from: ModeKind) -> Vec<Lin
     use crate::action::{help_lines, HelpLine};
     let mut sections: Vec<(ModeKind, &str)> = vec![
         (ModeKind::Selection, "Normal"),
+        (ModeKind::Home, "Home"),
         (ModeKind::Search, "Search / filter"),
         (ModeKind::Detail, "Structure modal"),
         (ModeKind::Sql, "SQL preview"),
@@ -127,6 +128,7 @@ fn help_display_lines(t: &theme::Theme, filter: &str, from: ModeKind) -> Vec<Lin
         (ModeKind::Notifications, "Notification center"),
         (ModeKind::Palette, "Command palette"),
         (ModeKind::Yank, "Yank (y + key)"),
+        (ModeKind::Menu, "Node menu"),
         (ModeKind::Help, "Help"),
     ];
     if let Some(i) = sections.iter().position(|(mk, _)| *mk == from) {

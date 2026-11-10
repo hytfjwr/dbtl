@@ -20,7 +20,7 @@
 
 ---
 
-`dbtl` draws your dbt project's dependency graph in a two-pane terminal UI. Pick a model on the left and its lineage appears on the right, so you can answer *"what does this model depend on, and what does it affect?"* without running `dbt compile` or opening a browser.
+`dbtl` draws your dbt project's dependency graph in a terminal UI. Pick a model in the list and its lineage appears beside it — in tabs, with an inspector pane for the cursor's node — so you can answer *"what does this model depend on, and what does it affect?"* without running `dbt compile` or opening a browser.
 
 ```
 ╭Seed────────────────────╮   ╭View───────────────────╮   ╭View────────────────────╮
@@ -125,6 +125,26 @@ dbt exposures such as dashboards and notebooks appear as end nodes at the right 
 
 ### Search and select like dbt
 The `/` list search takes a `!`-prefixed dbt selector (`!tag:nightly`, `!+fct_orders`, `!meta:owner=alice`, `!state:modified+` with `--diff`) or a `?`-prefixed full-text query over descriptions, column names, and raw SQL. `--select` accepts the same selectors minus `state:` (it resolves to the first matching model). `meta:key` matches key existence; `meta:key=value` matches the stringified value.
+
+</td>
+<td valign="top">
+
+### Tabs and a home page
+Work on several models at once: `O` opens the cursor's node in a new tab (opening an already-open model just jumps to its tab), `{`/`}` cycle, `1`-`9` jump, and `X`/`Ctrl-w` closes — each tab keeps its own root, lineage view, cursor, and re-root history, and the strip restores on the next run. The fixed `⌂` home tab is the project's front page: resume/recent/bookmarks, health (coverage, lint, layer violations, orphans), the last run, and the models to look at next.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### An inspector for the cursor's node
+A third pane summarizes the node under the lineage cursor: materialization and path, owner/tags/`meta`, description, tests, columns with their one-hop column-lineage counts, blast radius, the last run, lint, and diff status — the same data the `Enter` structure view shows, always on screen. `I` cycles auto/on/off; at 160+ columns it appears by itself.
+
+</td>
+<td valign="top">
+
+### Real mouse support
+Click to select and move the cursor, double-click to commit (re-root, expand, structure view), right-click for a node's actions menu, middle-click for a new tab — clicks confirm on release, so a slip never navigates. Drag the lineage to pan it, a shared pane border to resize it, or the minimap to scrub; hover a node to light it up and rest the pointer for a tooltip.
 
 </td>
 </tr>
@@ -418,8 +438,13 @@ Press `?` inside the app for the full list. The most useful ones:
 | `g` `G` | Jump to the first / last model in the list |
 | `PgUp` `PgDn` | Page the model list (`Ctrl-u` `Ctrl-d` also work) |
 | `H` `L` | Send the lineage cursor to the first / last column |
-| `Tab` | Switch focus between list ⇄ lineage |
-| `Ctrl-b` `Cmd-b` | Show / hide the model list pane |
+| `Tab` | Cycle focus: list → lineage → inspector |
+| `Ctrl-b` `Cmd-b` | Show / hide the model list pane (below 80 columns it opens as an overlay drawer instead) |
+| `I` | Inspector pane: cycle auto / on / off (auto shows it at 160+ columns) |
+| `<` `>` `=` | Narrow / widen a pane 4 columns / reset both to default — the inspector while it's focused, the list otherwise |
+| `O` | Open the cursor's node in a new tab (an already-open model just activates its tab) |
+| `X` `Ctrl-w` | Close the active tab |
+| `{` `}` `1`-`9` `~` | Previous / next tab · jump to tab 1–9 · jump to the `⌂` home tab |
 | `Enter` | Structure view (columns / tests / description); on a lineage model, re-root to it; on a `+N more` / `-N less` box, expand / collapse the sibling group |
 | `/` | Fuzzy search (list filter / lineage jump) — in the list, a `!` prefix is a dbt selector and a `?` prefix full-text |
 | `p` | Anchor / clear a two-node path (the highlight runs anchor↔cursor) |
@@ -436,6 +461,7 @@ Press `?` inside the app for the full list. The most useful ones:
 | `n` `N` | Jump to the next / previous untested model |
 | `Space` `'` `"` | Bookmark / cycle bookmarks forward / backward |
 | `T` `*` | Filter the list to untested / bookmarked models |
+| `-` | Fold / unfold the selected model's list group (clicking its `▾`/`▸` header does the same) |
 | `s` / `S` | SQL preview (syntax-highlighted) / project stats dashboard. Inside the preview, `c` toggles raw ↔ compiled SQL — the title shows `[raw]`, `[compiled]`, or `[compiled, stale]` when the source file is newer than the expansion. Compiled SQL comes from the manifest's `compiled_code` or `target/compiled/` (run `dbt compile`/`build` to produce it) |
 | `o` | Open the model's SQL in `$EDITOR` |
 | `a` | Node actions menu — `j`/`k` move, `Enter` runs, `Esc`/`q` closes, an item's own key fires it directly. Items act on the node the menu opened on (over the structure / SQL modal, the modal's node) |
@@ -446,14 +472,25 @@ Press `?` inside the app for the full list. The most useful ones:
 | `y` + key | Yank prefix menu — `yy` unique_id, `yY` name, `ym` Mermaid, `yx` DOT, `yc` ASCII, `yC` raw SQL, `ys` compiled SQL, `yi` impact, `y!` selector, `yl` column lineage of the structure modal's selected column (the single keys above still work) |
 | `P` | Run `dbt parse` and switch to the compiled manifest |
 | `D` | PR impact report vs the `--diff` baseline (then `e` exports it as Markdown, `y` copies the suggested `dbt build` command) |
-| `Ctrl-p` `Cmd-p` | Command palette |
+| `Ctrl-p` `Cmd-p` | Command palette (`@name` searches models instead) |
+| `Ctrl-n` | Notification center (the `!N` status chip's unread warnings land here) |
 | `Ctrl-t` | Cycle the color theme |
 | `?` | Toggle the full help overlay |
 | `q` | Quit (`Ctrl-c` from anywhere) |
 
 Inside a scrollable modal, `j`/`k` scroll, `d`/`u`/`Ctrl-d`/`Ctrl-u`/`PgDn`/`PgUp` page, `g`/`G` jump to the top / bottom, and `Esc`/`Enter`/`q` (`?` too, for the help overlay) closes. In the structure view, each column row carries its test-kind badges (`NN` not_null, `U` unique, `R` relationships, `AV` accepted_values, `AR` accepted_range, `*` other) next to its `↑`/`↓` one-hop column-edge count, and `h`/`l` move a cursor across the rows — the target of `y l` — and `Enter`/`c` commits the cursored column to the **column trace view**: the lineage filters to the column's related models, each box lists its related columns (`>` marks the traced one, the other marks name the edge kind), a `column:model.col ↑u ↓d` status chip (one-hop counts, like the modal) replaces the `[view]` label, and the title gains ` [col:name]`. While tracing, `h`/`l` step the traced column upstream/downstream, `K` opens the column modal, `t` reaches the column-impact lens (gold = the downstream closure), the rooted view filters `u`/`d`/`[`/`]`/`0` are gated (they would only apply after the trace), and `Esc` exits the trace. `Tab` moves that cursor between the column rows and the tests list — the tests side lands only on `relationships` rows, whose resolved `to:` target shows as `-> model.column`, and `Enter` there re-roots the lineage to the target. Pressing `y` over the structure view aims every `y<key>` yank at *the modal's node*, not the list selection — `y l` yanks the column under its cursor (or, mid-trace with no modal open, the traced column). The `y` which-key and the `a` menu stack *over* the modal: closing either one (`Esc`/`q`, or after the action runs) lands back on the modal, not the panes. In a `/` search, `Up`/`Down` move between matches.
 
-The mouse works too: click a lineage node to re-root (a `+N more` box expands instead), right-click a list row or a lineage node for the same actions menu `a` opens, and use the wheel to scroll. While a modal or menu is up the rest of the screen dims; the wheel scrolls its content, a row click selects, a double-click (a single click on a menu item) runs, and clicking outside closes it like `Esc`. The lineage pane pans in both directions. A horizontal wheel notch (trackpad swipe or tilt wheel) or `Shift`+wheel scrolls it sideways.
+The mouse follows the same rules everywhere — a click confirms on release, and a second click on the same cell within ~400ms is a double-click:
+
+- **Left click**: a list row selects it (the active tab re-roots), a group header folds/unfolds it, a lineage node moves the cursor there, an inspector column row moves its cursor, a tab activates it (its `×` closes it, `+` opens a model picker for a new tab), a status hint or chip runs what it names, the lineage title's breadcrumb / `[view]` / `[lens:…]` parts respond, and the minimap centers the viewport.
+- **Double-click**: a lineage node commits it like `Enter` (re-root a model, open the structure view elsewhere, expand a `+N more`), a list row opens the structure view, a pane border resets its width.
+- **Right-click** a list row or a lineage node for the same actions menu `a` opens.
+- **Middle-click** a list row or a lineage node to open it in a new tab, or a tab to close it.
+- **Drag** the lineage to pan it, a shared pane border to resize it, or the minimap to scrub the viewport.
+- **Wheel** over the list moves the selection, over the lineage pans it vertically (`Shift`+wheel or a horizontal notch — a trackpad swipe or tilt wheel — pans it sideways), over the inspector scrolls it, and over the tab strip scrolls the tabs.
+- **Hover** accents a node's box and direct edges; rest the pointer ~0.5s for a tooltip. Pane borders, status hints, chips, and tab controls light up too.
+
+While a modal or menu is up the rest of the screen dims; the wheel scrolls its content, a row click selects (a menu row runs on a single click), a double-click runs the row, and clicking outside closes it like `Esc`.
 
 ## Color themes
 
@@ -473,7 +510,7 @@ Then run `dbtl --theme my-ayu`. An unknown role or an invalid color stops startu
 
 ## State and config
 
-`dbtl` remembers your view per project: bookmarks (`Space`), the active lens, box density, list sort, and the last selected model are saved under `$XDG_STATE_HOME/dbtl/` (or `~/.local/state/dbtl/`) when you quit and restored on the next run. One JSON file per project; deleting it just resets the view.
+`dbtl` remembers your view per project: bookmarks (`Space`), the open tabs (each root and view filter) and the active one, recently-rooted models, folded list groups, the active lens, box density, list sort, the list/inspector pane widths, the list pane and minimap and inspector visibility (`Ctrl-b`/`M`/`I`), the theme, `/` search history, recently-run palette commands, and the last selected model are saved under `$XDG_STATE_HOME/dbtl/` (or `~/.local/state/dbtl/`) when you quit and restored on the next run. One JSON file per project; deleting it just resets the view. Session-only state — a tab's lineage cursor, re-root history, and scroll positions — is deliberately not saved.
 
 Defaults for a fresh project (or values a config can't express) come from `~/.config/dbtl/config.yml` (or `$XDG_CONFIG_HOME/dbtl/config.yml`):
 
@@ -483,6 +520,7 @@ theme: ayu-mirage      # same names as --theme (CLI/env still wins)
 lens: coverage         # off|coverage|degree-heat|layer|layer-violation|lint|diff|run-status|run-time|column-impact|primary-key
 density: compact       # comfortable|compact
 sort: downstream       # layer|downstream|tests
+inspector: auto        # auto|on|off — the inspector pane's default visibility (I cycles it live)
 group_by_meta: owner   # group the model list by this meta key's value instead of layer dirs
 owner_meta_key: owner  # the meta key the impact report counts as "affected owners" (default owner)
 lineage_collapse: 8    # fold a column's same-parent sibling tail into a +N more box past N (0 = never)

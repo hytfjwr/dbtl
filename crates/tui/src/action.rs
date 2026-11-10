@@ -1681,16 +1681,47 @@ static DYNAMIC_HELP: &[(ModeKind, &str, &str)] = &[
     (ModeKind::Palette, "a-z..", "type to filter commands"),
     (ModeKind::Palette, "@name", "search models / re-root"),
     (ModeKind::Help, "a-z..", "type to filter help lines"),
+    // §6's pointer table: clicks confirm on release; a second click on the
+    // same cell inside 400ms is a double-click.
     (
         ModeKind::Selection,
-        "left click",
-        "re-root / move cursor to a node (release confirms)",
+        "click",
+        "list row selects · node moves cursor · tab / chip / hint / title / minimap act",
     ),
-    (ModeKind::Selection, "right click", "node actions menu"),
+    (
+        ModeKind::Selection,
+        "double-click",
+        "node commits (re-root / structure / expand) · list row: structure · border: reset",
+    ),
+    (
+        ModeKind::Selection,
+        "right click",
+        "node actions menu (list row / lineage node)",
+    ),
+    (
+        ModeKind::Selection,
+        "middle click",
+        "list row / node opens in a new tab · tab closes",
+    ),
+    (
+        ModeKind::Selection,
+        "drag",
+        "pan lineage · resize a pane border · scrub the minimap",
+    ),
+    (
+        ModeKind::Selection,
+        "hover",
+        "accent node + direct edges · rest 0.5s for a tooltip",
+    ),
     (
         ModeKind::Selection,
         "wheel",
-        "scroll the pane under the cursor",
+        "list selects · lineage pans (Shift: sideways) · inspector scrolls · strip scrolls",
+    ),
+    (
+        ModeKind::Home,
+        "click / wheel",
+        "open the row / move the item cursor",
     ),
     (
         ModeKind::Menu,
@@ -1701,6 +1732,51 @@ static DYNAMIC_HELP: &[(ModeKind, &str, &str)] = &[
         ModeKind::Menu,
         "click item",
         "run the action (outside click closes)",
+    ),
+    (
+        ModeKind::Yank,
+        "mouse",
+        "row click picks · double-click yanks · outside closes",
+    ),
+    (
+        ModeKind::Palette,
+        "mouse",
+        "row click picks · double-click runs · wheel scrolls · outside closes",
+    ),
+    (
+        ModeKind::Columns,
+        "mouse",
+        "row click picks · double-click jumps · wheel scrolls · outside closes",
+    ),
+    (
+        ModeKind::Detail,
+        "mouse",
+        "wheel scrolls · outside click closes",
+    ),
+    (
+        ModeKind::Sql,
+        "mouse",
+        "wheel scrolls · outside click closes",
+    ),
+    (
+        ModeKind::Stats,
+        "mouse",
+        "wheel scrolls · outside click closes",
+    ),
+    (
+        ModeKind::Diff,
+        "mouse",
+        "wheel scrolls · outside click closes",
+    ),
+    (
+        ModeKind::Notifications,
+        "mouse",
+        "wheel scrolls · outside click closes",
+    ),
+    (
+        ModeKind::Help,
+        "mouse",
+        "wheel scrolls · outside click closes",
     ),
 ];
 
@@ -2925,5 +3001,109 @@ mod tests {
         // Multi-char labels never merge into a run.
         assert_eq!(compact_keys(&k(&["Down", "Up"])), "Down/Up");
         assert_eq!(compact_keys(&k(&["Enter"])), "Enter");
+    }
+
+    /// Issue 13: the README's Keybindings table must never teach a key the
+    /// keymap lacks. Every `code` span in a table row resolves: a plain token
+    /// is a [`Trigger::label`] somewhere in [`BINDINGS`] (any mode); a `y<c>`
+    /// chord is the `y` prefix plus a [`ModeKind::Yank`] trigger `<c>`. Tokens
+    /// that can't be keys (non-ASCII glyphs like `⌂`/`▾`, words like `key`,
+    /// phrases like `+N more` or `[raw]`, `$EDITOR`) aren't held to it.
+    #[test]
+    fn readme_keybindings_resolve_against_bindings() {
+        let readme =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md"))
+                .expect("workspace README.md is readable");
+        // The Keybindings section runs to the next `## ` heading; its rows
+        // are the `|…|` lines (header and `---` separator carry no keys).
+        let section = readme
+            .split("## Keybindings")
+            .nth(1)
+            .expect("README has a Keybindings section")
+            .split("\n## ")
+            .next()
+            .unwrap();
+        // What may spell a key: a single ASCII char, a named key, a modifier
+        // chord, or a `y<c>` yank chord. Everything else is prose.
+        const NAMED: &[&str] = &[
+            "Enter",
+            "Esc",
+            "Tab",
+            "BackTab",
+            "S-Tab",
+            "Space",
+            "Bksp",
+            "Backspace",
+            "Up",
+            "Down",
+            "Left",
+            "Right",
+            "PgUp",
+            "PgDn",
+            "Home",
+            "End",
+            "Ins",
+            "Del",
+        ];
+        let key_like = |tok: &str| {
+            let mut cs = tok.chars();
+            match (cs.next(), cs.next()) {
+                (Some(c), None) => c.is_ascii() && !c.is_whitespace(),
+                _ => {
+                    NAMED.contains(&tok)
+                        || ["Ctrl-", "Cmd-", "Alt-", "Super-", "Shift-"]
+                            .iter()
+                            .any(|p| tok.starts_with(p))
+                        || (tok.starts_with('y') && tok.chars().count() == 2)
+                }
+            }
+        };
+        let labels: std::collections::HashSet<String> = BINDINGS
+            .iter()
+            .flat_map(|b| b.triggers.iter().map(|t| t.label()))
+            .collect();
+        let yank_labels: std::collections::HashSet<String> = BINDINGS
+            .iter()
+            .filter(|b| b.mode == ModeKind::Yank)
+            .flat_map(|b| b.triggers.iter().map(|t| t.label()))
+            .collect();
+        // The `y` prefix itself must stay bound for a chord to mean anything.
+        assert!(
+            BINDINGS.iter().any(|b| {
+                b.mode == ModeKind::Selection && b.triggers.iter().any(|t| t.label() == "y")
+            }),
+            "the `y` yank prefix is unbound"
+        );
+        let mut checked = 0usize;
+        for line in section.lines().filter(|l| l.trim_start().starts_with('|')) {
+            let mut rest = line;
+            while let Some(open) = rest.find('`') {
+                rest = &rest[open + 1..];
+                let Some(close) = rest.find('`') else {
+                    break;
+                };
+                let tok = &rest[..close];
+                rest = &rest[close + 1..];
+                if !key_like(tok) {
+                    continue;
+                }
+                checked += 1;
+                if labels.contains(tok) {
+                    continue;
+                }
+                if let Some(ch) = tok.strip_prefix('y') {
+                    assert!(
+                        tok.chars().count() == 2 && yank_labels.contains(ch),
+                        "README yank chord `{tok}` is not a Yank-mode binding"
+                    );
+                    continue;
+                }
+                panic!("README key `{tok}` is not bound in BINDINGS");
+            }
+        }
+        assert!(
+            checked > 40,
+            "only {checked} key tokens found — the table scan likely broke"
+        );
     }
 }
