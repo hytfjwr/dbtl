@@ -23,7 +23,8 @@ pub mod ui;
 
 pub use action::{
     dispatch, help_lines, Action, DiffView, Direction, HelpLine, HelpView, Mode, ModeKind,
-    NoticeLevel, NotificationEntry, NotificationsView, PaletteRow, SearchTarget, SqlView, StatsView,
+    NoticeLevel, NotificationEntry, NotificationsView, PaletteRow, SearchTarget, SqlView,
+    StatsView,
 };
 pub use app::{apply_action, layer_violation_edges, App, AppStats, ListFilter, Outcome};
 pub use effect::Effect;
