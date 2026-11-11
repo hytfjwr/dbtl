@@ -193,11 +193,62 @@ pub enum Commands {
         /// thresholds and naming prefixes.
         #[arg(long, value_delimiter = ',', num_args = 1..)]
         rules: Vec<String>,
+        /// Minimum finding severity that fails a check: `error` (default)
+        /// fails on errors only, `warn` also fails on warnings, `never`
+        /// only reports (a tripped gate prints WARN and never counts).
+        /// Overrides `.dbtl.yml`'s top-level `fail_on`; the non-lint gates
+        /// are error-severity by definition.
+        #[arg(long, value_enum)]
+        fail_on: Option<FailOnArg>,
         /// Output format: `markdown` (the line report, default) or `json`
         /// (the structured check payload for automation).
         #[arg(long, value_enum, default_value = "markdown")]
         format: ImpactFormat,
         /// Suppress the per-check report on stdout; only the exit code matters.
+        #[arg(long)]
+        quiet: bool,
+    },
+    /// Run the static structure-lint rules over the resolved data source and
+    /// exit — the same `run_rules` findings `check --lint` gates on and the
+    /// TUI's Lint lens quotes. `.dbtl.yml` supplies rule enables, severities,
+    /// thresholds and naming prefixes; `--rules` overrides the selection;
+    /// the baseline file freezes known violations; `--diff` narrows the gate
+    /// to violations the baseline doesn't already carry.
+    Lint {
+        /// Restrict linting to these rules (comma-separated rule names).
+        /// The flag is the authoritative rule selector — the file still
+        /// supplies thresholds and naming prefixes.
+        #[arg(long, value_delimiter = ',', num_args = 1..)]
+        rules: Vec<String>,
+        /// Minimum finding severity that fails the run: `error` (default)
+        /// fails on errors only, `warn` also fails on warnings, `never`
+        /// only reports. Overrides `.dbtl.yml`'s top-level `fail_on`.
+        #[arg(long, value_enum)]
+        fail_on: Option<FailOnArg>,
+        /// Output format: `text` (default) or `json`.
+        #[arg(long, value_enum, default_value = "text")]
+        format: LintFormat,
+        /// Freeze every current finding into a lint baseline file and exit
+        /// (PATH defaults to `lint.baseline`, else `.dbtl-baseline.json` at
+        /// the project root). Writes always exit 0 and cannot combine with
+        /// `--diff`.
+        #[arg(long, num_args = 0..=1, value_name = "PATH",
+               conflicts_with_all = ["list_rules", "explain", "fail_on", "format", "no_baseline"])]
+        write_baseline: Option<Option<String>>,
+        /// Do not read the lint baseline file — every finding counts again.
+        #[arg(long)]
+        no_baseline: bool,
+        /// List every lint rule — id, category, effective severity, summary —
+        /// and exit. Reads `.dbtl.yml` when found; never loads a data source.
+        #[arg(long,
+               conflicts_with_all = ["explain", "write_baseline", "quiet", "format", "fail_on", "no_baseline"])]
+        list_rules: bool,
+        /// Show one rule's full registry entry (rationale, example, params)
+        /// and exit — no data load.
+        #[arg(long, value_name = "ID",
+               conflicts_with_all = ["list_rules", "write_baseline", "quiet", "format", "fail_on", "no_baseline"])]
+        explain: Option<String>,
+        /// Suppress the report on stdout; only the exit code matters.
         #[arg(long)]
         quiet: bool,
     },
@@ -253,6 +304,38 @@ pub enum ImpactFormat {
     Json,
 }
 
+/// The `dbtl lint` output format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum LintFormat {
+    /// Plain lines (default): one per counted finding, a tally, the verdict.
+    Text,
+    /// The structured payload for automation.
+    Json,
+}
+
+/// The `--fail-on` argument: the minimum finding severity that fails a gate —
+/// maps onto [`dbtl::FailOn`] (kept separate because `dbtl-core` has no clap
+/// dependency).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum FailOnArg {
+    /// Only error findings fail (the default).
+    Error,
+    /// Warn findings fail too.
+    Warn,
+    /// Report-only — findings print but nothing fails.
+    Never,
+}
+
+impl From<FailOnArg> for dbtl::FailOn {
+    fn from(v: FailOnArg) -> Self {
+        match v {
+            FailOnArg::Error => dbtl::FailOn::Error,
+            FailOnArg::Warn => dbtl::FailOn::Warn,
+            FailOnArg::Never => dbtl::FailOn::Never,
+        }
+    }
+}
+
 /// The package scope the CLI asks for (`--include-packages` ⇒ `All`, else the
 /// default `Root`). The flag is `global`, so clap lands the value here whether
 /// it was typed before or after a subcommand — the TUI and the subcommand
@@ -274,6 +357,7 @@ mod docs;
 mod exit;
 mod flags;
 mod gates;
+mod lint;
 mod resolve;
 mod resolvers;
 #[cfg(test)]
@@ -286,6 +370,8 @@ pub use docs::run_docs;
 pub use exit::{exit_code, Classify, CliError};
 pub use flags::check_flag_usage;
 pub use gates::{run_check, run_impact};
+use lint::*;
+pub use lint::{run_lint, LintArgs};
 use resolve::*;
 pub use resolve::{build_app, DataSourceArgs, ResolvedSource};
 use resolvers::*;

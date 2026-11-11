@@ -434,6 +434,7 @@ fn unsupported_flags_are_rejected_not_ignored() {
         ("check", &["--manifest", m_str]),
         ("impact", &["--manifest", m_str, "--diff", m_str]),
         ("columns", &["a.b", "--manifest", m_str]),
+        ("lint", &["--manifest", m_str]),
     ];
     for (flag_args, spelled) in tui_flags {
         for (sub, sub_args) in subs {
