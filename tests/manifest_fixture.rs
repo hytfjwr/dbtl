@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use dbtl::{
     column_coverage_counts, has_pk_guarantee, load_manifest, run_rules, LintConfig, LintRule,
+    Severity,
 };
 
 const INVALID: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/invalid.json");
@@ -176,10 +177,24 @@ fn closure_deep_multihop_fct_subscription_process() {
 // intermediate model reads a source, no backward edge exists, and
 // `utilities/` has no default naming prefix.
 
+/// A `LintConfig` running ONLY the rules that gate out of the box — the
+/// ones declared at error severity. Rules added later default to warn and
+/// are switched off here so the frozen gate counts can't churn when the
+/// rule set grows; their own fixture counts are pinned separately.
+fn gating_lint_config() -> LintConfig {
+    let mut cfg = LintConfig::default();
+    for rule in LintRule::ALL {
+        if rule.info().default_severity != Severity::Error {
+            cfg.severities.insert(rule, None);
+        }
+    }
+    cfg
+}
+
 #[test]
 fn lint_findings_match_frozen_fixture_counts() {
     let dag = fixture_dag();
-    let findings = run_rules(dbtl::LintInput::new(&dag, &LintConfig::default()));
+    let findings = run_rules(dbtl::LintInput::new(&dag, &gating_lint_config()));
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for f in &findings {
         *counts.entry(f.rule.name()).or_default() += 1;
@@ -212,6 +227,35 @@ fn lint_findings_match_frozen_fixture_counts() {
             rule.name()
         );
     }
+}
+
+#[test]
+fn warn_severity_rules_match_frozen_fixture_counts() {
+    // The warn-by-default rules' counts on the same fixture, pinned
+    // separately from the gate set (which is switched off here). Verified
+    // by hand: 11 of the fixture's sources feed nothing at all — not even
+    // an exposure — and nothing else on this graph matches a warn rule.
+    let dag = fixture_dag();
+    let mut cfg = LintConfig::default();
+    for rule in LintRule::ALL {
+        if rule.info().default_severity == Severity::Error {
+            cfg.severities.insert(rule, None);
+        }
+    }
+    let findings = run_rules(dbtl::LintInput::new(&dag, &cfg));
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for f in &findings {
+        *counts.entry(f.rule.name()).or_default() += 1;
+    }
+    let expected: BTreeMap<&str, usize> = BTreeMap::from([("unused_sources", 11)]);
+    assert_eq!(
+        counts, expected,
+        "the warn-severity rules' fixture counts drifted"
+    );
+    assert!(
+        findings.iter().all(|f| f.severity == Severity::Warn),
+        "warn-by-default rules emit warn findings"
+    );
 }
 
 // ---- Dag side maps (detail + tests), frozen against the fixture ----

@@ -739,8 +739,10 @@ fn registry_rows_match_all_one_for_one_in_order() {
 
 #[test]
 fn registry_rows_carry_the_fixed_metadata() {
-    // The 12 ids are a fixed contract — config keys, --rules args and the
-    // baseline format all rely on them.
+    // The 25 ids are a fixed contract — config keys, --rules args and the
+    // baseline format all rely on them. The original twelve lead; rules
+    // added later append in the registry's order so the emitted sequence
+    // stays stable.
     let ids: Vec<&str> = REGISTRY.iter().map(|r| r.id).collect();
     assert_eq!(
         ids,
@@ -757,11 +759,45 @@ fn registry_rows_carry_the_fixed_metadata() {
             "undocumented_models",
             "naming_conventions",
             "layer_violation",
+            "unused_sources",
+            "duplicate_sources",
+            "staging_depends_on_staging",
+            "too_many_joins",
+            "chained_views",
+            "exposure_parents_materializations",
+            "exposures_dependent_on_private_models",
+            "undocumented_sources",
+            "undocumented_columns",
+            "undocumented_public_models",
+            "model_directories",
+            "required_meta_keys",
+            "contract_columns_without_type",
         ]
     );
+    // The original twelve gate at error severity (that was the only
+    // behaviour); rules added later default to warn so they never silently
+    // gate a project that didn't opt in.
+    let error_by_default = [
+        "direct_join_to_source",
+        "multiple_sources_joined",
+        "source_fanout",
+        "model_fanout",
+        "root_models",
+        "rejoining_upstream",
+        "marts_depend_on_source",
+        "missing_primary_key_tests",
+        "public_models_without_contract",
+        "undocumented_models",
+        "naming_conventions",
+        "layer_violation",
+    ];
     for row in REGISTRY {
-        // Every current rule gates at error severity and reads the graph only.
-        assert_eq!(row.default_severity, Severity::Error, "{}", row.id);
+        let expected = if error_by_default.contains(&row.id) {
+            Severity::Error
+        } else {
+            Severity::Warn
+        };
+        assert_eq!(row.default_severity, expected, "{}", row.id);
         assert_eq!(row.requires, Requires::Graph, "{}", row.id);
         assert!(
             !row.summary.is_empty() && !row.summary.contains('\n'),
@@ -776,11 +812,8 @@ fn registry_rows_carry_the_fixed_metadata() {
 
 #[test]
 fn registry_params_are_the_declared_config_keys_with_matching_defaults() {
-    // The two fanout rules declare `threshold`; nothing else declares a
-    // param — and the unconfigured `LintConfig` resolves the declared
-    // defaults.
-    assert_eq!(LintRule::ModelFanout.info().params.len(), 1);
-    assert_eq!(LintRule::SourceFanout.info().params.len(), 1);
+    // Every declared param resolves its registry default under the
+    // unconfigured `LintConfig` — integers and string lists alike.
     for row in REGISTRY {
         for p in row.params {
             match p.kind {
@@ -794,12 +827,33 @@ fn registry_params_are_the_declared_config_keys_with_matching_defaults() {
                     );
                     assert!(min <= default, "{}.{}", row.id, p.name);
                 }
+                ParamKind::StringList { default, allowed } => {
+                    assert_eq!(
+                        LintConfig::default().str_list_param(row.rule, p.name),
+                        Some(default.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
+                        "{}.{}",
+                        row.id,
+                        p.name
+                    );
+                    if let Some(allowed) = allowed {
+                        assert!(
+                            default.iter().all(|d| allowed.contains(d)),
+                            "{}.{}'s default sits outside its allowed set",
+                            row.id,
+                            p.name
+                        );
+                    }
+                }
             }
         }
     }
     // A rule with no params resolves nothing.
     assert_eq!(
         LintConfig::default().int_param(LintRule::RootModels, "threshold"),
+        None
+    );
+    assert_eq!(
+        LintConfig::default().str_list_param(LintRule::RootModels, "keys"),
         None
     );
 }
@@ -1284,5 +1338,917 @@ fn baseline_rejects_bad_schema_and_malformed_json() {
     assert!(
         err.contains("other/v9") && err.contains(BASELINE_SCHEMA),
         "{err} names both the found and expected schema"
+    );
+}
+
+// ---- the graph/metadata rules ---------------------------------------------
+//
+// One positive + one negative case per rule minimum; the table below mirrors
+// the rule table in the feature spec. Helpers shared by these tests:
+
+/// A source literal with warehouse coordinates — `identifier` is the
+/// `identifier:` override that surfaces as `relation_name` on the detail.
+fn source_at(
+    name: &str,
+    database: Option<&str>,
+    schema: Option<&str>,
+    identifier: Option<&str>,
+) -> (String, RawSource) {
+    (
+        format!("source.p.{name}"),
+        RawSource {
+            name: name.into(),
+            resource_type: "source".into(),
+            database: database.map(str::to_string),
+            schema: schema.map(str::to_string),
+            identifier: identifier.map(str::to_string),
+            ..Default::default()
+        },
+    )
+}
+
+/// A model literal carrying an explicit `config.materialized` (chained_views
+/// / exposure_parents_materializations read it).
+fn mat_model(name: &str, materialized: &str) -> (String, RawNode) {
+    (
+        format!("model.p.{name}"),
+        RawNode {
+            name: name.into(),
+            resource_type: "model".into(),
+            path: Some(format!("staging/{name}.sql")),
+            config: crate::manifest::RawConfig {
+                materialized: Some(materialized.into()),
+            },
+            ..Default::default()
+        },
+    )
+}
+
+/// A generic-test node attached to `target_uid` — `test_on`'s model-uid
+/// sibling, for seeds/snapshots.
+fn test_attached(target_uid: &str, kind: &str, column: &str) -> (String, RawNode) {
+    (
+        format!("test.p.{kind}_{column}_on_{}", target_uid.replace('.', "_")),
+        RawNode {
+            name: format!("{kind}_{column}"),
+            resource_type: "test".into(),
+            attached_node: Some(target_uid.into()),
+            column_name: Some(column.into()),
+            test_metadata: Some(RawTestMetadata {
+                name: Some(kind.into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    )
+}
+
+/// Declared-column JSON — `[(name, description, data_type)]` triples.
+fn columns(
+    specs: &[(&str, Option<&str>, Option<&str>)],
+) -> serde_json::Map<String, serde_json::Value> {
+    specs
+        .iter()
+        .map(|(name, desc, dtype)| {
+            let mut col = serde_json::Map::new();
+            if let Some(d) = desc {
+                col.insert("description".into(), serde_json::json!(d));
+            }
+            if let Some(t) = dtype {
+                col.insert("data_type".into(), serde_json::json!(t));
+            }
+            (name.to_string(), serde_json::Value::Object(col))
+        })
+        .collect()
+}
+
+/// An `exposures` entry — extend `RawManifest::exposures` with it and wire
+/// its parents through `edges` as usual.
+fn exposure(name: &str) -> (String, crate::manifest::RawExposure) {
+    (
+        format!("exposure.p.{name}"),
+        crate::manifest::RawExposure {
+            name: name.into(),
+            ..Default::default()
+        },
+    )
+}
+
+// ---- unused_sources --------------------------------------------------------
+
+#[test]
+fn unused_sources_flags_sources_nothing_reads() {
+    // s.used feeds a model; s.exposed feeds an exposure — an exposure child
+    // counts as a use; only s.dead has no children at all.
+    let mut m = manifest(
+        vec![model("stg_a", "staging/stg_a.sql")],
+        vec![source("s.used"), source("s.exposed"), source("s.dead")],
+        &[
+            ("source.p.s.used", "model.p.stg_a"),
+            ("source.p.s.exposed", "exposure.p.exp"),
+        ],
+    );
+    m.exposures.extend([exposure("exp")]);
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::UnusedSources),
+        vec!["source.p.s.dead"],
+        "exposure children count as a use — only the childless source flags"
+    );
+}
+
+// ---- duplicate_sources -------------------------------------------------------
+
+#[test]
+fn duplicate_sources_compares_relations_case_insensitively() {
+    // a and b resolve to the same relation modulo case; c stands alone.
+    let m = manifest(
+        vec![],
+        vec![
+            source_at("a.users", Some("DB"), Some("app"), Some("users")),
+            source_at("b.users", Some("db"), Some("APP"), Some("USERS")),
+            source_at("c.orders", Some("db"), Some("app"), Some("orders")),
+        ],
+        &[],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hits: Vec<&Finding> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::DuplicateSources)
+        .collect();
+    assert_eq!(
+        flagged(&f, LintRule::DuplicateSources),
+        vec!["source.p.a.users", "source.p.b.users"],
+        "one finding per duplicated source"
+    );
+    assert_eq!(hits.len(), 2);
+    // related names the OTHER sources at the same relation.
+    assert_eq!(hits[0].related, vec!["source.p.b.users".to_string()]);
+    assert_eq!(hits[1].related, vec!["source.p.a.users".to_string()]);
+}
+
+#[test]
+fn duplicate_sources_prefers_the_identifier_over_the_source_name() {
+    // `x` declares identifier "users" — its relation collides with the
+    // source NAMED users. `alias` declares "other_users" — the identifier
+    // wins over the name, so it doesn't collide with either.
+    let m = manifest(
+        vec![],
+        vec![
+            source_at("x", Some("db"), Some("app"), Some("users")),
+            source_at("users", Some("db"), Some("app"), None),
+            source_at("alias", Some("db"), Some("app"), Some("other_users")),
+        ],
+        &[],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::DuplicateSources),
+        vec!["source.p.users", "source.p.x"],
+        "the identifier, not the declared name, is the relation"
+    );
+}
+
+#[test]
+fn duplicate_sources_missing_schema_never_flags_but_missing_database_compares_without_it() {
+    let m = manifest(
+        vec![],
+        vec![
+            // schema missing on one side → "unknown", never "same relation".
+            source_at("no_schema", Some("db"), None, Some("users")),
+            source_at("has_schema", Some("db"), Some("app"), Some("users")),
+            // database missing on one side → compared on schema.identifier.
+            source_at("no_db", None, Some("app"), Some("orders")),
+            source_at("has_db", Some("db"), Some("app"), Some("orders")),
+        ],
+        &[],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::DuplicateSources),
+        vec!["source.p.has_db", "source.p.no_db"],
+        "a schema-less pair never flags; a database-less pair still compares"
+    );
+}
+
+#[test]
+fn duplicate_sources_three_or_more_each_list_the_others() {
+    let m = manifest(
+        vec![],
+        vec![
+            source_at("a", Some("db"), Some("app"), Some("users")),
+            source_at("b", Some("db"), Some("app"), Some("users")),
+            source_at("c", Some("db"), Some("app"), Some("users")),
+        ],
+        &[],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::DuplicateSources),
+        vec!["source.p.a", "source.p.b", "source.p.c"]
+    );
+    for f in f.iter().filter(|f| f.rule == LintRule::DuplicateSources) {
+        let others: Vec<String> = ["source.p.a", "source.p.b", "source.p.c"]
+            .iter()
+            .filter(|u| **u != f.node_uid)
+            .map(|u| u.to_string())
+            .collect();
+        assert_eq!(f.related, others, "{} lists the other two", f.node_uid);
+    }
+}
+
+// ---- staging_depends_on_staging ----------------------------------------------
+
+#[test]
+fn staging_depends_on_staging_flags_staging_parents() {
+    // stg_b reads stg_a (staging→staging). int_c also reads stg_a but isn't
+    // staging itself; stg_c reads int_c — its parent isn't staging.
+    let m = manifest(
+        vec![
+            model("stg_a", "staging/stg_a.sql"),
+            model("stg_b", "staging/stg_b.sql"),
+            model("int_c", "intermediate/int_c.sql"),
+            model("stg_c", "staging/stg_c.sql"),
+        ],
+        vec![],
+        &[
+            ("model.p.stg_a", "model.p.stg_b"),
+            ("model.p.stg_a", "model.p.int_c"),
+            ("model.p.int_c", "model.p.stg_c"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hits: Vec<&Finding> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::StagingDependsOnStaging)
+        .collect();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].node_uid, "model.p.stg_b");
+    assert_eq!(hits[0].related, vec!["model.p.stg_a".to_string()]);
+}
+
+// ---- too_many_joins ------------------------------------------------------------
+
+#[test]
+fn too_many_joins_flags_at_the_configured_threshold() {
+    // fct_hub reads 7 data-resource parents (6 models + 1 source); fct_light
+    // reads 2. The default threshold is 7.
+    let m = manifest(
+        vec![
+            model("fct_hub", "marts/fct_hub.sql"),
+            model("fct_light", "marts/fct_light.sql"),
+            model("int_a", "intermediate/int_a.sql"),
+            model("int_b", "intermediate/int_b.sql"),
+            model("int_c", "intermediate/int_c.sql"),
+            model("int_d", "intermediate/int_d.sql"),
+            model("int_e", "intermediate/int_e.sql"),
+            model("int_f", "intermediate/int_f.sql"),
+        ],
+        vec![source("s.raw")],
+        &[
+            ("model.p.int_a", "model.p.fct_hub"),
+            ("model.p.int_b", "model.p.fct_hub"),
+            ("model.p.int_c", "model.p.fct_hub"),
+            ("model.p.int_d", "model.p.fct_hub"),
+            ("model.p.int_e", "model.p.fct_hub"),
+            ("model.p.int_f", "model.p.fct_hub"),
+            ("source.p.s.raw", "model.p.fct_hub"),
+            ("model.p.int_a", "model.p.fct_light"),
+            ("model.p.int_b", "model.p.fct_light"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::TooManyJoins),
+        vec!["model.p.fct_hub"],
+        "7 data-resource parents hit the default threshold"
+    );
+    // A higher threshold un-flags the same graph.
+    let cfg = config_from("lint:\n  rules:\n    too_many_joins: {threshold: 8}\n");
+    assert!(flagged(&findings_of(&m, &cfg), LintRule::TooManyJoins).is_empty());
+}
+
+// ---- chained_views -------------------------------------------------------------
+
+#[test]
+fn chained_views_flags_at_exactly_the_threshold_and_only_the_end() {
+    // v1→v2→v3→v4→v5 is a 5-chain — the default threshold. w1→…→w4 is one
+    // short. Only the chain END flags — v1..v4 run on into v5.
+    let m = manifest(
+        vec![
+            mat_model("v1", "view"),
+            mat_model("v2", "view"),
+            mat_model("v3", "view"),
+            mat_model("v4", "view"),
+            mat_model("v5", "view"),
+            mat_model("w1", "view"),
+            mat_model("w2", "view"),
+            mat_model("w3", "view"),
+            mat_model("w4", "view"),
+        ],
+        vec![],
+        &[
+            ("model.p.v1", "model.p.v2"),
+            ("model.p.v2", "model.p.v3"),
+            ("model.p.v3", "model.p.v4"),
+            ("model.p.v4", "model.p.v5"),
+            ("model.p.w1", "model.p.w2"),
+            ("model.p.w2", "model.p.w3"),
+            ("model.p.w3", "model.p.w4"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hits: Vec<&Finding> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::ChainedViews)
+        .collect();
+    assert_eq!(hits.len(), 1, "one finding per chain — at the end only");
+    assert_eq!(hits[0].node_uid, "model.p.v5");
+    // related is the whole chain upstream→downstream (the flagged node last).
+    assert_eq!(
+        hits[0].related,
+        vec![
+            "model.p.v1".to_string(),
+            "model.p.v2".to_string(),
+            "model.p.v3".to_string(),
+            "model.p.v4".to_string(),
+            "model.p.v5".to_string(),
+        ]
+    );
+    // A lower threshold flags the shorter chain's end too — middles never.
+    let cfg = config_from("lint:\n  rules:\n    chained_views: {threshold: 4}\n");
+    assert_eq!(
+        flagged(&findings_of(&m, &cfg), LintRule::ChainedViews),
+        vec!["model.p.v5", "model.p.w4"]
+    );
+}
+
+#[test]
+fn chained_views_flags_each_end_of_a_branching_chain() {
+    // v1→v2→v3→v4 forks into v5a and v5b — two ends of a 5-chain.
+    let m = manifest(
+        vec![
+            mat_model("v1", "view"),
+            mat_model("v2", "view"),
+            mat_model("v3", "view"),
+            mat_model("v4", "view"),
+            mat_model("v5a", "view"),
+            mat_model("v5b", "view"),
+        ],
+        vec![],
+        &[
+            ("model.p.v1", "model.p.v2"),
+            ("model.p.v2", "model.p.v3"),
+            ("model.p.v3", "model.p.v4"),
+            ("model.p.v4", "model.p.v5a"),
+            ("model.p.v4", "model.p.v5b"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::ChainedViews),
+        vec!["model.p.v5a", "model.p.v5b"],
+        "a branching chain reports one finding per end"
+    );
+}
+
+#[test]
+fn chained_views_breaks_on_durable_materializations_and_counts_ephemeral() {
+    // A table breaks a chain (v3..v4 = 2); an ephemeral counts like a view
+    // (the e-chain reaches 5); a model with NO materialized doesn't count.
+    let m = manifest(
+        vec![
+            mat_model("v1", "view"),
+            mat_model("v2", "view"),
+            mat_model("t_mid", "table"),
+            mat_model("v3", "view"),
+            mat_model("v4", "view"),
+            mat_model("e1", "view"),
+            mat_model("e2", "ephemeral"),
+            mat_model("e3", "view"),
+            mat_model("e4", "view"),
+            mat_model("e5", "view"),
+            // materialized: None — an unknown storage shape, not a view.
+            model("plain", "staging/plain.sql"),
+            mat_model("v6", "view"),
+            mat_model("v7", "view"),
+        ],
+        vec![],
+        &[
+            ("model.p.v1", "model.p.v2"),
+            ("model.p.v2", "model.p.t_mid"),
+            ("model.p.t_mid", "model.p.v3"),
+            ("model.p.v3", "model.p.v4"),
+            ("model.p.e1", "model.p.e2"),
+            ("model.p.e2", "model.p.e3"),
+            ("model.p.e3", "model.p.e4"),
+            ("model.p.e4", "model.p.e5"),
+            ("model.p.plain", "model.p.v6"),
+            ("model.p.v6", "model.p.v7"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::ChainedViews),
+        vec!["model.p.e5"],
+        "the table breaks its chain; ephemeral counts; no-materialization doesn't"
+    );
+}
+
+#[test]
+fn chained_views_reports_the_longest_chain_then_the_smallest_parent() {
+    // v5 has two view parents: y (a 5-chain) and x (a 2-chain) — the related
+    // chain walks the LONGER side. v6 has two equal 2-chain parents — the
+    // tie resolves to the smaller unique_id.
+    let m = manifest(
+        vec![
+            mat_model("q1", "view"),
+            mat_model("q2", "view"),
+            mat_model("q3", "view"),
+            mat_model("q4", "view"),
+            mat_model("y", "view"),
+            mat_model("p1", "view"),
+            mat_model("x", "view"),
+            mat_model("v5", "view"),
+            mat_model("m0", "view"),
+            mat_model("m1", "view"),
+            mat_model("n0", "view"),
+            mat_model("n1", "view"),
+            mat_model("v6", "view"),
+        ],
+        vec![],
+        &[
+            ("model.p.q1", "model.p.q2"),
+            ("model.p.q2", "model.p.q3"),
+            ("model.p.q3", "model.p.q4"),
+            ("model.p.q4", "model.p.y"),
+            ("model.p.y", "model.p.v5"),
+            ("model.p.p1", "model.p.x"),
+            ("model.p.x", "model.p.v5"),
+            ("model.p.m0", "model.p.m1"),
+            ("model.p.m1", "model.p.v6"),
+            ("model.p.n0", "model.p.n1"),
+            ("model.p.n1", "model.p.v6"),
+        ],
+    );
+    // threshold 6: only v5 qualifies (q1→…→y→v5 = 6; v6 = 3).
+    let cfg = config_from("lint:\n  rules:\n    chained_views: {threshold: 6}\n");
+    let f = findings_of(&m, &cfg);
+    let hits: Vec<&Finding> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::ChainedViews)
+        .collect();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].node_uid, "model.p.v5");
+    assert_eq!(
+        hits[0].related,
+        vec![
+            "model.p.q1".to_string(),
+            "model.p.q2".to_string(),
+            "model.p.q3".to_string(),
+            "model.p.q4".to_string(),
+            "model.p.y".to_string(),
+            "model.p.v5".to_string(),
+        ],
+        "the longest chain upstream→downstream"
+    );
+    // threshold 3: v6's equal-length parents tie-break on the uid.
+    let cfg = config_from("lint:\n  rules:\n    chained_views: {threshold: 3}\n");
+    let f = findings_of(&m, &cfg);
+    let v6 = f
+        .iter()
+        .find(|f| f.rule == LintRule::ChainedViews && f.node_uid == "model.p.v6")
+        .unwrap();
+    assert_eq!(
+        v6.related,
+        vec![
+            "model.p.m0".to_string(),
+            "model.p.m1".to_string(),
+            "model.p.v6".to_string(),
+        ],
+        "equal-length parents resolve to the smaller unique_id"
+    );
+}
+
+// ---- exposure_parents_materializations ----------------------------------------
+
+#[test]
+fn exposure_parents_materializations_flags_source_and_view_parents() {
+    // bad reads a view and a source (plus a durable table — that one
+    // doesn't count); ok reads only the table.
+    let mut m = manifest(
+        vec![mat_model("v_in", "view"), mat_model("t_ok", "table")],
+        vec![source("s.raw")],
+        &[
+            ("model.p.v_in", "exposure.p.bad"),
+            ("source.p.s.raw", "exposure.p.bad"),
+            ("model.p.t_ok", "exposure.p.bad"),
+            ("model.p.t_ok", "exposure.p.ok"),
+        ],
+    );
+    m.exposures.extend([exposure("bad"), exposure("ok")]);
+    let f = findings_of(&m, &LintConfig::default());
+    let hits: Vec<&Finding> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::ExposureParentsMaterializations)
+        .collect();
+    assert_eq!(hits.len(), 1, "one finding per exposure");
+    assert_eq!(hits[0].node_uid, "exposure.p.bad");
+    assert_eq!(
+        hits[0].related,
+        vec!["model.p.v_in".to_string(), "source.p.s.raw".to_string()],
+        "the offending parents, sorted"
+    );
+}
+
+// ---- exposures_dependent_on_private_models ------------------------------------
+
+#[test]
+fn exposures_dependent_on_private_models_flags_non_public_parents() {
+    // private + protected parents flag; public doesn't; a model with NO
+    // access value is "unknown" (source mode doesn't read it) — never
+    // judged.
+    let mut priv_m = model("dim_priv", "marts/dim_priv.sql");
+    priv_m.1.access = Some("private".into());
+    let mut prot_m = model("dim_prot", "marts/dim_prot.sql");
+    prot_m.1.access = Some("protected".into());
+    let mut pub_m = model("dim_pub", "marts/dim_pub.sql");
+    pub_m.1.access = Some("public".into());
+    let mut m = manifest(
+        vec![
+            priv_m,
+            prot_m,
+            pub_m,
+            model("dim_none", "marts/dim_none.sql"),
+        ],
+        vec![],
+        &[
+            ("model.p.dim_priv", "exposure.p.exp"),
+            ("model.p.dim_prot", "exposure.p.exp"),
+            ("model.p.dim_pub", "exposure.p.exp"),
+            ("model.p.dim_none", "exposure.p.exp"),
+        ],
+    );
+    m.exposures.extend([exposure("exp")]);
+    let f = findings_of(&m, &LintConfig::default());
+    let hits: Vec<&Finding> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::ExposuresDependentOnPrivateModels)
+        .collect();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].node_uid, "exposure.p.exp");
+    assert_eq!(
+        hits[0].related,
+        vec![
+            "model.p.dim_priv".to_string(),
+            "model.p.dim_prot".to_string()
+        ],
+        "private+protected flag; public and access-less don't"
+    );
+}
+
+// ---- undocumented_sources -------------------------------------------------------
+
+#[test]
+fn undocumented_sources_flags_missing_descriptions() {
+    let mut doc = source("s.doc");
+    doc.1.description = Some("documented".into());
+    let mut blank = source("s.blank");
+    blank.1.description = Some("  \n".into()); // cleaned to None at build
+    let m = manifest(vec![], vec![doc, source("s.bare"), blank], &[]);
+    let f = findings_of(&m, &LintConfig::default());
+    let mut got = flagged(&f, LintRule::UndocumentedSources);
+    got.sort_unstable();
+    assert_eq!(got, vec!["source.p.s.bare", "source.p.s.blank"]);
+}
+
+// ---- undocumented_columns --------------------------------------------------------
+
+#[test]
+fn undocumented_columns_names_the_bare_columns() {
+    // fct_x declares a documented column plus a bare one → one finding
+    // naming the bare column. fct_clean is fully documented; fct_none
+    // declares NO columns — not "missing column descriptions".
+    let mut x = model("fct_x", "marts/fct_x.sql");
+    x.1.columns = columns(&[("id", Some("the key"), None), ("amt", None, None)]);
+    let mut clean = model("fct_clean", "marts/fct_clean.sql");
+    clean.1.columns = columns(&[("id", Some("the key"), None)]);
+    let m = manifest(
+        vec![x, clean, model("fct_none", "marts/fct_none.sql")],
+        vec![],
+        &[],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hits: Vec<&Finding> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::UndocumentedColumns)
+        .collect();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].node_uid, "model.p.fct_x");
+    assert!(
+        hits[0].message.contains("amt"),
+        "the bare column is named: {}",
+        hits[0].message
+    );
+}
+
+// ---- undocumented_public_models ---------------------------------------------------
+
+#[test]
+fn undocumented_public_models_requires_the_model_and_its_columns_documented() {
+    // rpt_no_desc: public, no model description, columns documented → flag.
+    // rpt_bare_col: public, described, one column bare → flag.
+    // rpt_clean: public, described, no declared columns → clean.
+    // rpt_full: public, described, documented column → clean.
+    // rpt_priv: undocumented but NOT public → out of scope.
+    let mut no_desc = model("rpt_no_desc", "marts/rpt_no_desc.sql");
+    no_desc.1.access = Some("public".into());
+    no_desc.1.columns = columns(&[("id", Some("the key"), None)]);
+    let mut bare_col = model("rpt_bare_col", "marts/rpt_bare_col.sql");
+    bare_col.1.access = Some("public".into());
+    bare_col.1.description = Some("described".into());
+    bare_col.1.columns = columns(&[("id", Some("the key"), None), ("amt", None, None)]);
+    let mut clean = model("rpt_clean", "marts/rpt_clean.sql");
+    clean.1.access = Some("public".into());
+    clean.1.description = Some("described".into());
+    let mut full = model("rpt_full", "marts/rpt_full.sql");
+    full.1.access = Some("public".into());
+    full.1.description = Some("described".into());
+    full.1.columns = columns(&[("id", Some("the key"), None)]);
+    let mut priv_m = model("rpt_priv", "marts/rpt_priv.sql");
+    priv_m.1.access = Some("private".into());
+    let m = manifest(vec![no_desc, bare_col, clean, full, priv_m], vec![], &[]);
+    let f = findings_of(&m, &LintConfig::default());
+    let mut got = flagged(&f, LintRule::UndocumentedPublicModels);
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec!["model.p.rpt_bare_col", "model.p.rpt_no_desc"],
+        "missing model OR column descriptions flag; non-public and columnless don't"
+    );
+}
+
+// ---- model_directories --------------------------------------------------------------
+
+#[test]
+fn model_directories_flags_a_prefix_folder_disagreement_only() {
+    // staging/fct_x: prefix resolves marts, dir resolves staging → flag —
+    // the mismatch naming_conventions can't see (prefix-first says fct_x
+    // is a WELL-NAMED marts model). staging/stg_y agrees → clean.
+    // reports/rpt_z: prefix resolves marts but `reports` isn't a configured
+    // layer → the dir stage is unresolved → clean. marts/plain: no prefix
+    // match → the prefix stage is unresolved → clean.
+    let m = manifest(
+        vec![
+            model("fct_x", "staging/fct_x.sql"),
+            model("stg_y", "staging/stg_y.sql"),
+            model("rpt_z", "reports/rpt_z.sql"),
+            model("plain", "marts/plain.sql"),
+        ],
+        vec![],
+        &[],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::ModelDirectories),
+        vec!["model.p.fct_x"],
+        "only a disagreement between BOTH resolved layers flags"
+    );
+    assert!(
+        !flagged(&f, LintRule::NamingConventions).contains(&"model.p.fct_x"),
+        "prefix-first naming_conventions passes staging/fct_x — this rule is the one that catches it"
+    );
+}
+
+#[test]
+fn lint_model_type_stages_compose_into_the_same_resolution() {
+    // The two stages model_directories calls must compose into the same
+    // resolution lint_model_type always had: prefix first, dir second,
+    // `other` last — so the split didn't change any rule's input.
+    let m = manifest(
+        vec![
+            model("fct_x", "staging/fct_x.sql"),
+            model("plain", "staging/plain.sql"),
+            model("rpt_x", "reports/rpt_x.sql"),
+            model("bare", "reports/bare.sql"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let cfg = LintConfig::default();
+    for (uid, prefix_layer, dir_layer, combined) in [
+        // the prefix stage wins over the dir.
+        ("model.p.fct_x", Some("marts"), Some("staging"), "marts"),
+        // dir alone resolves the layer.
+        ("model.p.plain", None, Some("staging"), "staging"),
+        // an unmapped dir isn't a layer at all.
+        ("model.p.rpt_x", Some("marts"), None, "marts"),
+        // nothing resolves → other.
+        ("model.p.bare", None, None, "other"),
+    ] {
+        let n = dag.get(uid).unwrap();
+        assert_eq!(
+            rules::lint_model_type_by_prefix(n, &cfg),
+            prefix_layer,
+            "{uid} prefix stage"
+        );
+        assert_eq!(
+            rules::lint_model_type_by_dir(n, &cfg),
+            dir_layer,
+            "{uid} dir stage"
+        );
+        assert_eq!(
+            rules::lint_model_type(n, &cfg),
+            combined,
+            "{uid} combined resolution"
+        );
+    }
+}
+
+// ---- required_meta_keys --------------------------------------------------------------
+
+#[test]
+fn required_meta_keys_flags_only_missing_keys() {
+    // keys: [owner, domain] — stg_a has both, stg_b misses domain, stg_c
+    // misses both, stg_d's owner is an EMPTY string (present is present).
+    let mk = |name: &str, meta: serde_json::Value| {
+        (
+            format!("model.p.{name}"),
+            RawNode {
+                name: name.into(),
+                resource_type: "model".into(),
+                path: Some(format!("staging/{name}.sql")),
+                meta: meta.as_object().cloned().unwrap_or_default(),
+                ..Default::default()
+            },
+        )
+    };
+    let m = manifest(
+        vec![
+            mk("stg_a", serde_json::json!({"owner": "t", "domain": "d"})),
+            mk("stg_b", serde_json::json!({"owner": "t"})),
+            mk("stg_c", serde_json::json!({})),
+            mk("stg_d", serde_json::json!({"owner": "", "domain": "d"})),
+        ],
+        vec![],
+        &[],
+    );
+    // Empty keys → the rule is a no-op.
+    assert!(
+        flagged(
+            &findings_of(&m, &LintConfig::default()),
+            LintRule::RequiredMetaKeys
+        )
+        .is_empty(),
+        "no configured keys means no findings"
+    );
+    let cfg = config_from("lint:\n  rules:\n    required_meta_keys: {keys: [owner, domain]}\n");
+    let f = findings_of(&m, &cfg);
+    let mut got = flagged(&f, LintRule::RequiredMetaKeys);
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec!["model.p.stg_b", "model.p.stg_c"],
+        "an empty-string value still counts as present"
+    );
+    // The message names the missing keys.
+    let stg_c = f
+        .iter()
+        .find(|f| f.rule == LintRule::RequiredMetaKeys && f.node_uid == "model.p.stg_c")
+        .unwrap();
+    assert!(
+        stg_c.message.contains("owner") && stg_c.message.contains("domain"),
+        "the message names the missing keys: {}",
+        stg_c.message
+    );
+}
+
+// ---- contract_columns_without_type ----------------------------------------------------
+
+#[test]
+fn contract_columns_without_type_flags_untyped_declared_columns() {
+    // Enforced with a typeless column → flag (the column rides the message);
+    // enforced with all-typed columns → clean; a typeless column on a
+    // NON-enforced model isn't this rule's business.
+    let mut bad = model("rpt_bad", "marts/rpt_bad.sql");
+    bad.1.contract = Some(RawContract { enforced: true });
+    bad.1.columns = columns(&[("id", None, Some("int")), ("amt", None, None)]);
+    let mut good = model("rpt_good", "marts/rpt_good.sql");
+    good.1.contract = Some(RawContract { enforced: true });
+    good.1.columns = columns(&[("id", None, Some("int"))]);
+    let mut plain = model("rpt_plain", "marts/rpt_plain.sql");
+    plain.1.columns = columns(&[("amt", None, None)]);
+    let m = manifest(vec![bad, good, plain], vec![], &[]);
+    let f = findings_of(&m, &LintConfig::default());
+    let hits: Vec<&Finding> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::ContractColumnsWithoutType)
+        .collect();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].node_uid, "model.p.rpt_bad");
+    assert!(
+        hits[0].message.contains("amt"),
+        "the untyped column is named: {}",
+        hits[0].message
+    );
+}
+
+// ---- missing_primary_key_tests.resource_types -----------------------------------------
+
+#[test]
+fn missing_primary_key_tests_resource_types_widens_the_target_set() {
+    // A seed, a snapshot and a model — untested — plus a PK-tested seed.
+    let seed = |name: &str| {
+        (
+            format!("seed.p.{name}"),
+            RawNode {
+                name: name.into(),
+                resource_type: "seed".into(),
+                path: Some(format!("seeds/{name}.csv")),
+                ..Default::default()
+            },
+        )
+    };
+    let m = manifest(
+        vec![
+            model("stg_a", "staging/stg_a.sql"),
+            seed("raw_seed"),
+            seed("pk_seed"),
+            (
+                "snapshot.p.snap".to_string(),
+                RawNode {
+                    name: "snap".into(),
+                    resource_type: "snapshot".into(),
+                    path: Some("snapshots/snap.sql".into()),
+                    ..Default::default()
+                },
+            ),
+            test_attached("seed.p.pk_seed", "unique", "id"),
+            test_attached("seed.p.pk_seed", "not_null", "id"),
+        ],
+        vec![],
+        &[],
+    );
+    // Default [model]: only the model flags — seeds/snapshots are out.
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::MissingPrimaryKeyTests),
+        vec!["model.p.stg_a"],
+        "the default targets models only"
+    );
+    // [model, seed]: the untested seed joins; the tested one stays clean.
+    let cfg = config_from(
+        "lint:\n  rules:\n    missing_primary_key_tests: {resource_types: [model, seed]}\n",
+    );
+    let f = findings_of(&m, &cfg);
+    let mut got = flagged(&f, LintRule::MissingPrimaryKeyTests);
+    got.sort_unstable();
+    assert_eq!(got, vec!["model.p.stg_a", "seed.p.raw_seed"]);
+    // An invalid value is a config error naming the valid set.
+    let err = ProjectConfig::from_yaml(
+        "lint:\n  rules:\n    missing_primary_key_tests: {resource_types: [model, bogus]}\n",
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("bogus") && err.contains("model") && err.contains("seed"),
+        "{err} names the bad value and the valid set"
+    );
+}
+
+// ---- suppression on the new rules ------------------------------------------------------
+
+#[test]
+fn exclude_and_meta_suppression_reach_the_new_rules() {
+    // One `exclude`, one `meta.dbtl.ignore`, spanning two different new
+    // rules — both ride run_rules' shared suppression path.
+    let mut stg_ignored = model("stg_ignored", "staging/stg_ignored.sql");
+    stg_ignored.1.meta = serde_json::json!({"dbtl": {"ignore": ["staging_depends_on_staging"]}})
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let m = manifest(
+        vec![
+            model("stg_a", "staging/stg_a.sql"),
+            stg_ignored,
+            model("stg_b", "staging/stg_b.sql"),
+        ],
+        vec![source("dead_src"), source("kept_src")],
+        &[
+            ("model.p.stg_a", "model.p.stg_ignored"),
+            ("model.p.stg_a", "model.p.stg_b"),
+        ],
+    );
+    let cfg = config_from("lint:\n  rules:\n    unused_sources: {exclude: [\"dead_src\"]}\n");
+    let f = findings_of(&m, &cfg);
+    assert_eq!(
+        flagged(&f, LintRule::UnusedSources),
+        vec!["source.p.kept_src"],
+        "the exclude drops dead_src's finding; kept_src still flags"
+    );
+    assert_eq!(
+        flagged(&f, LintRule::StagingDependsOnStaging),
+        vec!["model.p.stg_b"],
+        "meta.dbtl.ignore suppresses stg_ignored's finding; stg_b still flags"
     );
 }

@@ -607,6 +607,21 @@ fn explain_rule(id: &str, cfg: &dbtl::LintConfig) -> Result<(), CliError> {
                         p.name, min, default, current, p.description
                     );
                 }
+                dbtl::ParamKind::StringList { default, allowed } => {
+                    let current = cfg
+                        .str_list_param(rule, p.name)
+                        .unwrap_or_else(|| default.iter().map(|s| s.to_string()).collect());
+                    let allowed = allowed
+                        .map_or_else(String::new, |a| format!(", allowed [{}]", a.join(", ")));
+                    println!(
+                        "  {}  string-list  default [{}], current [{}]{} — {}",
+                        p.name,
+                        default.join(", "),
+                        current.join(", "),
+                        allowed,
+                        p.description
+                    );
+                }
             }
         }
     }

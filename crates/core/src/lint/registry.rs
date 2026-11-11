@@ -143,7 +143,12 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "stg_orders has no test on order_id. Fix: add unique and \
                   not_null tests on order_id (or a \
                   unique_combination_of_columns test for a composite grain).",
-        params: &[],
+        params: &[ParamSpec::string_list(
+            "resource_types",
+            &["model"],
+            Some(&["model", "snapshot", "seed"]),
+            "resource kinds the primary-key test applies to",
+        )],
         requires: Requires::Graph,
     },
     RuleInfo {
@@ -208,6 +213,231 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "stg_orders refs fct_payments (staging reading a mart). Fix: \
                   move the shared logic upstream — staging should never need \
                   a marts model.",
+        params: &[],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::UnusedSources,
+        id: "unused_sources",
+        category: Category::Modeling,
+        default_severity: Severity::Warn,
+        summary: "a source is declared but never referenced",
+        rationale: "A source declaration is a promise that a table matters to \
+                    the project. When nothing refs it, the entry is dead \
+                    configuration — it rots in the schema.yml, misleads readers \
+                    about what feeds the DAG, and inflates the source inventory \
+                    beyond the real pipeline.",
+        example: "raw.legacy_exports is declared but no model or exposure \
+                  reads it. Fix: delete the declaration, or build the staging \
+                  model that was meant to consume it.",
+        params: &[],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::DuplicateSources,
+        id: "duplicate_sources",
+        category: Category::Modeling,
+        default_severity: Severity::Warn,
+        summary: "two or more sources point at the same warehouse relation",
+        rationale: "Declaring the same relation under two source names splits \
+                    its tests, docs and freshness into competing records, and a \
+                    model can silently read the 'wrong' one. One relation \
+                    should have exactly one declaration every model shares.",
+        example: "raw.app.users and mirror.app_users both resolve to \
+                  app.public.users. Fix: keep one declaration and update every \
+                  source() call to it.",
+        params: &[],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::StagingDependsOnStaging,
+        id: "staging_depends_on_staging",
+        category: Category::Modeling,
+        default_severity: Severity::Warn,
+        summary: "a staging model directly depends on another staging model",
+        rationale: "Staging models own raw-source cleanup — renaming, typing, \
+                    light dedup. Chaining staging into staging hides the fact \
+                    that a real transformation leaked in: the second model is \
+                    doing intermediate work under a staging name.",
+        example: "stg_order_items refs stg_orders to compute line totals. Fix: \
+                  move the join or aggregation into an int_ model so staging \
+                  stays a pure source-mapping layer.",
+        params: &[],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::TooManyJoins,
+        id: "too_many_joins",
+        category: Category::Modeling,
+        default_severity: Severity::Warn,
+        summary: "a model directly depends on too many data resources",
+        rationale: "A model that reads many parents at once is a join hub: the \
+                    SQL is doing the work of several intermediate models, and \
+                    every upstream change can break it. Splitting the inputs \
+                    into intermediate steps keeps each model's contract \
+                    testable.",
+        example: "fct_checkout reads 9 models and sources. Fix: pre-join the \
+                  related inputs in int_ models and ref those instead.",
+        params: &[ParamSpec::int(
+            "threshold",
+            1,
+            7,
+            "minimum direct data-resource parents to flag",
+        )],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::ChainedViews,
+        id: "chained_views",
+        category: Category::Performance,
+        default_severity: Severity::Warn,
+        summary: "a chain of consecutive view/ephemeral models is too long",
+        rationale: "Views and ephemeral models persist nothing — every one in \
+                    the chain is re-planned at query time. A long chain \
+                    compounds that work into a single slow query where one or \
+                    two materialized checkpoints would do.",
+        example: "rpt_daily runs five views deep from stg_events. Fix: \
+                  materialize the heavy middle step (table or incremental) so \
+                  the chain has a checkpoint.",
+        params: &[ParamSpec::int(
+            "threshold",
+            1,
+            5,
+            "minimum consecutive view/ephemeral chain length to flag",
+        )],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::ExposureParentsMaterializations,
+        id: "exposure_parents_materializations",
+        category: Category::Performance,
+        default_severity: Severity::Warn,
+        summary: "an exposure directly depends on a source or a view/ephemeral model",
+        rationale: "An exposure is what a dashboard actually reads. Pointing it \
+                    at a source or an unmaterialized view means every refresh \
+                    re-executes the full chain and can break on raw-source \
+                    drift — the last hop before the consumer should be a \
+                    durable model.",
+        example: "the churn dashboard reads int_features (a view) and \
+                  raw.events. Fix: point the exposure at the mart that already \
+                  materializes those inputs.",
+        params: &[],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::ExposuresDependentOnPrivateModels,
+        id: "exposures_dependent_on_private_models",
+        category: Category::Governance,
+        default_severity: Severity::Warn,
+        summary: "an exposure depends on a private/protected model",
+        rationale: "Private and protected access levels mark a model as \
+                    internal — ref-able only inside its group or project. \
+                    Declaring an external consumer on an internal model \
+                    advertises a dependency that violates the access contract's \
+                    intent.",
+        example: "the finance dashboard depends on dim_salaries (access: \
+                  private). Fix: publish a public mart for the dashboard, or \
+                  narrow the exposure's depends_on.",
+        params: &[],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::UndocumentedSources,
+        id: "undocumented_sources",
+        category: Category::Documentation,
+        default_severity: Severity::Warn,
+        summary: "a source has no description",
+        rationale: "Sources are the edge where external data enters the \
+                    project — the place readers most need provenance notes. An \
+                    undocumented source forces everyone to guess what the table \
+                    holds and who owns it.",
+        example: "raw.billing.events has no description. Fix: add a \
+                  description in its schema.yml entry saying what the upstream \
+                  system emits.",
+        params: &[],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::UndocumentedColumns,
+        id: "undocumented_columns",
+        category: Category::Documentation,
+        default_severity: Severity::Warn,
+        summary: "a model has declared columns without descriptions",
+        rationale: "Declaring a column without describing it documents the \
+                    schema's shape but not its meaning — the generated docs \
+                    show a table of names with no semantics. Column \
+                    descriptions are cheap and pay off every time the docs are \
+                    read.",
+        example: "fct_orders declares order_total without a description. Fix: \
+                  describe each column in schema.yml (units, semantics, edge \
+                  cases).",
+        params: &[],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::UndocumentedPublicModels,
+        id: "undocumented_public_models",
+        category: Category::Governance,
+        default_severity: Severity::Warn,
+        summary: "a public model lacks a model or column description",
+        rationale: "access: public marks a model as the project's supported \
+                    interface — the surface downstream teams build on. An \
+                    undocumented public model advertises a contract nobody can \
+                    read: consumers can't tell what a row means without asking.",
+        example: "rpt_revenue is access: public but has no description and two \
+                  undocumented columns. Fix: document the model and every \
+                  public column.",
+        params: &[],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::ModelDirectories,
+        id: "model_directories",
+        category: Category::Structure,
+        default_severity: Severity::Warn,
+        summary: "a model's name prefix and directory point at different layers",
+        rationale: "Layer conventions only work when the file location and the \
+                    name tell the same story. A marts-prefixed model inside \
+                    staging/ (or the reverse) is filed where nobody looks for \
+                    it — and folder-scoped config applies to the wrong layer.",
+        example: "models/staging/fct_orders.sql. Fix: move the file to \
+                  models/marts/, or rename it stg_* if it truly belongs to \
+                  staging.",
+        params: &[],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::RequiredMetaKeys,
+        id: "required_meta_keys",
+        category: Category::Governance,
+        default_severity: Severity::Warn,
+        summary: "a model is missing a required meta key",
+        rationale: "Projects that rely on meta for ownership, cost centers or \
+                    data-domain tagging only get value when every model carries \
+                    the keys. A missing key means the model escapes the reports \
+                    and groupings built on that tag.",
+        example: "with keys: [owner] configured, dim_products lacks meta.owner. \
+                  Fix: add owner: data-team to the model's meta.",
+        params: &[ParamSpec::string_list(
+            "keys",
+            &[],
+            None,
+            "meta keys every model must declare",
+        )],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::ContractColumnsWithoutType,
+        id: "contract_columns_without_type",
+        category: Category::Governance,
+        default_severity: Severity::Warn,
+        summary: "a contract-enforced model has declared columns without data_type",
+        rationale: "An enforced contract promises the warehouse will check the \
+                    declared schema — but a column without data_type \
+                    contributes nothing to that check. The contract is only as \
+                    strong as the column definitions behind it.",
+        example: "dim_customers enforces a contract but column segment has no \
+                  data_type. Fix: declare data_type for every contract column.",
         params: &[],
         requires: Requires::Graph,
     },
@@ -288,8 +518,7 @@ pub enum Requires {
     Catalog,
 }
 
-/// One declared rule parameter. Only integers exist today; the struct leaves
-/// room for new kinds without changing the registry's shape.
+/// One declared rule parameter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParamSpec {
     /// The config key under `rules.<id>.` — also the compat flat key's
@@ -314,6 +543,21 @@ impl ParamSpec {
             description,
         }
     }
+
+    /// A string-list parameter — a default item list plus an optional
+    /// allowed-value set (`None` = any strings).
+    pub const fn string_list(
+        name: &'static str,
+        default: &'static [&'static str],
+        allowed: Option<&'static [&'static str]>,
+        description: &'static str,
+    ) -> Self {
+        ParamSpec {
+            name,
+            kind: ParamKind::StringList { default, allowed },
+            description,
+        }
+    }
 }
 
 /// The value space of a [`ParamSpec`].
@@ -322,6 +566,12 @@ pub enum ParamKind {
     /// A non-negative integer with an inclusive minimum and a default used
     /// when the config doesn't set it.
     Int { min: usize, default: usize },
+    /// A list of strings — `allowed` bounds the items to a fixed set when
+    /// `Some` (`None` = any strings are valid).
+    StringList {
+        default: &'static [&'static str],
+        allowed: Option<&'static [&'static str]>,
+    },
 }
 
 /// One registry row — everything there is to say about a rule except its
@@ -360,6 +610,22 @@ impl RuleInfo {
     pub fn int_param(&self, name: &str) -> Option<(usize, usize)> {
         self.params.iter().find_map(|p| match p.kind {
             ParamKind::Int { min, default } if p.name == name => Some((min, default)),
+            _ => None,
+        })
+    }
+
+    /// `(default, allowed)` of the declared string-list parameter `name`, if
+    /// any. The config parser validates items against `allowed` and
+    /// [`LintConfig::str_list_param`](crate::LintConfig::str_list_param) falls
+    /// back to `default`, so the registry is the single place both read.
+    pub fn str_list_param(
+        &self,
+        name: &str,
+    ) -> Option<(&'static [&'static str], Option<&'static [&'static str]>)> {
+        self.params.iter().find_map(|p| match p.kind {
+            ParamKind::StringList { default, allowed } if p.name == name => {
+                Some((default, allowed))
+            }
             _ => None,
         })
     }

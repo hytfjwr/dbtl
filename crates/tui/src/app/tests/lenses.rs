@@ -376,11 +376,13 @@ fn violation_lens_tints_both_incident_nodes_and_spares_the_rest() {
 
 #[test]
 fn lint_findings_are_computed_once_from_the_shared_rules() {
-    // The fixture has 27 findings under the shipped defaults (frozen counts in
-    // tests/manifest_fixture.rs) — the App computes them once at construction
-    // and every surface (lens, stats worklist) reads that one vector.
+    // The fixture has 38 findings under the shipped defaults — the 27
+    // error-severity gate findings plus 11 warn-severity `unused_sources`
+    // (frozen counts in tests/manifest_fixture.rs) — the App computes them
+    // once at construction and every surface (lens, stats worklist) reads
+    // that one vector.
     let a = app();
-    assert_eq!(a.lint_findings().len(), 27, "the frozen fixture count");
+    assert_eq!(a.lint_findings().len(), 38, "the frozen fixture count");
     assert!(
         a.lint_findings()
             .iter()
@@ -458,7 +460,7 @@ fn stats_view_carries_the_lint_worklist_from_the_shared_findings() {
     // the numbers can never drift from `dbtl check --lint` or the lens.
     let a = app();
     let sv = a.compute_stats_view();
-    assert_eq!(sv.lint_findings.len(), 6, "6 rules have findings (frozen)");
+    assert_eq!(sv.lint_findings.len(), 7, "7 rules have findings (frozen)");
     assert_eq!(sv.lint_findings[0].0, "direct_join_to_source");
     assert_eq!(
         sv.lint_findings[0].1.len(),
