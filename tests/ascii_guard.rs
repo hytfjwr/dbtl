@@ -384,6 +384,7 @@ fn lint_surfaces_are_all_ascii() {
         parent_map,
         child_map,
         macros: HashMap::new(),
+        docs: Default::default(),
     });
     let mut app = App::new(dag, std::path::PathBuf::from("/p/manifest.json"));
     app.glyph_mode = GlyphMode::Ascii;
@@ -841,6 +842,7 @@ fn search_palette_surfaces_are_all_ascii() {
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
         macros: HashMap::new(),
+        docs: Default::default(),
     });
     let mut app = App::new(empty, std::path::PathBuf::from(FIXTURE));
     app.glyph_mode = GlyphMode::Ascii;

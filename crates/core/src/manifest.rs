@@ -330,6 +330,28 @@ pub struct RawMacro {
     pub depends_on: RawDependsOn,
 }
 
+/// A `docs` entry (`doc.<pkg>.<name>` — a `{% docs %}` block rendered at
+/// parse time). Only the fields the project-overview intake reads; the rest
+/// of the wire shape is ignored like everywhere else (no
+/// `deny_unknown_fields`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct RawDoc {
+    /// The block's `{% docs <name> %}` name (`__overview__` is the project
+    /// overview dbt renders atop its own docs index).
+    #[serde(default)]
+    pub name: String,
+    /// The package that declared the block — `dbt` ships a boilerplate
+    /// `doc.dbt.__overview__` in every manifest, so the package segment is
+    /// what distinguishes the project's own overview from an installed
+    /// package's.
+    #[serde(default)]
+    pub package_name: Option<String>,
+    /// The rendered block body — dbt expands `doc()` refs at parse time, so
+    /// this is display-ready text.
+    #[serde(default)]
+    pub block_contents: String,
+}
+
 /// `metadata` sub-object of the manifest. Only the fields we surface:
 /// `project_name` is the ROOT project's name as dbt recorded it (dbt ≥1.6) —
 /// the authoritative answer to "which package owns this graph", immune to
@@ -389,6 +411,14 @@ pub struct RawManifest {
     /// never drop silently; `Value` keeps the parse shape-tolerant.
     #[serde(default)]
     pub functions: HashMap<String, serde_json::Value>,
+    /// `#[serde(default)]`: the `docs` map (`doc.<pkg>.<name>` — rendered
+    /// `{% docs %}` blocks). Only `__overview__` is consumed — the root
+    /// project's own entry feeds [`Dag::overview`](crate::Dag::overview);
+    /// every other block stays unread (installed packages' blocks and dbt's
+    /// boilerplate included). Manifests without a `docs` key simply yield no
+    /// overview.
+    #[serde(default)]
+    pub docs: HashMap<String, RawDoc>,
     pub parent_map: HashMap<String, Vec<String>>,
     pub child_map: HashMap<String, Vec<String>>,
 }

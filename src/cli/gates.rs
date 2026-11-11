@@ -35,7 +35,7 @@ pub fn run_impact(
     // impact` and `dbtl check`'s hub gate can't disagree.
     let (manifest_arg, project_arg) = resolved_config_args(&resolved);
     let pc = load_project_config(manifest_arg.as_deref(), project_arg.as_deref())?;
-    let owner_key = owner_meta_key(pc.config.owner_meta_key.as_deref());
+    let owner_key = owner_meta_key(pc.config.owner_meta_key.as_deref(), true);
     // The same resolver pair the TUI diffs through (catalog-backed current,
     // catalog-less baseline) so the report's column analysis matches the
     // `D` modal byte-for-byte.
@@ -282,7 +282,7 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
     let check_cfg = gate_policy(&pc.config.check, args);
     // `.dbtl.yml` owner_meta_key > config.yml's > `owner` — the ONE
     // resolution `dbtl impact` and the TUI `D` modal share.
-    let owner_key = owner_meta_key(pc.config.owner_meta_key.as_deref());
+    let owner_key = owner_meta_key(pc.config.owner_meta_key.as_deref(), true);
     let lint_active = args.lint || !args.rules.is_empty() || check_cfg.lint;
 
     // The baseline loads once and feeds EVERYTHING diff-aware — the diff

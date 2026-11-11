@@ -13,7 +13,8 @@ use anyhow::Result;
 
 use crate::compiled::{CompiledOrigin, CompiledSql};
 use crate::manifest::{
-    load_manifest, RawExposure, RawFreshnessThreshold, RawMacro, RawManifest, RawNode, RawSource,
+    load_manifest, RawDoc, RawExposure, RawFreshnessThreshold, RawMacro, RawManifest, RawNode,
+    RawSource,
 };
 
 /// A merged, prefix-resolved entry in the unified node map.
@@ -447,6 +448,14 @@ pub struct Dag {
     /// manifests; CLL uses it to pick the SQL dialect. One scalar, propagated
     /// by [`filtered`](Dag::filtered) like [`root_project`](Dag::project_name).
     adapter_type: Option<String>,
+    /// The project's `{% docs __overview__ %}` body — the overview text dbt
+    /// renders atop its own docs index. One scalar (like `root_project`):
+    /// `Dag::build` picks it out of the manifest's `docs` map — the ROOT
+    /// project's own entry (`doc.<proj>.__overview__`), never an installed
+    /// package's (`doc.dbt.__overview__`, the boilerplate dbt ships in every
+    /// manifest, can only win when the project is literally named `dbt`).
+    /// [`filtered`](Dag::filtered) carries it over.
+    overview: Option<String>,
 }
 
 /// A manifest macro's diff-relevant payload. The [`Dag`] stores these keyed by

@@ -44,6 +44,7 @@ fn manifest(
         functions: HashMap::new(),
         parent_map,
         child_map,
+        docs: Default::default(),
     }
 }
 

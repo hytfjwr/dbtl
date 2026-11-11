@@ -290,7 +290,7 @@ impl Dag {
             .map(|(uid, m)| (uid.clone(), macro_info(m)))
             .collect();
 
-        Dag {
+        let mut dag = Dag {
             nodes,
             parents,
             children,
@@ -314,7 +314,12 @@ impl Dag {
                 .adapter_type
                 .clone()
                 .filter(|s| !s.trim().is_empty()),
-        }
+            overview: None,
+        };
+        // The overview needs the resolved root package, which is a property of
+        // the built graph — a second pass over the manifest's `docs` map.
+        dag.overview = overview_from_docs(&manifest.docs, dag.primary_package().as_deref());
+        dag
     }
 
     /// Fill the `compiled` side map from `target/compiled/` — the
@@ -393,4 +398,28 @@ impl Dag {
             );
         }
     }
+}
+
+/// The root project's `__overview__` block out of a manifest's `docs` map.
+///
+/// A doc qualifies when its `package_name` matches `primary` (the root
+/// package, resolved the same way `project_name`/`primary_package` resolve
+/// it) or when it is unattributed (`package_name: null` — a hand-built
+/// manifest may carry that; dbt's boilerplate `doc.dbt.__overview__` always
+/// records `dbt`, so it never slips through under an unattributed-candidate
+/// rule). An attributed doc with no resolvable root package is conservatively
+/// rejected — a wrong overview is worse than none. Deterministic: the
+/// smallest uid wins when more than one candidate survives.
+fn overview_from_docs(docs: &HashMap<String, RawDoc>, primary: Option<&str>) -> Option<String> {
+    docs.iter()
+        .filter(|(_, d)| d.name == "__overview__")
+        .filter(|(_, d)| match (d.package_name.as_deref(), primary) {
+            (None, _) => true,
+            (Some(p), Some(root)) => p == root,
+            (Some(_), None) => false,
+        })
+        .map(|(uid, d)| (uid, d.block_contents.trim()))
+        .filter(|(_, body)| !body.is_empty())
+        .min_by(|(a, _), (b, _)| a.cmp(b))
+        .map(|(_, body)| body.to_string())
 }

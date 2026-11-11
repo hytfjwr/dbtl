@@ -54,7 +54,7 @@ pub use lint::{
     SkippedRule, BASELINE_SCHEMA, DEFAULT_BASELINE_NAME, REGISTRY, YAML_ATTRIBUTE_RULE_IDS,
 };
 pub use manifest::{
-    load_manifest, RawConfig, RawDependsOn, RawExposure, RawExposureOwner, RawFreshness,
+    load_manifest, RawConfig, RawDependsOn, RawDoc, RawExposure, RawExposureOwner, RawFreshness,
     RawFreshnessThreshold, RawManifest, RawMetadata, RawNode, RawSemanticResource, RawSource,
     RawTestMetadata, RawUnitTest, RawUnitTestIo,
 };

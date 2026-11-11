@@ -89,6 +89,15 @@ impl Dag {
         self.adapter_type.as_deref()
     }
 
+    /// The project overview — the root project's `{% docs __overview__ %}`
+    /// body, already rendered (dbt expands `doc()` refs at parse time; source
+    /// mode expands them through `DocBlocks::render`). `None` when the
+    /// project declares none — installed-package entries
+    /// (`doc.dbt.__overview__` and friends) never count.
+    pub fn overview(&self) -> Option<&str> {
+        self.overview.as_deref()
+    }
+
     /// The detail payload (materialized / schema / columns / …) for a node, or
     /// `None` if unknown. Used by the structure modal and the status line.
     pub fn detail(&self, unique_id: &str) -> Option<&NodeDetail> {
@@ -310,6 +319,7 @@ impl Dag {
             // the kept uid set — a `--project-only` view is still that project.
             root_project: self.root_project.clone(),
             adapter_type: self.adapter_type.clone(),
+            overview: self.overview.clone(),
             nodes,
         }
     }

@@ -53,6 +53,18 @@ pub(super) fn push_stats_summary(s: &mut String, dag: &Dag, files: &BTreeMap<Str
         ));
     }
 
+    // The per-layer table — root-project models bucketed by the SAME
+    // taxonomy the split lineage uses (`model_layer_groups` IS the model
+    // half of `layer_groups`), each row counted through the one
+    // `coverage_counts` base over that bucket's uid set.
+    push_layer_coverage(s, dag);
+
+    // Documentation coverage sits directly after Test coverage — the SAME
+    // shared predicates the coverage gate quotes (`doc_coverage_counts` /
+    // `column_doc_coverage_counts` over `model_documented` /
+    // `column_documented`), never a second implementation.
+    push_doc_coverage(s, dag);
+
     s.push_str("\n## Orphan models\n\n");
     s.push_str("Models with no downstream consumer (`direct_down == 0`):\n\n");
     if orphans.is_empty() {
@@ -156,5 +168,67 @@ pub(super) fn push_lint_summary(
                 None => s.push_str(&format!("- {name} — {}{}\n", f.message, baselined)),
             }
         }
+    }
+}
+
+/// The per-layer test-coverage table inside `## Test coverage`: one row per
+/// populated layer bucket ([`model_layer_groups`] — the same classification
+/// the split lineage uses, so the two never disagree about which bucket a
+/// model belongs to), counted by the shared [`coverage_counts`] over that
+/// bucket's uid set, and a `Total (models)` row over the whole model set.
+/// Seeds and snapshots are counted in the overall coverage numbers above but
+/// are not split by layer — a trailing line says so.
+fn push_layer_coverage(s: &mut String, dag: &Dag) {
+    s.push_str("\n| Layer | Models | Tested | Coverage |\n");
+    s.push_str("| --- | --- | --- | --- |\n");
+    let (mut models, mut tested_models) = (0usize, 0usize);
+    for group in model_layer_groups(dag) {
+        let uids: BTreeSet<String> = group.uids.into_iter().collect();
+        let (tested, total) = coverage_counts(dag, Some(&uids));
+        models += total;
+        tested_models += tested;
+        // Rows always carry ≥1 model — `checked_div` stays a guard, never a
+        // real branch (the `Total` row is the one that can be 0).
+        let pct = (tested * 100)
+            .checked_div(total)
+            .map(|p| format!("{p}%"))
+            .unwrap_or_else(|| "-".to_string());
+        s.push_str(&format!(
+            "| {} | {total} | {tested} | {pct} |\n",
+            group.label
+        ));
+    }
+    let pct = (tested_models * 100)
+        .checked_div(models)
+        .map(|p| format!("{p}%"))
+        .unwrap_or_else(|| "-".to_string());
+    s.push_str(&format!(
+        "| Total (models) | {models} | {tested_models} | {pct} |\n"
+    ));
+    s.push_str(
+        "\nSeeds and snapshots are included in the totals above but are not split by layer.\n",
+    );
+}
+
+/// `## Documentation coverage` — the share of root-project models carrying
+/// a non-empty description, plus declared columns carrying one — counted by
+/// the shared [`doc_coverage_counts`] / [`column_doc_coverage_counts`]
+/// predicates so the section counts exactly what the docs coverage gate
+/// would. Same truncated-integer `checked_div` percent convention as Test
+/// coverage.
+fn push_doc_coverage(s: &mut String, dag: &Dag) {
+    let (documented, total) = doc_coverage_counts(dag, None);
+    let (col_documented, col_declared) = column_doc_coverage_counts(dag, None);
+    s.push_str("\n## Documentation coverage\n\n");
+    match (documented * 100).checked_div(total) {
+        None => s.push_str("- documentable models: 0\n"),
+        Some(pct) => s.push_str(&format!(
+            "- models documented: {documented} / {total} models ({pct}%)\n"
+        )),
+    }
+    if let Some(pct) = (col_documented * 100).checked_div(col_declared) {
+        s.push_str(&format!(
+            "- columns documented: {col_documented} / {col_declared} declared columns ({pct}%)\n"
+        ));
     }
 }

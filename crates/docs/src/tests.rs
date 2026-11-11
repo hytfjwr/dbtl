@@ -54,16 +54,28 @@ fn generates_one_page_per_node_plus_readme() {
         PackageScope::Root,
     );
     // 93 nodes (45 model + 38 source + 7 seed + 1 snapshot + 2 exposure)
-    // plus the README index.
-    assert_eq!(out.len(), dag.len() + 1, "one page per node + README");
+    // plus the README and the three index pages.
+    assert_eq!(
+        out.len(),
+        dag.len() + 4,
+        "one page per node + README + owners/tags/groups"
+    );
     let readme_count = out.iter().filter(|(p, _)| p == "README.md").count();
     assert_eq!(readme_count, 1, "exactly one README");
+    for index in ["owners.md", "tags.md", "groups.md"] {
+        assert_eq!(
+            out.iter().filter(|(p, _)| p == index).count(),
+            1,
+            "exactly one {index}"
+        );
+    }
     // Every node page lives under its resource-type directory — and
     // `node_files` places each page exactly there.
     let files = node_files(&dag);
     for (path, _) in &out {
         assert!(
-            path == "README.md" || files.values().any(|p| p == path),
+            ["README.md", "owners.md", "tags.md", "groups.md"].contains(&path.as_str())
+                || files.values().any(|p| p == path),
             "unexpected path {path}"
         );
     }
@@ -336,6 +348,7 @@ fn meta_renders_sorted_key_value_table() {
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
         macros: HashMap::new(),
+        docs: Default::default(),
     };
     let dag = Dag::build(&manifest);
     let out = generate_docs(&dag, "p", "src", PackageScope::Root);
@@ -419,6 +432,7 @@ fn hostile_names_and_descriptions_do_not_break_markdown_or_mermaid() {
         parent_map,
         child_map,
         macros: HashMap::new(),
+        docs: Default::default(),
     };
     let dag = Dag::build(&manifest);
     let out = generate_docs(&dag, "p", "src", PackageScope::Root);
@@ -681,6 +695,7 @@ fn large_layered_dag(count: usize) -> Dag {
         parent_map,
         child_map,
         macros: HashMap::new(),
+        docs: Default::default(),
     })
 }
 
@@ -1036,8 +1051,8 @@ fn linted_doc_set_is_byte_identical_across_runs() {
 // ---- synthetic-manifest helpers -------------------------------------------
 
 use dbtl_core::{
-    RawDependsOn, RawExposure, RawExposureOwner, RawManifest, RawNode, RawSemanticResource,
-    RawSource,
+    RawDependsOn, RawDoc, RawExposure, RawExposureOwner, RawManifest, RawMetadata, RawNode,
+    RawSemanticResource, RawSource,
 };
 use std::collections::HashMap as StdHashMap;
 
@@ -1057,6 +1072,7 @@ fn empty_manifest() -> RawManifest {
         parent_map: StdHashMap::new(),
         child_map: StdHashMap::new(),
         macros: StdHashMap::new(),
+        docs: Default::default(),
     }
 }
 
@@ -2330,4 +2346,653 @@ fn parseable_columns_without_provenance_render_blank_and_zero() {
         assert_eq!(cells[3], "", "{col}: no provenance → blank Upstream");
         assert_eq!(cells[4], "0", "{col}: no consumers → `0` Used by");
     }
+}
+
+// ---- the index pages + README coverage ------------------------------------
+
+/// A `meta` map literal for `RawNode::meta` — the wire shape (JSON object).
+fn meta(pairs: &[(&str, &str)]) -> serde_json::Map<String, serde_json::Value> {
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+        .collect()
+}
+
+/// A `RawNode` with the knobs the index pages partition on — path (layer),
+/// meta, tags, group, access — everything else default.
+fn governed_node(
+    name: &str,
+    path: &str,
+    tags: &[&str],
+    group: Option<&str>,
+    access: Option<&str>,
+    meta: serde_json::Map<String, serde_json::Value>,
+) -> RawNode {
+    RawNode {
+        name: name.into(),
+        resource_type: "model".into(),
+        path: Some(path.into()),
+        tags: tags.iter().map(|t| t.to_string()).collect(),
+        group: group.map(str::to_string),
+        access: access.map(str::to_string),
+        meta,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn readme_documentation_coverage_matches_the_shared_predicates() {
+    // `## Documentation coverage` sits DIRECTLY after `## Test coverage`
+    // and quotes the same `doc_coverage_counts`/`column_doc_coverage_counts`
+    // bases the docs coverage gate uses — never a second implementation.
+    let dag = fixture_dag();
+    let (documented, total) = doc_coverage_counts(&dag, None);
+    let pct = documented * 100 / total;
+    let (col_documented, col_declared) = column_doc_coverage_counts(&dag, None);
+    let col_pct = col_documented * 100 / col_declared;
+    let out = generate_docs(&dag, "p", "src", PackageScope::Root);
+    let readme = file(&out, "README.md");
+    assert!(
+        readme.contains(&format!(
+            "- models documented: {documented} / {total} models ({pct}%)"
+        )),
+        "model doc-coverage line, expected {documented}/{total}"
+    );
+    assert!(
+        readme.contains(&format!(
+            "- columns documented: {col_documented} / {col_declared} declared columns ({col_pct}%)"
+        )),
+        "column doc-coverage line, expected {col_documented}/{col_declared}"
+    );
+    // Directly after Test coverage — no section may sit between them.
+    let headings: Vec<&str> = readme.lines().filter(|l| l.starts_with("## ")).collect();
+    let pos = |h: &str| headings.iter().position(|x| *x == h).unwrap();
+    assert_eq!(
+        pos("## Documentation coverage"),
+        pos("## Test coverage") + 1,
+        "Documentation coverage is Test coverage's immediate neighbour"
+    );
+}
+
+#[test]
+fn readme_layer_coverage_rows_match_coverage_counts() {
+    // Each populated layer bucket is a row counted by `coverage_counts` over
+    // that bucket's uids; `Total (models)` sums them; the seed/snapshot
+    // disclaimer rides along.
+    let dag = fixture_dag();
+    let out = generate_docs(&dag, "p", "src", PackageScope::Root);
+    let readme = file(&out, "README.md");
+    let (mut models, mut tested_models) = (0usize, 0usize);
+    for group in model_layer_groups(&dag) {
+        let uids: BTreeSet<String> = group.uids.iter().cloned().collect();
+        let (tested, total) = coverage_counts(&dag, Some(&uids));
+        models += total;
+        tested_models += tested;
+        let pct = tested * 100 / total;
+        assert!(
+            readme.contains(&format!(
+                "| {} | {total} | {tested} | {pct}% |",
+                group.label
+            )),
+            "layer row for {} = {tested}/{total}",
+            group.label
+        );
+    }
+    assert!(
+        readme.contains(&format!(
+            "| Total (models) | {models} | {tested_models} | {}% |",
+            tested_models * 100 / models
+        )),
+        "the Total (models) row sums the buckets"
+    );
+    assert!(
+        readme.contains(
+            "Seeds and snapshots are included in the totals above but are not split by layer."
+        ),
+        "the seed/snapshot disclaimer is present"
+    );
+}
+
+#[test]
+fn models_in_unknown_dirs_form_the_other_models_row() {
+    // A model whose first path directory isn't a `LAYER_ORDER` name lands
+    // in `other models` — the same catch-all bucket the split lineage uses.
+    let mut m = empty_manifest();
+    m.nodes.insert(
+        "model.p.a".into(),
+        RawNode {
+            name: "a".into(),
+            resource_type: "model".into(),
+            path: Some("custom/x.sql".into()),
+            ..Default::default()
+        },
+    );
+    m.nodes.insert("seed.p.s".into(), node("s", "seed", &[]));
+    let dag = dag_from(m);
+    let out = generate_docs(&dag, "p", "src", PackageScope::Root);
+    let readme = file(&out, "README.md");
+    assert!(
+        readme.contains("| other models | 1 | 0 | 0% |"),
+        "the unknown-dir model lands in other models: {readme}"
+    );
+    assert!(
+        readme.contains("| Total (models) | 1 | 0 | 0% |"),
+        "seeds don't reach the model rows"
+    );
+    // The seed still counts in the overall bullets.
+    assert!(
+        readme.contains("- tested: 0 / 2 testable resources"),
+        "model+seed fill the testable total"
+    );
+}
+
+#[test]
+fn index_pages_are_generated_linked_and_marked() {
+    // The three index pages always exist, lead with the marker, and the
+    // README's `## Indexes` links them — even on the (tagged) fixture.
+    let dag = fixture_dag();
+    let out = generate_docs(&dag, "p", "src", PackageScope::Root);
+    let readme = file(&out, "README.md");
+    assert!(readme.contains("## Indexes"), "the Indexes section exists");
+    for page in ["owners.md", "tags.md", "groups.md"] {
+        let contents = file(&out, page);
+        assert!(
+            contents.starts_with(GENERATED_MARKER),
+            "{page} leads with the generated marker"
+        );
+        assert!(
+            readme.contains(&format!("]({page})")),
+            "README links to {page}"
+        );
+    }
+}
+
+#[test]
+fn index_pages_generate_for_an_empty_graph() {
+    // Empty dag → the three pages still generate (the README's links still
+    // resolve), each stating its emptiness rather than disappearing.
+    let dag = Dag::build(&empty_manifest());
+    let out = generate_docs(&dag, "p", "src", PackageScope::Root);
+    for (page, empty_line) in [
+        ("owners.md", "No owners."),
+        ("tags.md", "No tags."),
+        ("groups.md", "No groups."),
+    ] {
+        let contents = file(&out, page);
+        assert!(
+            contents.starts_with(GENERATED_MARKER),
+            "{page} leads with the marker"
+        );
+        assert!(contents.contains(empty_line), "{page} says {empty_line}");
+    }
+    let readme = file(&out, "README.md");
+    for page in ["owners.md", "tags.md", "groups.md"] {
+        assert!(
+            readme.contains(&format!("]({page})")),
+            "README links {page}"
+        );
+    }
+    // And the coverage tables degrade gracefully — no division by zero.
+    assert!(
+        readme.contains("- documentable models: 0"),
+        "zero-model doc coverage is stated: {readme}"
+    );
+    assert!(
+        readme.contains("| Total (models) | 0 | 0 | - |"),
+        "zero-model layer total is a dash, not a crash"
+    );
+}
+
+/// A small governed dag for the index pages: two owners, a custom owner key,
+/// multi-tag models, two groups + mixed access, and one unclassified kind.
+fn governed_dag() -> Dag {
+    let mut m = empty_manifest();
+    m.nodes.insert(
+        "model.p.alpha_m".into(),
+        governed_node(
+            "alpha_m",
+            "staging/a.sql",
+            &["nightly", "finance"],
+            Some("data_eng"),
+            Some("public"),
+            meta(&[("owner", "alice"), ("team", "eng")]),
+        ),
+    );
+    m.nodes.insert(
+        "model.p.beta_m".into(),
+        governed_node(
+            "beta_m",
+            "marts/b.sql",
+            &["nightly"],
+            Some("data_eng"),
+            Some("protected"),
+            meta(&[("owner", "alice")]),
+        ),
+    );
+    m.nodes.insert(
+        "model.p.gamma_m".into(),
+        governed_node(
+            "gamma_m",
+            "marts/g.sql",
+            &[],
+            Some("analytics"),
+            Some("private"),
+            meta(&[("owner", "zeta")]),
+        ),
+    );
+    m.nodes.insert(
+        "model.p.delta_m".into(),
+        governed_node(
+            "delta_m",
+            "staging/d.sql",
+            &["adhoc"],
+            None,
+            None,
+            meta(&[("team", "platform")]),
+        ),
+    );
+    m.nodes.insert(
+        "model.p.epsilon_m".into(),
+        governed_node(
+            "epsilon_m",
+            "utilities/e.sql",
+            &[],
+            None,
+            Some("private"),
+            serde_json::Map::new(),
+        ),
+    );
+    // A tagged source — the tags index covers source/seed/snapshot too.
+    m.sources.insert(
+        "source.p.raw.tbl".into(),
+        RawSource {
+            name: "tbl".into(),
+            resource_type: "source".into(),
+            ..Default::default()
+        },
+    );
+    dag_from(m)
+}
+
+#[test]
+fn owners_index_groups_models_by_the_default_key() {
+    let dag = governed_dag();
+    let out = generate_docs(&dag, "p", "src", PackageScope::Root);
+    let page = file(&out, "owners.md");
+    assert!(
+        page.contains("Owner meta key: `owner`"),
+        "the page states which key it indexed: {page}"
+    );
+    // Sections sorted by value, `(no owner)` last, table columns in place.
+    let alpha = page.find("## alice").expect("alice section");
+    let zeta = page.find("## zeta").expect("zeta section");
+    let none = page.find("## (no owner)").expect("(no owner) section");
+    assert!(
+        alpha < zeta && zeta < none,
+        "sorted owners, (no owner) last"
+    );
+    assert!(
+        page.contains("| Name | Layer | Materialization | Tests |"),
+        "the owners table columns"
+    );
+    // alice owns two models, both linked; zeta one; two models unowned.
+    let alice = &page[alpha..zeta];
+    assert!(alice.contains("[alpha_m](models/model.p.alpha_m.md)"));
+    assert!(alice.contains("[beta_m](models/model.p.beta_m.md)"));
+    let zeta_s = &page[zeta..none];
+    assert!(zeta_s.contains("[gamma_m](models/model.p.gamma_m.md)"));
+    let none_s = &page[none..];
+    assert!(none_s.contains("[delta_m](models/model.p.delta_m.md)"));
+    assert!(none_s.contains("[epsilon_m](models/model.p.epsilon_m.md)"));
+    // Sources never index under owners.
+    assert!(
+        !page.contains("source.p.raw"),
+        "sources stay out of owners.md"
+    );
+}
+
+#[test]
+fn owners_index_reads_the_configured_meta_key() {
+    // `DocsOptions::owner_meta_key` is the resolved key the CLI hands over —
+    // `team` here indexes `meta.team` and says so at the top.
+    let dag = governed_dag();
+    let out = generate_docs_with_options(
+        &dag,
+        "p",
+        "src",
+        PackageScope::Root,
+        &DocsOptions {
+            owner_meta_key: "team",
+            ..Default::default()
+        },
+    );
+    let page = file(&out, "owners.md");
+    assert!(
+        page.contains("Owner meta key: `team`"),
+        "the resolved key is stated: {page}"
+    );
+    assert!(page.contains("## eng"), "meta.team groups by its values");
+    assert!(page.contains("## platform"), "the platform team is indexed");
+    assert!(
+        !page.contains("## alice"),
+        "meta.owner is not the indexed key: {page}"
+    );
+}
+
+#[test]
+fn owners_index_stringifies_non_string_meta_values() {
+    // `meta` values aren't always strings on the wire — `owner: 42` or an
+    // object land as JSON. The index keys on the same stringification the
+    // `meta:` selector and the node page's meta table use (`meta_strings`),
+    // so an integer owner groups under `42`, an object under compact JSON.
+    let mut m = empty_manifest();
+    let mut num_meta = serde_json::Map::new();
+    num_meta.insert("owner".into(), serde_json::json!(42));
+    m.nodes.insert(
+        "model.p.num".into(),
+        governed_node("num", "staging/n.sql", &[], None, None, num_meta),
+    );
+    let mut obj_meta = serde_json::Map::new();
+    obj_meta.insert("owner".into(), serde_json::json!({"team": "eng"}));
+    m.nodes.insert(
+        "model.p.obj".into(),
+        governed_node("obj", "staging/o.sql", &[], None, None, obj_meta),
+    );
+    let dag = dag_from(m);
+    let out = generate_docs(&dag, "p", "src", PackageScope::Root);
+    let page = file(&out, "owners.md");
+    assert!(
+        page.contains("## 42"),
+        "integer owner groups under its digits"
+    );
+    assert!(
+        page.contains("## {\"team\":\"eng\"}"),
+        "object owner groups under compact JSON: {page}"
+    );
+    assert!(
+        !page.contains("## (no owner)"),
+        "every model carried a meta value — none is ownerless"
+    );
+}
+
+#[test]
+fn tags_index_lists_a_node_under_every_tag() {
+    let dag = governed_dag();
+    let out = generate_docs(&dag, "p", "src", PackageScope::Root);
+    let page = file(&out, "tags.md");
+    // Tag sections sorted; alpha_m (nightly + finance) appears under both.
+    let adhoc = page.find("## adhoc").expect("adhoc");
+    let finance = page.find("## finance").expect("finance");
+    let nightly = page.find("## nightly").expect("nightly");
+    assert!(adhoc < finance && finance < nightly, "tags sort ascending");
+    let nightly_s = &page[nightly..];
+    assert!(nightly_s.contains("[alpha_m](models/model.p.alpha_m.md)"));
+    assert!(nightly_s.contains("[beta_m](models/model.p.beta_m.md)"));
+    let finance_s = &page[finance..nightly];
+    assert!(finance_s.contains("[alpha_m](models/model.p.alpha_m.md)"));
+    let adhoc_s = &page[adhoc..finance];
+    assert!(adhoc_s.contains("[delta_m](models/model.p.delta_m.md)"));
+    // Untagged nodes (gamma_m, epsilon_m, the source) appear nowhere.
+    for absent in ["gamma_m", "epsilon_m", "tbl"] {
+        assert!(!page.contains(absent), "untagged {absent} stays out");
+    }
+    assert!(
+        page.contains("| Name | Type |"),
+        "the tags table carries the resource type"
+    );
+}
+
+#[test]
+fn groups_index_counts_access_and_groups_models() {
+    let dag = governed_dag();
+    let out = generate_docs(&dag, "p", "src", PackageScope::Root);
+    let page = file(&out, "groups.md");
+    // The access-count table: exactly `NodeDetail::access` over the models.
+    assert!(page.contains("| Access | Models |"), "access summary table");
+    for row in [
+        "| public | 1 |",
+        "| protected | 1 |",
+        "| private | 2 |",
+        "| none | 1 |",
+    ] {
+        assert!(page.contains(row), "access count row {row}: {page}");
+    }
+    // Group sections sorted; `(no group)` last.
+    let analytics = page.find("## analytics").expect("analytics");
+    let data_eng = page.find("## data_eng").expect("data_eng");
+    let none = page.find("## (no group)").expect("(no group)");
+    assert!(
+        analytics < data_eng && data_eng < none,
+        "groups sorted, (no group) last"
+    );
+    let eng_s = &page[data_eng..none];
+    assert!(eng_s.contains("[alpha_m](models/model.p.alpha_m.md)"));
+    assert!(eng_s.contains("[beta_m](models/model.p.beta_m.md)"));
+    let none_s = &page[none..];
+    assert!(none_s.contains("[delta_m](models/model.p.delta_m.md) | none |"));
+    assert!(none_s.contains("[epsilon_m](models/model.p.epsilon_m.md) | private |"));
+}
+
+#[test]
+fn index_links_target_only_generated_pages() {
+    // Under `--select` the index pages still enumerate the project (like the
+    // Summary) — but only pages that were actually generated get links; the
+    // rest degrade to plain names, the rule every page already follows.
+    let dag = governed_dag();
+    let selected: BTreeSet<String> = ["model.p.alpha_m".to_string()].into_iter().collect();
+    let out = generate_docs_with_options(
+        &dag,
+        "p",
+        "src",
+        PackageScope::Root,
+        &DocsOptions {
+            nodes: Some(&selected),
+            ..Default::default()
+        },
+    );
+    let generated: HashSet<&str> = out.iter().map(|(p, _)| p.as_str()).collect();
+    assert!(
+        generated.contains("owners.md"),
+        "indexes generate on partial runs"
+    );
+    let owners = file(&out, "owners.md");
+    assert!(
+        owners.contains("[alpha_m](models/model.p.alpha_m.md)"),
+        "the generated page is linked"
+    );
+    // beta_m is listed (project-wide membership) but NOT linked.
+    assert!(
+        owners.contains("| beta_m |"),
+        "the ungenerated node is still listed: {owners}"
+    );
+    assert!(
+        !owners.contains("[beta_m]("),
+        "an ungenerated page is never linked: {owners}"
+    );
+    // Every `](` href in every index page resolves into the generated set.
+    for index in ["owners.md", "tags.md", "groups.md"] {
+        let page = file(&out, index);
+        for chunk in page.split("](") {
+            if let Some(end) = chunk.find(')') {
+                let target = &chunk[..end];
+                if target.ends_with(".md") {
+                    let resolved = resolve_link(index, target);
+                    assert!(
+                        generated.contains(resolved.as_str()),
+                        "{index} links to ungenerated {target}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+// ---- the project overview --------------------------------------------------
+
+/// A manifest `docs` entry — `doc.<pkg>.<name>` — in the wire shape.
+fn raw_doc(name: &str, package: Option<&str>, body: &str) -> RawDoc {
+    RawDoc {
+        name: name.into(),
+        package_name: package.map(str::to_string),
+        block_contents: body.into(),
+    }
+}
+
+/// An overview-carrying dag: one model plus the given `docs` map entries.
+fn overview_dag(entries: &[(&str, RawDoc)]) -> Dag {
+    let mut m = empty_manifest();
+    m.metadata = RawMetadata {
+        project_name: Some("p".to_string()),
+        ..Default::default()
+    };
+    m.nodes.insert("model.p.a".into(), node("a", "model", &[]));
+    for (uid, doc) in entries {
+        m.docs.insert(uid.to_string(), doc.clone());
+    }
+    dag_from(m)
+}
+
+#[test]
+fn readme_renders_the_overview_under_the_title() {
+    // The `__overview__` body sits directly beneath `# <project>` — one
+    // blank line after it, exactly where dbt's own docs site places it.
+    let dag = overview_dag(&[(
+        "doc.p.__overview__",
+        raw_doc(
+            "__overview__",
+            Some("p"),
+            "The warehouse layer for finance.",
+        ),
+    )]);
+    let out = generate_docs(&dag, "p", "src", PackageScope::Root);
+    let readme = file(&out, "README.md");
+    assert!(
+        readme.contains("# p\n\nThe warehouse layer for finance.\n\nGenerated from:"),
+        "overview under the title, provenance after it: {readme}"
+    );
+}
+
+#[test]
+fn manifest_overview_prefers_the_root_projects_entry() {
+    // `doc.dbt.__overview__` — the boilerplate dbt ships in every manifest —
+    // must never win over the project's own block, nor be adopted alone.
+    let dag = overview_dag(&[
+        (
+            "doc.dbt.__overview__",
+            raw_doc("__overview__", Some("dbt"), "dbt's built-in overview"),
+        ),
+        (
+            "doc.p.__overview__",
+            raw_doc("__overview__", Some("p"), "the project's own"),
+        ),
+    ]);
+    let out = out_gen(&dag);
+    let readme = file(&out, "README.md");
+    assert!(readme.contains("the project's own"), "root project wins");
+    assert!(
+        !readme.contains("dbt's built-in overview"),
+        "the internal package entry never renders"
+    );
+
+    // Only the dbt package entry → no overview at all.
+    let dbt_only = overview_dag(&[(
+        "doc.dbt.__overview__",
+        raw_doc("__overview__", Some("dbt"), "dbt's built-in overview"),
+    )]);
+    let out = out_gen(&dbt_only);
+    let readme = file(&out, "README.md");
+    assert!(
+        readme.contains("# p\n\nGenerated from:"),
+        "no internal-package overview reaches the page: {readme}"
+    );
+    assert!(!readme.contains("dbt's built-in overview"));
+}
+
+/// Shorthand for a default-generation on `dag` (keeps the overview tests terse).
+fn out_gen(dag: &Dag) -> Vec<(String, String)> {
+    generate_docs(dag, "p", "src", PackageScope::Root)
+}
+
+#[test]
+fn overview_survives_package_scope_filtering() {
+    // `Dag::filtered` (what `--project-only`/`--include-packages` scoping
+    // uses) keeps the overview — it is a graph-level scalar, not node data.
+    let dag = overview_dag(&[(
+        "doc.p.__overview__",
+        raw_doc("__overview__", Some("p"), "scoped overview"),
+    )]);
+    let filtered = dag.filtered(|n| n.unique_id == "model.p.a");
+    assert_eq!(filtered.overview(), Some("scoped overview"));
+    let out = out_gen(&filtered);
+    let readme = file(&out, "README.md");
+    assert!(readme.contains("scoped overview"));
+}
+
+#[test]
+fn non_overview_doc_blocks_never_become_pages_or_readme_text() {
+    // Only `__overview__` is imported — other `docs` entries stay unread.
+    let dag = overview_dag(&[
+        (
+            "doc.p.some_block",
+            raw_doc("some_block", Some("p"), "NOT OVERVIEW TEXT"),
+        ),
+        (
+            "doc.p.__overview__",
+            raw_doc("__overview__", Some("p"), "the real overview"),
+        ),
+    ]);
+    let out = out_gen(&dag);
+    let readme = file(&out, "README.md");
+    assert!(readme.contains("the real overview"));
+    assert!(!readme.contains("NOT OVERVIEW TEXT"));
+    for (path, _) in &out {
+        assert!(
+            !path.contains("some_block"),
+            "no standalone page for non-overview docs: {path}"
+        );
+    }
+}
+
+#[test]
+fn source_mode_overview_expands_doc_refs() {
+    // A temp project whose docs.md carries `{% docs __overview__ %}` with a
+    // nested `{{ doc('x') }}` — the README must show the EXPANDED body, the
+    // same rendering a manifest's `block_contents` already holds.
+    let dir = std::env::temp_dir().join(format!("dbtl_docs_ovw_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("models")).expect("project dir");
+    std::fs::write(
+        dir.join("dbt_project.yml"),
+        "name: p\nversion: '1.0'\nconfig-version: 2\nprofile: p\nmodel-paths: [\"models\"]\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("models/m.sql"), "select 1").unwrap();
+    std::fs::write(
+        dir.join("models/docs.md"),
+        "{% docs x %}nested block body{% enddocs %}\n\n\
+         {% docs __overview__ %}\nProject overview.\n\nRefer: {{ doc('x') }}.\n{% enddocs %}\n",
+    )
+    .unwrap();
+    let dag = dbtl_core::load_dag_from_source(&dir).expect("source load");
+    let out = out_gen(&dag);
+    let readme = file(&out, "README.md");
+    assert!(
+        readme.contains("# p\n\nProject overview.\n\nRefer: nested block body.\n\nGenerated from:"),
+        "the expanded overview renders under the title: {readme}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn readme_without_overview_keeps_the_title_provenance_pair() {
+    // No `__overview__` → the title/provenance pair stays exactly as before —
+    // nothing may leak into the gap.
+    let dag = fixture_dag();
+    let out = generate_docs(&dag, "jaffle_finance", "manifest.json", PackageScope::Root);
+    let readme = file(&out, "README.md");
+    assert!(
+        readme.contains("# jaffle_finance\n\nGenerated from: `manifest.json`"),
+        "no overview → provenance directly under the title"
+    );
+    assert_eq!(dag.overview(), None, "the fixture declares no overview");
 }

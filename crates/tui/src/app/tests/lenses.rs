@@ -323,6 +323,7 @@ fn violation_dag() -> Dag {
         parent_map,
         child_map,
         macros: HashMap::new(),
+        docs: Default::default(),
     })
 }
 
