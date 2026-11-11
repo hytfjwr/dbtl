@@ -2,8 +2,9 @@
 
 use super::*;
 
-/// `undocumented_models`: a model with no description (`clean_desc` already
-/// normalizes whitespace-only to `None` at build).
+/// `undocumented_models`: a model with no description — the
+/// [`crate::model_documented`] predicate the `doc_coverage` gate counts by
+/// (`clean_desc` already normalizes whitespace-only to `None` at build).
 pub(super) fn undocumented_models(
     dag: &Dag,
     uids: &[&String],
@@ -15,11 +16,7 @@ pub(super) fn undocumented_models(
         if n.resource_type != "model" || !in_scope(n) {
             continue;
         }
-        if dag
-            .detail(uid)
-            .and_then(|d| d.description.as_ref())
-            .is_some()
-        {
+        if dag.detail(uid).is_some_and(crate::model_documented) {
             continue;
         }
         out.push(Finding::new(

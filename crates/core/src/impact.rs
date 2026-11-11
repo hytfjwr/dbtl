@@ -14,8 +14,8 @@ use serde::Serialize;
 
 use crate::layer::{first_dir, layer_rank};
 use crate::{
-    coverage_gap, in_package, is_exposure, ColumnChange, ColumnChangeClass, ColumnChangeKind, Dag,
-    DagDiff, ExposureInfo, NodeInfo, PackageScope,
+    coverage_gap, in_package, is_exposure, ColumnChange, ColumnChangeClass, ColumnChangeKind,
+    ColumnInfo, Dag, DagDiff, ExposureInfo, NodeDetail, NodeInfo, PackageScope,
 };
 
 /// A changed node whose transitive downstream (buildable) closure is at least
@@ -100,20 +100,44 @@ pub struct DiffReport {
     pub pr: PrImpact,
 }
 
+/// The non-graph inputs [`pr_impact`]/[`diff_report`] share: the `meta` key
+/// the affected-owners set reads and the downstream-degree threshold a
+/// "changed hub" needs. One options struct so `dbtl check`'s gate and the
+/// `dbtl impact`/TUI pack can never disagree on either.
+#[derive(Debug, Clone)]
+pub struct ImpactOpts<'a> {
+    /// The `meta` key read for [`PrImpact::affected_owners`] (`"owner"` by
+    /// default; resolved by the caller — `.dbtl.yml` > `config.yml` >
+    /// default — so the surfaces can't disagree).
+    pub owner_key: &'a str,
+    /// The downstream-count threshold [`PrImpact::changed_hubs`] lists at
+    /// (`.dbtl.yml` `check.gates.changed_hubs.min_downstream`;
+    /// [`PR_HUB_MIN_DOWNSTREAM`] by default).
+    pub hub_min_downstream: usize,
+}
+
+impl Default for ImpactOpts<'_> {
+    fn default() -> Self {
+        ImpactOpts {
+            owner_key: "owner",
+            hub_min_downstream: PR_HUB_MIN_DOWNSTREAM,
+        }
+    }
+}
+
 /// Build the shared [`DiffReport`] payload: names resolved from the CURRENT
 /// `dag`, every listing sorted. `base` is the baseline `Dag` the `diff` was
 /// computed from (needed for the new-layer-violations difference); `baseline`
 /// is its display label (the `--diff` argument). `scope` is the package scope
-/// both graphs were loaded under — carried onto the report verbatim.
-/// `owner_key` is the `meta` key the affected-owners set reads (`"owner"` by
-/// default).
+/// both graphs were loaded under — carried onto the report verbatim. `opts`
+/// carries the owner key and hub threshold (see [`ImpactOpts`]).
 pub fn diff_report(
     dag: &Dag,
     base: Option<&Dag>,
     diff: &DagDiff,
     baseline: &str,
     scope: PackageScope,
-    owner_key: &str,
+    opts: &ImpactOpts,
 ) -> DiffReport {
     let pair = |uid: &str| {
         dag.get(uid)
@@ -145,7 +169,7 @@ pub fn diff_report(
         edges_added: diff.edges_added.clone(),
         edges_removed: diff.edges_removed.clone(),
         column_changes,
-        pr: pr_impact(dag, base, diff, owner_key),
+        pr: pr_impact(dag, base, diff, opts),
     }
 }
 
@@ -157,14 +181,15 @@ pub fn diff_report(
 ///   "newly introduced" layer-violation difference; `None` → every current
 ///   violation counts as new.
 /// - `diff`: the changed set (added ∪ modified; identity = `unique_id`).
-/// - `owner_key`: the `meta` key read for [`PrImpact::affected_owners`]
-///   (`"owner"` by default; made explicit so the TUI's `config.yml` and the
-///   CLI can't disagree).
+/// - `opts`: the [`ImpactOpts`] — the `meta` key read for
+///   [`PrImpact::affected_owners`] and the hub threshold
+///   [`PrImpact::changed_hubs`] applies.
 ///
 /// Deterministic: the changed set is sorted; closures come from `HashSet`s
 /// but every emitted listing is sorted; the new-violation set is a `BTreeSet`
 /// difference.
-pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, owner_key: &str) -> PrImpact {
+pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, opts: &ImpactOpts) -> PrImpact {
+    let owner_key = opts.owner_key;
     // The changed BUILDABLE set: added ∪ modified, restricted to nodes that
     // still exist in the current Dag and that `dbt build` can target
     // (model / seed / snapshot). Removed nodes are gone — not buildable, not
@@ -331,7 +356,7 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, owner_key: &str)
                 .iter()
                 .filter(|id| dag.get(id).is_some_and(|n| !is_exposure(n)))
                 .count();
-            (down >= PR_HUB_MIN_DOWNSTREAM)
+            (down >= opts.hub_min_downstream)
                 .then(|| {
                     dag.get(uid)
                         .filter(|n| in_scope(n))
@@ -493,6 +518,80 @@ pub fn column_coverage_counts(dag: &Dag) -> (usize, usize) {
             .count();
     }
     (covered, declared)
+}
+
+/// Whether a node's model-level description counts as documented for the
+/// `doc_coverage` gate — `Some(_)`, the SAME predicate the
+/// `undocumented_models` lint rule fires on (one definition so the gate and
+/// the linter can never disagree on what "documented" means for a model).
+pub fn model_documented(detail: &NodeDetail) -> bool {
+    detail.description.is_some()
+}
+
+/// Whether a declared column counts as documented — a description that is
+/// present AND non-blank: a whitespace-only `description: " "` counts as
+/// missing. Deliberately tighter than the `undocumented_columns` lint rule's
+/// `is_none()` (the lint flags only absent descriptions; the gate measures
+/// real documentation, and a filler string isn't it).
+fn column_documented(col: &ColumnInfo) -> bool {
+    col.description
+        .as_deref()
+        .is_some_and(|d| !d.trim().is_empty())
+}
+
+/// The `(documented, total)` description-coverage pair over the documentable
+/// base — ROOT-PROJECT `model` nodes only (the set `dbt docs generate` can
+/// render a description for; a seed's "description" is its CSV). `total`
+/// counts them all; `documented` counts those carrying a description
+/// ([`model_documented`]). Sits beside [`coverage_counts`]/
+/// [`column_coverage_counts`]: the same root-project scoping and the same
+/// "of the things the project can document, how many are documented" shape,
+/// so `dbtl check`'s `doc_coverage` gate reads the same numbers any other
+/// surface would.
+pub fn doc_coverage_counts(dag: &Dag) -> (usize, usize) {
+    let primary = dag.primary_package();
+    let mut total = 0;
+    let mut documented = 0;
+    for n in dag.nodes().values() {
+        if !primary.as_deref().is_none_or(|p| in_package(n, p)) {
+            continue;
+        }
+        if n.resource_type != "model" {
+            continue;
+        }
+        total += 1;
+        if dag.detail(&n.unique_id).is_some_and(model_documented) {
+            documented += 1;
+        }
+    }
+    (documented, total)
+}
+
+/// The `(documented, declared)` COLUMN-description pair, over the same model
+/// base as [`doc_coverage_counts`] (root project, `model`): `declared`
+/// counts every entry in the nodes' `columns` lists, `documented` counts the
+/// entries carrying a real description ([`column_documented`] —
+/// whitespace-only doesn't count). A node with zero declared columns
+/// contributes nothing — the same "of the columns the project declares"
+/// framing the test-coverage metric uses.
+pub fn column_doc_coverage_counts(dag: &Dag) -> (usize, usize) {
+    let primary = dag.primary_package();
+    let mut declared = 0;
+    let mut documented = 0;
+    for n in dag.nodes().values() {
+        if !primary.as_deref().is_none_or(|p| in_package(n, p)) {
+            continue;
+        }
+        if n.resource_type != "model" {
+            continue;
+        }
+        let Some(d) = dag.detail(&n.unique_id) else {
+            continue;
+        };
+        declared += d.columns.len();
+        documented += d.columns.iter().filter(|c| column_documented(c)).count();
+    }
+    (documented, declared)
 }
 
 /// The parenthesised kind/owner suffix for one exposure line:
@@ -897,7 +996,7 @@ mod tests {
         m.nodes.get_mut("model.p.stg_x").unwrap().raw_code = Some("select 2".into());
         let current = Dag::build(&m);
         let diff = compute_diff(&base, &current);
-        let pr = pr_impact(&current, Some(&base), &diff, "owner");
+        let pr = pr_impact(&current, Some(&base), &diff, &ImpactOpts::default());
         assert_eq!(
             pr.affected_owners,
             vec!["alice".to_string(), "bob".to_string()],
@@ -905,7 +1004,15 @@ mod tests {
              (carol) and the untouched orphan's (mallory) are both excluded"
         );
         // A different `owner_key` reads a different meta key (here: nothing).
-        let pr = pr_impact(&current, Some(&base), &diff, "team");
+        let pr = pr_impact(
+            &current,
+            Some(&base),
+            &diff,
+            &ImpactOpts {
+                owner_key: "team",
+                ..ImpactOpts::default()
+            },
+        );
         assert!(pr.affected_owners.is_empty());
         // The markdown section lists them.
         let report = diff_report(
@@ -914,7 +1021,7 @@ mod tests {
             &diff,
             "b",
             PackageScope::Root,
-            "owner",
+            &ImpactOpts::default(),
         );
         let md = pr_impact_markdown("p", &report);
         assert!(md.contains("## Affected owners (2)\n- alice\n- bob\n"));
@@ -929,7 +1036,7 @@ mod tests {
         m.nodes.get_mut("model.p.fct_x").unwrap().raw_code = Some("select 22".into());
         let current = Dag::build(&m);
         let diff = compute_diff(&base, &current);
-        let pr = pr_impact(&current, Some(&base), &diff, "owner");
+        let pr = pr_impact(&current, Some(&base), &diff, &ImpactOpts::default());
 
         assert_eq!(pr.untested_changes, vec!["fct_x".to_string()]);
         assert_eq!(pr.ci_command.as_deref(), Some("dbt build --select fct_x+"));
@@ -955,7 +1062,7 @@ mod tests {
         m.nodes.get_mut("model.p.fct_x").unwrap().depends_on.nodes = vec![];
         let current = Dag::build(&m);
         let diff = compute_diff(&base, &current);
-        let pr = pr_impact(&current, Some(&base), &diff, "owner");
+        let pr = pr_impact(&current, Some(&base), &diff, &ImpactOpts::default());
         assert_eq!(
             pr.new_layer_violations,
             vec![("fct_x".to_string(), "stg_x".to_string())],
@@ -966,7 +1073,7 @@ mod tests {
             &current,
             Some(&current),
             &compute_diff(&current, &current),
-            "owner",
+            &ImpactOpts::default(),
         );
         assert!(pr.new_layer_violations.is_empty());
     }
@@ -1024,6 +1131,94 @@ mod tests {
     }
 
     #[test]
+    fn doc_coverage_counts_counts_models_with_descriptions() {
+        // stg_x documented, fct_x not, `blank` whitespace-only (→ None at
+        // build), `seeded` a seed (not the model base — drops out of both
+        // counters).
+        let mut m = two_model_manifest();
+        m.nodes.get_mut("model.p.stg_x").unwrap().description = Some("staged".into());
+        m.nodes.insert(
+            "model.p.blank".to_string(),
+            crate::RawNode {
+                name: "blank".into(),
+                resource_type: "model".into(),
+                description: Some("   \n".into()),
+                ..Default::default()
+            },
+        );
+        m.nodes.insert(
+            "seed.p.codes".to_string(),
+            crate::RawNode {
+                name: "codes".into(),
+                resource_type: "seed".into(),
+                description: Some("a seed".into()),
+                ..Default::default()
+            },
+        );
+        let dag = Dag::build(&m);
+        assert_eq!(
+            doc_coverage_counts(&dag),
+            (1, 3),
+            "stg_x of stg_x+fct_x+blank: a whitespace-only description \
+             is undocumented, and the seed never counts"
+        );
+        // The single predicate the gate and the lint rule share.
+        let detail = dag.detail("model.p.stg_x").unwrap();
+        assert!(model_documented(detail));
+        let detail = dag.detail("model.p.blank").unwrap();
+        assert!(!model_documented(detail));
+    }
+
+    #[test]
+    fn column_doc_coverage_counts_counts_documented_declared_columns() {
+        // stg_x declares id (documented) + extra (whitespace-only — treated
+        // as undocumented); fct_x declares one bare column.
+        let mut m = two_model_manifest();
+        m.nodes.get_mut("model.p.stg_x").unwrap().columns = serde_json::json!({
+            "id": {"name": "id", "description": "the id"},
+            "extra": {"name": "extra", "description": "  "},
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        m.nodes.get_mut("model.p.fct_x").unwrap().columns = serde_json::json!({
+            "amt": {"name": "amt"},
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let dag = Dag::build(&m);
+        assert_eq!(column_doc_coverage_counts(&dag), (1, 3));
+    }
+
+    #[test]
+    fn changed_hubs_honours_the_passed_threshold() {
+        // stg_x (changed) → fct_x: exactly one downstream model. The hub
+        // list is built at the passed threshold — the same `pr_impact` the
+        // check gate reads.
+        let base = Dag::build(&two_model_manifest());
+        let mut m = two_model_manifest();
+        m.nodes.get_mut("model.p.stg_x").unwrap().raw_code = Some("select 2".into());
+        let current = Dag::build(&m);
+        let diff = compute_diff(&base, &current);
+        let pr = pr_impact(&current, Some(&base), &diff, &ImpactOpts::default());
+        assert!(
+            pr.changed_hubs.is_empty(),
+            "1 downstream is under the shipped default {PR_HUB_MIN_DOWNSTREAM}"
+        );
+        let pr = pr_impact(
+            &current,
+            Some(&base),
+            &diff,
+            &ImpactOpts {
+                hub_min_downstream: 1,
+                ..ImpactOpts::default()
+            },
+        );
+        assert_eq!(pr.changed_hubs, vec![("stg_x".to_string(), 1)]);
+    }
+
+    #[test]
     fn diff_report_and_markdown_are_deterministic() {
         let base = Dag::build(&two_model_manifest());
         let mut m = two_model_manifest();
@@ -1036,7 +1231,7 @@ mod tests {
             &diff,
             "base",
             PackageScope::Root,
-            "owner",
+            &ImpactOpts::default(),
         );
         let r2 = diff_report(
             &current,
@@ -1044,7 +1239,7 @@ mod tests {
             &diff,
             "base",
             PackageScope::Root,
-            "owner",
+            &ImpactOpts::default(),
         );
         assert_eq!(r1, r2);
         let md = pr_impact_markdown("p", &r1);

@@ -1,5 +1,5 @@
 use super::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Run the `impact` subcommand: resolve the current source + the `--diff`
 /// baseline, compute the shared [`dbtl::diff_report`] payload, and print it as
@@ -25,7 +25,13 @@ pub fn run_impact(
     }
     let scope = src.scope;
     let resolved = src.resolve()?;
-    let (base, label) = load_baseline(diff_path, scope)?;
+    let (base, label) = load_baseline(diff_path, scope, &src.project_dir())?;
+    // `.dbtl.yml` (resolved next to the input, the same probe `check` uses)
+    // supplies `owner_meta_key` and the changed-hubs threshold — so `dbtl
+    // impact` and `dbtl check`'s hub gate can't disagree.
+    let (manifest_arg, project_arg) = resolved_config_args(&resolved);
+    let pc = load_project_config(manifest_arg.as_deref(), project_arg.as_deref())?;
+    let owner_key = owner_meta_key(pc.config.owner_meta_key.as_deref());
     // The same resolver pair the TUI diffs through (catalog-backed current,
     // catalog-less baseline) so the report's column analysis matches the
     // `D` modal byte-for-byte.
@@ -38,7 +44,10 @@ pub fn run_impact(
         &diff,
         &label,
         scope,
-        &owner_meta_key(),
+        &dbtl::ImpactOpts {
+            owner_key: &owner_key,
+            hub_min_downstream: pc.config.check.min_downstream(),
+        },
     );
     let project = resolved.dag.project_name().unwrap_or("dbt");
     let markdown = dbtl::pr_impact_markdown(project, &report);
@@ -77,8 +86,17 @@ pub fn run_impact(
 /// The `check` subcommand's options, bundled so the runner's signature stays
 /// readable (the fields map 1:1 onto the clap variant's args).
 pub struct CheckArgs<'a> {
-    /// `--coverage-min` — the coverage gate's minimum percent (0 = off).
-    pub coverage_min: u8,
+    /// `--coverage-min` — the coverage gate's `min` override (`None` =
+    /// `.dbtl.yml` / the default decides).
+    pub coverage_min: Option<u8>,
+    /// `--gate <id>=<severity>` — per-gate severity overrides (repeatable).
+    pub gate: &'a [(dbtl::CheckGate, Option<dbtl::Severity>)],
+    /// `--column-coverage-min` — the column-coverage gate's `min` override.
+    pub column_coverage_min: Option<u8>,
+    /// `--doc-coverage-min` — the doc-coverage gate's `min` override.
+    pub doc_coverage_min: Option<u8>,
+    /// `--max-blast-radius` — the blast-radius gate's `max` override.
+    pub max_blast_radius: Option<usize>,
     /// `--lint` — add one gate per enabled lint rule.
     pub lint: bool,
     /// `--no-breaking` — with `--diff`, gate on breaking column changes.
@@ -101,30 +119,122 @@ pub struct CheckArgs<'a> {
     pub docs_dir: Option<&'a str>,
 }
 
+/// Merge `.dbtl.yml`'s `check:` section with the CLI overrides into the
+/// effective [`dbtl::CheckConfig`]. The named param flags
+/// (`--coverage-min`, `--column-coverage-min`, `--doc-coverage-min`,
+/// `--max-blast-radius`, `--docs-dir`) set their gate's parameter — and a
+/// param flag on an `off` gate lifts it to `error` severity (an explicit
+/// flag is an explicit enable, like `--no-breaking` has always been for
+/// `breaking_columns`). `--gate <id>=<sev>` is applied LAST so it has the
+/// final word on any gate's severity.
+fn gate_policy(pc_check: &dbtl::CheckConfig, args: &CheckArgs) -> dbtl::CheckConfig {
+    use dbtl::CheckGate as G;
+    let mut cfg = pc_check.clone();
+    fn entry(cfg: &mut dbtl::CheckConfig, gate: G) -> &mut dbtl::GateSetting {
+        cfg.gates.entry(gate).or_insert_with(|| dbtl::GateSetting {
+            severity: gate.default_severity(),
+            ..dbtl::GateSetting::default()
+        })
+    }
+    /// A param flag on an `off` gate enables it at `error` — the flag is
+    /// the explicit ask.
+    fn lift(s: &mut dbtl::GateSetting) {
+        if s.severity.is_none() {
+            s.severity = Some(dbtl::Severity::Error);
+        }
+    }
+    if let Some(min) = args.coverage_min {
+        let s = entry(&mut cfg, G::Coverage);
+        s.min = Some(usize::from(min));
+        lift(s);
+    }
+    if let Some(min) = args.column_coverage_min {
+        let s = entry(&mut cfg, G::ColumnCoverage);
+        s.min = Some(usize::from(min));
+        lift(s);
+    }
+    if let Some(min) = args.doc_coverage_min {
+        let s = entry(&mut cfg, G::DocCoverage);
+        s.min = Some(usize::from(min));
+        lift(s);
+    }
+    if let Some(max) = args.max_blast_radius {
+        let s = entry(&mut cfg, G::BlastRadius);
+        s.max = Some(max);
+        lift(s);
+    }
+    if args.no_breaking {
+        entry(&mut cfg, G::BreakingColumns).severity = Some(dbtl::Severity::Error);
+    }
+    if let Some(dir) = args.docs_dir {
+        let s = entry(&mut cfg, G::DocsDrift);
+        s.dir = Some(PathBuf::from(dir));
+        lift(s);
+    }
+    // `--gate` is the last word on severity — it beats the named flags'
+    // implied `error` (an explicit `=warn`/`=off` means exactly what it says).
+    for (gate, severity) in args.gate {
+        entry(&mut cfg, *gate).severity = *severity;
+    }
+    cfg
+}
+
+/// Push one gate row at its resolved severity: `Pass` when `ok` holds, else
+/// the severity's `gate_status` verdict (`Fail`/`Warn` under `--fail-on`).
+/// `Skip` rows are pushed by the caller — they don't evaluate.
+fn push_gate(
+    gates: &mut Vec<GateResult>,
+    gate: dbtl::CheckGate,
+    severity: dbtl::Severity,
+    fail_on: dbtl::FailOn,
+    ok: bool,
+    ok_msg: String,
+    trip_msg: String,
+) {
+    let (status, message) = if ok {
+        (GateStatus::Pass, ok_msg)
+    } else {
+        (gate_status(severity, fail_on), trip_msg)
+    };
+    gates.push(GateResult::new(
+        gate.id(),
+        gate.title(),
+        severity,
+        status,
+        message,
+    ));
+}
+
 /// Run the `check` subcommand: evaluate the CI gates over the resolved
 /// source, emit the shared [`Report`] through the selected formats, and
-/// return `Err` (exit 1 via `main`) when any gate fails. Coverage below
-/// `--coverage-min` (when >0), and — only with `--diff` — newly introduced
-/// layer violations, changed buildable nodes without tests, and (with
-/// `--no-breaking`) breaking column changes still referenced downstream, all
-/// from the single [`dbtl::diff_report`] analysis. `--lint` adds one
-/// PASS/WARN/FAIL gate per static-lint rule through the shared
-/// [`evaluate_lint`] — the SAME counted-finding set `dbtl lint` reports
-/// (non-baselined, new under `--diff`). `--docs-dir` adds the docs-freshness
-/// gate (the exact comparison `dbtl docs --check` runs). Every gate is
-/// severity-aware: the non-lint gates are `error` by definition and lint
-/// findings carry their rule's effective severity, so `--fail-on` (CLI >
-/// `.dbtl.yml` > default `error`) decides whether a tripped gate FAILs or
-/// only WARNs. The `scope:` line and the `baseline:`/`affected owners:`
-/// context lines never gate; `--quiet` prints nothing (exit code only).
+/// return `Err` (exit 1 via `main`) when any gate fails.
+///
+/// The gate set is `.dbtl.yml`'s `check:` section plus the CLI overrides,
+/// resolved over the [`dbtl::CheckGate`] registry defaults (see
+/// [`gate_policy`]): the coverage family (model test coverage, declared-
+/// column coverage, description coverage), and — only with `--diff` — the
+/// diff gates (new layer violations, untested changes, breaking column
+/// changes, changed hubs, affected exposures, blast radius), all read off
+/// the single [`dbtl::diff_report`] analysis the `impact` command prints.
+/// `check.lint`/`--lint`/`--rules` add one gate per enabled static-lint
+/// rule through the shared [`evaluate_lint`] — the SAME counted-finding
+/// set `dbtl lint` reports. A diff gate the user explicitly enabled but
+/// can't evaluate (no `--diff`) reports `skip`, never a failure — same for
+/// an enabled `docs_drift` with no directory.
+///
+/// Every gate is severity-aware: a configured `warn` gate trips as WARN
+/// (which `--fail-on warn` still fails), `off` removes the row, and
+/// `--gate <id>=<sev>` overrides any source. The `scope:` line and the
+/// `baseline:`/`affected owners:` context lines never gate; `--quiet`
+/// prints nothing (exit code only).
 pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliError> {
+    use dbtl::CheckGate as G;
     let scope = src.scope;
     // `--rules` implies linting (a rule list with nothing to run is a no-op
     // flag, so honour the intent instead). An unknown name is a usage error —
     // checked before the data load so it can't hide behind a missing-input
     // error. Same for a malformed --report spec or a --path-prefix with no
     // path-carrying format selected.
-    let lint_active = args.lint || !args.rules.is_empty();
     validate_rule_names(args.rules)?;
     let plan = OutputPlan::build(
         args.format,
@@ -136,60 +246,104 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
     )?;
     let resolved = src.resolve()?;
     let dag = &resolved.dag;
-    // `.dbtl.yml` feeds EVERY gate via the top-level `fail_on`, so it's
-    // loaded once up front — a malformed file is a usage error even with
-    // lint off (its threshold can't be trusted either).
+    // `.dbtl.yml` feeds EVERY gate — the `check:` section picks severities
+    // and parameters, `lint:` the rule set, top-level `fail_on` the verdict
+    // threshold — so it's loaded once up front: a malformed file is a usage
+    // error (a CI gate can't silently run the wrong policy).
     let (manifest_arg, project_arg) = resolved_config_args(&resolved);
     let pc = load_project_config(manifest_arg.as_deref(), project_arg.as_deref())?;
     let fail_on = resolve_fail_on(args.fail_on, pc.config.fail_on);
     let baseline_explicit = pc.config.baseline_explicit;
     let config_found = pc.path.is_some();
+    // `.dbtl.yml`'s check: + the CLI overrides → the effective gate set.
+    let check_cfg = gate_policy(&pc.config.check, args);
+    // `.dbtl.yml` owner_meta_key > config.yml's > `owner` — the ONE
+    // resolution `dbtl impact` and the TUI `D` modal share.
+    let owner_key = owner_meta_key(pc.config.owner_meta_key.as_deref());
+    let lint_active = args.lint || !args.rules.is_empty() || check_cfg.lint;
 
     // The shared report: gates in evaluation order, the context lines
     // (`baseline:`/`affected owners:`) anchored where the line report has
-    // always printed them — after `scope:` + the coverage gate.
+    // always printed them — after `scope:` + the coverage family.
     let mut report = Report::new(dag.project_name().unwrap_or("dbt"), scope.describe());
     let mut gates: Vec<GateResult> = Vec::new();
 
-    // Coverage — always measured (the shared `coverage_counts` base, the same
-    // numbers the TUI's `cov` segment quotes); the gate only engages above 0.
-    let (tested, total) = dbtl::coverage_counts(dag);
-    // No buildable nodes → nothing untested → 100%.
-    let pct = (tested * 100).checked_div(total).unwrap_or(100);
-    if args.coverage_min == 0 || pct >= usize::from(args.coverage_min) {
-        gates.push(GateResult::pass(
-            "coverage",
-            "coverage",
+    // ---- the coverage family (no baseline needed) --------------------
+    // Each reads a shared `*_counts` core function — the same numbers the
+    // TUI gauges and `dbtl docs` summaries quote, so the gate can never
+    // count differently from the surfaces.
+    if let Some(sev) = check_cfg.severity(G::Coverage) {
+        let (tested, total) = dbtl::coverage_counts(dag);
+        // No buildable nodes → nothing untested → 100%.
+        let pct = (tested * 100).checked_div(total).unwrap_or(100);
+        let min = check_cfg.min(G::Coverage);
+        push_gate(
+            &mut gates,
+            G::Coverage,
+            sev,
+            fail_on,
+            pct >= min,
             format!("{tested}/{total} ({pct}%)"),
-        ));
-    } else {
-        gates.push(GateResult::new(
-            "coverage",
-            "coverage",
-            dbtl::Severity::Error,
-            gate_status(dbtl::Severity::Error, fail_on),
-            format!(
-                "coverage {pct}% below --coverage-min {}% ({tested}/{total})",
-                args.coverage_min
-            ),
-        ));
+            format!("coverage {pct}% below the {min}% minimum ({tested}/{total})"),
+        );
+    }
+    if let Some(sev) = check_cfg.severity(G::ColumnCoverage) {
+        let (covered, declared) = dbtl::column_coverage_counts(dag);
+        // No declared columns → nothing to cover → 100%.
+        let pct = (covered * 100).checked_div(declared).unwrap_or(100);
+        let min = check_cfg.min(G::ColumnCoverage);
+        push_gate(
+            &mut gates,
+            G::ColumnCoverage,
+            sev,
+            fail_on,
+            pct >= min,
+            format!("{covered}/{declared} ({pct}%)"),
+            format!("column coverage {pct}% below the {min}% minimum ({covered}/{declared})"),
+        );
+    }
+    if let Some(sev) = check_cfg.severity(G::DocCoverage) {
+        let (documented, total) = dbtl::doc_coverage_counts(dag);
+        let pct = (documented * 100).checked_div(total).unwrap_or(100);
+        let min = check_cfg.min(G::DocCoverage);
+        push_gate(
+            &mut gates,
+            G::DocCoverage,
+            sev,
+            fail_on,
+            pct >= min,
+            format!("{documented}/{total} ({pct}%)"),
+            format!("doc coverage {pct}% below the {min}% minimum ({documented}/{total})"),
+        );
     }
 
-    // The baseline loads once and feeds BOTH diff gates (layer violations +
-    // untested changes) and the lint new-violation comparison.
+    // ---- the diff gates ----------------------------------------------
+    // The baseline loads once and feeds BOTH the diff gates and the lint
+    // new-violation comparison.
     let base_ctx = match src.diff {
-        Some(d) => Some(load_baseline(d, scope)?),
+        Some(d) => Some(load_baseline(d, scope, &src.project_dir())?),
         None => None,
     };
     if let Some((base, label)) = &base_ctx {
         // Resolver-aware diff — the same pair `run_impact` and the TUI's `D`
-        // modal use — so `--no-breaking` gates on the identical column
+        // modal use — so the breaking-columns gate rides the identical column
         // analysis the reviewer reads, and the report's `impact` block IS
-        // the same payload `dbtl impact` prints.
+        // the same payload `dbtl impact` prints (the hub list included —
+        // `min_downstream` comes from the same `check:` resolution).
         let cur_res = src.cll_resolver(&resolved)?;
         let base_res = src.baseline_resolver(dag, base);
         let diff = dbtl::compute_diff_with(base, dag, &base_res, &cur_res);
-        let payload = dbtl::diff_report(dag, Some(base), &diff, label, scope, &owner_meta_key());
+        let payload = dbtl::diff_report(
+            dag,
+            Some(base),
+            &diff,
+            label,
+            scope,
+            &dbtl::ImpactOpts {
+                owner_key: &owner_key,
+                hub_min_downstream: check_cfg.min_downstream(),
+            },
+        );
         let pr = &payload.pr;
         report.info.push(format!("baseline: {label}"));
         // Informational listing (never a gate): who to page for the blast
@@ -201,122 +355,193 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
             ));
         }
         report.info_at = gates.len();
-        if pr.new_layer_violations.is_empty() {
-            gates.push(GateResult::pass(
-                "new_layer_violations",
-                "new layer violations",
-                "none".to_string(),
-            ));
-        } else {
-            gates.push(GateResult::new(
-                "new_layer_violations",
-                "new layer violations",
-                dbtl::Severity::Error,
-                gate_status(dbtl::Severity::Error, fail_on),
-                format!(
-                    "{} new layer violation(s): {}",
-                    pr.new_layer_violations.len(),
-                    pr.new_layer_violations
-                        .iter()
-                        .map(|(p, c)| format!("{p} -> {c}"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            ));
-        }
-        if pr.untested_changes.is_empty() {
-            gates.push(GateResult::pass(
-                "untested_changes",
-                "untested changes",
-                "none".to_string(),
-            ));
-        } else {
-            gates.push(GateResult::new(
-                "untested_changes",
-                "untested changes",
-                dbtl::Severity::Error,
-                gate_status(dbtl::Severity::Error, fail_on),
-                format!(
-                    "{} changed node(s) without tests: {}",
-                    pr.untested_changes.len(),
-                    pr.untested_changes.join(", ")
-                ),
-            ));
-        }
-        // `--no-breaking`: fail only on BREAKING column changes whose
-        // downstream still references the old column (removed/renamed with
-        // unmigrated consumers). Partial moves (type/expr) report in the
-        // impact pack, never here. Renames print `old -> new` so the log
-        // shows the exact migration to ask for.
-        if args.no_breaking {
-            let breaking = diff.breaking_referenced();
-            if breaking.is_empty() {
-                gates.push(GateResult::pass(
-                    "breaking_columns",
-                    "breaking column changes",
+        for gate in G::ALL.iter().copied().filter(|g| g.needs_diff()) {
+            let Some(sev) = check_cfg.severity(gate) else {
+                continue;
+            };
+            match gate {
+                G::NewLayerViolations => push_gate(
+                    &mut gates,
+                    gate,
+                    sev,
+                    fail_on,
+                    pr.new_layer_violations.is_empty(),
                     "none".to_string(),
-                ));
-            } else {
-                let names = breaking
-                    .iter()
-                    .map(|ch| match &ch.renamed_from {
-                        Some(old) => format!("{}.{} -> {}", ch.node_name, old, ch.column),
-                        None => format!("{}.{}", ch.node_name, ch.column),
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                gates.push(GateResult::new(
-                    "breaking_columns",
-                    "breaking column changes",
-                    dbtl::Severity::Error,
-                    gate_status(dbtl::Severity::Error, fail_on),
                     format!(
-                        "{} breaking column change(s) referenced downstream: {names}",
-                        breaking.len()
+                        "{} new layer violation(s): {}",
+                        pr.new_layer_violations.len(),
+                        pr.new_layer_violations
+                            .iter()
+                            .map(|(p, c)| format!("{p} -> {c}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ),
-                ));
+                ),
+                G::UntestedChanges => push_gate(
+                    &mut gates,
+                    gate,
+                    sev,
+                    fail_on,
+                    pr.untested_changes.is_empty(),
+                    "none".to_string(),
+                    format!(
+                        "{} changed node(s) without tests: {}",
+                        pr.untested_changes.len(),
+                        pr.untested_changes.join(", ")
+                    ),
+                ),
+                // Fail only on BREAKING column changes whose downstream
+                // still references the old column (removed/renamed with
+                // unmigrated consumers). Partial moves (type/expr) report
+                // in the impact pack, never here. Renames print
+                // `old -> new` so the log shows the exact migration to ask
+                // for.
+                G::BreakingColumns => {
+                    let breaking = diff.breaking_referenced();
+                    let names = breaking
+                        .iter()
+                        .map(|ch| match &ch.renamed_from {
+                            Some(old) => format!("{}.{} -> {}", ch.node_name, old, ch.column),
+                            None => format!("{}.{}", ch.node_name, ch.column),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    push_gate(
+                        &mut gates,
+                        gate,
+                        sev,
+                        fail_on,
+                        breaking.is_empty(),
+                        "none".to_string(),
+                        format!(
+                            "{} breaking column change(s) referenced downstream: {names}",
+                            breaking.len()
+                        ),
+                    );
+                }
+                // The SAME hub list the report's `## Hubs` section prints —
+                // `pr_impact` already applied the configured
+                // `min_downstream`, so the gate and the pack can't disagree.
+                G::ChangedHubs => {
+                    let min = check_cfg.min_downstream();
+                    push_gate(
+                        &mut gates,
+                        gate,
+                        sev,
+                        fail_on,
+                        pr.changed_hubs.is_empty(),
+                        "none".to_string(),
+                        format!(
+                            "{} changed hub(s) (>= {min} downstream): {}",
+                            pr.changed_hubs.len(),
+                            pr.changed_hubs
+                                .iter()
+                                .map(|(name, k)| format!("{name} ({k})"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    );
+                }
+                G::AffectedExposures => push_gate(
+                    &mut gates,
+                    gate,
+                    sev,
+                    fail_on,
+                    pr.affected_exposures.is_empty(),
+                    "none".to_string(),
+                    format!(
+                        "{} affected exposure(s): {}",
+                        pr.affected_exposures.len(),
+                        pr.affected_exposures.join(", ")
+                    ),
+                ),
+                G::BlastRadius => {
+                    let max = check_cfg.max(G::BlastRadius);
+                    push_gate(
+                        &mut gates,
+                        gate,
+                        sev,
+                        fail_on,
+                        pr.affected_models <= max,
+                        format!("{} affected model(s) (max {max})", pr.affected_models),
+                        format!(
+                            "blast radius {} affected model(s) exceeds max {max}",
+                            pr.affected_models
+                        ),
+                    );
+                }
+                // Only `needs_diff` gates iterate — the coverage family and
+                // docs_drift have their own slots.
+                _ => unreachable!("non-diff gate in the diff loop"),
             }
         }
         report.impact = Some(payload);
     }
-    // `--no-breaking` is a diff gate — without a baseline there is nothing
-    // to classify. A gate that was asked for but could not evaluate is a
-    // `skip`: visible to CI parsers, never counted as a failure.
-    if args.no_breaking && base_ctx.is_none() {
-        gates.push(GateResult::skip(
-            "breaking_columns",
-            "breaking column changes",
-            "needs --diff".to_string(),
-        ));
+    // An explicitly-enabled diff gate without `--diff` has nothing to
+    // evaluate — report `skip`: visible to CI parsers, never counted as a
+    // failure. A default-on diff gate nobody asked for just isn't listed,
+    // exactly as before.
+    if base_ctx.is_none() {
+        for gate in G::ALL.iter().copied().filter(|g| g.needs_diff()) {
+            if check_cfg.explicit(gate) {
+                if let Some(sev) = check_cfg.severity(gate) {
+                    gates.push(GateResult::new(
+                        gate.id(),
+                        gate.title(),
+                        sev,
+                        GateStatus::Skip,
+                        "needs --diff".to_string(),
+                    ));
+                }
+            }
+        }
     }
 
-    // `--docs-dir` — the same freshness comparison `dbtl docs --check` runs:
-    // regenerate the file set in memory and diff it against the directory.
-    // The drift detail rides as the gate's `details` lines AND the report's
-    // `docs_drift` block, so every format shows the divergence.
-    if let Some(dir) = args.docs_dir {
-        // No --lineage-depth flag on check — the gate resolves depth from
-        // `.dbtl.yml`/defaults exactly like `docs --check` without the flag.
-        let files = docs_file_set(&resolved, scope, None)?;
-        let drift = docs_differences(Path::new(dir), &files);
-        if drift.total() == 0 {
-            gates.push(GateResult::pass(
-                "docs_drift",
-                "docs drift",
-                format!("up to date ({} files)", files.len()),
-            ));
-        } else {
-            let mut gate = GateResult::new(
-                "docs_drift",
-                "docs drift",
-                dbtl::Severity::Error,
-                gate_status(dbtl::Severity::Error, fail_on),
-                format!("docs drift: {} difference(s)", drift.total()),
-            );
-            gate.details = drift.lines();
-            gates.push(gate);
+    // `docs_drift` — the same freshness comparison `dbtl docs --check`
+    // runs: regenerate the file set in memory and diff it against the
+    // directory (`--docs-dir` or `check.gates.docs_drift.dir`; the flag
+    // wins). The drift detail rides as the gate's `details` lines AND the
+    // report's `docs_drift` block, so every format shows the divergence.
+    if let Some(sev) = check_cfg.severity(G::DocsDrift) {
+        match check_cfg.docs_dir().map(Path::to_path_buf) {
+            Some(dir) => {
+                // No --lineage-depth flag on check — the gate resolves
+                // depth from `.dbtl.yml`/defaults exactly like `docs
+                // --check` without the flag.
+                let files = docs_file_set(&resolved, scope, None)?;
+                let drift = docs_differences(&dir, &files);
+                if drift.total() == 0 {
+                    gates.push(GateResult::new(
+                        G::DocsDrift.id(),
+                        G::DocsDrift.title(),
+                        sev,
+                        GateStatus::Pass,
+                        format!("up to date ({} files)", files.len()),
+                    ));
+                } else {
+                    let mut gate = GateResult::new(
+                        G::DocsDrift.id(),
+                        G::DocsDrift.title(),
+                        sev,
+                        gate_status(sev, fail_on),
+                        format!("docs drift: {} difference(s)", drift.total()),
+                    );
+                    gate.details = drift.lines();
+                    gates.push(gate);
+                }
+                report.docs_drift = Some(drift);
+            }
+            // An enabled gate nobody pointed at a directory can't
+            // evaluate — `skip`, never a failure.
+            None if check_cfg.explicit(G::DocsDrift) => gates.push(GateResult::new(
+                G::DocsDrift.id(),
+                G::DocsDrift.title(),
+                sev,
+                GateStatus::Skip,
+                "needs --docs-dir or check.gates.docs_drift.dir".to_string(),
+            )),
+            None => {}
         }
-        report.docs_drift = Some(drift);
     }
 
     // Static lint — the shared evaluation `dbtl lint` runs verbatim: the

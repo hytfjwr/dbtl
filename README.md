@@ -180,6 +180,7 @@ $ dbtl --list-themes
 # Diff against a baseline: "what does my branch change?"
 $ dbtl --diff /path/to/main-checkout            # another worktree (or its manifest.json)
 $ dbtl --diff target/manifest.prod.json         # a saved production manifest
+$ dbtl --diff git:main                          # the project as committed on another ref — no checkout needed
 
 # The last run's statuses + runtimes (target/run_results.json is auto-detected)
 $ dbtl --run-results /path/to/run_results.json
@@ -196,11 +197,14 @@ $ dbtl impact --diff /path/to/main-checkout                       # PR impact pa
 $ dbtl impact --diff target/manifest.prod.json --format json      # same payload as JSON
 $ dbtl check --coverage-min 80                                    # fail under 80% test coverage
 $ dbtl check --diff /path/to/main-checkout --coverage-min 80      # + new violations & untested changes
-$ dbtl check --diff /path/to/main-checkout --no-breaking          # + breaking column changes still read downstream
+$ dbtl check --diff git:main --no-breaking                        # + breaking column changes still read downstream
 $ dbtl check --lint                                               # + static structure lint (one gate per rule)
 $ dbtl check --lint --diff /path/to/main-checkout                 # lint gates on NEW violations only
 $ dbtl check --rules root_models,undocumented_models              # a subset of rules (implies --lint)
 $ dbtl check --lint --format json                                 # the whole report as JSON
+$ dbtl check --column-coverage-min 50 --doc-coverage-min 80       # + column-test and description coverage
+$ dbtl check --diff git:main --max-blast-radius 10                # + a ceiling on the blast radius
+$ dbtl check --gate changed_hubs=error --gate blast_radius=warn   # per-gate severity overrides
 ```
 
 ### How `--diff` compares
@@ -222,6 +226,12 @@ On top of the node-level comparison, every `modified` node gets a **column diff*
 Severity is what the downstream picture proves: a removed or renamed column that still has readers — consumers whose reference now resolves to nothing, or that remain linked to the changed node — is **breaking**; type and expression moves are **partial-breaking**; added columns and unreferenced removals are **non-breaking**. Each finding lists the downstream columns, models, marts, and exposures it reaches, so the `D` modal and the impact report answer "which downstream columns and dashboards break" precisely — and a narrower `dbt build --select` lists exactly the models the changed columns reach (a column-clean change keeps its `+` fan-out only while the analysis can't prove otherwise). All of it is the same `column_changes` payload in the modal, the Markdown, and `--format json`.
 
 Both sides of a diff are loaded under the same package scope, so a compiled-manifest baseline and a source-parsed current side now compare cleanly by default — see the next section.
+
+#### A baseline from a git ref: `--diff git:<rev>`
+
+`<rev>` is anything `git rev-parse` resolves to a commit — a branch (`git:main`), a tag (`git:v1.4.0`), a sha, or an expression (`git:HEAD~3`). dbtl enumerates the project's files at that revision with `git ls-tree` (source files only — models, schema yml, seeds, docs, `dbt_project.yml`; `target/` and `dbt_packages/` stay out) and parses them through the source loader into a scratch directory. Nothing touches the repository: no checkout, no worktree, no index writes — so the current side stays your live working tree, uncommitted changes included.
+
+Because the baseline is parsed *from source*, the current side parses from source too (even when `target/manifest.json` is sitting there — loader differences would masquerade as changes). An explicit `--manifest` still wins, with a warning that the two loaders may disagree on the margins. This is the CI-friendly shape for `dbtl check --diff git:origin/main` in a pull_request workflow — pair it with `actions/checkout`'s `fetch-depth: 0` (or fetch the base ref) so the revision resolves.
 
 #### Package scope: root project by default (`--include-packages`)
 
@@ -278,14 +288,24 @@ comment can never disagree with the screen.
 - **`dbtl check`** prints one `PASS`/`WARN`/`FAIL`/`SKIP` line per gate —
   with the violating findings indented under tripped gates — and exits 1
   when any fails. Gates: **`--coverage-min <pct>`** (test coverage below the
-  threshold — the same `coverage_gap` counts the status `cov%` shows), and —
+  threshold — the same `coverage_gap` counts the status `cov%` shows),
+  **`--column-coverage-min <pct>`** (schema tests on declared columns),
+  **`--doc-coverage-min <pct>`** (models carrying a description), and —
   with `--diff <BASELINE>` — **newly introduced layer violations**,
-  **changed models/seeds/snapshots without tests** (the impact pack's risk
-  flags), and with **`--no-breaking`** any **breaking column change still
+  **changed models/seeds/snapshots without tests**, **changed hubs**
+  (a changed node feeding ≥ `min_downstream` models), **affected
+  exposures**, **`--max-blast-radius <N>`** (a ceiling on the affected-model
+  count), and with **`--no-breaking`** any **breaking column change still
   referenced downstream** (removed/renamed columns whose readers didn't
   migrate — the failure line names each `model.column`, `old -> new` for
   renames; partial-breaking type/expression moves report but never trip it;
   without `--diff` the gate reports `SKIP`).
+  **`--gate <id>=error|warn|off`** overrides any gate's severity
+  (repeatable — the gate ids are the `check.gates` keys below); a `warn`
+  gate reports WARN without failing unless `--fail-on warn` (or
+  `.dbtl.yml`'s `fail_on`) says otherwise, and every named-parameter flag
+  lifts its gate to `error` when the gate is off. An enabled diff gate
+  with no `--diff` prints `SKIP … needs --diff`, never a silent gap.
   **`--lint`** adds one gate per static structure rule (see the next
   section) — and under `--diff` only violations that did not exist in the
   baseline fail it. **`--rules a,b,c`** runs a named subset (implies
@@ -392,6 +412,8 @@ defaults).
 
 ```yaml
 # .dbtl.yml — every key optional; absent rules stay enabled
+fail_on: warn             # error (default) | warn | never — what counts as a failure
+owner_meta_key: team      # the meta key "affected owners" reads (beats config.yml's)
 lint:
   rules:
     model_fanout: false        # disable individual rules
@@ -402,7 +424,29 @@ lint:
     staging: [stg_, base_]     # staging/ also accepts base_
     marts: []                  # marts/ is unchecked
     other: [rpt_]              # flag unclassified models without rpt_ (evaluator parity)
+check:
+  lint: true              # fold the lint gates into `dbtl check` without --lint
+  gates:                  # severity only, or severity + parameters
+    coverage: {severity: error, min: 80}
+    column_coverage: warn
+    changed_hubs: {min_downstream: 10}
+    blast_radius: {severity: error, max: 25}
+    docs_drift: {dir: docs/lineage}
 ```
+
+The `check.gates` ids are `coverage`, `column_coverage`, `doc_coverage`,
+`new_layer_violations`, `untested_changes`, `breaking_columns`,
+`changed_hubs`, `affected_exposures`, `blast_radius`, and `docs_drift`.
+Each accepts a bare `error`/`warn`/`off` or an object with `severity` plus
+its parameters (`min` for the coverage gates, `max` for `blast_radius`,
+`min_downstream` for `changed_hubs`, `dir` for `docs_drift`); a gate with
+parameters but no severity runs at `error`. Defaults match the flag-only
+behaviour — coverage, the two diff gates, and docs drift gate at `error`;
+`changed_hubs` and `affected_exposures` report at `warn`; everything else
+stays off until configured or flagged. The CLI overrides the file
+(`--gate`, `--coverage-min`, `--column-coverage-min`,
+`--doc-coverage-min`, `--max-blast-radius`, `--no-breaking`,
+`--docs-dir`), and the file overrides the shipped defaults.
 
 `dbtl check --lint --diff <BASELINE>` compares finding *keys* against the
 baseline's — only **newly introduced** violations gate (the same "new only"

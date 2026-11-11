@@ -23,6 +23,26 @@ fn parse_sql_dialect(s: &str) -> std::result::Result<dbtl::SqlDialect, String> {
     })
 }
 
+/// The `--gate` value parser: `<gate-id>=<error|warn|off>` — a severity
+/// override for one `check` gate, validated eagerly so an unknown gate id or
+/// severity is a usage error before any loading (the same accepted ids
+/// `.dbtl.yml`'s `check.gates` takes).
+fn parse_gate_override(
+    s: &str,
+) -> std::result::Result<(dbtl::CheckGate, Option<dbtl::Severity>), String> {
+    let (id, severity) = s
+        .split_once('=')
+        .ok_or_else(|| format!("expected GATE=SEVERITY, got '{s}'"))?;
+    let gate = dbtl::CheckGate::from_name(id).ok_or_else(|| format!("unknown gate '{id}'"))?;
+    let severity = match severity {
+        "error" => Some(dbtl::Severity::Error),
+        "warn" => Some(dbtl::Severity::Warn),
+        "off" => None,
+        _ => return Err(format!("unknown severity '{severity}' (error|warn|off)")),
+    };
+    Ok((gate, severity))
+}
+
 /// dbtl: browse dbt models and their lineage — from a compiled manifest.json
 /// or straight from project source (no `dbt compile`).
 #[derive(Parser, Debug)]
@@ -65,11 +85,14 @@ pub struct Cli {
     /// List the available color themes (presets + user theme files) and exit.
     #[arg(long)]
     pub list_themes: bool,
-    /// Baseline to diff against: a manifest.json file, or a dbt project dir
-    /// (its target/manifest.json if compiled, else parsed from source). Adds
-    /// the Diff lens (added/modified tints), the `D` summary modal, and a
-    /// status diff chip; `impact` requires it and `check` uses it for its
-    /// diff gates. `global` so it works before OR after a subcommand.
+    /// Baseline to diff against: a manifest.json file, a dbt project dir
+    /// (its target/manifest.json if compiled, else parsed from source), or
+    /// `git:<rev>` — the project's committed files at that git revision,
+    /// parsed from source (the current side then parses source too, so
+    /// loader differences never read as changes). Adds the Diff lens
+    /// (added/modified tints), the `D` summary modal, and a status diff
+    /// chip; `impact` requires it and `check` uses it for its diff gates.
+    /// `global` so it works before OR after a subcommand.
     #[arg(long, global = true)]
     pub diff: Option<String>,
     /// Path to a dbt run_results.json (the last run's per-node status +
@@ -174,15 +197,43 @@ pub enum Commands {
         #[arg(long, value_name = "FMT:PATH")]
         report: Vec<String>,
     },
-    /// Run CI checks over the resolved data source and exit 1 when any fails:
-    /// test coverage below `--coverage-min`, newly introduced layer violations,
-    /// or changed buildable nodes without tests (the last two need `--diff`).
-    /// The report is plain lines on stdout, one per check.
+    /// Run CI checks over the resolved data source and exit 1 when any fails.
+    /// The gate set comes from `.dbtl.yml`'s `check:` section plus the flags:
+    /// test coverage below `--coverage-min`, and — only with `--diff` —
+    /// newly introduced layer violations, changed buildable nodes without
+    /// tests, changed hubs, affected exposures, and (with `--no-breaking` or
+    /// `--gate breaking_columns=…`) breaking column changes still referenced
+    /// downstream. The report is plain lines on stdout, one per gate.
     Check {
         /// Fail when test coverage (model/seed/snapshot nodes with ≥1 test)
-        /// falls below this percent. 0 disables the coverage check.
-        #[arg(long, default_value = "0", value_parser = clap::value_parser!(u8))]
-        coverage_min: u8,
+        /// falls below this percent. Overrides `.dbtl.yml`'s
+        /// `check.gates.coverage.min`; when that gate is `off`, setting this
+        /// enables it at error severity.
+        #[arg(long, value_name = "PCT", value_parser = clap::value_parser!(u8))]
+        coverage_min: Option<u8>,
+        /// Override one check gate's severity: `--gate coverage=warn`,
+        /// `--gate breaking_columns=error`, `--gate changed_hubs=off`
+        /// (repeatable). Overrides `.dbtl.yml`'s `check.gates.<id>.severity`.
+        #[arg(long = "gate", value_name = "ID=error|warn|off", value_parser = parse_gate_override)]
+        gate: Vec<(dbtl::CheckGate, Option<dbtl::Severity>)>,
+        /// Fail when declared columns covered by a schema test fall below
+        /// this percent. Overrides `.dbtl.yml`'s
+        /// `check.gates.column_coverage.min`; when that gate is `off`,
+        /// setting this enables it at error severity.
+        #[arg(long, value_name = "PCT", value_parser = clap::value_parser!(u8))]
+        column_coverage_min: Option<u8>,
+        /// Fail when models carrying a description fall below
+        /// this percent. Overrides `.dbtl.yml`'s `check.gates.doc_coverage.min`;
+        /// when that gate is `off`, setting this enables it at error
+        /// severity.
+        #[arg(long, value_name = "PCT", value_parser = clap::value_parser!(u8))]
+        doc_coverage_min: Option<u8>,
+        /// Fail when the changed set's blast radius exceeds this many
+        /// affected models. Overrides `.dbtl.yml`'s
+        /// `check.gates.blast_radius.max`; when that gate is `off`, setting
+        /// this enables it at error severity. Needs `--diff`.
+        #[arg(long, value_name = "N")]
+        max_blast_radius: Option<usize>,
         /// Run the static structure-lint rules (the `dbt_project_evaluator`-
         /// style checks — no warehouse or `dbt compile` needed). Rule
         /// enable/disable, thresholds, and naming prefixes come from the
@@ -406,6 +457,7 @@ mod docs;
 mod exit;
 mod flags;
 mod gates;
+mod git_baseline;
 mod lint;
 mod report;
 mod resolve;

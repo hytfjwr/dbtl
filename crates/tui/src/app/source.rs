@@ -156,15 +156,21 @@ impl App {
             Some(path) => match crate::ProjectConfig::load(path) {
                 Ok(pc) => {
                     self.lint_config = pc.lint;
+                    self.project_owner_meta_key = pc.owner_meta_key;
                     warnings.extend(pc.warnings);
                 }
                 Err(e) => {
                     warnings.push(format!("ignoring .dbtl.yml: {e}"));
                     self.lint_config = crate::LintConfig::default();
+                    self.project_owner_meta_key = None;
                 }
             },
-            None => self.lint_config = crate::LintConfig::default(),
+            None => {
+                self.lint_config = crate::LintConfig::default();
+                self.project_owner_meta_key = None;
+            }
         }
+        self.resolve_owner_meta_key();
         self.lint_findings = crate::run_rules(crate::LintInput::new(&self.dag, &self.lint_config));
         self.filter = None;
         self.mode = self.idle_mode();
