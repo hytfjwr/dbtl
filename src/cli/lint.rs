@@ -698,7 +698,7 @@ mod tests {
     fn the_gate_status_table() {
         use dbtl::{FailOn, Severity};
         // (finding severity, fail_on) → fails?
-        for (sev, fo, want) in [
+        for (sev, fail_on, want) in [
             (Severity::Error, FailOn::Error, true),
             (Severity::Error, FailOn::Warn, true),
             (Severity::Error, FailOn::Never, false),
@@ -706,13 +706,21 @@ mod tests {
             (Severity::Warn, FailOn::Warn, true),
             (Severity::Warn, FailOn::Never, false),
         ] {
-            assert_eq!(severity_fails(sev, fo), want, "{sev:?} under {fo:?}");
+            assert_eq!(
+                severity_fails(sev, fail_on),
+                want,
+                "{sev:?} under {fail_on:?}"
+            );
             let want_status = if want {
                 GateStatus::Fail
             } else {
                 GateStatus::Warn
             };
-            assert_eq!(gate_status(sev, fo), want_status, "{sev:?} under {fo:?}");
+            assert_eq!(
+                gate_status(sev, fail_on),
+                want_status,
+                "{sev:?} under {fail_on:?}"
+            );
         }
     }
 
