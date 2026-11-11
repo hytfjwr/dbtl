@@ -150,7 +150,7 @@ jobs:
       # format is exercised on the same run and kept for inspection.
       - name: Run the full check report
         run: |
-          set -u
+          set -euo pipefail
           out="$RUNNER_TEMP/dogfood"
           mkdir -p "$out"
           set +e
@@ -183,7 +183,7 @@ jobs:
       # manifest). Exit 1 is pinned by the real run above.
       - name: Pin the exit-code ladder
         run: |
-          set -u
+          set -euo pipefail
           expect() {
             local want="$1"; shift
             set +e
@@ -204,7 +204,7 @@ jobs:
       # listing — their ids are a compatibility contract.
       - name: Verify lint --list-rules
         run: |
-          set -u
+          set -euo pipefail
           dbtl lint --list-rules | tee "$RUNNER_TEMP/dogfood/rules.txt"
           for id in \
             direct_join_to_source multiple_sources_joined source_fanout \
@@ -221,7 +221,7 @@ jobs:
 
       - name: Exercise docs generation and --check
         run: |
-          set -u
+          set -euo pipefail
           docs="$RUNNER_TEMP/dogfood/docs"
           dbtl docs --manifest tests/fixtures/manifest.json --out "$docs" --quiet
           dbtl docs --manifest tests/fixtures/manifest.json --out "$docs" --check --quiet
@@ -237,24 +237,18 @@ jobs:
           fi
           echo "docs --check on a doctored page: exit 1 (drift is a gate failure)"
 
-      # `dbtl ls` is not in every build yet — the subcommand arrives with
-      # the selector work that is still in review. When it exists, pin
-      # exit 0 plus a few frozen fixture names; until then the step says
-      # so instead of failing.
+      # `dbtl ls` selectors against the frozen fixture — a bare name and
+      # a staging-layer glob must resolve to the fixture's known models.
       - name: Exercise dbtl ls
         run: |
-          set -u
-          if ! dbtl ls --help >/dev/null 2>&1; then
-            echo "::notice::this build has no 'ls' subcommand — it lands with the pending selector work; skipping"
-            exit 0
-          fi
+          set -euo pipefail
           dbtl ls pos_txn --manifest tests/fixtures/manifest.json | tee "$RUNNER_TEMP/dogfood/ls.txt"
           grep -qx 'pos_txn' "$RUNNER_TEMP/dogfood/ls.txt" || {
             echo "::error::'dbtl ls pos_txn' did not list pos_txn"
             exit 1
           }
           dbtl ls 'stg_*' --manifest tests/fixtures/manifest.json | tee "$RUNNER_TEMP/dogfood/ls-stg.txt"
-          for name in stg_orders stg_payment__shoppers; do
+          for name in stg_finance__budgets stg_payment__suppliers; do
             grep -qx "$name" "$RUNNER_TEMP/dogfood/ls-stg.txt" || {
               echo "::error::'dbtl ls stg_*' did not list $name"
               exit 1
@@ -270,7 +264,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          set -u
+          set -euo pipefail
           if [ -n "$(git status --porcelain)" ]; then
             git status --porcelain
             echo "::error::the working tree is dirty before the git-baseline run"
@@ -302,7 +296,7 @@ jobs:
 
       - name: Validate the report structures
         run: |
-          set -u
+          set -euo pipefail
           out="$RUNNER_TEMP/dogfood"
           jq -e '.version == "2.1.0"' "$out/report.sarif" >/dev/null || {
             echo "::error::the SARIF report is not version 2.1.0"
@@ -319,6 +313,10 @@ jobs:
           }
           counted=$(jq '[.gates[].findings[]? | select(.baselined | not)] | length' "$out/report.json")
           sarif_results=$(jq '.runs[0].results | length' "$out/report.sarif")
+          if [ "$counted" -lt 1 ]; then
+            echo "::error::the JSON report carried no counted findings — the SARIF count check would pass vacuously"
+            exit 1
+          fi
           if [ "$counted" -ne "$sarif_results" ]; then
             echo "::error::SARIF carried $sarif_results results for $counted counted findings — baselined findings must never reach SARIF"
             exit 1
@@ -331,8 +329,16 @@ jobs:
             echo "::error::the JSON report schema is not dbtl.report/v1"
             exit 1
           }
+          jq -e '.gates | length >= 1' "$out/report.json" >/dev/null || {
+            echo "::error::the JSON report has no gates — the JUnit testcase check would pass vacuously"
+            exit 1
+          }
           gates=$(jq '.gates | length' "$out/report.json")
           failed=$(jq '[.gates[] | select(.status == "fail")] | length' "$out/report.json")
+          if [ "$failed" -lt 1 ]; then
+            echo "::error::no gate failed on the fixture — the JUnit failure-count check would pass vacuously"
+            exit 1
+          fi
           JUNIT_FILE="$out/report.xml" EXPECTED_GATES="$gates" EXPECTED_FAILURES="$failed" \
             python3 - <<'PY'
           import os, sys, xml.etree.ElementTree as ET
