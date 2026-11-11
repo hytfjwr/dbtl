@@ -9,10 +9,10 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// `config` sub-object of a node (only the fields we surface).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct RawConfig {
     #[serde(default)]
     pub materialized: Option<String>,
@@ -21,7 +21,7 @@ pub struct RawConfig {
 /// `depends_on` sub-object of a node (the node refs it points at). `macros`
 /// carries the macro unique_ids (`macro.<project>.<name>`) the node's compiled
 /// SQL calls — present on real manifests, empty on synthesized source ones.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct RawDependsOn {
     #[serde(default)]
     pub nodes: Vec<String>,
@@ -31,7 +31,7 @@ pub struct RawDependsOn {
 
 /// `test_metadata` sub-object of a generic test node (`name` is the test kind:
 /// `unique`, `not_null`, `relationships`, …). Absent for singular tests.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct RawTestMetadata {
     #[serde(default)]
     pub name: Option<String>,
@@ -52,7 +52,7 @@ pub struct RawTestMetadata {
 /// the unit-test literals can use `..Default::default()` and never churn again as
 /// fields are added. `columns` keeps dbt definition order via `serde_json`'s
 /// `preserve_order` (its `Map` is then an `IndexMap`).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct RawNode {
     pub name: String,
     pub resource_type: String,
@@ -133,14 +133,14 @@ pub struct RawNode {
 
 /// `contract` sub-object: whether `enforced` is on (the declared column list
 /// becomes the actual warehouse schema).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct RawContract {
     #[serde(default)]
     pub enforced: bool,
 }
 
 /// A single source in the parsed manifest (`sources` entry).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct RawSource {
     pub name: String,
     pub resource_type: String,
@@ -173,7 +173,7 @@ pub struct RawSource {
 
 /// `owner` sub-object of an exposure. dbt requires at least one of name/email,
 /// but both stay optional here (exclusion is never a parse failure).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct RawExposureOwner {
     #[serde(default)]
     pub name: Option<String>,
@@ -185,7 +185,7 @@ pub struct RawExposureOwner {
 /// downstream consumer (dashboard / notebook / application / …). Exposures are
 /// pure leaves — they have `depends_on` parents and never children — so the
 /// DAG keeps them as terminator nodes.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct RawExposure {
     pub name: String,
     /// The exposure kind (`dashboard`, `notebook`, `analysis`, `ml`,
@@ -213,7 +213,7 @@ pub struct RawExposure {
 /// — like an exposure, a declared downstream consumer that only ever gains
 /// parents, so it joins the DAG as a terminator node. `resource_type` comes
 /// from which manifest map it arrived in (not a field on the wire).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct RawSemanticResource {
     pub name: String,
     #[serde(default)]
@@ -228,7 +228,7 @@ pub struct RawSemanticResource {
 
 /// A dbt unit test (`unit_tests` entry, dbt ≥1.8): attached to ONE model via
 /// its `model` field (the manifest key's last uid segment).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct RawUnitTest {
     /// `#[serde(default)]`: real manifests always carry `name`, but it is the
     /// only required field on a map whose shape already diverged once between
@@ -252,7 +252,7 @@ pub struct RawUnitTest {
 /// inline `rows:` list is countable from the manifest, while a `fixture:`
 /// reference or a CSV-string `rows:` payload is not (dbt stores the string,
 /// not the parsed rows — counting it would invent a number).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct RawUnitTestIo {
     /// The `input:` reference for `given:` entries (`ref('x')` /
     /// `source('a','b')` as a string). Kept raw — display doesn't resolve it.
@@ -267,7 +267,7 @@ pub struct RawUnitTestIo {
 /// A single macro in the parsed manifest (`macros` entry). Only the fields the
 /// diff needs: `macro_sql` is the surface a shared-macro change moves, and
 /// `depends_on.macros` is the macro→macro call graph for transitive impact.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct RawMacro {
     pub name: String,
     /// The macro's Jinja body — the real dbt manifest field name (v12).
@@ -281,7 +281,7 @@ pub struct RawMacro {
 /// `project_name` is the ROOT project's name as dbt recorded it (dbt ≥1.6) —
 /// the authoritative answer to "which package owns this graph", immune to
 /// installed packages whose names happen to sort first in `unique_id`s.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct RawMetadata {
     #[serde(default)]
     pub project_name: Option<String>,
@@ -297,7 +297,7 @@ pub struct RawMetadata {
 ///
 /// `deny_unknown_fields` is intentionally NOT set: the v12 schema has many
 /// fields we don't model, and they must be ignored.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RawManifest {
     /// `#[serde(default)]`: real dbt manifests always carry a `metadata`
     /// object (though `project_name` exists in it only since dbt 1.6) — this

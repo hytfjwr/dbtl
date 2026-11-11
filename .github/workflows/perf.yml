@@ -1,0 +1,219 @@
+name: Perf
+
+on:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "src/**"
+      - "benches/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "xtask/**"
+  # Daily — release-mode perf tests plus the ignored `perf_*` suite.
+  schedule:
+    - cron: "41 2 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Report-only base-vs-head comparison: short Criterion runs on both sides
+  # plus command timings on a generated 10k-model project. Regressions never
+  # fail the job — they show up as a `**slower**` flag in the step summary —
+  # and a failed measurement renders `n/a`, so the only red is a broken
+  # workflow definition itself.
+  perf-report:
+    name: Perf (report)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      # WORK is one scratch root for everything the job produces: the base
+      # worktree, both criterion output dirs, the synth project, and the
+      # metrics files the report renderer reads.
+      - name: Prepare the scratch dir
+        run: mkdir -p "$RUNNER_TEMP/perf" && echo "WORK=$RUNNER_TEMP/perf" >> "$GITHUB_ENV"
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The merge-base lookup needs the base branch's history.
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Resolve the merge base
+        id: base
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          sha=$(git merge-base HEAD "$BASE_SHA" 2>/dev/null || echo "$BASE_SHA")
+          echo "merge-base: $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the base in a worktree
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: git worktree add "$WORK/base" "$BASE_SHA"
+
+      - name: Detect benchmark-set changes
+        id: flags
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: |
+          # A delta measured across a changed benchmark set is part code,
+          # part measurement — the report notes it.
+          if git diff --quiet "$BASE_SHA" HEAD -- benches xtask; then
+            echo "benches-changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "benches-changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build head (release)
+        run: cargo build --release --locked -p dbtl -p xtask || true
+
+      - name: Build base (release)
+        run: |
+          cd "$WORK/base"
+          cargo build --release --locked || true
+
+      # `|| true` everywhere below: a failed measurement must not fail the
+      # job — the renderer writes n/a for whatever is missing.
+      - name: Benchmark head
+        env:
+          CRITERION_HOME: ${{ runner.temp }}/perf/criterion-head
+        run: cargo bench --locked --bench pipeline -- --measurement-time 2 --warm-up-time 1 --sample-size 10 || true
+
+      - name: Benchmark base
+        env:
+          CRITERION_HOME: ${{ runner.temp }}/perf/criterion-base
+        run: |
+          cd "$WORK/base"
+          cargo bench --locked --bench pipeline -- --measurement-time 2 --warm-up-time 1 --sample-size 10 || true
+
+      - name: Generate the synthetic project (10,000 models)
+        run: ./target/release/xtask synth --models 10000 --out "$WORK/synth" || true
+
+      # GNU time writes "elapsed_secs max_rss_kib"; the recorded exit code
+      # distinguishes a gate finding (exit 1 — still a valid measurement)
+      # from an unusable run (≥2 → n/a).
+      - name: Measure check/docs and binary sizes
+        run: |
+          mkdir -p "$WORK/metrics"
+          measure() {
+            name="$1"; side="$2"; bin="$3"; shift 3
+            if /usr/bin/time -f "%e %M" -o "$WORK/metrics/$name.$side.time" "$bin" "$@" >/dev/null 2>&1; then
+              code=0
+            else
+              code=$?
+            fi
+            if [ -f "$WORK/metrics/$name.$side.time" ]; then
+              read -r secs rss < "$WORK/metrics/$name.$side.time" || true
+              # An empty time file means /usr/bin/time itself failed — leave
+              # the metric absent so the report writes n/a, never a fake 0s.
+              if [ -n "${secs:-}" ]; then
+                printf '%s %s %s\n' "$secs" "${rss:-0}" "$code" > "$WORK/metrics/$name.$side"
+              fi
+            fi
+          }
+          base_bin="$WORK/base/target/release/dbtl"
+          head_bin="$GITHUB_WORKSPACE/target/release/dbtl"
+          if [ -x "$base_bin" ]; then
+            measure check base "$base_bin" check --project "$WORK/synth" --lint --quiet
+            measure docs  base "$base_bin" docs --project "$WORK/synth" --out "$WORK/docs-base" --quiet
+            stat -c %s "$base_bin" > "$WORK/metrics/size.base"
+          fi
+          if [ -x "$head_bin" ]; then
+            measure check head "$head_bin" check --project "$WORK/synth" --lint --quiet
+            measure docs  head "$head_bin" docs --project "$WORK/synth" --out "$WORK/docs-head" --quiet
+            stat -c %s "$head_bin" > "$WORK/metrics/size.head"
+          fi
+          ls -la "$WORK/metrics" || true
+
+      - name: Render the perf report
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHANGED: ${{ steps.flags.outputs.benches-changed }}
+        run: |
+          flags=()
+          if [ "$CHANGED" = "true" ]; then
+            flags+=(--benches-changed)
+          fi
+          xtask="$GITHUB_WORKSPACE/target/release/xtask"
+          if [ -x "$xtask" ]; then
+            "$xtask" perf-report \
+              --base "$WORK/criterion-base" \
+              --head "$WORK/criterion-head" \
+              --metrics-dir "$WORK/metrics" \
+              --base-label "base-${BASE_SHA:0:7}" \
+              --head-label "head-${HEAD_SHA:0:7}" \
+              --out "$WORK/report.md" \
+              "${flags[@]}"
+            cat "$WORK/report.md" >> "$GITHUB_STEP_SUMMARY"
+            cat "$WORK/report.md"
+          else
+            # A broken head build is a measurement failure, not a workflow
+            # failure — say so on the summary and stay green.
+            {
+              echo '## Perf report'
+              echo
+              echo 'Head build failed — measurements unavailable.'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-report-${{ github.event.pull_request.number }}
+          path: |
+            ${{ runner.temp }}/perf/report.md
+            ${{ runner.temp }}/perf/metrics
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # The ignored `perf_*` tests under a release build — a smoke budget per
+  # workload, run against main daily so a pathological regression surfaces
+  # even without a PR touching it.
+  perf-nightly:
+    name: Perf (nightly)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run perf tests (release)
+        run: cargo test --release --workspace --locked -- --ignored perf_

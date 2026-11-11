@@ -489,6 +489,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "unicode-width",
+ "xtask",
 ]
 
 [[package]]
@@ -2436,6 +2437,7 @@ version = "0.5.3"
 dependencies = [
  "anyhow",
  "clap",
+ "dbtl-core",
  "serde_json",
  "tempfile",
 ]

@@ -1,4 +1,6 @@
+mod perf_report_cmd;
 mod regen_sample_manifest;
+mod synth_cmd;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -14,10 +16,19 @@ struct Cli {
 enum Command {
     /// Regenerate tests/fixtures/sample_manifest.json with real dbt (requires uv).
     RegenSampleManifest(regen_sample_manifest::Args),
+    /// Write a deterministic synthetic dbt project to disk (models/*.sql +
+    /// schema.yml + target/manifest.json — the manifest and the source tree
+    /// describe the same graph).
+    Synth(synth_cmd::Args),
+    /// Render the Markdown perf comparison for the CI step summary: Criterion
+    /// medians for both sides plus command timings and binary sizes.
+    PerfReport(perf_report_cmd::Args),
 }
 
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::RegenSampleManifest(args) => regen_sample_manifest::run(args),
+        Command::Synth(args) => synth_cmd::run(args),
+        Command::PerfReport(args) => perf_report_cmd::run(args),
     }
 }
