@@ -136,9 +136,11 @@ jobs:
           CC_aarch64_unknown_linux_musl: musl-gcc
         run: cargo build --release --locked --target "$TARGET"
 
-      # A musl artifact must be fully static — prove it inside the job with
-      # the binary itself (ldd + a real run) rather than trusting the target
-      # name.
+      # A musl artifact must be fully static — prove it inside the job on
+      # the binary itself rather than trusting the target name. The gate is
+      # the ELF's own property: no PT_INTERP segment means no dynamic loader
+      # is ever consulted. (glibc's ldd is unreliable here — it cannot tell
+      # a dynamic musl binary from a static one either way.)
       - name: Verify the musl binary
         if: matrix.musl
         env:
@@ -146,9 +148,10 @@ jobs:
         run: |
           bin="target/${TARGET}/release/dbtl"
           file "$bin"
-          if ! ldd "$bin" 2>&1 | grep -q "not a dynamic executable"; then
-            echo "::error::$bin is not statically linked:"
-            ldd "$bin" || true
+          ldd "$bin" || true
+          if readelf -l "$bin" | grep -q INTERP; then
+            echo "::error::$bin requests a dynamic loader — not fully static:"
+            readelf -l "$bin" | grep -A2 INTERP
             exit 1
           fi
           "$bin" --version
