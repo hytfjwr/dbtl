@@ -754,7 +754,23 @@ fn config_markdown(dbtl_schema: &Value) -> String {
     }
 
     // docs:
-    section(&mut out, &props, "docs", "docs", &docs_default, &docs_type);
+    out.push_str("\n### `docs:`\n\n");
+    out.push_str("| Key | Type | Default | Description |\n");
+    out.push_str("| --- | ---- | ------- | ----------- |\n");
+    if let Some(inner) = props
+        .get("docs")
+        .and_then(|n| n.pointer("/properties"))
+        .and_then(Value::as_object)
+    {
+        for (k, node) in inner {
+            out.push_str(&format!(
+                "| `{k}` | {} | {} | {} |\n",
+                docs_type(k, node),
+                docs_default(k),
+                cell(&desc(node))
+            ));
+        }
+    }
 
     // ---- config.yml -------------------------------------------------
     out.push_str("\n## `config.yml` (`~/.config/dbtl/config.yml`)\n\n");
@@ -831,10 +847,13 @@ fn check_type(key: &str) -> String {
     }
 }
 
-/// The readable type of a `docs:` key.
-fn docs_type(key: &str) -> String {
-    let _ = key;
-    "integer ≥ 1 or `all`".to_string()
+/// The readable type of a `docs:` key — `lineage_depth` has a custom
+/// grammar; every other key's type comes straight off its schema node.
+fn docs_type(key: &str, node: &Value) -> String {
+    match key {
+        "lineage_depth" => "integer ≥ 1 or `all`".to_string(),
+        _ => schema_type(node),
+    }
 }
 
 /// A top-level `.dbtl.yml` key's effective default.
@@ -874,10 +893,12 @@ fn check_default(key: &str) -> String {
 
 /// A `docs:` key's effective default.
 fn docs_default(key: &str) -> String {
-    let _ = key;
-    match LineageDepth::DEFAULT {
-        LineageDepth::Hops(n) => format!("`{n}`"),
-        LineageDepth::All => "`all`".to_string(),
+    match key {
+        "lineage_depth" => match LineageDepth::DEFAULT {
+            LineageDepth::Hops(n) => format!("`{n}`"),
+            LineageDepth::All => "`all`".to_string(),
+        },
+        _ => "`false`".to_string(),
     }
 }
 
@@ -1053,7 +1074,10 @@ mod tests {
         );
         assert_eq!(
             get(&["docs"]),
-            ["lineage_depth"].iter().map(|s| s.to_string()).collect()
+            ["catalog", "lineage_depth", "run_results"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
         );
         assert_eq!(
             s["properties"]["docs"]["additionalProperties"],
