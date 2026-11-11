@@ -275,22 +275,44 @@ comment can never disagree with the screen.
   collects distinct values of a `meta` key (default `owner`, set
   `owner_meta_key` in `config.yml`) off the affected downstream nodes —
   changed nodes themselves are excluded.
-- **`dbtl check`** prints one `PASS`/`FAIL` line per gate and exits 1 when any
-  fails. Gates: **`--coverage-min <pct>`** (test coverage below the
+- **`dbtl check`** prints one `PASS`/`WARN`/`FAIL`/`SKIP` line per gate —
+  with the violating findings indented under tripped gates — and exits 1
+  when any fails. Gates: **`--coverage-min <pct>`** (test coverage below the
   threshold — the same `coverage_gap` counts the status `cov%` shows), and —
   with `--diff <BASELINE>` — **newly introduced layer violations**,
   **changed models/seeds/snapshots without tests** (the impact pack's risk
   flags), and with **`--no-breaking`** any **breaking column change still
   referenced downstream** (removed/renamed columns whose readers didn't
   migrate — the failure line names each `model.column`, `old -> new` for
-  renames; partial-breaking type/expression moves report but never trip it).
+  renames; partial-breaking type/expression moves report but never trip it;
+  without `--diff` the gate reports `SKIP`).
   **`--lint`** adds one gate per static structure rule (see the next
   section) — and under `--diff` only violations that did not exist in the
   baseline fail it. **`--rules a,b,c`** runs a named subset (implies
-  `--lint`), **`--format json`** serializes the whole report for automation.
+  `--lint`), **`--docs-dir <DIR>`** gates on generated-docs freshness (the
+  same comparison `dbtl docs --check` runs).
   A `--diff` run also prints informational (non-gating) lines — the resolved
   baseline label and the same `affected owners:` set the impact report lists.
-  `--quiet` suppresses the report for an exit-code-only check.
+- **Report formats and destinations.** `dbtl check` and `dbtl lint` build one
+  `dbtl.report/v1` report and render it through `--format`: **`text`** (the
+  line report, default), **`markdown`** (a `<!-- dbtl:report -->`-marked
+  document for PR comments/step summaries), **`json`** (the report
+  verbatim), **`github`** (Actions `::error`/`::warning` annotations),
+  **`sarif`** (code-scanning upload), **`junit`** (test-report XML), and
+  **`codeclimate`** (Code Quality issues). Repeatable
+  **`--report <FMT>:<PATH>`** writes any of them to files — byte-identical
+  to that format's stdout, parents created, existing files overwritten.
+  **`--step-summary`** appends the markdown report to the file
+  `GITHUB_STEP_SUMMARY` names (a no-op off GitHub Actions);
+  **`--path-prefix <PREFIX>`** rewrites the file paths the
+  `github`/`sarif`/`codeclimate` formats emit, for a project living in a
+  repository subdirectory; **`--quiet`** suppresses stdout only — report
+  files still write and the exit code still gates.
+- **`dbtl lint`** takes the same report options — `--format`, `--report`,
+  `--step-summary`, `--path-prefix`, `--quiet` — plus its own
+  `--write-baseline`/`--no-baseline`/`--list-rules`/`--explain` flags.
+  `dbtl impact` accepts `--report markdown:<PATH>`/`json:<PATH>` for the
+  same bytes its stdout prints.
 
 Example GitHub-Actions shape:
 
@@ -298,7 +320,8 @@ Example GitHub-Actions shape:
 dbtl impact --manifest target/manifest.json --diff "$BASE/target/manifest.json" \
     >> "$GITHUB_STEP_SUMMARY"
 dbtl check  --manifest target/manifest.json --diff "$BASE/target/manifest.json" \
-    --coverage-min 80 --lint
+    --coverage-min 80 --lint --format github \
+    --report sarif:reports/dbtl.sarif --step-summary
 ```
 
 ### Static project lint (`dbtl check --lint`, `.dbtl.yml`)

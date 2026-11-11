@@ -165,15 +165,19 @@ fn warn_findings_report_with_their_severity() {
     let out = lint_on(&m, &[]);
     assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
     let stdout = out_text(&out);
-    // The finding line carries its severity tag…
+    // The gate line carries its severity tag…
     assert!(
-        stdout.lines().any(|l| l.starts_with("warn ")),
-        "a warn finding line: {stdout}"
+        stdout
+            .lines()
+            .any(|l| l.starts_with("WARN lint direct_join_to_source:") && l.ends_with("(warn)")),
+        "a warn gate line: {stdout}"
     );
-    // …and the summary counts errors and warnings separately.
+    // …and a counted finding line nests under it.
     assert!(
-        stdout.contains("error(s),") && stdout.contains("warning(s),"),
-        "severity tally: {stdout}"
+        stdout
+            .lines()
+            .any(|l| l.starts_with("  ") && l.contains("direct_join_to_source ")),
+        "a finding line: {stdout}"
     );
 }
 
@@ -424,15 +428,21 @@ fn missing_explicit_baseline_warns_but_still_runs() {
 fn check_and_lint_count_the_same_findings() {
     let m = fixture_manifest();
     // `lint --format json`: with no baseline file beside the fixture, the
-    // counted set is exactly the non-baselined findings.
+    // counted set is exactly the non-baselined findings across every gate.
     let out = lint_on(&m, &["--format", "json"]);
     assert_eq!(out.status.code(), Some(1));
     let lint_json: serde_json::Value =
         serde_json::from_str(&out_text(&out)).expect("lint stdout is pure JSON");
-    let mut lint_counted: Vec<(String, String)> = lint_json["findings"]
+    let mut lint_counted: Vec<(String, String)> = lint_json["gates"]
         .as_array()
         .unwrap()
         .iter()
+        .flat_map(|g| {
+            g["findings"]
+                .as_array()
+                .map(|a| a.iter())
+                .unwrap_or_default()
+        })
         .filter(|f| f["baselined"] == false)
         .map(|f| {
             (
@@ -443,7 +453,7 @@ fn check_and_lint_count_the_same_findings() {
         .collect();
     lint_counted.sort();
 
-    // `check --lint --format json`: each lint check carries exactly the
+    // `check --lint --format json`: each lint gate carries exactly the
     // findings that gated — by construction the same counted set.
     let out = run(&[
         "check",
@@ -456,17 +466,18 @@ fn check_and_lint_count_the_same_findings() {
     assert_eq!(out.status.code(), Some(1));
     let check_json: serde_json::Value =
         serde_json::from_str(&out_text(&out)).expect("check stdout is pure JSON");
-    let mut check_counted: Vec<(String, String)> = check_json["checks"]
+    let mut check_counted: Vec<(String, String)> = check_json["gates"]
         .as_array()
         .unwrap()
         .iter()
-        .filter(|c| c["check"].as_str().is_some_and(|n| n.starts_with("lint:")))
-        .flat_map(|c| {
-            c["findings"]
+        .filter(|g| g["id"].as_str().is_some_and(|n| n.starts_with("lint:")))
+        .flat_map(|g| {
+            g["findings"]
                 .as_array()
                 .map(|a| a.iter())
                 .unwrap_or_default()
         })
+        .filter(|f| f["baselined"] == false)
         .map(|f| {
             (
                 f["rule"].as_str().unwrap().to_string(),
@@ -658,9 +669,23 @@ fn json_output_is_machine_readable_and_stdout_clean() {
     let stdout = out_text(&out);
     let json: serde_json::Value =
         serde_json::from_str(&stdout).expect("stdout is pure JSON — no log lines mixed in");
-    let findings = json["findings"].as_array().expect("findings array");
+    assert_eq!(json["schema"], "dbtl.report/v1", "the schema marker");
+    for key in ["tool_version", "project", "scope", "summary"] {
+        assert!(json.get(key).is_some(), "report carries {key}");
+    }
+    let gates = json["gates"].as_array().expect("gates array");
+    assert!(!gates.is_empty(), "gates present");
+    let findings: Vec<&serde_json::Value> = gates
+        .iter()
+        .flat_map(|g| {
+            g["findings"]
+                .as_array()
+                .map(|a| a.iter())
+                .unwrap_or_default()
+        })
+        .collect();
     assert!(!findings.is_empty(), "findings present");
-    for f in findings {
+    for f in &findings {
         for key in [
             "rule",
             "node_uid",
@@ -673,12 +698,11 @@ fn json_output_is_machine_readable_and_stdout_clean() {
             assert!(f.get(key).is_some(), "finding carries {key}: {f}");
         }
     }
-    assert_eq!(json["fail_on"], "error", "the effective fail_on reports");
-    assert_eq!(json["failed"], true);
     let summary = &json["summary"];
-    for key in ["errors", "warnings", "baselined"] {
+    for key in ["errors", "warnings", "baselined", "skipped"] {
         assert!(summary.get(key).is_some(), "summary carries {key}");
     }
+    assert!(summary["errors"].as_u64().unwrap() > 0, "errors counted");
 }
 
 #[test]
@@ -699,12 +723,13 @@ fn text_output_is_deterministic_across_runs() {
     let a = lint_on(&m, &[]);
     let b = lint_on(&m, &[]);
     assert_eq!(a.stdout, b.stdout, "same input → byte-identical stdout");
-    // One finding per line, severity-tagged, with the rule id.
+    // One counted finding per line under the gate it tripped —
+    // `file:line rule message`.
     let stdout = out_text(&a);
     assert!(
         stdout
             .lines()
-            .any(|l| l.starts_with("error ") && l.contains("direct_join_to_source")),
+            .any(|l| l.starts_with("  ") && l.contains("direct_join_to_source ")),
         "finding lines: {stdout}"
     );
 }
@@ -797,16 +822,14 @@ fn check_json_carries_warn_statuses_and_finding_fields() {
     let json: serde_json::Value =
         serde_json::from_str(&out_text(&out)).expect("stdout is pure JSON");
     assert!(
-        json["warnings"].as_u64().unwrap_or(0) > 0,
-        "WARN checks count at the top level: {json}"
+        json["summary"]["warnings"].as_u64().unwrap_or(0) > 0,
+        "WARN gates count in the summary: {json}"
     );
-    let checks = json["checks"].as_array().unwrap();
-    let lint_warn = checks
+    let gates = json["gates"].as_array().unwrap();
+    let lint_warn = gates
         .iter()
-        .find(|c| {
-            c["check"].as_str().is_some_and(|n| n.starts_with("lint:")) && c["status"] == "warn"
-        })
-        .expect("a warn-status lint check exists");
+        .find(|g| g["id"].as_str().is_some_and(|n| n.starts_with("lint:")) && g["status"] == "warn")
+        .expect("a warn-status lint gate exists");
     let finding = &lint_warn["findings"].as_array().unwrap()[0];
     for key in [
         "severity",
