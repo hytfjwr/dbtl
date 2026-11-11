@@ -15,7 +15,9 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="#features">Features</a> ·
   <a href="#usage">Usage</a> ·
-  <a href="#keybindings">Keybindings</a>
+  <a href="#keybindings">Keybindings</a> ·
+  <a href="docs/">Guides</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 ---
@@ -42,7 +44,22 @@ $ brew install hytfjwr/tap/dbtl
 
 Homebrew works on macOS and Linux. Other options:
 
-- **Prebuilt binaries.** Download a tarball for your platform from the [releases page](https://github.com/hytfjwr/dbtl/releases). `checksums.txt` is included.
+- **Prebuilt binaries.** Download the archive for your platform from the [releases page](https://github.com/hytfjwr/dbtl/releases):
+
+  | Platform | Artifact |
+  |---|---|
+  | macOS (Apple Silicon / Intel) | `*-aarch64-apple-darwin.tar.gz` / `*-x86_64-apple-darwin.tar.gz` |
+  | Linux (x86_64 / ARM64) | `*-x86_64-unknown-linux-gnu.tar.gz` / `*-aarch64-unknown-linux-gnu.tar.gz` |
+  | Linux, fully static (x86_64 / ARM64, musl) | `*-x86_64-unknown-linux-musl.tar.gz` / `*-aarch64-unknown-linux-musl.tar.gz` |
+  | Windows (x86_64) | `*-x86_64-pc-windows-msvc.zip` |
+
+  Each archive contains the `dbtl` binary, `LICENSE`, `README.md`, shell completions (`completions/`), and a man page (`man/dbtl.1`). Verify the download against `checksums.txt` and the build provenance before unpacking:
+
+  ```console
+  $ sha256sum --check --ignore-missing checksums.txt
+  $ gh attestation verify dbtl-v0.6.0-aarch64-apple-darwin.tar.gz --repo hytfjwr/dbtl
+  ```
+
 - **From source** (Rust 1.88+):
 
   ```console
@@ -50,6 +67,8 @@ Homebrew works on macOS and Linux. Other options:
   $ cd dbtl
   $ cargo install --path .
   ```
+
+Once installed, `dbtl completions <SHELL>` prints a completion script for `bash`, `zsh`, `fish`, `powershell`, or `elvish`, and `dbtl man` prints the man page in roff — the release archives ship both pre-generated under `completions/` and `man/dbtl.1`.
 
 ## Quick start
 
@@ -148,6 +167,34 @@ Click to select and move the cursor, double-click to commit (re-root, expand, st
 
 </td>
 </tr>
+<tr>
+<td valign="top">
+
+### Docs that match the screen
+`dbtl docs` writes a committable Markdown tree — a page per node with description, columns, tests, SQL, lint, and a bounded Mermaid lineage, plus a README index with coverage stats and owner/tag/group indexes. Regeneration is byte-deterministic, so CI can gate on `docs --check` or the `docs_drift` gate.
+
+</td>
+<td valign="top">
+
+### Gates, lint, and a GitHub Action
+`dbtl check` gates coverage, layer violations, untested and breaking changes, docs drift, and more against a `--diff` baseline — `git:<rev>` included — and `dbtl lint` runs a `dbt_project_evaluator`-style rule set statically. Wire it up with the composite Action (`uses: hytfjwr/dbtl`) or a pre-commit hook, and read the verdict as text, Markdown, JSON, GitHub annotations, SARIF, JUnit, or CodeClimate.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### Never lose a warning
+Transitory toasts surface loader and config warnings as they happen, and every one also lands in a bounded notification log — the `!N` status chip counts the unread, and `Ctrl-n` opens the center to page through them.
+
+</td>
+<td valign="top">
+
+### One selector grammar everywhere
+The dbt-selector language — `tag:`, `path:`, `config.materialized:`, `meta:`, `exposure:`, `state:`, hops, globs, unions, intersections — drives `dbtl ls`, the TUI's `!` search, and `--select`/`--exclude` on `check`, `lint`, `impact`, and `docs`, so a spec means the same set in every context.
+
+</td>
+</tr>
 </table>
 
 ## Usage
@@ -205,7 +252,17 @@ $ dbtl check --lint --format json                                 # the whole re
 $ dbtl check --column-coverage-min 50 --doc-coverage-min 80       # + column-test and description coverage
 $ dbtl check --diff git:main --max-blast-radius 10                # + a ceiling on the blast radius
 $ dbtl check --gate changed_hubs=error --gate blast_radius=warn   # per-gate severity overrides
+
+# Static lint, node listing, shell completions (all non-interactive)
+$ dbtl lint                                                   # the lint gate set on its own
+$ dbtl lint --list-rules                                      # every rule with its effective severity
+$ dbtl lint --write-baseline                                  # freeze current findings (.dbtl-baseline.json)
+$ dbtl ls 'tag:marts+'                                        # the models a selector picks, one per line
+$ dbtl ls 'state:modified+' --diff git:main                   # a branch's blast radius as a selection
+$ dbtl completions zsh                                        # shell completion script on stdout
 ```
+
+Global flags (`--manifest`, `--source`, `--project`, `--diff`, `--run-results`, `--catalog`, `--include-packages`, `--sql-dialect`) work on either side of a subcommand — `dbtl --manifest m.json check` and `dbtl check --manifest m.json` are the same. A flag a subcommand doesn't consume (a TUI-only flag next to a subcommand, or a misplaced data flag) is rejected as a usage error rather than silently ignored — see [Exit codes](#exit-codes).
 
 ### How `--diff` compares
 
@@ -245,7 +302,7 @@ The scope is always visible where numbers are reported: the status bar shows `sc
 
 The owning package is the manifest's `metadata.project_name` (the root project dbt recorded; on old manifests without it, the most frequent `model.<pkg>.<name>` uid segment — a heuristic dbtl warns about when several packages are present and the guess is genuinely ambiguous). On such unrecorded manifests the *displayed* project name (title bar, docs index) can differ from the *scoped* package: the display name takes the lexicographically smallest uid segment for stability while the scope follows the most frequent one — under recorded metadata they always agree. `--project-only` still parses for backwards compatibility but is a deprecated no-op — the default already is what it asked for — and prints a deprecation warning on stderr (it also conflicts with `--include-packages`). In source mode `--include-packages` is a no-op with a warning, since installed packages are never parsed.
 
-### The last run and the warehouse
+### Side artifacts: the last run and the warehouse
 
 Two more dbt artifacts are picked up automatically when they sit next to the data source — the manifest's directory (usually `target/`) in manifest mode, `<project>/target/` in source mode. A missing file just means less data, never an error.
 
@@ -254,108 +311,35 @@ Two more dbt artifacts are picked up automatically when they sit next to the dat
 
 ### Markdown docs (`dbtl docs`)
 
-`dbtl docs --out <DIR>` never starts the TUI, so it runs in CI without a TTY. It writes a Markdown documentation tree that you can commit to a repo and read on GitHub or GitLab:
+`dbtl docs --out <DIR>` never starts the TUI, so it runs in CI without a TTY. It writes a committable Markdown documentation tree — a page per node under per-resource-type directories (`models/`, `sources/`, `exposures/`, …) with description, columns (each with upstream links and a `Used by` count), tests, SQL, lint violations, and a Mermaid lineage figure bounded to GitHub's render limits — plus a `README.md` index with coverage stats, lint totals, orphans, owner/tag/group index pages, and a whole-graph diagram.
 
-- **One page per node** — model, source, seed, snapshot, exposure, plus semantic models, metrics, and saved queries from a compiled manifest. Each page has the description, materialization, schema, tags, a sorted `meta` table, tests (with the `relationships` target linked and the unit-test `in:`/`given:`/`expect:` row counts where the manifest records them), direct and transitive upstream/downstream links, and a Mermaid lineage diagram. The column table lists declared columns in dbt definition order; on models and snapshots each column also gets an `Upstream` cell of linked source columns (up to five entries, then `+K more`) and a `Used by` count of distinct downstream consumers — sources and seeds carry `Used by` only.
-- **Optional warehouse + run metadata** — pass `--catalog <path>` to add a `Warehouse type` column plus `rows:`/`size:` bullets per node, and `--run-results <path>` to add a `last run:` status line (status, execution time, and the artifact's `generated_at`). Both are strictly opt-in — `.dbtl.yml`'s `docs.catalog`/`docs.run_results` load the conventional sibling files — a `catalog.json`/`run_results.json` sitting next to the manifest is never auto-detected, and the index `README.md` names what was actually loaded in an `Includes:` line.
-- **An index `README.md`** — opens with the project's `__overview__` docs block when the manifest carries one, then a project summary enumerating every resource type in the graph (the counts always sum to the total), test coverage % with a per-layer model table (the same layer split the lineage diagram uses), column-level coverage (tested declared columns — the same numbers the stats dashboard quotes), a `## Documentation coverage` section (documented models and declared columns), a list of orphan models, a linked table of every node, and a whole-project Mermaid diagram. Large projects get the diagram split by layer.
-- **Cross-resource index pages** — `owners.md`, `tags.md`, and `groups.md` beside the README, linked from its `## Indexes` section. Owners groups models by the `owner` meta value (the project `.dbtl.yml`'s `owner_meta_key` picks a different key — the page states which one it used; user-level config is never read, so committed output doesn't vary by machine), tags groups tagged models/seeds/snapshots by tag, and groups groups models by their dbt `group` with a public/protected/private access summary. All three are always generated — an empty index says so — so the README's links always resolve.
+```console
+$ dbtl docs --out ./dbt-docs --clean   # delete stale generated pages too
+$ dbtl docs --out ./dbt-docs --check   # write nothing; exit 1 when docs are stale
+$ dbtl docs --select 'path:marts+' --out docs/marts   # a partial tree
+```
 
-The data source is chosen the same way as in the TUI (`--manifest` / `--source` / `--project` / auto-detect). The output is deterministic: regenerating from the same input produces byte-identical files.
-
-Every generated file starts with a `<!-- Generated by dbtl. Do not edit. -->` marker. Two housekeeping flags rely on it:
-
-- **`--clean`** writes the docs, then deletes marked files under `<DIR>` that this run did not regenerate, such as the pages of removed or renamed models. Only marked files are ever removed, so a hand-written `.md` in the same directory is safe.
-- **`--check`** writes nothing. It compares the generated set against `<DIR>`, prints one line per difference (a missing, changed, or stale marked file), and exits 1 if there are any. Unlike running `git diff --exit-code` after regenerating, it also catches stale pages, and it needs no checkout step in CI: `dbtl docs --out docs/ --check`.
-- **`--select <SELECTOR>` / `--exclude <SELECTOR>`** (repeatable, the same dbt-selector grammar `dbtl ls` uses) generate a *partial* tree: only the selected nodes get pages — no `--select` means every node minus the exclusions. Links into ungenerated pages degrade to plain names so every emitted link still resolves, the README records the selection on `Selection:`/`Excluding:` lines, and its summary counts stay project-wide. `state:` specs compare against `--diff`; `--clean`/`--check` can't pair with a partial set (a whole-set comparison makes no sense on one).
+The output is deterministic — regenerating from the same input is byte-identical — and environment-independent: it never reads the user-level `config.yml` or `target/compiled/` files, and `--catalog`/`--run-results` are strictly opt-in. Node-page diagrams default to depth 2 (`--lineage-depth <N|all>`); figures that would exceed the Mermaid budget shrink or degrade to an explicit omission note instead of breaking the render. The full guide: [docs/docs-generator.md](docs/docs-generator.md).
 
 ### PR impact + CI checks (`dbtl impact` / `dbtl check`)
 
-Two more non-interactive subcommands (no TTY needed — both return before any
-terminal init, just like `dbtl docs`). They compute the *same*
-`dbtl_core::diff_report` payload the TUI's `D` diff modal snapshots, so a CI
-comment can never disagree with the screen.
+Two non-interactive subcommands (no TTY needed — both return before any terminal init) compute the *same* `dbtl_core::diff_report` payload the TUI's `D` diff modal snapshots, so a CI comment can never disagree with the screen.
 
-- **`dbtl impact --diff <BASELINE>`** prints the PR impact pack — the diff
-  listings (added / removed / modified / edge changes), the **Column changes**
-  section (per-column classification + the downstream columns/models/marts/
-  exposures each reaches), the aggregate blast radius, affected marts,
-  exposures, and owners, suggested `dbt build --select …` commands
-  (model-granular *and* the column-narrowed one), and the risk flags — as
-  **Markdown** (the exact bytes the `D`→`e`
-  export writes; paste or post as a PR comment). `--format json` emits the
-  `DiffReport` payload verbatim for automation. The "Affected owners" section
-  collects distinct values of a `meta` key (default `owner`, set
-  `owner_meta_key` in `config.yml`) off the affected downstream nodes —
-  changed nodes themselves are excluded. **`--select <SELECTOR>`**
-  (repeatable) narrows the report to the matching changed nodes — the
-  added/modified listings, blast radius, hubs, exposures, and the
-  `dbt build` suggestion all describe only the selected changes.
-- **`dbtl check`** prints one `PASS`/`WARN`/`FAIL`/`SKIP` line per gate —
-  with the violating findings indented under tripped gates — and exits 1
-  when any fails. Gates: **`--coverage-min <pct>`** (test coverage below the
-  threshold — the same `coverage_gap` counts the status `cov%` shows),
-  **`--column-coverage-min <pct>`** (schema tests on declared columns),
-  **`--doc-coverage-min <pct>`** (models carrying a description), and —
-  with `--diff <BASELINE>` — **newly introduced layer violations**,
-  **changed models/seeds/snapshots without tests**, **changed hubs**
-  (a changed node feeding ≥ `min_downstream` models), **affected
-  exposures**, **`--max-blast-radius <N>`** (a ceiling on the affected-model
-  count), and with **`--no-breaking`** any **breaking column change still
-  referenced downstream** (removed/renamed columns whose readers didn't
-  migrate — the failure line names each `model.column`, `old -> new` for
-  renames; partial-breaking type/expression moves report but never trip it;
-  without `--diff` the gate reports `SKIP`).
-  **`--gate <id>=error|warn|off`** overrides any gate's severity
-  (repeatable — the gate ids are the `check.gates` keys below); a `warn`
-  gate reports WARN without failing unless `--fail-on warn` (or
-  `.dbtl.yml`'s `fail_on`) says otherwise, and every named-parameter flag
-  lifts its gate to `error` when the gate is off. An enabled diff gate
-  with no `--diff` prints `SKIP … needs --diff`, never a silent gap.
-  **`--lint`** adds one gate per static structure rule (see the next
-  section) — and under `--diff` only violations that did not exist in the
-  baseline fail it. **`--rules a,b,c`** runs a named subset (implies
-  `--lint`), **`--docs-dir <DIR>`** gates on generated-docs freshness (the
-  same comparison `dbtl docs --check` runs). **`--select <SELECTOR>`**
-  (repeatable) scopes every gate to the matching nodes — the coverage
-  counts, lint findings, and diff-derived readouts all intersect it (the
-  `docs_drift` comparison stays whole-set), `state:` atoms compare against
-  `--diff`, and an empty match warns and passes.
-  A `--diff` run also prints informational (non-gating) lines — the resolved
-  baseline label and the same `affected owners:` set the impact report lists.
-- **Report formats and destinations.** `dbtl check` and `dbtl lint` build one
-  `dbtl.report/v1` report and render it through `--format`: **`text`** (the
-  line report, default), **`markdown`** (a `<!-- dbtl:report -->`-marked
-  document for PR comments/step summaries), **`json`** (the report
-  verbatim), **`github`** (Actions `::error`/`::warning` annotations),
-  **`sarif`** (code-scanning upload), **`junit`** (test-report XML), and
-  **`codeclimate`** (Code Quality issues). Repeatable
-  **`--report <FMT>:<PATH>`** writes any of them to files — byte-identical
-  to that format's stdout, parents created, existing files overwritten.
-  **`--step-summary`** appends the markdown report to the file
-  `GITHUB_STEP_SUMMARY` names (a no-op off GitHub Actions);
-  **`--path-prefix <PREFIX>`** rewrites the file paths the
-  `github`/`sarif`/`codeclimate` formats emit, for a project living in a
-  repository subdirectory; **`--quiet`** suppresses stdout only — report
-  files still write and the exit code still gates.
-- **`dbtl lint`** takes the same report options — `--format`, `--report`,
-  `--step-summary`, `--path-prefix`, `--quiet` — plus its own
-  `--write-baseline`/`--no-baseline`/`--list-rules`/`--explain` flags, and
-  `--select <SELECTOR>` restricts the findings to the matching nodes
-  (`state:` atoms compare against `--diff`; it can't combine with the
-  query modes or `--write-baseline`).
-  `dbtl impact` accepts `--report markdown:<PATH>`/`json:<PATH>` for the
-  same bytes its stdout prints.
+- **`dbtl impact --diff <BASELINE>`** prints the PR impact pack — diff listings (added / removed / modified / edge changes), a **Column changes** section (which downstream columns, models, marts, and exposures each changed column reaches), blast radius, affected hubs/exposures/owners, `dbt build --select` suggestions, and risk flags — as Markdown or `--format json`. `--select <SELECTOR>` narrows the report to matching changed nodes.
+- **`dbtl check`** prints one `PASS`/`WARN`/`FAIL`/`SKIP` line per gate and exits 1 when any fails at or above `--fail-on`. Gates: test coverage (`--coverage-min`), column coverage, doc coverage, and with `--diff` — new layer violations, untested changes, changed hubs, affected exposures, blast radius (`--max-blast-radius`), and breaking column changes still referenced downstream (`--no-breaking`); `--lint` adds one gate per rule and `--docs-dir <DIR>` gates on generated-docs freshness. `--gate <id>=error|warn|off` overrides severities, `.dbtl.yml`'s `check:` section configures them per project, and an enabled diff gate without `--diff` reports `SKIP`, never a silent gap. `--select` scopes every gate to matching nodes.
+- **`dbtl lint`** runs the rule set on its own, with `--write-baseline`/`--no-baseline`/`--list-rules`/`--explain` on top — see [Static project lint](#static-project-lint-dbtl-lint-dbtlyml) below.
+- **Reports.** `check` and `lint` render one `dbtl.report/v1` document through `--format` (`text` default, `markdown`, `json`, `github` annotations, `sarif`, `junit`, `codeclimate`); repeatable `--report <FMT>:<PATH>` writes files, `--step-summary` appends to `GITHUB_STEP_SUMMARY`, `--path-prefix` rewrites annotation paths for repo subdirectories, and `--quiet` keeps only the exit code. `dbtl impact` takes `--report markdown:<PATH>`/`json:<PATH>`.
 
-Example GitHub-Actions shape:
+The fastest CI wiring is the composite Action — it installs a release binary, runs `dbtl check` with annotations and a step summary, and diffs against the PR's base commit:
 
-```sh
-dbtl impact --manifest target/manifest.json --diff "$BASE/target/manifest.json" \
-    >> "$GITHUB_STEP_SUMMARY"
-dbtl check  --manifest target/manifest.json --diff "$BASE/target/manifest.json" \
-    --coverage-min 80 --lint --format github \
-    --report sarif:reports/dbtl.sarif --step-summary
+```yaml
+- uses: hytfjwr/dbtl@<commit-sha> # v0.6.0
+  with:
+    version: v0.6.0
+    project-dir: .
 ```
+
+Full workflows (SARIF upload, sticky PR comments, baselines, GitLab, pre-commit): [docs/ci.md](docs/ci.md).
 
 ### Listing selected nodes (`dbtl ls`)
 
@@ -385,169 +369,34 @@ set may not match dbt's `state:modified`. An empty match prints nothing
 (`[]` under `json`) and still exits 0; a malformed spec is a usage error
 (exit 2).
 
-### Static project lint (`dbtl check --lint`, `.dbtl.yml`)
+### Static project lint (`dbtl lint`, `.dbtl.yml`)
 
-The `dbt_project_evaluator`-style best-practice checks — the ones that package
-normally materializes in your warehouse — evaluated **statically** against the
-same `Dag` everything else reads. No warehouse connection, no `dbt run`, and in
-source mode not even `dbt parse`/`dbt compile`: a CI run is seconds, and the
-results are deterministic.
+The `dbt_project_evaluator`-style best-practice checks — the ones that package normally materializes in your warehouse — evaluated **statically** against the same `Dag` everything else reads. No warehouse connection, no `dbt run`, and in source mode not even `dbt parse`/`dbt compile`: a CI run is seconds, and the results are deterministic.
 
-One `run_rules` findings vector feeds every surface, so the numbers can never
-drift apart: `dbtl check --lint` gates on it, and the TUI reads it everywhere —
-the **Lint** `t`-lens tints each violating node by its worst severity (error
-red / warn yellow), `F` filters the model list to linted nodes, `n`/`N` cycle
-them under the lens, the inspector lists the selected node's findings with
-severity marks, the `S` dashboard adds a per-rule worklist and the
-error/warning split, and the `⌂` home tab quotes the same split. `dbtl docs`
-puts a Lint summary in the generated README plus a "Lint violations" section
-on each node's page.
+One `run_rules` findings vector feeds every surface, so the numbers can never drift apart: `dbtl check --lint` gates on it, `dbtl lint` reports it, `dbtl docs` puts a summary in the README plus a "Lint violations" section per page, and the TUI reads it through the **Lint** `t`-lens, `F` filter, `n`/`N` cycling, inspector findings, the `S` worklist, and the `⌂` home split.
 
-Every rule declares what it needs — the graph alone, parsed SQL, or the
-`catalog.json` warehouse record. A rule whose input isn't there is
-**skipped**: `dbtl lint` and `check` both print `SKIP lint <rule>:
-<reason>` gate rows, and the `dbtl.report/v1` JSON carries them as
-`gates[]` entries with `status: "skip"` (counted in `summary.skipped`) —
-informational only, never a failure.
-`dbtl lint`, `check --lint`, and `docs` all parse SQL lazily (a shared
-resolver parses a model only when a SQL rule asks, memoized across rules)
-and auto-detect `catalog.json` next to the data source; the TUI passes the
-catalog but never parses SQL (parsing every model up front would stall
-startup), so its Lint lens stays graph+catalog only.
+Rules declare what they need — the graph alone, parsed SQL (parsed lazily per model), or `catalog.json` — and a rule whose input is missing is **skipped** (`SKIP` gate rows, never a failure). The rule set spans graph structure (`model_fanout`, `root_models`, `layer_violation`, …), governance (`missing_primary_key_tests`, `naming_conventions`, …), a warn-severity tier (`unused_sources`, `incremental_without_unique_key`, …), SQL-content checks (`select_star`, `hard_coded_references`, `cartesian_join`, …), and warehouse drift checks against `catalog.json` (`warehouse_type_drift`, `columns_missing_in_warehouse`). The full listing is a command away:
 
-The initial rule set (all enabled by default):
+```console
+$ dbtl lint --list-rules                 # every rule, its needs, its effective severity
+$ dbtl lint --explain model_fanout       # what it flags and how to configure it
+```
 
-| Rule | Flags |
-| --- | --- |
-| `direct_join_to_source` | a model directly depends on both a source and a model |
-| `multiple_sources_joined` | a model directly depends on 2+ sources |
-| `source_fanout` | a source directly feeds ≥ `source_fanout_threshold` models (default 2) |
-| `model_fanout` | a model directly feeds ≥ `model_fanout_threshold` leaf models (default 5, the hub threshold) |
-| `root_models` | a model has no parents |
-| `rejoining_upstream` | a redundant hop: A→B→C while A→C also exists and B has no other data-node child (endpoint resources like exposures don't count as a use) |
-| `marts_depend_on_source` | a marts/intermediate model directly depends on a source (layer resolved prefix-first — `staging/fct_x` counts as marts) |
-| `missing_primary_key_tests` | a model lacks `unique`+`not_null` on the same column or `unique_combination_of_columns` |
-| `public_models_without_contract` | `access: public` without `contract: enforced` |
-| `undocumented_models` | a model has no description |
-| `naming_conventions` | a model's name misses its resolved layer's prefix (`stg_`, `int_`, `fct_`/`dim_`/`rpt_`) |
-| `layer_violation` | a backward edge between logical layers — the shared `layer_violation_edges` predicate |
-
-A second rule set ships enabled but at `warn` severity — they report WARN in
-`dbtl lint`, the docs summary, and the TUI worklist, and only gate `check`
-when you set `fail_on: warn` or raise a rule to `severity: error`:
-
-| Rule | Flags |
-| --- | --- |
-| `unused_sources` | a source is declared but never referenced (exposures count as a use) |
-| `duplicate_sources` | two or more sources resolve to the same warehouse relation |
-| `staging_depends_on_staging` | a staging model directly depends on another staging model |
-| `too_many_joins` | a model directly depends on ≥ `threshold` data resources (default 7) |
-| `chained_views` | a view/ephemeral model ends a consecutive view/ephemeral chain of ≥ `threshold` hops (default 5) — the terminal node lists the whole chain |
-| `exposure_parents_materializations` | an exposure directly depends on a source or a view/ephemeral model |
-| `exposures_dependent_on_private_models` | an exposure directly depends on a model that isn't `access: public` |
-| `undocumented_sources` | a source has no description |
-| `undocumented_columns` | a model has a declared column without a description |
-| `undocumented_public_models` | an `access: public` model lacks a model or column description |
-| `model_directories` | a model's prefix-derived layer disagrees with its directory-derived layer |
-| `required_meta_keys` | a model is missing a key listed in `keys` (empty by default = no-op) |
-| `contract_columns_without_type` | an enforced-contract model has a declared column without `data_type` |
-| `incremental_without_unique_key` | an incremental model has no `unique_key` (suppress append-style models with `exclude:`/`meta.dbtl.ignore`) |
-| `sources_without_freshness` | a source has no freshness configured (`warn_after`/`error_after` at source or table level) |
-
-A third set reads the model's SQL (raw text, or the manifest's
-`compiled_code`/`target/compiled/` override — skipped in the TUI):
-
-| Rule | Flags |
-| --- | --- |
-| `select_star` | the final SELECT uses `*`/`t.*` (parse-level — `select *, except(...)` still flags; a `count(*)`-style aggregate does not) |
-| `hard_coded_references` | a relation name is written into the SQL instead of `ref()`/`source()` (CTEs, `unnest`/table functions, and lateral joins don't count) |
-| `cartesian_join` | a `cross join` or `join` with no condition (excluding lateral/`unnest`-style function joins; implicit comma joins are out of scope) |
-| `unknown_column_reference` | the SQL reads a column its parent provably doesn't have — only when the parent's column set is trusted (warehouse catalog or enforced contract) |
-| `forbidden_patterns` | raw SQL matches a regex in `patterns` (empty by default = no-op); invalid patterns are rejected when `.dbtl.yml` is read |
-
-A fourth set compares declared columns against `catalog.json` — the same
-`target/catalog.json` sibling auto-detect/`--catalog` override `columns` and
-`impact` already use (skipped when no catalog resolves, and in the TUI it
-shares the exact drift comparison the `c` columns view shows):
-
-| Rule | Flags |
-| --- | --- |
-| `warehouse_type_drift` | a declared column's `data_type` disagrees with the warehouse's record (byte-for-byte, after the same casing the TUI shows) |
-| `columns_missing_in_warehouse` | a declared column is absent from the warehouse record (a node missing from `catalog.json` entirely is unknown, not flagged) |
-
-`--sql-dialect` selects the parse dialect (the manifest's adapter otherwise);
-`--catalog` overrides the auto-detected `catalog.json`. Both are accepted by
-`lint`, `check`, `impact`, `columns`, and `docs`.
-
-Rule policy lives in the **project-local `.dbtl.yml`** — deliberately *not*
-`~/.config/dbtl/config.yml`, because a CI gate must not depend on the
-developer's machine. In source mode the project dir is searched; in manifest
-mode a `<root>/target/manifest.json` layout looks at the project root first,
-then `target/` itself (a manifest anywhere else only consults its own
-directory — no unrelated parent `.dbtl.yml` is picked up). A malformed file
-is an error for `check` and `docs` (the TUI warns and falls back to
-defaults).
+Rule policy lives in the **project-local `.dbtl.yml`** — deliberately *not* `~/.config/dbtl/config.yml`, because a CI gate must not depend on the developer's machine. A minimal file:
 
 ```yaml
 # .dbtl.yml — every key optional; absent rules stay enabled
 fail_on: warn             # error (default) | warn | never — what counts as a failure
-owner_meta_key: team      # the meta key "affected owners" reads (beats config.yml's)
 lint:
   rules:
-    model_fanout: false        # disable individual rules
-    naming_conventions: false
-    incremental_without_unique_key:
-      exclude: ["path:models/legacy", "tag:append_only"]   # dbt selector specs — a matching node's findings are skipped
-  model_fanout_threshold: 4    # flag models feeding 4+ leaf models
-  source_fanout_threshold: 3
-  naming_prefixes:             # per-layer merge over the defaults
-    staging: [stg_, base_]     # staging/ also accepts base_
-    marts: []                  # marts/ is unchecked
-    other: [rpt_]              # flag unclassified models without rpt_ (evaluator parity)
+    model_fanout: false   # disable a rule, or {severity: warn}, or {exclude: [<selectors>]}
 check:
   lint: true              # fold the lint gates into `dbtl check` without --lint
-  gates:                  # severity only, or severity + parameters
+  gates:
     coverage: {severity: error, min: 80}
-    column_coverage: warn
-    changed_hubs: {min_downstream: 10}
-    blast_radius: {severity: error, max: 25}
-    docs_drift: {dir: docs/lineage}
 ```
 
-The `check.gates` ids are `coverage`, `column_coverage`, `doc_coverage`,
-`new_layer_violations`, `untested_changes`, `breaking_columns`,
-`changed_hubs`, `affected_exposures`, `blast_radius`, and `docs_drift`.
-Each accepts a bare `error`/`warn`/`off` or an object with `severity` plus
-its parameters (`min` for the coverage gates, `max` for `blast_radius`,
-`min_downstream` for `changed_hubs`, `dir` for `docs_drift`); a gate with
-parameters but no severity runs at `error`. Defaults match the flag-only
-behaviour — coverage, the two diff gates, and docs drift gate at `error`;
-`changed_hubs` and `affected_exposures` report at `warn`; everything else
-stays off until configured or flagged. The CLI overrides the file
-(`--gate`, `--coverage-min`, `--column-coverage-min`,
-`--doc-coverage-min`, `--max-blast-radius`, `--no-breaking`,
-`--docs-dir`), and the file overrides the shipped defaults.
-
-`dbtl check --lint --diff <BASELINE>` compares finding *keys* against the
-baseline's — only **newly introduced** violations gate (the same "new only"
-idea as the layer-violation gate), so adopting lint on a large existing
-project doesn't force a flag day: land `.dbtl.yml`, keep `main` green, and PRs
-fail only on the violations they add.
-
-Differences from `dbt_project_evaluator`: dbtl evaluates the pruned in-scope
-graph (root project by default — installed-package neighbours still count as
-dependency context but are never flagged). Layer resolution for
-`naming_conventions` / `marts_depend_on_source` follows the evaluator's
-`model_type` — **prefix first, then folder, else `other`** — but `other` is
-prefix-free by default where the evaluator expects `rpt_` (opt in with
-`naming_prefixes.other: [rpt_]`). `model_fanout` defaults to ≥5 aligned with
-dbtl's hub threshold (the evaluator's default is ≥3 — the operator is the
-same, only the default differs) and `source_fanout` to ≥2 (the evaluator's
->1). The evaluator's SQL-content checks live here too (`hard_coded_references`,
-`select_star`, …) — dbtl reads `raw_code`/`compiled_code` straight from the
-manifest instead of querying the warehouse, and `warehouse_type_drift` /
-`columns_missing_in_warehouse` replace the warehouse introspection with
-`catalog.json`.
+The full reference — rule-by-rule tables, `.dbtl.yml` keys and lookup order, baselines (`.dbtl-baseline.json`), `--select` scoping, evaluator parity notes — is in [docs/lint.md](docs/lint.md).
 
 ### Column lineage (`dbtl columns`)
 
@@ -706,7 +555,19 @@ lineage_collapse: 8    # fold a column's same-parent sibling tail into a +N more
 
 Precedence is `config.yml` < saved project state < explicit CLI flags — so `dbtl --theme x` always wins over a configured theme, and a project you already visited restores its saved lens rather than the configured one. A malformed `config.yml` prints a warning and is ignored; a stale state file can reference models that no longer exist — those bookmarks are simply dropped.
 
-Project-level lint policy is a different file — `.dbtl.yml` in the dbt project itself (see **Static project lint** above): rule enables, the fanout thresholds, and the naming prefixes. It is auto-detected next to the data source and re-read on `r` reload, like `run_results.json`.
+Project-level lint policy is a different file — `.dbtl.yml` in the dbt project itself (see [Static project lint](#static-project-lint-dbtl-lint-dbtlyml)): rule enables, the fanout thresholds, and the naming prefixes. It is auto-detected next to the data source and re-read on `r` reload, like `run_results.json`.
+
+## Exit codes
+
+Every non-interactive subcommand maps its outcome onto a small set of codes, so CI can distinguish "the project failed a gate" from "the invocation was wrong":
+
+| Code | Meaning | Examples |
+|---|---|---|
+| `0` | Success | gates passed, docs up to date, selector matched (even empty) |
+| `1` | Gate failure | a `check`/`lint` finding at or above `fail_on`; `docs --check` found drift |
+| `2` | Usage or config error | a malformed selector, a flag a subcommand doesn't take, a broken `.dbtl.yml` |
+| `3` | Input error | manifest not found, an unreadable baseline, an unknown `columns` node |
+| `101` | Internal panic | a bug — please [report it](https://github.com/hytfjwr/dbtl/issues/new/choose) |
 
 ## Troubleshooting
 
@@ -721,6 +582,15 @@ Unicode box-drawing characters have East Asian Ambiguous width, and some termina
 $ dbtl --ascii     # pure ASCII rendering
 $ dbtl --unicode   # skip the probe, keep Unicode box drawing
 ```
+
+</details>
+
+<details>
+<summary><b>The terminal is too small / panes disappeared</b></summary>
+
+<br>
+
+`dbtl` needs at least 50 columns × 12 rows; below that it draws only a "terminal too small" notice (`q` and `Ctrl-c` still work). Between 50 and 80 columns the model list collapses into a drawer (`Ctrl-b` toggles it, `Tab` cycles focus), and below 160 columns the inspector stops auto-showing — `I` toggles it manually. In a narrow tmux pane, resize or zoom (`prefix z`) rather than disabling panes.
 
 </details>
 

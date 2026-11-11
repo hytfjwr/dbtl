@@ -1,0 +1,68 @@
+name: Bug report
+description: Something in dbtl doesn't work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. A quick note on exit
+        codes first: `2` means a usage/config error and `3` an input error —
+        if `dbtl` printed one of those with an explanatory message, the
+        message itself is probably the answer.
+  - type: input
+    id: version
+    attributes:
+      label: dbtl version
+      description: Output of `dbtl --version`
+      placeholder: dbtl 0.5.3
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS and terminal, e.g. "macOS 15, iTerm2" or "Ubuntu 24.04, Windows Terminal over SSH"
+      placeholder: macOS, Ghostty
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Data source
+      options:
+        - Compiled manifest (target/manifest.json)
+        - Project source (no compile)
+        - A --diff comparison
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact invocation, e.g. `dbtl --manifest target/manifest.json check --lint`
+      render: console
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: What should have happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead?
+      description: Error output, a screenshot, or a description of the wrong behavior. For TUI rendering issues, a screenshot plus your terminal's size (`tput cols; tput lines`) helps a lot.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: If you can, a trimmed-down manifest.json or project layout that triggers it. Please scrub anything private — node names can be renamed freely.
+    validations:
+      required: false
