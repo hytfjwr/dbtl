@@ -24,7 +24,7 @@ const IGNORED_ROOT_DIRS: &[&str] = &["target", "dbt_packages", "dbt_internal_pac
 /// Load the `--diff git:<rev>` baseline: extract the project at `<project_dir>`
 /// (the repository-relative path `git rev-parse --show-prefix` reports for
 /// it) at revision `<rev>` into a temp dir and parse it from source. The
-/// returned label is the spec string verbatim (`git:<rev>`). Every failure
+/// returned label is the revision string verbatim (`git:<rev>`). Every failure
 /// is an input error except an obviously invalid `<rev>`, which is a usage
 /// error — a rev must never read as a git flag.
 pub(super) fn load(
