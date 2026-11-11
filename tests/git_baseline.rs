@@ -64,7 +64,7 @@ fn impact_reads_baseline_from_a_git_revision() {
         out.contains("stg_orders"),
         "the HEAD~1→HEAD change reports, got: {out:?}"
     );
-    // The baseline's own label is the spec string verbatim.
+    // The baseline's own label is the revision string verbatim.
     assert!(out.contains("`git:HEAD~1`"), "the rev label, got: {out:?}");
 }
 
