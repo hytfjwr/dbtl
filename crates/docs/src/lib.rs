@@ -98,7 +98,7 @@ impl Default for DocsOptions<'_> {
 }
 
 /// Generate the full documentation set for `dag` as `(relative path, contents)`
-/// pairs: one `<type-dir>/<sanitized-uid>.md` per node (see [`docs_dir`]) and a
+/// pairs: one `<type-dir>/<sanitized-uid>.md` per node (see `docs_dir`) and a
 /// single `README.md` index. `project_name` titles the index; `source_label`
 /// records where the data came from (a manifest path or a project dir) so a
 /// reader knows the provenance; `scope` is the package scope the graph was
