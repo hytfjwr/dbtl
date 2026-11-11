@@ -1443,6 +1443,36 @@ fn file_origin_compiled_sql_never_reaches_a_page() {
 }
 
 #[test]
+fn code_span_handles_hostile_keys() {
+    // `.dbtl.yml`'s `owner_meta_key` is caller-supplied text — a key with a
+    // backtick, a newline, or a `#`-heading line must not break the echo or
+    // smuggle content into the page.
+    assert_eq!(code_span("owner"), "`owner`");
+    assert_eq!(code_span("a`b"), "``a`b``");
+    assert_eq!(code_span("`edge`"), "`` `edge` ``");
+    assert_eq!(code_span("x\n## y"), "`x ## y`");
+    // Through the page: the hostile key echoes as ONE line, no `## y`
+    // heading escapes into the document.
+    let dag = governed_dag();
+    let out = generate_docs_with_options(
+        &dag,
+        "p",
+        "src",
+        PackageScope::Root,
+        &DocsOptions {
+            owner_meta_key: "a`b\n## planted",
+            ..Default::default()
+        },
+    );
+    let page = file(&out, "owners.md");
+    assert!(page.contains("Owner meta key: ``a`b ## planted``\n"));
+    assert!(
+        !page.contains("\n## planted"),
+        "the hostile newline was flattened: {page}"
+    );
+}
+
+#[test]
 fn sql_fence_grows_past_embedded_backticks() {
     let dag = sql_dag();
     let out = generate_docs(&dag, "p", "src", PackageScope::Root);
@@ -2602,7 +2632,8 @@ fn governed_dag() -> Dag {
             serde_json::Map::new(),
         ),
     );
-    // A tagged source — the tags index covers source/seed/snapshot too.
+    // An untagged source — sources can never carry tags in `NodeDetail`, so
+    // it's a pure bystander: never indexed, never linked.
     m.sources.insert(
         "source.p.raw.tbl".into(),
         RawSource {

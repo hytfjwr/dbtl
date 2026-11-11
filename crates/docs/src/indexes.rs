@@ -59,7 +59,10 @@ fn sorted_nodes<'a>(uids: impl Iterator<Item = &'a NodeInfo>) -> Vec<&'a NodeInf
 /// without it land in a trailing `(no owner)` section.
 fn owners_markdown(ctx: &PageInputs<'_>, key: &str) -> String {
     let mut s = String::from("# Owners\n\n");
-    s.push_str(&format!("Owner meta key: `{key}`\n"));
+    // The resolved key is config-supplied text — `code_span` keeps a key
+    // containing backticks or newlines from breaking the inline-code span
+    // (or smuggling a fake line into the page).
+    s.push_str(&format!("Owner meta key: {}\n", code_span(key)));
 
     let mut groups: BTreeMap<&str, Vec<&NodeInfo>> = BTreeMap::new();
     let mut unowned: Vec<&NodeInfo> = Vec::new();
@@ -113,17 +116,19 @@ fn owners_markdown(ctx: &PageInputs<'_>, key: &str) -> String {
     s
 }
 
-/// `tags.md` — model/source/seed/snapshot nodes grouped by tag. A node with
+/// `tags.md` — model/seed/snapshot nodes grouped by tag. A node with
 /// several tags appears under each; untagged nodes appear nowhere.
+/// (Sources can't carry tags in `NodeDetail` — `RawSource` has no `tags`
+/// field — so they're not candidates.)
 fn tags_markdown(ctx: &PageInputs<'_>) -> String {
     let mut s = String::from("# Tags\n");
     let mut groups: BTreeMap<&str, Vec<&NodeInfo>> = BTreeMap::new();
-    for node in ctx.dag.nodes().values().filter(|n| {
-        matches!(
-            n.resource_type.as_str(),
-            "model" | "source" | "seed" | "snapshot"
-        )
-    }) {
+    for node in ctx
+        .dag
+        .nodes()
+        .values()
+        .filter(|n| matches!(n.resource_type.as_str(), "model" | "seed" | "snapshot"))
+    {
         for tag in ctx
             .dag
             .detail(&node.unique_id)

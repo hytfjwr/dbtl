@@ -368,6 +368,32 @@ pub(crate) fn page_link(from_rel: &str, to_rel: &str) -> String {
     }
 }
 
+/// The inline-code span that safely wraps `text`: one backtick longer than
+/// the longest backtick run inside (minimum the usual 1), padded with a
+/// space when `text` starts or ends with a backtick (the CommonMark inline
+/// code rule — `` `` `x` `` `` renders `` `x` ``). Newlines flatten to
+/// spaces — an inline span can't hold them, and an unflattened newline in
+/// caller-supplied text could smuggle a fake heading/list line into a page.
+pub(crate) fn code_span(text: &str) -> String {
+    let mut longest = 0usize;
+    let mut run = 0usize;
+    for c in text.chars() {
+        if c == '`' {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    let ticks = "`".repeat(longest + 1);
+    let flat = text.replace(['\n', '\r'], " ");
+    if flat.starts_with('`') || flat.ends_with('`') {
+        format!("{ticks} {flat} {ticks}")
+    } else {
+        format!("{ticks}{flat}{ticks}")
+    }
+}
+
 /// The fence that safely wraps `code`: one backtick longer than the longest
 /// backtick run inside (minimum the usual 3), so SQL containing inline-code
 /// spans or template literals can never close the block early.
