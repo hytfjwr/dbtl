@@ -125,11 +125,13 @@ jobs:
               code=$?
             fi
             if [ -f "$WORK/metrics/$name.$side.time" ]; then
-              read -r secs rss < "$WORK/metrics/$name.$side.time" || true
-              # An empty time file means /usr/bin/time itself failed — leave
-              # the metric absent so the report writes n/a, never a fake 0s.
-              if [ -n "${secs:-}" ]; then
-                printf '%s %s %s\n' "$secs" "${rss:-0}" "$code" > "$WORK/metrics/$name.$side"
+              # GNU time prepends a "Command exited with non-zero status N"
+              # notice ahead of the format line on gate findings — take the
+              # LAST line and require the numeric "secs rss" shape so a
+              # stray notice can never become a fake measurement.
+              last=$(tail -n 1 "$WORK/metrics/$name.$side.time" 2>/dev/null || true)
+              if [[ "$last" =~ ^([0-9.]+)[[:space:]]+([0-9]+) ]]; then
+                printf '%s %s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$code" > "$WORK/metrics/$name.$side"
               fi
             fi
           }
