@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # New RustSec advisories appear without any commit; scan the lockfile daily
+  # so they surface even while the tree is unchanged.
+  schedule:
+    - cron: "23 21 * * *"
+  workflow_dispatch:
 
 permissions: {}
 
@@ -15,6 +20,7 @@ jobs:
   zizmor:
     name: zizmor
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     timeout-minutes: 10
     permissions:
       contents: read
@@ -39,6 +45,7 @@ jobs:
   actionlint:
     name: actionlint
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     timeout-minutes: 10
     permissions:
       contents: read
@@ -72,6 +79,7 @@ jobs:
   pinact:
     name: pinact
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     timeout-minutes: 10
     permissions:
       contents: read
@@ -105,3 +113,56 @@ jobs:
         run: pinact run --check --verify
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+  cargo-deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    # Advisory state moves independently of the code, so bans/licenses/sources
+    # stay on push + pull_request only; advisories run on every trigger below.
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: Check bans, licenses, and sources
+        run: cargo deny check bans licenses sources
+
+  advisories:
+    name: advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: Check security advisories
+        run: cargo deny check advisories
