@@ -38,7 +38,7 @@ Any other top-level key is allowed but ignored (it produces a warning).
 | Key | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
 | `model_fanout_threshold` | integer ≥ 1 | `5` | Compat flat keys — the same value `rules.<id>.threshold` sets; both spellings together are an error naming both keys. |
-| `source_fanout_threshold` | integer ≥ 1 | `2` |  |
+| `source_fanout_threshold` | integer ≥ 1 | `2` | Compat flat key — the same value `rules.source_fanout.threshold` sets; both spellings together are an error naming both keys. |
 | `naming_prefixes` | object: layer → list of strings | `intermediate: [int_]` `marts: [fct_, dim_, rpt_]` `staging: [stg_]` | layer dir → allowed prefixes; merges per-layer over the defaults. |
 | `baseline` | path | `.dbtl-baseline.json` | The frozen-violations file — resolved against this file's directory in [`ProjectConfig::load`]. |
 | `rules` | object | — | rule id → `false` (off) \| `true` (the registry default) \| a settings object (`severity`, `exclude`, and the rule's declared parameters). Unknown rule names are an error. |

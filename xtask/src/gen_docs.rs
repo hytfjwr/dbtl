@@ -442,13 +442,16 @@ fn dbtl_yml_schema() -> Value {
     });
 
     // docs.lineage_depth — the `usize`/`'all'` grammar the manual
-    // Deserialize impl accepts (a numeric STRING parses too).
+    // Deserialize impl accepts: `~` (the field is Option<_>), an integer,
+    // or a numeric STRING — including `+7`/`07` spellings the parser's
+    // `usize::from_str` takes.
     *prop(&mut properties, &["docs", "properties", "lineage_depth"]) = json!({
         "description": "Mermaid ancestry depth per node page: an integer ≥ 1, or `all` for the whole closure (default 2).",
         "anyOf": [
             {"type": "integer", "minimum": 1},
             {"enum": ["all"]},
-            {"type": "string", "pattern": "^[1-9][0-9]*$"},
+            {"type": "string", "pattern": "^\\+?0*[1-9][0-9]*$"},
+            {"type": "null"},
         ],
     });
 
@@ -541,8 +544,10 @@ fn gate_param_schema(p: &dbtl_core::GateParamSpec) -> Value {
             }
             Value::Object(m)
         }
+        // `dir: ~` is an explicit no-op in the parser (Value::Null), so the
+        // schema accepts null alongside the path string.
         GateParamKind::Path => json!({
-            "type": "string",
+            "type": ["string", "null"],
             "description": "a path, resolved against the `.dbtl.yml` directory",
         }),
     }
@@ -1160,19 +1165,25 @@ docs:
   lineage_depth: 3
 "#;
         assert!(ProjectConfig::from_yaml(yaml).is_ok());
-        // Lineage depth spellings the schema advertises.
-        for v in ["2", "all", "'7'"] {
+        // Lineage depth spellings the schema advertises — including `~`
+        // (Option<_>), and the `+7`/`07` strings usize::from_str accepts.
+        for v in ["2", "all", "'7'", "~", "'07'", "'+7'"] {
             assert!(
                 ProjectConfig::from_yaml(&format!("docs:\n  lineage_depth: {v}\n")).is_ok(),
                 "{v}"
             );
         }
-        for v in ["0", "'0'", "nope", "-1"] {
+        for v in ["0", "'0'", "nope", "-1", "'+0'", "'00'"] {
             assert!(
                 ProjectConfig::from_yaml(&format!("docs:\n  lineage_depth: {v}\n")).is_err(),
                 "{v}"
             );
         }
+        // A null Path param is an explicit no-op in the parser.
+        assert!(
+            ProjectConfig::from_yaml("check:\n  gates:\n    docs_drift: { dir: ~ }\n").is_ok(),
+            "docs_drift.dir: ~ parses"
+        );
         // Severity spellings.
         for sev in ["error", "warn", "off", "~"] {
             assert!(

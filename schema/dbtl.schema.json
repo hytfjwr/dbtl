@@ -44,6 +44,7 @@
           ],
           "format": "uint",
           "minimum": 1,
+          "description": "Compat flat key — the same value `rules.source_fanout.threshold`\nsets; both spellings together are an error naming both keys.",
           "default": null
         },
         "naming_prefixes": {
@@ -1786,7 +1787,10 @@
                       ]
                     },
                     "dir": {
-                      "type": "string",
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "description": "a path, resolved against the `.dbtl.yml` directory"
                     }
                   }
@@ -1826,7 +1830,10 @@
             },
             {
               "type": "string",
-              "pattern": "^[1-9][0-9]*$"
+              "pattern": "^\\+?0*[1-9][0-9]*$"
+            },
+            {
+              "type": "null"
             }
           ]
         }

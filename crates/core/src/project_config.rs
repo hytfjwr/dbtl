@@ -502,6 +502,8 @@ struct LintFile {
     /// Compat flat keys — the same value `rules.<id>.threshold` sets; both
     /// spellings together are an error naming both keys.
     model_fanout_threshold: Option<usize>,
+    /// Compat flat key — the same value `rules.source_fanout.threshold`
+    /// sets; both spellings together are an error naming both keys.
     source_fanout_threshold: Option<usize>,
     /// layer dir → allowed prefixes; merges per-layer over the defaults.
     naming_prefixes: Option<BTreeMap<String, Vec<String>>>,
