@@ -116,8 +116,9 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
             quiet,
             clean,
             check,
+            lineage_depth,
         }) => {
-            return run_docs(out, &src, *quiet, *clean, *check);
+            return run_docs(out, &src, lineage_depth.as_deref(), *quiet, *clean, *check);
         }
         Some(Commands::Impact { format }) => {
             return run_impact(*format, &src);

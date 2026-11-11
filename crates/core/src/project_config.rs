@@ -1,7 +1,7 @@
 //! The project-local `.dbtl.yml` loader — the ONE place the file's
 //! discovery rules and top-level shape live. The file is a namespace for
-//! project-level settings (`fail_on`, `lint:` today; `check:`/`docs:`
-//! sections are added by their own features). It is deliberately NOT
+//! project-level settings (`fail_on`, `lint:`, `docs:` today; `check:` is
+//! added by its own feature). It is deliberately NOT
 //! `~/.config/dbtl/config.yml` — lint/gate policy is project-owned (a CI
 //! gate must not depend on the developer's machine).
 //!
@@ -45,9 +45,92 @@ impl FailOn {
     }
 }
 
-/// A parsed `.dbtl.yml`: the resolved `lint:` section, the top-level
-/// `fail_on`, and any non-fatal notes (unknown top-level keys are WARNED,
-/// not errors — forward compatibility with sections added later).
+/// Per-node lineage-diagram depth for generated docs: `Hops(n)` draws the
+/// neighbourhood within n hops; `All` draws the node's whole closure. This
+/// is the shared value `dbtl docs --lineage-depth` and `.dbtl.yml`'s
+/// `docs.lineage_depth` both resolve to — parsed once here so every surface
+/// agrees on the accepted spellings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineageDepth {
+    /// Within `n` hops of the node (n >= 1).
+    Hops(usize),
+    /// The whole upstream/downstream closure.
+    All,
+}
+
+impl LineageDepth {
+    /// The shipped default — used when neither the flag nor `.dbtl.yml`
+    /// names a depth. 2 hops keeps a page's diagram local enough to stay
+    /// useful on wide projects.
+    pub const DEFAULT: LineageDepth = LineageDepth::Hops(2);
+
+    /// The `Option<usize>` shape [`Dag::subgraph_view`](crate::Dag) takes
+    /// (`All` → `None`, unbounded).
+    pub fn hops(self) -> Option<usize> {
+        match self {
+            LineageDepth::Hops(n) => Some(n),
+            LineageDepth::All => None,
+        }
+    }
+
+    /// Parse the flag/config token: `all` or an integer >= 1. Anything else
+    /// is a usage/config error at the caller.
+    pub fn parse(text: &str) -> Option<Self> {
+        if text == "all" {
+            return Some(Self::All);
+        }
+        text.parse::<usize>()
+            .ok()
+            .filter(|n| *n >= 1)
+            .map(Self::Hops)
+    }
+}
+
+impl<'de> Deserialize<'de> for LineageDepth {
+    /// The `docs.lineage_depth` wire value: a YAML integer >= 1 or the word
+    /// `all` — the same grammar [`LineageDepth::parse`] accepts on the CLI,
+    /// so file and flag reject identically.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::{Error, Visitor};
+        struct DepthVisitor;
+        impl Visitor<'_> for DepthVisitor {
+            type Value = LineageDepth;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an integer >= 1 or 'all'")
+            }
+            fn visit_i64<E: Error>(self, n: i64) -> Result<LineageDepth, E> {
+                usize::try_from(n)
+                    .ok()
+                    .filter(|n| *n >= 1)
+                    .map(LineageDepth::Hops)
+                    .ok_or_else(|| E::custom("an integer >= 1 or 'all'"))
+            }
+            fn visit_u64<E: Error>(self, n: u64) -> Result<LineageDepth, E> {
+                usize::try_from(n)
+                    .ok()
+                    .filter(|n| *n >= 1)
+                    .map(LineageDepth::Hops)
+                    .ok_or_else(|| E::custom("an integer >= 1 or 'all'"))
+            }
+            fn visit_str<E: Error>(self, s: &str) -> Result<LineageDepth, E> {
+                LineageDepth::parse(s).ok_or_else(|| E::custom("an integer >= 1 or 'all'"))
+            }
+        }
+        d.deserialize_any(DepthVisitor)
+    }
+}
+
+/// The `docs:` section resolved over defaults — all-`None` fields mean the
+/// consumer falls back to its shipped default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DocsConfig {
+    /// `docs.lineage_depth` — `None` when the file doesn't set it.
+    pub lineage_depth: Option<LineageDepth>,
+}
+
+/// A parsed `.dbtl.yml`: the resolved `lint:`/`docs:` sections, the
+/// top-level `fail_on`, and any non-fatal notes (unknown top-level keys are
+/// WARNED, not errors — forward compatibility with sections added later).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProjectConfig {
     /// Top-level `fail_on:` value (`None` = the consumer's own default).
@@ -57,17 +140,20 @@ pub struct ProjectConfig {
     /// `lint.baseline` was written in the file — a missing file at an
     /// explicit path warns, while a missing default stays silent.
     pub baseline_explicit: bool,
+    /// The `docs:` section resolved over the shipped defaults.
+    pub docs: DocsConfig,
     /// Non-fatal notes the caller surfaces (CLI: `warning: …` on stderr;
     /// TUI: the startup notice / reload warnings).
     pub warnings: Vec<String>,
 }
 
 impl ProjectConfig {
-    /// Parse `.dbtl.yml` text: apply the `lint:` section over the shipped
-    /// defaults. Errors on malformed YAML, unknown keys inside `lint:`,
-    /// unknown rule names inside `rules:` and undeclared rule parameters —
-    /// a config a CI gate can't interpret must fail loudly, never silently
-    /// lint with defaults. Unknown TOP-LEVEL keys land in `warnings`.
+    /// Parse `.dbtl.yml` text: apply the `lint:`/`docs:` sections over the
+    /// shipped defaults. Errors on malformed YAML, unknown keys inside a
+    /// known section, unknown rule names inside `rules:` and undeclared
+    /// rule parameters — a config a CI gate can't interpret must fail
+    /// loudly, never silently lint with defaults. Unknown TOP-LEVEL keys
+    /// land in `warnings`.
     pub fn from_yaml(text: &str) -> Result<Self, String> {
         let file: ProjectFile =
             serde_norway::from_str(text).map_err(|e| format!("invalid .dbtl.yml: {e}"))?;
@@ -138,6 +224,9 @@ impl ProjectConfig {
         if let Some(baseline) = file.lint.baseline {
             lint.baseline = baseline;
         }
+        let docs = DocsConfig {
+            lineage_depth: file.docs.lineage_depth,
+        };
         let warnings = file
             .other
             .keys()
@@ -147,6 +236,7 @@ impl ProjectConfig {
             fail_on: file.fail_on,
             lint,
             baseline_explicit,
+            docs,
             warnings,
         })
     }
@@ -233,8 +323,20 @@ pub fn project_config_path(
 struct ProjectFile {
     fail_on: Option<FailOn>,
     lint: LintFile,
+    docs: DocsFile,
     #[serde(flatten)]
     other: BTreeMap<String, serde_norway::Value>,
+}
+
+/// The `docs:` section wire shape. `deny_unknown_fields` — the same typo
+/// policy as `lint:`: a silently-ignored `lineage_dpeth` would generate a
+/// different doc set than the author intended.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct DocsFile {
+    /// `docs.lineage_depth` — `None` when unset; an invalid value fails the
+    /// whole parse (a malformed config is fatal, never silently defaulted).
+    lineage_depth: Option<LineageDepth>,
 }
 
 /// The `lint:` section wire shape. `deny_unknown_fields` makes a typo'd key
@@ -435,15 +537,36 @@ mod tests {
         assert!(err.contains("invalid .dbtl.yml"), "{err}");
         // An unknown TOP-LEVEL key is a warning — forward compat with
         // sections added later.
-        let pc = parse("check:\n  strict: true\ndocs: {}\nlint: {}\n").unwrap();
+        let pc = parse("check:\n  strict: true\ntui: {}\nlint: {}\n").unwrap();
         assert_eq!(
             pc.warnings,
             vec![
                 "ignoring unknown top-level key 'check' in .dbtl.yml".to_string(),
-                "ignoring unknown top-level key 'docs' in .dbtl.yml".to_string()
+                "ignoring unknown top-level key 'tui' in .dbtl.yml".to_string()
             ],
             "warnings are sorted by key (BTreeMap order)"
         );
+    }
+
+    #[test]
+    fn docs_lineage_depth_accepts_ints_and_all_and_rejects_the_rest() {
+        let pc = parse("docs:\n  lineage_depth: 3\n").unwrap();
+        assert_eq!(pc.docs.lineage_depth, Some(LineageDepth::Hops(3)));
+        let pc = parse("docs:\n  lineage_depth: all\n").unwrap();
+        assert_eq!(pc.docs.lineage_depth, Some(LineageDepth::All));
+        let pc = parse("docs: {}\n").unwrap();
+        assert_eq!(pc.docs.lineage_depth, None);
+        // The same invalid set the flag rejects — plus a typo'd key inside
+        // the section (deny_unknown_fields).
+        for bad in [
+            "docs:\n  lineage_depth: 0\n",
+            "docs:\n  lineage_depth: -1\n",
+            "docs:\n  lineage_depth: 1.5\n",
+            "docs:\n  lineage_depth: sometimes\n",
+            "docs:\n  lineage_dpeth: 2\n",
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?} must fail to parse");
+        }
     }
 
     #[test]

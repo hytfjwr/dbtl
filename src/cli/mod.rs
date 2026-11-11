@@ -136,8 +136,10 @@ pub enum Commands {
         /// node pages / README.md are overwritten (no files are deleted).
         #[arg(long)]
         out: String,
-        /// Suppress the success summary on stdout (errors still go to stderr).
-        /// For quiet CI runs where only the exit code matters.
+        /// Suppress the success summary on stdout — only that one line.
+        /// Errors still go to stderr, and a failing --check still prints
+        /// its per-file difference list (the actionable output). For CI
+        /// runs where only the exit code matters.
         #[arg(long)]
         quiet: bool,
         /// After writing, delete stale generated pages: marked dbtl files under
@@ -151,6 +153,11 @@ pub enum Commands {
         /// stale marked file. Prints one line per difference for the CI log.
         #[arg(long, conflicts_with = "clean")]
         check: bool,
+        /// Per-node lineage-diagram depth: a hop count (`2`, `1`, …) or `all`
+        /// for the node's whole closure. Overrides `.dbtl.yml`'s
+        /// `docs.lineage_depth`; the shipped default is `2`.
+        #[arg(long, value_name = "N|all")]
+        lineage_depth: Option<String>,
     },
     /// Print the PR impact pack for a `--diff` baseline comparison to stdout
     /// and exit — Markdown by default (paste into a PR description), `--format

@@ -83,7 +83,13 @@ pub(super) fn readme_markdown(
         let uid = node.unique_id.as_str();
         let link = files
             .get(uid)
-            .map(|rel| format!("[{}]({})", md_cell(&node.name), rel))
+            .map(|rel| {
+                format!(
+                    "[{}]({})",
+                    md_label(&node.name),
+                    page_link("README.md", rel)
+                )
+            })
             .unwrap_or_else(|| md_cell(&node.name));
         s.push_str(&format!(
             "| {} | {} | {} | {} | {} |\n",
@@ -105,39 +111,69 @@ pub(super) fn readme_markdown(
     s
 }
 
-/// Append the README's whole-project lineage. Below [`FULL_GRAPH_NODE_LIMIT`]
-/// nodes it is one diagram of the entire graph; at or above it the single
-/// diagram would be an unreadable hairball (and slow / liable to be rejected by
-/// Mermaid renderers), so the graph is split into one diagram per logical layer
-/// ([`LAYER_ORDER`], unknown layers and non-models grouped last) — each diagram
-/// holding only that group's nodes and the edges WITHIN it.
+/// Append the README's whole-project lineage. One diagram of the entire
+/// graph when it fits — [`FULL_GRAPH_NODE_LIMIT`] nodes is the size cap, and
+/// even a smaller graph falls back to the per-layer split when its figure
+/// would exceed the Mermaid budget (the same character/edge limits the node
+/// pages honour). At or above the limit the single diagram would be an
+/// unreadable hairball (and slow / liable to be rejected by Mermaid
+/// renderers), so the graph splits into one diagram per logical layer
+/// ([`LAYER_ORDER`], unknown layers and non-models grouped last) — each
+/// holding only that group's nodes and the edges WITHIN it. A group whose
+/// own figure still exceeds the budget is replaced by the omission line and
+/// a plain node table.
 ///
 /// The threshold is a fixed constant (documented on [`FULL_GRAPH_NODE_LIMIT`]),
 /// so the same project always renders the same way: determinism is preserved
 /// either branch. Cross-layer edges are necessarily omitted from the split view
 /// (they would reintroduce the hairball); a note says so and points readers at
-/// the per-node pages for the full picture.
+/// the per-node pages for the full picture. The note names WHICH trigger —
+/// the node count or the budget — fired.
 pub(super) fn push_readme_lineage(s: &mut String, dag: &Dag, files: &BTreeMap<String, String>) {
-    let href = |rel: &str| rel.to_string();
+    // The README sits at the output root — `page_link` yields the target's
+    // stored relative path verbatim, and every link goes through the one
+    // resolver like every other page's links do.
+    let href = |rel: &str| page_link("README.md", rel);
     if dag.is_empty() {
         s.push_str("No nodes.\n");
         return;
     }
-    if dag.len() < FULL_GRAPH_NODE_LIMIT {
-        let sg = dag.full_subgraph();
-        push_linked_diagram(s, dag, &sg, files, href);
-        return;
-    }
-    // Large graph: split by layer group. The order is the model layer order
-    // first, then the remaining resource-type groups, mirroring `readme_order`.
-    s.push_str(&format!(
-        "This project has {} nodes (>= {} threshold), so the full graph is \
-         split by layer below — one diagram per group, intra-group edges only. \
-         For cross-layer lineage of a specific node, open its page (each carries \
-         its own neighbourhood diagram).\n",
-        dag.len(),
-        FULL_GRAPH_NODE_LIMIT
-    ));
+    let whole = dag.full_subgraph();
+    // The split trigger — the message names it so a committed README says
+    // WHY the graph isn't one picture. The whole-graph figure is rendered
+    // only below the node cap: at or above it the split is already decided,
+    // so building (then discarding) a multi-MB figure is wasted work.
+    let reason = if dag.len() >= FULL_GRAPH_NODE_LIMIT {
+        format!(
+            "This project has {} nodes (>= {} threshold), so the full graph is \
+             split by layer below — one diagram per group, intra-group edges only. \
+             For cross-layer lineage of a specific node, open its page (each carries \
+             its own neighbourhood diagram).\n",
+            dag.len(),
+            FULL_GRAPH_NODE_LIMIT
+        )
+    } else {
+        let whole_figure = mermaid_figure(&whole, files, &href);
+        if within_mermaid_budget(whole_figure.chars().count(), whole.edges.len()) {
+            s.push_str(&whole_figure);
+            push_legend(s, dag, &whole, files, &href);
+            return;
+        }
+        format!(
+            "The whole-project diagram is {} characters / {} edges — over the \
+             rendering limits ({} characters / {} edges) — so the full graph is \
+             split by layer below, one diagram per group, intra-group edges only. \
+             For cross-layer lineage of a specific node, open its page (each carries \
+             its own neighbourhood diagram).\n",
+            whole_figure.chars().count(),
+            whole.edges.len(),
+            MERMAID_MAX_CHARS,
+            MERMAID_MAX_EDGES
+        )
+    };
+    // Split by layer group. The order is the model layer order first, then
+    // the remaining resource-type groups, mirroring `readme_order`.
+    s.push_str(&reason);
     for group in layer_groups(dag) {
         let member_uids: HashSet<&str> = group.uids.iter().map(String::as_str).collect();
         let nodes: Vec<NodeInfo> = group
@@ -160,8 +196,30 @@ pub(super) fn push_readme_lineage(s: &mut String, dag: &Dag, files: &BTreeMap<St
         s.push_str(&format!("\n### {} ({})\n\n", group.label, group.uids.len()));
         if sg.nodes.is_empty() {
             s.push_str("No nodes.\n");
+            continue;
+        }
+        let figure = mermaid_figure(&sg, files, &href);
+        if within_mermaid_budget(figure.chars().count(), sg.edges.len()) {
+            push_figure_and_legend(s, dag, &sg, files, figure, &href);
         } else {
-            push_linked_diagram(s, dag, &sg, files, href);
+            // The group alone still overflows — same wording as the
+            // node-page omission, then a plain table so the members are
+            // still listed and linked.
+            s.push_str(&omitted_diagram_line(sg.nodes.len(), sg.edges.len()));
+            s.push_str("\n| Name | Type | Materialization |\n");
+            s.push_str("| --- | --- | --- |\n");
+            for n in &sg.nodes {
+                let cell = files
+                    .get(&n.unique_id)
+                    .map(|rel| format!("[{}]({})", md_label(&n.name), page_link("README.md", rel)))
+                    .unwrap_or_else(|| md_cell(&n.name));
+                s.push_str(&format!(
+                    "| {} | {} | {} |\n",
+                    cell,
+                    md_cell(&n.resource_type),
+                    md_cell(n.materialized.as_deref().unwrap_or("-")),
+                ));
+            }
         }
     }
 }
@@ -198,7 +256,9 @@ pub(super) fn layer_groups(dag: &Dag) -> Vec<LayerGroup> {
         } else if let Some(rank) = RESOURCE_ORDER.iter().position(|k| *k == node.resource_type) {
             by_rt
                 .entry(rank)
-                .or_insert_with(|| (format!("{}s", node.resource_type), Vec::new()))
+                // The page-directory name doubles as the group label —
+                // one pluralization rule for both surfaces.
+                .or_insert_with(|| (docs_dir(&node.resource_type).to_string(), Vec::new()))
                 .1
                 .push(uid);
         } else {

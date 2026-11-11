@@ -11,7 +11,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::compiled::CompiledSql;
+use crate::compiled::{CompiledOrigin, CompiledSql};
 use crate::manifest::{load_manifest, RawExposure, RawMacro, RawManifest, RawNode, RawSource};
 
 /// A merged, prefix-resolved entry in the unified node map.

@@ -12,6 +12,7 @@ use super::*;
 pub fn run_docs(
     out: &str,
     src: &DataSourceArgs,
+    lineage_depth: Option<&str>,
     quiet: bool,
     clean: bool,
     check: bool,
@@ -24,18 +25,51 @@ pub fn run_docs(
         format!("manifest ({})", resolved.label)
     };
     let project_name = docs_project_name(&resolved.dag, &resolved.label);
+    // `.dbtl.yml` once — it supplies BOTH the lint config and
+    // `docs.lineage_depth`. Malformed is fatal: a committed doc set must
+    // never describe the wrong rule set or draw the wrong depth.
+    let (manifest_arg, project_arg) = resolved_config_args(&resolved);
+    let pc = load_project_config(manifest_arg.as_deref(), project_arg.as_deref())?;
+    let project_cfg = &pc.config;
+    // Precedence: the flag wins, then `docs.lineage_depth`, then the
+    // shipped default (2 hops).
+    let depth = match lineage_depth {
+        Some(text) => dbtl::LineageDepth::parse(text).ok_or_else(|| {
+            CliError::usage(anyhow::anyhow!(
+                "invalid --lineage-depth '{text}' (expected an integer >= 1 or 'all')"
+            ))
+        })?,
+        None => project_cfg
+            .docs
+            .lineage_depth
+            .unwrap_or(dbtl::LineageDepth::DEFAULT),
+    };
     // The README's Lint section + per-node violation lists quote the SAME
-    // `run_rules` vector `check --lint` and the TUI read — `.dbtl.yml` is
-    // auto-detected beside the source, a malformed file fatal (a committed
-    // doc set must never describe the wrong rule set).
-    let lint_cfg = load_lint_config(&resolved, &[])?;
-    let lint_findings = dbtl::run_rules(dbtl::LintInput::new(&resolved.dag, &lint_cfg));
-    let files = dbtl::generate_docs_with_findings(
+    // `run_rules` vector `check --lint`, `dbtl lint`, and the TUI read — and
+    // the baseline resolves through the same path/`baseline_explicit` rules
+    // the lint subcommand uses. A missing conventional file freezes nothing;
+    // a named-but-absent file warns; an unreadable/malformed one is an input
+    // error (the same policy — a frozen set we can't read must never
+    // silently un-freeze every violation in the record).
+    let mut lint_findings = dbtl::run_rules(dbtl::LintInput::new(&resolved.dag, &project_cfg.lint));
+    let candidates =
+        dbtl::project_config_candidates(manifest_arg.as_deref(), project_arg.as_deref());
+    let baseline = load_lint_baseline_file(
+        &lint_baseline_path(&project_cfg.lint.baseline, pc.path.is_some(), &candidates),
+        project_cfg.baseline_explicit,
+    )?;
+    if let Some(b) = &baseline {
+        b.apply(&mut lint_findings);
+    }
+    let files = dbtl::generate_docs_with_options(
         &resolved.dag,
         &project_name,
         &provenance,
         scope,
-        Some(&lint_findings),
+        &dbtl::DocsOptions {
+            findings: Some(&lint_findings),
+            lineage_depth: depth,
+        },
     );
 
     let out_dir = PathBuf::from(out);
@@ -107,7 +141,9 @@ pub(super) fn marked_docs_on_disk(out_dir: &std::path::Path) -> Vec<String> {
 /// without writing anything. Prints one sorted line per difference — a
 /// `missing:` page, a `changed:` page, or a `stale:` marked file — then
 /// returns a gate failure (the check ran and the invariant did not hold).
-/// An exact match exits 0.
+/// An exact match exits 0. The difference list is the command's actionable
+/// output, so it prints even under `--quiet`: quiet suppresses only the
+/// success summary, never the report a CI run exists to read.
 pub(super) fn check_docs(
     out_dir: &std::path::Path,
     files: &[(String, String)],
