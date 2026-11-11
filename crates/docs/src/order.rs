@@ -98,3 +98,24 @@ pub(super) fn md_cell(text: &str) -> String {
     }
     out
 }
+
+/// Escape text for a Markdown link LABEL (the `[…]` of `[label](href)`): an
+/// unescaped `]` would end the label early and snap the link, an unescaped
+/// `[` could nest, and a `\` right before them could un-escape them — so all
+/// three plus `|` (link labels sit inside table cells too) and newlines are
+/// neutralized. Superset of [`md_cell`]; use it for the label half of every
+/// generated link.
+pub(super) fn md_label(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '[' => out.push_str("\\["),
+            ']' => out.push_str("\\]"),
+            '|' => out.push_str("\\|"),
+            '\n' | '\r' => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
+}

@@ -67,7 +67,7 @@ pub(super) fn push_stats_summary(s: &mut String, dag: &Dag, files: &BTreeMap<Str
             match files.get(&node.unique_id) {
                 Some(rel) => s.push_str(&format!(
                     "- [{}]({})\n",
-                    node.name,
+                    md_label(&node.name),
                     page_link("README.md", rel)
                 )),
                 None => s.push_str(&format!("- {}\n", node.name)),
@@ -148,7 +148,7 @@ pub(super) fn push_lint_summary(
             match files.get(&f.node_uid) {
                 Some(rel) => s.push_str(&format!(
                     "- [{}]({}) — {}{}\n",
-                    name,
+                    md_label(name),
                     page_link("README.md", rel),
                     f.message,
                     baselined

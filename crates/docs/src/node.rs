@@ -13,9 +13,9 @@ use super::*;
 ///   Lint violations, Upstream, Downstream, Lineage (both ways), Meta;
 /// - `source`/`seed`: bullets, Description, Columns, Tests, Lint violations,
 ///   Downstream, Lineage (downstream), Meta;
-/// - `exposure`: bullets, Description, Depends on, Lineage (upstream), Meta;
+/// - `exposure`: bullets, Description, Depends on, Lineage (upstream);
 /// - `semantic_model`/`metric`/`saved_query`/other: bullets, Description,
-///   Upstream, Lineage (upstream), Meta.
+///   Upstream, Lineage (upstream).
 pub(super) fn node_markdown(
     dag: &Dag,
     uid: &str,
@@ -69,12 +69,10 @@ pub(super) fn node_markdown(
             let parents = direct_neighbours(dag, uid, true);
             push_dep_list(&mut s, dag, &parents, files, page_rel);
             push_node_lineage(&mut s, dag, uid, files, page_rel, Sides::Upstream, depth);
-            push_meta(&mut s, detail);
         }
         _ => {
             push_upstream(&mut s, dag, uid, node, files, page_rel);
             push_node_lineage(&mut s, dag, uid, files, page_rel, Sides::Upstream, depth);
-            push_meta(&mut s, detail);
         }
     }
 
@@ -278,7 +276,7 @@ fn push_tests(
                     None => name.to_string(),
                 };
                 match files.get(ref_uid) {
-                    Some(rel) => format!("[{}]({})", md_cell(&label), page_link(page_rel, rel)),
+                    Some(rel) => format!("[{}]({})", md_label(&label), page_link(page_rel, rel)),
                     None => md_cell(&label),
                 }
             }
@@ -423,8 +421,9 @@ fn push_downstream(
 
 /// The `Meta` section — the `meta` dict as a key-value table, sorted by key
 /// (`NodeDetail.meta` is a `BTreeMap`, so iteration IS the sort). Nested
-/// values render their compact-JSON form. Always present (labeled, never
-/// dropped — same convention as the other sections).
+/// values render their compact-JSON form. Rendered for the kinds whose
+/// section set carries it (labeled, never dropped — same convention as the
+/// other sections).
 fn push_meta(s: &mut String, detail: Option<&dbtl_core::NodeDetail>) {
     s.push_str("\n## Meta\n\n");
     let meta = detail.map(|d| &d.meta);
@@ -466,8 +465,9 @@ impl Sides {
 /// The per-node Mermaid lineage: the node's neighbourhood at the configured
 /// `depth`, drawn through the shared core (so the id assignment and label
 /// escaping match the interactive `m` yank — at the same view the two
-/// surfaces produce the same diagram). Links resolve from this page to the
-/// sibling pages via [`page_link`].
+/// surfaces produce the same diagram where a yank exists: models, the only
+/// lineage-rootable kind). Links resolve from this page to the sibling
+/// pages via [`page_link`].
 ///
 /// When the figure would exceed the Mermaid budget, the depth drops to the
 /// largest hop count that still fits. A deeper view is always a superset
@@ -495,6 +495,18 @@ fn push_node_lineage(
         let figure = mermaid_figure(&sg, files, &href);
         (sg, figure)
     };
+    // The `m`-yank parity claim only holds where the TUI can root the
+    // lineage at this node — models. Other resource kinds can't be the
+    // lineage root, so their caption ends after the depth note instead
+    // of claiming a comparison that doesn't exist.
+    let is_model = dag.get(uid).is_some_and(|n| n.resource_type == "model");
+    let caption = |note: &str| {
+        if is_model {
+            format!("{note} Matches the interactive `m` yank for this node at the same view.\n\n")
+        } else {
+            format!("{note}\n\n")
+        }
+    };
 
     // Attempt at the requested depth first — the common case is one render.
     let requested = depth.hops();
@@ -508,12 +520,11 @@ fn push_node_lineage(
                     Sides::Upstream => "upstream",
                     Sides::Downstream => "downstream",
                 };
-                format!("Full lineage (all {dir} dependencies). ")
+                format!("Full lineage (all {dir} dependencies).")
             }
-            LineageDepth::Hops(n) => format!("Lineage within {n} hops. "),
+            LineageDepth::Hops(n) => format!("Lineage within {n} hops."),
         };
-        s.push_str(&note);
-        s.push_str("Matches the interactive `m` yank for this node at the same view.\n\n");
+        s.push_str(&caption(&note));
         push_figure_and_legend(s, dag, &sg, files, figure, &href);
         return;
     }
@@ -547,10 +558,9 @@ fn push_node_lineage(
         LineageDepth::All => "the full lineage".to_string(),
         LineageDepth::Hops(n) => format!("{n} hops"),
     };
-    s.push_str(&format!(
-        "Lineage within {drawn} hops (reduced from {orig} — deeper views exceed GitHub's Mermaid limits). "
-    ));
-    s.push_str("Matches the interactive `m` yank for this node at the same view.\n\n");
+    s.push_str(&caption(&format!(
+        "Lineage within {drawn} hops (reduced from {orig} — deeper views exceed GitHub's Mermaid limits)."
+    )));
     push_figure_and_legend(s, dag, &sg, files, figure, &href);
 }
 

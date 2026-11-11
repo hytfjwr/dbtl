@@ -364,8 +364,9 @@ fn meta_renders_sorted_key_value_table() {
 
 #[test]
 fn hostile_names_and_descriptions_do_not_break_markdown_or_mermaid() {
-    // A node whose name/description carry a `"`, a `|`, and a newline must
-    // not break the Mermaid label, the Markdown table cell, or the fence.
+    // A node whose name/description carry a `"`, a `|`, a `]`, a `\`, and a
+    // newline must not break the Mermaid label, the Markdown table cell, the
+    // link label, or the fence.
     use dbtl_core::{RawDependsOn, RawManifest, RawNode};
     use std::collections::HashMap;
     let mut columns = serde_json::Map::new();
@@ -381,7 +382,7 @@ fn hostile_names_and_descriptions_do_not_break_markdown_or_mermaid() {
         (
             "model.p.evil".to_string(),
             RawNode {
-                name: "ev\"il | model".into(),
+                name: "ev\"]il\\ | model".into(),
                 resource_type: "model".into(),
                 path: Some("staging/evil.sql".into()),
                 description: Some("line one\nline \"two\" | pipe".into()),
@@ -432,11 +433,24 @@ fn hostile_names_and_descriptions_do_not_break_markdown_or_mermaid() {
         page.contains("a \\| piped"),
         "table cell escaped the pipe in the column description"
     );
-    // The whole-project README must also survive the hostile name.
+    // The whole-project README must also survive the hostile name: the
+    // table cell escapes the `|` (the bare `]`/`\` are inert in cell text),
+    // and the link label escapes `]`/`\`/`|` so the `[…](…)` can't snap.
     let readme = file(&out, "README.md");
     assert!(
-        readme.contains("ev\"il \\| model"),
+        readme.contains("ev\"]il\\ \\| model"),
         "README cell escaped the pipe"
+    );
+    assert!(
+        readme.contains("[ev\"\\]il\\\\ \\| model]("),
+        "README link label escaped ] \\ and |"
+    );
+    // The dep list on the parent's page (same directory → basename href)
+    // carries the same escaping.
+    let up = file(&out, &files["model.p.up"]);
+    assert!(
+        up.contains("- [ev\"\\]il\\\\ \\| model](model.p.evil.md)"),
+        "dep-list link label escaped ] \\ and |"
     );
     // Determinism still holds with the hostile data.
     let again = generate_docs(&dag, "p", "src", PackageScope::Root);
@@ -1237,7 +1251,7 @@ fn section_order_matches_the_resource_type() {
     assert_eq!(headings("seed.p.sd"), headings("source.p.s"));
     assert_eq!(
         headings("exposure.p.e"),
-        ["## Description", "## Depends on", "## Lineage", "## Meta",]
+        ["## Description", "## Depends on", "## Lineage",]
     );
     for uid in [
         "semantic_model.p.sm",
@@ -1247,12 +1261,7 @@ fn section_order_matches_the_resource_type() {
     ] {
         assert_eq!(
             headings(uid),
-            [
-                "## Description",
-                "## Upstream dependencies",
-                "## Lineage",
-                "## Meta",
-            ],
+            ["## Description", "## Upstream dependencies", "## Lineage",],
             "{uid} carries the consumer section set"
         );
     }

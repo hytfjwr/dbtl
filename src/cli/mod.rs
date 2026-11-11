@@ -136,8 +136,10 @@ pub enum Commands {
         /// node pages / README.md are overwritten (no files are deleted).
         #[arg(long)]
         out: String,
-        /// Suppress the success summary on stdout (errors still go to stderr).
-        /// For quiet CI runs where only the exit code matters.
+        /// Suppress the success summary on stdout — only that one line.
+        /// Errors still go to stderr, and a failing --check still prints
+        /// its per-file difference list (the actionable output). For CI
+        /// runs where only the exit code matters.
         #[arg(long)]
         quiet: bool,
         /// After writing, delete stale generated pages: marked dbtl files under

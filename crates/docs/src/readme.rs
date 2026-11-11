@@ -83,7 +83,13 @@ pub(super) fn readme_markdown(
         let uid = node.unique_id.as_str();
         let link = files
             .get(uid)
-            .map(|rel| format!("[{}]({})", md_cell(&node.name), page_link("README.md", rel)))
+            .map(|rel| {
+                format!(
+                    "[{}]({})",
+                    md_label(&node.name),
+                    page_link("README.md", rel)
+                )
+            })
             .unwrap_or_else(|| md_cell(&node.name));
         s.push_str(&format!(
             "| {} | {} | {} | {} | {} |\n",
@@ -205,7 +211,7 @@ pub(super) fn push_readme_lineage(s: &mut String, dag: &Dag, files: &BTreeMap<St
             for n in &sg.nodes {
                 let cell = files
                     .get(&n.unique_id)
-                    .map(|rel| format!("[{}]({})", md_cell(&n.name), page_link("README.md", rel)))
+                    .map(|rel| format!("[{}]({})", md_label(&n.name), page_link("README.md", rel)))
                     .unwrap_or_else(|| md_cell(&n.name));
                 s.push_str(&format!(
                     "| {} | {} | {} |\n",

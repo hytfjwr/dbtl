@@ -141,7 +141,9 @@ pub(super) fn marked_docs_on_disk(out_dir: &std::path::Path) -> Vec<String> {
 /// without writing anything. Prints one sorted line per difference — a
 /// `missing:` page, a `changed:` page, or a `stale:` marked file — then
 /// returns a gate failure (the check ran and the invariant did not hold).
-/// An exact match exits 0.
+/// An exact match exits 0. The difference list is the command's actionable
+/// output, so it prints even under `--quiet`: quiet suppresses only the
+/// success summary, never the report a CI run exists to read.
 pub(super) fn check_docs(
     out_dir: &std::path::Path,
     files: &[(String, String)],
