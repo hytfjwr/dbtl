@@ -413,10 +413,8 @@ impl SqlParseResolver {
         }
     }
 
-    // -- query / select resolution ------------------------------------------
+    // -- edge construction ----------------------------------------------------
 
-    /// Resolve a `Query` (WITH + body + ORDER BY), returning the body's
-    /// result AND the outermost select's scope bindings (needed by the
     /// Edges into `node` — the analyzed model when it exists, else the
     /// name-match fallback (recorded for the `[name-match]` tag).
     fn compute_resolve(&self, dag: &Dag, node: &str) -> Vec<ColumnEdge> {

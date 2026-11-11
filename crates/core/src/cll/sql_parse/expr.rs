@@ -1,6 +1,8 @@
 use super::*;
 
 impl SqlParseResolver {
+    // -- expression references -----------------------------------------------
+
     /// Every parent-column reference inside `expr`. `None` propagates the
     /// depth-abort sentinel.
     pub(super) fn expr_refs(
@@ -908,6 +910,4 @@ impl SqlParseResolver {
         out.extend(cols);
         Some(())
     }
-
-    // -- edge construction ----------------------------------------------------
 }

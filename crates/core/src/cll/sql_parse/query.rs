@@ -1,6 +1,10 @@
 use super::*;
 
 impl SqlParseResolver {
+    // -- query / select resolution ------------------------------------------
+
+    /// Resolve a `Query` (WITH + body + ORDER BY), returning the body's
+    /// result AND the outermost select's scope bindings (needed by the
     /// declared-column probe at the model level; nested calls drop them).
     pub(super) fn resolve_query_full(
         &self,

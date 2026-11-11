@@ -520,6 +520,4 @@ impl SqlParseResolver {
         }
         Some(())
     }
-
-    // -- expression references -----------------------------------------------
 }
