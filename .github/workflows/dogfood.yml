@@ -115,3 +115,257 @@ jobs:
           out="$(bash "$GITHUB_WORKSPACE/action/sarif_dry_run.sh")"
           echo "$out"
           echo "$out" | grep -qF 'codeql-action/upload-sarif' || { echo "::error::the dry-run plan does not describe the SARIF upload"; exit 1; }
+
+  dogfood-e2e:
+    name: Dogfood E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build dbtl (release)
+        run: cargo build --release --locked
+
+      - name: Put dbtl on PATH
+        run: echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
+
+      # The committed jaffle_finance fixture trips error-severity lint
+      # rules, so `check --lint` is a gate failure (exit 1) — the pinned
+      # expectation, verified against the release binary. Every report
+      # format is exercised on the same run and kept for inspection.
+      - name: Run the full check report
+        run: |
+          set -u
+          out="$RUNNER_TEMP/dogfood"
+          mkdir -p "$out"
+          set +e
+          dbtl check --manifest tests/fixtures/manifest.json --lint \
+            --format github \
+            --report markdown:"$out/report.md" \
+            --report sarif:"$out/report.sarif" \
+            --report junit:"$out/report.xml" \
+            --report json:"$out/report.json" \
+            --step-summary \
+            >"$out/annotations.txt" 2>"$out/check-stderr.txt"
+          code=$?
+          set -e
+          cat "$out/check-stderr.txt"
+          if [ "$code" -ne 1 ]; then
+            echo "::error::'dbtl check --lint' exited $code — expected 1 (gate failure on the fixture's error-severity findings)"
+            exit 1
+          fi
+          errors=$(grep -c '^::error ' "$out/annotations.txt" || true)
+          if [ "$errors" -lt 1 ]; then
+            echo "::error::the github-format report carried no ::error annotations on a failing run"
+            exit 1
+          fi
+          echo "check --lint: exit 1 with $errors '::error file=…,line=…,title=…::' annotations, as expected"
+          head -n 3 "$out/annotations.txt"
+
+      # The remaining exit-code classes, one invocation each: 0 = pass
+      # (--fail-on never downgrades every finding to a report-only WARN),
+      # 2 = usage error (unknown rule id), 3 = input error (missing
+      # manifest). Exit 1 is pinned by the real run above.
+      - name: Pin the exit-code ladder
+        run: |
+          set -u
+          expect() {
+            local want="$1"; shift
+            set +e
+            "$@" >/dev/null 2>&1
+            local got=$?
+            set -e
+            if [ "$got" -ne "$want" ]; then
+              echo "::error::$* exited $got — expected $want"
+              exit 1
+            fi
+            echo "exit $got: $*"
+          }
+          expect 0 dbtl check --manifest tests/fixtures/manifest.json --lint --fail-on never --quiet
+          expect 2 dbtl check --manifest tests/fixtures/manifest.json --lint --rules not_a_rule --quiet
+          expect 3 dbtl check --manifest tests/fixtures/does_not_exist.json --lint --quiet
+
+      # The twelve original error-severity rules must all appear in the
+      # listing — their ids are a compatibility contract.
+      - name: Verify lint --list-rules
+        run: |
+          set -u
+          dbtl lint --list-rules | tee "$RUNNER_TEMP/dogfood/rules.txt"
+          for id in \
+            direct_join_to_source multiple_sources_joined source_fanout \
+            model_fanout root_models rejoining_upstream \
+            marts_depend_on_source missing_primary_key_tests \
+            public_models_without_contract undocumented_models \
+            naming_conventions layer_violation; do
+            grep -qw "$id" "$RUNNER_TEMP/dogfood/rules.txt" || {
+              echo "::error::'lint --list-rules' is missing rule id '$id'"
+              exit 1
+            }
+          done
+          echo "lint --list-rules: exit 0, all twelve error-severity ids listed"
+
+      - name: Exercise docs generation and --check
+        run: |
+          set -u
+          docs="$RUNNER_TEMP/dogfood/docs"
+          dbtl docs --manifest tests/fixtures/manifest.json --out "$docs" --quiet
+          dbtl docs --manifest tests/fixtures/manifest.json --out "$docs" --check --quiet
+          echo "docs --check on freshly generated output: exit 0"
+          printf '\n' >> "$docs/README.md"
+          set +e
+          dbtl docs --manifest tests/fixtures/manifest.json --out "$docs" --check
+          code=$?
+          set -e
+          if [ "$code" -ne 1 ]; then
+            echo "::error::'docs --check' on a doctored page exited $code — expected 1"
+            exit 1
+          fi
+          echo "docs --check on a doctored page: exit 1 (drift is a gate failure)"
+
+      # `dbtl ls` is not in every build yet — the subcommand arrives with
+      # the selector work that is still in review. When it exists, pin
+      # exit 0 plus a few frozen fixture names; until then the step says
+      # so instead of failing.
+      - name: Exercise dbtl ls
+        run: |
+          set -u
+          if ! dbtl ls --help >/dev/null 2>&1; then
+            echo "::notice::this build has no 'ls' subcommand — it lands with the pending selector work; skipping"
+            exit 0
+          fi
+          dbtl ls pos_txn --manifest tests/fixtures/manifest.json | tee "$RUNNER_TEMP/dogfood/ls.txt"
+          grep -qx 'pos_txn' "$RUNNER_TEMP/dogfood/ls.txt" || {
+            echo "::error::'dbtl ls pos_txn' did not list pos_txn"
+            exit 1
+          }
+          dbtl ls 'stg_*' --manifest tests/fixtures/manifest.json | tee "$RUNNER_TEMP/dogfood/ls-stg.txt"
+          for name in stg_orders stg_payment__shoppers; do
+            grep -qx "$name" "$RUNNER_TEMP/dogfood/ls-stg.txt" || {
+              echo "::error::'dbtl ls stg_*' did not list $name"
+              exit 1
+            }
+          done
+          echo "dbtl ls: exit 0, frozen fixture names resolve through the selector"
+
+      # `dbtl impact --diff git:<rev>` materializes the baseline read-only
+      # via git ls-tree/cat-file — assert the working tree is untouched on
+      # both sides of the run.
+      - name: Exercise the git-revision baseline
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -u
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --porcelain
+            echo "::error::the working tree is dirty before the git-baseline run"
+            exit 1
+          fi
+          if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          fi
+          set +e
+          dbtl impact --project tests/fixtures/sample_project --diff "git:$BASE_SHA" \
+            >"$RUNNER_TEMP/dogfood/impact.md" 2>&1
+          code=$?
+          set -e
+          cat "$RUNNER_TEMP/dogfood/impact.md"
+          if [ "$code" -ne 0 ]; then
+            echo "::error::'dbtl impact --diff git:<base>' exited $code — expected 0"
+            exit 1
+          fi
+          grep -qF "git:$BASE_SHA" "$RUNNER_TEMP/dogfood/impact.md" || {
+            echo "::error::the impact report does not name the git baseline"
+            exit 1
+          }
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --porcelain
+            echo "::error::'--diff git:' changed the working tree — it must stay read-only"
+            exit 1
+          fi
+          echo "impact --diff git:<base>: exit 0, working tree untouched"
+
+      - name: Validate the report structures
+        run: |
+          set -u
+          out="$RUNNER_TEMP/dogfood"
+          jq -e '.version == "2.1.0"' "$out/report.sarif" >/dev/null || {
+            echo "::error::the SARIF report is not version 2.1.0"
+            exit 1
+          }
+          jq -e '.runs[0].tool.driver.rules | length > 0' "$out/report.sarif" >/dev/null || {
+            echo "::error::the SARIF report declares no tool rules"
+            exit 1
+          }
+          jq -e '([.runs[0].results[].ruleId] - [.runs[0].tool.driver.rules[].id]) | length == 0' \
+            "$out/report.sarif" >/dev/null || {
+            echo "::error::SARIF results reference rules missing from tool.driver.rules"
+            exit 1
+          }
+          counted=$(jq '[.gates[].findings[]? | select(.baselined | not)] | length' "$out/report.json")
+          sarif_results=$(jq '.runs[0].results | length' "$out/report.sarif")
+          if [ "$counted" -ne "$sarif_results" ]; then
+            echo "::error::SARIF carried $sarif_results results for $counted counted findings — baselined findings must never reach SARIF"
+            exit 1
+          fi
+          jq -e '.summary.baselined == 0' "$out/report.json" >/dev/null || {
+            echo "::error::the fixture has no baseline file, yet findings were marked baselined"
+            exit 1
+          }
+          jq -e '.schema == "dbtl.report/v1"' "$out/report.json" >/dev/null || {
+            echo "::error::the JSON report schema is not dbtl.report/v1"
+            exit 1
+          }
+          gates=$(jq '.gates | length' "$out/report.json")
+          failed=$(jq '[.gates[] | select(.status == "fail")] | length' "$out/report.json")
+          JUNIT_FILE="$out/report.xml" EXPECTED_GATES="$gates" EXPECTED_FAILURES="$failed" \
+            python3 - <<'PY'
+          import os, sys, xml.etree.ElementTree as ET
+
+          def die(msg):
+              print(f"::error::{msg}", file=sys.stderr)
+              sys.exit(1)
+
+          root = ET.parse(os.environ["JUNIT_FILE"]).getroot()
+          if root.tag != "testsuites":
+              die(f"JUnit root is <{root.tag}>, expected <testsuites>")
+          cases = root.findall(".//testcase")
+          want_cases = int(os.environ["EXPECTED_GATES"])
+          if len(cases) != want_cases:
+              die(f"JUnit has {len(cases)} testcases, expected one per gate ({want_cases})")
+          failures = [c for c in cases if c.find("failure") is not None]
+          want_failures = int(os.environ["EXPECTED_FAILURES"])
+          if len(failures) != want_failures:
+              die(f"JUnit has {len(failures)} failing testcases, expected {want_failures}")
+          print(f"JUnit: {len(cases)} testcases, {len(failures)} failures — one per gate")
+          PY
+          echo "report structures OK: sarif=$sarif_results results, json=dbtl.report/v1, junit=$gates testcases/$failed failures"
+
+      # Reports stay available even when an assertion above fails.
+      - name: Upload the dogfood reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dogfood-e2e-reports
+          path: |
+            ${{ runner.temp }}/dogfood/report.md
+            ${{ runner.temp }}/dogfood/report.sarif
+            ${{ runner.temp }}/dogfood/report.xml
+            ${{ runner.temp }}/dogfood/report.json
+            ${{ runner.temp }}/dogfood/impact.md
+          if-no-files-found: warn
