@@ -24,7 +24,9 @@ if [ -z "$target" ]; then
 	exit 1 # dbtl_select_artifact already reported the unsupported runner
 fi
 
-repo="${DBTL_ACTION_REPOSITORY:?the action repository is unknown}"
+# `github.action_repository` names the repo the action came from; fall back
+# to the current repo for invocations where the context leaves it empty.
+repo="${DBTL_ACTION_REPOSITORY:-${GITHUB_REPOSITORY:?the action repository is unknown}}"
 artifact="dbtl-${version}-${target}.${ext}"
 base_url="https://github.com/${repo}/releases/download/${version}"
 work="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dbtl-install.XXXXXX")"
@@ -72,9 +74,9 @@ if [ ! -f "$bin" ]; then
 fi
 chmod +x "$bin" 2>/dev/null || true
 
-reported="$("$bin" --version | awk '{print $NF}')"
+reported="$("$bin" --version 2>/dev/null | awk '{print $NF}' || true)"
 if [ "$reported" != "${version#v}" ]; then
-	dbtl_die "installed dbtl reports version '${reported}', expected '${version#v}'"
+	dbtl_die "installed dbtl reports version '${reported}', expected '${version#v}' (the binary may not run on this runner)"
 fi
 
 if [ -n "${GITHUB_PATH:-}" ]; then

@@ -153,13 +153,14 @@ dbtl_resolve_base() {
 }
 
 # Split the free-form `args` input on whitespace, one argument per line.
-# Quoting is deliberately NOT interpreted (the input's description says so),
-# and globbing is off so `*` can never turn into a file list.
+# Quoting is deliberately NOT interpreted (the input's description says so);
+# `read -a` splits on IFS without touching quotes or glob characters, so `*`
+# can never turn into a file list — and a whitespace-only input produces no
+# argument at all.
 dbtl_split_args() {
-	local args="${1:-}"
-	(
-		set -f
-		# shellcheck disable=SC2086 # whitespace splitting is the contract
-		if [ -n "$args" ]; then printf '%s\n' $args; fi
-	)
+	local -a words
+	read -ra words <<<"${1:-}"
+	if ((${#words[@]})); then
+		printf '%s\n' "${words[@]}"
+	fi
 }

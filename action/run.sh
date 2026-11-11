@@ -28,9 +28,11 @@ if [ -n "$base" ] && [[ "$base" =~ ^[0-9a-fA-F]{40}$ ]]; then
 	fi
 fi
 
-report="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dbtl-report.md"
-sarif_file="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dbtl.sarif"
-rm -f "$report" "$sarif_file"
+# A fresh directory per invocation — repeated `uses:` in one job must not
+# clobber a previous run's report while its outputs still point at it.
+work="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dbtl-check.XXXXXX")"
+report="$work/dbtl-report.md"
+sarif_file="$work/dbtl.sarif"
 
 cmd=(dbtl check --project "$project_dir" --format github
 	--report "markdown:${report}" --path-prefix "$project_dir")

@@ -304,6 +304,10 @@ fn split_args_collapses_repeated_whitespace_and_handles_empty() {
     let out = bash("dbtl_split_args ''");
     assert!(out.status.success());
     assert_eq!(stdout(&out), "", "empty input splits to nothing");
+    // Whitespace-only input must not become a single empty argument.
+    let out = bash("dbtl_split_args '   '");
+    assert!(out.status.success());
+    assert_eq!(stdout(&out), "", "whitespace-only input splits to nothing");
 }
 
 #[test]
