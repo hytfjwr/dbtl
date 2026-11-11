@@ -570,7 +570,7 @@ pub fn doc_coverage_counts(dag: &Dag) -> (usize, usize) {
 /// The `(documented, declared)` COLUMN-description pair, over the same model
 /// base as [`doc_coverage_counts`] (root project, `model`): `declared`
 /// counts every entry in the nodes' `columns` lists, `documented` counts the
-/// entries carrying a real description ([`column_documented`] —
+/// entries carrying a real description (`column_documented` —
 /// whitespace-only doesn't count). A node with zero declared columns
 /// contributes nothing — the same "of the columns the project declares"
 /// framing the test-coverage metric uses.
