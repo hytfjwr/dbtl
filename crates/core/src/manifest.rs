@@ -16,6 +16,12 @@ use serde::{Deserialize, Serialize};
 pub struct RawConfig {
     #[serde(default)]
     pub materialized: Option<String>,
+    /// The declared `unique_key` — dbt keeps the declared shape on the wire:
+    /// a bare string for `unique_key: id`, an array for
+    /// `unique_key: [a, b]`. Left as a `Value` here; `Dag::build` normalizes
+    /// both spellings to `Vec<String>` (empty = unconfigured).
+    #[serde(default)]
+    pub unique_key: Option<serde_json::Value>,
 }
 
 /// `depends_on` sub-object of a node (the node refs it points at). `macros`
@@ -60,6 +66,13 @@ pub struct RawNode {
     pub path: Option<String>,
     #[serde(default)]
     pub original_file_path: Option<String>,
+    /// `patch_path` — the `.yml` properties file this node's docs/config were
+    /// declared in (`<package>://<project-relative path>` on the wire, e.g.
+    /// `sample://models/schema.yml`; `null` when nothing patches the node).
+    /// `Dag::build` strips the scheme so it is comparable with the
+    /// `original_file_path` convention.
+    #[serde(default)]
+    pub patch_path: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
@@ -169,6 +182,46 @@ pub struct RawSource {
     /// against it the same way [`RawNode::alias`] covers models.
     #[serde(default)]
     pub identifier: Option<String>,
+    /// `loaded_at_field` — the timestamp column freshness is measured
+    /// against (table-level overrides the source-level declaration; a table's
+    /// explicit `null` clears the inherited value, so the wire value is the
+    /// already-resolved effective one).
+    #[serde(default)]
+    pub loaded_at_field: Option<String>,
+    /// The tool that loads this table (`loader:` — source-level only; dbt
+    /// ignores it on tables and in `dbt_project.yml`). dbt writes `""` when
+    /// unconfigured.
+    #[serde(default)]
+    pub loader: Option<String>,
+    /// The resolved `freshness` block: `warn_after`/`error_after` merged per
+    /// threshold (table > source > `dbt_project.yml` `+freshness`). `null`
+    /// when nothing configures it — including a table's explicit
+    /// `freshness: null`, which clears inherited thresholds. `filter` is out
+    /// of scope and ignored.
+    #[serde(default)]
+    pub freshness: Option<RawFreshness>,
+}
+
+/// `freshness` sub-object of a source: the two thresholds dbt compares a
+/// table's `loaded_at_field` against. Each threshold is optional; a threshold
+/// object whose `count` is null is effectively absent (dbt writes
+/// `{"count": null, "period": null}` for the unset side).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct RawFreshness {
+    #[serde(default)]
+    pub warn_after: Option<RawFreshnessThreshold>,
+    #[serde(default)]
+    pub error_after: Option<RawFreshnessThreshold>,
+}
+
+/// One freshness threshold (`{count: 12, period: hour}`). `count` may be null
+/// even when the object is present; a null count carries no signal.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct RawFreshnessThreshold {
+    #[serde(default)]
+    pub count: Option<i64>,
+    #[serde(default)]
+    pub period: Option<String>,
 }
 
 /// `owner` sub-object of an exposure. dbt requires at least one of name/email,

@@ -33,7 +33,7 @@ fn detail_view_for(app: &App, uid: String) -> DetailView {
     DetailView {
         model_id: uid,
         name,
-        detail,
+        detail: Box::new(detail),
         tests,
         downstream_count,
         upstream_count,

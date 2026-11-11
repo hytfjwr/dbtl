@@ -28,6 +28,9 @@ pub use baseline::{Baseline, BASELINE_SCHEMA, DEFAULT_BASELINE_NAME};
 mod registry;
 pub use registry::{Category, ParamKind, ParamSpec, Requires, RuleInfo, Severity, REGISTRY};
 
+mod location;
+pub use location::{fill_finding_lines, yaml_name_line, YAML_ATTRIBUTE_RULE_IDS};
+
 mod rules;
 pub use rules::{run_rules, LintInput};
 
@@ -90,6 +93,10 @@ pub enum LintRule {
     RequiredMetaKeys,
     /// A contract-enforced model has declared columns without `data_type`.
     ContractColumnsWithoutType,
+    /// An `incremental` model has no `unique_key`.
+    IncrementalWithoutUniqueKey,
+    /// A source has no effective `warn_after`/`error_after` freshness.
+    SourcesWithoutFreshness,
 }
 
 impl LintRule {
@@ -97,7 +104,7 @@ impl LintRule {
     /// order of the enum and of [`REGISTRY`]. The twelve original rules
     /// lead; rules added later append in registry order so the emitted
     /// sequence stays stable.
-    pub const ALL: [LintRule; 25] = [
+    pub const ALL: [LintRule; 27] = [
         Self::DirectJoinToSource,
         Self::MultipleSourcesJoined,
         Self::SourceFanout,
@@ -123,6 +130,8 @@ impl LintRule {
         Self::ModelDirectories,
         Self::RequiredMetaKeys,
         Self::ContractColumnsWithoutType,
+        Self::IncrementalWithoutUniqueKey,
+        Self::SourcesWithoutFreshness,
     ];
 
     /// This rule's registry row — every rule has exactly one (drift-tested).

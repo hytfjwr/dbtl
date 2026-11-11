@@ -476,3 +476,33 @@ pub(super) fn too_many_joins(
         ));
     }
 }
+
+/// `incremental_without_unique_key`: a model materialized `incremental`
+/// whose effective `unique_key` is empty (the normalized `NodeDetail` list —
+/// in-file `config()`, schema.yml `config:` and the project tree all land
+/// there already, so the rule reads one field).
+pub(super) fn incremental_without_unique_key(
+    dag: &Dag,
+    uids: &[&String],
+    in_scope: &dyn Fn(&NodeInfo) -> bool,
+    out: &mut Vec<Finding>,
+) {
+    for uid in uids {
+        let Some(n) = dag.get(uid) else { continue };
+        if n.resource_type != "model"
+            || n.materialized.as_deref() != Some("incremental")
+            || !in_scope(n)
+        {
+            continue;
+        }
+        if dag.detail(uid).is_some_and(|d| !d.unique_key.is_empty()) {
+            continue;
+        }
+        out.push(Finding::new(
+            LintRule::IncrementalWithoutUniqueKey,
+            (*uid).clone(),
+            Vec::new(),
+            format!("incremental model {} has no unique_key", n.name),
+        ));
+    }
+}

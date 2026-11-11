@@ -404,14 +404,14 @@ mod tests {
         let dv = DetailView {
             model_id: "model.p.m".into(),
             name: "m".into(),
-            detail: crate::NodeDetail {
+            detail: Box::new(crate::NodeDetail {
                 meta: BTreeMap::from_iter([
                     ("zone".to_string(), "z1".to_string()),
                     ("owner".to_string(), "alice".to_string()),
                     ("deep".to_string(), r#"{"x":1}"#.to_string()),
                 ]),
                 ..Default::default()
-            },
+            }),
             tests: vec![],
             downstream_count: 0,
             upstream_count: 0,
@@ -462,13 +462,13 @@ mod tests {
         let dv = DetailView {
             model_id: "model.p.m".into(),
             name: "m".into(),
-            detail: crate::NodeDetail {
+            detail: Box::new(crate::NodeDetail {
                 meta: BTreeMap::from_iter([
                     ("k".to_string(), "line1\nline2\r\nline3".to_string()),
                     ("équipe".to_string(), "x".to_string()),
                 ]),
                 ..Default::default()
-            },
+            }),
             tests: vec![],
             downstream_count: 0,
             upstream_count: 0,

@@ -325,7 +325,7 @@ fn fold_survives_the_untested_filter_toggle() {
     );
     assert_eq!(
         a.active_list().len(),
-        5 - hidden_uids.len(),
+        7 - hidden_uids.len(),
         "the folded group's untested members stay hidden under T"
     );
     for uid in &hidden_uids {

@@ -38,3 +38,29 @@ pub(super) fn missing_primary_key_tests(
         ));
     }
 }
+
+/// `sources_without_freshness`: a source with no effective freshness — the
+/// [`NodeDetail::has_freshness`] predicate (a `warn_after`/`error_after`
+/// with a count after dbt's source→table merge and `null` clearing).
+pub(super) fn sources_without_freshness(
+    dag: &Dag,
+    uids: &[&String],
+    in_scope: &dyn Fn(&NodeInfo) -> bool,
+    out: &mut Vec<Finding>,
+) {
+    for uid in uids {
+        let Some(n) = dag.get(uid) else { continue };
+        if n.resource_type != "source" || !in_scope(n) {
+            continue;
+        }
+        if dag.detail(uid).is_some_and(|d| d.has_freshness()) {
+            continue;
+        }
+        out.push(Finding::new(
+            LintRule::SourcesWithoutFreshness,
+            (*uid).clone(),
+            Vec::new(),
+            format!("source {} has no freshness configured", n.name),
+        ));
+    }
+}

@@ -50,6 +50,46 @@ pub(super) fn meta_strings(
         .collect()
 }
 
+/// Normalize `config.unique_key` to `Vec<String>`: dbt accepts a bare string
+/// (`unique_key: id`) or a string list (`unique_key: [a, b]`) and keeps that
+/// declared shape on the wire. Anything else (null, numbers, a map) is
+/// unconfigured → empty.
+pub(super) fn unique_key_from(value: &Option<serde_json::Value>) -> Vec<String> {
+    match value {
+        Some(serde_json::Value::String(s)) => vec![s.clone()],
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Strip the `<package>://` scheme off a manifest `patch_path`
+/// (`sample://models/schema.yml` → `models/schema.yml`) so it is directly
+/// comparable with `original_file_path` — the same project-relative
+/// convention source mode emits when it records the declaring `.yml`.
+pub(super) fn project_rel_patch_path(patch_path: &Option<String>) -> Option<String> {
+    patch_path.as_deref().map(|p| {
+        p.split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(p)
+            .to_string()
+    })
+}
+
+/// Keep a freshness threshold only when it carries a real `count` — dbt
+/// writes `{"count": null, "period": null}` for the unset side of a partially
+/// configured `freshness` block, and a count-less threshold is absent.
+pub(super) fn freshness_threshold(t: &Option<RawFreshnessThreshold>) -> Option<FreshnessThreshold> {
+    t.as_ref().and_then(|t| {
+        t.count.map(|count| FreshnessThreshold {
+            count,
+            period: t.period.clone(),
+        })
+    })
+}
+
 /// Whether `n`'s `unique_id` package segment equals `pkg`: `model.<pkg>.<name>`
 /// → `pkg`, `source.<pkg>.<src>.<tbl>` → `pkg`, and so on for every
 /// `<resource>.<pkg>.…` uid shape. A uid with no non-empty second segment is
@@ -70,12 +110,14 @@ pub fn in_package(n: &NodeInfo, pkg: &str) -> bool {
 pub(super) fn detail_from_node(node: &RawNode) -> NodeDetail {
     NodeDetail {
         materialized: node.config.materialized.clone(),
+        unique_key: unique_key_from(&node.config.unique_key),
         database: node.database.clone(),
         schema: node.schema.clone(),
         tags: node.tags.clone(),
         description: clean_desc(&node.description),
         columns: columns_from(&node.columns),
         original_file_path: node.original_file_path.clone(),
+        patch_path: project_rel_patch_path(&node.patch_path),
         package_name: node.package_name.clone(),
         access: node.access.clone(),
         group: node.group.clone(),
@@ -89,6 +131,8 @@ pub(super) fn detail_from_node(node: &RawNode) -> NodeDetail {
             .alias
             .clone()
             .filter(|a| !a.trim().is_empty() && a != &node.name),
+        // The ingestion fields below are source-only.
+        ..Default::default()
     }
 }
 
@@ -127,6 +171,18 @@ pub(super) fn detail_from_source(source: &RawSource) -> NodeDetail {
             .identifier
             .clone()
             .filter(|i| !i.trim().is_empty() && i != &source.name),
+        loaded_at_field: source.loaded_at_field.clone(),
+        // dbt writes `loader: ""` for an unconfigured source — normalize to
+        // `None` so it reads the same as an absent one.
+        loader: source.loader.clone().filter(|l| !l.is_empty()),
+        freshness_warn_after: source
+            .freshness
+            .as_ref()
+            .and_then(|f| freshness_threshold(&f.warn_after)),
+        freshness_error_after: source
+            .freshness
+            .as_ref()
+            .and_then(|f| freshness_threshold(&f.error_after)),
         ..Default::default() // sources carry no governance fields
     }
 }

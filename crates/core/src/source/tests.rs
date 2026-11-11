@@ -397,3 +397,133 @@ fn tree_config_meta_stringifies_keys_and_warns() {
         "warning names the bad level: {w:?}"
     );
 }
+
+#[test]
+fn config_unique_key_keeps_the_declared_shape() {
+    // A bare string stays a string, a list stays a list — `Dag::build`
+    // normalizes both to `Vec<String>`; here the raw `Value` is asserted.
+    // The LAST resolvable `unique_key=` wins (ordered config() application,
+    // same as `materialized`); an unresolvable expression can't override an
+    // earlier literal.
+    assert_eq!(
+        config_unique_key("{{ config(unique_key='id') }}"),
+        Some(serde_json::json!("id"))
+    );
+    assert_eq!(
+        config_unique_key("{{ config(materialized='i', unique_key=['a', 'b']) }}"),
+        Some(serde_json::json!(["a", "b"]))
+    );
+    assert_eq!(
+        config_unique_key("{{ config(unique_key='x') }} {{ config(unique_key=['y','z']) }}"),
+        Some(serde_json::json!(["y", "z"]))
+    );
+    assert_eq!(
+        config_unique_key("{{ config(unique_key='id') }} {{ config(unique_key=var('k')) }}"),
+        Some(serde_json::json!("id")),
+        "the unresolvable expr can't shadow the earlier literal"
+    );
+    // Outside a config() call the key is inert.
+    assert_eq!(config_unique_key("-- unique_key='id'"), None);
+    assert_eq!(config_unique_key("select 1"), None);
+}
+
+#[test]
+fn effective_freshness_merges_per_threshold() {
+    let t = |count: i64| RawFreshnessThreshold {
+        count: Some(count),
+        period: Some("hour".to_string()),
+    };
+    let src = Some(Some(RawFreshness {
+        warn_after: Some(t(12)),
+        error_after: Some(t(24)),
+    }));
+    // A table declaring only `error_after` keeps the inherited warn_after —
+    // the per-threshold merge real dbt does (verified on 1.12.6).
+    let tbl = Some(Some(RawFreshness {
+        warn_after: None,
+        error_after: Some(t(6)),
+    }));
+    let out = effective_freshness(&tbl, &src, &None).expect("merged");
+    assert_eq!(out.warn_after.and_then(|x| x.count), Some(12));
+    assert_eq!(out.error_after.and_then(|x| x.count), Some(6));
+    // An absent table level inherits the source wholesale.
+    let out = effective_freshness(&None, &src, &None).expect("inherited");
+    assert_eq!(out.warn_after.and_then(|x| x.count), Some(12));
+    assert_eq!(out.error_after.and_then(|x| x.count), Some(24));
+    // `freshness: null` on the table clears everything — the walk STOPS at
+    // the explicit null (the tree `+freshness` never lands either).
+    let tree = Some(RawFreshness {
+        warn_after: Some(t(48)),
+        error_after: None,
+    });
+    assert!(effective_freshness(&Some(None), &src, &tree).is_none());
+    // But a source-level `freshness: null` only stops the levels BELOW the
+    // table: the table's own declared thresholds still count.
+    let out = effective_freshness(&tbl, &Some(None), &tree).expect("table wins");
+    assert_eq!(out.error_after.and_then(|x| x.count), Some(6));
+    assert!(out.warn_after.is_none(), "source null stops its warn");
+    // The tree is the lowest level: absent schema levels pass through to it.
+    let out = effective_freshness(&None, &None, &tree).expect("tree lands");
+    assert_eq!(out.warn_after.and_then(|x| x.count), Some(48));
+    // Nothing declared anywhere → no freshness object at all.
+    assert!(effective_freshness(&None, &None, &None).is_none());
+}
+
+#[test]
+fn source_table_three_state_fields_deserialize() {
+    // `loaded_at_field:`/`freshness:` are `Option<Option<_>>`: ABSENT means
+    // "inherit the higher level", an explicit `null` means "clear it".
+    let mut w = Vec::new();
+    let v = yaml_to_json(
+        "tables:\n  - name: a\n    loaded_at_field: null\n    freshness: null\n  - name: b\n    loaded_at_field: ts\n",
+        &mut w,
+    )
+    .unwrap();
+    let tables: Vec<SchemaSourceTable> = serde_json::from_value(v["tables"].clone()).unwrap();
+    assert!(matches!(tables[0].loaded_at_field, Some(None)));
+    assert!(matches!(tables[0].freshness, Some(None)));
+    assert_eq!(
+        tables[1].loaded_at_field.clone().flatten(),
+        Some("ts".to_string()),
+        "a declared value overrides"
+    );
+    assert!(tables[1].freshness.is_none(), "absent means inherit");
+}
+
+#[test]
+fn tree_config_reads_unique_key_and_freshness() {
+    // `+unique_key` keeps its declared shape (string OR list — `Dag::build`
+    // normalizes); `+freshness` parses into the wire freshness type; a
+    // deeper level wins over a shallower one.
+    let mut w = Vec::new();
+    let tree = yaml_to_json(
+        "sample:\n  +unique_key: base_uk\n  staging:\n    +unique_key: [a, b]\n    +freshness:\n      warn_after: {count: 48, period: hour}\n",
+        &mut w,
+    )
+    .unwrap();
+    let cfg = resolve_tree_config(
+        &tree,
+        &["sample".to_string(), "staging".to_string()],
+        "sources".to_string(),
+        &mut w,
+    );
+    assert_eq!(cfg.unique_key, Some(serde_json::json!(["a", "b"])));
+    assert_eq!(
+        cfg.freshness
+            .as_ref()
+            .and_then(|f| f.warn_after.as_ref())
+            .and_then(|t| t.count),
+        Some(48)
+    );
+    // A malformed `+freshness` warns instead of silently losing the block.
+    let mut w = Vec::new();
+    let tree = yaml_to_json("sample:\n  +freshness: 7\n", &mut w).unwrap();
+    let cfg = resolve_tree_config(
+        &tree,
+        &["sample".to_string()],
+        "sources".to_string(),
+        &mut w,
+    );
+    assert!(cfg.freshness.is_none());
+    assert_eq!(w.len(), 1, "{w:?}");
+}

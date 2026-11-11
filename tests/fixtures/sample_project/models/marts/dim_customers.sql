@@ -1,4 +1,4 @@
-{{ config(materialized="incremental") }}
+{{ config(materialized="incremental", unique_key="id") }}
 
 -- dbt renders Jinja BEFORE SQL comments exist, so a `--`-commented ref to an
 -- existing node IS a real dependency in the manifest. The source loader must

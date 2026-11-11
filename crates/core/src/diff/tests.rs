@@ -10,6 +10,7 @@ fn model(name: &str, materialized: Option<&str>, sql: &str) -> RawNode {
         raw_code: Some(sql.to_string()),
         config: RawConfig {
             materialized: materialized.map(String::from),
+            ..Default::default()
         },
         ..Default::default()
     }

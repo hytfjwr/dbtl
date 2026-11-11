@@ -116,6 +116,7 @@ fn export_labels_neutralize_untrusted_kind() {
                 resource_type: "model".into(),
                 config: RawConfig {
                     materialized: Some("table\"] x[\"pwn".into()),
+                    ..Default::default()
                 },
                 ..Default::default()
             },

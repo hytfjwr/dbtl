@@ -864,3 +864,75 @@ fn check_diff_marks_pre_existing_findings() {
         out_text(&out)
     );
 }
+
+// ---- finding locations: the yml file + line ---------------------------------
+
+/// A tiny source-mode project in `dir`: one documented model with two
+/// undescribed columns (so `undocumented_columns` fires on the first one).
+/// `models/schema.yml` line numbers are pinned by the write below.
+fn column_project(dir: &Path) -> PathBuf {
+    let root = dir.join("proj");
+    std::fs::create_dir_all(root.join("models")).unwrap();
+    std::fs::write(
+        root.join("dbt_project.yml"),
+        "name: p\nversion: \"1.0.0\"\nconfig-version: 2\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("models/m.sql"), "select 1\n").unwrap();
+    // line 7 is `- name: id`, the first undescribed column.
+    std::fs::write(
+        root.join("models/schema.yml"),
+        "version: 2\n\nmodels:\n  - name: m\n    description: documented\n    columns:\n      - name: id\n      - name: amt\n",
+    )
+    .unwrap();
+    root
+}
+
+#[test]
+fn lint_prints_the_yml_line_for_column_findings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = column_project(tmp.path());
+    let out = run(&[
+        "lint",
+        "--source",
+        root.to_str().unwrap(),
+        "--rules",
+        "undocumented_columns",
+    ]);
+    let stdout = out_text(&out);
+    assert!(
+        stdout.contains("models/schema.yml:7"),
+        "the column finding prints the declaring yml + its line: {stdout}"
+    );
+    assert!(
+        stdout.contains("undocumented_columns"),
+        "the rule id shows: {stdout}"
+    );
+}
+
+#[test]
+fn check_json_findings_carry_the_yml_line() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = column_project(tmp.path());
+    let out = run(&[
+        "check",
+        "--source",
+        root.to_str().unwrap(),
+        "--lint",
+        "--rules",
+        "undocumented_columns",
+        "--format",
+        "json",
+    ]);
+    let json: serde_json::Value =
+        serde_json::from_str(&out_text(&out)).expect("check stdout is pure JSON");
+    let finding = json["gates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["id"] == "lint:undocumented_columns")
+        .and_then(|g| g["findings"].as_array().and_then(|a| a.first()))
+        .expect("an undocumented_columns finding exists");
+    assert_eq!(finding["location"]["file"], "models/schema.yml");
+    assert_eq!(finding["location"]["line"], 7);
+}

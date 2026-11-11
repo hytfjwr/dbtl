@@ -125,6 +125,11 @@ pub(super) struct SchemaConfig {
     /// `config: alias:` — the relation-name override (dbt's `alias` config).
     #[serde(default, deserialize_with = "de_opt_string")]
     pub(super) alias: Option<String>,
+    /// `config: unique_key:` — kept raw: dbt accepts a bare string or a
+    /// string list and records the declared shape; `Dag::build` normalizes
+    /// both to `Vec<String>`.
+    #[serde(default)]
+    pub(super) unique_key: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -181,6 +186,19 @@ pub(super) struct SchemaSource {
     /// `meta:` overrides it per key, verified against real dbt).
     #[serde(default)]
     pub(super) meta: serde_json::Value,
+    /// `loader:` — the tool loading these tables; cascades to every table
+    /// (dbt ignores it on the table level and in `dbt_project.yml`).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) loader: Option<String>,
+    /// `loaded_at_field:` at the source level — inherited by every table
+    /// unless the table overrides or explicitly nulls it.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) loaded_at_field: Option<String>,
+    /// `freshness:` at the source level — per-threshold defaults for the
+    /// tables. Three-state so `freshness: null` clears a tree-provided
+    /// `+freshness` instead of passing it through.
+    #[serde(default, deserialize_with = "de_opt_some")]
+    pub(super) freshness: Option<Option<RawFreshness>>,
     #[serde(default)]
     pub(super) tables: Vec<SchemaSourceTable>,
 }
@@ -198,6 +216,15 @@ pub(super) struct SchemaSourceTable {
     /// `meta:` at the table level — overrides the source's `meta:` per key.
     #[serde(default)]
     pub(super) meta: serde_json::Value,
+    /// `loaded_at_field:` at the table level — three-state: absent inherits
+    /// the source's, explicit `null` clears it, a value overrides it.
+    #[serde(default, deserialize_with = "de_opt_opt_string")]
+    pub(super) loaded_at_field: Option<Option<String>>,
+    /// `freshness:` at the table level — merges with the source's PER
+    /// THRESHOLD (verified: a table's `error_after` keeps the inherited
+    /// `warn_after`); an explicit `null` clears both.
+    #[serde(default, deserialize_with = "de_opt_some")]
+    pub(super) freshness: Option<Option<RawFreshness>>,
     #[serde(default)]
     pub(super) columns: Vec<SchemaColumn>,
     #[serde(default)]

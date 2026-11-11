@@ -1,5 +1,5 @@
 use super::*;
-use crate::manifest::{RawConfig, RawTestMetadata};
+use crate::manifest::{RawConfig, RawFreshness, RawFreshnessThreshold, RawTestMetadata};
 
 fn sample_manifest() -> RawManifest {
     // a -> b -> c, plus a test node hanging off b (must not bridge). The test
@@ -22,6 +22,7 @@ fn sample_manifest() -> RawManifest {
                 path: Some("marts/b.sql".into()),
                 config: RawConfig {
                     materialized: Some("view".into()),
+                    ..Default::default()
                 },
                 ..Default::default()
             },
@@ -964,4 +965,222 @@ fn same_named_relationships_tests_sort_by_their_target() {
             "ref_uid breaks the (kind, column, name) tie deterministically"
         );
     }
+}
+
+// ---- the ingestion fields (unique_key / patch_path / source
+// freshness / loader / loaded_at_field) --------------------------------------
+
+/// A node literal carrying just the fields the ingestion tests vary.
+fn ingest_model(name: &str, unique_key: Option<serde_json::Value>, patch: Option<&str>) -> RawNode {
+    RawNode {
+        name: name.into(),
+        resource_type: "model".into(),
+        original_file_path: Some(format!("models/{name}.sql")),
+        patch_path: patch.map(str::to_string),
+        config: RawConfig {
+            unique_key,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+#[test]
+fn unique_key_normalizes_string_list_and_absent_forms() {
+    // dbt keeps the declared shape on the wire — `unique_key: id` is a
+    // string, `unique_key: [a, b]` a list. `Dag::build` normalizes both to
+    // `Vec<String>` (written order); anything else is unconfigured → empty.
+    let nodes = HashMap::from([
+        (
+            "model.p.scalar".to_string(),
+            ingest_model("scalar", Some(serde_json::json!("id")), None),
+        ),
+        (
+            "model.p.list".to_string(),
+            ingest_model("list", Some(serde_json::json!(["a", "b"])), None),
+        ),
+        (
+            "model.p.absent".to_string(),
+            ingest_model("absent", None, None),
+        ),
+        (
+            "model.p.nulled".to_string(),
+            ingest_model("nulled", Some(serde_json::Value::Null), None),
+        ),
+        (
+            "model.p.not_a_string".to_string(),
+            ingest_model("not_a_string", Some(serde_json::json!(7)), None),
+        ),
+    ]);
+    let manifest = RawManifest {
+        metadata: Default::default(),
+        nodes,
+        sources: HashMap::new(),
+        exposures: HashMap::new(),
+        macros: HashMap::new(),
+        semantic_models: HashMap::new(),
+        metrics: HashMap::new(),
+        saved_queries: HashMap::new(),
+        unit_tests: HashMap::new(),
+        functions: HashMap::new(),
+        parent_map: HashMap::new(),
+        child_map: HashMap::new(),
+    };
+    let dag = Dag::build(&manifest);
+    let uk = |uid: &str| dag.detail(uid).unwrap().unique_key.clone();
+    assert_eq!(uk("model.p.scalar"), vec!["id".to_string()]);
+    assert_eq!(
+        uk("model.p.list"),
+        vec!["a".to_string(), "b".to_string()],
+        "list order is the declared order"
+    );
+    for uid in ["model.p.absent", "model.p.nulled", "model.p.not_a_string"] {
+        assert!(uk(uid).is_empty(), "{uid} must normalize to unconfigured");
+    }
+}
+
+#[test]
+fn patch_path_strips_the_package_scheme() {
+    // `sample://models/schema.yml` → `models/schema.yml` so both loaders
+    // carry the same project-relative value; a bare path (no scheme) passes
+    // through; no patch stays `None`.
+    let nodes = HashMap::from([
+        (
+            "model.p.declared".to_string(),
+            ingest_model("declared", None, Some("sample://models/marts/schema.yml")),
+        ),
+        (
+            "model.p.bare".to_string(),
+            ingest_model("bare", None, Some("models/marts/schema.yml")),
+        ),
+        (
+            "model.p.plain".to_string(),
+            ingest_model("plain", None, None),
+        ),
+    ]);
+    let manifest = RawManifest {
+        metadata: Default::default(),
+        nodes,
+        sources: HashMap::new(),
+        exposures: HashMap::new(),
+        macros: HashMap::new(),
+        semantic_models: HashMap::new(),
+        metrics: HashMap::new(),
+        saved_queries: HashMap::new(),
+        unit_tests: HashMap::new(),
+        functions: HashMap::new(),
+        parent_map: HashMap::new(),
+        child_map: HashMap::new(),
+    };
+    let dag = Dag::build(&manifest);
+    assert_eq!(
+        dag.detail("model.p.declared")
+            .unwrap()
+            .patch_path
+            .as_deref(),
+        Some("models/marts/schema.yml")
+    );
+    assert_eq!(
+        dag.detail("model.p.bare").unwrap().patch_path.as_deref(),
+        Some("models/marts/schema.yml")
+    );
+    assert_eq!(dag.detail("model.p.plain").unwrap().patch_path, None);
+}
+
+#[test]
+fn source_freshness_loader_and_loaded_at_normalize() {
+    // The wire shape real dbt emits: `loader: ""` when unconfigured, a
+    // threshold object with null `count`/`period` for the unset side, and
+    // `freshness: null` when a table's explicit null cleared the inherited
+    // block — each normalizes to "not configured".
+    let sources = HashMap::from([
+        (
+            "source.p.s.full".to_string(),
+            RawSource {
+                name: "full".into(),
+                resource_type: "source".into(),
+                loader: Some("fivetran".into()),
+                loaded_at_field: Some("loaded_at".into()),
+                freshness: Some(RawFreshness {
+                    warn_after: Some(RawFreshnessThreshold {
+                        count: Some(12),
+                        period: Some("hour".into()),
+                    }),
+                    // The unset side arrives as an all-null object, not a
+                    // missing key — still absent.
+                    error_after: Some(RawFreshnessThreshold {
+                        count: None,
+                        period: None,
+                    }),
+                }),
+                ..Default::default()
+            },
+        ),
+        (
+            "source.p.s.cleared".to_string(),
+            RawSource {
+                name: "cleared".into(),
+                resource_type: "source".into(),
+                loader: Some("".into()),
+                freshness: None,
+                ..Default::default()
+            },
+        ),
+        (
+            "source.p.s.error_only".to_string(),
+            RawSource {
+                name: "error_only".into(),
+                resource_type: "source".into(),
+                freshness: Some(RawFreshness {
+                    warn_after: None,
+                    error_after: Some(RawFreshnessThreshold {
+                        count: Some(6),
+                        period: Some("hour".into()),
+                    }),
+                }),
+                ..Default::default()
+            },
+        ),
+    ]);
+    let manifest = RawManifest {
+        metadata: Default::default(),
+        nodes: HashMap::new(),
+        sources,
+        exposures: HashMap::new(),
+        macros: HashMap::new(),
+        semantic_models: HashMap::new(),
+        metrics: HashMap::new(),
+        saved_queries: HashMap::new(),
+        unit_tests: HashMap::new(),
+        functions: HashMap::new(),
+        parent_map: HashMap::new(),
+        child_map: HashMap::new(),
+    };
+    let dag = Dag::build(&manifest);
+    let d = |uid: &str| dag.detail(uid).unwrap();
+
+    let full = d("source.p.s.full");
+    assert_eq!(full.loader.as_deref(), Some("fivetran"));
+    assert_eq!(full.loaded_at_field.as_deref(), Some("loaded_at"));
+    assert_eq!(full.freshness_warn_after.as_ref().unwrap().count, 12);
+    assert_eq!(
+        full.freshness_warn_after
+            .as_ref()
+            .unwrap()
+            .period
+            .as_deref(),
+        Some("hour")
+    );
+    assert!(full.freshness_error_after.is_none(), "null count = absent");
+    assert!(full.has_freshness());
+
+    let cleared = d("source.p.s.cleared");
+    assert_eq!(cleared.loader, None, "an empty loader is unconfigured");
+    assert!(!cleared.has_freshness(), "freshness: null = none");
+
+    let err = d("source.p.s.error_only");
+    assert!(
+        err.has_freshness(),
+        "error_after alone is effective freshness"
+    );
 }

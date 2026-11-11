@@ -172,6 +172,18 @@ pub(super) fn config_meta(sql: &str) -> Option<serde_json::Map<String, serde_jso
     found.then_some(out)
 }
 
+/// The `unique_key=` literal from the file's `config()` calls — the LAST
+/// resolvable one wins (ordered config() application, same as `materialized`).
+/// Kept as the raw `Value`: dbt accepts a bare string or a string list and
+/// records the declared shape; `Dag::build` normalizes. An unresolvable
+/// expression can't override an earlier literal.
+pub(super) fn config_unique_key(sql: &str) -> Option<serde_json::Value> {
+    config_kwarg_exprs(sql, "unique_key")
+        .into_iter()
+        .filter_map(lit_value)
+        .next_back()
+}
+
 /// The relation-name override from `config(alias='…')`, if a string literal —
 /// the LAST `alias=` across the file's config() calls wins, the same ordered
 /// application `materialized`/`enabled` follow. An unresolvable expression

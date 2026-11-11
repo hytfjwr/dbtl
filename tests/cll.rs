@@ -182,6 +182,8 @@ fn downstream_closure_of_stg_id_is_the_blast_radius() {
         .collect();
     let want: BTreeSet<String> = [
         (model("fct_orders"), "id"),
+        (model("fct_daily_orders"), "id"),
+        (model("fct_line_items"), "id"),
         (model("cll_demo"), "order_id"),
         (model("cll_demo"), "n_orders"),
         // cll_syntax name-matches `s.id`/`l.order_id` flat — the v0
@@ -457,8 +459,8 @@ fn columns_prints_the_downstream_markdown_report() {
     );
     // v1: the FOJ fans of `o.id = f.id` reach EVERY cll_demo output and
     // cll_syntax's own fans reach its seven outputs — the parser's precise
-    // blast radius is 14 (name-match reported 5).
-    assert!(stdout.contains("## Downstream columns (14)"), "row count");
+    // blast radius is 16 (name-match reported 5).
+    assert!(stdout.contains("## Downstream columns (16)"), "row count");
     for row in [
         "`fct_orders.id` | `stg_orders.id` | passthrough",
         "`cll_demo.order_id`",
@@ -511,7 +513,7 @@ fn columns_json_is_a_serializable_report() {
     assert_eq!(v["confidence"], "exact");
     assert_eq!(v["unique_id"], model("stg_orders"));
     let cols = v["columns"].as_array().expect("columns array");
-    assert_eq!(cols.len(), 14);
+    assert_eq!(cols.len(), 16);
     assert!(
         cols.iter()
             .any(|r| r["column"] == "fct_orders.id"
@@ -566,7 +568,7 @@ fn columns_works_in_source_mode() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("## Downstream columns (14)"), "{stdout:?}");
+    assert!(stdout.contains("## Downstream columns (16)"), "{stdout:?}");
 }
 
 // ---- performance ------------------------------------------------------------

@@ -12,7 +12,9 @@ use std::path::Path;
 use anyhow::Result;
 
 use crate::compiled::{CompiledOrigin, CompiledSql};
-use crate::manifest::{load_manifest, RawExposure, RawMacro, RawManifest, RawNode, RawSource};
+use crate::manifest::{
+    load_manifest, RawExposure, RawFreshnessThreshold, RawMacro, RawManifest, RawNode, RawSource,
+};
 
 /// A merged, prefix-resolved entry in the unified node map.
 ///
@@ -265,18 +267,37 @@ pub struct ExposureInfo {
     pub url: Option<String>,
 }
 
+/// One source freshness threshold (`{count: 12, period: hour}`). A threshold
+/// whose count dbt left null carries no signal — it never reaches this type.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FreshnessThreshold {
+    pub count: i64,
+    pub period: Option<String>,
+}
+
 /// The detail payload for a node, used by the structure modal and the status
 /// line. Hung off the [`Dag`] (NOT [`NodeInfo`]) so the hot subgraph clone /
 /// equality path stays cheap and the frozen `NodeInfo` literals are untouched.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NodeDetail {
     pub materialized: Option<String>,
+    /// The node's effective `unique_key`, normalized to a list regardless of
+    /// the declared scalar/list shape (empty = unconfigured). Comes from
+    /// `config(unique_key=…)` > schema.yml `config:` > the project tree's
+    /// `+unique_key` — whichever the loader's input declared.
+    pub unique_key: Vec<String>,
     pub database: Option<String>,
     pub schema: Option<String>,
     pub tags: Vec<String>,
     pub description: Option<String>,
     pub columns: Vec<ColumnInfo>,
     pub original_file_path: Option<String>,
+    /// The `.yml` properties file that patches this node (manifest
+    /// `patch_path` with its `<package>://` scheme stripped so it matches the
+    /// `original_file_path` project-relative convention; `None` when no YAML
+    /// entry declares the node — location code then falls back to
+    /// `original_file_path`).
+    pub patch_path: Option<String>,
     /// The dbt package that defined the node (manifest `package_name`) —
     /// distinguishes installed-package models from the project's own. `None`
     /// in source mode (where every node is local).
@@ -303,6 +324,29 @@ pub struct NodeDetail {
     /// `FROM "db"."schema"."<relation>"` against it; `None` means the
     /// `name`/`unique_id` segment is the relation.
     pub relation_name: Option<String>,
+    // --- source ingestion metadata (sources only) ---
+    /// `loaded_at_field` — the timestamp column freshness is measured
+    /// against. The already-resolved effective value (table > source).
+    pub loaded_at_field: Option<String>,
+    /// `loader:` — the tool that loads the table (source-level only; `None`
+    /// when unconfigured — dbt's `""` normalizes to `None`).
+    pub loader: Option<String>,
+    /// Effective `freshness.warn_after` — `None` when unconfigured (or
+    /// cleared by a table's explicit `freshness: null`).
+    pub freshness_warn_after: Option<FreshnessThreshold>,
+    /// Effective `freshness.error_after` — `None` when unconfigured.
+    pub freshness_error_after: Option<FreshnessThreshold>,
+}
+
+impl NodeDetail {
+    /// Whether dbt has an effective freshness definition for this source:
+    /// any configured `warn_after` or `error_after` counts (a threshold with
+    /// a null count does not). This is the single predicate
+    /// `sources_without_freshness` reads — loader-side precedence already
+    /// resolved into the two fields.
+    pub fn has_freshness(&self) -> bool {
+        self.freshness_warn_after.is_some() || self.freshness_error_after.is_some()
+    }
 }
 
 /// A directed dependency edge `parent -> child` inside a subgraph (both

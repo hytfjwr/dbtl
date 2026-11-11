@@ -23,8 +23,18 @@ models:
     config:
       # The in-file config (incremental) must win over this schema value.
       materialized: table
+      # Loses too: the .sql `config(unique_key=…)` beats schema.yml.
+      unique_key: customer_id
       meta:
         owner: bob
+  - name: fct_line_items
+    description: "Line-item facts, incremental on a composite key"
+    config:
+      # List-form unique_key; beats the `+unique_key: tree_shadowed` project
+      # tree leaf in dbt_project.yml.
+      unique_key: [order_id, line_no]
+  - name: fct_daily_orders
+    description: "Incremental without any unique_key — a lint finding"
   - name: cll_syntax
     description: "CLL v1 coverage: every parser-resolved syntax in one model."
     columns:

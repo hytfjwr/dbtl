@@ -15,10 +15,20 @@ models:
   sample:
     +meta:
       team: analytics-eng
+    staging:
+      # Model-level leaf: `+unique_key` from the tree only lands when neither
+      # the .sql `config()` nor schema.yml `config:` declares one — this is
+      # the tree-wins case (`stg_two_configs` has no other unique_key).
+      stg_two_configs:
+        +unique_key: tree_uk
     marts:
       +materialized: table
       +meta:
         domain: finance
+      # Loses: fct_line_items declares `config.unique_key` in schema.yml,
+      # which sits above the project tree.
+      fct_line_items:
+        +unique_key: tree_shadowed
     legacy:
       +enabled: false
 seeds:
@@ -43,6 +53,13 @@ sources:
       raw:
         +meta:
           tree_src: proj-tree-src
+        # These sit BELOW schema.yml in precedence: `raw` declares
+        # freshness/loaded_at_field/loader at source level, so none of the
+        # tree values may surface on raw's tables.
+        +freshness:
+          warn_after: {count: 48, period: hour}
+        +loaded_at_field: tree_loaded_at
+        +loader: tree_loader
         orders:
           +meta:
             tree_tbl: proj-tree-tbl
@@ -50,6 +67,13 @@ sources:
             # table-level `meta:` sit above the tree in precedence.
             shared: "tree-level (shadowed)"
             owner: "tree-level (shadowed)"
+      # `archive` declares no ingestion keys in schema.yml — whatever lands
+      # on archive.audit_log is exactly what the tree provides.
+      archive:
+        +freshness:
+          warn_after: {count: 48, period: hour}
+        +loaded_at_field: archived_at
+        +loader: warehouse_cron
   # A bare <source>: <table>: key (no package/dirs) is an unused config path
   # in real dbt — kept here to pin that its meta must NOT land on the source.
   raw:
