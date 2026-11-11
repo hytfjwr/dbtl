@@ -2,6 +2,8 @@
 //! manifest) and assert the synthesized manifest / DAG. Mirrors the
 //! `manifest_fixture` strategy: assert structure, not rendering.
 
+mod common;
+use common::SAMPLE_PROJECT as PROJECT;
 use std::collections::HashSet;
 
 use dbtl::{
@@ -9,7 +11,6 @@ use dbtl::{
     manifest_from_source, SortMode,
 };
 
-const PROJECT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample_project");
 const MISSING: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/does_not_exist");
 const YAML_SNAPSHOT_PROJECT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),

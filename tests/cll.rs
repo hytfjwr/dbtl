@@ -8,9 +8,12 @@
 //! (`upper(o.status)`, `count(o.id)`), and filter-or-join (`o.disabled_flag`,
 //! `f.country` — row-shaping columns that appear only in the join/where tail).
 
+mod common;
+use common::{
+    dbtl_cmd, sample_manifest_path as fixture_manifest, SAMPLE_MANIFEST as MANIFEST,
+    SAMPLE_PROJECT as PROJECT,
+};
 use std::collections::BTreeSet;
-use std::path::PathBuf;
-use std::process::Command;
 
 use dbtl::{
     closure_report, load_dag, load_dag_from_source, ClosureDirection, ColumnEdgeKind,
@@ -18,18 +21,8 @@ use dbtl::{
     SqlParseResolver,
 };
 
-const MANIFEST: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/sample_manifest.json"
-);
-const PROJECT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample_project");
-
-fn fixture_manifest() -> PathBuf {
-    PathBuf::from(MANIFEST)
-}
-
 fn run(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_dbtl"))
+    dbtl_cmd()
         .args(args)
         // Null stdin keeps a bare (no-subcommand) invocation from seeing the
         // test runner's TTY and parking on the interactive event loop.

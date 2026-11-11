@@ -2,19 +2,15 @@
 //! return before any terminal init, so they exercise the real arg parsing +
 //! analysis path in a non-TTY test process (same guarantee `docs` has).
 
+mod common;
+use common::{
+    dbtl_cmd, manifest_path as fixture_manifest, sample_manifest_path as sample_manifest,
+    SAMPLE_PROJECT,
+};
 use std::path::PathBuf;
-use std::process::Command;
-
-/// The frozen fixture manifest the rest of the suite pins.
-fn fixture_manifest() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("manifest.json")
-}
 
 fn run(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_dbtl"))
+    dbtl_cmd()
         .args(args)
         // Null stdin keeps a bare (no-subcommand) invocation from seeing the
         // test runner's TTY and parking on the interactive event loop.
@@ -26,7 +22,7 @@ fn run(args: &[&str]) -> std::process::Output {
 /// Same as [`run`] with extra env vars scoped to the child process — the only
 /// safe way to point `~/.config/dbtl/config.yml` at a fixture.
 fn run_env(args: &[&str], envs: &[(&str, &std::path::Path)]) -> std::process::Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_dbtl"));
+    let mut cmd = dbtl_cmd();
     cmd.args(args);
     cmd.stdin(std::process::Stdio::null());
     for (k, v) in envs {
@@ -35,21 +31,10 @@ fn run_env(args: &[&str], envs: &[(&str, &std::path::Path)]) -> std::process::Ou
     cmd.output().expect("failed to run dbtl")
 }
 
-/// The real-dbt-generated manifest the consistency suite pins (rich `meta`).
-fn sample_manifest() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("sample_manifest.json")
-}
-
 /// The source-mode dbt project fixture (`stg_orders -> fct_orders ->
 /// agg_country_orders`, plus the `orders_dashboard` exposure).
 fn sample_project() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("sample_project")
+    PathBuf::from(SAMPLE_PROJECT)
 }
 
 /// A recursive directory copy — `std::fs` has none, and the diff tests need

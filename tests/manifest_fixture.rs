@@ -1,23 +1,19 @@
 //! Integration tests against the committed fixture (the synthetic
 //! jaffle_finance manifest), asserting frozen expected values.
 
+mod common;
+use common::fixture_dag;
 use std::collections::{BTreeMap, HashSet};
 
 use dbtl::{
-    column_coverage_counts, has_pk_guarantee, load_dag, load_manifest, run_rules, Dag, LintConfig,
-    LintRule,
+    column_coverage_counts, has_pk_guarantee, load_manifest, run_rules, LintConfig, LintRule,
 };
 
-const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifest.json");
 const INVALID: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/invalid.json");
 const MISSING: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/does_not_exist.json"
 );
-
-fn fixture_dag() -> Dag {
-    load_dag(FIXTURE).expect("fixture manifest must load")
-}
 
 fn set(items: &[&str]) -> HashSet<String> {
     items.iter().map(|s| s.to_string()).collect()
