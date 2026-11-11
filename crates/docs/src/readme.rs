@@ -4,16 +4,32 @@ use super::*;
 /// breakdown, a full linked node table (in a deterministic logical order), and a
 /// whole-project Mermaid diagram.
 pub(super) fn readme_markdown(
-    dag: &Dag,
+    ctx: &PageInputs,
     project_name: &str,
     source_label: &str,
-    files: &BTreeMap<String, String>,
     scope: PackageScope,
     lint: Option<&[Finding]>,
 ) -> String {
+    let dag = ctx.dag;
+    let files = ctx.files;
     let mut s = String::new();
     s.push_str(&format!("# {project_name}\n\n"));
-    s.push_str(&format!("Generated from: `{source_label}`\n\n"));
+    s.push_str(&format!("Generated from: `{source_label}`\n"));
+    // Which side artifacts fed this doc set — declared only when one was
+    // explicitly enabled (an artifact-free run emits nothing here at all).
+    // The names only, never the paths: the file set must read identically
+    // from any checkout.
+    let mut includes: Vec<&str> = Vec::new();
+    if ctx.catalog.is_some() {
+        includes.push("warehouse catalog");
+    }
+    if ctx.run_results.is_some() {
+        includes.push("last run results");
+    }
+    if !includes.is_empty() {
+        s.push_str(&format!("Includes: {}\n", includes.join(", ")));
+    }
+    s.push('\n');
 
     // Summary: total + per-resource-type breakdown. Kinds in RESOURCE_ORDER
     // come first in their fixed display order, then every OTHER kind present

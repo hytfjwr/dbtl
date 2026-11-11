@@ -88,6 +88,19 @@ pub(super) fn cll_resolver(
     Ok(dbtl::SqlParseResolver::new(catalog, dialect))
 }
 
+/// A parser resolver over a catalog the CALLER already resolved — `docs`
+/// hands its pages the opt-in catalog (never the aux auto-detect's sibling)
+/// so generated output can't pick up warehouse data nobody asked for. The
+/// dialect rule is [`cli_dialect`]'s: one notice policy regardless of
+/// which catalog the resolver carries.
+pub(super) fn parse_resolver(
+    resolved: &ResolvedSource,
+    catalog: Option<std::rc::Rc<dbtl::Catalog>>,
+    sql_dialect: Option<dbtl::SqlDialect>,
+) -> dbtl::SqlParseResolver {
+    dbtl::SqlParseResolver::new(catalog, cli_dialect(resolved, sql_dialect))
+}
+
 /// The auxiliary lint inputs for a resolved current source — the loaded
 /// catalog AND the shared lazy [`dbtl::SqlParseResolver`] built over it —
 /// so `lint`, `check --lint`, and `docs` feed [`dbtl::LintInput`] the same

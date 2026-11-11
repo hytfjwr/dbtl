@@ -205,6 +205,7 @@ fn flag_usage_rejects_unsupported_flags_by_value_source() {
         ["dbtl", "check", "--run-results", "x.json"].as_slice(),
         ["dbtl", "--diff", "x", "docs", "--out", "o"].as_slice(),
         ["dbtl", "columns", "a.b", "--diff", "x"].as_slice(),
+        ["dbtl", "lint", "--run-results", "x.json"].as_slice(),
     ] {
         match Cli::command().try_get_matches_from(args) {
             Err(e) => assert_eq!(e.exit_code(), 2, "{args:?}: clap's own usage error"),
@@ -214,7 +215,12 @@ fn flag_usage_rejects_unsupported_flags_by_value_source() {
                 };
                 assert_eq!(err.kind(), Some(ExitKind::Usage), "{args:?}");
                 let msg = err.to_string();
-                assert!(msg.contains("check") || msg.contains("docs") || msg.contains("columns"));
+                assert!(
+                    msg.contains("check")
+                        || msg.contains("docs")
+                        || msg.contains("columns")
+                        || msg.contains("lint")
+                );
             }
         }
     }
@@ -225,9 +231,12 @@ fn flag_usage_rejects_unsupported_flags_by_value_source() {
         ["dbtl", "check", "--manifest", "m.json", "--diff", "b.json"].as_slice(),
         ["dbtl", "--catalog", "c.json", "columns", "a.b"].as_slice(),
         ["dbtl", "--sql-dialect", "generic", "columns", "a.b"].as_slice(),
-        // lint + docs consume both aux inputs (the SQL/catalog rules).
+        // lint + docs consume the aux inputs (the SQL/catalog rules);
+        // docs also takes `--run-results` for its `last run` surface.
         ["dbtl", "docs", "--out", "o", "--sql-dialect", "generic"].as_slice(),
+        ["dbtl", "docs", "--out", "o", "--catalog", "c.json"].as_slice(),
         ["dbtl", "--catalog", "c.json", "docs", "--out", "o"].as_slice(),
+        ["dbtl", "--run-results", "r.json", "docs", "--out", "o"].as_slice(),
         [
             "dbtl",
             "lint",

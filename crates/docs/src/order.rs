@@ -83,6 +83,20 @@ pub(super) fn opt_code(value: Option<&str>) -> String {
     }
 }
 
+/// Format a list of values as inline-code-joined (`a`, `b`), or `none` when
+/// empty — the `tags`/`unique_key` bullet shape.
+pub(super) fn opt_code_list(items: &[String]) -> String {
+    if items.is_empty() {
+        "none".to_string()
+    } else {
+        items
+            .iter()
+            .map(|i| format!("`{i}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 /// Escape text for a single Markdown table cell: a `|` would start a new column
 /// and a newline would break the row, so both are neutralized. The text is kept
 /// otherwise verbatim (names/descriptions may carry `"`/`(`/`)` — those are

@@ -32,6 +32,8 @@ pub struct DataSourceArgs<'a> {
     pub diff: Option<&'a str>,
     /// `--catalog` — an explicit catalog.json override.
     pub catalog: Option<&'a str>,
+    /// `--run-results` — an explicit run_results.json (TUI + `docs`).
+    pub run_results: Option<&'a str>,
     /// The package scope `--include-packages` computes to.
     pub scope: dbtl::PackageScope,
     /// `--sql-dialect` — the parse-dialect pin, if given.
@@ -47,6 +49,7 @@ impl<'a> DataSourceArgs<'a> {
             project: &cli.project,
             diff: cli.diff.as_deref(),
             catalog: cli.catalog.as_deref(),
+            run_results: cli.run_results.as_deref(),
             scope: cli.package_scope(),
             sql_dialect: cli.sql_dialect,
         }
