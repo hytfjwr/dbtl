@@ -970,6 +970,7 @@ fn lint_and_docs_accept_the_catalog_and_dialect_flags() {
     let m = manifest_in(tmp.path());
     catalog_in(tmp.path(), &m);
     let cat = tmp.path().join("catalog.json");
+    let docs_dir = tmp.path().join("docs");
     for args in [
         vec![
             "lint",
@@ -987,6 +988,18 @@ fn lint_and_docs_accept_the_catalog_and_dialect_flags() {
             "--lint",
             "--catalog",
             cat.to_str().unwrap(),
+        ],
+        vec![
+            "docs",
+            "--manifest",
+            m.to_str().unwrap(),
+            "--out",
+            docs_dir.to_str().unwrap(),
+            "--catalog",
+            cat.to_str().unwrap(),
+            "--sql-dialect",
+            "snowflake",
+            "--quiet",
         ],
     ] {
         let out = run(&args);

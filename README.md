@@ -420,7 +420,7 @@ A third set reads the model's SQL (raw text, or the manifest's
 | --- | --- |
 | `select_star` | the final SELECT uses `*`/`t.*` (parse-level — `select *, except(...)` still flags; a `count(*)`-style aggregate does not) |
 | `hard_coded_references` | a relation name is written into the SQL instead of `ref()`/`source()` (CTEs, `unnest`/table functions, and lateral joins don't count) |
-| `cartesian_join` | a `cross join`, comma-join, or `join` with no condition (excluding lateral/`unnest`-style function joins) |
+| `cartesian_join` | a `cross join` or `join` with no condition (excluding lateral/`unnest`-style function joins; implicit comma joins are out of scope) |
 | `unknown_column_reference` | the SQL reads a column its parent provably doesn't have — only when the parent's column set is trusted (warehouse catalog or enforced contract) |
 | `forbidden_patterns` | raw SQL matches a regex in `patterns` (empty by default = no-op); invalid patterns are rejected when `.dbtl.yml` is read |
 

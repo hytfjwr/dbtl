@@ -255,6 +255,7 @@ fn scan_join(j: &Join, scope: &BTreeSet<String>, out: &mut RelationScan) {
             | TableFactor::Derived { lateral: true, .. }
     );
     let unconditional = !functionish
+        && !matches!(j.join_operator, JoinOperator::AsOf { .. })
         && (matches!(j.join_operator, JoinOperator::CrossJoin(_))
             || matches!(join_constraint(j), Some(JoinConstraint::None)));
     if unconditional {

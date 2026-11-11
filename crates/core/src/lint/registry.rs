@@ -662,9 +662,10 @@ impl Severity {
     }
 }
 
-/// The data a rule needs to evaluate. Today everything is `Graph` — SQL-body
-/// and catalog rules are declared here so `run_rules`' input struct has a
-/// stable place to hang them when they arrive.
+/// The data a rule needs to evaluate. `Graph` rules run on the `Dag` alone;
+/// `Sql` and `Catalog` rules additionally need the parsed-SQL resolver and
+/// the warehouse catalog — `run_rules` reports a skip when an enabled rule's
+/// required input wasn't supplied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Requires {

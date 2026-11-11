@@ -2918,6 +2918,10 @@ fn cartesian_join_flags_conditionless_joins() {
                 "unnest",
                 "select * from a.t cross join unnest(a.t.arr) as x",
             ),
+            model_sql(
+                "asof",
+                "select * from a.t asof join b.u match_condition(a.t.ts >= b.u.ts)",
+            ),
         ],
         vec![],
         &[],
@@ -2929,7 +2933,7 @@ fn cartesian_join_flags_conditionless_joins() {
     assert_eq!(
         flagged(&out.findings, LintRule::CartesianJoin),
         vec!["model.p.bare_join", "model.p.cross"],
-        "ON/USING/NATURAL conditions and UNNEST joins must not flag"
+        "ON/USING/NATURAL/ASOF MATCH_CONDITION conditions and UNNEST joins must not flag"
     );
 }
 
