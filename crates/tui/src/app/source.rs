@@ -150,11 +150,14 @@ impl App {
         // or deleted mid-session is picked up/dropped too (the path is
         // re-detected from the data source, not just replayed). A malformed
         // file falls back to shipped defaults + a warning (same policy as
-        // startup).
-        self.lint_config_path = self.source.lint_config_path();
-        match &self.lint_config_path {
-            Some(path) => match crate::LintConfig::load(path) {
-                Ok(c) => self.lint_config = c,
+        // startup); unknown top-level keys warn without failing.
+        self.project_config_path = self.source.project_config_path();
+        match &self.project_config_path {
+            Some(path) => match crate::ProjectConfig::load(path) {
+                Ok(pc) => {
+                    self.lint_config = pc.lint;
+                    warnings.extend(pc.warnings);
+                }
                 Err(e) => {
                     warnings.push(format!("ignoring .dbtl.yml: {e}"));
                     self.lint_config = crate::LintConfig::default();
@@ -162,7 +165,7 @@ impl App {
             },
             None => self.lint_config = crate::LintConfig::default(),
         }
-        self.lint_findings = crate::run_rules(&self.dag, &self.lint_config);
+        self.lint_findings = crate::run_rules(crate::LintInput::new(&self.dag, &self.lint_config));
         self.filter = None;
         self.mode = self.idle_mode();
         // Any yank-menu context stashed against the OLD graph dies here too.

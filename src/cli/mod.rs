@@ -36,13 +36,14 @@ pub struct Cli {
     #[arg(short = 'v', action = clap::ArgAction::Version)]
     pub version_short: Option<bool>,
     /// Path to a compiled dbt manifest.json (forces manifest mode).
-    #[arg(long, conflicts_with = "source")]
+    /// `global` so it works before OR after a subcommand.
+    #[arg(long, global = true, conflicts_with = "source")]
     pub manifest: Option<String>,
     /// Path to a dbt project dir, parsed from source with no compile (forces source mode).
-    #[arg(long, conflicts_with = "manifest")]
+    #[arg(long, global = true, conflicts_with = "manifest")]
     pub source: Option<String>,
     /// dbt project dir for auto-detect: prefer <dir>/target/manifest.json, else parse source.
-    #[arg(long, default_value = ".")]
+    #[arg(long, global = true, default_value = ".")]
     pub project: String,
     /// Force pure-ASCII glyphs (boxes/borders/markers). Default: probe the terminal.
     #[arg(long, conflicts_with = "unicode")]
@@ -67,16 +68,27 @@ pub struct Cli {
     /// Baseline to diff against: a manifest.json file, or a dbt project dir
     /// (its target/manifest.json if compiled, else parsed from source). Adds
     /// the Diff lens (added/modified tints), the `D` summary modal, and a
-    /// status diff chip.
-    #[arg(long)]
+    /// status diff chip; `impact` requires it and `check` uses it for its
+    /// diff gates. `global` so it works before OR after a subcommand.
+    #[arg(long, global = true)]
     pub diff: Option<String>,
     /// Path to a dbt run_results.json (the last run's per-node status +
     /// execution_time). Adds the RunStatus/RunTime lenses, a `run n/m @date`
     /// status chip, and the runtime-weighted critical path in the `S` stats
     /// modal. Default: auto-detect target/run_results.json next to the data
     /// source — a missing file just means no run data, never an error.
-    #[arg(long)]
+    /// TUI-only: `global` so it parses next to a subcommand too, where the
+    /// ignored-flag check rejects it.
+    #[arg(long, global = true)]
     pub run_results: Option<String>,
+    /// Path to a dbt catalog.json (the `dbt docs generate` side-map: real
+    /// column types, row counts, byte sizes — and the top column-list tier
+    /// for column-level lineage). Default: auto-detect
+    /// target/catalog.json next to the data source — a missing file just
+    /// means no catalog data, never an error. `global` so it works before
+    /// OR after a subcommand.
+    #[arg(long, global = true)]
+    pub catalog: Option<String>,
     /// Deprecated no-op kept for backwards compatibility: the default scope
     /// is ALREADY the root project only (installed-package nodes are pruned
     /// at load). Passing it prints a deprecation warning and changes nothing —
@@ -124,16 +136,6 @@ pub enum Commands {
         /// node pages / README.md are overwritten (no files are deleted).
         #[arg(long)]
         out: String,
-        /// Path to a compiled dbt manifest.json (forces manifest mode).
-        #[arg(long, conflicts_with = "source")]
-        manifest: Option<String>,
-        /// Path to a dbt project dir, parsed from source with no compile.
-        #[arg(long, conflicts_with = "manifest")]
-        source: Option<String>,
-        /// dbt project dir for auto-detect: prefer <dir>/target/manifest.json,
-        /// else parse source.
-        #[arg(long, default_value = ".")]
-        project: String,
         /// Suppress the success summary on stdout (errors still go to stderr).
         /// For quiet CI runs where only the exit code matters.
         #[arg(long)]
@@ -155,34 +157,15 @@ pub enum Commands {
     /// json` for automation. The same `dbtl_core::diff_report` payload the TUI's
     /// `D` modal snapshots, so a CI comment matches the screen byte-for-byte.
     Impact {
-        /// Baseline to diff against: a manifest.json file, or a dbt project dir
-        /// (same resolution as the TUI's --diff).
-        #[arg(long)]
-        diff: String,
         /// Output format: `markdown` (default) or `json`.
         #[arg(long, value_enum, default_value = "markdown")]
         format: ImpactFormat,
-        /// Path to a compiled dbt manifest.json (forces manifest mode).
-        #[arg(long, conflicts_with = "source")]
-        manifest: Option<String>,
-        /// Path to a dbt project dir, parsed from source with no compile.
-        #[arg(long, conflicts_with = "manifest")]
-        source: Option<String>,
-        /// dbt project dir for auto-detect: prefer <dir>/target/manifest.json,
-        /// else parse source.
-        #[arg(long, default_value = ".")]
-        project: String,
     },
     /// Run CI checks over the resolved data source and exit 1 when any fails:
     /// test coverage below `--coverage-min`, newly introduced layer violations,
     /// or changed buildable nodes without tests (the last two need `--diff`).
     /// The report is plain lines on stdout, one per check.
     Check {
-        /// Baseline to diff against: enables the new-layer-violation and
-        /// untested-change checks (same resolution as the TUI's --diff). With
-        /// --lint it also scopes lint gating to NEW violations only.
-        #[arg(long)]
-        diff: Option<String>,
         /// Fail when test coverage (model/seed/snapshot nodes with ≥1 test)
         /// falls below this percent. 0 disables the coverage check.
         #[arg(long, default_value = "0", value_parser = clap::value_parser!(u8))]
@@ -214,16 +197,6 @@ pub enum Commands {
         /// (the structured check payload for automation).
         #[arg(long, value_enum, default_value = "markdown")]
         format: ImpactFormat,
-        /// Path to a compiled dbt manifest.json (forces manifest mode).
-        #[arg(long, conflicts_with = "source")]
-        manifest: Option<String>,
-        /// Path to a dbt project dir, parsed from source with no compile.
-        #[arg(long, conflicts_with = "manifest")]
-        source: Option<String>,
-        /// dbt project dir for auto-detect: prefer <dir>/target/manifest.json,
-        /// else parse source.
-        #[arg(long, default_value = ".")]
-        project: String,
         /// Suppress the per-check report on stdout; only the exit code matters.
         #[arg(long)]
         quiet: bool,
@@ -253,16 +226,6 @@ pub enum Commands {
         /// Output format: `markdown` (default) or `json`.
         #[arg(long, value_enum, default_value = "markdown")]
         format: ImpactFormat,
-        /// Path to a compiled dbt manifest.json (forces manifest mode).
-        #[arg(long, conflicts_with = "source")]
-        manifest: Option<String>,
-        /// Path to a dbt project dir, parsed from source with no compile.
-        #[arg(long, conflicts_with = "manifest")]
-        source: Option<String>,
-        /// dbt project dir for auto-detect: prefer <dir>/target/manifest.json,
-        /// else parse source.
-        #[arg(long, default_value = ".")]
-        project: String,
     },
 }
 
@@ -294,6 +257,8 @@ impl Cli {
 mod baseline;
 mod columns;
 mod docs;
+mod exit;
+mod flags;
 mod gates;
 mod resolve;
 mod resolvers;
@@ -303,7 +268,9 @@ mod tests;
 pub use baseline::load_baseline;
 pub use columns::run_columns;
 pub use docs::run_docs;
+pub use exit::{exit_code, Classify, CliError};
+pub use flags::check_flag_usage;
 pub use gates::{run_check, run_impact};
 use resolve::*;
-pub use resolve::{build_app, resolve_source, ResolvedSource};
+pub use resolve::{build_app, DataSourceArgs, ResolvedSource};
 use resolvers::*;

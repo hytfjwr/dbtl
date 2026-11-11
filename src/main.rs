@@ -22,10 +22,13 @@ mod watch;
 
 use std::process::ExitCode;
 
-use anyhow::{Context, Result};
-use clap::Parser;
+use anyhow::Context;
+use clap::{CommandFactory, FromArgMatches};
 
-use cli::{build_app, load_baseline, run_check, run_columns, run_docs, run_impact, Cli, Commands};
+use cli::{
+    build_app, check_flag_usage, exit_code, load_baseline, run_check, run_columns, run_docs,
+    run_impact, Cli, CliError, Commands, DataSourceArgs,
+};
 use event_loop::{event_loop, find_dbt};
 use terminal::{
     detect_keyboard_enhancement, resolve_glyph_mode, set_keyboard_enhancement, set_mouse_capture,
@@ -36,25 +39,50 @@ use watch::Watch;
 use dbtl::ui::LineageLens;
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    match run(&cli) {
+    // `get_matches`/`from_arg_matches` (not `Cli::parse`) so `run` also sees
+    // the raw `ArgMatches`: `value_source` is how the ignored-flag check
+    // tells an explicitly typed flag from an env-fed or defaulted value.
+    let matches = Cli::command().get_matches();
+    let cli = match Cli::from_arg_matches(&matches) {
+        Ok(cli) => cli,
+        Err(err) => err.exit(),
+    };
+    match run(&cli, &matches) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             // Print the full context chain (cause is named), not a panic backtrace.
             eprintln!("error: {err:#}");
-            ExitCode::FAILURE
+            // The single classification → exit code conversion.
+            ExitCode::from(exit_code(err.kind()) as u8)
         }
     }
 }
 
-fn run(cli: &Cli) -> Result<()> {
+fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
+    // Flags the dispatched subcommand does not consume — an explicit
+    // occurrence is a usage error, never silently dropped. Only a
+    // command-line source counts (env-fed values like DBTL_THEME still
+    // configure the app harmlessly).
+    check_flag_usage(matches)?;
+
     // clap's `conflicts_with` catches `--project-only --include-packages` at
     // the same level — but `--include-packages` is GLOBAL, so it can also
     // arrive via a subcommand context (`dbtl --project-only check
     // --include-packages`), which the declarative conflict does not reach.
     // Check the parsed pair so the two are exclusive wherever they were typed.
     if cli.project_only && cli.include_packages {
-        anyhow::bail!("the argument '--project-only' cannot be used with '--include-packages'");
+        return Err(CliError::usage(anyhow::anyhow!(
+            "the argument '--project-only' cannot be used with '--include-packages'"
+        )));
+    }
+
+    // --manifest/--source are likewise global now, so either can sit on the
+    // far side of a subcommand where `conflicts_with` can't see its peer —
+    // keep the pair mutually exclusive wherever each was typed.
+    if cli.manifest.is_some() && cli.source.is_some() {
+        return Err(CliError::usage(anyhow::anyhow!(
+            "the argument '--manifest <MANIFEST>' cannot be used with '--source <SOURCE>'"
+        )));
     }
 
     // --list-themes is a plain stdout listing, no data source / TTY needed.
@@ -76,95 +104,49 @@ fn run(cli: &Cli) -> Result<()> {
         );
     }
 
+    // The global data-input flags, bundled once — every subcommand resolves
+    // its source (and its diff/catalog/dialect) the same way the TUI does.
+    let src = DataSourceArgs::from_cli(cli);
+
     // Non-interactive subcommands run and return BEFORE any terminal init /
     // probe (same as --list-themes), so they work in a non-TTY / CI environment.
     match &cli.command {
-        // `--include-packages` is a GLOBAL flag (parsed before OR after the
-        // subcommand, landing on `cli.include_packages` either way), so the
-        // subcommand variants carry no field of their own.
         Some(Commands::Docs {
             out,
-            manifest,
-            source,
-            project,
             quiet,
             clean,
             check,
         }) => {
-            return run_docs(
-                out,
-                manifest,
-                source,
-                project,
-                *quiet,
-                *clean,
-                *check,
-                cli.include_packages,
-            );
+            return run_docs(out, &src, *quiet, *clean, *check);
         }
-        Some(Commands::Impact {
-            diff,
-            format,
-            manifest,
-            source,
-            project,
-        }) => {
-            return run_impact(
-                diff,
-                *format,
-                manifest,
-                source,
-                project,
-                cli.include_packages,
-                cli.sql_dialect,
-            );
+        Some(Commands::Impact { format }) => {
+            return run_impact(*format, &src);
         }
         Some(Commands::Check {
-            diff,
             coverage_min,
             lint,
             no_breaking,
             rules,
             format,
-            manifest,
-            source,
-            project,
             quiet,
         }) => {
             return run_check(
-                diff,
+                &src,
                 *coverage_min,
                 *lint,
                 rules,
                 *format,
-                manifest,
-                source,
-                project,
                 *quiet,
-                cli.include_packages,
                 *no_breaking,
-                cli.sql_dialect,
             );
         }
         Some(Commands::Columns {
             target,
             upstream,
             format,
-            manifest,
-            source,
-            project,
             ..
         }) => {
-            return run_columns(
-                target,
-                *upstream,
-                *format,
-                manifest,
-                source,
-                project,
-                cli.include_packages,
-                cli.sql_dialect,
-            );
+            return run_columns(target, *upstream, *format, &src);
         }
         None => {}
     }
@@ -231,7 +213,12 @@ fn run(cli: &Cli) -> Result<()> {
         } else {
             ""
         };
-        anyhow::ensure!(found, "--select: model '{name}' not found{hint}");
+        if !found {
+            // A named model that isn't there is the caller's mistake.
+            return Err(CliError::usage(anyhow::anyhow!(
+                "--select: model '{name}' not found{hint}"
+            )));
+        }
     }
 
     // Load the --diff baseline (a second Dag) and open on the Diff lens so the
@@ -260,7 +247,9 @@ fn run(cli: &Cli) -> Result<()> {
             eprintln!("warning: {e:#}");
             load_themes(None)?
         }
-        Err(e) => return Err(e),
+        // An explicitly named theme that doesn't resolve is the caller's
+        // mistake (a saved/config name only warns and falls back).
+        Err(e) => return Err(CliError::usage(e)),
     };
     app.set_themes(themes, theme_idx);
 
@@ -321,5 +310,5 @@ fn run(cli: &Cli) -> Result<()> {
     // the next run. Best-effort — an unwritable state dir is ignored.
     state::save_state(app.project_root(), &app.prefs_snapshot());
 
-    loop_result
+    loop_result.map_err(CliError::from)
 }

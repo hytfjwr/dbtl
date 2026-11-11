@@ -365,6 +365,7 @@ fn three_models(a: &App) -> (String, String, String) {
     (m(0), m(1), m(2))
 }
 
+mod catalog;
 mod collapse_badges;
 mod columns;
 mod diff_impact;

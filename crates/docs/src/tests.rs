@@ -774,7 +774,10 @@ fn per_node_lineage_figure_equals_the_m_key_yank() {
 /// shared vector `dbtl check --lint` gates on (frozen counts live in
 /// `tests/manifest_fixture.rs`).
 fn fixture_findings(dag: &Dag) -> Vec<Finding> {
-    dbtl_core::run_rules(dag, &dbtl_core::LintConfig::default())
+    dbtl_core::run_rules(dbtl_core::LintInput::new(
+        dag,
+        &dbtl_core::LintConfig::default(),
+    ))
 }
 
 #[test]

@@ -4,28 +4,20 @@ use super::*;
 /// baseline, compute the shared [`dbtl::diff_report`] payload, and print it as
 /// Markdown (the same bytes the TUI's `D`→`e` export writes) or pretty JSON —
 /// to stdout, no TTY needed, so CI can post it as a PR comment.
-#[allow(clippy::too_many_arguments)]
-pub fn run_impact(
-    diff_path: &str,
-    format: ImpactFormat,
-    manifest: &Option<String>,
-    source: &Option<String>,
-    project: &str,
-    include_packages: bool,
-    sql_dialect: Option<dbtl::SqlDialect>,
-) -> Result<()> {
-    let scope = if include_packages {
-        dbtl::PackageScope::All
-    } else {
-        dbtl::PackageScope::Root
-    };
-    let resolved = resolve_source(manifest, source, project, scope)?;
+pub fn run_impact(format: ImpactFormat, src: &DataSourceArgs) -> Result<(), CliError> {
+    // The baseline is `impact`'s reason to exist — missing is a usage error,
+    // checked before any loading happens.
+    let diff_path = src
+        .diff
+        .ok_or_else(|| CliError::usage(anyhow::anyhow!("impact requires '--diff <BASELINE>'")))?;
+    let scope = src.scope;
+    let resolved = src.resolve()?;
     let (base, label) = load_baseline(diff_path, scope)?;
     // The same resolver pair the TUI diffs through (catalog-backed current,
     // catalog-less baseline) so the report's column analysis matches the
     // `D` modal byte-for-byte.
-    let cur_res = cll_resolver(&resolved, sql_dialect);
-    let base_res = baseline_resolver(&resolved.dag, &base, sql_dialect);
+    let cur_res = src.cll_resolver(&resolved)?;
+    let base_res = src.baseline_resolver(&resolved.dag, &base);
     let diff = dbtl::compute_diff_with(&base, &resolved.dag, &base_res, &cur_res);
     let report = dbtl::diff_report(
         &resolved.dag,
@@ -41,7 +33,10 @@ pub fn run_impact(
             print!("{}", dbtl::pr_impact_markdown(project, &report));
         }
         ImpactFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&report)?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).map_err(|e| CliError::new(e.into()))?
+            );
         }
     }
     Ok(())
@@ -88,25 +83,16 @@ pub(super) struct CheckReportJson {
 /// only).
 #[allow(clippy::too_many_arguments)] // the subcommand's flat flag set
 pub fn run_check(
-    diff_path: &Option<String>,
+    src: &DataSourceArgs,
     coverage_min: u8,
     lint: bool,
     rules: &[String],
     format: ImpactFormat,
-    manifest: &Option<String>,
-    source: &Option<String>,
-    project: &str,
     quiet: bool,
-    include_packages: bool,
     no_breaking: bool,
-    sql_dialect: Option<dbtl::SqlDialect>,
-) -> Result<()> {
-    let scope = if include_packages {
-        dbtl::PackageScope::All
-    } else {
-        dbtl::PackageScope::Root
-    };
-    let resolved = resolve_source(manifest, source, project, scope)?;
+) -> Result<(), CliError> {
+    let scope = src.scope;
+    let resolved = src.resolve()?;
     let dag = &resolved.dag;
     // `--rules` implies linting (a rule list with nothing to run is a no-op
     // flag, so honour the intent instead).
@@ -155,7 +141,7 @@ pub fn run_check(
 
     // The baseline loads once and feeds BOTH diff gates (layer violations +
     // untested changes) and the lint new-violation comparison.
-    let base_ctx = match diff_path {
+    let base_ctx = match src.diff {
         Some(d) => Some(load_baseline(d, scope)?),
         None => None,
     };
@@ -163,8 +149,8 @@ pub fn run_check(
         // Resolver-aware diff — the same pair `run_impact` and the TUI's `D`
         // modal use — so `--no-breaking` gates on the identical column
         // analysis the reviewer reads.
-        let cur_res = cll_resolver(&resolved, sql_dialect);
-        let base_res = baseline_resolver(dag, base, sql_dialect);
+        let cur_res = src.cll_resolver(&resolved)?;
+        let base_res = src.baseline_resolver(dag, base);
         let diff = dbtl::compute_diff_with(base, dag, &base_res, &cur_res);
         let pr = dbtl::pr_impact(dag, Some(base), &diff, &owner_meta_key());
         lines.push(format!("baseline: {label}"));
@@ -287,13 +273,13 @@ pub fn run_check(
     // the thresholds/prefixes.
     if lint_active {
         let cfg = load_lint_config(&resolved, rules)?;
-        let findings = dbtl::run_rules(dag, &cfg);
+        let findings = dbtl::run_rules(dbtl::LintInput::new(dag, &cfg));
         // Under --diff the gate narrows to NEW violations: a finding whose
         // `key()` already exists in the baseline is pre-existing noise — same
         // "new only" idea as the layer-violation gate.
         let base_keys: std::collections::BTreeSet<(dbtl::LintRule, String, Vec<String>)> =
             match &base_ctx {
-                Some((base, _)) => dbtl::run_rules(base, &cfg)
+                Some((base, _)) => dbtl::run_rules(dbtl::LintInput::new(base, &cfg))
                     .iter()
                     .map(|f| {
                         let (r, n, rel) = f.key();
@@ -386,13 +372,19 @@ pub fn run_check(
                     checks: json_checks,
                     failures: failures.len(),
                 };
-                println!("{}", serde_json::to_string_pretty(&report)?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report).map_err(|e| CliError::new(e.into()))?
+                );
             }
         }
     }
     if failures.is_empty() {
         Ok(())
     } else {
-        anyhow::bail!("{} check(s) failed", failures.len())
+        Err(CliError::gate(anyhow::anyhow!(
+            "{} check(s) failed",
+            failures.len()
+        )))
     }
 }

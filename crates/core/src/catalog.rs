@@ -26,6 +26,21 @@ pub fn default_catalog_path(
         .map(|dir| dir.join("catalog.json"))
 }
 
+/// Where the catalog side-map comes from: an explicit `--catalog` path when
+/// given (its load failure is then the caller's error to report), else the
+/// auto-detected sibling [`default_catalog_path`] locates (`None` = no data,
+/// never an error). The single resolution rule the CLI and the App share, so
+/// "explicit wins over auto-detect" can't drift between surfaces.
+pub fn resolve_catalog_path(
+    explicit: Option<&Path>,
+    manifest_path: Option<&Path>,
+    project_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    explicit
+        .map(Path::to_path_buf)
+        .or_else(|| default_catalog_path(manifest_path, project_dir))
+}
+
 /// A parsed `catalog.json`, keyed by `unique_id` — the same key space as the
 /// manifest nodes, so `catalog.get("model.proj.foo")` just works.
 #[derive(Debug, Clone, Default)]
