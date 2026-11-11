@@ -1,0 +1,7 @@
+name: Tmp caller
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  call:
+    uses: ./.github/workflows/tmp-called.yml
