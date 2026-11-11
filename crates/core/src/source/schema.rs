@@ -1,0 +1,207 @@
+use super::*;
+
+// ---- dbt_project.yml / schema.yml deserialization (only the fields we use) ----
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct DbtProject {
+    #[serde(deserialize_with = "de_string")]
+    pub(super) name: String,
+    #[serde(
+        rename = "model-paths",
+        default,
+        deserialize_with = "de_opt_string_vec"
+    )]
+    pub(super) model_paths: Option<Vec<String>>,
+    #[serde(rename = "seed-paths", default, deserialize_with = "de_opt_string_vec")]
+    pub(super) seed_paths: Option<Vec<String>>,
+    #[serde(
+        rename = "snapshot-paths",
+        default,
+        deserialize_with = "de_opt_string_vec"
+    )]
+    pub(super) snapshot_paths: Option<Vec<String>>,
+    #[serde(
+        rename = "source-paths",
+        default,
+        deserialize_with = "de_opt_string_vec"
+    )]
+    pub(super) source_paths: Option<Vec<String>>,
+    /// `docs-paths` scopes the `.md` docs-block scan; unset -> every resource
+    /// path. The next three are read ONLY for that default union (verified:
+    /// a block in `macros/` resolves with no `docs-paths` set).
+    #[serde(rename = "docs-paths", default, deserialize_with = "de_opt_string_vec")]
+    pub(super) docs_paths: Option<Vec<String>>,
+    #[serde(
+        rename = "macro-paths",
+        default,
+        deserialize_with = "de_opt_string_vec"
+    )]
+    pub(super) macro_paths: Option<Vec<String>>,
+    #[serde(
+        rename = "analysis-paths",
+        default,
+        deserialize_with = "de_opt_string_vec"
+    )]
+    pub(super) analysis_paths: Option<Vec<String>>,
+    #[serde(rename = "test-paths", default, deserialize_with = "de_opt_string_vec")]
+    pub(super) test_paths: Option<Vec<String>>,
+    /// The directory-hierarchical config trees (`+materialized` / `+enabled`
+    /// under nested path keys). Kept as raw YAML and walked by
+    /// [`resolve_tree_config`]; `Value::default()` is `Null`, which resolves to
+    /// no config.
+    #[serde(default)]
+    pub(super) models: serde_json::Value,
+    #[serde(default)]
+    pub(super) seeds: serde_json::Value,
+    #[serde(default)]
+    pub(super) snapshots: serde_json::Value,
+    /// The `sources:` config tree — keyed by the source's fqn (`<pkg>`:
+    /// `<declaring-yml dirs>`: `<source>`: `<table>` — verified against real
+    /// dbt's recorded fqn). Only `+meta` is read (other `+`-configs like
+    /// `+enabled`/`+event_time` are out of scope).
+    #[serde(default)]
+    pub(super) sources: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct SchemaFile {
+    #[serde(default)]
+    pub(super) models: Vec<SchemaModel>,
+    #[serde(default)]
+    pub(super) sources: Vec<SchemaSource>,
+    #[serde(default)]
+    pub(super) seeds: Vec<SchemaModel>,
+    #[serde(default)]
+    pub(super) snapshots: Vec<SchemaModel>,
+    #[serde(default)]
+    pub(super) exposures: Vec<SchemaExposure>,
+}
+
+/// Shared shape for `models:` / `seeds:` / `snapshots:` entries (only what we read).
+///
+/// `tests` and `data_tests` are kept as SEPARATE fields (not one aliased
+/// field) so a file declaring both keys on the same entry still deserializes
+/// — serde treats an `alias` as just another name for the SAME field, so two
+/// keys mapping to it is a duplicate-field error that silently drops the
+/// whole file; the two lists are unioned by the caller instead.
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct SchemaModel {
+    #[serde(deserialize_with = "de_string")]
+    pub(super) name: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) description: Option<String>,
+    #[serde(default)]
+    pub(super) config: SchemaConfig,
+    #[serde(default, deserialize_with = "de_string_vec")]
+    pub(super) tags: Vec<String>,
+    #[serde(default)]
+    pub(super) columns: Vec<SchemaColumn>,
+    #[serde(default)]
+    pub(super) tests: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub(super) data_tests: Vec<serde_json::Value>,
+    /// The `relation:` Jinja expression of a YAML-defined snapshot (dbt
+    /// 1.9+), e.g. `ref('stg_orders')`. Always `None` for models/seeds and
+    /// for a `{% snapshot %}`-block snapshot (its relation is implicit).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) relation: Option<String>,
+    /// Top-level `meta:` dict — dbt treats it as equivalent to
+    /// `config.meta` (both together are a dbt parse error; here it merges
+    /// with `config.meta` winning per key). Kept as raw `Value` so a
+    /// non-mapping `meta:` can't fail the whole file's deserialization.
+    #[serde(default)]
+    pub(super) meta: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct SchemaConfig {
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) materialized: Option<String>,
+    #[serde(default)]
+    pub(super) enabled: Option<bool>,
+    /// `config: meta:` — merges over a top-level `meta:` per key.
+    #[serde(default)]
+    pub(super) meta: serde_json::Value,
+    /// `config: alias:` — the relation-name override (dbt's `alias` config).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) alias: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct SchemaColumn {
+    #[serde(deserialize_with = "de_string")]
+    pub(super) name: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) data_type: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) description: Option<String>,
+    #[serde(default)]
+    pub(super) tests: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub(super) data_tests: Vec<serde_json::Value>,
+}
+
+/// An `exposures:` entry (only what we surface). `depends_on` holds Jinja
+/// strings (`ref('x')` / `source('a','b')`) per the dbt spec.
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct SchemaExposure {
+    #[serde(deserialize_with = "de_string")]
+    pub(super) name: String,
+    #[serde(rename = "type", default, deserialize_with = "de_opt_string")]
+    pub(super) exposure_type: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) description: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) url: Option<String>,
+    #[serde(default)]
+    pub(super) owner: SchemaExposureOwner,
+    #[serde(default)]
+    pub(super) config: SchemaConfig,
+    #[serde(default, deserialize_with = "de_string_vec")]
+    pub(super) depends_on: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct SchemaExposureOwner {
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) name: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) email: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct SchemaSource {
+    #[serde(deserialize_with = "de_string")]
+    pub(super) name: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) database: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) schema: Option<String>,
+    /// `meta:` at the source level — cascades to every table (a table-level
+    /// `meta:` overrides it per key, verified against real dbt).
+    #[serde(default)]
+    pub(super) meta: serde_json::Value,
+    #[serde(default)]
+    pub(super) tables: Vec<SchemaSourceTable>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct SchemaSourceTable {
+    #[serde(deserialize_with = "de_string")]
+    pub(super) name: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) description: Option<String>,
+    /// schema.yml's `identifier:` — the table's real warehouse name when it
+    /// differs from `name` (dbt renders `source()` to it in compiled SQL).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) identifier: Option<String>,
+    /// `meta:` at the table level — overrides the source's `meta:` per key.
+    #[serde(default)]
+    pub(super) meta: serde_json::Value,
+    #[serde(default)]
+    pub(super) columns: Vec<SchemaColumn>,
+    #[serde(default)]
+    pub(super) tests: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub(super) data_tests: Vec<serde_json::Value>,
+}
