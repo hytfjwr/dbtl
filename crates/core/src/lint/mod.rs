@@ -64,12 +64,40 @@ pub enum LintRule {
     /// A backward (e.g. marts→staging) edge — the shared
     /// [`layer_violation_edges`] predicate, surfaced as a lint rule.
     LayerViolation,
+    /// A source is declared but never referenced.
+    UnusedSources,
+    /// Two or more sources point at the same warehouse relation.
+    DuplicateSources,
+    /// A staging model directly depends on another staging model.
+    StagingDependsOnStaging,
+    /// A model directly depends on too many data resources.
+    TooManyJoins,
+    /// A chain of consecutive view/ephemeral models is too long.
+    ChainedViews,
+    /// An exposure directly depends on a source or a view/ephemeral model.
+    ExposureParentsMaterializations,
+    /// An exposure directly depends on a private/protected model.
+    ExposuresDependentOnPrivateModels,
+    /// A source has no description.
+    UndocumentedSources,
+    /// A model has declared columns without descriptions.
+    UndocumentedColumns,
+    /// A public model lacks a model or column description.
+    UndocumentedPublicModels,
+    /// A model's name prefix and directory resolve to different layers.
+    ModelDirectories,
+    /// A model is missing a configured `meta` key.
+    RequiredMetaKeys,
+    /// A contract-enforced model has declared columns without `data_type`.
+    ContractColumnsWithoutType,
 }
 
 impl LintRule {
     /// Every rule, in the fixed evaluation/output order — the declaration
-    /// order of the enum and of [`REGISTRY`].
-    pub const ALL: [LintRule; 12] = [
+    /// order of the enum and of [`REGISTRY`]. The twelve original rules
+    /// lead; rules added later append in registry order so the emitted
+    /// sequence stays stable.
+    pub const ALL: [LintRule; 25] = [
         Self::DirectJoinToSource,
         Self::MultipleSourcesJoined,
         Self::SourceFanout,
@@ -82,6 +110,19 @@ impl LintRule {
         Self::UndocumentedModels,
         Self::NamingConventions,
         Self::LayerViolation,
+        Self::UnusedSources,
+        Self::DuplicateSources,
+        Self::StagingDependsOnStaging,
+        Self::TooManyJoins,
+        Self::ChainedViews,
+        Self::ExposureParentsMaterializations,
+        Self::ExposuresDependentOnPrivateModels,
+        Self::UndocumentedSources,
+        Self::UndocumentedColumns,
+        Self::UndocumentedPublicModels,
+        Self::ModelDirectories,
+        Self::RequiredMetaKeys,
+        Self::ContractColumnsWithoutType,
     ];
 
     /// This rule's registry row — every rule has exactly one (drift-tested).
@@ -216,6 +257,10 @@ pub struct LintConfig {
     /// rule → declared integer parameter values (validated against the
     /// registry's [`ParamSpec`] at parse — only declared names land here).
     pub params: BTreeMap<LintRule, BTreeMap<String, usize>>,
+    /// rule → declared string-list parameter values
+    /// (`required_meta_keys.keys`, `missing_primary_key_tests.resource_types`)
+    /// — validated against the registry's [`ParamSpec`] like the integer map.
+    pub list_params: BTreeMap<LintRule, BTreeMap<String, Vec<String>>>,
     /// `naming_conventions`: model TYPE → allowed name prefixes, where the
     /// type is resolved by `lint_model_type` (prefix-first, then
     /// [`first_dir`] folder, else `other`). A model whose resolved type is
@@ -239,6 +284,7 @@ impl Default for LintConfig {
             severities: BTreeMap::new(),
             exclude: BTreeMap::new(),
             params: BTreeMap::new(),
+            list_params: BTreeMap::new(),
             naming_prefixes: BTreeMap::from([
                 ("staging".to_string(), vec!["stg_".to_string()]),
                 ("intermediate".to_string(), vec!["int_".to_string()]),
@@ -284,6 +330,22 @@ impl LintConfig {
             .and_then(|m| m.get(param))
             .copied()
             .or_else(|| rule.info().int_param(param).map(|(_, default)| default))
+    }
+
+    /// The effective value of `rule`'s string-list parameter `param`: the
+    /// configured override, else the registry-declared default. `None` only
+    /// when `rule` declares no string-list parameter of that name — the
+    /// config parser rejects undeclared keys before they can land here.
+    pub fn str_list_param(&self, rule: LintRule, param: &str) -> Option<Vec<String>> {
+        self.list_params
+            .get(&rule)
+            .and_then(|m| m.get(param))
+            .cloned()
+            .or_else(|| {
+                rule.info()
+                    .str_list_param(param)
+                    .map(|(default, _)| default.iter().map(|s| s.to_string()).collect())
+            })
     }
 }
 

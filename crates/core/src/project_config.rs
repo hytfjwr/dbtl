@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::lint::{LintConfig, LintRule, Severity};
+use crate::lint::{LintConfig, LintRule, ParamKind, Severity};
 
 /// The conventional project-local config file name: `.dbtl.yml` next to
 /// `dbt_project.yml` (or at the project root above `target/` in manifest
@@ -180,18 +180,53 @@ impl ProjectConfig {
                         lint.exclude.insert(rule, settings.exclude);
                     }
                     for (param, value) in settings.params {
-                        let (min, _) = rule.info().int_param(&param).ok_or_else(|| {
-                            format!(
-                                "unknown parameter '{param}' for rule '{name}' (valid params: {})",
-                                valid_params(rule)
-                            )
-                        })?;
-                        let v = value
-                            .as_i64()
-                            .and_then(|v| usize::try_from(v).ok())
-                            .filter(|v| *v >= min)
-                            .ok_or_else(|| format!("{name}.{param} must be an integer >= {min}"))?;
-                        lint.params.entry(rule).or_default().insert(param, v);
+                        let spec = rule
+                            .info()
+                            .params
+                            .iter()
+                            .find(|p| p.name == param)
+                            .ok_or_else(|| {
+                                format!(
+                                    "unknown parameter '{param}' for rule '{name}' (valid params: {})",
+                                    valid_params(rule)
+                                )
+                            })?;
+                        match spec.kind {
+                            ParamKind::Int { min, .. } => {
+                                let v = value
+                                    .as_i64()
+                                    .and_then(|v| usize::try_from(v).ok())
+                                    .filter(|v| *v >= min)
+                                    .ok_or_else(|| {
+                                        format!("{name}.{param} must be an integer >= {min}")
+                                    })?;
+                                lint.params.entry(rule).or_default().insert(param, v);
+                            }
+                            ParamKind::StringList { allowed, .. } => {
+                                let items = value.as_sequence().ok_or_else(|| {
+                                    format!("{name}.{param} must be a list of strings")
+                                })?;
+                                let mut list = Vec::with_capacity(items.len());
+                                for item in items {
+                                    let s = item.as_str().ok_or_else(|| {
+                                        format!("{name}.{param} must be a list of strings")
+                                    })?;
+                                    if let Some(allowed) = allowed {
+                                        if !allowed.contains(&s) {
+                                            return Err(format!(
+                                                "{name}.{param}: '{s}' is not a valid value (valid: {})",
+                                                allowed.join(", ")
+                                            ));
+                                        }
+                                    }
+                                    list.push(s.to_string());
+                                }
+                                lint.list_params
+                                    .entry(rule)
+                                    .or_default()
+                                    .insert(param, list);
+                            }
+                        }
                     }
                 }
             }
@@ -623,6 +658,41 @@ mod tests {
         assert_eq!(
             pc.lint.int_param(LintRule::ModelFanout, "threshold"),
             Some(4)
+        );
+    }
+
+    #[test]
+    fn string_list_params_parse_and_validate_against_the_allowed_set() {
+        let pc = parse(
+            "lint:\n  rules:\n    required_meta_keys: {keys: [owner, domain]}\n    missing_primary_key_tests: {resource_types: [model, seed]}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            pc.lint.str_list_param(LintRule::RequiredMetaKeys, "keys"),
+            Some(vec!["owner".to_string(), "domain".to_string()])
+        );
+        assert_eq!(
+            pc.lint
+                .str_list_param(LintRule::MissingPrimaryKeyTests, "resource_types"),
+            Some(vec!["model".to_string(), "seed".to_string()])
+        );
+        // An item outside the allowed set errors naming the valid values.
+        let err = parse(
+            "lint:\n  rules:\n    missing_primary_key_tests: {resource_types: [model, bogus]}\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("'bogus'") && err.contains("model") && err.contains("seed"),
+            "{err} names the bad item and the valid set"
+        );
+        // A scalar or non-string items error as the wrong shape.
+        assert!(parse("lint:\n  rules:\n    required_meta_keys: {keys: owner}\n").is_err());
+        assert!(parse("lint:\n  rules:\n    required_meta_keys: {keys: [1]}\n").is_err());
+        // An empty list is legal — it makes the rule a no-op.
+        let pc = parse("lint:\n  rules:\n    required_meta_keys: {keys: []}\n").unwrap();
+        assert_eq!(
+            pc.lint.str_list_param(LintRule::RequiredMetaKeys, "keys"),
+            Some(vec![])
         );
     }
 

@@ -332,6 +332,26 @@ The initial rule set (all enabled by default):
 | `naming_conventions` | a model's name misses its resolved layer's prefix (`stg_`, `int_`, `fct_`/`dim_`/`rpt_`) |
 | `layer_violation` | a backward edge between logical layers — the shared `layer_violation_edges` predicate |
 
+A second rule set ships enabled but at `warn` severity — they report WARN in
+`dbtl lint`, the docs summary, and the TUI worklist, and only gate `check`
+when you set `fail_on: warn` or raise a rule to `severity: error`:
+
+| Rule | Flags |
+| --- | --- |
+| `unused_sources` | a source is declared but never referenced (exposures count as a use) |
+| `duplicate_sources` | two or more sources resolve to the same warehouse relation |
+| `staging_depends_on_staging` | a staging model directly depends on another staging model |
+| `too_many_joins` | a model directly depends on ≥ `threshold` data resources (default 7) |
+| `chained_views` | a view/ephemeral model ends a consecutive view/ephemeral chain of ≥ `threshold` hops (default 5) — the terminal node lists the whole chain |
+| `exposure_parents_materializations` | an exposure directly depends on a source or a view/ephemeral model |
+| `exposures_dependent_on_private_models` | an exposure directly depends on a model that isn't `access: public` |
+| `undocumented_sources` | a source has no description |
+| `undocumented_columns` | a model has a declared column without a description |
+| `undocumented_public_models` | an `access: public` model lacks a model or column description |
+| `model_directories` | a model's prefix-derived layer disagrees with its directory-derived layer |
+| `required_meta_keys` | a model is missing a key listed in `keys` (empty by default = no-op) |
+| `contract_columns_without_type` | an enforced-contract model has a declared column without `data_type` |
+
 Rule policy lives in the **project-local `.dbtl.yml`** — deliberately *not*
 `~/.config/dbtl/config.yml`, because a CI gate must not depend on the
 developer's machine. In source mode the project dir is searched; in manifest
