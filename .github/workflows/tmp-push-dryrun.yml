@@ -1,0 +1,8 @@
+name: Tmp push dry run
+on:
+  push:
+    branches: [ci/release-targets]
+permissions: {}
+jobs:
+  call:
+    uses: ./.github/workflows/tmp-called.yml
