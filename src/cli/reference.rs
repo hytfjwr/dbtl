@@ -317,10 +317,13 @@ mod tests {
         assert!(doc.contains("`dbtl cli-reference`"));
         assert!(doc.contains("## Exit codes"));
         assert!(doc.contains("## Global flags"));
-        // The flag-consumption table: docs takes --manifest but not --diff.
+        // The flag-consumption table: docs takes --manifest; completions
+        // (no data source) takes nothing.
         let docs = doc.split("### `dbtl docs`").nth(1).unwrap();
         let docs = docs.split("### `dbtl").next().unwrap();
         assert!(docs.contains("`--manifest`"));
-        assert!(!docs.contains("`--diff`"));
+        let completions = doc.split("### `dbtl completions`").nth(1).unwrap();
+        let completions = completions.split("### `dbtl").next().unwrap();
+        assert!(completions.contains("Accepts no global flags"));
     }
 }
