@@ -598,8 +598,11 @@ fn findings_are_deterministic_and_rule_ordered() {
 #[test]
 fn installed_package_nodes_are_not_flagged() {
     // model.pkg.other is an installed package's model: it must not flag
-    // even though it has no parents/docs. PackageScope::All keeps it in
-    // the graph; root-project scoping must still exclude it.
+    // even though it has no parents/docs. It is also an incremental model
+    // without a unique_key, and source.pkg.s.t a source without freshness —
+    // both would trip the new warn rules if root-project scoping broke.
+    // PackageScope::All keeps them in the graph; scoping must still exclude
+    // them.
     let m = manifest(
         vec![
             model("stg_a", "staging/stg_a.sql"),
@@ -610,23 +613,36 @@ fn installed_package_nodes_are_not_flagged() {
                     resource_type: "model".into(),
                     path: Some("staging/other.sql".into()),
                     package_name: Some("pkg".into()),
+                    config: crate::manifest::RawConfig {
+                        materialized: Some("incremental".into()),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             ),
         ],
-        vec![],
+        vec![(
+            "source.pkg.s.t".to_string(),
+            RawSource {
+                name: "t".into(),
+                resource_type: "source".into(),
+                package_name: Some("pkg".into()),
+                ..Default::default()
+            },
+        )],
         &[],
     );
     let mut m = m;
     m.metadata.project_name = Some("p".into());
     let dag = Dag::build(&m);
     assert!(dag.contains("model.pkg.other"), "package node kept in dag");
+    assert!(dag.contains("source.pkg.s.t"), "package source kept in dag");
     let f = run_rules(LintInput::new(&dag, &LintConfig::default()));
     for rule in LintRule::ALL {
         assert!(
             flagged(&f, rule)
                 .iter()
-                .all(|u| !u.starts_with("model.pkg.")),
+                .all(|u| !u.starts_with("model.pkg.") && !u.starts_with("source.pkg.")),
             "{} flagged an installed-package node",
             rule.name()
         );
