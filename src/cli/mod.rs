@@ -105,16 +105,19 @@ pub struct Cli {
     /// status chip, and the runtime-weighted critical path in the `S` stats
     /// modal. Default: auto-detect target/run_results.json next to the data
     /// source — a missing file just means no run data, never an error.
-    /// TUI-only: `global` so it parses next to a subcommand too, where the
-    /// ignored-flag check rejects it.
+    /// `docs` also accepts it (the `last run` page bullet — an explicit
+    /// path there is REQUIRED); every other subcommand rejects it.
+    /// `global` so it parses before OR after a subcommand.
     #[arg(long, global = true)]
     pub run_results: Option<String>,
     /// Path to a dbt catalog.json (the `dbt docs generate` side-map: real
     /// column types, row counts, byte sizes — and the top column-list tier
     /// for column-level lineage). Default: auto-detect
     /// target/catalog.json next to the data source — a missing file just
-    /// means no catalog data, never an error. `global` so it works before
-    /// OR after a subcommand.
+    /// means no catalog data, never an error. `docs` accepts it too — as an
+    /// explicit REQUIRED path: docs never auto-detects it (the `.dbtl.yml`
+    /// `docs.catalog` opt-in reads the default sibling instead). `global` so
+    /// it works before OR after a subcommand.
     #[arg(long, global = true)]
     pub catalog: Option<String>,
     /// Deprecated no-op kept for backwards compatibility: the default scope
@@ -142,7 +145,7 @@ pub struct Cli {
     /// adapter_type (source mode has none → generic); any other value pins the
     /// dialect for every model (`generic`, `postgres`, `snowflake`, `bigquery`,
     /// `mysql`, `sqlite`, `duckdb`, `spark`, …). `global` so `dbtl columns`
-    /// accepts it too.
+    /// and `dbtl docs` accept it too.
     #[arg(long, global = true, value_name = "DIALECT", value_parser = parse_sql_dialect)]
     pub sql_dialect: Option<dbtl::SqlDialect>,
     /// A non-interactive subcommand. Omitted = launch the TUI (the default,

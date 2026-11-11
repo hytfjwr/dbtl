@@ -1681,3 +1681,653 @@ fn lint_summary_marks_baselined_findings() {
         "the node page marks the frozen finding"
     );
 }
+
+// ---- column lineage (Upstream / Used by) + side artifacts -------------------
+
+use dbtl_core::{load_dag_from_source, RawConfig, RawFreshness, RawFreshnessThreshold};
+
+const SAMPLE_MANIFEST: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../tests/fixtures/sample_manifest.json"
+);
+const SAMPLE_PROJECT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../tests/fixtures/sample_project"
+);
+
+fn sample_dag() -> Dag {
+    load_dag(SAMPLE_MANIFEST).expect("sample manifest loads")
+}
+
+/// The `## Columns` table of `page` — everything between the heading and the
+/// next blank line (the header, separator, and data rows).
+fn columns_table(page: &str) -> &str {
+    page.split("## Columns\n\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n\n").next())
+        .expect("a Columns section")
+}
+
+/// The Columns-table row whose Name cell is `name`.
+fn column_row<'a>(page: &'a str, name: &str) -> &'a str {
+    columns_table(page)
+        .lines()
+        .find(|l| l.starts_with(&format!("| {name} |")))
+        .unwrap_or_else(|| panic!("no column row for {name}:\n{page}"))
+}
+
+/// `{"<name>": {"data_type": <ty>}, …}` — the `RawNode.columns`/`RawSource.columns`
+/// wire shape, in the given order.
+fn col_map(spec: &[(&str, &str)]) -> serde_json::Map<String, serde_json::Value> {
+    spec.iter()
+        .map(|(n, t)| {
+            (
+                n.to_string(),
+                serde_json::json!({"name": n, "data_type": t}),
+            )
+        })
+        .collect()
+}
+
+/// The `Used by` cell the page should show for `cref`: distinct downstream
+/// columns reached by value-carrying edges out of children the resolver can
+/// read — the engine's own answer, mirrored so the assertion isn't a guess.
+fn expected_used_by(dag: &Dag, cref: &ColumnRef) -> usize {
+    let resolver = SqlParseResolver::new(None, SqlDialect::from_dag(dag));
+    let cll = ColumnLineage::new(dag, &resolver);
+    let mut targets = BTreeSet::new();
+    for child in dag.direct_children(&cref.node) {
+        if resolver.column_exprs(dag, child).is_none() {
+            continue;
+        }
+        for e in cll.in_edges(child).iter() {
+            if e.from == *cref && e.kind != ColumnEdgeKind::FilterOrJoin {
+                targets.insert(e.to.clone());
+            }
+        }
+    }
+    targets.len()
+}
+
+#[test]
+fn columns_table_lists_linked_upstream_and_used_by_counts() {
+    // The same assertions against the frozen manifest AND the source-mode
+    // load of the same project — the upstream/used-by view must not depend
+    // on which intake produced the dag.
+    for (label, dag) in [
+        ("manifest", sample_dag()),
+        (
+            "source mode",
+            load_dag_from_source(SAMPLE_PROJECT).expect("sample project parses"),
+        ),
+    ] {
+        let out = generate_docs(&dag, "sample", "fixture", PackageScope::Root);
+        let page = file(&out, "models/model.sample.cll_syntax.md");
+        assert!(
+            columns_table(page).contains("| Name | Type | Upstream | Used by | Description |"),
+            "{label}: the header gains Upstream + Used by"
+        );
+        // Rename, passthrough, and transform edges each render as a link to
+        // the upstream node's page.
+        assert!(
+            column_row(page, "order_id").contains("[stg_orders.id](model.sample.stg_orders.md)"),
+            "{label}: order_id ← stg_orders.id (rename)"
+        );
+        assert!(
+            column_row(page, "status").contains("[stg_orders.status](model.sample.stg_orders.md)"),
+            "{label}: status ← stg_orders.status (passthrough)"
+        );
+        assert!(
+            column_row(page, "status_upper")
+                .contains("[stg_orders.status](model.sample.stg_orders.md)"),
+            "{label}: status_upper ← stg_orders.status (transform)"
+        );
+        // A multi-source transform lists every distinct upstream — the seed
+        // links cross from `models/` into `../seeds/`.
+        let country = column_row(page, "country");
+        for expected in [
+            "[stg_orders.country_code](model.sample.stg_orders.md)",
+            "[country_codes.code](../seeds/seed.sample.country_codes.md)",
+            "[country_codes.country](../seeds/seed.sample.country_codes.md)",
+        ] {
+            assert!(
+                country.contains(expected),
+                "{label}: {expected} in {country}"
+            );
+        }
+        // A leaf column shows `0`, not a blank or a dash.
+        assert!(
+            column_row(page, "order_id").contains("| 0 |"),
+            "{label}: no downstream columns → 0"
+        );
+        // stg_orders.id's Used by equals the engine's own 1-hop answer.
+        let stg = file(&out, "models/model.sample.stg_orders.md");
+        let expected = expected_used_by(&dag, &ColumnRef::new("model.sample.stg_orders", "id"));
+        assert!(expected > 0, "{label}: stg_orders.id feeds downstreams");
+        assert!(
+            column_row(stg, "id").contains(&format!("| {expected} |")),
+            "{label}: stg_orders.id Used by = {expected}"
+        );
+    }
+}
+
+#[test]
+fn filter_or_join_edges_feed_neither_lineage_cell() {
+    let dag = sample_dag();
+    let out = generate_docs(&dag, "sample", "fixture", PackageScope::Root);
+    // `cll_syntax`'s where/join tail attaches `stg.disabled_flag`, `fct.id`,
+    // and `fct.country` to every output as `filter_or_join` — none may appear
+    // in an Upstream cell.
+    let table = columns_table(file(&out, "models/model.sample.cll_syntax.md"));
+    for absent in ["disabled_flag", "fct_orders.id", "fct_orders.country"] {
+        assert!(
+            !table.contains(absent),
+            "row-shaping source leaked into an Upstream cell: {absent}"
+        );
+    }
+    // A column named only in a child's WHERE/JOIN tail feeds no value edges —
+    // its Used by is 0 even though `filter_or_join` fan edges name it on every
+    // one of the child's outputs.
+    let mut m = empty_manifest();
+    m.nodes.insert("model.t.p".into(), {
+        let mut n = node("p", "model", &[]);
+        n.raw_code = Some("select 1 as id, false as flag".into());
+        n.columns = col_map(&[("id", "int"), ("flag", "bool")]);
+        n
+    });
+    m.nodes.insert("model.t.j".into(), {
+        let mut n = node("j", "model", &["model.t.p"]);
+        n.raw_code = Some("select id from {{ ref('p') }} where flag".into());
+        n.columns = col_map(&[("id", "int")]);
+        n
+    });
+    let dag = dag_from(m);
+    let out = generate_docs(&dag, "t", "synthetic", PackageScope::Root);
+    let p = file(&out, "models/model.t.p.md");
+    assert!(
+        column_row(p, "flag").contains("| 0 |"),
+        "a FOJ-only ref counts nothing downstream: {p}"
+    );
+    assert!(
+        column_row(p, "id").contains("| 1 |"),
+        "the value ref still counts: {p}"
+    );
+    let j = file(&out, "models/model.t.j.md");
+    let row = column_row(j, "id");
+    assert!(
+        row.contains("[p.id](model.t.p.md)"),
+        "the value edge: {row}"
+    );
+    assert!(
+        !row.contains("flag"),
+        "the row-shaping ref is hidden: {row}"
+    );
+}
+
+#[test]
+fn unparsable_models_dash_their_cells_and_are_not_counted_downstream() {
+    // `a` parses and consumes `p.id`; `b`'s SQL is broken — the name-match
+    // fallback still emits edges from `p.id`, but they can't vouch for
+    // provenance, so `b`'s own cells show `-` and `b` adds nothing to
+    // `p.id`'s Used by.
+    let mut m = empty_manifest();
+    m.nodes.insert("model.t.p".into(), {
+        let mut n = node("p", "model", &[]);
+        // Parseable SQL of its own, so `p.id`'s Used by is a real count (a
+        // SQL-less model would itself be a `-` case).
+        n.raw_code = Some("select 1 as id".into());
+        n.columns = col_map(&[("id", "int")]);
+        n
+    });
+    m.nodes.insert("model.t.a".into(), {
+        let mut n = node("a", "model", &["model.t.p"]);
+        n.raw_code = Some("select id as aid from {{ ref('p') }}".into());
+        n.columns = col_map(&[("aid", "int")]);
+        n
+    });
+    m.nodes.insert("model.t.b".into(), {
+        let mut n = node("b", "model", &["model.t.p"]);
+        n.raw_code = Some("select id from {{ ref('p') }} where (((".into());
+        n.columns = col_map(&[("id", "int")]);
+        n
+    });
+    let dag = dag_from(m);
+    let out = generate_docs(&dag, "t", "synthetic", PackageScope::Root);
+    let b = file(&out, "models/model.t.b.md");
+    assert!(
+        column_row(b, "id").contains("| - | - |"),
+        "an unparsable model shows `-` in both lineage cells: {b}"
+    );
+    let p = file(&out, "models/model.t.p.md");
+    let row = column_row(p, "id");
+    assert!(
+        row.contains("| 1 |"),
+        "the unparsable child's edges don't count: {row}"
+    );
+    let a = file(&out, "models/model.t.a.md");
+    assert!(
+        column_row(a, "aid").contains("[p.id](model.t.p.md)"),
+        "the parseable child's upstream links normally: {a}"
+    );
+}
+
+#[test]
+fn upstream_cells_truncate_after_five_with_a_plus_k_count() {
+    let mut m = empty_manifest();
+    for i in 1..=6usize {
+        m.nodes.insert(format!("model.t.p{i}"), {
+            let mut n = node(&format!("p{i}"), "model", &[]);
+            n.columns = col_map(&[("c", "int")]);
+            n
+        });
+    }
+    m.nodes.insert("model.t.m".into(), {
+        let mut n = node(
+            "m",
+            "model",
+            &(1..=6usize)
+                .map(|i| format!("model.t.p{i}"))
+                .collect::<Vec<_>>()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+        );
+        n.raw_code = Some(
+            "select coalesce(t1.c, t2.c, t3.c, t4.c, t5.c, t6.c) as out_col \
+             from {{ ref('p1') }} t1, {{ ref('p2') }} t2, {{ ref('p3') }} t3, \
+             {{ ref('p4') }} t4, {{ ref('p5') }} t5, {{ ref('p6') }} t6"
+                .into(),
+        );
+        n.columns = col_map(&[("out_col", "int")]);
+        n
+    });
+    let dag = dag_from(m);
+    let out = generate_docs(&dag, "t", "x", PackageScope::Root);
+    let page = file(&out, "models/model.t.m.md");
+    let row = column_row(page, "out_col");
+    assert!(
+        row.contains("+1 more"),
+        "the sixth upstream folds away: {row}"
+    );
+    for i in 1..=5 {
+        assert!(
+            row.contains(&format!("[p{i}.c](model.t.p{i}.md)")),
+            "the first five stay linked: {row}"
+        );
+    }
+    assert!(
+        !row.contains("p6.c"),
+        "the overflow entry never prints: {row}"
+    );
+}
+
+#[test]
+fn source_and_seed_tables_carry_used_by_without_an_upstream_column() {
+    let dag = sample_dag();
+    let out = generate_docs(&dag, "sample", "fixture", PackageScope::Root);
+    let page = file(&out, "sources/source.sample.raw.orders.md");
+    assert!(
+        columns_table(page).contains("| Name | Type | Used by | Description |"),
+        "a source table drops Upstream but keeps Used by"
+    );
+    // `stg_orders` is `select *` — every source column feeds exactly its
+    // same-named staging column.
+    assert!(
+        column_row(page, "id").contains("| 1 |"),
+        "raw.orders.id Used by"
+    );
+
+    // The fixture seeds declare no columns — a synthetic seed covers the
+    // seed-kind table.
+    let mut m = empty_manifest();
+    m.nodes.insert("seed.t.sd".into(), {
+        let mut n = node("sd", "seed", &[]);
+        n.columns = col_map(&[("k", "int")]);
+        n
+    });
+    m.nodes.insert("model.t.m".into(), {
+        let mut n = node("m", "model", &["seed.t.sd"]);
+        n.raw_code = Some("select k as kk from {{ ref('sd') }}".into());
+        n.columns = col_map(&[("kk", "int")]);
+        n
+    });
+    let dag = dag_from(m);
+    let out = generate_docs(&dag, "t", "x", PackageScope::Root);
+    let page = file(&out, "seeds/seed.t.sd.md");
+    assert!(
+        columns_table(page).contains("| Name | Type | Used by | Description |"),
+        "a seed table drops Upstream but keeps Used by"
+    );
+    assert!(column_row(page, "k").contains("| 1 |"), "seed Used by");
+}
+
+#[test]
+fn enabled_catalog_adds_warehouse_types_stats_and_the_includes_line() {
+    let dag = sample_dag();
+    let catalog = Catalog::from_json(
+        r#"{
+            "metadata": {"generated_at": "2024-06-01T10:00:00Z"},
+            "nodes": {
+                "model.sample.cll_syntax": {
+                    "columns": {"order_id": {"type": "INT64"}},
+                    "stats": {
+                        "row_count": {"value": 1234, "include": true},
+                        "size": {"value": 56789, "include": true}
+                    }
+                }
+            },
+            "sources": {
+                "source.sample.raw.orders": {
+                    "columns": {"id": {"type": "INT"}},
+                    "stats": {}
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+    let out = generate_docs_with_options(
+        &dag,
+        "sample",
+        "fixture",
+        PackageScope::Root,
+        &DocsOptions {
+            catalog: Some(&catalog),
+            ..Default::default()
+        },
+    );
+    assert!(
+        file(&out, "README.md").contains("Includes: warehouse catalog"),
+        "the README declares the loaded artifact"
+    );
+    let page = file(&out, "models/model.sample.cll_syntax.md");
+    assert!(
+        columns_table(page)
+            .contains("| Name | Type | Warehouse type | Upstream | Used by | Description |"),
+        "catalog adds the Warehouse type column"
+    );
+    assert!(
+        column_row(page, "order_id").contains("| INT64 |"),
+        "the covered column shows its warehouse type"
+    );
+    assert!(
+        !column_row(page, "status").contains("INT64"),
+        "an uncovered column's warehouse cell stays blank"
+    );
+    assert!(
+        page.contains("- rows: `1234`") && page.contains("- size: `55.5 KiB`"),
+        "the stats bullets render: {page}"
+    );
+    // A node the catalog doesn't cover still gets `none` bullets.
+    let fct = file(&out, "models/model.sample.fct_orders.md");
+    assert!(
+        fct.contains("- rows: none") && fct.contains("- size: none"),
+        "uncovered node → none: {fct}"
+    );
+    // Sources take the same warehouse column and stats treatment.
+    let src = file(&out, "sources/source.sample.raw.orders.md");
+    assert!(
+        columns_table(src).contains("| Name | Type | Warehouse type | Used by | Description |"),
+        "the source table gains Warehouse type (no Upstream)"
+    );
+    assert!(
+        column_row(src, "id").contains("| INT |"),
+        "source column types come from the sources section"
+    );
+    assert!(src.contains("- rows: none"), "no stats → none");
+}
+
+#[test]
+fn enabled_run_results_add_last_run_bullets_and_the_includes_line() {
+    let dag = sample_dag();
+    let rr = RunResults::from_json(
+        r#"{
+            "metadata": {"generated_at": "2024-05-01T12:34:56.789Z"},
+            "results": [
+                {"unique_id": "model.sample.cll_syntax", "status": "success", "execution_time": 1.25},
+                {"unique_id": "model.sample.fct_orders", "status": "error", "execution_time": 30.5},
+                {"unique_id": "seed.sample.country_codes", "status": "skipped", "execution_time": null}
+            ]
+        }"#,
+    )
+    .unwrap();
+    let out = generate_docs_with_options(
+        &dag,
+        "sample",
+        "fixture",
+        PackageScope::Root,
+        &DocsOptions {
+            run_results: Some(&rr),
+            ..Default::default()
+        },
+    );
+    assert!(
+        file(&out, "README.md").contains("Includes: last run results"),
+        "the README declares the loaded artifact"
+    );
+    let ok = file(&out, "models/model.sample.cll_syntax.md");
+    assert!(
+        ok.contains("- last run: `success, 1.25s (2024-05-01T12:34:56.789Z)`"),
+        "status, 2-decimal seconds, artifact timestamp: {ok}"
+    );
+    let bad = file(&out, "models/model.sample.fct_orders.md");
+    assert!(
+        bad.contains("- last run: `error, 30.50s (2024-05-01T12:34:56.789Z)`"),
+        "a failing status renders verbatim: {bad}"
+    );
+    let skipped = file(&out, "seeds/seed.sample.country_codes.md");
+    assert!(
+        skipped.contains("- last run: `skipped (2024-05-01T12:34:56.789Z)`"),
+        "no recorded time omits the seconds: {skipped}"
+    );
+    let uncovered = file(&out, "models/model.sample.stg_orders.md");
+    assert!(
+        uncovered.contains("- last run: none"),
+        "a node the run didn't cover → none: {uncovered}"
+    );
+    // Sources carry no last-run status — `dbt run` doesn't execute them.
+    let src = file(&out, "sources/source.sample.raw.orders.md");
+    assert!(
+        !src.contains("- last run:"),
+        "source pages never grow the bullet: {src}"
+    );
+}
+
+#[test]
+fn includes_line_names_exactly_the_loaded_artifacts() {
+    let dag = sample_dag();
+    let clean = generate_docs(&dag, "sample", "f", PackageScope::Root);
+    assert!(
+        !file(&clean, "README.md").contains("Includes:"),
+        "no artifacts → no Includes line (byte-identical to before)"
+    );
+    let catalog = Catalog::from_json(r#"{"nodes": {}}"#).unwrap();
+    let rr = RunResults::from_json(r#"{"results": []}"#).unwrap();
+    let cat_only = generate_docs_with_options(
+        &dag,
+        "sample",
+        "f",
+        PackageScope::Root,
+        &DocsOptions {
+            catalog: Some(&catalog),
+            ..Default::default()
+        },
+    );
+    assert!(
+        file(&cat_only, "README.md").contains("Generated from: `f`\nIncludes: warehouse catalog\n"),
+        "catalog alone"
+    );
+    let both = generate_docs_with_options(
+        &dag,
+        "sample",
+        "f",
+        PackageScope::Root,
+        &DocsOptions {
+            catalog: Some(&catalog),
+            run_results: Some(&rr),
+            ..Default::default()
+        },
+    );
+    assert!(
+        file(&both, "README.md").contains("Includes: warehouse catalog, last run results"),
+        "both artifacts, in order"
+    );
+}
+
+#[test]
+fn heading_bullets_render_ingested_metadata() {
+    // The fields the manifest carries into `NodeDetail` — `unique_key` on
+    // models (string and list spellings), `loader`/`freshness` on sources —
+    // all `none` when unset.
+    let mut m = empty_manifest();
+    m.nodes.insert("model.t.uk".into(), {
+        let mut n = node("uk", "model", &[]);
+        n.config = RawConfig {
+            unique_key: Some(serde_json::json!("order_id")),
+            ..Default::default()
+        };
+        n
+    });
+    m.nodes.insert("model.t.uk2".into(), {
+        let mut n = node("uk2", "model", &[]);
+        n.config = RawConfig {
+            unique_key: Some(serde_json::json!(["a", "b"])),
+            ..Default::default()
+        };
+        n
+    });
+    m.nodes
+        .insert("model.t.plain".into(), node("plain", "model", &[]));
+    m.sources.insert(
+        "source.t.raw.tbl".into(),
+        RawSource {
+            name: "tbl".into(),
+            resource_type: "source".into(),
+            loader: Some("fivetran".into()),
+            loaded_at_field: Some("updated_at".into()),
+            freshness: Some(RawFreshness {
+                warn_after: Some(RawFreshnessThreshold {
+                    count: Some(12),
+                    period: Some("hour".into()),
+                }),
+                error_after: Some(RawFreshnessThreshold {
+                    count: Some(24),
+                    period: Some("day".into()),
+                }),
+            }),
+            ..Default::default()
+        },
+    );
+    m.sources.insert(
+        "source.t.raw.t2".into(),
+        RawSource {
+            name: "t2".into(),
+            resource_type: "source".into(),
+            freshness: Some(RawFreshness {
+                warn_after: Some(RawFreshnessThreshold {
+                    count: Some(6),
+                    period: Some("hour".into()),
+                }),
+                error_after: None,
+            }),
+            ..Default::default()
+        },
+    );
+    m.sources.insert(
+        "source.t.raw.t3".into(),
+        RawSource {
+            name: "t3".into(),
+            resource_type: "source".into(),
+            ..Default::default()
+        },
+    );
+    let dag = dag_from(m);
+    let out = generate_docs(&dag, "t", "x", PackageScope::Root);
+    assert!(
+        file(&out, "models/model.t.uk.md").contains("- unique_key: `order_id`"),
+        "a bare-string unique_key"
+    );
+    assert!(
+        file(&out, "models/model.t.uk2.md").contains("- unique_key: `a`, `b`"),
+        "a list unique_key joins with `, `"
+    );
+    assert!(
+        file(&out, "models/model.t.plain.md").contains("- unique_key: none"),
+        "unconfigured → none"
+    );
+    let tbl = file(&out, "sources/source.t.raw.tbl.md");
+    assert!(
+        tbl.contains("- loader: `fivetran`"),
+        "loader verbatim: {tbl}"
+    );
+    assert!(
+        tbl.contains("- freshness: `warn after 12 hour, error after 24 day`"),
+        "both thresholds in warn-then-error order: {tbl}"
+    );
+    let t2 = file(&out, "sources/source.t.raw.t2.md");
+    assert!(
+        t2.contains("- loader: none") && t2.contains("- freshness: `warn after 6 hour`"),
+        "a warn-only freshness and a missing loader: {t2}"
+    );
+    let t3 = file(&out, "sources/source.t.raw.t3.md");
+    assert!(
+        t3.contains("- loader: none") && t3.contains("- freshness: none"),
+        "unconfigured source → none: {t3}"
+    );
+}
+
+#[test]
+fn artifact_enabled_docs_are_byte_identical_across_runs() {
+    let dag = sample_dag();
+    let catalog = Catalog::from_json(
+        r#"{"nodes": {"model.sample.cll_syntax": {"columns": {"order_id": {"type": "INT64"}}}}}"#,
+    )
+    .unwrap();
+    let rr = RunResults::from_json(
+        r#"{"metadata": {"generated_at": "2024-05-01T00:00:00Z"},
+            "results": [{"unique_id": "model.sample.cll_syntax", "status": "warn", "execution_time": 0.5}]}"#,
+    )
+    .unwrap();
+    let opts = DocsOptions {
+        catalog: Some(&catalog),
+        run_results: Some(&rr),
+        ..Default::default()
+    };
+    let a = generate_docs_with_options(&dag, "sample", "f", PackageScope::Root, &opts);
+    let b = generate_docs_with_options(&dag, "sample", "f", PackageScope::Root, &opts);
+    assert_eq!(a, b, "two artifact-enabled runs produce identical bytes");
+}
+
+#[test]
+fn size_formats_in_binary_units_at_the_boundaries() {
+    use crate::node::format_size;
+    // The 1024-boundary cases plus a MiB anchor — the contract the `size`
+    // bullet's single formatter is pinned to.
+    assert_eq!(format_size(0), "0 B");
+    assert_eq!(format_size(1023), "1023 B");
+    assert_eq!(format_size(1024), "1.0 KiB");
+    assert_eq!(format_size(1536), "1.5 KiB");
+    assert_eq!(format_size(1_048_576), "1.0 MiB");
+}
+
+#[test]
+fn parseable_columns_without_provenance_render_blank_and_zero() {
+    // The known-empty case: SQL parsed fine, the column simply consumes
+    // nothing and feeds nothing — blank Upstream, `0` Used by. `-` is
+    // reserved for SQL nobody could parse.
+    let mut m = empty_manifest();
+    m.nodes.insert("model.t.solo".into(), {
+        let mut n = node("solo", "model", &[]);
+        n.raw_code = Some("select 1 as id, 'x' as tag".into());
+        n.columns = col_map(&[("id", "int"), ("tag", "varchar")]);
+        n
+    });
+    let dag = dag_from(m);
+    let out = generate_docs(&dag, "t", "synthetic", PackageScope::Root);
+    let page = file(&out, "models/model.t.solo.md");
+    for col in ["id", "tag"] {
+        let cells: Vec<&str> = column_row(page, col).split('|').map(str::trim).collect();
+        // `| Name | Type | Upstream | Used by | Description |` → cells 1..5.
+        assert_eq!(cells[3], "", "{col}: no provenance → blank Upstream");
+        assert_eq!(cells[4], "0", "{col}: no consumers → `0` Used by");
+    }
+}

@@ -473,17 +473,6 @@ fn unsupported_flags_are_rejected_not_ignored() {
             vec![
                 "--run-results",
                 "r.json",
-                "docs",
-                "--out",
-                "/tmp/dbtl_flag_docs",
-            ],
-            "--run-results",
-            "docs",
-        ),
-        (
-            vec![
-                "--run-results",
-                "r.json",
                 "impact",
                 "--manifest",
                 m_str,

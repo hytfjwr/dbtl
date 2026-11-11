@@ -129,6 +129,14 @@ impl<'de> Deserialize<'de> for LineageDepth {
 pub struct DocsConfig {
     /// `docs.lineage_depth` — `None` when the file doesn't set it.
     pub lineage_depth: Option<LineageDepth>,
+    /// `docs.catalog` — `true` reads the default sibling `catalog.json` into
+    /// the generated docs (warehouse types / row counts / sizes). `false`
+    /// (or unset) leaves the artifact out entirely — docs never auto-detects.
+    pub catalog: bool,
+    /// `docs.run_results` — `true` reads the default sibling
+    /// `run_results.json` into the generated docs (per-node `last run`
+    /// status). `false` (or unset) leaves the artifact out entirely.
+    pub run_results: bool,
 }
 
 /// A parsed `.dbtl.yml`: the resolved `lint:`/`check:`/`docs:` sections, the
@@ -305,6 +313,8 @@ impl ProjectConfig {
         }
         let docs = DocsConfig {
             lineage_depth: file.docs.lineage_depth,
+            catalog: file.docs.catalog,
+            run_results: file.docs.run_results,
         };
         let owner_meta_key = match file.owner_meta_key {
             Some(k) if k.trim().is_empty() => {
@@ -452,6 +462,11 @@ struct DocsFile {
     /// whole parse (a malformed config is fatal, never silently defaulted).
     #[cfg_attr(feature = "schema", schemars(skip))]
     lineage_depth: Option<LineageDepth>,
+    /// `docs.catalog` — opt in to the sibling `catalog.json` (same path rule
+    /// as the CLI's auto-detect, but only when the file asks for it).
+    catalog: bool,
+    /// `docs.run_results` — opt in to the sibling `run_results.json`.
+    run_results: bool,
 }
 
 /// The `check:` section wire shape. `deny_unknown_fields` — the same typo
@@ -852,6 +867,29 @@ mod tests {
             "docs:\n  lineage_depth: 1.5\n",
             "docs:\n  lineage_depth: sometimes\n",
             "docs:\n  lineage_dpeth: 2\n",
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?} must fail to parse");
+        }
+    }
+
+    #[test]
+    fn docs_artifact_opt_ins_default_false_parse_bools_and_reject_the_rest() {
+        // Unset means off — docs never auto-detects the sibling artifacts.
+        let pc = parse("docs: {}\n").unwrap();
+        assert!(!pc.docs.catalog && !pc.docs.run_results);
+        let pc = parse("").unwrap();
+        assert!(!pc.docs.catalog && !pc.docs.run_results);
+        // Explicit true/false both parse.
+        let pc = parse("docs:\n  catalog: true\n  run_results: true\n").unwrap();
+        assert!(pc.docs.catalog && pc.docs.run_results);
+        let pc = parse("docs:\n  catalog: false\n  run_results: true\n").unwrap();
+        assert!(!pc.docs.catalog && pc.docs.run_results);
+        // Non-bool values and unknown keys fail like the section's other typos.
+        for bad in [
+            "docs:\n  catalog: [x]\n",
+            "docs:\n  catalog: 1\n",
+            "docs:\n  run_results: \"yes\"\n",
+            "docs:\n  catalogs: true\n",
         ] {
             assert!(parse(bad).is_err(), "{bad:?} must fail to parse");
         }

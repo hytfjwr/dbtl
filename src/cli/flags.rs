@@ -27,9 +27,9 @@ pub const GLOBAL_FLAG_COMMANDS: &[(&str, &[&str])] = &[
         &["docs", "impact", "check", "columns", "lint"],
     ),
     ("diff", &["impact", "check", "lint"]),
-    // TUI-only global flags: the empty list rejects them under every
-    // subcommand while keeping them accepted (and honored) for the app.
-    ("run_results", &[]),
+    // `--run-results` feeds the TUI and `docs` — every other subcommand
+    // rejects it (an empty list would mean TUI-only).
+    ("run_results", &["docs"]),
     // `lint`/`docs` consume both: docs' Lint section runs the same
     // evaluation `dbtl lint` does, so without the flags their results could
     // disagree with the report's.

@@ -1,0 +1,117 @@
+name: Dogfood
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  action-self-test:
+    name: Action self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Deliberately shallow: a depth-1 checkout lacks the pull
+          # request's base commit, so this exercises the action's
+          # base-fetch path on every pull request run.
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build dbtl (release)
+        run: cargo build --release --locked
+
+      - name: Put dbtl on PATH
+        run: echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
+
+      - name: Run the action (passing check)
+        id: passing
+        uses: ./
+        with:
+          version: local
+          project-dir: tests/fixtures/sample_project
+          lint: 'true'
+          fail-on: never
+          sarif: 'true'
+          comment: 'true'
+          dry-run: 'true'
+
+      - name: Verify the passing run
+        env:
+          EXIT_CODE: ${{ steps.passing.outputs.exit-code }}
+          REPORT: ${{ steps.passing.outputs.report }}
+          SARIF: ${{ steps.passing.outputs.sarif }}
+        run: |
+          [ "$EXIT_CODE" = "0" ] || { echo "::error::exit-code is $EXIT_CODE, want 0"; exit 1; }
+          [ -f "$REPORT" ] || { echo "::error::report output points at a missing file: '$REPORT'"; exit 1; }
+          head -n1 "$REPORT" | grep -qF '<!-- dbtl:report -->' || { echo "::error::the markdown report lacks the marker line"; exit 1; }
+          [ -f "$SARIF" ] || { echo "::error::sarif output points at a missing file: '$SARIF'"; exit 1; }
+          jq -e '.version == "2.1.0"' "$SARIF" >/dev/null || { echo "::error::the SARIF file is not version 2.1.0 JSON"; exit 1; }
+
+      # The second run must fail the check — coverage-min 100 is above the
+      # fixture's real coverage — and still write the report and SARIF.
+      - name: Run the action (failing check)
+        id: failing
+        uses: ./
+        continue-on-error: true
+        with:
+          version: local
+          project-dir: tests/fixtures/sample_project
+          args: --coverage-min 100
+          sarif: 'true'
+          comment: 'true'
+          dry-run: 'true'
+
+      - name: Verify the failing run still reported
+        env:
+          EXIT_CODE: ${{ steps.failing.outputs.exit-code }}
+          REPORT: ${{ steps.failing.outputs.report }}
+          SARIF: ${{ steps.failing.outputs.sarif }}
+        run: |
+          [ "$EXIT_CODE" = "1" ] || { echo "::error::exit-code is $EXIT_CODE, want 1"; exit 1; }
+          [ -f "$REPORT" ] || { echo "::error::no report file on a failed check: '$REPORT'"; exit 1; }
+          [ -f "$SARIF" ] || { echo "::error::no SARIF file on a failed check: '$SARIF'"; exit 1; }
+
+      # The write-back steps are dry-runs — verify their printed plans
+      # mechanically by re-running the scripts in dry-run mode.
+      - name: Verify the dry-run comment plan
+        env:
+          DBTL_DRY_RUN: 'true'
+          DBTL_REPORT: ${{ steps.passing.outputs.report }}
+          DBTL_PR_NUMBER: ${{ github.event.pull_request.number || '0' }}
+        run: |
+          out="$(bash "$GITHUB_WORKSPACE/action/comment.sh")"
+          echo "$out"
+          echo "$out" | grep -qF 'GET /repos/' || { echo "::error::the dry-run plan does not describe the existing-comment lookup"; exit 1; }
+          echo "$out" | grep -qF 'PATCH /repos/' || { echo "::error::the dry-run plan does not describe the comment update"; exit 1; }
+          echo "$out" | grep -qF 'POST /repos/' || { echo "::error::the dry-run plan does not describe the comment create"; exit 1; }
+
+      - name: Verify the dry-run SARIF plan
+        env:
+          DBTL_SARIF_FILE: ${{ steps.passing.outputs.sarif }}
+        run: |
+          out="$(bash "$GITHUB_WORKSPACE/action/sarif_dry_run.sh")"
+          echo "$out"
+          echo "$out" | grep -qF 'codeql-action/upload-sarif' || { echo "::error::the dry-run plan does not describe the SARIF upload"; exit 1; }
