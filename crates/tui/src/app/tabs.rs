@@ -1,10 +1,10 @@
-//! Tabs (Issue 03): several open roots at once, each keeping the §2
-//! "タブごと" state set — its own root, lineage view, cursor, re-root history,
+//! Tabs: several open roots at once, each keeping its own per-tab state set
+//! — its own root, lineage view, cursor, re-root history,
 //! sibling-collapse expansions, path anchor, column trace, and lineage scroll.
 //!
 //! `App` owns the ordered tab list plus the active index; every read/write of
 //! the ACTIVE tab's state funnels through [`App::tab`]/[`App::tab_mut`] — the
-//! one accessor site the spec requires, which is what keeps the old
+//! one accessor site, which is what keeps the old
 //! direct-field call sites a mechanical rewrite.
 //!
 //! Everything here is size-unaware: the tab BAR's pixel layout is pure
@@ -20,7 +20,7 @@ use crate::action::{Mode, PaletteState};
 use super::column::ColumnFocus;
 use super::{App, LineageView};
 
-/// Everything one open root keeps between tab switches — the §2 per-tab set.
+/// Everything one open root keeps between tab switches — the per-tab set.
 /// The tab's IDENTITY is its root `unique_id`; the rest is the view state that
 /// root's lineage accumulates, restored verbatim on reactivation.
 #[derive(Default)]
@@ -29,8 +29,8 @@ pub struct TabState {
     /// `last_selected` compat). `None` only for the transient empty tab (a
     /// project whose list has no models at all) and the home tab.
     pub root: Option<String>,
-    /// The fixed, unclosable home tab (§3/H1): always `tabs[0]`, draws the
-    /// §3 home screen over the whole body while active. Carries no lineage
+    /// The fixed, unclosable home tab: always `tabs[0]`, draws the
+    /// home screen over the whole body while active. Carries no lineage
     /// state — its fields stay default so a stale cursor/scroll can never
     /// leak into a model tab.
     pub home: bool,
@@ -78,8 +78,8 @@ impl TabState {
     }
 }
 
-/// A tab label's model name is middle-truncated past this many chars (§2 —
-/// the same "keep the tail, elide the middle" rule §10 uses for list names).
+/// A tab label's model name is middle-truncated past this many chars (the
+/// same "keep the tail, elide the middle" rule the list names follow).
 const TAB_NAME_MAX: usize = 24;
 
 impl App {
@@ -142,7 +142,7 @@ impl App {
     /// loop's uid-tracked selection-change chokepoint consumes it: a switch is
     /// an id-changing selection (so it lands on the one path every selection
     /// change takes), but the cursor/collapse reset is SKIPPED — the incoming
-    /// tab's own cursor and expansions restore instead (§2's rule).
+    /// tab's own cursor and expansions restore instead (the per-tab restore).
     pub fn take_tab_switch(&mut self) -> bool {
         std::mem::take(&mut self.tab_switched)
     }
@@ -182,8 +182,8 @@ impl App {
     /// labels/scroll/active/project — the single derivation the render ctx
     /// and the hit-test share (the Dag-aware half — names live on `dag` —
     /// stays inside `App`, keeping `RenderCtx` Dag-free).
-    /// `ensure_active` applies §2's "the active tab is always scrolled into
-    /// view" — pass `false` only when replaying the stored scroll for a
+    /// `ensure_active` applies the keep-active-visible rule — pass `false`
+    /// only when replaying the stored scroll for a
     /// manual-scroll frame or a hit-test.
     pub fn tab_bar_layout_for(&self, strip: Rect, ensure_active: bool) -> crate::ui::TabBarLayout {
         // `closable` shadows the strip: the home tab (index 0) is the only
@@ -228,7 +228,7 @@ impl App {
             .collect()
     }
 
-    /// Write the ACTIVE tab's root — the single write site the spec asks for.
+    /// Write the ACTIVE tab's root — the single write site.
     /// The cursor/collapse resets that a root change implies live at the
     /// event loop's selection-change chokepoint (it diffs `root` frames), so
     /// this accessor only moves the identity. The home tab refuses: its
@@ -241,7 +241,7 @@ impl App {
         self.tab_mut().root = root;
     }
 
-    /// Record `uid` at the front of the `recent` MRU (Issue 10's home reads
+    /// Record `uid` at the front of the `recent` MRU (the home screen reads
     /// it — max 10, newest first, deduped, so it bumps `home_stamp`). Called
     /// wherever a model becomes a root: `select_by_unique_id` lands and tab
     /// activations.
@@ -261,7 +261,7 @@ impl App {
     /// `O` / middle-click / `+` / `--select`: open `uid` as a tab — under the
     /// `is_rootable` rule (the node must exist and be a `model`): a folded or
     /// filtered-out model still EXISTS in the dag — it renders in the
-    /// lineage — so it opens and detaches (§2), the same way a folded root
+    /// lineage — so it opens and detaches, the same way a folded root
     /// does. Only a genuinely non-model node toasts
     /// `can't open a <kind> as a tab` and nothing moves.
     pub fn open_node_as_tab(&mut self, uid: &str) -> bool {
@@ -280,7 +280,7 @@ impl App {
     }
 
     /// Insert a fresh tab for `uid` right of the active tab and activate it —
-    /// T2 dedupe first: already-open `uid` just activates that tab.
+    /// Dedupe first: already-open `uid` just activates that tab.
     fn open_in_new_tab(&mut self, uid: &str) {
         if let Some(i) = self
             .tabs
@@ -302,7 +302,7 @@ impl App {
             return;
         }
         // Leaving for home: the outgoing model tab's root becomes the home
-        // screen's `Resume` row (§3 — "前回のアクティブタブの root").
+        // screen's `Resume` row (the previous-tab root).
         if self.tabs[idx].home {
             let outgoing = self.tab().root.clone();
             if outgoing != self.home_resume {
@@ -316,9 +316,9 @@ impl App {
     }
 
     /// Close tab `idx` (× / middle-click / `X`): the RIGHT neighbour takes
-    /// over, else the LEFT (§2). The home tab (index 0) refuses — a toast
-    /// only. Closing the LAST model tab lands on home (§2's "最後の 1 個を
-    /// 閉じたらホームへ" — Issue 10's replacement for "last tab refuses").
+    /// over, else the LEFT. The home tab (index 0) refuses — a toast
+    /// only. Closing the LAST model tab lands on home — the strip never
+    /// ends empty.
     /// Closing a non-active tab just shifts the active index left when
     /// needed; the live tab's state is untouched.
     pub(crate) fn close_tab(&mut self, idx: usize) {
@@ -353,7 +353,7 @@ impl App {
         }
     }
 
-    /// `{` / `}`: previous / next tab, wrapping at both ends (§2).
+    /// `{` / `}`: previous / next tab, wrapping at both ends.
     pub(crate) fn cycle_tab(&mut self, next: bool) {
         let n = self.tabs.len();
         if n <= 1 {
@@ -369,7 +369,7 @@ impl App {
 
     /// The state swap a switch performs: restore the incoming tab's saved
     /// lineage viewport (a `None` scroll falls through to the re-root anchor),
-    /// close any open search (§2 — a switch mid-search drops it), re-anchor
+    /// close any open search (a switch mid-search drops it), re-anchor
     /// the list cursor on the incoming root when it resolves (a filtered-out
     /// root leaves the cursor detached at the top, like `--select` on a
     /// filtered list), record the root in `recent`, and settle the idle mode
@@ -377,7 +377,7 @@ impl App {
     /// over a forced re-entry keep their mode).
     fn enter_active_tab(&mut self) {
         if self.home_active() {
-            // The home body owns the whole band — §12's list drawer has no
+            // The home body owns the whole band — the list drawer has no
             // surface over it (draw never paints it there, and a stale flag
             // would still feed the hit-test the shadow targets).
             self.ui_state.set_list_drawer(false);
@@ -404,8 +404,8 @@ impl App {
             {
                 self.ui_state.set_selected(i);
             } else {
-                // Root survives but is filtered out of the active list: the
-                // §2 detach — the lineage still shows the root; the list
+                // Root survives but is filtered out of the active list:
+                // the lineage still shows the root; the list
                 // selection simply points at the top.
                 self.ui_state.set_selected(0);
             }
@@ -433,8 +433,8 @@ impl App {
     }
 
     /// `--select`'s tab form: activate the tab rooted on `name`'s model —
-    /// opening one when it isn't already open (§2's activate-or-open), gated
-    /// by the same active-list rule as `open_node_as_tab`.
+    /// opening one when it isn't already open (the activate-or-open rule),
+    /// gated by the same active-list rule as `open_node_as_tab`.
     pub fn open_tab_by_name(&mut self, name: &str) -> bool {
         let uid = self
             .active_list()
@@ -446,7 +446,7 @@ impl App {
     }
 
     /// The `+` cell's click: open the command palette pre-seeded with `@` —
-    /// the model-search mode (§7) whose Enter lands the model in a NEW tab
+    /// the model-search mode whose Enter lands the model in a NEW tab
     /// (`PaletteState::new_tab`). A plain Ctrl-p palette typed with `@`
     /// searches models too but keeps re-root semantics.
     pub(crate) fn open_tab_palette(&mut self) {
@@ -482,10 +482,10 @@ impl App {
 }
 
 /// Middle-elide `name` to at most `max` display chars, keeping head and tail
-/// (`stg_payment__…_departments` — §10's rule: dbt names share prefixes, so
-/// the tail is what distinguishes them). The ellipsis is `..` — never the
-/// `…` char, which is ambiguous-width on CJK terminals (the same rule the
-/// breadcrumb follows).
+/// (`stg_payment__…_departments` — dbt names share prefixes, so the tail is
+/// what distinguishes them). The ellipsis is `..` — never the `…` char,
+/// which is ambiguous-width on CJK terminals (the same rule the breadcrumb
+/// follows).
 fn mid_truncate(name: &str, max: usize) -> String {
     let chars: Vec<char> = name.chars().collect();
     if chars.len() <= max {

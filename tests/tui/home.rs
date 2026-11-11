@@ -1,7 +1,7 @@
 use super::*;
 
 // ============================================================================
-// Issue 10: the home screen
+// the home screen
 // ============================================================================
 
 /// The home frame exactly as the event loop wires it: the app's own
@@ -40,7 +40,7 @@ pub(super) fn render_home(app: &dbtl::App, width: u16, height: u16) -> Buffer {
 
 #[test]
 pub(super) fn too_small_screen_shows_only_the_message() {
-    // §12: below 50x12 the whole frame is the one message — no pane, status,
+    // Below 50x12 the whole frame is the one message — no pane, status,
     // tab strip, or overlay cell may leak through.
     let backend = TestBackend::new(48, 11);
     let mut terminal = Terminal::new(backend).expect("terminal");
@@ -75,7 +75,7 @@ pub(super) fn too_small_screen_shows_only_the_message() {
 
 #[test]
 pub(super) fn narrow_band_hides_the_inline_list() {
-    // §12: below 80 columns the list never sits inline — `pane_layout` zeroes
+    // Below 80 columns the list never sits inline — `pane_layout` zeroes
     // its rect regardless of the pref, so the lineage owns the whole body.
     let buffer = render(70, 24);
     let text = buffer_to_string(&buffer);
@@ -106,7 +106,7 @@ pub(super) fn narrow_band_hides_the_inline_list() {
 
 #[test]
 pub(super) fn narrow_band_drawer_renders_the_list_over_the_lineage() {
-    // §12: `Ctrl-b` in the band floats the SAME list pane — `min(34, 60%)`
+    // `Ctrl-b` in the band floats the SAME list pane — `min(34, 60%)`
     // wide, the body's full height — over the lineage's left edge.
     let buffer = render_with(70, 24, |s| {
         s.set_list_auto_hidden(true); // the loop's <80 verdict
@@ -263,7 +263,7 @@ pub(super) fn inspector_auto_boundary_publishes_into_pane_config() {
 
 #[test]
 pub(super) fn band_transitions_preserve_selection_and_pref() {
-    // §12's preservation rule, at the state level: band publishes and drawer
+    // The preservation rule, at the state level: band publishes and drawer
     // open/close cycles are overlay operations — the selection, the saved
     // list pref, and the focus semantics must all survive a round trip.
     let mut state = UiState::new(45);

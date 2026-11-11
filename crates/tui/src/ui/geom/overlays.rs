@@ -18,8 +18,8 @@ pub(crate) fn centered_rect(pct_w: u16, pct_h: u16, area: Rect) -> Rect {
 }
 
 /// The widest cell a modal may grow to: `min(80% of the terminal, 120
-/// columns)` (screen-spec §9 — on wide terminals a short sentence in a
-/// 160-col box is unreadable).
+/// columns)` — on wide terminals a short sentence in a 160-col box is
+/// unreadable.
 const MODAL_MAX_W: u16 = 120;
 
 /// Every scrollable modal's outer rect: `min(80%, 120 cols)` × 80% of `area`,
@@ -120,8 +120,8 @@ fn menu_anchors(
 
 /// The node context menu's frame rect: sized to its `label  key` rows plus
 /// borders, placed bottom-right of the anchor and flipped to the other side
-/// when the preferred box would overflow the terminal (screen-spec §9's
-/// "右下（はみ出すなら反転）" rule). Shared by `draw_menu` and the mouse
+/// when the preferred box would overflow the terminal (the anchor-below-
+/// right, flip-on-overflow rule). Shared by `draw_menu` and the mouse
 /// hit-test — the tested rect is the drawn rect.
 pub fn menu_rect(
     area: Rect,
@@ -233,14 +233,14 @@ pub fn underlay_mode(mode: &crate::action::Mode) -> Option<&crate::action::Mode>
 /// the centre. The SINGLE source of this geometry — both `draw_lineage_pane` and
 /// the mouse `hit_test` use it, so "computed window == drawn window" holds for
 /// hit-testing too (clicks in the pad margin map to no node).
-/// The hover tooltip's widest box in columns (screen-spec §9's floating-chrome
+/// The hover tooltip's widest box in columns (the floating-chrome
 /// rule — a name-plus-two-lines box never becomes a wall of text).
 pub const TOOLTIP_MAX_W: u16 = 48;
 
 /// The hover tooltip's frame rect: hangs one cell below-right of the pointer
 /// cell `at`, flips to the cell's left/top when the preferred corner would
-/// overflow `area` (§9's "右下（はみ出すなら反転）" rule — the same anchor
-/// policy [`menu_rect`] applies), then clamps inside `area`. `w`/`h` are the
+/// overflow `area` (the same anchor policy [`menu_rect`] applies), then
+/// clamps inside `area`. `w`/`h` are the
 /// caller's content-sized box. Pure, so the draw and a test measure the same
 /// rect — the tooltip itself is a frame-buffer overlay, never a CharGrid
 /// input (it must not perturb the layout cache or the hit-test).

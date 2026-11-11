@@ -1,7 +1,7 @@
 use super::*;
 
 // ---------------------------------------------------------------------------
-// Naïve SQL scanning (deliberately scanner-grade; Issue 08 replaces it)
+// Naïve SQL scanning (deliberately scanner-grade; a real parser replaces it)
 // ---------------------------------------------------------------------------
 
 /// One outermost-select-list item: how it names its output column (`alias`)

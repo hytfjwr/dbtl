@@ -84,7 +84,7 @@ pub fn run_columns(
         ImpactFormat::Markdown => print!("{report}"),
         ImpactFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
     }
-    // Parser coverage transparency: how many models ended up on the Issue 07
+    // Parser coverage transparency: how many models ended up on the
     // name-match approximation (missing/unparsable SQL). Status goes to
     // stderr so stdout stays machine-clean for both formats.
     let fallbacks = resolver.fallback_count();

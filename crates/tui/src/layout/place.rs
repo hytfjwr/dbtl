@@ -63,7 +63,7 @@ pub fn layout_density(sg: &Subgraph, mode: GlyphMode, density: Density) -> Layou
 
 /// Lay out a lineage subgraph like [`layout_density`], but draw each node's
 /// RELATED columns as extra `│{mark} {name}…│` rows inside its box (the
-/// Issue 09 column-focus view): `cols` maps `unique_id` → the node's related
+/// column-focus view): `cols` maps `unique_id` → the node's related
 /// column rows, in display order. Nodes absent from the map (and every node
 /// when no focus is active) keep the classic 3-row shape.
 ///

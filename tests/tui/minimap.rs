@@ -64,7 +64,7 @@ pub(super) fn render_app(app: &dbtl::app::App, width: u16, height: u16) -> Buffe
 
 #[test]
 pub(super) fn tab_bar_renders_cells_plus_and_project_on_row_zero() {
-    // Issue 03's strip: row 0 carries `{n} {name}` cells (numbered to 9,
+    // the strip: row 0 carries `{n} {name}` cells (numbered to 9,
     // names middle-truncated at 24 with `..`), the ` + ` cell, and the
     // right-pinned project name — pane content starts a row lower.
     use dbtl::app::App;
@@ -74,7 +74,7 @@ pub(super) fn tab_bar_renders_cells_plus_and_project_on_row_zero() {
     app.select_by_unique_id("model.jaffle_finance.fct_subscription_process");
     app.open_node_as_tab("model.jaffle_finance.rpt_delivery_base_metrics");
 
-    // §2: `⌂` pins at the strip's left edge like `+` pins at the right —
+    // `⌂` pins at the strip's left edge like `+` pins at the right —
     // model tabs window between them. At 80 cols the window only fits one
     // model tab, so the active one shows and `‹` marks the scrolled-away
     // side; at 160 both fit with no arrows.

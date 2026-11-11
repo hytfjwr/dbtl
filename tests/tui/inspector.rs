@@ -1,7 +1,7 @@
 use super::*;
 
 // ============================================================================
-// Issue 04: the inspector pane
+// the inspector pane
 // ============================================================================
 
 /// Render an `App` through the SAME seam the event loop uses for the
@@ -178,7 +178,7 @@ pub(super) fn inspector_renders_the_spec_sections_in_order() {
             "missing section {section:?}: {pane}"
         );
     }
-    // §4 order: Description, then Tests, then Columns, then Impact.
+    // Section order: Description, then Tests, then Columns, then Impact.
     let order = ["Description", "Tests (12)", "Columns (7)", "Impact"];
     let mut at = 0;
     for s in order {
@@ -199,7 +199,7 @@ pub(super) fn inspector_renders_the_spec_sections_in_order() {
 #[test]
 pub(super) fn inspector_omits_empty_sections() {
     // A node with no description/tests shows neither section header — the
-    // pane never draws dead chrome (§4). Build one: the fixture documents
+    // pane never draws dead chrome. Build one: the fixture documents
     // everything, so a bare model is the honest case.
     use std::collections::HashMap;
     let mut nodes = HashMap::new();
@@ -382,7 +382,7 @@ pub(super) fn inspector_column_at_maps_rows_to_columns() {
 
 #[test]
 pub(super) fn inspector_pane_keeps_list_and_lineage_unscathed() {
-    // The three-pane layout still honours the §1 minimums at the auto width:
+    // The three-pane layout still honours the minimums at the auto width:
     // list 34, inspector 42, lineage the rest (floor 40).
     let mut app = dbtl::app::App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
     let buf = render_app_with_inspector(&mut app, 200, 40);
@@ -398,7 +398,7 @@ pub(super) fn inspector_pane_keeps_list_and_lineage_unscathed() {
 
 #[test]
 pub(super) fn inspector_min_width_wraps_and_clips_within_30_cols() {
-    // §1's 30-col floor: the pane still renders every section — headers
+    // The 30-col floor: the pane still renders every section — headers
     // stay legible, text wraps inside the narrow interior, and long rows
     // CLIP at the right border instead of bleeding past it.
     let mut app = dbtl::app::App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));

@@ -1,4 +1,4 @@
-//! Column-level lineage (Issue 07 v0) end-to-end coverage: the `ColumnResolver`
+//! Column-level lineage v0 end-to-end coverage: the `ColumnResolver`
 //! boundary, the lazy memoized `ColumnLineage` engine, `closure_report`
 //! determinism, and the `dbtl columns` CLI surface.
 //!
@@ -205,7 +205,7 @@ fn downstream_closure_of_stg_id_is_the_blast_radius() {
 #[test]
 fn column_counts_are_the_one_hop_edge_counts() {
     // The structure modal's `↑u ↓d` numbers are the ONE-HOP edge counts —
-    // `upstream()`/`downstream()` lens per the Issue 07 spec, NOT transitive
+    // `upstream()`/`downstream()` lens per the contract, NOT transitive
     // closures. Pin the equivalence so the render layer and the engine can't
     // disagree.
     let dag = load_dag(MANIFEST).expect("sample manifest loads");
@@ -273,7 +273,7 @@ fn source_and_manifest_modes_agree_where_columns_are_declared() {
     }
 }
 
-// ---- Issue 08: the parser-backed resolver -------------------------------------
+// ---- the parser-backed resolver -------------------------------------
 
 /// `cll_demo`'s in-edges under `SqlParseResolver`: the SAME topology the v0
 /// set sketches but without the over-connection — qualified `o.`/`f.` refs
@@ -587,7 +587,7 @@ fn perf_node(uid: &str, sql: &str) -> (String, RawNode) {
     )
 }
 
-/// ~100 ms budget for a transitive column closure, per the Issue 07 spec.
+/// ~100 ms budget for a transitive column closure, per the contract.
 /// `#[ignore]`d — run with `cargo test --release --test cll perf_ -- --ignored`
 /// (debug-mode timing is unrepresentative).
 #[test]

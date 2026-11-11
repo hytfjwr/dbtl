@@ -1,7 +1,7 @@
 use super::*;
 
 impl App {
-    // ---- node context menu (Issue 06) -------------------------------------
+    // ---- node context menu -------------------------------------
 
     /// The `unique_id` the `a` key's node menu acts on: over the structure /
     /// SQL modal the modal's own node (same rule `y` uses); in Selection the
@@ -16,7 +16,7 @@ impl App {
     }
 
     /// Which menu items are usable for `uid`: SQL preview only when the node
-    /// actually has SQL (a source has none — screen-spec §9's "unsupported
+    /// actually has SQL (a source has none — the "unsupported
     /// actions are omitted"; a seed's EMPTY `raw_code` preview would open a
     /// blank modal, so blank counts as unavailable too), the editor row only
     /// when the node has a file path, and Bookmark only for models — the

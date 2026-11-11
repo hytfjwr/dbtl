@@ -110,7 +110,7 @@ pub(super) struct LineageCaches {
     layout: RefCell<Option<(LayoutKey, Rc<Layout>)>>,
     impact: RefCell<Option<(ImpactKey, ImpactCounts)>>,
     inspector: RefCell<Option<(InspectorKey, Rc<crate::InspectorView>)>>,
-    /// Issue 10's home body — keyed `(generation, home_stamp, search)` so it
+    /// the home body — keyed `(generation, home_stamp, search)` so it
     /// rebuilds only when an input actually moves.
     pub(super) home: RefCell<Option<(super::home::HomeKey, Rc<crate::app::HomeData>)>>,
 }
@@ -166,7 +166,7 @@ impl App {
 
     /// The memoized COLLAPSED display view — the stage between
     /// [`subgraph_rc`](App::subgraph_rc) and `layout` where sibling groups
-    /// over the threshold contract into `+M more` markers (Issue 13). The
+    /// over the threshold contract into `+M more` markers. The
     /// returned `subgraph` also carries `selected` = the lineage cursor when
     /// it resolves to a drawn node OR a marker (so the existing emphasis +
     /// `selected_rect` machinery highlights it, like the old cursor swap did).

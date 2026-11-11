@@ -1,6 +1,6 @@
 use super::*;
 
-/// One live toast in the top-right stack (Issue 08): the notice text, its
+/// One live toast in the top-right stack: the notice text, its
 /// severity (drives the TTL and the border colour), and the arrival stamp the
 /// loop adds — the reducer stays clock-free.
 pub(super) struct ToastItem {
@@ -18,7 +18,7 @@ pub(super) struct ToastStack {
 }
 
 impl ToastStack {
-    /// At most 3 toasts on screen at once (Issue 08).
+    /// At most 3 toasts on screen at once.
     const MAX: usize = 3;
 
     /// Push `item` to the TOP (newest first), evicting the oldest past `MAX`.
@@ -61,8 +61,8 @@ pub(super) fn toast_ttl(level: dbtl::NoticeLevel) -> Duration {
 }
 
 /// Local wall-clock `HH:MM:SS` for notification stamps. `std` has no local
-/// time API and adding `time`/`chrono` would trip the orchestration's
-/// dependency stop-condition — so the platform `date` answers "what time is
+/// time API and adding `time`/`chrono` just for a wall clock isn't worth a
+/// new dependency — so the platform `date` answers "what time is
 /// it here". The fallback when `date` is absent is UTC, NOT local time — the
 /// stamp degrades to a fixed-offset clock rather than guessing the zone.
 /// `pub(crate)` because `cli::build_app` stamps startup warnings through the

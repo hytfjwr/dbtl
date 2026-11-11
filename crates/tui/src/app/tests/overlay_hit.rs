@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- Issue 06: overlay hit-testing + geometry -------------------------------
+// ---- overlay hit-testing + geometry -------------------------------
 
 #[test]
 fn hit_target_overlay_owns_rows_frame_and_the_whole_exterior() {

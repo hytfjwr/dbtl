@@ -58,7 +58,7 @@ fn empty_app() -> App {
     App::new(dag, PathBuf::from(FIXTURE))
 }
 
-/// Simulate a lineage node's DOUBLE-click (M1's commit): park the cursor on
+/// Simulate a lineage node's DOUBLE-click (the commit): park the cursor on
 /// `uid`, then run the Enter arm — a model re-roots, a `+M more` marker
 /// toggles, anything else opens the structure modal — the same two calls the
 /// event loop's `DoubleClick` arm makes.
@@ -67,7 +67,7 @@ fn node_commit(a: &mut App, uid: &str) {
     apply_action(a, Action::DetailOpen);
 }
 
-/// Simulate a lineage node's SINGLE left click (M1): cursor-move only — the
+/// Simulate a lineage node's SINGLE left click: cursor-move only — the
 /// production [`App::click_target`] path the event loop takes.
 fn node_click(a: &mut App, uid: &str) {
     a.click_target(
@@ -351,8 +351,8 @@ fn hit_geom<'a>(a: &'a App, lay: Option<&'a Layout>, area: Rect) -> HitGeometry<
         scroll_y: a.ui_state.lineage_scroll_y(),
         minimap: a.ui_state.minimap_visible(),
         overlay: None,
-        // Headless hit-tests that need the §8/§6 span geometry build it
-        // explicitly — the default stays the pre-07 surface.
+        // Headless hit-tests that need the span geometry build it
+        // explicitly — the default stays the chrome-free surface.
         status: None,
         title: None,
     }

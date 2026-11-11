@@ -211,7 +211,7 @@ pub struct TestInfo {
 /// tables feed it and how many rows each side declares. Row counts are
 /// `Some` only where the manifest carries an inline `rows` list — a `fixture:`
 /// reference or a CSV-string `rows` payload is `None` ("where the manifest
-/// carries them", per the Issue 11 spec).
+/// carries them", per the contract).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UnitTestShape {
     /// Number of `given:` input tables the test feeds the model.

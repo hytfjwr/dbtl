@@ -182,7 +182,7 @@ pub(crate) fn draw_lineage_pane(
 
     frame.render_widget(Paragraph::new(lines), target);
 
-    // Issue 05's pointer/search accents (§6): every search-match node's box
+    // The pointer/search accents: every search-match node's box
     // frame, and the HOVERED node's frame plus the connector cells of its
     // direct edges — a style-only post-blit pass mapped through the same
     // scroll window the blit used. Glyphs, geometry, and CharGrid are all
@@ -342,7 +342,7 @@ fn draw_minimap(
     }
 }
 
-/// The grid cells Issue 05's accent overlay paints (§6): every uid's box
+/// The grid cells the accent overlay paints: every uid's box
 /// PERIMETER (top/bottom rows + left/right columns — the frame, not the label
 /// interior), and for the hovered node additionally the connector cells of
 /// its DIRECT edges. `edge_cells` keys an edge by `(parent, child)`, so a
@@ -638,12 +638,12 @@ fn put_title(
 /// Compose the lineage pane title as a [`TitleLayout`]: the drawn text plus
 /// the cell ranges of its clickable parts. THE single composer — `draw`
 /// renders `text` verbatim and `hit_target` maps title-row cells through
-/// `spans` (screen-spec §6), so a drawn part can never disagree with its
+/// `spans`, so a drawn part can never disagree with its
 /// hit range. Byte-compatible with the four shapes the old
 /// `compose_lineage_title` produced.
 ///
 /// Four shapes:
-/// - **Search**: `" /{query}{caret} {cur}/{total} "` — screen-spec §9's
+/// - **Search**: `" /{query}{caret} {cur}/{total} "` — the
 ///   lineage-search form: the query + caret + the cycled match position,
 ///   which OWNS the title while the search is open (the `Lineage: {sel}`
 ///   body and any breadcrumb/lens suffixes drop). `(0, 0)` while the query
@@ -662,7 +662,7 @@ fn put_title(
 ///   view suffix is meaningless while it is on, since the direction/depth
 ///   toggles are gated).
 ///
-/// Clickable parts (§6): each breadcrumb entry — `TitleKind::Crumb(steps)`,
+/// Clickable parts: each breadcrumb entry — `TitleKind::Crumb(steps)`,
 /// replaying `history_back` that many times — the ` [{v}]` view tag
 /// ([`TitleKind::View`]), and the ` [lens:…]` tag ([`TitleKind::Lens`]). The
 /// ` [col:name]` column-trace suffix stays inert (the `column:` status chip
@@ -685,7 +685,7 @@ pub fn title_layout(
 ) -> TitleLayout {
     use unicode_width::UnicodeWidthStr;
 
-    // The lineage-search shape owns the title (§9): `/` + query + caret +
+    // The lineage-search shape owns the title: `/` + query + caret +
     // the `{cur}/{total}` cycle position — the sel body, breadcrumb, and
     // lens suffixes all drop while a search is open. No clickable chrome:
     // the `i/N` count is a readout (matches cycle by key, not click).
@@ -804,7 +804,7 @@ pub fn title_layout(
 }
 
 /// Build the title `Line` from a [`TitleLayout`]: `text` verbatim, split at
-/// the clickable ranges so the `hovered` part gains UNDERLINE — the §6
+/// the clickable ranges so the `hovered` part gains UNDERLINE — the
 /// affordance cue for a clickable title part. Every other cell keeps the
 /// pane-title style.
 fn title_line(layout: &TitleLayout, base: Style, hovered: Option<TitleKind>) -> Line<'static> {
@@ -1244,7 +1244,7 @@ mod tests {
 
     #[test]
     fn title_layout_search_shape_owns_the_title_and_stays_inert() {
-        // §9's lineage-search form owns the title: `/` + query + caret +
+        // The lineage-search form owns the title: `/` + query + caret +
         // `{cur}/{total}` — sel body, crumb, and suffixes all drop, and no
         // span is clickable (the count is a readout).
         let title = title_layout(

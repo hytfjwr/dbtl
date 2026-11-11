@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- hover tooltip (Issue 05) ----------------------------------------------
+// ---- hover tooltip ----------------------------------------------
 
 /// The settled-hover tooltip's content, snapshotted Dag-side by
 /// [`App::tooltip_view`](crate::App::tooltip_view) — the render layer stays
@@ -27,8 +27,8 @@ pub struct TooltipView {
 
 /// Draw the settled-hover tooltip: a small bordered box floating beside the
 /// pointer carrying the node's name, kind tag, first description lines, and
-/// the `tests:N ↑u ↓d` stats — the §9 pointer summary (always shown on a
-/// settled hover, whether or not the inspector is up — M2-b). Frame-buffer
+/// the `tests:N ↑u ↓d` stats — the pointer summary (always shown on a
+/// settled hover, whether or not the inspector is up). Frame-buffer
 /// chrome like the toasts: it writes only cells, never CharGrid, so the
 /// layout cache and the golden fixtures are untouched; it draws over the
 /// panes but under the transient toasts.

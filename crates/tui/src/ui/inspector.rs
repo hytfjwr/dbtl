@@ -1,10 +1,10 @@
-//! The right inspector pane (Issue 04; screen-spec §4): a continuously
+//! The right inspector pane: a continuously
 //! updated summary of the node under the lineage cursor (or the rooted
 //! selection). All domain data arrives as an [`InspectorView`] snapshot —
 //! the same `detail_view_for`-built payload the structure modal renders —
 //! so this module stays `Dag`-free like every other render surface.
 //!
-//! Layout contract (§4): head line + owner/tags/meta, Description, Tests,
+//! Layout contract: head line + owner/tags/meta, Description, Tests,
 //! Columns, Impact, Last run, Lint, Diff — every section omitted (header
 //! included) when it has no data, so the pane never shows dead chrome.
 //! `wrap_prefixed`/`test_row_text` are shared with the structure modal via
@@ -60,7 +60,7 @@ pub fn inspector_lines(
     if !d.tags.is_empty() {
         out.push(Line::from(format!("tags:  {}", d.tags.join(", "))));
     }
-    // The `meta` dict as a `key=value, …` joined line — the §4 compact form
+    // The `meta` dict as a `key=value, …` joined line — the compact form
     // (the modal's one-row-per-entry block would eat the narrow pane).
     if !d.meta.is_empty() {
         let joined = d
@@ -136,7 +136,7 @@ pub fn inspector_lines(
     // ---- Impact ------------------------------------------------------------
     // Transitive up/down + exposure reach — the `impact_breakdown_for`
     // numbers (the modal drops the exposure component for its two-number
-    // blast radius; §4 wants all three).
+    // blast radius; the pane wants all three).
     out.push(Line::from(""));
     out.push(Line::styled("Impact", section));
     out.push(Line::from(format!(
@@ -169,8 +169,8 @@ pub fn inspector_lines(
 
     // ---- Lint --------------------------------------------------------------
     // A lint config is always in effect (defaults lint too), so an empty
-    // per-node finding list reads as a real verdict, not "no data" — §4's
-    // `✓ all checks pass`. Findings render `rule: message`, wrapped.
+    // per-node finding list reads as a real verdict, not "no data" — the
+    // `✓ all checks pass` readout. Findings render `rule: message`, wrapped.
     out.push(Line::from(""));
     out.push(Line::styled("Lint", section));
     if view.lint.is_empty() {

@@ -567,7 +567,7 @@ fn key_bound_actions_appear_in_bindings() {
 
 #[test]
 fn column_focus_keys_dispatch() {
-    // Issue 09's keymap: `K` opens the column modal from Selection or the
+    // The keymap: `K` opens the column modal from Selection or the
     // structure modal, Enter/`c` on a Detail column cursor commits it to
     // the trace, Esc exits the trace in Selection (and closes the modal
     // like every other overlay), and the modal rides ColumnRowMove/
@@ -625,7 +625,7 @@ fn ctrl_p_and_cmd_p_open_the_palette() {
 
 #[test]
 fn tab_keys_dispatch_in_selection_mode() {
-    // O/X/Ctrl-w/{/}/1-9 — the §3 tab keymap (uppercase for open/close so
+    // O/X/Ctrl-w/{/}/1-9 — the tab keymap (uppercase for open/close so
     // the lowercase row stays free; digits are direct tab activation).
     let sel = Mode::Selection;
     assert_eq!(dispatch(&sel, press(Char('O'))), Some(Action::TabOpen));
@@ -766,7 +766,7 @@ fn help_lines_cover_every_binding() {
     }
 }
 
-// ---- node context menu (Issue 06) ----
+// ---- node context menu ----
 
 fn menu_mode_with(items: Vec<MenuEntry>) -> Mode {
     Mode::Menu(MenuState {
@@ -946,13 +946,13 @@ fn yank_bindings_lists_only_the_prefix_rows() {
         "only ModeKind::Yank rows, in table order"
     );
     // The first row is `yy` (copy unique_id); the cancel row, then `?`
-    // (Issue 09's help layer) close the table.
+    // (the help layer) close the table.
     assert_eq!(rows[0].action, Action::YankId);
     assert_eq!(rows[rows.len() - 2].action, Action::DetailClose);
     assert_eq!(rows.last().unwrap().action, Action::HelpToggle);
 }
 
-// ---- Issue 07: the §8 contextual status hints (BINDINGS-generated) ----
+// ---- The contextual status hints (BINDINGS-generated) ----
 
 /// The generated hints as `(key, desc)` pairs — the shape `draw_status`
 /// renders left-anchored.
@@ -965,7 +965,7 @@ fn hint_pairs(mode: ModeKind, focus: Focus, traced: bool, overview: bool) -> Vec
 
 #[test]
 fn status_hints_emit_the_screen_spec_rows() {
-    // §8's per-context hint tables — generated from BINDINGS, so a key
+    // The per-context hint tables — generated from BINDINGS, so a key
     // the status line teaches always dispatches.
     assert_eq!(
         hint_pairs(ModeKind::Selection, Focus::List, false, false),
@@ -1131,7 +1131,7 @@ fn compact_keys_collapses_ranges_runs_and_pairs() {
     assert_eq!(compact_keys(&k(&["Enter"])), "Enter");
 }
 
-/// Issue 13: the README's Keybindings table must never teach a key the
+/// The README's Keybindings table must never teach a key the
 /// keymap lacks. Every `code` span in a table row resolves: a plain token
 /// is a [`Trigger::label`] somewhere in [`BINDINGS`] (any mode); a `y<c>`
 /// chord is the `y` prefix plus a [`ModeKind::Yank`] trigger `<c>`. Tokens

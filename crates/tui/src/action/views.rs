@@ -37,7 +37,7 @@ pub struct DetailView {
     /// `normalized column -> (one-hop upstream, one-hop downstream)` DIRECT
     /// column-edge counts, snapshotted from `ColumnLineage::column_counts` at
     /// open — the `↑u ↓d` numbers beside each column row (direct parents in /
-    /// direct children out, per the Issue 07 spec — NOT the transitive
+    /// direct children out, per the contract — NOT the transitive
     /// closure). `BTreeMap` keeps the render order deterministic; empty when
     /// the resolver sees no columns. Keys are the resolver's normalized names,
     /// so a declared `col_names` entry looks itself up through
@@ -47,7 +47,7 @@ pub struct DetailView {
     /// Any of this node's column edges was resolved against compiled SQL
     /// older than its source — the columns header gets a `[stale]` tag.
     pub stale: bool,
-    /// This node's column edges fell back to the Issue 07 name-match
+    /// This node's column edges fell back to the name-match
     /// approximation (unparsed or missing SQL) — the columns header gets a
     /// `[name-match]` tag.
     pub name_match: bool,
@@ -56,7 +56,7 @@ pub struct DetailView {
 
 /// The right inspector pane's snapshot for the node under the lineage cursor
 /// (or the rooted selection): `detail` reuses the structure modal's
-/// `detail_view_for` assembly verbatim (screen-spec §4's "share the DetailView
+/// `detail_view_for` assembly verbatim (the "share the DetailView
 /// construction" rule — one domain pass, never two), and the pane-specific
 /// extras (tag / exposures / catalog types / last-run / lint / diff) join
 /// here. Plain comparable data, built at `(uid, generation)` cache time so
@@ -73,7 +73,7 @@ pub struct InspectorView {
     /// line — `Table` / `View` / `Source` / …
     pub tag: &'static str,
     /// Downstream EXPOSURE count — the third component of
-    /// `impact_breakdown_for` the two-number `DetailView` drops. §4 shows it
+    /// `impact_breakdown_for` the two-number `DetailView` drops. The pane shows it
     /// alongside the up/down counts.
     pub exposures: usize,
     /// The owner from `App::owner_meta_key`'s meta lookup (the config's key,
@@ -167,7 +167,7 @@ pub struct StatsView {
     /// `cov` segment use — the three readouts can never disagree.
     pub testable_total: usize,
     pub testable_tested: usize,
-    /// Column-level test coverage (Issue 11): declared columns carrying ≥1
+    /// Column-level test coverage: declared columns carrying ≥1
     /// attached test / declared columns, over the same root-project testable
     /// base — the SHARED [`column_coverage_counts`](crate::column_coverage_counts)
     /// numbers `dbtl docs`' README quotes, so the dashboard and the generated
@@ -208,7 +208,7 @@ pub struct StatsView {
     pub untested_testable: usize,
     pub zero_downstream_models: usize,
     pub no_description_models: usize,
-    /// Root-project models whose column lineage resolved through the Issue 07
+    /// Root-project models whose column lineage resolved through the
     /// name-match fallback (SQL missing or unparsable) — the aggregate of the
     /// detail modal's per-model `[name-match]` tag. Computed by resolving every
     /// model once when the dashboard opens; the resolutions stay memoized, so
@@ -259,7 +259,7 @@ pub struct DiffView {
 
 /// The command-palette state: the live query and the selected candidate index.
 /// The candidate LIST is derived on demand ([`crate::App::palette_rows`], keyed off
-/// [`BINDINGS`] — or the model list when the query is `@`-prefixed, §7), never
+/// [`BINDINGS`] — or the model list when the query is `@`-prefixed), never
 /// stored — so the palette can't drift from the keymap. No scroll field: the
 /// render layer derives the scroll window from `selected`, so there is nothing
 /// for the event loop to clamp (it falls through unchanged).
@@ -272,7 +272,7 @@ pub struct PaletteState {
     pub query: String,
     pub selected: usize,
     /// The `+` cell's variant: Enter on an `@`-query match opens the model as
-    /// a NEW tab instead of re-rooting the active one (§2 — a plain Ctrl-p
+    /// a NEW tab instead of re-rooting the active one (a plain Ctrl-p
     /// palette's `@` search keeps the re-root semantics).
     pub new_tab: bool,
 }
@@ -296,7 +296,7 @@ pub enum PaletteRow {
         unavailable: Option<String>,
     },
     /// An `@`-search model result: Enter re-roots to `uid` (the "active tab
-    /// root" the spec names — the current selection until tabs exist).
+    /// root" the rule names — the current selection until tabs exist).
     Model { name: String, uid: String },
 }
 
@@ -315,7 +315,7 @@ pub struct HelpView {
     /// keys return to scrolling); Esc clears the filter outright.
     pub editing: bool,
     /// `back.kind()` — the mode the help was opened over; its section lists
-    /// FIRST in the layout (the spec's "開いた時点のモードの節を先頭に").
+    /// FIRST in the layout (the opening mode's section first).
     pub from: ModeKind,
     /// The mode to restore when help closes — the overlay is a LAYER over
     /// whatever was up (a modal keeps its snapshot and reappears on Esc).
@@ -340,7 +340,7 @@ impl Default for HelpView {
     }
 }
 
-/// One row of the column-lineage modal (`Mode::Columns`, Issue 09 C): either a
+/// One row of the column-lineage modal (`Mode::Columns`): either a
 /// section header/separator (`uid == None`, non-selectable) or a selectable
 /// `model.column` entry — `Enter` on it re-roots to the entry's model. The
 /// text is pre-rendered at open time so the render layer stays Dag-free.
@@ -372,7 +372,7 @@ impl ColumnRow {
     }
 }
 
-/// The column-lineage modal payload (Issue 09 C), snapshotted when the modal
+/// The column-lineage modal payload, snapshotted when the modal
 /// opens so the render layer never needs a [`Dag`](crate::Dag): the traced
 /// column's upstream and downstream columns as a hop-indented tree, one
 /// selectable row per column. MUST be `Eq` (`Mode` derives `Eq`).
@@ -414,7 +414,7 @@ impl ColumnView {
     }
 }
 
-/// A notification's severity (Issue 08): drives the toast's TTL/border
+/// A notification's severity: drives the toast's TTL/border
 /// colour, the centre's `level` column, and the `!N` unread-warning count
 /// (only warnings count). `Info` is the default channel level; `Warning`
 /// marks failures and load warnings.
@@ -434,7 +434,7 @@ impl NoticeLevel {
     }
 }
 
-/// One logged notification (Issue 08): the wall-clock `HH:MM:SS` stamp applied
+/// One logged notification: the wall-clock `HH:MM:SS` stamp applied
 /// by the event loop — `App` and the reducer keep no clock — the severity, and
 /// the text. Logged newest-last in `App::notifications` (capped at
 /// [`App::NOTIFICATION_CAP`](crate::App::NOTIFICATION_CAP)) and snapshotted
@@ -446,7 +446,7 @@ pub struct NotificationEntry {
     pub text: String,
 }
 
-/// The notification-centre modal payload (Issue 08), snapshotted at open like
+/// The notification-centre modal payload, snapshotted at open like
 /// every other modal so the render layer never needs a [`Dag`](crate::Dag).
 /// MUST be `Eq` (`Mode` derives `Eq`). `rows` are newest-first (the centre's
 /// display order).

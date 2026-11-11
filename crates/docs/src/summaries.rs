@@ -15,7 +15,7 @@ use super::*;
 /// Both are order-independent / sorted, so the section is deterministic.
 pub(super) fn push_stats_summary(s: &mut String, dag: &Dag, files: &BTreeMap<String, String>) {
     let (tested, testable) = coverage_counts(dag);
-    // Column-level coverage (Issue 11): the SAME `column_coverage_counts` the
+    // Column-level coverage: the SAME `column_coverage_counts` the
     // stats dashboard's "Column coverage" gauge quotes — declared columns
     // carrying ≥1 test over the root-project testable set.
     let (col_tested, col_declared) = column_coverage_counts(dag);

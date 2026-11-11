@@ -78,7 +78,7 @@ pub fn event_loop(
     let mut last_selection: Option<String> = None;
     let mut last_cursor: Option<String> = None;
     let mut force_anchor = false;
-    // The on-screen toast stack (Issue 08): each App notice is stamped with
+    // The on-screen toast stack: each App notice is stamped with
     // its arrival time and pushed to the TOP — the loop owns the per-level
     // lifetime (info 2.5s / warning 5s, the reducer stays clock-free), and an
     // expired entry drops on the next iteration — the 250ms idle tick
@@ -95,16 +95,17 @@ pub fn event_loop(
     // leave two alive. Loop-owned (like the router): a drag tracks pointer
     // cells, so it is size-aware state by nature.
     let mut pane_drag: Option<PaneDrag> = None;
-    // The settled-hover tooltip (§9, Issue 05): armed when the resolved
-    // hover rests on a lineage node with no button held, shown after
+    // The settled-hover tooltip: armed when the resolved hover
+    // rests on a lineage node with no button held, shown after
     // `TOOLTIP_DELAY` stationary, dropped when the hover leaves or a press
     // lands. The loop owns the clock — the 250ms idle tick supplies the
     // flip's redraw, the reducer and renderer stay clock-free.
     let mut hover_tip: Option<HoverTip> = None;
-    // §8/§6's chrome geometry: the status-line + lineage-title layouts the
-    // LAST draw painted — recomputed alongside the ctx each dirty pass and
-    // handed to `hit_geometry`, so a hover/click lands on the exact spans
-    // the frame showed (the draw and the hit-test share the layout).
+    // The status/title chrome geometry: the status-line + lineage-title
+    // layouts the LAST draw painted — recomputed alongside the ctx each
+    // dirty pass and handed to `hit_geometry`, so a hover/click lands on
+    // the exact spans the frame showed (the draw and the hit-test share
+    // the layout).
     let mut chrome = ChromeGeom::default();
     // Dirty-flag redraw: the frame work below only runs when something
     // actually changed (first frame, any event, a toast flip, a --watch
@@ -123,8 +124,8 @@ pub fn event_loop(
     let mut last_tab_count = 0usize;
 
     loop {
-        // §12's size gates, resolved once per iteration in the ONLY size-aware
-        // layer: below the usable floor the whole app suspends behind the
+        // The responsive size gates, resolved once per iteration in the ONLY
+        // size-aware layer: below the usable floor the whole app suspends behind the
         // too-small screen; below the narrow band the list exists only as its
         // overlay drawer.
         let cur_area = full_area(terminal)?;
@@ -178,7 +179,7 @@ pub fn event_loop(
         if toasts.retain_fresh(Instant::now()) {
             dirty = true;
         }
-        // The tooltip's 500ms flip is itself a redraw reason (§9): an idle
+        // The tooltip's 500ms flip is itself a redraw reason: an idle
         // tick crosses the delay under a still pointer, and nothing else
         // would mark the frame for a frame-buffer-only overlay.
         if let Some(t) = hover_tip.as_mut() {
@@ -189,7 +190,7 @@ pub fn event_loop(
         }
         if dirty {
             // A tab switch is a root change in every sense but two: the
-            // incoming tab's own cursor and collapse expansions restore (§2),
+            // incoming tab's own cursor and collapse expansions restore,
             // so the chokepoint resets below skip it. Drained once per dirty
             // pass — the flag also feeds the strip's ensure-active decision.
             let tab_switch = app.take_tab_switch();
@@ -211,7 +212,7 @@ pub fn event_loop(
             // The inspector's effective visibility for THIS frame — resolved
             // in two phases, both in this size-aware seam. Phase 1 publishes
             // the INTENT: the pref resolved against the terminal width
-            // (`on`/`off` answer for themselves; `auto` shows at §12's >=160
+            // (`on`/`off` answer for themselves; `auto` shows at >=160
             // columns — `InspectorPolicy::shown_at` is the single pure
             // predicate the boundary lives behind), so `pane_config` (the
             // layout below) knows whether to carve the region at all.
@@ -252,7 +253,7 @@ pub fn event_loop(
             lineage = app.styled_lineage_layout();
             let (view_w, view_h) = lineage_viewport(terminal, &app.ui_state)?;
             let cursor = app.lineage_cursor_uid();
-            // The lineage-search overlays (§6/M4): every matching node's
+            // The lineage-search overlays: every matching node's
             // frame accents, the title rides `i/N`, and the viewport anchors
             // on the cycled match — `Some` only while a Lineage-target search
             // is open, computed ONCE for all three consumers. `match_idx`
@@ -285,7 +286,7 @@ pub fn event_loop(
                     app.ui_state
                         .anchor_lineage(Some(rect), &lay.grid, view_w, view_h);
                 } else if tab_switch && app.tab_scroll_saved() {
-                    // §2's verbatim restore: the switch already swapped the
+                    // The verbatim restore: the switch already swapped the
                     // stashed viewport into UiState — only re-clamp it, since
                     // a resize may have shrunk the window since the stash.
                     app.ui_state
@@ -324,10 +325,10 @@ pub fn event_loop(
             // The tab strip's resolved cells — the same `pane_layout` +
             // `tab_bar_layout` the hit-test replays. `ensure_active` fires on
             // a switch or a strip-size change (open/close) — never on a
-            // manual scroll, so `‹`/`›`/wheel can actually look around (§2's
-            // "アクティブタブは常に見える" is a switch-time guarantee). The
-            // RESOLVED first-visible index is written back, so a hit-test
-            // always sees what the last frame drew.
+            // manual scroll, so `‹`/`›`/wheel can actually look around ("the
+            // active tab stays scrolled into view" is a switch-time
+            // guarantee). The RESOLVED first-visible index is written back,
+            // so a hit-test always sees what the last frame drew.
             let panes = pane_layout(area, &app.ui_state.pane_config());
             let tab_labels = app.tab_labels();
             let tab_layout = app.tab_bar_layout_for(
@@ -476,7 +477,7 @@ pub fn event_loop(
             // from the active glyph mode's Chrome badges — never hardcoded).
             // Built in App so the string source is single and unit-testable.
             let impact_s = app.impact_status();
-            // The unread-warning badge (`!N`, Issue 08) — sits right after
+            // The unread-warning badge (`!N`) — sits right after
             // impact in the chip order; absent when nothing is unread.
             let notify_s = if app.unread_warnings() > 0 {
                 Some(format!("!{}", app.unread_warnings()))
@@ -507,7 +508,7 @@ pub fn event_loop(
             // pointer may now sit on a different surface. Re-resolve the
             // remembered hover target against the FRESH geometry so it can't
             // go stale between `Moved` events. The resolved target feeds the
-            // Issue 05 hover accent and the tooltip's arm/drop below — both
+            // hover accent and the tooltip's arm/drop below — both
             // frame-buffer overlay inputs, never CharGrid or a cache key.
             if let Some(cell) = mouse.pointer() {
                 let target = if app.mode.mouse_live() {
@@ -531,7 +532,7 @@ pub fn event_loop(
                 };
                 mouse.track_hover(target);
             }
-            // Issue 05's settled-hover reconcile: the tip arms only while the
+            // The settled-hover reconcile: the tip arms only while the
             // resolved hover rests on a real lineage NODE with no button held
             // (a press — a click or the start of a pan — is not a hover), and
             // drops when the viewport moves under a same-node pointer.
@@ -553,7 +554,7 @@ pub fn event_loop(
                 (Some(t), Some(at)) if t.visible => app.tooltip_view(&t.uid, (at.x, at.y)),
                 _ => None,
             };
-            // §5 splitter feedback: the accent border + a status hint. The
+            // Splitter feedback: the accent border + a status hint. The
             // hint names the live saved width mid-drag; on hover it teaches
             // the gesture (`·` is ambiguous-width, so ASCII mode swaps it).
             let live_splitter = match pane_drag {
@@ -594,14 +595,14 @@ pub fn event_loop(
             // persistent-filter reason) — `Some` only while the active list is
             // empty, so non-empty frames keep the legacy pane untouched.
             let empty_reason = app.list_empty_reason();
-            // §8's status line: the LEFT side is the contextual hints
+            // The status line: the LEFT side is the contextual hints
             // (`App::status_hints` — generated from BINDINGS), REPLACED by the
             // splitter's transient readout while its border is hot (the
             // pointer is the gesture, so its action is `None`). The RIGHT
             // side is the chip order `status_chips` derives from the segments
             // (impact/notify head the drop order).
             let panes = pane_layout(area, &app.ui_state.pane_config());
-            // Issue 10: the home body's draw product — built only while the
+            // The home body's draw product — built only while the
             // fixed home tab is active (a `None` ctx.home keeps the panes).
             // The size-aware seam then clamps `home_sel`/`match_idx` into
             // range and scrolls so the cursor's line stays visible — the
@@ -723,7 +724,7 @@ pub fn event_loop(
                 ctx.toasts = &toast_lines;
                 ctx.palette_rows = palette_rows.as_deref();
                 ctx.empty_reason = empty_reason.as_deref();
-                // Issue 05's pointer overlays — all post-blit frame-buffer
+                // The pointer overlays — all post-blit frame-buffer
                 // effects (the CharGrid bytes and the layout cache never
                 // see them): the hovered node's accent frame + incident
                 // edge cells, the search-match frames + `i/N` title, and
@@ -733,14 +734,15 @@ pub fn event_loop(
                 ctx.search_pos = search_pos;
                 ctx.tooltip = tip_view.as_ref();
                 ctx.folded_groups = Some(&app.folded_groups);
-                // §6's row hover — only list targets tint (a tab-strip hover
-                // already feeds `tab_bar.hover`; a lineage hover is issue-05's).
+                // The row hover — only list targets tint (a tab-strip hover
+                // already feeds `tab_bar.hover`; a lineage hover has its own
+                // overlay).
                 ctx.list_hover = mouse
                     .hover()
                     .filter(|h| matches!(h, HitTarget::ListRow(_) | HitTarget::ListHeader(_)));
                 ctx.theme = app.active_theme();
                 ctx.inspector = inspector.as_deref();
-                // Issue 10: `Some` IS the body switch — the home view owns
+                // `Some` IS the body switch — the home view owns
                 // the whole band while the fixed tab is active.
                 ctx.home = home_data.as_deref();
                 ctx.home_sel = app.home_sel;
@@ -787,7 +789,7 @@ pub fn event_loop(
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     dirty = true; // a keypress may change the frame
                     if let Some(action) = dispatch(&app.mode, key) {
-                        // §12's narrow band owns two keys itself — `Ctrl-b`
+                        // The narrow band owns two keys itself — `Ctrl-b`
                         // toggles the overlay drawer (the inline pref it flips
                         // above the band governs a surface that cannot exist
                         // here, so it stays untouched) and `Esc` closes the
@@ -802,15 +804,15 @@ pub fn event_loop(
                         // must re-centre even when the selected id is unchanged.
                         let reanchor = reanchors_lineage(action);
                         let outcome = apply_action(app, action);
-                        // §12: Enter IS the drawer's keyboard pick — the
+                        // Enter IS the drawer's keyboard pick — the
                         // row's model commits (re-root/detail) and the
                         // transient surface closes, the same contract a
                         // mouse click-pick keeps.
                         if matches!(action, Action::DetailOpen) && app.ui_state.list_drawer() {
                             app.ui_state.set_list_drawer(false);
                         }
-                        // `<`/`>` stepped the saved width size-blind (the §1
-                        // floor lives in `nudge_list_width`); the §1 max is
+                        // `<`/`>` stepped the saved width size-blind (the pane
+                        // floor lives in `nudge_list_width`); the cap is
                         // terminal-relative, so it clamps HERE — the same
                         // `set_pane_width` write a splitter drag makes.
                         if matches!(action, Action::PaneNarrow | Action::PaneWiden) {

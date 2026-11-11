@@ -2,7 +2,7 @@ use super::*;
 
 // ---- sibling collapse (`+N more`) ----
 
-/// The Issue-13 acceptance fixture: `hub -> c00..c{kids-1}`, all models, plus an
+/// The acceptance fixture: `hub -> c00..c{kids-1}`, all models, plus an
 /// optional `leaf -> leaf` edge under one child (the path-visibility case).
 /// Built as a `RawManifest` so the collapse tests exercise the real
 /// `Dag`/`Subgraph` plumbing, not a hand-rolled subgraph.
@@ -562,7 +562,7 @@ fn click_marker_toggles_and_parks_the_cursor_and_s_notices() {
     let mut a = collapse_app(20, 8);
     a.ui_state.set_focus(Focus::RightPane);
     let marker = the_marker(&a);
-    // A double-click (M1's commit) toggles the group AND parks the cursor on
+    // A double-click (the commit) toggles the group AND parks the cursor on
     // the marker — the same focus-the-click behaviour a node commit gets.
     node_commit(&mut a, &marker);
     assert_eq!(
@@ -595,7 +595,7 @@ fn click_marker_toggles_and_parks_the_cursor_and_s_notices() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue 11: per-column test badges, the tests-section cursor + relationships
+// per-column test badges, the tests-section cursor + relationships
 // jump, and the PrimaryKey lens.
 // ---------------------------------------------------------------------------
 

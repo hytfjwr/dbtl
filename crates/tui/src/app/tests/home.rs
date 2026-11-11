@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- Issue 10: the fixed home tab + home screen ---------------------------------
+// ---- the fixed home tab + home screen ---------------------------------
 
 #[test]
 fn home_tab_is_fixed_unclosable_stateless_and_survives_reload() {
@@ -99,7 +99,7 @@ fn home_data_sections_order_and_flat_selectable() {
     assert_eq!(titles.first(), Some(&"Resume"), "Resume heads the page");
     assert_eq!(titles.last(), Some(&"Actions"), "Actions always exists");
     let pos = |t: &str| titles.iter().position(|x| x == &t);
-    // §3's fixed order: Resume → Recent → Bookmarks → Health → Last run →
+    // The fixed order: Resume → Recent → Bookmarks → Health → Last run →
     // Diff → Attention → Actions (Health always renders; Last run / Diff
     // only with their data sources — absent under this fixture).
     assert!(
@@ -160,7 +160,7 @@ fn home_move_clamps_never_wraps_and_open_dedupes() {
     assert_eq!(a.home_sel, 0, "k clamps at the first row");
 
     // Enter on the Resume row re-activates the already-open seeded tab —
-    // the T2 dedupe, not a fresh tab.
+    // the dedupe, not a fresh tab.
     apply_action(&mut a, Action::HomeOpen);
     assert!(!a.home_active());
     assert_eq!(a.selected_unique_id().as_deref(), Some(root0.as_str()));
@@ -193,7 +193,7 @@ fn home_command_rows_run_and_unavailable_ones_are_filtered() {
     apply_action(&mut a, Action::DetailClose);
     assert!(matches!(a.mode, Mode::Home));
 
-    // §3's 使えない行は出さない: `D` without a baseline is NOT a row at
+    // The no-unusable-rows rule: `D` without a baseline is NOT a row at
     // all — the shared `unavailable_reason` filters it at build time, so a
     // drawn command can never toast instead of running.
     assert!(

@@ -32,27 +32,27 @@ pub struct PersistedState {
     pub sort: Option<String>,
     /// The `unique_id` selected when the app exited; `None` = unset. Kept
     /// writing even after `tabs`/`active_tab` arrived — an older dbtl still
-    /// reads it (the backward-compat field, §13).
+    /// reads it (the backward-compat field).
     pub last_selected: Option<String>,
-    /// The open tab strip (§13 `tabs`): ordered roots + per-tab view filters.
+    /// The open tab strip (the `tabs` key): ordered roots + per-tab view filters.
     /// Empty on files written before tabs existed — `apply_prefs` then falls
     /// back to `last_selected`, so an old state file restores unchanged.
     pub tabs: Vec<PersistedTab>,
-    /// The active tab's index into `tabs`; `None` = unset (or — reserved for
-    /// Issue 10 — the home tab). Clamped into range on apply.
+    /// The active tab's index into `tabs`; `None` = unset (or — the home
+    /// tab). Clamped into range on apply.
     pub active_tab: Option<usize>,
-    /// Recently-rooted models, newest-first, max 10 — Issue 10's home reads
+    /// Recently-rooted models, newest-first, max 10 — the home screen reads
     /// it; restored per project like the strip itself.
     pub recent: Vec<String>,
-    /// The list pane's folded group keys (§13 `folded_groups`): the `-` /
+    /// The list pane's folded group keys (the `folded_groups` key): the `-` /
     /// header-click set. A set field like `bookmarks`, not an Option —
     /// absent = nothing folded, same as an empty set. Keys that no longer
     /// name a live group are dropped on apply (same rule as `reload`).
     pub folded_groups: BTreeSet<String>,
-    /// The list pane's saved width in columns (screen-spec §5 — columns, not
+    /// The list pane's saved width in columns (columns, not
     /// ratios). `None` = unset.
     pub list_width: Option<u16>,
-    /// The inspector pane's saved width in columns (saved ahead of Issue 04's
+    /// The inspector pane's saved width in columns (saved ahead of the
     /// pane so `=` and an early drag already round-trip). `None` = unset.
     pub inspector_width: Option<u16>,
     /// The inspector visibility pref (`auto`/`on`/`off` — see
@@ -66,7 +66,7 @@ pub struct PersistedState {
     pub minimap: Option<bool>,
     /// The active theme's name (the `--theme`/`Ctrl-t` selection). `None` =
     /// unset. Applied by the binary's theme loader (saved < `--theme`, >
-    /// `config.yml` — §13), not by [`App::apply_prefs`]: the theme LIST is
+    /// `config.yml` in precedence), not by [`App::apply_prefs`]: the theme LIST is
     /// loaded there too, so an absent name degrades to the default.
     pub theme: Option<String>,
     /// Confirmed list-search queries, most-recent-first (max 20 — what the
@@ -81,7 +81,7 @@ pub struct PersistedState {
     pub palette_recent: Option<Vec<String>>,
 }
 
-/// One persisted tab: its root and the rooted-view filter. Per §13 the tab's
+/// One persisted tab: its root and the rooted-view filter. The tab's
 /// VIEW state persists (`view`) while its session state — cursor, back /
 /// forward history, collapse expansions, scroll — deliberately does not: a
 /// restored tab opens homed on its root, which is what "restore the tabs I
@@ -124,7 +124,7 @@ pub struct Config {
     /// marker (default 8; `0` = never collapse). Config-only — it is a
     /// display policy, not a per-project pref, so the state file ignores it.
     pub lineage_collapse: Option<usize>,
-    /// Default inspector visibility pref (`auto`/`on`/`off`) — Issue 04's
+    /// Default inspector visibility pref (`auto`/`on`/`off`) — the
     /// `I` cycle. Same Option-layering as the other pref names.
     pub inspector: Option<String>,
 }
@@ -315,7 +315,7 @@ impl App {
                 }
             }
         }
-        // Issue 03's strip: saved tabs restore roots + view filters — a root
+        // The strip: saved tabs restore roots + view filters — a root
         // that vanished (or is no longer a model) drops its whole tab. When
         // every saved tab is dead — or the state file predates tabs — the
         // compat `last_selected` applies like before. `active_tab` clamps to
@@ -346,7 +346,7 @@ impl App {
         } else if let Some(uid) = &prefs.last_selected {
             self.select_by_unique_id(uid);
         }
-        // The recent-roots MRU (Issue 10's home, restored early): prune ids
+        // The recent-roots MRU (read by home, restored early): prune ids
         // that no longer resolve — same rule as bookmarks/tabs.
         self.recent = prefs
             .recent
@@ -355,7 +355,7 @@ impl App {
             .cloned()
             .collect();
         self.recent.truncate(10);
-        // §13's folded groups — same set-field layering as bookmarks: keys
+        // The folded groups — same set-field layering as bookmarks: keys
         // that no longer name a live group drop (a restored fold against a
         // renamed/emptied group would pin a phantom), then
         // `apply_list_filter` materializes the fold view (the single writer
@@ -372,7 +372,7 @@ impl App {
             );
             self.apply_list_filter();
         }
-        // Pane/display prefs (Issue 02): same Option-layering as the rest —
+        // Pane/display prefs: same Option-layering as the rest —
         // `None` keeps the current (or config-defaulted) value. Out-of-range
         // widths are NOT rejected here: `pane_layout` clamps them for display,
         // so a stale 200-col write degrades to a capped pane, not an error.
@@ -486,7 +486,7 @@ mod tests {
         a.sort = SortMode::Tests;
         a.model_list = build_model_list_grouped(&a.dag, a.sort, None);
         a.select_by_unique_id("model.jaffle_finance.rpt_delivery_base_metrics");
-        // Issue 02's pane/display prefs: set non-defaults so the round-trip
+        // The pane/display prefs: set non-defaults so the round-trip
         // proves they apply, not just that the defaults coincide.
         a.ui_state.set_list_width(50);
         a.ui_state.set_inspector_width(60);
@@ -512,7 +512,7 @@ mod tests {
         assert!(b.ui_state.minimap_visible(), "minimap pref restored");
         assert!(b.ui_state.list_visible(), "list stays visible");
         assert_eq!(snap.theme.as_deref(), Some(a.theme_name()));
-        // The Issue-09 recall lists ride the same snapshot/apply round-trip.
+        // The recall lists ride the same snapshot/apply round-trip.
         assert_eq!(
             b.search_history,
             vec!["?order".to_string(), "stg_".to_string()]
@@ -523,7 +523,7 @@ mod tests {
     #[test]
     fn apply_prefs_restores_a_hidden_list_and_minimap() {
         // The Ctrl-b/M result persisted across a restart — the toggles used to
-        // be session-only (Issue 02). `apply_prefs` on the snapshot must
+        // be session-only. `apply_prefs` on the snapshot must
         // reproduce the hidden list + minimap-on combination.
         let mut a = fixture_app();
         a.ui_state.toggle_list_pane(); // hide the list
@@ -633,7 +633,7 @@ mod tests {
 
     #[test]
     fn prefs_snapshot_then_apply_restores_tabs() {
-        // §13: the strip round-trips — roots + per-tab view filters +
+        // The strip round-trips — roots + per-tab view filters +
         // active index + the recent-roots MRU — while the compat
         // `last_selected` keeps mirroring the ACTIVE tab's root.
         let mut a = fixture_app();
@@ -660,7 +660,7 @@ mod tests {
         assert!(b.tabs()[2].lineage_view.upstream, "tab 2 kept the default");
         assert_eq!(b.recent.first().map(String::as_str), Some(m1.as_str()));
         // Session state deliberately does NOT restore — the tab re-homes on
-        // its root (§13: cursor/history/scroll start fresh).
+        // its root (cursor/history/scroll start fresh).
         assert!(b.tabs()[1].back.is_empty() && b.tabs()[1].lineage_cursor.is_none());
     }
 
@@ -733,7 +733,7 @@ mod tests {
 
     #[test]
     fn home_landing_persists_none_active_tab_and_resume_seeds() {
-        // Issue 10: a file written on the home tab has `active_tab: None`
+        // A file written on the home tab has `active_tab: None`
         // (home is never serialized — it re-seeds on apply) and lands back
         // on home. `last_selected` mirrors the Resume uid so an older dbtl
         // can still land on a model.
@@ -823,7 +823,7 @@ mod tests {
         let back: PersistedState = serde_json::from_str(&json).unwrap();
         assert_eq!(back, p);
         // Unknown/absent keys deserialize as defaults — forward-compatible,
-        // and an OLD state file (no Issue-02 fields) still loads.
+        // and an OLD state file (no pane/display fields) still loads.
         let sparse: PersistedState = serde_json::from_str("{}").unwrap();
         assert_eq!(sparse, PersistedState::default());
         let old: PersistedState =

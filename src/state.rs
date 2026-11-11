@@ -75,7 +75,7 @@ pub fn load_config() -> std::io::Result<Config> {
     }
 }
 
-/// Whether this project already has a state file — the §3/H2 startup
+/// Whether this project already has a state file — the startup
 /// distinction: "no file" lands on the home screen, "file exists" resumes
 /// the saved tab strip (even a trivially small one). `load_state` can't
 /// answer this — it collapses "absent" and "unparsable" into the same

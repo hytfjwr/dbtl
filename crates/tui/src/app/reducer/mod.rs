@@ -247,7 +247,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
     {
         // A yank / an unhandled key closes the one-shot which-key: the mode it
         // stacked over (`back`, e.g. the structure modal) comes back — NOT a
-        // jump to Selection (Issue 06's nested-overlay rule). Two gestures are
+        // jump to Selection (the nested-overlay rule). Two gestures are
         // exempt: `YankPick` (a pointer hover/row click only moves the
         // highlight) and the DetailScroll family (a wheel over the which-key
         // is a no-op — the menu has no scroll slot — and must not dismiss it).

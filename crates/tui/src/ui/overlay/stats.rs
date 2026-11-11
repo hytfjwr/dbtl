@@ -103,7 +103,7 @@ fn stats_display_lines(sv: &StatsView, t: &theme::Theme) -> Vec<Line<'static>> {
     )));
     out.push(Line::from(cov_spans));
 
-    // Column-level coverage (Issue 11): the SAME `column_coverage_counts`
+    // Column-level coverage: the SAME `column_coverage_counts`
     // numbers `dbtl docs`' README quotes — declared columns carrying ≥1 test.
     out.push(Line::styled(
         "Column coverage (declared columns):",

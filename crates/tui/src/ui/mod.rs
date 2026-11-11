@@ -104,31 +104,31 @@ pub(crate) struct Chrome {
     /// The em dash inside prose chrome (empty-state / no-match lines):
     /// `—` Unicode / `-` ASCII.
     pub dash: &'static str,
-    /// The tab cell's close glyph (`×` Unicode / `x` ASCII — §15).
+    /// The tab cell's close glyph (`×` Unicode / `x` ASCII).
     pub tab_close: &'static str,
     /// The multiplication sign in prose chrome — the too-small screen's
-    /// `50×12` / `WxH` shape (`×` Unicode / `x` ASCII — §12, same
+    /// `50×12` / `WxH` shape (`×` Unicode / `x` ASCII — same
     /// ambiguous-width swap as `tab_close`).
     pub times: &'static str,
     /// The tab bar's scroll-back overflow arrow (`‹` Unicode / `<` ASCII).
     pub tab_prev: &'static str,
     /// The tab bar's scroll-forward overflow arrow (`›` Unicode / `>` ASCII).
     pub tab_next: &'static str,
-    /// The inspector pane's run/test result markers (Issue 04): `✓`/`!`/`✗`
+    /// The inspector pane's run/test result markers: `✓`/`!`/`✗`
     /// in Unicode mode; `v`/`!`/`x` in ASCII — `!` is already pure ASCII in
     /// both. Only the glyph swaps; the status word does the real talking.
     pub run_ok: &'static str,
     pub run_warn: &'static str,
     pub run_fail: &'static str,
-    /// The list group header's OPEN fold marker (`▾` Unicode / `v` ASCII — §15).
+    /// The list group header's OPEN fold marker (`▾` Unicode / `v` ASCII).
     pub group_open: &'static str,
-    /// The list group header's FOLDED marker (`▸` Unicode / `>` ASCII — §15).
+    /// The list group header's FOLDED marker (`▸` Unicode / `>` ASCII).
     pub group_folded: &'static str,
-    /// The list row's middle-elision marker (`…` Unicode / `..` ASCII — §10).
+    /// The list row's middle-elision marker (`…` Unicode / `..` ASCII).
     /// `…` is East-Asian-Ambiguous — ASCII mode uses the two-cell `..` so the
     /// truncation budget stays cell-exact on ambiguous-width terminals.
     pub ellipsis: &'static str,
-    /// The fixed home tab's glyph (`⌂` Unicode / `~` ASCII — Issue 10, §15).
+    /// The fixed home tab's glyph (`⌂` Unicode / `~` ASCII).
     /// `⌂` is East-Asian-Ambiguous; `~` is also the `~` key's label, so the
     /// ASCII bar reads "press ~ to get here".
     pub home: &'static str,
@@ -161,7 +161,7 @@ static UNICODE_CHROME: Chrome = Chrome {
     mm_empty: ".",
     mm_view: "+",
     dash: "—",
-    // §15: `×` and `‹`/`›` are East-Asian-Ambiguous — ASCII mode swaps to
+    // `×` and `‹`/`›` are East-Asian-Ambiguous — ASCII mode swaps to
     // `x` / `<` / `>` so the cells stay one column on CJK terminals.
     tab_close: "×",
     times: "×",

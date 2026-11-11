@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- Issue 01: HitTarget resolution + button-aware click dispatch ----
+// ---- HitTarget resolution + button-aware click dispatch ----
 //
 // `hit_target` is the pure half (the event loop builds `HitGeometry` from the
 // same pane/scroll state it draws with); `App::click_target` is the domain
@@ -52,7 +52,7 @@ fn hit_target_classifies_the_status_line_boundaries_and_dead_zones() {
         Some(HitTarget::StatusBar)
     );
     // The divider is two columns: the list's right border and the lineage
-    // pane's left border — both report the LIST splitter (§5).
+    // pane's left border — both report the LIST splitter.
     assert_eq!(
         hit_target(&g, g.panes.list.x + g.panes.list.width - 1, 5),
         Some(HitTarget::PaneBorder(Splitter::List))
@@ -192,7 +192,7 @@ fn click_target_left_click_moves_the_cursor_only() {
     let root0 = a.selected_unique_id().unwrap();
     let second = a.active_list().model_at(1).unwrap().unique_id.clone();
 
-    // A list row: §2 T1 — a click picks the model exactly like a keypress:
+    // A list row: a click picks the model exactly like a keypress:
     // re-root WITH the back-history push (`jump_to`, not bare `reroot_select`).
     a.click_target(&HitTarget::ListRow(1), MouseButton::Left, (0, 0));
     assert_eq!(a.selected_unique_id().as_deref(), Some(second.as_str()));
@@ -203,7 +203,7 @@ fn click_target_left_click_moves_the_cursor_only() {
         "a list click lands on the tab's history like the key path"
     );
 
-    // A lineage node: §6 M1 — a single left click moves the CURSOR only;
+    // A lineage node: a single left click moves the CURSOR only;
     // the re-root is the double-click's commit (`commit_lineage_node` +
     // `DetailOpen`, which `node_commit` simulates).
     a.select_by_unique_id("model.sample.fct_orders");
@@ -215,7 +215,7 @@ fn click_target_left_click_moves_the_cursor_only() {
     assert_eq!(
         a.selected_unique_id().as_deref(),
         Some("model.sample.fct_orders"),
-        "a single click never re-roots (M1)"
+        "a single click never re-roots"
     );
     assert_eq!(
         a.lineage_cursor_uid().as_deref(),
@@ -340,7 +340,7 @@ fn click_target_blank_surfaces_only_focus_and_modals_are_inert() {
 
 #[test]
 fn click_target_right_click_opens_the_node_menu_at_the_pointer() {
-    // Issue 06: a right-click on a list row or a lineage node opens the
+    // a right-click on a list row or a lineage node opens the
     // node context menu anchored at the POINTER cell; right-clicks
     // elsewhere stay inert (middle-clicks open tabs — covered below).
     let mut a = sample_app();
@@ -411,7 +411,7 @@ fn click_target_right_click_opens_the_node_menu_at_the_pointer() {
 #[test]
 fn click_target_middle_click_opens_a_tab() {
     let mut a = sample_app();
-    // §6 M4: middle-click on a list row or a lineage node opens that model
+    // Middle-click on a list row or a lineage node opens that model
     // in a NEW tab (the `O` semantics — inserted right of the active tab
     // and activated).
     let row_uid = a.active_list().model_at(1).unwrap().unique_id.clone();
@@ -432,7 +432,7 @@ fn click_target_middle_click_opens_a_tab() {
         a.selected_unique_id().as_deref(),
         Some("model.sample.fct_orders"),
     );
-    // Middle-clicking an already-open model just activates its tab (T2
+    // Middle-clicking an already-open model just activates its tab (the
     // dedupe — the strip never grows a duplicate).
     a.click_target(
         &HitTarget::LineageNode("model.sample.fct_orders".to_string()),

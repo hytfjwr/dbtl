@@ -16,7 +16,7 @@
 //! - [`diff`]          — the `--diff` baseline summary modal.
 //! - [`columns`]       — the column-lineage modal.
 //! - [`palette`]       — the Ctrl-p command palette, the `y` yank menu, and
-//!   `dim_exterior` (the §9 underlay dim).
+//!   `dim_exterior` (the underlay dim).
 //! - [`menu`]          — the node context menu.
 //! - [`notifications`] — the notification centre + the toast stack.
 //! - [`tooltip`]       — the settled-hover tooltip.

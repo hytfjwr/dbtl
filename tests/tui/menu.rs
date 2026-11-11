@@ -1,10 +1,10 @@
 use super::*;
 
 // ============================================================================
-// Issue 06 — context menu, dimming & overlay stacking (render-side)
+// context menu, dimming & overlay stacking (render-side)
 // ============================================================================
 
-pub(super) fn issue06_app() -> dbtl::app::App {
+pub(super) fn menu_app() -> dbtl::app::App {
     const SAMPLE: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/sample_manifest.json"
@@ -19,7 +19,7 @@ pub(super) fn issue06_app() -> dbtl::app::App {
 pub(super) fn modal_dimming_recedes_everything_outside_the_box() {
     use dbtl::ui::theme;
     // Same app twice: once bare, once with the structure modal open.
-    let mut app = issue06_app();
+    let mut app = menu_app();
     let before = render_app(&app, 140, 50);
     dbtl::app::apply_action(&mut app, dbtl::Action::DetailOpen);
     let after = render_app(&app, 140, 50);
@@ -254,7 +254,7 @@ pub(super) fn palette_overshot_selected_still_highlights_the_last_row() {
 
 #[test]
 pub(super) fn node_menu_renders_title_items_and_key_hints() {
-    let mut app = issue06_app();
+    let mut app = menu_app();
     dbtl::app::apply_action(&mut app, dbtl::Action::MenuOpen);
     let buffer = render_app(&app, 140, 50);
     let text = buffer_to_string(&buffer);
@@ -312,7 +312,7 @@ pub(super) fn help_filter_narrows_to_matching_bindings() {
 pub(super) fn menu_over_modal_keeps_the_modal_visible_underneath() {
     // Detail -> menu: the underlay (modal) is drawn first, then dimmed, then
     // the menu — so the modal title text must still be legible in the buffer.
-    let mut app = issue06_app();
+    let mut app = menu_app();
     dbtl::app::apply_action(&mut app, dbtl::Action::DetailOpen);
     dbtl::app::apply_action(&mut app, dbtl::Action::MenuOpen);
     let buffer = render_app(&app, 140, 50);
@@ -327,7 +327,7 @@ pub(super) fn menu_over_modal_keeps_the_modal_visible_underneath() {
 
 #[test]
 pub(super) fn yank_menu_renders_every_binding_row() {
-    let mut app = issue06_app();
+    let mut app = menu_app();
     dbtl::app::apply_action(&mut app, dbtl::Action::YankPrefix);
     let buffer = render_app(&app, 140, 50);
     let text = buffer_to_string(&buffer);

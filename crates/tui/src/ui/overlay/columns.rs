@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- column-lineage modal (Issue 09) ---------------------------------------
+// ---- column-lineage modal ---------------------------------------
 
 /// The columns modal's content as display lines: the [`ColumnView`] rows,
 /// each styled by its flags — the cursor row reversed ([`selected_style`]),

@@ -451,8 +451,8 @@ pub fn coverage_counts(dag: &Dag) -> (usize, usize) {
 /// (`test.column_name`, both sides compared through
 /// [`normalize_column`](crate::normalize_column)). A node with zero declared
 /// columns contributes nothing — the metric answers "of the columns the
-/// project actually documents, how many are test-guarded" (the Issue 11 spec:
-/// テストが 1 件以上ある列 / 宣言済みの列).
+/// project actually documents, how many are test-guarded" (columns with
+/// ≥1 test / declared columns).
 ///
 /// The ONE source for the stats dashboard's column gauge and `dbtl docs`'s
 /// README bullet, so the two surfaces can never disagree — the same shape

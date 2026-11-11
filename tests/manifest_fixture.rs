@@ -278,7 +278,7 @@ fn tests_are_captured_for_a_known_seed() {
     );
 }
 
-// ---- Issue 11: PK guarantees + column coverage + relationships metadata ----
+// ---- PK guarantees + column coverage + relationships metadata ----
 
 #[test]
 fn pk_guarantee_set_is_frozen() {

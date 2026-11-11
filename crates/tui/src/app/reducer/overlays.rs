@@ -28,7 +28,7 @@ fn detail_view_for(app: &App, uid: String) -> DetailView {
         Some((_, crate::Confidence::Stale))
     );
     // `column_counts_for` just resolved this uid, so the fallback
-    // flag is settled: `[name-match]` marks the Issue 07 path.
+    // flag is settled: `[name-match]` marks the name-match path.
     let name_match = app.cll.is_fallback(&uid);
     DetailView {
         model_id: uid,
@@ -51,7 +51,7 @@ fn detail_view_for(app: &App, uid: String) -> DetailView {
 /// The inspector pane's snapshot for `uid` — built ONCE per
 /// `(uid, generation)` into `LineageCaches::inspector`, so the per-frame
 /// redraw is an `Rc` clone. The `detail` field is the verbatim output of
-/// [`detail_view_for`] (screen-spec §4: the pane shares the structure
+/// [`detail_view_for`] (the pane shares the structure
 /// modal's construction, it never reassembles domain data itself); the
 /// remaining fields are the pane-only extras the modal doesn't carry:
 /// materialization tag, the third (exposure) component of the impact
@@ -165,8 +165,8 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
         Action::DetailOpen => {
             // Inspector-focused Enter commits the pane's cursored COLUMN row
             // to the column-trace view — the same flow Enter on the
-            // structure modal's column cursor takes (§4: カラム行で Enter
-            // → カラム Lineage 遷移). No row cursored → nothing to commit;
+            // structure modal's column cursor takes (Enter on a column row
+            // jumps to the column lineage). No row cursored → nothing to commit;
             // the inspector keeps focus.
             if app.ui_state.focus() == Focus::Inspector {
                 let col = {
@@ -234,7 +234,7 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
         // the post-match step at the bottom of this function. Over the Detail
         // modal BOTH the modal's node and its column target are stashed — and
         // the modal itself is stacked into `back` so the which-key's close
-        // RESTORES it instead of landing on Selection (Issue 06) — or every
+        // RESTORES it instead of landing on Selection — or every
         // `y<key>` yank would silently act on the list selection instead of
         // the modal's node. (The `y` row exists in Mode::Detail's bindings.)
         Action::YankPrefix => {

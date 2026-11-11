@@ -9,7 +9,7 @@ impl App {
     }
 
     /// The list a search narrows FROM: the persistent-filter view when one is
-    /// active, else the full list. FOLD-FREE on purpose — §10: a list search
+    /// active, else the full list. FOLD-FREE on purpose — a list search
     /// ignores the folded groups so matches inside them still surface.
     pub(super) fn unfolded_base(&self) -> &ModelList {
         self.filtered_base.as_ref().unwrap_or(&self.model_list)
@@ -91,7 +91,7 @@ impl App {
     /// When no model resolves under the cursor at all (the all-folded empty
     /// list), fall back to the ROOT's group: the root is the one "selected
     /// model" that can live inside a folded group, and toggling it is the
-    /// only `-` path that can re-OPEN one (§10's 畳む / 開く — and what the
+    /// only `-` path that can re-OPEN one (fold/unfold — and what the
     /// all-folded empty-state hint promises).
     pub(crate) fn toggle_selected_group_fold(&mut self) {
         let key = self
@@ -116,10 +116,10 @@ impl App {
     /// rebuild — the single writer of all view caches. On a FOLD that hides
     /// the tab's root the uid re-resolve fails (a folded group leaves model
     /// space), so the cursor is re-seated at the slot the group's models
-    /// vacated — where the NEXT surviving model lands (§10's 次の見えるモデ
-    /// ル — the next group's first row, or the new tail's last model when
+    /// vacated — where the NEXT surviving model lands (the next visible
+    /// model — the next group's first row, or the new tail's last model when
     /// the folded group was last). The root itself stays on the hidden
-    /// model (the §2 detach: the lineage keeps it while the list hides it,
+    /// model (the detach: the lineage keeps it while the list hides it,
     /// same as a filtered-out root).
     pub(crate) fn toggle_group_fold(&mut self, key: &str) {
         // Computed BEFORE the rebuild, while the pre-fold list is live: the
@@ -185,8 +185,8 @@ impl App {
         // `?`-prefixed queries are FULL-TEXT: match description, column names,
         // and raw SQL — "who references this table/column" (`/?raw_events`).
         // The search base is FOLD-FREE (`unfolded_base`): a folded group's
-        // members still match and render while the search runs — §10's
-        // 検索中は畳みを無視する rule — and `close_search` lands back on the
+        // members still match and render while the search runs — folds are
+        // ignored mid-search — and `close_search` lands back on the
         // folded `base_list` when the query ends.
         let filtered = if let Some(spec) = query.strip_prefix('!') {
             if spec.trim().is_empty() {
@@ -253,9 +253,9 @@ impl App {
     /// group — where the just-restored fold view can't re-resolve it and the
     /// pick would silently drop. An explicit selection wins over the view
     /// pref: the match's OWN group unfolds (every other fold stays put —
-    /// 畳みに戻る still holds for what the user didn't pick). `false`
+    /// unchanged for what the user didn't pick). `false`
     /// (cancel / a tab switch's `None`) mutates nothing: restoring the
-    /// origin inside a still-folded group is the ordinary §2 detach.
+    /// origin inside a still-folded group is the ordinary detach.
     pub(super) fn close_search(&mut self, restore_uid: Option<String>, unfold: bool) {
         self.filter = None;
         self.mode = self.idle_mode();

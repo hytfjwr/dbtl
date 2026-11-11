@@ -68,7 +68,7 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
         // `-`: fold/unfold the group under the cursor through the SAME
         // apply_list_filter rebuild the `T`/`*` toggles use — a folded group
         // keeps its header row but sheds its models from selection space
-        // (§10; the fold state is the persisted `folded_groups` set, §13).
+        // (the fold state is the persisted `folded_groups` set).
         Action::ToggleGroupFold => {
             app.toggle_selected_group_fold();
             Outcome::cont()
@@ -83,7 +83,7 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
             let target = cycle_to(app.active_list(), app.ui_state.selected(), forward, |m| {
                 app.bookmarks.contains(&m.unique_id)
             });
-            // A cycle landing on a different model is a re-root — §2 T1 makes
+            // A cycle landing on a different model is a re-root — the move makes
             // it history like any other selection (`jump_to` owns the push;
             // `reroot_select` inside it ends the column trace).
             if let Some(uid) = target
@@ -132,7 +132,7 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
         }
         // Toggle the lineage minimap (a pure UiState view-pref). Routed DIRECTLY
         // here, mirroring `CycleLens` — NOT through `reduce_selection`, which is
-        // the UiState-only legacy list-movement arms (spec D5).
+        // the UiState-only legacy list-movement arms.
         _ => return Arm::Pass,
     };
     Arm::Done(out)

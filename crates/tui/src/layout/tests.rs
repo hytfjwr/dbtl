@@ -576,7 +576,7 @@ fn unstyled_layout_has_default_attrs() {
     }
 }
 
-// ---- column rows (Issue 09's layout_columns) ----
+// ---- column rows (the layout_columns) ----
 
 /// Column 0 stacks a/b/z (all -> c in column 1): the fixture for
 /// running-y stacking — a taller box must push its column-mates down.

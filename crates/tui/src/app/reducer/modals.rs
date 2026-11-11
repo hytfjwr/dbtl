@@ -86,7 +86,7 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
             app.mode = Mode::Stats(app.compute_stats_view());
             Outcome::cont()
         }
-        // The notification centre (`Ctrl-n`, Issue 08): opens on a snapshot
+        // The notification centre (`Ctrl-n`): opens on a snapshot
         // of the log; opening is the read gesture — `!N` zeroes the moment
         // the modal appears.
         Action::NotificationsOpen => {

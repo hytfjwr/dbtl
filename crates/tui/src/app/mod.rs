@@ -120,7 +120,7 @@ impl Outcome {
 
 /// The lineage view filter: which directions to show and an optional hop-depth
 /// limit. Default = the full lineage (both directions, unlimited). Persisted
-/// per tab (§13): `#[serde(default)]` keeps an old/partial state file loading.
+/// per tab: `#[serde(default)]` keeps an old/partial state file loading.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct LineageView {
@@ -180,8 +180,8 @@ pub struct App {
     /// `All`). Rebuilt ONLY by [`apply_list_filter`](App::apply_list_filter).
     filtered_base: Option<ModelList>,
     /// The folded group keys — the `-` toggle / header click's persistent
-    /// model (screen-spec §10, persisted via `PersistedState::folded_groups`,
-    /// §13). App-level state like `list_filter` (§2's shared column), not a
+    /// model (persisted via `PersistedState::folded_groups`).
+    /// App-level state like `list_filter` — shared across tabs, not a
     /// per-tab pref. A pipeline INPUT — the fold is materialized into
     /// `folded_base` by `apply_list_filter`, never faked at draw time, so a
     /// folded group's models leave selection space entirely.
@@ -232,7 +232,7 @@ pub struct App {
     /// the wall-clock, and owns the on-screen toast lifetime — `App` stores no
     /// clock, so the reducer stays pure.
     notice: Option<(NoticeLevel, String)>,
-    /// The notification log behind `Ctrl-n` (Issue 08): stamped entries,
+    /// The notification log behind `Ctrl-n`: stamped entries,
     /// newest LAST, capped at [`NOTIFICATION_CAP`](App::NOTIFICATION_CAP).
     /// Written by the event loop (every drained notice) and the CLI's
     /// `build_app` (startup load warnings) — never by the reducer, so
@@ -262,7 +262,7 @@ pub struct App {
     /// the `‹`/`›` cells write; resolved (clamped + active-ensured) by
     /// [`tab_bar_layout`](crate::ui::tab_bar_layout) per frame. Session-only.
     tab_scroll: usize,
-    /// Recently-rooted models (newest first, max 10) — Issue 10's home reads
+    /// Recently-rooted models (newest first, max 10) — the home reads
     /// it; persisted per project like the tab list itself.
     pub recent: Vec<String>,
     /// The home screen's item cursor — an index into the flattened
@@ -341,8 +341,8 @@ pub struct App {
     catalog: Option<Rc<crate::Catalog>>,
     /// Where `catalog` was auto-detected — `reload` re-reads it.
     catalog_path: Option<PathBuf>,
-    /// The column-level-lineage resolver (Issue 08's `sqlparser`-backed
-    /// resolver, falling back to Issue 07's name-match approximation per
+    /// The column-level-lineage resolver (the `sqlparser`-backed
+    /// path, falling back to the name-match approximation per
     /// model). Owns its own per-uid memos, so it must be rebuilt whenever the
     /// Dag/catalog can change — `reload` does that. The `ColumnResolver`
     /// trait is the consumer-facing boundary, so callers never see which
@@ -522,9 +522,9 @@ impl App {
             notifications: VecDeque::new(),
             unread_from: 0,
             // The strip always opens `[home, seeded]` — home is the fixed
-            // left tab (Issue 10). `active` starts on the seeded model tab so
+            // left tab. `active` starts on the seeded model tab so
             // a pre-home state file keeps its old landing behaviour; the
-            // no-state-file path calls `enter_home` explicitly (§3/H2).
+            // no-state-file path calls `enter_home` explicitly.
             tabs: vec![
                 TabState::home(),
                 TabState {

@@ -160,7 +160,7 @@ impl ModelList {
 
     /// The key of the group owning `model_index`, plus that group's FIRST
     /// model index — the slot a fold empties into (after folding, the next
-    /// surviving model slides into it — §10's "next visible model" seat).
+    /// surviving model slides into it — the "next visible model" seat).
     /// `None` when the index is out of range. Works on ANY view (full,
     /// filtered, folded): `groups` always enumerates the list's own visible
     /// members, so a folded list answers about the models it still holds.
@@ -193,12 +193,12 @@ impl ModelList {
     }
 
     /// The group header to pin at the pane's first interior row while the
-    /// scroll offset lands mid-group (§10's sticky header). `Some` exactly
+    /// scroll offset lands mid-group (the sticky header). `Some` exactly
     /// when the window's first display row is a MODEL row — its owning
     /// header scrolled off above — AND that row is not the selected one
     /// (the pin would hide the selection marker). An accessor over `rows`
     /// only — pinning is rendering/hit-test chrome, never a model-space or
-    /// display-row-space mutation (the issue's rendering-only rule).
+    /// display-row-space mutation (rendering only — no model state moves).
     pub fn sticky_header(&self, offset: usize, selected: usize) -> Option<&DisplayRow> {
         match self.rows.get(offset) {
             Some(DisplayRow::Model { model_index, .. }) if *model_index != selected => self
@@ -420,11 +420,11 @@ pub fn filter_model_list(full: &ModelList, keep: impl Fn(&NodeInfo) -> bool) -> 
     assemble_model_list(matched_groups)
 }
 
-/// Apply the folded-group set to `full` (screen-spec §10): every group keeps
+/// Apply the folded-group set to `full`: every group keeps
 /// its HEADER row — the `▸ Name (N)` fold toggle + click target — but a
 /// folded group's models leave BOTH `models` and `rows`. Model space itself
 /// shrinks, so a folded group is skipped by `j`/`k` and can't take the
-/// selection (the issue's pipeline-stage rule — display-row hiding alone
+/// selection (the pipeline-stage rule — display-row hiding alone
 /// would desync the two coordinate spaces). `groups[i].models` carries only
 /// the VISIBLE members (a folded group's is empty), preserving the
 /// `models == concat(groups.models)` invariant every consumer of `groups`
@@ -458,7 +458,7 @@ pub fn fold_model_list(full: &ModelList, folded: &std::collections::BTreeSet<Str
 }
 
 /// Middle-elide `name` to at most `budget` display CELLS, keeping head and
-/// tail (`stg_payment__…_departments` — §10's rule: dbt names share
+/// tail (`stg_payment__…_departments` — the name-display rule: dbt names share
 /// prefixes, so the tail distinguishes them). Width is measured by
 /// `unicode-width`, so a CJK name's 2-cell chars budget correctly — never
 /// byte- or char-count-slicing. `marker` is the mode's ellipsis (`…` /
@@ -1032,7 +1032,7 @@ mod tests {
         }
     }
 
-    // ---- Issue 11: folding, sticky header, middle truncation ----
+    // ---- folding, sticky header, middle truncation ----
 
     #[test]
     fn fold_keeps_headers_with_full_counts_and_empties_model_space() {
@@ -1172,8 +1172,8 @@ mod tests {
     #[test]
     fn mid_truncate_budgets_cjk_by_cells_not_chars() {
         use unicode_width::UnicodeWidthStr;
-        // あいうえお = 10 cells (2/char). Budget 7 → head+`…`+tail ≤ 7
-        // (avail 6 → tail お / head あい), tail preserved, chars stay whole.
+        // five 2-cell kana = 10 cells. Budget 7 → head+`…`+tail ≤ 7
+        // (avail 6 → tail 1 char / head 2), tail preserved, chars stay whole.
         let (t, _) = mid_truncate_indexed("あいうえお", 7, "…");
         assert_eq!(t, "あい…お");
         assert!(UnicodeWidthStr::width(t.as_str()) <= 7);

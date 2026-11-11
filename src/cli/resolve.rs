@@ -10,8 +10,8 @@ pub struct ResolvedSource {
     pub label: String,
     pub is_source: bool,
     /// The collected warnings (loader first, then scope). `build_app` feeds
-    /// them to the App's notification log as unread WARNING entries (Issue
-    /// 08) so they stay visible after the TUI opens; non-TUI callers ignore
+    /// them to the App's notification log as unread WARNING entries so they
+    /// stay visible after the TUI opens; non-TUI callers ignore
     /// them — stderr output is unchanged.
     pub warnings: Vec<String>,
 }
@@ -151,7 +151,7 @@ pub fn build_app(cli: &Cli) -> Result<App> {
         App::new(dag, PathBuf::from(label))
     };
     app.set_scope(scope);
-    // Issue 08: the load/scope warnings that already went to stderr also join
+    // The load/scope warnings that already went to stderr also join
     // the notification log as unread WARNING entries — opening `Ctrl-n`
     // replays what scrolled past before the TUI came up. One stamp per batch
     // (now_hhmmss spawns `date`; per-line stamping would fork per warning).

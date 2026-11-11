@@ -37,7 +37,7 @@ pub fn hit_test(
 pub enum HitTarget {
     /// A tab in the tab bar: its index in `App`'s tab list (the identity —
     /// the strip's drawn slot order is resolved by [`tab_bar_layout`]).
-    /// Left-click activates it, middle-click closes it (§2/§6).
+    /// Left-click activates it, middle-click closes it.
     Tab(usize),
     /// The `×` close cell inside tab `usize` — left-click closes.
     TabClose(usize),
@@ -61,7 +61,7 @@ pub enum HitTarget {
     /// Lineage pane interior with no node under the point (includes the
     /// centering pad around a fully-fitting diagram).
     LineageBlank,
-    /// An interior ROW of the inspector pane (Issue 04): `(row - inner.y)`,
+    /// An interior ROW of the inspector pane: `(row - inner.y)`,
     /// 0-based inside its border — the same shape [`HitTarget::OverlayRow`]
     /// uses for covering overlays. What the row MEANS (a column row vs other
     /// content) is content-dependent, so the event loop resolves it against
@@ -71,20 +71,20 @@ pub enum HitTarget {
     /// reports `Minimap` and never the node below.
     Minimap,
     /// A shared boundary between adjacent panes — the two border columns where
-    /// the panes' edges meet (screen-spec §5's drag-to-resize target). The
+    /// the panes' edges meet (the drag-to-resize target). The
     /// payload says WHICH boundary, so the drag/double-click edits the right
     /// saved width.
     PaneBorder(Splitter),
     /// The bottom status line.
     StatusBar,
-    /// A contextual hint on the status line (screen-spec §8): the payload is
+    /// A contextual hint on the status line: the payload is
     /// the [`Action`](crate::Action) a click dispatches — `None` marks a
     /// transient readout (splitter hover/drag), which a click leaves inert.
     StatusHint(Option<crate::Action>),
     /// A droppable chip on the status line — which one, so the click dispatch
-    /// consults the §6/§8 chip table.
+    /// consults the chip table.
     StatusChip(StatusChip),
-    /// A selectable row on the home screen (Issue 10): the flat index into
+    /// A selectable row on the home screen: the flat index into
     /// `HomeData::selectable` — the `HomePick` payload. A click opens the
     /// row's model tab / runs its command, identical to Enter.
     HomeRow(usize),
@@ -186,7 +186,7 @@ pub fn hit_target(g: &HitGeometry, col: u16, row: u16) -> Option<HitTarget> {
             HitTarget::ModalExterior
         });
     }
-    // The home body owns the whole pane band (Issue 10): every interior cell
+    // The home body owns the whole pane band: every interior cell
     // routes through the line plan — a drawn `Row(i)` is clickable, the
     // title/health/headers/blank lines are dead chrome. Checked before the
     // drawer/tab strip arms: the band union is disjoint from both anyway,
@@ -201,7 +201,7 @@ pub fn hit_target(g: &HitGeometry, col: u16, row: u16) -> Option<HitTarget> {
             };
         }
     }
-    // §12's list drawer is a covering surface too, one band narrower in
+    // The list drawer is a covering surface too, one band narrower in
     // scope: while it floats, its interior rows resolve exactly like the
     // inline list's (the SAME row/offset space), its frame is inert chrome,
     // and every other cell — panes, tab strip, status — reports
@@ -247,7 +247,7 @@ pub fn hit_target(g: &HitGeometry, col: u16, row: u16) -> Option<HitTarget> {
         }
     }
     if p.status.contains(at) {
-        // §8: a span-covered cell reports the span's own target (a hint's
+        // A span-covered cell reports the span's own target (a hint's
         // action, a chip's identity); uncovered status cells stay StatusBar.
         if let Some(l) = g.status {
             let rel = col.saturating_sub(p.status.x);
@@ -320,11 +320,11 @@ pub fn hit_target(g: &HitGeometry, col: u16, row: u16) -> Option<HitTarget> {
 }
 
 /// The list-interior cell → target resolution the inline pane and the
-/// narrow-band drawer share (§12): the sticky pin claims interior row 0 when
+/// narrow-band drawer share: the sticky pin claims interior row 0 when
 /// it covers a mid-group row, everything below resolves by display row —
 /// identical on both surfaces so a row means the same thing either way.
 fn list_cell_target(g: &HitGeometry, inner: Rect, row: u16) -> HitTarget {
-    // The sticky header (§10) is drawn OVER the first interior row while
+    // The sticky header is drawn OVER the first interior row while
     // scrolling mid-group — that row reports the PINNED header's target,
     // not the model row the pin covers: the pointer sees a header, so a
     // click must fold it. Everything below row 0 resolves normally.

@@ -137,7 +137,7 @@ fn palette_backspace_resets_selected_to_top() {
     }
 }
 
-// ---- Issue 09: list-search hint/history/zero-match -------------------------
+// ---- list-search hint/history/zero-match -------------------------
 
 /// Confirm a list search straight on `app` — the SearchConfirm arm records
 /// the query and closes (the mode payload is what the arm reads).
@@ -322,7 +322,7 @@ fn list_empty_reason_names_the_persistent_filter_and_scope() {
     );
 }
 
-// ---- Issue 09: palette Recent / @-models / availability / zero-match -------
+// ---- palette Recent / @-models / availability / zero-match -------
 
 #[test]
 fn palette_recent_section_leads_after_a_run() {
@@ -349,7 +349,7 @@ fn palette_recent_section_leads_after_a_run() {
         matches!(&selectable[0], PaletteRow::Command { action, .. } if *action == Action::ToggleMinimap),
         "the recent row is the first selectable"
     );
-    // And the same command still appears in the full list below (spec: 続いて全コマンド).
+    // And the same command still appears in the full list below.
     assert!(
         selectable
             .iter()
@@ -580,7 +580,7 @@ fn unavailable_reason_mirrors_focus_routed_movement_noops() {
     );
 }
 
-// ---- Issue 09: help `/`-filter + opening-mode section ----------------------
+// ---- help `/`-filter + opening-mode section ----------------------
 
 #[test]
 fn help_records_the_opening_mode_for_section_order() {

@@ -29,7 +29,7 @@ pub enum MenuEntry {
     Item { binding: usize, label: String },
 }
 
-/// Where the menu box anchors (screen-spec §9): the pointer cell it was
+/// Where the menu box anchors: the pointer cell it was
 /// right-clicked on, or the target node's drawn box for the `a` keyboard
 /// path. The box grows down-right of the anchor and flips on overflow —
 /// the actual cells are computed by the size-aware layer (draw / hit-test).
@@ -76,7 +76,7 @@ pub enum MenuSlot {
     Separator,
 }
 
-/// The node context menu's layout — the screen-spec §9 shape: open/view
+/// The node context menu's layout — the shape: open/view
 /// actions, a rule, the yanks, a rule, the bookmarks/path toggles. This table
 /// carries NO item data; `menu_layout_resolves` asserts every item slot names
 /// a real `(mode, action)` [`BINDINGS`] row.

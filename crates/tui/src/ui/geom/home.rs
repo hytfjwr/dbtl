@@ -1,4 +1,4 @@
-// Home screen line plan (Issue 10, §3): ONE pure sequence — the renderer
+// Home screen line plan: ONE pure sequence — the renderer
 // draws it top-down into the body band and `hit_target` resolves a cell the
 // same way, so "computed window == drawn window" holds for the home too.
 // ---------------------------------------------------------------------------
@@ -13,7 +13,7 @@ pub enum HomeLine {
     /// The `/` search bar (live query + caret while open, dim hint while
     /// closed).
     SearchBar,
-    /// A section's non-selectable content row — §3's middle rows (Health's
+    /// A section's non-selectable content row — the middle rows (Health's
     /// coverage gauge, Last run's status counts, Diff's delta). The index
     /// addresses [`crate::HomeData::info_flat`] — never selectable.
     Info(usize),
@@ -25,23 +25,23 @@ pub enum HomeLine {
     /// A dim note row (`no matches — Esc to clear`).
     Note,
     /// A capped section's `+{n} more` overflow line — non-selectable
-    /// (`S`/`'` reach the full sets; §3's Attention overflow points at `S`).
+    /// (`S`/`'` reach the full sets; the Attention overflow points at `S`).
     Tail(usize),
     /// The trailing `+{n} more` elision when the body clipped rows.
     More(usize),
-    /// §3's fixed `Tip:` line — closes the plan (never selectable).
+    /// The fixed `Tip:` line — closes the plan (never selectable).
     Tip,
 }
 
 /// The home body's FULL line sequence (unclipped) — the plan
 /// [`home_window`] scrolls/clips and `hit_target` re-derives, so a `Row(i)`
 /// cell always lands on the row the screen painted. Pure + mode-independent
-/// (§15).
+/// in both glyph modes.
 ///
-/// Order (fixed, §3): title → pad → search bar → pad → either the open
+/// Order (fixed): title → pad → search bar → pad → either the open
 /// search's result rows (which own the cursor) or the section list in
 /// `HomeData::sections` order — each section a header, its `info` content
-/// rows (§3's Health/Last run/Diff middle rows sit here in section order),
+/// rows (the Health/Last run/Diff middle rows sit here in section order),
 /// its selectable `rows`, then a `+N more` tail — padded between.
 pub fn home_lines(data: &crate::app::HomeData) -> Vec<HomeLine> {
     let mut lines = vec![
@@ -77,7 +77,7 @@ pub fn home_lines(data: &crate::app::HomeData) -> Vec<HomeLine> {
                     lines.push(HomeLine::Tail(n));
                 }
             }
-            // §3's fixed closing line (`Actions` always exists, so the pad
+            // The fixed closing line (`Actions` always exists, so the pad
             // before it can never lead the plan).
             lines.push(HomeLine::Pad);
             lines.push(HomeLine::Tip);

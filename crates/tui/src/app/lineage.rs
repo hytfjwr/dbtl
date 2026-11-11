@@ -75,20 +75,20 @@ impl App {
     ///   on a lineage node it only MOVES THE CURSOR there — the re-root /
     ///   modal / marker-toggle commit is the double-click's job, identical to
     ///   `Enter` (`commit_lineage_node` + `DetailOpen`). A list group header
-    ///   folds/unfolds its group (the `-` key's mouse twin, §10); a blank
+    ///   folds/unfolds its group (the `-` key's mouse twin); a blank
     ///   interior / lineage blank just takes that pane's focus; tab-strip
     ///   cells switch / close / scroll / open the `+` palette.
     /// - **Left** on a status hint runs the hint's `Action` (a `None` action
-    ///   is a transient readout — inert); on a chip, the §8 table's action;
+    ///   is a transient readout — inert); on a chip, the chip's action;
     ///   on a title breadcrumb entry, `history_back` that many steps (no new
     ///   history model — the same replay `b` gives); on the title's `[{v}]`
     ///   / `[lens:…]` tags, `ResetView` / `CycleLens`.
     /// - **Right** on a list row or lineage node opens its context menu at
-    ///   `at` (Issue 06).
+    ///   `at`.
     /// - **Middle** on a list row or a lineage node opens that model in a
     ///   NEW tab; on a tab it closes it.
     /// - The minimap, pane borders, the inert status cells, and the reserved
-    ///   modal targets stay inert (Issues 05 owns the minimap). The
+    ///   modal targets stay inert (the minimap's gestures are loop-level). The
     ///   size-aware half (point → target) is `ui::hit_target`.
     pub fn click_target(
         &mut self,
@@ -129,12 +129,12 @@ impl App {
             (MouseButton::Middle, HitTarget::LineageNode(uid)) => {
                 self.open_node_as_tab(uid);
             }
-            // §3: a home row IS its Enter — open the model tab / run the
+            // A home row IS its Enter — open the model tab / run the
             // command, exactly like `HomeOpen` on the selected row.
             (MouseButton::Left, HitTarget::HomeRow(i)) => {
                 return self.chrome_dispatch(Action::HomePick(*i));
             }
-            // §6: the `×` closes on left-click; the WHOLE tab cell (× column
+            // The `×` closes on left-click; the WHOLE tab cell (× column
             // included) closes on middle-click.
             (MouseButton::Middle, HitTarget::Tab(i) | HitTarget::TabClose(i))
             | (MouseButton::Left, HitTarget::TabClose(i)) => self.close_tab(*i),
@@ -142,9 +142,9 @@ impl App {
             (MouseButton::Left, HitTarget::TabNew) => self.open_tab_palette(),
             (MouseButton::Left, HitTarget::TabScrollLeft) => self.scroll_tab_bar(-1),
             (MouseButton::Left, HitTarget::TabScrollRight) => self.scroll_tab_bar(1),
-            // §8: a status hint click runs the hint's own action — the same
+            // A status hint click runs the hint's own action — the same
             // `apply_action` the key would take (a transient readout's `None`
-            // action is inert by contract). A chip resolves through the §8
+            // action is inert by contract). A chip resolves through the chip
             // table ([`status_chip_action`](App::status_chip_action)).
             (MouseButton::Left, HitTarget::StatusHint(Some(action))) => {
                 return self.chrome_dispatch(*action);
@@ -155,7 +155,7 @@ impl App {
                     return self.chrome_dispatch(action);
                 }
             }
-            // §6: a breadcrumb entry replays `history_back` its step count —
+            // A breadcrumb entry replays `history_back` its step count —
             // no new history model, just the `b` arm repeated.
             (MouseButton::Left, HitTarget::TitleCrumb(steps)) => {
                 for _ in 0..*steps {
@@ -175,7 +175,7 @@ impl App {
                     .model_at(*index)
                     .map(|m| m.unique_id.clone());
                 if let Some(uid) = uid {
-                    // §2 T1: a click picks the row's model exactly like a
+                    // A click picks the row's model exactly like a
                     // key-driven selection — re-root WITH the history push
                     // (and the column-trace / overview rules `jump_to`
                     // owns). A same-model click no-ops inside `jump_to`.
@@ -184,7 +184,7 @@ impl App {
             }
             (MouseButton::Left, HitTarget::ListHeader(layer)) => {
                 self.ui_state.set_focus(Focus::List);
-                // §10: a header click is the fold toggle (`-`'s twin), never
+                // A header click is the fold toggle (`-`'s twin), never
                 // a selection — the row names a group, not a model.
                 self.toggle_group_fold(layer);
             }
@@ -192,8 +192,8 @@ impl App {
                 self.ui_state.set_focus(Focus::List);
             }
             (MouseButton::Left, HitTarget::LineageNode(uid)) => {
-                // M1: a single left click MOVES THE CURSOR only — re-root /
-                // modal / marker-toggle is the double-click commit (§6). A
+                // A single left click MOVES THE CURSOR only — re-root /
+                // modal / marker-toggle is the double-click commit. A
                 // `+M more` marker is a valid cursor position (its uid lives
                 // in the collapsed view, same rule as the keyboard cursor).
                 self.ui_state.set_focus(Focus::RightPane);
@@ -213,10 +213,10 @@ impl App {
                 self.ui_state.set_focus(Focus::Inspector);
             }
             // Inert surfaces do nothing at all — the minimap literally
-            // swallows its click (Issue 05 gives it a pan meaning), and the
-            // reserved targets wait on Issues 05/06 (menu/modal chrome). A
+            // swallows its click (the loop gives it a pan meaning), and the
+            // reserved targets stay inert (menu/modal chrome). A
             // pane boundary's single click is also inert: only its DRAG and
-            // DOUBLE-CLICK carry meaning (§5) — the loop handles both without
+            // DOUBLE-CLICK carry meaning — the loop handles both without
             // routing here.
             (
                 MouseButton::Left,
@@ -245,8 +245,8 @@ impl App {
         out
     }
 
-    /// The cursor half of a lineage node's DOUBLE-click commit (§6's "double
-    /// = Enter"): take the lineage focus and park the cursor on `uid`, after
+    /// The cursor half of a lineage node's DOUBLE-click commit (double-click
+    /// = Enter): take the lineage focus and park the cursor on `uid`, after
     /// which the caller applies `Action::DetailOpen` — so a marker toggles,
     /// a model re-roots, and the root/other node opens its structure modal,
     /// all through Enter's exact arm rather than a second implementation.
@@ -258,8 +258,8 @@ impl App {
     }
 
     /// The settled-hover tooltip's content for `uid`, anchored at the pointer
-    /// cell `at` (§9's pointer summary — drawn whether or not the inspector
-    /// is up, M2-b). A Dag-side snapshot like every other overlay payload, so
+    /// cell `at` (the pointer summary — drawn whether or not the inspector
+    /// is up). A Dag-side snapshot like every other overlay payload, so
     /// `RenderCtx` stays Dag-free. `None` for a uid the Dag doesn't know: a
     /// `+M more` marker is display chrome, not a node — its hover accents the
     /// frame but draws no tooltip (there is nothing to describe).
@@ -556,7 +556,7 @@ impl App {
         }
     }
 
-    /// The `unique_id` the inspector pane describes — §4's rule: the lineage
+    /// The `unique_id` the inspector pane describes — the rule: the lineage
     /// cursor's node, the rooted selection when the cursor is home (or while
     /// the list is focused, where the selection IS the root). This is the one
     /// place that decision lives; the cache key and the title both read it.

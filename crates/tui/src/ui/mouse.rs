@@ -4,7 +4,7 @@
 //! [`MouseOutcome`]s — so this state machine stays pure and headlessly
 //! testable (no `Instant::now()` inside).
 //!
-//! The rules (screen-spec §6):
+//! The rules:
 //! - a **click** is confirmed on RELEASE, only when the pointer stayed on the
 //!   press cell (sub-cell movement can't be observed anyway — coordinates are
 //!   whole cells);
@@ -285,7 +285,7 @@ impl MouseRouter {
 
     /// The live press — button, cell, and the `Instant` it went down — while
     /// a button is held. Consumers needing the press age (a hold threshold,
-    /// Issue 02's drag) read it through here; the router still owns no clock.
+    /// the drag) read it through here; the router still owns no clock.
     pub fn press(&self) -> Option<(MouseButton, Position, Instant)> {
         self.press.map(|p| (p.button, p.at, p.when))
     }
@@ -315,7 +315,7 @@ impl MouseRouter {
     }
 
     /// Mark the `Click` the loop just dispatched as having consumed a
-    /// transient overlay surface that has since closed (the §12 drawer's
+    /// transient overlay surface that has since closed (the drawer's
     /// click-pick): the follow-up `DoubleClick` must be inert or it would
     /// hit-test the revealed surface and act on a target the user never
     /// aimed at.
@@ -481,7 +481,7 @@ mod tests {
         let t0 = t0();
         let cases = [
             (399u64, true),
-            (400u64, true),  // boundary: "400ms以内" is inclusive
+            (400u64, true),  // boundary: the 400ms budget is inclusive
             (401u64, false), // over the window → second click
         ];
         for (ms, expect_double) in cases {
@@ -591,7 +591,7 @@ mod tests {
         let mut r = MouseRouter::new();
         r.feed(press(MouseButton::Left, 5, 3), t0);
         // No Drag events between press and release — the ≥1-cell displacement
-        // still makes it a drag (spec §6), never a click.
+        // still makes it a drag, never a click.
         assert_eq!(
             r.feed(release(MouseButton::Left, 8, 3), t0),
             Some(MouseOutcome::DragEnd {

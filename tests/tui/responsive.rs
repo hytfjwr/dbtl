@@ -1,7 +1,7 @@
 use super::*;
 
 // ============================================================================
-// §12 responsive layout: too-small screen, narrow band, the list drawer
+// Responsive layout: too-small screen, narrow band, the list drawer
 // ============================================================================
 
 /// Render `draw` with a `UiState` mutated by `f`, at `width x height`.

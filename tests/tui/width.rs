@@ -1,7 +1,7 @@
 use super::*;
 
 // ============================================================================
-// Issue 11: width-tiered columns, truncation, fold markers, sticky, hover
+// width-tiered columns, truncation, fold markers, sticky, hover
 // ============================================================================
 
 /// Render `fixture_list` at `width x height`: `prep_state` mutates `UiState`
@@ -55,7 +55,7 @@ pub(super) fn render_model_list(
 
 #[test]
 pub(super) fn list_columns_follow_the_inner_width_tiers() {
-    // §10's width table on the pane's INNER width (pane = inner + 2 borders):
+    // The width table on the pane's INNER width (pane = inner + 2 borders):
     // <30 name only; 30..=43 name + `↑u ↓d`; >=44 adds the materialization tag
     // + `t:N`. The four spec probes: 29, 30, 43, 44.
     for (inner, badges, wide) in [
@@ -206,7 +206,7 @@ pub(super) fn sticky_hit_test_reports_the_pinned_header() {
 
 #[test]
 pub(super) fn hovered_row_tints_the_surface_colour() {
-    // §6's hover cue: a `ListRow` hover paints `theme.surface` across the row.
+    // The hover cue: a `ListRow` hover paints `theme.surface` across the row.
     use dbtl::ui::HitTarget;
     let target = HitTarget::ListRow(1);
     let buffer = render_list_with(100, 30, |_| {}, None, Some(&target));

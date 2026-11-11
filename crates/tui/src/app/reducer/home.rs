@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn apply(app: &mut App, action: Action) -> Arm {
     let out: Outcome = match action {
-        // ---- home (Issue 10; §3) ----
+        // ---- home ----
         // `~` (or the `⌂` cell): activate the fixed home tab. From home it
         // is a no-op (idx 0 is already active).
         Action::HomeGo => {
@@ -15,8 +15,8 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
             app.move_home_sel(dir);
             Outcome::cont()
         }
-        // Enter / a row click: open the row's model AS A TAB (T2 dedupes to
-        // the open one), or run its command — §3 drops the unavailable ones
+        // Enter / a row click: open the row's model AS A TAB (dedupes to
+        // the open one), or run its command — the unavailable ones drop
         // at build, so a drawn command always runs.
         Action::HomeOpen | Action::HomePick(_) => {
             let idx = match action {

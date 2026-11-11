@@ -1,13 +1,13 @@
 use super::*;
 
 // ---------------------------------------------------------------------------
-// NameMatchResolver — Issue 07's approximation
+// NameMatchResolver — the approximation
 // ---------------------------------------------------------------------------
 
 /// The v0 resolution strategy: column names + a naïve scan of the outermost
 /// SELECT. Everything it produces is [`Confidence::NameMatch`] (or
 /// [`Confidence::Stale`] when it had to read a stale compiled file) — the UI
-/// can always distinguish approximation from Issue 08's `Exact`.
+/// can always distinguish approximation from the `Exact`.
 ///
 /// Internal memos (`col_memo`/`sql_memo`) make per-node answers cheap to reuse
 /// across [`ColumnLineage`] passes. They are keyed by uid alone, so the
@@ -150,7 +150,7 @@ impl NameMatchResolver {
     ///   [`Transform`](ColumnEdgeKind::Transform), and `*` / `t.*` →
     ///   passthrough for every parent column the node outputs.
     /// - when no select item produces `c` (a documented column the extraction
-    ///   can't see), the spec's fallback applies: `c` present in the node's
+    ///   can't see), the fallback applies: `c` present in the node's
     ///   SQL and `c` a parent column → `Passthrough`.
     /// - a parent column that appears in the FROM/JOIN/WHERE/GROUP BY tail and
     ///   carries no direct edge → [`FilterOrJoin`](ColumnEdgeKind::FilterOrJoin)
@@ -240,7 +240,7 @@ impl NameMatchResolver {
             }
         }
 
-        // Fallback passthrough (the spec's "identifier c appears in the SQL"):
+        // Fallback passthrough (the "identifier c appears in the SQL" rule):
         // a documented column no select item produced is assumed carried
         // through verbatim when its name appears in the SQL at all (e.g. a
         // column behind `select *` that the parent's column list can't see).

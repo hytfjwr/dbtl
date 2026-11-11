@@ -1,5 +1,5 @@
-//! Issue 10's home screen renderer — draws the loop-built [`HomeData`] into
-//! the whole body band while the fixed home tab is active (§3). Pure
+//! The home screen renderer — draws the loop-built [`HomeData`] into
+//! the whole body band while the fixed home tab is active. Pure
 //! painting: the line sequence comes from [`super::geom::home_lines`] (the
 //! same plan `hit_target` resolves), the rows/strings arrive precomputed —
 //! nothing here reads a `Dag`.
@@ -21,7 +21,7 @@ use crate::app::HomeTone;
 /// the row needs (a full-width row never truncates its label).
 const DETAIL_W: usize = 34;
 /// The coverage gauge's cell count (`cov [#######---] 80%`-style — the bar
-/// is `ok`/`surface`-background SPACES, never glyphs, per the §15 rule).
+/// is `ok`/`surface`-background SPACES, never glyphs, per the no-gauge rule).
 const GAUGE_W: usize = 12;
 
 /// Draw the home body into `area` (the `list ∪ lineage ∪ inspector` band).
@@ -34,7 +34,7 @@ pub(crate) fn draw_home(frame: &mut Frame, area: Rect, data: &crate::HomeData, c
     }
     let t = ctx.theme;
     let chrome = super::chrome(ctx.glyphs);
-    // §3's `·` separator is a Unicode-only glyph — ASCII mode falls back
+    // The `·` separator is a Unicode-only glyph — ASCII mode falls back
     // to `|` (the ascii_guard renders this surface in ASCII mode).
     let sep = if ctx.glyphs == crate::GlyphMode::Ascii {
         " | "
@@ -84,7 +84,7 @@ pub(crate) fn draw_home(frame: &mut Frame, area: Rect, data: &crate::HomeData, c
                             " dbtl home",
                             Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
                         ),
-                        // §3's 枠の題: project · data source + path · scope
+                        // The header frame: project · data source + path · scope
                         // (the `·` swaps for `|` under ASCII mode).
                         Span::styled(
                             format!(
@@ -101,9 +101,9 @@ pub(crate) fn draw_home(frame: &mut Frame, area: Rect, data: &crate::HomeData, c
                 );
             }
             HomeLine::Info(i) => match data.info_flat.get(*i) {
-                // §3's Health row: `coverage [gauge] pct% (n/t)` + the
+                // The Health row: `coverage [gauge] pct% (n/t)` + the
                 // lint / layer-violation / orphan counts. The gauge is
-                // `ok`/`surface` background SPACES (§15's no-gauge-glyphs
+                // `ok`/`surface` background SPACES (the no-gauge-glyphs
                 // rule) — identical to the stats dashboard's bar.
                 Some(crate::app::HomeInfo::Gauge {
                     tested,
@@ -140,7 +140,7 @@ pub(crate) fn draw_home(frame: &mut Frame, area: Rect, data: &crate::HomeData, c
                     }
                     frame.render_widget(Paragraph::new(Line::from(spans)), row);
                 }
-                // §3's Last run row: per-status counts through Chrome's
+                // The Last run row: per-status counts through Chrome's
                 // run marks (ASCII swaps `x`/`!`/`v`) + the timestamp.
                 Some(crate::app::HomeInfo::Run {
                     error,
@@ -173,7 +173,7 @@ pub(crate) fn draw_home(frame: &mut Frame, area: Rect, data: &crate::HomeData, c
                     ));
                     frame.render_widget(Paragraph::new(Line::from(spans)), row);
                 }
-                // §3's Diff row (and any other dim content line).
+                // The Diff row (and any other dim content line).
                 Some(crate::app::HomeInfo::Text(text)) => {
                     frame.render_widget(
                         Paragraph::new(Line::from(Span::styled(
@@ -198,7 +198,7 @@ pub(crate) fn draw_home(frame: &mut Frame, area: Rect, data: &crate::HomeData, c
                         ),
                     ]),
                     None => {
-                        // §3's syntax hint sits right-aligned in the row.
+                        // The syntax hint sits right-aligned in the row.
                         let hint = format!("search models{sep}Enter opens a tab");
                         let syntax = "!selector  ?full-text";
                         let used = 3 + hint.chars().count() + syntax.chars().count();
@@ -256,7 +256,7 @@ pub(crate) fn draw_home(frame: &mut Frame, area: Rect, data: &crate::HomeData, c
                 );
             }
             HomeLine::Tip => {
-                // §3's fixed closing line — ASCII-safe in both glyph modes.
+                // The fixed closing line — ASCII-safe in both glyph modes.
                 frame.render_widget(
                     Paragraph::new(Line::from(Span::styled(
                         format!(

@@ -25,13 +25,13 @@ mod cll;
 mod diff;
 mod home;
 mod inspector;
-mod issue09;
 mod list_assembly;
 mod menu;
 mod minimap;
 mod render;
 mod responsive;
 mod scroll;
+mod search_palette;
 mod toasts;
 mod width;
 

@@ -69,9 +69,9 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
             }
             Outcome::cont()
         }
-        // `<`/`>`: nudge the saved pane width by §5's 4-column step, a pure
+        // `<`/`>`: nudge the saved pane width by the 4-column step, a pure
         // UiState view-pref like the minimap — direct here, never through
-        // `reduce_selection`. The pane follows §5's focus rule: the inspector
+        // `reduce_selection`. The pane follows the focus rule: the inspector
         // while focused, the list otherwise. The floor is in the write; the
         // terminal-relative cap is the event loop's post-clamp (size-aware)
         // plus `pane_layout`'s display clamp — the reducer stays size-blind.
@@ -88,9 +88,9 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
             }
             Outcome::cont()
         }
-        // `=`: every resizable pane's saved width back to its §1 default
-        // (§5 "全部を既定値に" — the inspector's saved width included, though
-        // its pane only materializes in Issue 04).
+        // `=`: every resizable pane's saved width back to its default
+        // (the inspector's saved width included, though
+        // its pane isn't drawn yet).
         Action::PaneWidthsReset => {
             app.ui_state.reset_pane_width(crate::ui::Splitter::List);
             app.ui_state
@@ -104,7 +104,8 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
         }
         // A click on an inspector column row moves the pane's column cursor
         // to it — the same select-before-Enter contract the columns modal's
-        // `ColumnPick` keeps (double-click wiring lands with Issue 05).
+        // `ColumnPick` keeps (the double-click wiring lands with the pointer
+        // gestures).
         Action::InspectorColumnPick(i) => {
             let cols = app
                 .inspector_view()

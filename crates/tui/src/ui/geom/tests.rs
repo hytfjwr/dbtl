@@ -30,7 +30,7 @@ fn home_fixture(rows: usize) -> HomeData {
 
 #[test]
 fn home_lines_orders_chrome_then_sections() {
-    // §3's fixed plan: title, pad, search bar, pad — then one header
+    // The fixed plan: title, pad, search bar, pad — then one header
     // per section followed by its info content rows and flat-indexed
     // selectable rows, and the fixed `Tip` line closes the plan
     // (search replaces it all).
@@ -123,7 +123,7 @@ fn cfg() -> PaneConfig {
 
 #[test]
 fn pane_layout_default_is_list_34_plus_lineage() {
-    // §1: the list defaults to 34 columns regardless of terminal width —
+    // The list defaults to 34 columns regardless of terminal width —
     // NOT a ratio (the old 40/60 split is gone).
     for w in [80u16, 100, 160, 220] {
         let area = Rect::new(0, 0, w, 30);
@@ -179,8 +179,8 @@ fn pane_layout_clamps_saved_width_to_min_and_cap() {
 
 #[test]
 fn pane_layout_squeezes_displayed_width_below_floor_when_narrow() {
-    // §5: the saved value is untouched while the DISPLAYED width shrinks.
-    // Below §12's 80-column band edge the LIST never sits inline — the
+    // The saved value is untouched while the DISPLAYED width shrinks.
+    // Below the 80-column band edge the LIST never sits inline — the
     // squeeze can't demonstrate on it (its only surface there is the
     // drawer), so the INSPECTOR carries the below-floor demo: body 55,
     // saved 42 → 50%-cap 27 → floor 30, then the deficit squeezes the
@@ -190,7 +190,7 @@ fn pane_layout_squeezes_displayed_width_below_floor_when_narrow() {
         ..cfg()
     };
     let p = pane_layout(Rect::new(0, 0, 55, 30), &cfg);
-    assert_eq!(p.list.width, 0, "§12's band hides the inline list");
+    assert_eq!(p.list.width, 0, "the band hides the inline list");
     assert_eq!(p.inspector.width, 15, "55 - 40 = a 15-column inspector");
     assert_eq!(p.lineage.width, MIN_LINEAGE_WIDTH);
     assert_eq!(cfg.inspector_width, 42, "the saved width never changes");
@@ -198,7 +198,7 @@ fn pane_layout_squeezes_displayed_width_below_floor_when_narrow() {
 
 #[test]
 fn terminal_too_small_boundary() {
-    // §12's usable floor: EITHER axis below it gates the app.
+    // The usable floor: EITHER axis below it gates the app.
     let small = |w: u16, h: u16| terminal_too_small(Rect::new(0, 0, w, h));
     assert!(small(49, 12), "one column under the width floor");
     assert!(small(50, 11), "one row under the height floor");
@@ -209,7 +209,7 @@ fn terminal_too_small_boundary() {
 
 #[test]
 fn pane_layout_narrow_band_hides_inline_list() {
-    // §12: below 80 columns the list never sits inline — even with the
+    // Below 80 columns the list never sits inline — even with the
     // pref on — because the drawer is its only surface there. The pref's
     // saved width is not consulted at all (not even squeezed).
     for w in [50u16, 60, 79] {
@@ -225,7 +225,7 @@ fn pane_layout_narrow_band_hides_inline_list() {
 
 #[test]
 fn pane_layout_drawer_only_floats_in_the_band() {
-    // §12: `min(34, 60%)` wide, the body's full height, over its left edge.
+    // `min(34, 60%)` wide, the body's full height, over its left edge.
     let open = PaneConfig {
         list_drawer: true,
         ..cfg()
@@ -353,7 +353,7 @@ fn pane_layout_hidden_list_gives_lineage_the_full_body() {
 
 #[test]
 fn pane_layout_splitter_is_the_adjacent_two_border_columns() {
-    // §5's strip: the list's right border column plus the lineage's left
+    // The strip: the list's right border column plus the lineage's left
     // border column, spanning the whole body — either side grabs.
     let p = pane_layout(Rect::new(0, 0, 100, 30), &cfg());
     assert_eq!(
@@ -367,7 +367,7 @@ fn pane_layout_splitter_is_the_adjacent_two_border_columns() {
 
 #[test]
 fn pane_layout_inspector_takes_the_right_columns() {
-    // Issue 04's pane, driven through the same config: a 160-col terminal
+    // the pane, driven through the same config: a 160-col terminal
     // shows list 34 + inspector 42 + the lineage in between, with a second
     // splitter on the lineage|inspector edge.
     let p = pane_layout(
@@ -386,7 +386,7 @@ fn pane_layout_inspector_takes_the_right_columns() {
 
 #[test]
 fn pane_layout_tab_bar_claims_a_row_above_the_body() {
-    // Issue 03's strip: with the flag on, the body starts one row lower —
+    // the strip: with the flag on, the body starts one row lower —
     // status is untouched.
     let p = pane_layout(
         Rect::new(0, 0, 100, 30),
@@ -576,18 +576,18 @@ fn pane_layout_narrow_squeeze_prefers_lineage_floor_then_order() {
     );
     // 80 cols: floors can't all hold — the inspector's own floor breaks
     // first (the least essential pane), the list keeps 18. (80 is also
-    // §12's band edge — the inline list still exists at exactly 80.)
+    // the band edge — the inline list still exists at exactly 80.)
     let p = pane_layout(Rect::new(0, 0, 80, 30), &cfg);
     assert_eq!(
         (p.list.width, p.lineage.width, p.inspector.width),
         (18, 40, 22),
         "inspector dips below its floor before the list does"
     );
-    // 55 cols — inside §12's band: the inline list is gone entirely (its
+    // 55 cols — inside the band: the inline list is gone entirely (its
     // only surface is the drawer), so the squeeze never touches it; the
     // inspector dips below its floor to 15 and the lineage keeps its 40.
     let p = pane_layout(Rect::new(0, 0, 55, 30), &cfg);
-    assert_eq!(p.list.width, 0, "§12's band hides the inline list");
+    assert_eq!(p.list.width, 0, "the band hides the inline list");
     assert_eq!((p.lineage.width, p.inspector.width), (40, 15));
     // Narrower still the inspector too is squeezed away.
     let p = pane_layout(Rect::new(0, 0, 50, 30), &cfg);
@@ -600,7 +600,7 @@ fn pane_layout_max_cap_interacts_with_squeeze() {
     // A saved width past the cap on a narrow terminal: cap first, then the
     // squeeze decides (cap 60% of 80 = 48, then lineage floor shrinks it).
     // Uses 80 — the narrowest terminal where the inline list exists at all
-    // under §12's band rule.
+    // under the band rule.
     let p = pane_layout(
         Rect::new(0, 0, 80, 30),
         &PaneConfig {
@@ -619,7 +619,7 @@ fn pane_layout_max_cap_interacts_with_squeeze() {
             ..cfg()
         },
     );
-    assert_eq!(p.list.width, 0, "§12's band overrides even a huge pref");
+    assert_eq!(p.list.width, 0, "the band overrides even a huge pref");
     assert_eq!(p.lineage.width, 60);
 }
 
@@ -888,7 +888,7 @@ fn tooltip_rect_hangs_below_right_and_flips_on_overflow() {
     let _ = tooltip_rect(Position { x: 0, y: 0 }, 5, 3, Rect::new(0, 0, 1, 1));
 }
 
-// ---- Issue 07: status-line + title chrome geometry ----
+// ---- status-line + title chrome geometry ----
 
 fn hint(key: &str, desc: &str, action: crate::Action, prio: u8) -> crate::action::StatusHint {
     crate::action::StatusHint {
@@ -949,7 +949,7 @@ fn status_layout_tiles_hints_left_and_chips_right() {
 #[test]
 fn status_layout_drops_the_hint_tail_then_the_chip_tail() {
     use crate::Action as A;
-    // §8's shed order: the hints' low-priority tail first, then — only
+    // The shed order: the hints' low-priority tail first, then — only
     // once the hints are gone — the chips' tail. The kept set is always
     // a PREFIX of each priority-sorted input.
     let hints = vec![

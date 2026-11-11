@@ -2,11 +2,11 @@ use super::*;
 
 pub(super) fn apply(app: &mut App, action: Action) -> Arm {
     let out: Outcome = match action {
-        // ---- tabs (Issue 03; §2) ----
+        // ---- tabs ----
         // `O`: the focus target's model opens in a NEW tab right of the
         // active one — the lineage cursor's node when the lineage pane is
         // focused, else the list cursor's (a non-model / filtered-out node
-        // toasts its kind instead). Already-open roots just activate (T2).
+        // toasts its kind instead). Already-open roots just activate.
         Action::TabOpen => {
             if let Some(uid) = app.focus_target() {
                 app.open_node_as_tab(&uid);

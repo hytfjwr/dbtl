@@ -485,12 +485,12 @@ fn first_in_group_selection_reveals_its_header() {
     assert_eq!(off, 31, "window snaps up to reveal the utilities header");
 }
 
-// ---- §12 responsive band: auto-hide verdict, drawer, focus pins ----
+// ---- Responsive band: auto-hide verdict, drawer, focus pins ----
 
 #[test]
 fn inspector_policy_shown_at_resolves_the_auto_width_rule() {
     use InspectorPolicy::*;
-    // §12's inspector rule: auto at >=160 columns only; the explicit
+    // The inspector rule: auto at >=160 columns only; the explicit
     // prefs answer for themselves at any width.
     assert!(Auto.shown_at(160));
     assert!(Auto.shown_at(400));
