@@ -17,6 +17,14 @@ path = "src/lib.rs"
 name = "dbtl"
 path = "src/main.rs"
 
+[profile.release]
+# Whole-graph optimization over a single codegen unit, with the symbol
+# table stripped out of the shipped binaries. `panic` stays `unwind` —
+# the TUI's panic hook restores the terminal on the unwind path.
+lto = true
+codegen-units = 1
+strip = true
+
 [workspace]
 members = ["crates/*", "xtask"]
 
@@ -71,6 +79,10 @@ dbtl-tui.workspace = true
 dbtl-docs.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+# Generated output (shell completions / the man page) is rendered from the
+# clap definition itself so the shipped files can't drift from the CLI.
+clap_complete = "4.6.11"
+clap_mangen = "0.3.3"
 ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true

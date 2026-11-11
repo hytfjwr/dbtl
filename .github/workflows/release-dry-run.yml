@@ -1,0 +1,27 @@
+name: Release dry run
+
+# Builds and packages every release target through the same reusable
+# pipeline release.yml calls — under a dummy tag, so nothing is published:
+# no tag is created, no GitHub release, no tap update, no attestation
+# (this workflow never requests an id-token).
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/release*.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  dry-run:
+    name: Release dry run
+    uses: ./.github/workflows/release-build.yml
+    with:
+      tag: v0.0.0-dryrun
+      ref: ${{ github.sha }}

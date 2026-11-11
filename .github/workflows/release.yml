@@ -72,80 +72,64 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+  # Build + packaging are reusable: release-dry-run.yml calls the same
+  # workflow so the dry run exercises the exact steps a real release takes.
   build:
-    name: Build (${{ matrix.target }})
     needs: prepare
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    uses: ./.github/workflows/release-build.yml
+    with:
+      tag: ${{ needs.prepare.outputs.tag }}
+      ref: ${{ needs.prepare.outputs.tag }}
+
+  # Signing permissions live only in this job — the build jobs keep their
+  # read-only token, and a caller that cannot mint attestations (a dry run)
+  # never reaches this job at all.
+  attest:
+    name: Attest release artifacts
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-            runner: macos-latest
-          - target: x86_64-apple-darwin
-            runner: macos-latest
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
+      id-token: write
+      attestations: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download the release asset bundle
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
-          persist-credentials: false
+          name: release-dist
+          path: dist
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          toolchain: stable
-          targets: ${{ matrix.target }}
+          subject-path: |
+            dist/dbtl-*.tar.gz
+            dist/dbtl-*.zip
+            dist/checksums.txt
 
-      - name: Build
-        env:
-          TARGET: ${{ matrix.target }}
-        run: cargo build --release --locked --target "$TARGET"
-
-      - name: Package
-        env:
-          TARGET: ${{ matrix.target }}
-          TAG: ${{ needs.prepare.outputs.tag }}
-        run: |
-          staging="dbtl-${TAG}-${TARGET}"
-          mkdir "$staging"
-          cp "target/${TARGET}/release/dbtl" LICENSE README.md "$staging/"
-          tar -czf "${staging}.tar.gz" "$staging"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      # The SBOM attestation binds the CycloneDX document to the archives it
+      # describes — checksums.txt is the same subject list the release ships.
+      - name: Attest the SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
-          name: dbtl-${{ matrix.target }}
-          path: dbtl-*.tar.gz
-          if-no-files-found: error
+          sbom-path: "dist/dbtl-${{ needs.prepare.outputs.tag }}.cdx.json"
+          subject-checksums: dist/checksums.txt
 
   release:
     name: Create release
-    needs: [prepare, build]
+    needs: [prepare, build, attest]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       # gh release create / upload.
       contents: write
     steps:
-      - name: Download artifacts
+      - name: Download the release asset bundle
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          name: release-dist
           path: dist
-          merge-multiple: true
-
-      - name: Create checksums
-        run: |
-          cd dist
-          sha256sum dbtl-*.tar.gz > checksums.txt
-          cat checksums.txt
 
       - name: Create or update GitHub release
         env:
@@ -155,14 +139,13 @@ jobs:
           # Idempotent: a release may already exist (e.g. drafted from the UI,
           # which also pushes the tag) — then just attach the assets to it.
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
-              dist/dbtl-*.tar.gz dist/checksums.txt
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber dist/*
           else
             gh release create "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --title "$TAG" \
               --generate-notes \
-              dist/dbtl-*.tar.gz dist/checksums.txt
+              dist/*
           fi
 
   homebrew:
@@ -227,6 +210,10 @@ jobs:
 
             def install
               bin.install "dbtl"
+              bash_completion.install "completions/dbtl.bash" => "dbtl"
+              zsh_completion.install "completions/_dbtl"
+              fish_completion.install "completions/dbtl.fish"
+              man1.install "man/dbtl.1"
             end
 
             test do

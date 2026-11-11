@@ -26,8 +26,8 @@ use anyhow::Context;
 use clap::{CommandFactory, FromArgMatches};
 
 use cli::{
-    build_app, check_flag_usage, exit_code, load_baseline, run_check, run_columns, run_docs,
-    run_impact, Cli, CliError, Commands, DataSourceArgs,
+    build_app, check_flag_usage, exit_code, load_baseline, run_check, run_columns, run_completions,
+    run_docs, run_impact, run_man, Cli, CliError, Commands, DataSourceArgs,
 };
 use event_loop::{event_loop, find_dbt};
 use terminal::{
@@ -147,6 +147,13 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
             ..
         }) => {
             return run_columns(target, *upstream, *format, &src);
+        }
+        // Generated from the clap definition — no data source needed.
+        Some(Commands::Completions { shell }) => {
+            return run_completions(*shell);
+        }
+        Some(Commands::Man) => {
+            return run_man();
         }
         None => {}
     }

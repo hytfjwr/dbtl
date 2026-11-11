@@ -662,6 +662,76 @@ fn explicit_catalog_overrides_the_sibling() {
     );
 }
 
+// ---- completions / man: generated from the clap definition --------------
+
+#[test]
+fn completions_emit_scripts_for_every_shell() {
+    for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
+        let out = run(&["completions", shell]);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "completions {shell}: {}",
+            stderr(&out)
+        );
+        assert!(
+            stdout(&out).contains("dbtl"),
+            "completions {shell} names dbtl"
+        );
+    }
+    // Two runs are byte-identical — the script is a pure function of the
+    // clap definition.
+    assert_eq!(
+        run(&["completions", "zsh"]).stdout,
+        run(&["completions", "zsh"]).stdout
+    );
+}
+
+#[test]
+fn man_emits_roff_and_stays_hidden() {
+    let out = run(&["man"]);
+    assert_eq!(out.status.code(), Some(0), "man: {}", stderr(&out));
+    let roff = stdout(&out);
+    assert!(roff.contains(".TH dbtl"), "roff title line: {roff}");
+    // Byte-identical across runs — no embedded timestamp.
+    assert_eq!(roff, stdout(&run(&["man"])));
+    // Hidden: absent from `--help`'s command list and from the man page's
+    // own SUBCOMMANDS section.
+    let help = stdout(&run(&["--help"]));
+    assert!(
+        !help
+            .lines()
+            .any(|l| l.trim_start() == "man" || l.trim_start().starts_with("man ")),
+        "--help omits the hidden man subcommand"
+    );
+    assert!(
+        !roff.contains("dbtl\\-man"),
+        "the man page omits itself: {roff}"
+    );
+}
+
+#[test]
+fn completions_and_man_reject_every_global_flag() {
+    let m = fixture_manifest();
+    let m_str = m.to_str().unwrap();
+    for args in [
+        vec!["--manifest", m_str, "completions", "bash"],
+        vec!["completions", "bash", "--manifest", m_str],
+        vec!["--diff", "x", "man"],
+        vec!["man", "--include-packages"],
+        vec!["--ascii", "completions", "zsh"],
+        vec!["--watch", "man"],
+    ] {
+        let out = run(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{args:?} is a usage error, stderr: {}",
+            stderr(&out)
+        );
+    }
+}
+
 // ---- TUI startup paths: classified before terminal init -----------------
 
 #[test]
