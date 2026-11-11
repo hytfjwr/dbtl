@@ -478,6 +478,127 @@ pub static REGISTRY: &[RuleInfo] = &[
         params: &[],
         requires: Requires::Graph,
     },
+    RuleInfo {
+        rule: LintRule::SelectStar,
+        id: "select_star",
+        category: Category::Sql,
+        default_severity: Severity::Warn,
+        summary: "a model's final SELECT reads * or t.*",
+        rationale: "A wildcard projection inherits whatever the upstream \
+                    happens to emit today — new columns ride through \
+                    unannounced, a removed column surfaces as a downstream \
+                    error far from the cause, and the model's contract is \
+                    invisible to readers and docs.",
+        example: "fct_orders ends with `select * from joined`. Fix: spell \
+                  out the columns the model actually produces so its output \
+                  contract is explicit.",
+        params: &[],
+        requires: Requires::Sql,
+    },
+    RuleInfo {
+        rule: LintRule::HardCodedReferences,
+        id: "hard_coded_references",
+        category: Category::Sql,
+        default_severity: Severity::Warn,
+        summary: "a model names a relation literally instead of ref()/source()",
+        rationale: "A hand-written `from analytics.orders` is a dependency \
+                    dbt can't see — it misses the DAG (no ref edge), builds \
+                    out of order, and reads the wrong table when the schema \
+                    or target changes. ref()/source() is how a model \
+                    declares what it needs.",
+        example: "stg_events selects from prod.raw_events instead of \
+                  source('prod', 'raw_events'). Fix: declare the relation \
+                  with ref()/source() so it joins the lineage and gets \
+                  environment-aware naming.",
+        params: &[],
+        requires: Requires::Sql,
+    },
+    RuleInfo {
+        rule: LintRule::CartesianJoin,
+        id: "cartesian_join",
+        category: Category::Sql,
+        default_severity: Severity::Warn,
+        summary: "a JOIN carries no join condition",
+        rationale: "A conditionless join multiplies every row of one side by \
+                    every row of the other — usually a missing ON clause, and \
+                    always a row explosion nobody asked for. `cross join` is \
+                    the same shape spelled intentionally and is just as \
+                    dangerous in a model.",
+        example: "fct_events writes `join dim_users` with no ON. Fix: add \
+                  the join predicate (`on e.user_id = u.id`) — or use \
+                  `cross join` only when the product is truly intended.",
+        params: &[],
+        requires: Requires::Sql,
+    },
+    RuleInfo {
+        rule: LintRule::UnknownColumnReference,
+        id: "unknown_column_reference",
+        category: Category::Sql,
+        default_severity: Severity::Warn,
+        summary: "a model names a column a trusted upstream doesn't emit",
+        rationale: "A column that doesn't exist in the parent is either a \
+                    typo that fails at run time or a leftover name from a \
+                    renamed column — both surface as warehouse errors at \
+                    build time instead of at review time.",
+        example: "fct_orders selects p.status but parent stg_payments \
+                  (enforced contract) declares only order_id/amount. Fix: \
+                  correct the column name, or extend the parent's declared \
+                  columns.",
+        params: &[],
+        requires: Requires::Sql,
+    },
+    RuleInfo {
+        rule: LintRule::ForbiddenPatterns,
+        id: "forbidden_patterns",
+        category: Category::Sql,
+        default_severity: Severity::Warn,
+        summary: "a model's raw SQL matches a configured forbidden pattern",
+        rationale: "Some constructs are banned by project policy — unsafe \
+                    functions, non-deterministic calls, debug leftovers. A \
+                    regex list keeps that policy in `.dbtl.yml` where review \
+                    can see it, instead of a tribal knowledge check.",
+        example: "with patterns: [\"\\\\bUNSAFE_UDF\\\\b\"], stg_events calls \
+                  UNSAFE_UDF(). Fix: remove the call, or narrow the pattern \
+                  in .dbtl.yml when the match is legitimate.",
+        params: &[ParamSpec::regex_list(
+            "patterns",
+            &[],
+            "regular expressions the raw SQL must not match",
+        )],
+        requires: Requires::Sql,
+    },
+    RuleInfo {
+        rule: LintRule::WarehouseTypeDrift,
+        id: "warehouse_type_drift",
+        category: Category::Warehouse,
+        default_severity: Severity::Warn,
+        summary: "a declared column's data_type disagrees with the warehouse",
+        rationale: "schema.yml says one type, the warehouse reports another — \
+                    the docs lie about the model's real shape, and a reader \
+                    who trusts the declared type writes casts and joins that \
+                    behave differently than expected.",
+        example: "stg_orders declares amount as int but the catalog records \
+                  NUMERIC(10,2). Fix: correct the declared data_type (or the \
+                    model's cast) so docs match the warehouse.",
+        params: &[],
+        requires: Requires::Catalog,
+    },
+    RuleInfo {
+        rule: LintRule::ColumnsMissingInWarehouse,
+        id: "columns_missing_in_warehouse",
+        category: Category::Warehouse,
+        default_severity: Severity::Warn,
+        summary: "a declared column doesn't exist in the warehouse",
+        rationale: "Documenting a column the warehouse doesn't have means \
+                    the model's docs promise a field its build never \
+                    produced — the declaration is a typo'd name, a dropped \
+                    select, or a stale schema.yml.",
+        example: "fct_orders declares ship_method but the catalog lists no \
+                  such column. Fix: rename the declaration to the real \
+                  column, or add it back to the model's output.",
+        params: &[],
+        requires: Requires::Catalog,
+    },
 ];
 
 /// A rule family — used for grouping in `--list-rules`-style output and for
@@ -595,6 +716,21 @@ impl ParamSpec {
             description,
         }
     }
+
+    /// A regular-expression-list parameter — every item must compile; the
+    /// config parser rejects invalid patterns at load (a rule evaluator
+    /// never sees a broken pattern).
+    pub const fn regex_list(
+        name: &'static str,
+        default: &'static [&'static str],
+        description: &'static str,
+    ) -> Self {
+        ParamSpec {
+            name,
+            kind: ParamKind::RegexList { default },
+            description,
+        }
+    }
 }
 
 /// The value space of a [`ParamSpec`].
@@ -609,6 +745,10 @@ pub enum ParamKind {
         default: &'static [&'static str],
         allowed: Option<&'static [&'static str]>,
     },
+    /// A list of regular expressions — the config parser validates each
+    /// item compiles at load; items land in `LintConfig::list_params` like
+    /// a `StringList`.
+    RegexList { default: &'static [&'static str] },
 }
 
 /// One registry row — everything there is to say about a rule except its
@@ -651,10 +791,13 @@ impl RuleInfo {
         })
     }
 
-    /// `(default, allowed)` of the declared string-list parameter `name`, if
-    /// any. The config parser validates items against `allowed` and
-    /// [`LintConfig::str_list_param`](crate::LintConfig::str_list_param) falls
-    /// back to `default`, so the registry is the single place both read.
+    /// `(default, allowed)` of the declared list parameter `name`, if any —
+    /// `RegexList` rows report `allowed: None` (any string is a candidate,
+    /// the regex-compile check is the validation). The config parser
+    /// validates `StringList` items against `allowed` and
+    /// [`LintConfig::str_list_param`](crate::LintConfig::str_list_param)
+    /// falls back to `default`, so the registry is the single place both
+    /// read.
     pub fn str_list_param(
         &self,
         name: &str,
@@ -663,6 +806,7 @@ impl RuleInfo {
             ParamKind::StringList { default, allowed } if p.name == name => {
                 Some((default, allowed))
             }
+            ParamKind::RegexList { default } if p.name == name => Some((default, None)),
             _ => None,
         })
     }

@@ -213,10 +213,9 @@ fn usage_errors_exit_two() {
         vec!["--diff", m_str, "lint", "--list-rules"],
         vec!["lint", "--explain", "root_models", "--diff", m_str],
         vec!["lint", "--list-rules", "--include-packages"],
-        // Global flags lint doesn't consume.
+        // Global flags lint doesn't consume. (`--catalog`/`--sql-dialect`
+        // ARE consumed: they feed the SQL/catalog-backed rules.)
         vec!["lint", "--manifest", m_str, "--run-results", "r.json"],
-        vec!["lint", "--manifest", m_str, "--catalog", "c.json"],
-        vec!["lint", "--manifest", m_str, "--sql-dialect", "generic"],
     ] {
         let out = run(&args);
         assert_eq!(
@@ -842,6 +841,160 @@ fn check_json_carries_warn_statuses_and_finding_fields() {
         assert!(
             finding.get(key).is_some(),
             "finding carries the new fields ({key}): {finding}"
+        );
+    }
+}
+
+// ---- requirement-aware skipping ---------------------------------------------
+
+/// A catalog.json declaring every column of `uid`; written next to `manifest`
+/// so the sibling auto-detect finds it.
+fn catalog_in(dir: &Path, manifest: &Path) {
+    let m: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
+    let mut nodes = serde_json::Map::new();
+    for (uid, node) in m["nodes"].as_object().unwrap() {
+        if node["resource_type"] != "model" || node["columns"].as_object().is_none() {
+            continue;
+        }
+        let cols: serde_json::Map<String, serde_json::Value> = node["columns"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|c| (c.clone(), serde_json::json!({"type": "TEXT"})))
+            .collect();
+        nodes.insert(uid.clone(), serde_json::json!({"columns": cols}));
+    }
+    std::fs::write(
+        dir.join("catalog.json"),
+        serde_json::json!({"nodes": nodes}).to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn catalog_rules_skip_without_a_catalog_and_report_with_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+
+    // No catalog.json beside the manifest → the two catalog-backed rules
+    // report as SKIP gates instead of running — never a failure.
+    let out = lint_on(&m, &["--fail-on", "never"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = out_text(&out);
+    for rule in ["warehouse_type_drift", "columns_missing_in_warehouse"] {
+        assert!(
+            text.contains(&format!("SKIP lint {rule}:")),
+            "the skip gate names {rule}: {text}"
+        );
+    }
+
+    // A sibling catalog.json is auto-detected → both rules evaluate.
+    catalog_in(tmp.path(), &m);
+    let out = lint_on(&m, &["--fail-on", "never"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    assert!(
+        !out_text(&out).contains("SKIP lint "),
+        "with a catalog nothing skips: {}",
+        out_text(&out)
+    );
+}
+
+#[test]
+fn check_reports_skipped_lint_rules_as_skip_rows() {
+    let m = fixture_manifest();
+    // No catalog sibling → SKIP lint <rule>: <reason>, exit per findings only.
+    let out = run(&[
+        "check",
+        "--manifest",
+        m.to_str().unwrap(),
+        "--lint",
+        "--fail-on",
+        "never",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "skips never fail the run, stderr: {}",
+        stderr(&out)
+    );
+    let text = out_text(&out);
+    assert!(
+        text.contains("SKIP lint warehouse_type_drift:"),
+        "the SKIP verdict line: {text}"
+    );
+
+    // The same shape in JSON: a `lint:` gate entry with status `skip`.
+    let out = run(&[
+        "check",
+        "--manifest",
+        m.to_str().unwrap(),
+        "--lint",
+        "--format",
+        "json",
+    ]);
+    let json: serde_json::Value =
+        serde_json::from_str(&out_text(&out)).expect("check stdout is pure JSON");
+    let skip = json["gates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"].as_str() == Some("lint:warehouse_type_drift") && c["status"] == "skip")
+        .expect("a skip-status lint gate exists");
+    assert!(
+        skip["message"].as_str().is_some_and(|s| !s.is_empty()),
+        "the skip carries its reason: {skip}"
+    );
+
+    // `lint --format json` reports the same skip gates — and the summary
+    // counts them as skipped, never as failures.
+    let out = lint_on(&m, &["--format", "json", "--fail-on", "never"]);
+    let json: serde_json::Value =
+        serde_json::from_str(&out_text(&out)).expect("lint stdout is pure JSON");
+    let gates = json["gates"].as_array().expect("gates array");
+    assert!(
+        gates
+            .iter()
+            .any(|g| g["id"] == "lint:warehouse_type_drift" && g["status"] == "skip"),
+        "lint JSON carries the skip gate: {json}"
+    );
+    assert!(
+        json["summary"]["skipped"].as_u64().unwrap() >= 2,
+        "the summary counts skipped gates: {json}"
+    );
+}
+
+#[test]
+fn lint_and_docs_accept_the_catalog_and_dialect_flags() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    catalog_in(tmp.path(), &m);
+    let cat = tmp.path().join("catalog.json");
+    for args in [
+        vec![
+            "lint",
+            "--manifest",
+            m.to_str().unwrap(),
+            "--catalog",
+            cat.to_str().unwrap(),
+            "--sql-dialect",
+            "snowflake",
+        ],
+        vec![
+            "check",
+            "--manifest",
+            m.to_str().unwrap(),
+            "--lint",
+            "--catalog",
+            cat.to_str().unwrap(),
+        ],
+    ] {
+        let out = run(&args);
+        assert_ne!(
+            out.status.code(),
+            Some(2),
+            "{args:?} is accepted (the flags feed the SQL/catalog rules), stderr: {}",
+            stderr(&out)
         );
     }
 }

@@ -21,29 +21,22 @@ pub(super) fn owner_meta_key(project: Option<&str>) -> String {
     }
 }
 
-/// The CLL resolver for a resolved CURRENT source, built exactly like the
-/// app's: an explicit `--catalog` wins over the auto-detected
-/// `target/catalog.json` sibling (one [`dbtl::resolve_catalog_path`] rule the
-/// App follows too), and the catalog tops the column/type priority chain;
-/// `--sql-dialect` pins the parse dialect, else it auto-selects from the
-/// manifest's adapter (an unknown adapter lands on generic with a stderr
-/// notice — the override suppresses it). Shared by `columns`, `impact`, and
-/// `check` so every surface resolves identically.
-///
-/// An explicit catalog is a REQUIRED input — unreadable fails as an input
-/// error; the auto-detected sibling stays best-effort (missing or
-/// unreadable just means no catalog data).
-pub(super) fn cll_resolver(
+/// The catalog a resolved current source loads under the shared
+/// `--catalog`-or-auto-detect rule [`dbtl::resolve_catalog_path`] — the
+/// same one the App's startup follows. An explicit `--catalog` is a
+/// REQUIRED input: unreadable fails as an input error; the auto-detected
+/// sibling stays best-effort (missing or unreadable just means no catalog
+/// data — `Requires::Catalog` lint rules then report `skipped`).
+fn load_cli_catalog(
     resolved: &ResolvedSource,
-    sql_dialect: Option<dbtl::SqlDialect>,
     catalog_flag: Option<&str>,
-) -> Result<dbtl::SqlParseResolver, CliError> {
+) -> Result<Option<std::rc::Rc<dbtl::Catalog>>, CliError> {
     let (manifest_arg, project_arg) = if resolved.is_source {
         (None, Some(std::path::Path::new(&resolved.label)))
     } else {
         (Some(std::path::Path::new(&resolved.label)), None)
     };
-    let catalog = match (
+    match (
         catalog_flag,
         dbtl::resolve_catalog_path(
             catalog_flag.map(std::path::Path::new),
@@ -51,14 +44,23 @@ pub(super) fn cll_resolver(
             project_arg,
         ),
     ) {
-        (Some(_), Some(p)) => Some(std::rc::Rc::new(
+        (Some(_), Some(p)) => Ok(Some(std::rc::Rc::new(
             dbtl::Catalog::load(&p)
                 .with_context(|| format!("failed to load catalog {}", p.display()))
                 .input()?,
-        )),
-        (_, Some(p)) => dbtl::Catalog::load(&p).ok().map(std::rc::Rc::new),
-        (_, None) => None,
-    };
+        ))),
+        (_, Some(p)) => Ok(dbtl::Catalog::load(&p).ok().map(std::rc::Rc::new)),
+        (_, None) => Ok(None),
+    }
+}
+
+/// The parse dialect a resolved current source runs under: `--sql-dialect`
+/// wins, else the manifest's adapter auto-selects (an unknown adapter
+/// lands on generic with a stderr notice — the override suppresses it).
+fn cli_dialect(
+    resolved: &ResolvedSource,
+    sql_dialect: Option<dbtl::SqlDialect>,
+) -> dbtl::SqlDialect {
     let dialect = sql_dialect.unwrap_or_else(|| dbtl::SqlDialect::from_dag(&resolved.dag));
     if sql_dialect.is_none() {
         if let Some(a) = dbtl::SqlDialect::unrecognized_adapter(&resolved.dag) {
@@ -67,7 +69,42 @@ pub(super) fn cll_resolver(
             );
         }
     }
+    dialect
+}
+
+/// The CLL resolver for a resolved CURRENT source, built exactly like the
+/// app's: an explicit `--catalog` wins over the auto-detected
+/// `target/catalog.json` sibling, and the catalog tops the column/type
+/// priority chain; `--sql-dialect` pins the parse dialect, else it
+/// auto-selects from the manifest's adapter. Shared by `columns`,
+/// `impact`, and `check` so every surface resolves identically.
+pub(super) fn cll_resolver(
+    resolved: &ResolvedSource,
+    sql_dialect: Option<dbtl::SqlDialect>,
+    catalog_flag: Option<&str>,
+) -> Result<dbtl::SqlParseResolver, CliError> {
+    let catalog = load_cli_catalog(resolved, catalog_flag)?;
+    let dialect = cli_dialect(resolved, sql_dialect);
     Ok(dbtl::SqlParseResolver::new(catalog, dialect))
+}
+
+/// The auxiliary lint inputs for a resolved current source — the loaded
+/// catalog AND the shared lazy [`dbtl::SqlParseResolver`] built over it —
+/// so `lint`, `check --lint`, and `docs` feed [`dbtl::LintInput`] the same
+/// inputs (`with_sql` always; `with_catalog` when a catalog resolved, else
+/// the catalog rules come back `skipped`). Building the resolver is
+/// allocation-only: it parses nothing until a SQL rule asks.
+pub(super) fn lint_aux(
+    resolved: &ResolvedSource,
+    sql_dialect: Option<dbtl::SqlDialect>,
+    catalog_flag: Option<&str>,
+) -> Result<(Option<std::rc::Rc<dbtl::Catalog>>, dbtl::SqlParseResolver), CliError> {
+    let catalog = load_cli_catalog(resolved, catalog_flag)?;
+    let dialect = cli_dialect(resolved, sql_dialect);
+    Ok((
+        catalog.clone(),
+        dbtl::SqlParseResolver::new(catalog, dialect),
+    ))
 }
 
 /// The baseline side's diff resolver: no catalog (the baseline's warehouse

@@ -514,7 +514,13 @@ impl App {
             },
             None => (crate::LintConfig::default(), None, None),
         };
-        let lint_findings = crate::run_rules(crate::LintInput::new(&dag, &lint_config));
+        // The TUI passes its catalog (warehouse rules are parse-free and
+        // cheap) but never a SQL resolver — parsing every model would block
+        // startup/reload, so `requires: Sql` rules come back `skipped`.
+        let lint_findings = crate::run_rules(
+            crate::LintInput::new(&dag, &lint_config).with_catalog(catalog.as_deref()),
+        )
+        .findings;
         // The first tab roots on the list head — the same model `selected` 0
         // pointed at before tabs existed.
         let first_root = model_list.models.first().map(|n| n.unique_id.clone());

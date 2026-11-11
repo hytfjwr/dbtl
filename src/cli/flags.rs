@@ -30,8 +30,14 @@ pub const GLOBAL_FLAG_COMMANDS: &[(&str, &[&str])] = &[
     // TUI-only global flags: the empty list rejects them under every
     // subcommand while keeping them accepted (and honored) for the app.
     ("run_results", &[]),
-    ("catalog", &["impact", "check", "columns"]),
-    ("sql_dialect", &["impact", "check", "columns"]),
+    // `lint`/`docs` consume both: docs' Lint section runs the same
+    // evaluation `dbtl lint` does, so without the flags their results could
+    // disagree with the report's.
+    ("catalog", &["docs", "impact", "check", "columns", "lint"]),
+    (
+        "sql_dialect",
+        &["docs", "impact", "check", "columns", "lint"],
+    ),
 ];
 
 /// TUI-only top-level flags: valid in the app, meaningless under a

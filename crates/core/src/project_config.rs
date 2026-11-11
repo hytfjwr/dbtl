@@ -237,6 +237,27 @@ impl ProjectConfig {
                                     .or_default()
                                     .insert(param, list);
                             }
+                            ParamKind::RegexList { .. } => {
+                                let items = value.as_sequence().ok_or_else(|| {
+                                    format!("{name}.{param} must be a list of regex patterns")
+                                })?;
+                                let mut list = Vec::with_capacity(items.len());
+                                for item in items {
+                                    let s = item.as_str().ok_or_else(|| {
+                                        format!("{name}.{param} must be a list of regex patterns")
+                                    })?;
+                                    if let Err(e) = regex::Regex::new(s) {
+                                        return Err(format!(
+                                            "{name}.{param}: '{s}' is not a valid regex: {e}"
+                                        ));
+                                    }
+                                    list.push(s.to_string());
+                                }
+                                lint.list_params
+                                    .entry(rule)
+                                    .or_default()
+                                    .insert(param, list);
+                            }
                         }
                     }
                 }

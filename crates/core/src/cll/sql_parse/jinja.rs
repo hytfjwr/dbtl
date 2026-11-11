@@ -7,6 +7,27 @@
 /// killing the whole parse.
 const THIS_RELATION: &str = "\"__dbtl_this__\"";
 
+/// The prefix stamped on names rendered under [`JinjaMark::Marked`]:
+/// `ref('x')` → `"__dbtl_ref__x"`, `source('a','b')` →
+/// `"__dbtl_src__a"."__dbtl_src__b"`, `{{ this }}` → `"__dbtl_this__"`,
+/// any other `{{ }}` → `"__dbtl_jinja__"`. No real relation name starts
+/// with it, so the lint relation scan treats every marked segment as
+/// generated — never a hand-written reference.
+pub(super) const JINJA_MARK_PREFIX: &str = "__dbtl_";
+
+/// How `{{ ref }}`/`{{ source }}`/other `{{ }}` render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum JinjaMark {
+    /// The CLL render: `ref`/`source` become their relation names, other
+    /// `{{ }}` become `NULL`.
+    Plain,
+    /// The lint render: every Jinja-derived token becomes a
+    /// [`JINJA_MARK_PREFIX`]-tagged identifier so a parse tree can tell
+    /// generated relation names (`{{ ref('x') }}`, `{{ target.schema }}`)
+    /// from hand-written ones.
+    Marked,
+}
+
 /// Turn raw dbt SQL into something a plain-SQL parser can read:
 /// `ref()`/`source()` render to quoted relation names, other `{{ }}` render
 /// as `NULL`, `{% %}`/`{# #}` drop. Compiled SQL needs nothing (dbt already
@@ -20,6 +41,12 @@ const THIS_RELATION: &str = "\"__dbtl_this__\"";
 /// pair spanning two separate literals is always our scanner misreading —
 /// shielding them keeps the surrounding SQL intact).
 pub(super) fn render_jinja(sql: &str) -> String {
+    render_jinja_as(sql, JinjaMark::Plain)
+}
+
+/// [`render_jinja`] with an explicit marker mode — see [`JinjaMark`]. The
+/// `Plain` mode is byte-identical to the historical renderer.
+pub(super) fn render_jinja_as(sql: &str, mark: JinjaMark) -> String {
     let b = sql.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(b.len() + 16);
     let mut i = 0usize;
@@ -109,7 +136,7 @@ pub(super) fn render_jinja(sql: &str) -> String {
                         match kind {
                             b'{' => {
                                 let inner = &sql[i + 2..e];
-                                out.extend_from_slice(render_jinja_expr(inner).as_bytes());
+                                out.extend_from_slice(render_jinja_expr(inner, mark).as_bytes());
                             }
                             // `{% … %}` tags and `{# … #}` comments drop
                             // entirely — the tag's body (if/for branches)
@@ -205,10 +232,13 @@ pub(super) fn dollar_quote_close(b: &[u8], from: usize, delim: &[u8]) -> Option<
 }
 
 /// What a `{{ … }}` expression renders to. `config(...)` disappears (it
-/// emits no SQL); `ref()`/`source()` emit their quoted relation name(s);
-/// `this` a fake relation; everything else (`{{ var(...) }}`, macro calls,
-/// `{{ col }}`…) → `NULL`, an expression that yields no column refs.
-pub(super) fn render_jinja_expr(inner: &str) -> String {
+/// emits no SQL); `ref()`/`source()` emit their quoted relation name(s)
+/// ([`JinjaMark::Marked`]: `__dbtl_`-prefixed names instead); `this` a fake
+/// relation; everything else (`{{ var(...) }}`, macro calls, `{{ col }}`…)
+/// → `NULL` under `Plain`, a `__dbtl_jinja__` placeholder under `Marked` —
+/// an expression that yields no column refs either way, but that a lint
+/// scan can recognise as generated.
+pub(super) fn render_jinja_expr(inner: &str, mark: JinjaMark) -> String {
     let e = inner
         .trim()
         .trim_start_matches(['-', '+', '~'])
@@ -221,23 +251,36 @@ pub(super) fn render_jinja_expr(inner: &str) -> String {
         // ref('model') / ref("pkg","model") — the LAST literal arg is the
         // model name (a two-arg ref's first arg is the package).
         if let Some(name) = args.last() {
-            return quoted_ident(name);
+            return match mark {
+                JinjaMark::Plain => quoted_ident(name),
+                JinjaMark::Marked => quoted_ident(&format!("{JINJA_MARK_PREFIX}ref__{name}")),
+            };
         }
     }
     if let Some(args) = jinja_call_args(e, "source") {
         // source('src','tbl') → "src"."tbl" — the two-arg form dbt renders.
         if args.len() >= 2 {
-            return format!(
-                "{}.{}",
-                quoted_ident(&args[args.len() - 2]),
-                quoted_ident(&args[args.len() - 1])
-            );
+            let (a, b) = (&args[args.len() - 2], &args[args.len() - 1]);
+            return match mark {
+                JinjaMark::Plain => format!("{}.{}", quoted_ident(a), quoted_ident(b)),
+                JinjaMark::Marked => format!(
+                    "{}.{}",
+                    quoted_ident(&format!("{JINJA_MARK_PREFIX}src__{a}")),
+                    quoted_ident(&format!("{JINJA_MARK_PREFIX}src__{b}"))
+                ),
+            };
         }
     }
     if e == "this" || e.starts_with("this.") {
         return THIS_RELATION.to_string();
     }
-    " NULL ".to_string()
+    match mark {
+        JinjaMark::Plain => " NULL ".to_string(),
+        // A Jinja expression in a relation position (`FROM {{ var('t') }}`,
+        // `FROM {{ target.schema }}.t`) is unclassifiable — the marked token
+        // keeps the parse valid and tells the scan "generated, not written".
+        JinjaMark::Marked => quoted_ident(&format!("{JINJA_MARK_PREFIX}jinja__")),
+    }
 }
 
 /// Double-quote an identifier for the rendered SQL (inner `"`s doubled).
