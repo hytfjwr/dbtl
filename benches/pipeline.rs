@@ -201,9 +201,9 @@ fn bench_select(c: &mut Criterion) {
         ("materialized", "config.materialized:table".to_string()),
         ("union", "+int_00100+ tag:hourly".to_string()),
     ];
-    for (label, spec) in cases {
+    for (label, expr) in cases {
         g.bench_function(label, |b| {
-            b.iter(|| select(black_box(&dag), None, black_box(&spec)))
+            b.iter(|| select(black_box(&dag), None, black_box(&expr)))
         });
     }
     g.finish();

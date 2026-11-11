@@ -43,7 +43,7 @@ pub struct Report {
     pub benches_changed: bool,
 }
 
-/// A benchmark id's state on ONE side, resolved against the spec's
+/// A benchmark id's state on ONE side, resolved against the report's
 /// new/removed/n-a distinction.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Side {
@@ -329,11 +329,14 @@ mod tests {
         let mut head = Estimates::new();
         base.insert("dag_build/500".to_string(), Some(100_000_000.0));
         head.insert("dag_build/500".to_string(), Some(112_000_000.0));
+        base.insert("dag_build/2000".to_string(), Some(50_000_000.0));
+        head.insert("dag_build/2000".to_string(), Some(55_000_000.0));
         base.insert("dag_build/8000".to_string(), Some(2_000_000_000.0));
         head.insert("dag_build/8000".to_string(), Some(2_100_000_000.0));
         let md = render_report(&report(base, head));
         assert!(md.contains("| dag_build/500 | 100.0 ms | 112.0 ms | +12.0% **slower** |"));
         // Exactly +10% marks too; +5% stays unmarked.
+        assert!(md.contains("| dag_build/2000 | 50.0 ms | 55.0 ms | +10.0% **slower** |"));
         assert!(md.contains("| dag_build/8000 | 2.00 s | 2.10 s | +5.0% |"));
     }
 

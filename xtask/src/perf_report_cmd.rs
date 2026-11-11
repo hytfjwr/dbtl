@@ -30,7 +30,7 @@ pub struct Args {
     #[arg(long)]
     benches_changed: bool,
     /// Append the report to this file instead of stdout (the workflow passes
-    /// the step-summary path).
+    /// its scratch report path, then cats the file into the step summary).
     #[arg(long)]
     out: Option<PathBuf>,
 }

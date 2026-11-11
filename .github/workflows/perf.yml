@@ -64,11 +64,21 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          sha=$(git merge-base HEAD "$BASE_SHA" 2>/dev/null || echo "$BASE_SHA")
-          echo "merge-base: $sha"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          # The base object can be missing from the fetched history — pull
+          # it explicitly first (anonymous fetch works; the repo is public).
+          git fetch origin "$BASE_SHA" || true
+          if sha=$(git merge-base HEAD "$BASE_SHA" 2>/dev/null); then
+            echo "merge-base: $sha"
+            echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          else
+            # Unresolvable base: every base-side step is skipped and the
+            # report renders that side n/a — never measure the wrong base.
+            echo "merge-base: unresolvable — base-side rows will be n/a"
+            echo "sha=" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Check out the base in a worktree
+        if: steps.base.outputs.sha != ''
         env:
           BASE_SHA: ${{ steps.base.outputs.sha }}
         run: git worktree add "$WORK/base" "$BASE_SHA"
@@ -79,17 +89,24 @@ jobs:
           BASE_SHA: ${{ steps.base.outputs.sha }}
         run: |
           # A delta measured across a changed benchmark set is part code,
-          # part measurement — the report notes it.
-          if git diff --quiet "$BASE_SHA" HEAD -- benches xtask; then
-            echo "benches-changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "benches-changed=true" >> "$GITHUB_OUTPUT"
+          # part measurement — the report notes it. An unresolvable base
+          # counts as changed (the conservative note).
+          changed=true
+          if [ -n "$BASE_SHA" ] && git diff --quiet "$BASE_SHA" HEAD -- benches xtask; then
+            changed=false
           fi
+          echo "benches-changed=$changed" >> "$GITHUB_OUTPUT"
 
       - name: Build head (release)
-        run: cargo build --release --locked -p dbtl -p xtask || true
+        run: |
+          # The restored cargo cache can hold a stale release binary — drop
+          # both binaries first so a failed build can never masquerade as
+          # a measured head.
+          rm -f target/release/dbtl target/release/xtask
+          cargo build --release --locked -p dbtl -p xtask || true
 
       - name: Build base (release)
+        if: steps.base.outputs.sha != ''
         run: |
           cd "$WORK/base"
           cargo build --release --locked || true
@@ -102,6 +119,7 @@ jobs:
         run: cargo bench --locked --bench pipeline -- --measurement-time 2 --warm-up-time 1 --sample-size 10 || true
 
       - name: Benchmark base
+        if: steps.base.outputs.sha != ''
         env:
           CRITERION_HOME: ${{ runner.temp }}/perf/criterion-base
         run: |
@@ -160,24 +178,31 @@ jobs:
             flags+=(--benches-changed)
           fi
           xtask="$GITHUB_WORKSPACE/target/release/xtask"
-          if [ -x "$xtask" ]; then
-            "$xtask" perf-report \
+          # `${var:+...}` keeps the label bare "base" when the merge base
+          # could not be resolved (base-side cells then render n/a).
+          base_label="base${BASE_SHA:+-${BASE_SHA:0:7}}"
+          rendered=false
+          if [ -x "$xtask" ] \
+            && "$xtask" perf-report \
               --base "$WORK/criterion-base" \
               --head "$WORK/criterion-head" \
               --metrics-dir "$WORK/metrics" \
-              --base-label "base-${BASE_SHA:0:7}" \
+              --base-label "$base_label" \
               --head-label "head-${HEAD_SHA:0:7}" \
               --out "$WORK/report.md" \
-              "${flags[@]}"
+              "${flags[@]}" \
+            && [ -f "$WORK/report.md" ]; then
             cat "$WORK/report.md" >> "$GITHUB_STEP_SUMMARY"
             cat "$WORK/report.md"
-          else
-            # A broken head build is a measurement failure, not a workflow
-            # failure — say so on the summary and stay green.
+            rendered=true
+          fi
+          if [ "$rendered" != "true" ]; then
+            # A missing binary or a failed render is a measurement failure,
+            # not a workflow failure — say so on the summary, stay green.
             {
               echo '## Perf report'
               echo
-              echo 'Head build failed — measurements unavailable.'
+              echo 'Report rendering or the head build failed — measurements unavailable.'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
