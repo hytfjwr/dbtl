@@ -80,12 +80,12 @@ pub(super) fn baseline_resolver(
     dbtl::SqlParseResolver::new(None, dialect)
 }
 
-/// The lint config for `check --lint`: `.dbtl.yml` beside the resolved data
-/// source (same auto-detect as the TUI/docs), a malformed file fatal, and
-/// `--rules` overlaid as the authoritative rule selector (exactly the named
-/// rules run — the file still supplies thresholds and naming prefixes).
-/// Every failure is a usage error — a config the caller handed us that we
-/// cannot interpret.
+/// The lint config for `check --lint` and `docs`: `.dbtl.yml` beside the
+/// resolved data source (same auto-detect as the TUI), a malformed file
+/// fatal, and `--rules` overlaid as the authoritative rule selector
+/// (exactly the named rules run — the file still supplies thresholds and
+/// naming prefixes). Every failure is a usage error — a config the caller
+/// handed us that we cannot interpret.
 pub(super) fn load_lint_config(
     resolved: &ResolvedSource,
     rules: &[String],
@@ -95,11 +95,17 @@ pub(super) fn load_lint_config(
     } else {
         (Some(std::path::Path::new(&resolved.label)), None)
     };
-    let path = dbtl::lint_config_path(manifest_arg, project_arg);
+    let path = dbtl::project_config_path(manifest_arg, project_arg);
     let mut cfg = match &path {
-        Some(p) => dbtl::LintConfig::load(p)
-            .with_context(|| format!("check --lint: failed to read {}", p.display()))
-            .usage()?,
+        Some(p) => {
+            let pc = dbtl::ProjectConfig::load(p)
+                .with_context(|| format!("check --lint: failed to read {}", p.display()))
+                .usage()?;
+            for w in &pc.warnings {
+                eprintln!("warning: {w}");
+            }
+            pc.lint
+        }
         None => dbtl::LintConfig::default(),
     };
     if !rules.is_empty() {
@@ -115,10 +121,91 @@ pub(super) fn load_lint_config(
                 )));
             }
         }
+        // `--rules` is the authoritative rule SELECTOR: unnamed rules go
+        // off; a named rule's `off` in the file is lifted to the registry
+        // default (a configured non-off severity stands — the file still
+        // supplies severities like it supplies thresholds and prefixes).
         for r in dbtl::LintRule::ALL {
-            cfg.rules
-                .insert(r.name().to_string(), rules.iter().any(|n| n == r.name()));
+            if rules.iter().any(|n| n == r.name()) {
+                if cfg.severities.get(&r) == Some(&None) {
+                    cfg.severities.remove(&r);
+                }
+            } else {
+                cfg.severities.insert(r, None);
+            }
         }
     }
     Ok(cfg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// An empty source-mode ResolvedSource rooted at `dir` (the `.dbtl.yml`
+    /// search treats the project dir itself as the root).
+    fn resolved_at(dir: &std::path::Path) -> ResolvedSource {
+        let manifest = dbtl::RawManifest {
+            metadata: Default::default(),
+            nodes: HashMap::new(),
+            sources: HashMap::new(),
+            exposures: HashMap::new(),
+            macros: HashMap::new(),
+            semantic_models: HashMap::new(),
+            metrics: HashMap::new(),
+            saved_queries: HashMap::new(),
+            unit_tests: HashMap::new(),
+            functions: HashMap::new(),
+            parent_map: HashMap::new(),
+            child_map: HashMap::new(),
+        };
+        ResolvedSource {
+            dag: dbtl::Dag::build(&manifest),
+            label: dir.to_string_lossy().into_owned(),
+            is_source: true,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn rules_flag_is_the_authoritative_selector() {
+        // Named rules run even when the file turns them off — at the
+        // registry's default severity; a file-configured non-off severity
+        // stands; unnamed rules go off entirely.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".dbtl.yml"),
+            "lint:\n  rules:\n    root_models: false\n    source_fanout: {severity: warn}\n",
+        )
+        .unwrap();
+        let resolved = resolved_at(dir.path());
+        let cfg = load_lint_config(
+            &resolved,
+            &["root_models".to_string(), "source_fanout".to_string()],
+        )
+        .unwrap();
+        assert!(cfg.enabled(dbtl::LintRule::RootModels));
+        assert_eq!(
+            cfg.severity(dbtl::LintRule::RootModels),
+            Some(dbtl::Severity::Error),
+            "a named-but-off rule runs at the registry default severity"
+        );
+        assert_eq!(
+            cfg.severity(dbtl::LintRule::SourceFanout),
+            Some(dbtl::Severity::Warn),
+            "a named rule keeps its configured non-off severity"
+        );
+        assert!(
+            !cfg.enabled(dbtl::LintRule::ModelFanout),
+            "unnamed rules go off under --rules"
+        );
+        // No --rules → the file's off applies.
+        let cfg = load_lint_config(&resolved, &[]).unwrap();
+        assert!(!cfg.enabled(dbtl::LintRule::RootModels));
+        assert_eq!(
+            cfg.severity(dbtl::LintRule::SourceFanout),
+            Some(dbtl::Severity::Warn)
+        );
+    }
 }

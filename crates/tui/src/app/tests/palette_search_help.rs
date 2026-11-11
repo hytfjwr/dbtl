@@ -837,6 +837,40 @@ fn search_bare_selector_prefix_keeps_the_full_list() {
 }
 
 #[test]
+fn search_selector_name_globs_filter_the_list() {
+    // `!stg_*` narrows the list to glob-matched names — the same set
+    // `select` returns (the `!` prefix IS the selector path, one parse).
+    let mut a = app();
+    apply_action(&mut a, Action::SearchOpen);
+    for c in "!stg_*".chars() {
+        apply_action(&mut a, Action::SearchType(c));
+    }
+    let expected = crate::select::select(&a.dag, a.diff(), "stg_*");
+    let got: std::collections::BTreeSet<String> = a
+        .active_list()
+        .models
+        .iter()
+        .map(|n| n.unique_id.clone())
+        .collect();
+    assert!(!got.is_empty(), "the fixture has stg_* models");
+    assert_eq!(got, expected);
+    assert!(got.iter().all(|u| u.contains(".stg_")));
+    // A non-glob name keeps exact-match semantics.
+    apply_action(&mut a, Action::SearchCancel);
+    apply_action(&mut a, Action::SearchOpen);
+    for c in "!pos_sku".chars() {
+        apply_action(&mut a, Action::SearchType(c));
+    }
+    let names: Vec<_> = a
+        .active_list()
+        .models
+        .iter()
+        .map(|n| n.unique_id.as_str())
+        .collect();
+    assert_eq!(names, vec!["model.jaffle_finance.pos_sku"]);
+}
+
+#[test]
 fn search_history_recall_reruns_selector_and_fulltext_queries() {
     // Recalled queries re-run their OWN syntax — `!` selector and `?`
     // full-text included (the recall restores the query string wholesale).

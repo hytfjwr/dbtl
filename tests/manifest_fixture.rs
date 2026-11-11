@@ -179,7 +179,7 @@ fn closure_deep_multihop_fct_subscription_process() {
 #[test]
 fn lint_findings_match_frozen_fixture_counts() {
     let dag = fixture_dag();
-    let findings = run_rules(&dag, &LintConfig::default());
+    let findings = run_rules(dbtl::LintInput::new(&dag, &LintConfig::default()));
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for f in &findings {
         *counts.entry(f.rule.name()).or_default() += 1;

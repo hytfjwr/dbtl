@@ -273,13 +273,13 @@ pub fn run_check(
     // the thresholds/prefixes.
     if lint_active {
         let cfg = load_lint_config(&resolved, rules)?;
-        let findings = dbtl::run_rules(dag, &cfg);
+        let findings = dbtl::run_rules(dbtl::LintInput::new(dag, &cfg));
         // Under --diff the gate narrows to NEW violations: a finding whose
         // `key()` already exists in the baseline is pre-existing noise — same
         // "new only" idea as the layer-violation gate.
         let base_keys: std::collections::BTreeSet<(dbtl::LintRule, String, Vec<String>)> =
             match &base_ctx {
-                Some((base, _)) => dbtl::run_rules(base, &cfg)
+                Some((base, _)) => dbtl::run_rules(dbtl::LintInput::new(base, &cfg))
                     .iter()
                     .map(|f| {
                         let (r, n, rel) = f.key();
