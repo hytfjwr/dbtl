@@ -1,0 +1,37 @@
+# Supply-chain policy checked by `cargo deny` in CI.
+
+[graph]
+# Optional features off: crates enabled only through unused features are not
+# shipped, so they should not gate the policy checks.
+all-features = false
+
+[advisories]
+# RustSec advisory database plus crates.io yank state.
+yanked = "deny"
+
+[bans]
+# Duplicate versions in the transitive tree are common and mostly harmless;
+# surface them for review without failing the check.
+multiple-versions = "warn"
+highlight = "all"
+
+[licenses]
+# Minimal allow-list derived from the resolved dependency graph. OR
+# expressions are satisfied by the permissive member (e.g. `MIT OR MPL-2.0`
+# via MIT), so MPL/GPL-family licenses are deliberately absent.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-3-Clause",                 # encoding_rs
+  "BSL-1.0",                      # ryu
+  "Unicode-3.0",                  # unicode-ident
+  "Zlib",                         # foldhash
+  "Apache-2.0 WITH LLVM-exception", # ar_archive_writer
+]
+
+[sources]
+# Dependencies may only come from crates.io; unknown registries and git
+# sources are rejected.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
