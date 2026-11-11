@@ -316,8 +316,25 @@ fn query_lint_config(src: &DataSourceArgs, rules: &[String]) -> Result<dbtl::Lin
 /// the resolved `fail_on`.
 pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
     // Query modes never touch the data source — `--explain`/`--list-rules`
-    // must work in an empty directory.
+    // must work in an empty directory. Flags that only shape a loaded graph
+    // (`--diff`, `--include-packages`) have no effect here — reject them
+    // rather than silently drop them.
     if args.list_rules || args.explain.is_some() {
+        let mode = if args.list_rules {
+            "--list-rules"
+        } else {
+            "--explain"
+        };
+        for (flag, given) in [
+            ("--diff", src.diff.is_some()),
+            ("--include-packages", src.scope.includes_packages()),
+        ] {
+            if given {
+                return Err(CliError::usage(anyhow::anyhow!(
+                    "the argument '{flag}' cannot be used with '{mode}'"
+                )));
+            }
+        }
         let cfg = query_lint_config(src, args.rules)?;
         if args.list_rules {
             print_rules_table(&cfg);

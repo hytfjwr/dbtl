@@ -125,6 +125,35 @@ fn cli_fail_on_beats_the_config_file() {
 }
 
 #[test]
+fn cli_fail_on_beats_file_fail_on_warn() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    // Every firing rule at warn + `fail_on: warn` in the file: the warnings
+    // themselves fail the run under the file's threshold.
+    std::fs::write(
+        tmp.path().join(".dbtl.yml"),
+        "fail_on: warn\nlint:\n  rules:\n    direct_join_to_source: {severity: warn}\n    multiple_sources_joined: {severity: warn}\n    source_fanout: {severity: warn}\n    model_fanout: {severity: warn}\n    rejoining_upstream: {severity: warn}\n    missing_primary_key_tests: {severity: warn}\n",
+    )
+    .unwrap();
+    let out = lint_on(&m, &[]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the file's fail_on: warn gates warn findings, stderr: {}",
+        stderr(&out)
+    );
+    // The CLI flag wins back the other direction too: error-only gating
+    // ignores the warnings entirely.
+    let out = lint_on(&m, &["--fail-on", "error"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "CLI --fail-on error beats the file's warn, stderr: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn warn_findings_report_with_their_severity() {
     let tmp = tempfile::tempdir().unwrap();
     let m = manifest_in(tmp.path());
@@ -173,6 +202,13 @@ fn usage_errors_exit_two() {
             "--diff",
             m_str,
         ],
+        // Flags that only shape a loaded graph have no effect under the
+        // query modes — they are rejected, not silently dropped, on either
+        // side of the subcommand.
+        vec!["lint", "--list-rules", "--diff", m_str],
+        vec!["--diff", m_str, "lint", "--list-rules"],
+        vec!["lint", "--explain", "root_models", "--diff", m_str],
+        vec!["lint", "--list-rules", "--include-packages"],
         // Global flags lint doesn't consume.
         vec!["lint", "--manifest", m_str, "--run-results", "r.json"],
         vec!["lint", "--manifest", m_str, "--catalog", "c.json"],
@@ -383,6 +419,118 @@ fn missing_explicit_baseline_warns_but_still_runs() {
 }
 
 // ---- --diff: only new violations count --------------------------------------
+
+#[test]
+fn check_and_lint_count_the_same_findings() {
+    let m = fixture_manifest();
+    // `lint --format json`: with no baseline file beside the fixture, the
+    // counted set is exactly the non-baselined findings.
+    let out = lint_on(&m, &["--format", "json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let lint_json: serde_json::Value =
+        serde_json::from_str(&out_text(&out)).expect("lint stdout is pure JSON");
+    let mut lint_counted: Vec<(String, String)> = lint_json["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["baselined"] == false)
+        .map(|f| {
+            (
+                f["rule"].as_str().unwrap().to_string(),
+                f["node_uid"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    lint_counted.sort();
+
+    // `check --lint --format json`: each lint check carries exactly the
+    // findings that gated — by construction the same counted set.
+    let out = run(&[
+        "check",
+        "--manifest",
+        m.to_str().unwrap(),
+        "--lint",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+    let check_json: serde_json::Value =
+        serde_json::from_str(&out_text(&out)).expect("check stdout is pure JSON");
+    let mut check_counted: Vec<(String, String)> = check_json["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["check"].as_str().is_some_and(|n| n.starts_with("lint:")))
+        .flat_map(|c| {
+            c["findings"]
+                .as_array()
+                .map(|a| a.iter())
+                .unwrap_or_default()
+        })
+        .map(|f| {
+            (
+                f["rule"].as_str().unwrap().to_string(),
+                f["node_uid"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    check_counted.sort();
+
+    assert_eq!(
+        lint_counted, check_counted,
+        "lint and check count the same findings from the same input"
+    );
+}
+
+#[test]
+fn baseline_file_and_diff_compose_at_the_cli() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    // Freeze every current finding at the default path, then self-diff:
+    // the frozen findings classify as baselined — the baseline file wins
+    // the partition over the diff's pre-existing bucket.
+    let out = lint_on(&m, &["--write-baseline"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let out = lint_on(&m, &["--diff", m.to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "baselined findings don't count, stderr: {}",
+        stderr(&out)
+    );
+    let stdout = out_text(&out);
+    assert!(
+        stdout.contains("no new violations") && stdout.contains("baselined"),
+        "the baselined count reports under --diff: {stdout}"
+    );
+    assert!(
+        !stdout.contains("pre-existing"),
+        "frozen findings aren't also counted as pre-existing: {stdout}"
+    );
+    // `--no-baseline` drops the file → the same findings shift to the
+    // diff's pre-existing bucket.
+    let out = lint_on(&m, &["--diff", m.to_str().unwrap(), "--no-baseline"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    assert!(
+        out_text(&out).contains("pre-existing"),
+        "without the file, the diff's pre-existing count reports"
+    );
+    // `check --lint --diff` reads the same file and lands on the same
+    // partition — every suppressed rule reports its baselined count.
+    let out = run(&[
+        "check",
+        "--manifest",
+        m.to_str().unwrap(),
+        "--lint",
+        "--diff",
+        m.to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    assert!(
+        out_text(&out).contains("baselined"),
+        "check reports the baselined count too"
+    );
+}
 
 #[test]
 fn diff_counts_only_new_violations() {
