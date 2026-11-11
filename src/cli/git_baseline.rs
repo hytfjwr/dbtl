@@ -33,8 +33,8 @@ pub(super) fn load(
     scope: dbtl::PackageScope,
 ) -> Result<(dbtl::Dag, String), CliError> {
     // `-<anything>` would reach git as a flag, not a rev (`--diff git:-p`
-    // silently mis-parsing is worse than a usage error); an empty rev is
-    // just a `git:` typo.
+    // failing inside git's own flag parser is worse than a usage error);
+    // an empty rev is just a `git:` typo.
     if rev.is_empty() || rev.starts_with('-') {
         return Err(CliError::usage(anyhow::anyhow!(
             "--diff: invalid git revision '{rev}'"

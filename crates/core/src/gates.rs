@@ -318,7 +318,7 @@ mod tests {
             assert!(seen.insert(gate.id()), "duplicate gate id {}", gate.id());
             assert_eq!(CheckGate::from_name(gate.id()), Some(gate));
         }
-        assert_eq!(CheckGate::from_name("coverge"), None);
+        assert_eq!(CheckGate::from_name("not_a_gate"), None);
     }
 
     #[test]

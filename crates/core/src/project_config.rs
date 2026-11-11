@@ -1013,9 +1013,9 @@ mod tests {
 
     #[test]
     fn check_gates_reject_unknown_ids_params_and_out_of_range_values() {
-        let err = parse("check:\n  gates:\n    coverge: warn\n").unwrap_err();
+        let err = parse("check:\n  gates:\n    not_a_gate: warn\n").unwrap_err();
         assert!(
-            err.contains("unknown check gate 'coverge'") && err.contains("coverage"),
+            err.contains("unknown check gate 'not_a_gate'") && err.contains("coverage"),
             "{err} names the id and the valid set"
         );
         let err = parse("check:\n  gates:\n    coverage: {mxn: 80}\n").unwrap_err();
