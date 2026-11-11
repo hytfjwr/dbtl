@@ -27,7 +27,7 @@ use clap::{CommandFactory, FromArgMatches};
 
 use cli::{
     build_app, check_flag_usage, exit_code, load_baseline, run_check, run_columns, run_docs,
-    run_impact, Cli, CliError, Commands, DataSourceArgs,
+    run_impact, run_lint, Cli, CliError, Commands, DataSourceArgs, LintArgs,
 };
 use event_loop::{event_loop, find_dbt};
 use terminal::{
@@ -127,6 +127,7 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
             lint,
             no_breaking,
             rules,
+            fail_on,
             format,
             quiet,
         }) => {
@@ -135,9 +136,34 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
                 *coverage_min,
                 *lint,
                 rules,
+                fail_on.map(Into::into),
                 *format,
                 *quiet,
                 *no_breaking,
+            );
+        }
+        Some(Commands::Lint {
+            rules,
+            fail_on,
+            format,
+            write_baseline,
+            no_baseline,
+            list_rules,
+            explain,
+            quiet,
+        }) => {
+            return run_lint(
+                &src,
+                &LintArgs {
+                    rules,
+                    fail_on: fail_on.map(Into::into),
+                    format: *format,
+                    write_baseline: write_baseline.as_ref(),
+                    no_baseline: *no_baseline,
+                    list_rules: *list_rules,
+                    explain: explain.as_deref(),
+                    quiet: *quiet,
+                },
             );
         }
         Some(Commands::Columns {

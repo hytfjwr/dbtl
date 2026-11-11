@@ -34,6 +34,17 @@ pub enum FailOn {
     Never,
 }
 
+impl FailOn {
+    /// The stable lowercase tag (same as the serde form).
+    pub fn name(self) -> &'static str {
+        match self {
+            FailOn::Error => "error",
+            FailOn::Warn => "warn",
+            FailOn::Never => "never",
+        }
+    }
+}
+
 /// A parsed `.dbtl.yml`: the resolved `lint:` section, the top-level
 /// `fail_on`, and any non-fatal notes (unknown top-level keys are WARNED,
 /// not errors — forward compatibility with sections added later).
@@ -43,6 +54,9 @@ pub struct ProjectConfig {
     pub fail_on: Option<FailOn>,
     /// The `lint:` section resolved over the shipped defaults.
     pub lint: LintConfig,
+    /// `lint.baseline` was written in the file — a missing file at an
+    /// explicit path warns, while a missing default stays silent.
+    pub baseline_explicit: bool,
     /// Non-fatal notes the caller surfaces (CLI: `warning: …` on stderr;
     /// TUI: the startup notice / reload warnings).
     pub warnings: Vec<String>,
@@ -120,6 +134,7 @@ impl ProjectConfig {
                 lint.naming_prefixes.insert(layer, p);
             }
         }
+        let baseline_explicit = file.lint.baseline.is_some();
         if let Some(baseline) = file.lint.baseline {
             lint.baseline = baseline;
         }
@@ -131,6 +146,7 @@ impl ProjectConfig {
         Ok(ProjectConfig {
             fail_on: file.fail_on,
             lint,
+            baseline_explicit,
             warnings,
         })
     }

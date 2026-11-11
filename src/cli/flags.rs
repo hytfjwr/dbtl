@@ -19,11 +19,14 @@ use super::CliError;
 /// them. A global flag the subcommand doesn't list is an error when typed
 /// explicitly, no matter which side of the subcommand it sits on.
 pub const GLOBAL_FLAG_COMMANDS: &[(&str, &[&str])] = &[
-    ("manifest", &["docs", "impact", "check", "columns"]),
-    ("source", &["docs", "impact", "check", "columns"]),
-    ("project", &["docs", "impact", "check", "columns"]),
-    ("include_packages", &["docs", "impact", "check", "columns"]),
-    ("diff", &["impact", "check"]),
+    ("manifest", &["docs", "impact", "check", "columns", "lint"]),
+    ("source", &["docs", "impact", "check", "columns", "lint"]),
+    ("project", &["docs", "impact", "check", "columns", "lint"]),
+    (
+        "include_packages",
+        &["docs", "impact", "check", "columns", "lint"],
+    ),
+    ("diff", &["impact", "check", "lint"]),
     // TUI-only global flags: the empty list rejects them under every
     // subcommand while keeping them accepted (and honored) for the app.
     ("run_results", &[]),

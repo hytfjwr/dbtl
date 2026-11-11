@@ -80,62 +80,112 @@ pub(super) fn baseline_resolver(
     dbtl::SqlParseResolver::new(None, dialect)
 }
 
-/// The lint config for `check --lint` and `docs`: `.dbtl.yml` beside the
-/// resolved data source (same auto-detect as the TUI), a malformed file
-/// fatal, and `--rules` overlaid as the authoritative rule selector
-/// (exactly the named rules run — the file still supplies thresholds and
-/// naming prefixes). Every failure is a usage error — a config the caller
-/// handed us that we cannot interpret.
-pub(super) fn load_lint_config(
+/// The `.dbtl.yml` in effect for a data source: the parsed file (the
+/// shipped defaults when none exists) plus the path it was read from —
+/// `None` meaning "no file", which anchors the default lint-baseline path
+/// instead.
+pub(super) struct ProjectConfigFile {
+    pub config: dbtl::ProjectConfig,
+    pub path: Option<PathBuf>,
+}
+
+/// The (manifest, project-dir) pair `.dbtl.yml` discovery keys off: source
+/// mode treats the project dir as the root, manifest mode the manifest's
+/// location — the same inputs [`dbtl::project_config_path`] takes.
+pub(super) fn resolved_config_args(
     resolved: &ResolvedSource,
-    rules: &[String],
-) -> Result<dbtl::LintConfig, CliError> {
-    let (manifest_arg, project_arg) = if resolved.is_source {
-        (None, Some(std::path::Path::new(&resolved.label)))
+) -> (Option<PathBuf>, Option<PathBuf>) {
+    if resolved.is_source {
+        (None, Some(PathBuf::from(&resolved.label)))
     } else {
-        (Some(std::path::Path::new(&resolved.label)), None)
-    };
+        (Some(PathBuf::from(&resolved.label)), None)
+    }
+}
+
+/// Load `.dbtl.yml` for a (manifest, project-dir) probe — the shared entry
+/// `check`, `lint`, and `docs` take so the file's discovery, its
+/// `warning: …` stderr lines, and its error class can never drift between
+/// commands. A missing file yields the shipped defaults; a malformed file
+/// is a usage error — a config a CI gate can't interpret must fail loudly.
+pub(super) fn load_project_config(
+    manifest_arg: Option<&std::path::Path>,
+    project_arg: Option<&std::path::Path>,
+) -> Result<ProjectConfigFile, CliError> {
     let path = dbtl::project_config_path(manifest_arg, project_arg);
-    let mut cfg = match &path {
+    let config = match &path {
         Some(p) => {
             let pc = dbtl::ProjectConfig::load(p)
-                .with_context(|| format!("check --lint: failed to read {}", p.display()))
+                .with_context(|| format!("failed to read {}", p.display()))
                 .usage()?;
             for w in &pc.warnings {
                 eprintln!("warning: {w}");
             }
-            pc.lint
+            pc
         }
-        None => dbtl::LintConfig::default(),
+        None => dbtl::ProjectConfig::default(),
     };
-    if !rules.is_empty() {
-        for name in rules {
-            if dbtl::LintRule::from_name(name).is_none() {
-                return Err(CliError::usage(anyhow::anyhow!(
-                    "unknown lint rule '{name}' (valid rules: {})",
-                    dbtl::LintRule::ALL
-                        .iter()
-                        .map(|r| r.name())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )));
-            }
-        }
-        // `--rules` is the authoritative rule SELECTOR: unnamed rules go
-        // off; a named rule's `off` in the file is lifted to the registry
-        // default (a configured non-off severity stands — the file still
-        // supplies severities like it supplies thresholds and prefixes).
-        for r in dbtl::LintRule::ALL {
-            if rules.iter().any(|n| n == r.name()) {
-                if cfg.severities.get(&r) == Some(&None) {
-                    cfg.severities.remove(&r);
-                }
-            } else {
-                cfg.severities.insert(r, None);
-            }
+    Ok(ProjectConfigFile { config, path })
+}
+
+/// The lint config for `check --lint` and `docs`: `.dbtl.yml` beside the
+/// resolved data source plus `--rules` overlaid as the authoritative rule
+/// selector (exactly the named rules run — the file still supplies
+/// thresholds and naming prefixes). Every failure is a usage error — a
+/// config the caller handed us that we cannot interpret.
+pub(super) fn load_lint_config(
+    resolved: &ResolvedSource,
+    rules: &[String],
+) -> Result<dbtl::LintConfig, CliError> {
+    let (manifest_arg, project_arg) = resolved_config_args(resolved);
+    let mut cfg = load_project_config(manifest_arg.as_deref(), project_arg.as_deref())?
+        .config
+        .lint;
+    apply_rules_overlay(&mut cfg, rules)?;
+    Ok(cfg)
+}
+
+/// Every `--rules` name must be a registry rule — checked before the data
+/// source loads so an unknown name is a usage error, never masked behind a
+/// missing-input error.
+pub(super) fn validate_rule_names(rules: &[String]) -> Result<(), CliError> {
+    for name in rules {
+        if dbtl::LintRule::from_name(name).is_none() {
+            return Err(CliError::usage(anyhow::anyhow!(
+                "unknown lint rule '{name}' (valid rules: {})",
+                dbtl::LintRule::ALL
+                    .iter()
+                    .map(|r| r.name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
         }
     }
-    Ok(cfg)
+    Ok(())
+}
+
+/// Overlay `--rules` on a lint config: the flag is the authoritative rule
+/// SELECTOR — exactly the named rules run; a file-`off` named rule lifts to
+/// the registry default severity (a configured non-off severity stands, like
+/// the file's thresholds and prefixes do). An unknown name is a usage error
+/// listing the valid ids.
+pub(super) fn apply_rules_overlay(
+    cfg: &mut dbtl::LintConfig,
+    rules: &[String],
+) -> Result<(), CliError> {
+    if rules.is_empty() {
+        return Ok(());
+    }
+    validate_rule_names(rules)?;
+    for r in dbtl::LintRule::ALL {
+        if rules.iter().any(|n| n == r.name()) {
+            if cfg.severities.get(&r) == Some(&None) {
+                cfg.severities.remove(&r);
+            }
+        } else {
+            cfg.severities.insert(r, None);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

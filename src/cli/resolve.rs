@@ -77,13 +77,48 @@ impl<'a> DataSourceArgs<'a> {
     }
 }
 
+/// Which input [`resolve_source`] would load, without loading it — shared
+/// with the `.dbtl.yml` probe (`lint --list-rules`/`--explain` decide where
+/// the config file lives from the path decision alone, never the data).
+pub(super) enum SourcePath {
+    /// A manifest.json to load directly.
+    Manifest(PathBuf),
+    /// A project dir to parse from source.
+    Project(PathBuf),
+}
+
+/// The source-selection half of [`resolve_source`]: explicit `--manifest` /
+/// `--source` win, else auto-detect under `project` — `target/manifest.json`
+/// (full fidelity) first, then `dbt_project.yml` (source parse). `None` =
+/// no data source under `project`.
+pub(super) fn source_path(
+    manifest: &Option<String>,
+    source: &Option<String>,
+    project: &str,
+) -> Option<SourcePath> {
+    if let Some(path) = manifest {
+        return Some(SourcePath::Manifest(PathBuf::from(path)));
+    }
+    if let Some(dir) = source {
+        return Some(SourcePath::Project(PathBuf::from(dir)));
+    }
+    let project = PathBuf::from(project);
+    let manifest = project.join("target").join("manifest.json");
+    if manifest.is_file() {
+        return Some(SourcePath::Manifest(manifest));
+    }
+    if project.join("dbt_project.yml").is_file() {
+        return Some(SourcePath::Project(project));
+    }
+    None
+}
+
 /// The shared data-source resolution, identical for the TUI and the
 /// subcommands. Explicit `manifest` / `source` win; otherwise auto-detect
-/// under `project`: a compiled `target/manifest.json` if present (full
-/// fidelity), else parse the project from source. The TUI ([`build_app`])
-/// and the subcommands all go through here so the precedence can never
-/// diverge. Every failure here is an input error — a named file/dir that
-/// could not be read.
+/// under `project` per [`source_path`]. The TUI ([`build_app`]) and the
+/// subcommands all go through here so the precedence can never diverge.
+/// Every failure here is an input error — a named file/dir that could not
+/// be read.
 ///
 /// `scope` is applied to the loaded graph on the way out (the default `Root`
 /// scope prunes installed-package nodes — manifest mode's `nodes` map mixes
@@ -95,69 +130,34 @@ pub fn resolve_source(
     project: &str,
     scope: dbtl::PackageScope,
 ) -> Result<ResolvedSource, CliError> {
-    if let Some(path) = manifest {
-        let (dag, mut warnings) = load_dag_with_warnings(path).input()?;
-        for w in &warnings {
-            eprintln!("warning: {w}");
-        }
-        let (dag, scope_w) = apply_package_scope(dag, scope, false);
-        warnings.extend(scope_w);
-        return Ok(ResolvedSource {
-            dag,
-            label: path.clone(),
-            is_source: false,
-            warnings,
-        });
-    }
-    if let Some(dir) = source {
-        let (dag, mut warnings) = load_dag_from_source_with_warnings(dir).input()?;
-        for w in &warnings {
-            eprintln!("warning: {w}");
-        }
-        let (dag, scope_w) = apply_package_scope(dag, scope, true);
-        warnings.extend(scope_w);
-        return Ok(ResolvedSource {
-            dag,
-            label: dir.clone(),
-            is_source: true,
-            warnings,
-        });
-    }
-    let project = PathBuf::from(project);
-    let manifest = project.join("target").join("manifest.json");
-    if manifest.is_file() {
-        let (dag, mut warnings) = load_dag_with_warnings(&manifest).input()?;
-        for w in &warnings {
-            eprintln!("warning: {w}");
-        }
-        let (dag, scope_w) = apply_package_scope(dag, scope, false);
-        warnings.extend(scope_w);
-        Ok(ResolvedSource {
-            dag,
-            label: manifest.display().to_string(),
-            is_source: false,
-            warnings,
-        })
-    } else if project.join("dbt_project.yml").is_file() {
-        let (dag, mut warnings) = load_dag_from_source_with_warnings(&project).input()?;
-        for w in &warnings {
-            eprintln!("warning: {w}");
-        }
-        let (dag, scope_w) = apply_package_scope(dag, scope, true);
-        warnings.extend(scope_w);
-        Ok(ResolvedSource {
-            dag,
-            label: project.display().to_string(),
-            is_source: true,
-            warnings,
-        })
-    } else {
-        Err(CliError::input(anyhow::anyhow!(
+    let Some(path) = source_path(manifest, source, project) else {
+        return Err(CliError::input(anyhow::anyhow!(
             "no data source under {}: neither target/manifest.json nor dbt_project.yml found \
              (pass --manifest <file> or --source <dir>)",
-            project.display()
-        )))
+            project
+        )));
+    };
+    let (dag, mut warnings, label, is_source) = match &path {
+        SourcePath::Manifest(path) => {
+            let (dag, warnings) = load_dag_with_warnings(path).input()?;
+            (dag, warnings, path.display().to_string(), false)
+        }
+        SourcePath::Project(dir) => {
+            let (dag, warnings) = load_dag_from_source_with_warnings(dir).input()?;
+            (dag, warnings, dir.display().to_string(), true)
+        }
+    };
+    for w in &warnings {
+        eprintln!("warning: {w}");
     }
+    let (dag, scope_w) = apply_package_scope(dag, scope, is_source);
+    warnings.extend(scope_w);
+    Ok(ResolvedSource {
+        dag,
+        label,
+        is_source,
+        warnings,
+    })
 }
 /// Apply the loaded graph's package scope: `All` keeps the manifest's full
 /// contents (installed-package nodes as dependency context); the default
