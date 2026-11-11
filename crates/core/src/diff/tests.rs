@@ -46,6 +46,7 @@ fn manifest(b: RawNode, extra: Option<(&str, RawNode)>) -> RawManifest {
         functions: HashMap::new(),
         parent_map,
         child_map,
+        docs: Default::default(),
     }
 }
 
@@ -225,6 +226,7 @@ fn cross_mode_surfaces_are_excluded_per_node_kind() {
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
             macros: HashMap::new(),
+            docs: Default::default(),
         })
     };
     // Base: documented seed columns only + the dbt-style snapshot body.
@@ -478,6 +480,7 @@ fn col_manifest(
         functions: HashMap::new(),
         parent_map,
         child_map,
+        docs: Default::default(),
     }
 }
 

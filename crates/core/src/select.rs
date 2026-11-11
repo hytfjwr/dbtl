@@ -484,6 +484,7 @@ mod tests {
                 ("model.p.stg".into(), vec!["model.p.int".into()]),
                 ("model.p.int".into(), vec!["model.p.fct".into()]),
             ]),
+            docs: Default::default(),
         })
     }
 
@@ -574,6 +575,7 @@ mod tests {
             functions: HashMap::new(),
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
+            docs: Default::default(),
         })
     }
 
@@ -617,6 +619,7 @@ mod tests {
 
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
+            docs: Default::default(),
         };
         let mut base_nodes = HashMap::new();
         let fct = RawNode {

@@ -404,6 +404,7 @@ fn selected_file_path_stays_under_the_project_root() {
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
         macros: HashMap::new(),
+        docs: Default::default(),
     });
     let mut a = App::new(dag, PathBuf::from("/x/proj/target/manifest.json"));
 

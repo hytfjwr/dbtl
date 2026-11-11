@@ -314,6 +314,7 @@ fn list_empty_reason_names_the_persistent_filter_and_scope() {
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
         macros: HashMap::new(),
+        docs: Default::default(),
     });
     let b = App::new(empty, PathBuf::from(FIXTURE));
     assert_eq!(

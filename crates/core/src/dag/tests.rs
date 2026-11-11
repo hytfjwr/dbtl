@@ -77,6 +77,7 @@ fn sample_manifest() -> RawManifest {
         functions: HashMap::new(),
         parent_map,
         child_map,
+        docs: Default::default(),
     }
 }
 
@@ -129,6 +130,7 @@ fn analysis_nodes_are_excluded_like_tests() {
         parent_map,
         child_map,
         macros: HashMap::new(),
+        docs: Default::default(),
     });
     assert!(dag.get("analysis.p.x").is_none());
     assert_eq!(dag.count_by_resource_type("analysis"), 0);
@@ -229,6 +231,7 @@ fn closure_is_cycle_safe() {
         parent_map: HashMap::new(),
         child_map,
         macros: HashMap::new(),
+        docs: Default::default(),
     };
     let dag = Dag::build(&manifest);
     let down = dag.downstream("model.p.a");
@@ -525,6 +528,7 @@ fn multi_package_manifest(root_project: Option<&str>) -> RawManifest {
         functions: HashMap::new(),
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
+        docs: Default::default(),
     }
 }
 
@@ -1025,6 +1029,7 @@ fn unique_key_normalizes_string_list_and_absent_forms() {
         functions: HashMap::new(),
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
+        docs: Default::default(),
     };
     let dag = Dag::build(&manifest);
     let uk = |uid: &str| dag.detail(uid).unwrap().unique_key.clone();
@@ -1071,6 +1076,7 @@ fn patch_path_strips_the_package_scheme() {
         functions: HashMap::new(),
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
+        docs: Default::default(),
     };
     let dag = Dag::build(&manifest);
     assert_eq!(
@@ -1155,6 +1161,7 @@ fn source_freshness_loader_and_loaded_at_normalize() {
         functions: HashMap::new(),
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
+        docs: Default::default(),
     };
     let dag = Dag::build(&manifest);
     let d = |uid: &str| dag.detail(uid).unwrap();
@@ -1182,5 +1189,127 @@ fn source_freshness_loader_and_loaded_at_normalize() {
     assert!(
         err.has_freshness(),
         "error_after alone is effective freshness"
+    );
+}
+
+// ---- the `__overview__` doc-block intake -----------------------------------
+
+/// A manifest `docs` entry in the wire shape (`doc.<pkg>.<name>`).
+fn raw_doc(name: &str, package: Option<&str>, body: &str) -> RawDoc {
+    RawDoc {
+        name: name.into(),
+        package_name: package.map(str::to_string),
+        block_contents: body.into(),
+    }
+}
+
+/// A manifest with `metadata.project_name = "p"`, one model, and the given
+/// `docs` entries — the minimum `Dag::build` needs to resolve the overview.
+fn overview_manifest(entries: &[(&str, RawDoc)]) -> RawManifest {
+    let nodes = HashMap::from([(
+        "model.p.a".to_string(),
+        RawNode {
+            name: "a".into(),
+            resource_type: "model".into(),
+            ..Default::default()
+        },
+    )]);
+    let docs: HashMap<String, RawDoc> = entries
+        .iter()
+        .map(|(uid, d)| (uid.to_string(), d.clone()))
+        .collect();
+    RawManifest {
+        metadata: crate::manifest::RawMetadata {
+            project_name: Some("p".into()),
+            ..Default::default()
+        },
+        nodes,
+        sources: HashMap::new(),
+        exposures: HashMap::new(),
+        macros: HashMap::new(),
+        semantic_models: HashMap::new(),
+        metrics: HashMap::new(),
+        saved_queries: HashMap::new(),
+        unit_tests: HashMap::new(),
+        functions: HashMap::new(),
+        parent_map: HashMap::new(),
+        child_map: HashMap::new(),
+        docs,
+    }
+}
+
+#[test]
+fn overview_prefers_the_root_project_over_installed_packages() {
+    // dbt ships `doc.dbt.__overview__` boilerplate in every manifest — it
+    // must never outrank the project's own block…
+    let m = overview_manifest(&[
+        (
+            "doc.dbt.__overview__",
+            raw_doc("__overview__", Some("dbt"), "internal boilerplate"),
+        ),
+        (
+            "doc.p.__overview__",
+            raw_doc("__overview__", Some("p"), "project overview"),
+        ),
+    ]);
+    assert_eq!(Dag::build(&m).overview(), Some("project overview"));
+    // …and alone it yields NO overview rather than the boilerplate.
+    let m = overview_manifest(&[(
+        "doc.dbt.__overview__",
+        raw_doc("__overview__", Some("dbt"), "internal boilerplate"),
+    )]);
+    assert_eq!(Dag::build(&m).overview(), None);
+    // Non-`__overview__` blocks are never overview candidates.
+    let m = overview_manifest(&[(
+        "doc.p.other",
+        raw_doc("other", Some("p"), "not the overview"),
+    )]);
+    assert_eq!(Dag::build(&m).overview(), None);
+}
+
+#[test]
+fn overview_accepts_unattributed_and_trims_blank_bodies() {
+    // `package_name: null` — a hand-built manifest may carry that — is
+    // accepted; surrounding whitespace doesn't survive the trim.
+    let m = overview_manifest(&[(
+        "doc.p.__overview__",
+        raw_doc("__overview__", None, "  padded body  \n"),
+    )]);
+    assert_eq!(Dag::build(&m).overview(), Some("padded body"));
+    // An empty/whitespace body is no overview at all.
+    let m = overview_manifest(&[(
+        "doc.p.__overview__",
+        raw_doc("__overview__", Some("p"), "   \n  "),
+    )]);
+    assert_eq!(Dag::build(&m).overview(), None);
+}
+
+#[test]
+fn overview_tiebreaks_by_uid_deterministically() {
+    // Two qualifying docs → the smallest uid wins, whichever order the
+    // map hands them back in.
+    let m = overview_manifest(&[
+        ("doc.p.zzz", raw_doc("__overview__", Some("p"), "second")),
+        ("doc.p.aaa", raw_doc("__overview__", Some("p"), "first")),
+    ]);
+    assert_eq!(Dag::build(&m).overview(), Some("first"));
+}
+
+#[test]
+fn filtered_preserves_the_overview() {
+    // Like `root_project`, the overview rides across a rebuild — it's a
+    // graph-level scalar, not node data the prune could own.
+    let m = overview_manifest(&[(
+        "doc.p.__overview__",
+        raw_doc("__overview__", Some("p"), "kept"),
+    )]);
+    let dag = Dag::build(&m);
+    let filtered = dag.filtered(|n| n.resource_type == "model");
+    assert_eq!(filtered.overview(), Some("kept"));
+    let gone = dag.filtered(|_| false);
+    assert_eq!(
+        gone.overview(),
+        Some("kept"),
+        "even an empty prune keeps it"
     );
 }

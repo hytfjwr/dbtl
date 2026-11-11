@@ -6,9 +6,18 @@ use super::*;
 /// the `check`/`impact` gates and the TUI share, so a CI comment and the
 /// `D` modal never disagree on who to page. `project` is the already-parsed
 /// `ProjectConfig::owner_meta_key`.
-pub(super) fn owner_meta_key(project: Option<&str>) -> String {
+///
+/// `user_config` controls whether `config.yml` is consulted at all: the
+/// gates and the TUI resolve `owner_meta_key` project-first-then-user, but
+/// generated docs must be reproducible from the project inputs alone — a
+/// committed `owners.md` must never depend on a maintainer's home dir — so
+/// `docs` passes `false` (`.dbtl.yml`, else `owner`).
+pub(super) fn owner_meta_key(project: Option<&str>, user_config: bool) -> String {
     if let Some(key) = project {
         return key.to_string();
+    }
+    if !user_config {
+        return "owner".to_string();
     }
     match crate::state::load_config() {
         Ok(c) => c.owner_meta_key.unwrap_or_else(|| "owner".to_string()),
@@ -313,6 +322,7 @@ mod tests {
             functions: HashMap::new(),
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
+            docs: Default::default(),
         };
         ResolvedSource {
             dag: dbtl::Dag::build(&manifest),
@@ -372,5 +382,26 @@ mod tests {
             cfg.severity(dbtl::LintRule::SourceFanout),
             Some(dbtl::Severity::Warn)
         );
+    }
+
+    #[test]
+    fn owner_meta_key_resolves_project_first_then_user_policy() {
+        // A `.dbtl.yml` key always wins — over the user config AND over
+        // the project-only path docs takes.
+        for user in [true, false] {
+            assert_eq!(
+                owner_meta_key(Some("team"), user),
+                "team",
+                "the project key wins (user_config={user})"
+            );
+        }
+        // With no project key the docs path (`user_config: false`) can only
+        // ever produce the `owner` default — it never opens config.yml, so
+        // committed pages can't depend on a maintainer's home dir.
+        assert_eq!(owner_meta_key(None, false), "owner");
+        // `true` resolves the user config (the gates' path) — still
+        // `owner` when no config.yml names a key; what it returns under a
+        // configured home dir is the shared file-loading rule, covered by
+        // the config loader's own tests.
     }
 }

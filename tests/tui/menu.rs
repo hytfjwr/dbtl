@@ -104,6 +104,7 @@ pub(super) fn empty_list_stamps_the_scope_reason_and_ascii_dash() {
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
         macros: HashMap::new(),
+        docs: Default::default(),
     });
     let mut app = App::new(empty, std::path::PathBuf::from(FIXTURE));
     // The reason is longer than the 34-col default pane — widen to fit it.

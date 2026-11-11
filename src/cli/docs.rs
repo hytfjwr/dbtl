@@ -92,7 +92,7 @@ pub fn run_docs(src: &DataSourceArgs, args: &DocsArgs) -> Result<(), CliError> {
             set.remove(&uid);
         }
         if set.is_empty() {
-            eprintln!("warning: --select/--exclude matched no nodes — writing the README only");
+            eprintln!("warning: --select/--exclude matched no nodes — writing no node pages");
         }
         Some(set)
     } else {
@@ -268,6 +268,10 @@ pub(super) fn docs_file_set(
         manifest_arg.as_deref(),
         project_arg.as_deref(),
     )?;
+    // The owners index's meta key: `.dbtl.yml`, else `owner` — the ONE
+    // resolver the gates share, minus the user-level fallback (a committed
+    // doc set must be reproducible from the project inputs alone).
+    let owner_key = owner_meta_key(pc.config.owner_meta_key.as_deref(), false);
     Ok(dbtl::generate_docs_with_options(
         &resolved.dag,
         &project_name,
@@ -282,6 +286,7 @@ pub(super) fn docs_file_set(
             nodes: sel.nodes,
             select_label: sel.select_label,
             exclude_label: sel.exclude_label,
+            owner_meta_key: &owner_key,
         },
     ))
 }

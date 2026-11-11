@@ -773,8 +773,14 @@ fn select_generates_only_the_selected_pages() {
     assert!(r.status.success(), "stderr: {}", lossy(&r.stderr));
     assert_eq!(
         generated_files(&out),
-        ["README.md", "models/model.sample.fct_orders.md"],
-        "one node page + the README"
+        [
+            "README.md",
+            "groups.md",
+            "models/model.sample.fct_orders.md",
+            "owners.md",
+            "tags.md"
+        ],
+        "one node page + the README and the index pages"
     );
     let readme = std::fs::read_to_string(out.join("README.md")).unwrap();
     assert!(readme.contains("Selection: `fct_orders`"), "{readme}");
@@ -856,7 +862,7 @@ fn links_to_ungenerated_pages_degrade_to_names() {
 }
 
 #[test]
-fn empty_selection_warns_and_writes_only_the_readme() {
+fn empty_selection_warns_and_writes_no_node_pages() {
     let out = temp_out("empty_sel");
     let _ = std::fs::remove_dir_all(&out);
     let r = run_docs_sample(&out, &["--select", "no_such_node"]);
@@ -866,7 +872,12 @@ fn empty_selection_warns_and_writes_only_the_readme() {
         "the empty-selection warning: {}",
         lossy(&r.stderr)
     );
-    assert_eq!(generated_files(&out), ["README.md"]);
+    // No node pages — but the README and the index pages still generate
+    // (the index set stays stable and the README's links stay valid).
+    assert_eq!(
+        generated_files(&out),
+        ["README.md", "groups.md", "owners.md", "tags.md"]
+    );
     let readme = std::fs::read_to_string(out.join("README.md")).unwrap();
     assert!(readme.contains("Selection: `no_such_node`"), "{readme}");
     let _ = std::fs::remove_dir_all(&out);
@@ -938,4 +949,126 @@ fn invalid_selectors_and_orphaned_diff_are_usage_errors() {
     let r = run_docs_sample(&out, &["--diff", &m]);
     assert_eq!(r.status.code(), Some(2), "stderr: {}", lossy(&r.stderr));
     assert!(lossy(&r.stderr).contains("state:"), "{}", lossy(&r.stderr));
+}
+
+// ---- the index pages + owner-meta-key plumbing -----------------------------
+
+#[test]
+fn index_pages_land_on_disk_and_readme_links_them() {
+    // owners.md / tags.md / groups.md sit beside README.md, each leading
+    // with the generated marker (so `--clean`/`--check` track them like any
+    // other page), and the README's Indexes section links all three.
+    let out = temp_out("indexes");
+    let _ = std::fs::remove_dir_all(&out);
+    assert!(run_docs(&out, false).status.success());
+    let readme = std::fs::read_to_string(out.join("README.md")).expect("README");
+    assert!(readme.contains("## Indexes"), "Indexes section: {readme}");
+    for page in ["owners.md", "tags.md", "groups.md"] {
+        let p = out.join(page);
+        assert!(p.is_file(), "{page} was written");
+        let contents = std::fs::read_to_string(&p).expect("read index page");
+        assert!(
+            contents.starts_with(MARKER),
+            "{page} leads with the generated marker"
+        );
+        assert!(
+            readme.contains(&format!("]({page})")),
+            "README links {page}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn dbtl_yml_owner_meta_key_reaches_the_owners_page() {
+    // The project config's `owner_meta_key` is the one input that can move
+    // the owners index off the `owner` default — the generated page states
+    // the resolved key at the top.
+    let dir = manifest_in_temp("cfg_owner");
+    std::fs::write(dir.join(".dbtl.yml"), "owner_meta_key: team\n").unwrap();
+    let out = dir.join("out");
+    let result = dbtl_cmd()
+        .arg("docs")
+        .arg("--manifest")
+        .arg(dir.join("manifest.json"))
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .expect("run docs");
+    assert!(result.status.success(), "{}", lossy(&result.stderr));
+    let owners = std::fs::read_to_string(out.join("owners.md")).expect("owners.md");
+    assert!(
+        owners.contains("Owner meta key: `team`"),
+        ".dbtl.yml's owner_meta_key reached the page: {owners}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn docs_ignores_the_user_level_owner_meta_key() {
+    // A committed doc set is reproducible from the project inputs alone —
+    // `~/.config/dbtl/config.yml` (simulated via XDG_CONFIG_HOME) may name a
+    // key the gates honour, but generated docs must not read it: the page
+    // keeps the `owner` default with only the user file present.
+    let dir = manifest_in_temp("user_owner");
+    let xdg = dir.join("xdg");
+    std::fs::create_dir_all(xdg.join("dbtl")).unwrap();
+    std::fs::write(xdg.join("dbtl/config.yml"), "owner_meta_key: user_key\n").unwrap();
+    let out = dir.join("out");
+    let result = dbtl_cmd()
+        .env("XDG_CONFIG_HOME", &xdg)
+        .arg("docs")
+        .arg("--manifest")
+        .arg(dir.join("manifest.json"))
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .expect("run docs");
+    assert!(result.status.success(), "{}", lossy(&result.stderr));
+    let owners = std::fs::read_to_string(out.join("owners.md")).expect("owners.md");
+    assert!(
+        owners.contains("Owner meta key: `owner`"),
+        "the user config's key never reached the page: {owners}"
+    );
+    assert!(
+        !owners.contains("user_key"),
+        "no trace of the user-level key: {owners}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn partial_generation_still_writes_the_index_pages() {
+    // `--select` narrows the node pages, but the README and all three index
+    // pages still generate — and nothing links to a page that wasn't
+    // generated (a linked-but-missing href is the failure mode this guards).
+    let out = temp_out("partial_idx");
+    let _ = std::fs::remove_dir_all(&out);
+    let result = run_docs_flags(&out, &["--select", "fct_subscription_process"]);
+    assert!(result.status.success(), "{}", lossy(&result.stderr));
+    for page in ["owners.md", "tags.md", "groups.md", "README.md"] {
+        assert!(out.join(page).is_file(), "{page} under --select");
+    }
+    let selected = out.join("models/model.jaffle_finance.fct_subscription_process.md");
+    assert!(selected.is_file(), "the selected page exists");
+    let count = std::fs::read_dir(out.join("models"))
+        .expect("models dir")
+        .count();
+    assert_eq!(count, 1, "--select wrote exactly the one model page");
+    // Every markdown link in every index page resolves to a file on disk.
+    for index in ["owners.md", "tags.md", "groups.md"] {
+        let page = std::fs::read_to_string(out.join(index)).expect("index page");
+        for chunk in page.split("](") {
+            if let Some(end) = chunk.find(')') {
+                let target = &chunk[..end];
+                if target.ends_with(".md") {
+                    assert!(
+                        out.join(target).exists(),
+                        "{index} links to ungenerated {target}"
+                    );
+                }
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&out);
 }

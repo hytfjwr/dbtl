@@ -35,6 +35,7 @@ fn dag_with(project_name: Option<&str>, uids: &[&str]) -> Dag {
         functions: HashMap::new(),
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
+        docs: Default::default(),
     })
 }
 

@@ -966,6 +966,7 @@ mod tests {
                 "model.p.stg_x".to_string(),
                 vec!["model.p.fct_x".to_string()],
             )]),
+            docs: Default::default(),
         }
     }
 
@@ -1034,6 +1035,7 @@ mod tests {
                     vec!["model.p.mart_b".to_string()],
                 ),
             ]),
+            docs: Default::default(),
         }
     }
 

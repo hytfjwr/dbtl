@@ -131,6 +131,7 @@ fn export_labels_neutralize_untrusted_kind() {
         saved_queries: HashMap::new(),
         unit_tests: HashMap::new(),
         functions: HashMap::new(),
+        docs: Default::default(),
     };
     let mut a = App::new(Dag::build(&manifest), PathBuf::from("manifest.json"));
     assert!(a.select_by_unique_id("model.p.evil"));
@@ -385,6 +386,7 @@ fn export_sanitizes_untrusted_node_names_into_a_safe_relative_path() {
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
         macros: HashMap::new(),
+        docs: Default::default(),
     });
     let mut a = App::new(dag, PathBuf::from("/tmp/x/target/manifest.json"));
     a.select_by_unique_id("model.p.evil");

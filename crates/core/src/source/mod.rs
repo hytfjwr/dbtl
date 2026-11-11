@@ -48,7 +48,7 @@ use yaml_rust2::parser::{Event, MarkedEventReceiver, Tag};
 use yaml_rust2::scanner::{Marker, TScalarStyle};
 
 use crate::{
-    Dag, RawConfig, RawDependsOn, RawExposure, RawExposureOwner, RawFreshness,
+    Dag, RawConfig, RawDependsOn, RawDoc, RawExposure, RawExposureOwner, RawFreshness,
     RawFreshnessThreshold, RawManifest, RawMetadata, RawNode, RawSource, RawTestMetadata,
 };
 
@@ -742,6 +742,25 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
         }
     }
 
+    // The `{% docs __overview__ %}` block rides into the manifest's `docs`
+    // map in exactly the shape a real manifest carries
+    // (`doc.<proj>.__overview__`), so `Dag::build` picks the overview up
+    // through ONE intake path for both load modes. `DocBlocks::render`
+    // expands `doc()` refs and strips `{# #}` comments — what dbt writes to
+    // `block_contents`. Other docs blocks are not ingested (they already
+    // expanded where referenced; nothing else consumes them).
+    let mut manifest_docs = HashMap::new();
+    if let Some(body) = docs.blocks.get("__overview__") {
+        manifest_docs.insert(
+            format!("doc.{proj}.__overview__"),
+            RawDoc {
+                name: "__overview__".to_string(),
+                package_name: Some(proj.clone()),
+                block_contents: docs.render(body, &mut warnings),
+            },
+        );
+    }
+
     // Collapse identical warnings — a misdeclared `+meta` level every node
     // descends through would otherwise warn once PER NODE (the message is
     // the same string, so first-seen order survives dedup).
@@ -773,6 +792,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             saved_queries: HashMap::new(),
             unit_tests: HashMap::new(),
             functions: HashMap::new(),
+            docs: manifest_docs,
         },
         warnings,
     ))

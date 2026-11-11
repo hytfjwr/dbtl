@@ -476,6 +476,7 @@ fn manifest_from_plan(params: &SynthParams, plan: &Plan, sql_bodies: bool) -> Ra
         functions: HashMap::new(),
         parent_map,
         child_map,
+        docs: Default::default(),
     }
 }
 

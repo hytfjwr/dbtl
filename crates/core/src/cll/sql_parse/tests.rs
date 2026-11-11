@@ -70,6 +70,7 @@ fn manifest(nodes: Vec<(String, RawNode)>, edges: &[(&str, &str)]) -> RawManifes
         unit_tests: HashMap::new(),
         functions: HashMap::new(),
         metadata: Default::default(),
+        docs: Default::default(),
     }
 }
 

@@ -150,7 +150,11 @@ fn check_never_reaches_generated_docs() {
         "fusion_manifest.json",
         dbtl::PackageScope::Root,
     );
-    assert_eq!(out.len(), dag.len() + 1, "one page per node + README");
+    assert_eq!(
+        out.len(),
+        dag.len() + 4,
+        "one page per node + README + the three index pages"
+    );
     for (path, contents) in &out {
         assert!(
             !path.starts_with("models/check."),

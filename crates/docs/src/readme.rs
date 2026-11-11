@@ -30,6 +30,13 @@ pub(super) fn readme_markdown(
 
     let mut s = String::new();
     s.push_str(&format!("# {project_name}\n\n"));
+    // The project's `__overview__` docs block — placed directly under the
+    // title, the spot dbt's own docs site renders it. The Dag already carries
+    // it trimmed; absent → the provenance line keeps its pre-overview bytes.
+    if let Some(overview) = dag.overview() {
+        s.push_str(overview);
+        s.push_str("\n\n");
+    }
     s.push_str(&format!("Generated from: `{source_label}`\n"));
     if let Some(label) = options.select_label {
         s.push_str(&format!("Selection: `{label}`\n"));
@@ -112,6 +119,14 @@ pub(super) fn readme_markdown(
     // The lint summary — the shared `run_rules` findings `dbtl check --lint`
     // gates on (rendered only when lint ran).
     push_lint_summary(&mut s, dag, files, lint);
+
+    // The index pages — cross-cutting views over the project living next to
+    // this README. They're ALWAYS generated (an empty index states its
+    // emptiness), so these links always resolve.
+    s.push_str("\n## Indexes\n\n");
+    s.push_str("- [Owners](owners.md) — models grouped by the owner meta value\n");
+    s.push_str("- [Tags](tags.md) — tagged nodes grouped by tag\n");
+    s.push_str("- [Groups](groups.md) — models grouped by group, with access\n");
 
     // Node table in logical order (see `readme_order`), each linked to its
     // page — the GENERATED set only (`listed`): every row's link resolves.
@@ -274,6 +289,51 @@ pub(super) struct LayerGroup {
     pub(super) uids: Vec<String>,
 }
 
+/// The shared model→layer bucketing [`layer_groups`] and the per-layer
+/// coverage table both use — a model's layer is its first path directory
+/// ([`first_dir`]), ranked by [`LAYER_ORDER`] (unknown dirs rank last →
+/// `other models`); non-models are skipped. Buckets iterate in rank order;
+/// member uids are unsorted (each caller sorts as it needs).
+fn bucket_models<'a>(
+    nodes: impl Iterator<Item = &'a NodeInfo>,
+) -> BTreeMap<usize, (String, Vec<String>)> {
+    let mut layers: BTreeMap<usize, (String, Vec<String>)> = BTreeMap::new();
+    for node in nodes {
+        if node.resource_type != "model" {
+            continue;
+        }
+        let layer = first_dir(node).unwrap_or("");
+        let rank = layer_rank(layer);
+        let label = LAYER_ORDER.get(rank).copied().unwrap_or("other models");
+        layers
+            .entry(rank)
+            .or_insert_with(|| (label.to_string(), Vec::new()))
+            .1
+            .push(node.unique_id.clone());
+    }
+    layers
+}
+
+/// The ROOT-PROJECT models, bucketed by [`bucket_models`] — the per-layer
+/// coverage table's partition: the same classification the split lineage's
+/// model buckets get, narrowed to the root project like every other coverage
+/// metric (installed-package models are context, never project health
+/// numbers). Empty buckets drop out; member uids sorted.
+pub(super) fn model_layer_groups(dag: &Dag) -> Vec<LayerGroup> {
+    let primary = dag.primary_package();
+    bucket_models(
+        dag.nodes()
+            .values()
+            .filter(|n| primary.as_deref().is_none_or(|p| in_package(n, p))),
+    )
+    .into_values()
+    .map(|(label, mut uids)| {
+        uids.sort();
+        LayerGroup { label, uids }
+    })
+    .collect()
+}
+
 /// Partition the dag's nodes into ordered groups for the split lineage:
 /// model layers in [`LAYER_ORDER`] first (each with its members), then one
 /// group per remaining resource type in [`RESOURCE_ORDER`], then a catch-all
@@ -282,21 +342,12 @@ pub(super) struct LayerGroup {
 /// uids are sorted, and empty buckets are dropped, so the result is
 /// deterministic and gap-free (every node lands in exactly one group).
 pub(super) fn layer_groups(dag: &Dag) -> Vec<LayerGroup> {
-    let mut model_layers: BTreeMap<usize, (String, Vec<String>)> = BTreeMap::new();
+    let model_layers = bucket_models(dag.nodes().values());
     let mut by_rt: BTreeMap<usize, (String, Vec<String>)> = BTreeMap::new();
     let mut other: Vec<String> = Vec::new();
-    for node in dag.nodes().values() {
+    for node in dag.nodes().values().filter(|n| n.resource_type != "model") {
         let uid = node.unique_id.clone();
-        if node.resource_type == "model" {
-            let layer = first_dir(node).unwrap_or("");
-            let rank = layer_rank(layer);
-            let label = LAYER_ORDER.get(rank).copied().unwrap_or("other models");
-            model_layers
-                .entry(rank)
-                .or_insert_with(|| (label.to_string(), Vec::new()))
-                .1
-                .push(uid);
-        } else if let Some(rank) = RESOURCE_ORDER.iter().position(|k| *k == node.resource_type) {
+        if let Some(rank) = RESOURCE_ORDER.iter().position(|k| *k == node.resource_type) {
             by_rt
                 .entry(rank)
                 // The page-directory name doubles as the group label —

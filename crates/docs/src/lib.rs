@@ -18,9 +18,10 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use dbtl_core::layer::{first_dir, layer_rank};
 use dbtl_core::mermaid::subgraph_mermaid_linked;
 use dbtl_core::{
-    column_coverage_counts, coverage_counts, in_package, normalize_column, Catalog, ColumnEdgeKind,
-    ColumnLineage, ColumnRef, ColumnResolver, CompiledOrigin, Dag, Edge, Finding, LineageDepth,
-    NodeInfo, PackageScope, RunResults, SqlDialect, SqlParseResolver, Subgraph, LAYER_ORDER,
+    column_coverage_counts, column_doc_coverage_counts, coverage_counts, doc_coverage_counts,
+    in_package, normalize_column, Catalog, ColumnEdgeKind, ColumnLineage, ColumnRef,
+    ColumnResolver, CompiledOrigin, Dag, Edge, Finding, LineageDepth, NodeInfo, PackageScope,
+    RunResults, SqlDialect, SqlParseResolver, Subgraph, LAYER_ORDER,
 };
 
 /// Where a node page lives under `<out>`, keyed by `resource_type` — the ONE
@@ -117,6 +118,11 @@ pub struct DocsOptions<'a> {
     pub select_label: Option<&'a str>,
     /// The `--exclude` spec string, echoed on the README's `Excluding:` line.
     pub exclude_label: Option<&'a str>,
+    /// The `meta` key the owners index reads — resolved by the caller
+    /// (`.dbtl.yml`'s top-level `owner_meta_key`, else `owner`; this crate
+    /// never reads user-level config). Echoed at the top of `owners.md` so
+    /// the page states which key it indexed.
+    pub owner_meta_key: &'a str,
 }
 
 impl std::fmt::Debug for DocsOptions<'_> {
@@ -132,6 +138,7 @@ impl std::fmt::Debug for DocsOptions<'_> {
             .field("nodes", &self.nodes.map(<BTreeSet<String>>::len))
             .field("select_label", &self.select_label)
             .field("exclude_label", &self.exclude_label)
+            .field("owner_meta_key", &self.owner_meta_key)
             .finish()
     }
 }
@@ -147,6 +154,7 @@ impl Default for DocsOptions<'_> {
             nodes: None,
             select_label: None,
             exclude_label: None,
+            owner_meta_key: "owner",
         }
     }
 }
@@ -275,6 +283,12 @@ pub fn generate_docs_with_options(
         "README.md".to_string(),
         format!("{GENERATED_MARKER}\n\n{index}"),
     ));
+    // The cross-cutting index pages — always generated (the README's Indexes
+    // links are unconditional, and `--clean`/`--check` want a stable file
+    // set); an empty index states its emptiness rather than disappearing.
+    for (rel, body) in index_pages(&ctx, options.owner_meta_key) {
+        out.push((rel, format!("{GENERATED_MARKER}\n\n{body}")));
+    }
     out
 }
 
@@ -354,6 +368,32 @@ pub(crate) fn page_link(from_rel: &str, to_rel: &str) -> String {
     }
 }
 
+/// The inline-code span that safely wraps `text`: one backtick longer than
+/// the longest backtick run inside (minimum the usual 1), padded with a
+/// space when `text` starts or ends with a backtick (the CommonMark inline
+/// code rule — `` `` `x` `` `` renders `` `x` ``). Newlines flatten to
+/// spaces — an inline span can't hold them, and an unflattened newline in
+/// caller-supplied text could smuggle a fake heading/list line into a page.
+pub(crate) fn code_span(text: &str) -> String {
+    let mut longest = 0usize;
+    let mut run = 0usize;
+    for c in text.chars() {
+        if c == '`' {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    let ticks = "`".repeat(longest + 1);
+    let flat = text.replace(['\n', '\r'], " ");
+    if flat.starts_with('`') || flat.ends_with('`') {
+        format!("{ticks} {flat} {ticks}")
+    } else {
+        format!("{ticks}{flat}{ticks}")
+    }
+}
+
 /// The fence that safely wraps `code`: one backtick longer than the longest
 /// backtick run inside (minimum the usual 3), so SQL containing inline-code
 /// spans or template literals can never close the block early.
@@ -372,6 +412,7 @@ pub(crate) fn code_fence(text: &str) -> String {
 }
 
 mod diagram;
+mod indexes;
 mod node;
 mod order;
 mod readme;
@@ -380,6 +421,7 @@ mod summaries;
 mod tests;
 
 use diagram::*;
+use indexes::*;
 use node::*;
 use order::*;
 use readme::*;
