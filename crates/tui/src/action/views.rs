@@ -54,6 +54,18 @@ pub struct DetailView {
     pub scroll: usize,
 }
 
+/// One lint finding attached to a node, snapshotted for the inspector's Lint
+/// section: `severity` picks the mark (`x`/`!` — `Chrome`'s run glyphs) and
+/// the colour, `rule` is the registry's snake_case id, `summary` its one-line
+/// description, `message` the finding's own explanation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InspectorLintFinding {
+    pub severity: crate::Severity,
+    pub rule: String,
+    pub summary: String,
+    pub message: String,
+}
+
 /// The right inspector pane's snapshot for the node under the lineage cursor
 /// (or the rooted selection): `detail` reuses the structure modal's
 /// `detail_view_for` assembly verbatim (the "share the DetailView
@@ -88,10 +100,10 @@ pub struct InspectorView {
     /// `(status word, optional seconds)` — `("success", Some(3.2))` renders
     /// `✓ success  3.2s`. `None` when the artifact doesn't cover the node.
     pub run: Option<(String, Option<f64>)>,
-    /// This node's lint findings as `"{rule}: {message}"` lines (only
-    /// findings whose `node_uid` IS this node — `related` uids are context
-    /// for the OTHER node's violation, not this node's).
-    pub lint: Vec<String>,
+    /// This node's lint findings (only findings whose `node_uid` IS this
+    /// node — `related` uids are context for the OTHER node's violation,
+    /// not this node's).
+    pub lint: Vec<InspectorLintFinding>,
     /// The diff readout when a `--diff` baseline flags this node:
     /// `"+ added"` / `"~ modified: {reasons}"`. `None` when unchanged or no
     /// baseline is loaded.
@@ -150,6 +162,17 @@ impl SqlView {
     }
 }
 
+/// One rule's slice of the static-lint worklist: the registry's snake_case
+/// id, the severity the rule ran at (per-RULE — the registry default or the
+/// config's override, uniform across the group), and the sorted violating
+/// node names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LintWorklist {
+    pub rule: String,
+    pub severity: crate::Severity,
+    pub names: Vec<String>,
+}
+
 /// The stats-dashboard modal payload, computed when the modal opens so the
 /// render layer never needs a [`Dag`](crate::Dag). MUST be `Eq` (`Mode` derives
 /// `Eq`): coverage is stored as integers (covered/total) and the percentage is
@@ -190,12 +213,17 @@ pub struct StatsView {
     /// [`layer_violation_edges`](crate::layer_violation_edges), sorted. Stored in
     /// full; the render caps the listing and shows the total `(N)`.
     pub layer_violations: Vec<(String, String)>,
-    /// The static-lint worklist: `(rule name, sorted violating node names)` per
-    /// rule that has ≥1 finding, in [`LintRule::ALL`](crate::LintRule) order —
-    /// the SAME [`run_rules`](crate::run_rules) findings `dbtl check --lint`
-    /// gates on, so the dashboard can never disagree with the CI gate. Empty
-    /// when nothing violates.
-    pub lint_findings: Vec<(String, Vec<String>)>,
+    /// The static-lint worklist: one [`LintWorklist`] per rule that has ≥1
+    /// finding, in [`LintRule::ALL`](crate::LintRule) order — the SAME
+    /// [`run_rules`](crate::run_rules) findings `dbtl check --lint` gates
+    /// on, so the dashboard can never disagree with the CI gate. Empty when
+    /// nothing violates.
+    pub lint_findings: Vec<LintWorklist>,
+    /// The severity totals over the same shared findings — the heading's
+    /// split (`e errors, w warnings`) and the home Health tail's source, so
+    /// every surface quotes the one vector.
+    pub lint_errors: usize,
+    pub lint_warnings: usize,
     /// The longest dependency chain in the whole DAG (node names, upstream →
     /// downstream; deterministic tie-breaks by `unique_id`). Its `len()` is the
     /// graph's depth — the "how many hops can a change ripple" readout.

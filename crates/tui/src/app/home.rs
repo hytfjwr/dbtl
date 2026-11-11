@@ -42,8 +42,9 @@ pub enum HomeItem {
 }
 
 /// A row's emphasis — the renderer maps these onto theme tones. `Bad` marks
-/// the failure-class attention rows (run errors, lint), `Warn` the softer
-/// ones (orphans, layer violations, untested models).
+/// the failure-class attention rows (run errors, error-severity lint),
+/// `Warn` the softer ones (orphans, layer violations, untested models,
+/// warn-severity lint).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HomeTone {
     Normal,
@@ -334,13 +335,16 @@ impl App {
 
         // Health — the middle info row, ALWAYS shown: the coverage gauge +
         // lint / layer-violation / orphan counts straight from `stats` (the
-        // `S` dashboard's own numbers, never recomputed).
+        // `S` dashboard's own numbers, never recomputed). The lint split
+        // quotes the snapshot's severity counts — `lint 0` when clean, else
+        // `lint E errors, W warnings` (a zero side drops out).
         let coverage = self.coverage_summary();
-        let lint_total: usize = stats
-            .lint_findings
-            .iter()
-            .map(|(_, names)| names.len())
-            .sum();
+        let lint_tail = match (stats.lint_errors, stats.lint_warnings) {
+            (0, 0) => "lint 0".to_string(),
+            (e, 0) => format!("lint {e} errors"),
+            (0, w) => format!("lint {w} warnings"),
+            (e, w) => format!("lint {e} errors, {w} warnings"),
+        };
         push_info(
             &mut sections,
             &mut info_flat,
@@ -349,7 +353,7 @@ impl App {
                 tested: coverage.0,
                 total: coverage.1,
                 tail: format!(
-                    "lint {lint_total}   layer violations {}   orphans {}",
+                    "{lint_tail}   layer violations {}   orphans {}",
                     stats.layer_violations.len(),
                     stats.orphan_models.len()
                 ),
@@ -595,18 +599,26 @@ impl App {
                 ));
             }
         }
-        // 4 — lint findings (rule name + node, stats order = LintRule::ALL).
-        for (rule, names) in &stats.lint_findings {
-            for name in names {
-                if let Some(uid) = name_to_uid.get(name.as_str()) {
-                    if seen.contains(uid) {
-                        continue;
+        // 4 — lint findings (rule name + node, stats order = LintRule::ALL):
+        // ERROR-severity groups first, then warnings — a node carrying both
+        // keeps its error row (the `seen` dedupe's first/worst rule, like
+        // every other class).
+        for (sev, tone) in [
+            (crate::Severity::Error, HomeTone::Bad),
+            (crate::Severity::Warn, HomeTone::Warn),
+        ] {
+            for wl in stats.lint_findings.iter().filter(|w| w.severity == sev) {
+                for name in &wl.names {
+                    if let Some(uid) = name_to_uid.get(name.as_str()) {
+                        if seen.contains(uid) {
+                            continue;
+                        }
+                        seen.push(uid);
+                        rows.push((
+                            4,
+                            model_row(uid, name, format!("lint {}: {}", sev.name(), wl.rule), tone),
+                        ));
                     }
-                    seen.push(uid);
-                    rows.push((
-                        4,
-                        model_row(uid, name, format!("lint: {rule}"), HomeTone::Bad),
-                    ));
                 }
             }
         }

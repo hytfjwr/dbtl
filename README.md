@@ -310,10 +310,14 @@ source mode not even `dbt parse`/`dbt compile`: a CI run is seconds, and the
 results are deterministic.
 
 One `run_rules` findings vector feeds every surface, so the numbers can never
-drift apart: `dbtl check --lint` gates on it, the TUI's **Lint** `t`-lens tints
-every violating node violation-red and the `S` dashboard adds a per-rule
-worklist, and `dbtl docs` puts a Lint summary in the generated README plus a
-"Lint violations" section on each node's page.
+drift apart: `dbtl check --lint` gates on it, and the TUI reads it everywhere —
+the **Lint** `t`-lens tints each violating node by its worst severity (error
+red / warn yellow), `F` filters the model list to linted nodes, `n`/`N` cycle
+them under the lens, the inspector lists the selected node's findings with
+severity marks, the `S` dashboard adds a per-rule worklist and the
+error/warning split, and the `⌂` home tab quotes the same split. `dbtl docs`
+puts a Lint summary in the generated README plus a "Lint violations" section
+on each node's page.
 
 The initial rule set (all enabled by default):
 
@@ -324,7 +328,7 @@ The initial rule set (all enabled by default):
 | `source_fanout` | a source directly feeds ≥ `source_fanout_threshold` models (default 2) |
 | `model_fanout` | a model directly feeds ≥ `model_fanout_threshold` leaf models (default 5, the hub threshold) |
 | `root_models` | a model has no parents |
-| `rejoining_upstream` | a redundant hop: A→B→C while A→C also exists and B has no other data-node child (endpoint resources like exposures don't count as a use) |
+| `rejoining_upstream` | a redundant hop: A->B->C while A->C also exists and B has no other data-node child (endpoint resources like exposures don't count as a use) |
 | `marts_depend_on_source` | a marts/intermediate model directly depends on a source (layer resolved prefix-first — `staging/fct_x` counts as marts) |
 | `missing_primary_key_tests` | a model lacks `unique`+`not_null` on the same column or `unique_combination_of_columns` |
 | `public_models_without_contract` | `access: public` without `contract: enforced` |
@@ -472,15 +476,15 @@ Press `?` inside the app for the full list. The most useful ones:
 | `b` `f` | Back / forward in re-root history |
 | `z` | Home the lineage cursor and re-center |
 | `r` | Reload the data source |
-| `t` | Cycle lineage lens (off → coverage → blast radius → layer → layer violation → diff → run status → runtime → column impact → primary key; lenses with no data are skipped — column impact only while a column is traced) |
+| `t` | Cycle lineage lens (off → coverage → blast radius → layer → layer violation → lint → diff → run status → runtime → column impact → primary key; lenses with no data are skipped — column impact only while a column is traced) |
 | `K` | Column-lineage modal for the traced column (or the structure view's cursored column): a scrollable upstream / this-column / downstream tree — `j`/`k` move the row cursor, `Enter` re-roots to a row's model |
 | `v` | Toggle compact lineage (1-row nodes — fits ~2x more graph on screen) |
 | `w` | Toggle whole-graph overview (the entire DAG in the lineage pane; Compact, minimap on) |
 | `M` | Toggle the lineage minimap |
 | `.` | Cycle the list sort (layer → downstream → tests) |
-| `n` `N` | Jump to the next / previous untested model |
+| `n` `N` | Jump to the next / previous untested model (lint findings under the lint lens) |
 | `Space` `'` `"` | Bookmark / cycle bookmarks forward / backward |
-| `T` `*` | Filter the list to untested / bookmarked models |
+| `T` `*` `F` | Filter the list to untested / bookmarked / lint-finding models |
 | `-` | Fold / unfold the selected model's list group (clicking its `▾`/`▸` header does the same) |
 | `s` / `S` | SQL preview (syntax-highlighted) / project stats dashboard. Inside the preview, `c` toggles raw ↔ compiled SQL — the title shows `[raw]`, `[compiled]`, or `[compiled, stale]` when the source file is newer than the expansion. Compiled SQL comes from the manifest's `compiled_code` or `target/compiled/` (run `dbt compile`/`build` to produce it) |
 | `o` | Open the model's SQL in `$EDITOR` |

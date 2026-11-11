@@ -661,9 +661,11 @@ pub fn lint(theme: &Theme) -> Vec<String> {
     ];
     let diff = [("diff_add", theme.diff_add), ("diff_mod", theme.diff_mod)];
     let danger = ("danger (coverage/violation lens tint)", theme.danger);
+    let lint_warn = ("warn (lint-warning lens tint)", theme.warn);
 
     let mut warnings = Vec::new();
     for (tint_name, tint) in std::iter::once(danger)
+        .chain(std::iter::once(lint_warn))
         .chain(heat)
         .chain(layers)
         .chain(diff)
@@ -718,6 +720,23 @@ mod tests {
                 warnings.join("\n  ")
             );
         }
+    }
+
+    #[test]
+    fn lint_flags_a_warn_tint_colliding_with_a_class_colour() {
+        // The lint-warning tint rides `theme.warn` — a custom theme that
+        // points it at a materialization class colour renders warn findings
+        // identically to that class under the Lint lens. The audit must
+        // name the collision (the presets are asserted clean above).
+        let mut theme = DEFAULT;
+        theme.warn = theme.class_view;
+        let warnings = lint(&theme);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("lint-warning lens tint") && w.contains("class_view")),
+            "warn == class_view is flagged: {warnings:?}"
+        );
     }
 
     #[test]

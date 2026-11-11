@@ -164,8 +164,27 @@ impl App {
                 .iter()
                 .any(|m| self.bookmarks.contains(&m.unique_id)))
             .then(|| "no bookmarks in the list".to_string()),
-            A::GapNext | A::GapPrev => (!self.active_list().models.iter().any(coverage_gap))
-                .then(|| "no untested models".to_string()),
+            // `n`/`N` mirrors the arm's contextual target: the coverage-gap
+            // set — or, under the Lint lens, the linted set. The reason names
+            // whichever set is on screen.
+            A::GapNext | A::GapPrev => {
+                if self.ui_state.lens() == crate::LineageLens::Lint {
+                    let linted: std::collections::HashSet<&str> = self
+                        .lint_findings()
+                        .iter()
+                        .map(|f| f.node_uid.as_str())
+                        .collect();
+                    (!self
+                        .active_list()
+                        .models
+                        .iter()
+                        .any(|m| linted.contains(m.unique_id.as_str())))
+                    .then(|| "no lint findings in the list".to_string())
+                } else {
+                    (!self.active_list().models.iter().any(coverage_gap))
+                        .then(|| "no untested models".to_string())
+                }
+            }
             A::HistoryBack => self
                 .tab()
                 .back
@@ -314,6 +333,7 @@ impl App {
             return Some(match self.list_filter {
                 ListFilter::Untested => "no untested models".to_string(),
                 ListFilter::Bookmarked => "no bookmarked models".to_string(),
+                ListFilter::Linted => "no linted models".to_string(),
                 // `All` ⇒ unfolded_base == model_list — an empty list already
                 // took the scope reason above; kept only as the defensive
                 // fallback.

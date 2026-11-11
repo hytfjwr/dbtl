@@ -594,7 +594,8 @@ fn class_color(class: MaterializationClass, t: &theme::Theme) -> Option<Color> {
 fn lens_color(tint: LensTint, t: &theme::Theme) -> Option<Color> {
     match tint {
         LensTint::None => None,
-        LensTint::Warn | LensTint::Violation => Some(t.danger),
+        LensTint::Warn | LensTint::Violation | LensTint::LintError => Some(t.danger),
+        LensTint::LintWarn => Some(t.warn),
         LensTint::HeatLow => Some(t.heat_low),
         LensTint::HeatMid => Some(t.heat_mid),
         LensTint::HeatHigh => Some(t.heat_high),
@@ -1029,6 +1030,8 @@ mod tests {
             let tints = [
                 LensTint::Warn,
                 LensTint::Violation,
+                LensTint::LintError,
+                LensTint::LintWarn,
                 LensTint::HeatLow,
                 LensTint::HeatMid,
                 LensTint::HeatHigh,

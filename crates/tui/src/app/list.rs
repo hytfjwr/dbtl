@@ -33,6 +33,7 @@ impl App {
             ListFilter::All => None,
             ListFilter::Untested => Some("untested"),
             ListFilter::Bookmarked => Some("marked"),
+            ListFilter::Linted => Some("linted"),
         }
     }
 
@@ -59,6 +60,20 @@ impl App {
                 &self.model_list,
                 |m| self.bookmarks.contains(&m.unique_id),
             )),
+            // Membership is the shared `run_rules` vector — the same source
+            // the Lint lens and `dbtl check --lint` read, so the filtered
+            // list can never disagree with either.
+            ListFilter::Linted => {
+                let linted: std::collections::HashSet<&str> = self
+                    .lint_findings()
+                    .iter()
+                    .map(|f| f.node_uid.as_str())
+                    .collect();
+                Some(crate::model_list::filter_model_list(
+                    &self.model_list,
+                    |m| linted.contains(m.unique_id.as_str()),
+                ))
+            }
         };
         self.folded_base = if self.folded_groups.is_empty() {
             None

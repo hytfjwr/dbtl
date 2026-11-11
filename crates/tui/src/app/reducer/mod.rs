@@ -220,6 +220,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         Action::BookmarkToggle
         | Action::ToggleUntestedFilter
         | Action::ToggleBookmarkFilter
+        | Action::ToggleLintFilter
         | Action::ToggleGroupFold
         | Action::BookmarkCycle
         | Action::BookmarkCycleBack

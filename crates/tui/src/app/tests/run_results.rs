@@ -14,10 +14,11 @@ fn run_status_lens_tints_by_last_run_outcome() {
         ]}"#,
     );
     let none = std::collections::HashSet::new();
+    let no_lint = std::collections::HashMap::new();
     let uid = "model.p.stg_a";
     let node = a.dag.get(uid);
     assert_eq!(
-        a.lens_tint(crate::LineageLens::RunStatus, uid, node, &none, &none),
+        a.lens_tint(crate::LineageLens::RunStatus, uid, node, &none, &no_lint),
         crate::LensTint::Violation,
         "error → violation red"
     );
@@ -27,7 +28,7 @@ fn run_status_lens_tints_by_last_run_outcome() {
             "model.p.fct_b",
             a.dag.get("model.p.fct_b"),
             &none,
-            &none
+            &no_lint
         ),
         crate::LensTint::RunWarn,
         "warn → yellow"
@@ -38,7 +39,7 @@ fn run_status_lens_tints_by_last_run_outcome() {
             "model.p.mart_c",
             a.dag.get("model.p.mart_c"),
             &none,
-            &none
+            &no_lint
         ),
         crate::LensTint::RunSkip,
         "skipped → muted"
@@ -57,13 +58,14 @@ fn run_time_lens_buckets_by_execution_seconds() {
         ]}"#,
     );
     let none = std::collections::HashSet::new();
+    let no_lint = std::collections::HashMap::new();
     let tint = |uid: &str| {
         a.lens_tint(
             crate::LineageLens::RunTime,
             uid,
             a.dag.get(uid),
             &none,
-            &none,
+            &no_lint,
         )
     };
     assert_eq!(tint("model.p.stg_a"), crate::LensTint::None, "sub-second");

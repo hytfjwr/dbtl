@@ -140,15 +140,17 @@ impl Default for LineageView {
 }
 
 /// The persistent left-pane filter: show every model, only the untested ones
-/// (the [`coverage_gap`] set — the same predicate as the Coverage lens), or
-/// only the bookmarked ones. Orthogonal to the transient name search, which
-/// narrows on top of it.
+/// (the [`coverage_gap`] set — the same predicate as the Coverage lens), only
+/// the bookmarked ones, or only the linted ones (the shared `run_rules`
+/// output — the same source as the Lint lens and `dbtl check --lint`).
+/// Orthogonal to the transient name search, which narrows on top of it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ListFilter {
     #[default]
     All,
     Untested,
     Bookmarked,
+    Linted,
 }
 
 /// Project-level counts for the title bar.

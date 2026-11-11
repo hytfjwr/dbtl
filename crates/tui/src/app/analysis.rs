@@ -133,26 +133,42 @@ impl App {
             .collect();
         layer_violations.sort();
         // The lint worklist from the shared `run_rules` findings (computed
-        // once on the App): per-rule violating NODE NAMES, in LintRule::ALL
-        // order, names sorted — the dashboard and `dbtl check --lint` quote
-        // the same source, so they can never disagree.
-        let lint_findings: Vec<(String, Vec<String>)> = crate::LintRule::ALL
+        // once on the App): per-rule severity + violating NODE NAMES, in
+        // LintRule::ALL order, names sorted — the dashboard and
+        // `dbtl check --lint` quote the same source, so they can never
+        // disagree. Severity is per-RULE (the config's override or the
+        // registry default), so the group carries it once.
+        let lint_findings: Vec<crate::LintWorklist> = crate::LintRule::ALL
             .iter()
             .filter_map(|rule| {
+                let mut severity = None;
                 let mut names: Vec<String> = self
                     .lint_findings()
                     .iter()
                     .filter(|f| f.rule == *rule)
                     .map(|f| {
+                        severity = Some(f.severity);
                         self.dag
                             .get(&f.node_uid)
                             .map_or_else(|| f.node_uid.clone(), |n| n.name.clone())
                     })
                     .collect();
                 names.sort();
-                (!names.is_empty()).then(|| (rule.name().to_string(), names))
+                (!names.is_empty()).then(|| crate::LintWorklist {
+                    rule: rule.name().to_string(),
+                    severity: severity.expect("a non-empty group saw its findings"),
+                    names,
+                })
             })
             .collect();
+        // The severity split the heading + home Health quote — totals over
+        // the SAME findings vector the groups above read.
+        let lint_errors = self
+            .lint_findings()
+            .iter()
+            .filter(|f| f.severity == crate::Severity::Error)
+            .count();
+        let lint_warnings = self.lint_findings().len() - lint_errors;
         let critical_path = longest_chain(&self.dag);
         // The runtime-weighted critical path, only when run_results is loaded:
         // the chain that costs the most wall-clock time (unweighted sibling of
@@ -175,6 +191,8 @@ impl App {
             orphan_models: orphans,
             layer_violations,
             lint_findings,
+            lint_errors,
+            lint_warnings,
             critical_path,
             critical_path_runtime,
             untested_testable: testable_total - testable_tested,
