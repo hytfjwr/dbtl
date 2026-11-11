@@ -64,7 +64,12 @@ read/write on `hytfjwr/homebrew-tap`:
 ## Pre-release checklist
 
 - [ ] `CHANGELOG.md` has an entry for the release — rename `Unreleased` to
-      the new version with the date (keep an empty `Unreleased` on top).
+      the new version with the date (keep an empty `Unreleased` on top),
+      and update the link definitions at the footer: repoint
+      `[Unreleased]` to `compare/vX.Y.Z...HEAD` and add a
+      `[X.Y.Z]: .../compare/v<prev>...vX.Y.Z` line. The bump workflow only
+      touches `Cargo.toml`/`Cargo.lock`, so this step stays manual — put it
+      in the release PR or land it just before bumping.
 - [ ] CI is green on `main`, including `Docs reference` and `Dogfood`.
 - [ ] Run the bump workflow, review the release PR (version and lockfile
       only), merge it.

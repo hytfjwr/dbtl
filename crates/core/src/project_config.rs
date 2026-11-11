@@ -527,7 +527,7 @@ struct LintFile {
     /// layer dir → allowed prefixes; merges per-layer over the defaults.
     naming_prefixes: Option<BTreeMap<String, Vec<String>>>,
     /// The frozen-violations file — resolved against this file's directory
-    /// in [`ProjectConfig::load`].
+    /// in `ProjectConfig::load`.
     baseline: Option<PathBuf>,
 }
 

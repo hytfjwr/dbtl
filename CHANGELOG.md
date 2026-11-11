@@ -32,8 +32,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   full report-format set.
 - Lint rule registry: named rules with declared severities, parameters, and
   required inputs; a rule whose input is missing reports `SKIP` instead of
-  failing. 13 additional graph/metadata rules ship at `warn` severity, plus
-  SQL-backed rules (`select_star`, `hard_coded_references`,
+  failing. 15 additional graph/metadata rules ship at `warn` severity,
+  plus SQL-backed rules (`select_star`, `hard_coded_references`,
   `cartesian_join`, `unknown_column_reference`, `forbidden_patterns`) and
   catalog-backed drift rules (`warehouse_type_drift`,
   `columns_missing_in_warehouse`).
