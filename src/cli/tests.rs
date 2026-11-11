@@ -111,3 +111,126 @@ fn build_app_routes_startup_warnings_into_the_notification_log() {
         view.rows
     );
 }
+
+// ---- the exit-code + ignored-flag contract -------------------------------
+
+use super::exit::ExitKind;
+use super::flags::{is_ignored_flag_exempt, GLOBAL_FLAG_COMMANDS, TUI_ONLY_FLAGS};
+use clap::{ArgAction, CommandFactory};
+use std::collections::BTreeSet;
+
+/// The pure mapping `main` applies — every failure class has exactly one
+/// exit code, and an unclassified error is `3` (never confused with a clean
+/// gate trip or a usage mistake).
+#[test]
+fn exit_code_maps_each_kind() {
+    assert_eq!(exit_code(Some(ExitKind::Gate)), 1);
+    assert_eq!(exit_code(Some(ExitKind::Usage)), 2);
+    assert_eq!(exit_code(Some(ExitKind::Input)), 3);
+    assert_eq!(exit_code(None), 3, "unclassified → input");
+}
+
+/// Every `global = true` clap arg appears in the accepted-flags table —
+/// a new global flag must name its consuming subcommands (an empty list is
+/// a valid "TUI only" answer), or the ignored-flag check can't vet it.
+#[test]
+fn flag_table_covers_every_global_arg() {
+    let cmd = Cli::command();
+    let globals: BTreeSet<String> = cmd
+        .get_arguments()
+        .filter(|a| a.is_global_set())
+        .map(|a| a.get_id().to_string())
+        .collect();
+    let table: BTreeSet<String> = GLOBAL_FLAG_COMMANDS
+        .iter()
+        .map(|(id, _)| id.to_string())
+        .collect();
+    assert_eq!(globals, table);
+}
+
+/// The table's subcommand names all exist — a typo would silently let the
+/// flag through under a command that never runs.
+#[test]
+fn flag_table_names_real_subcommands() {
+    let cmd = Cli::command();
+    let names: BTreeSet<String> = cmd
+        .get_subcommands()
+        .map(|s| s.get_name().to_string())
+        .collect();
+    for (flag, subs) in GLOBAL_FLAG_COMMANDS {
+        for s in *subs {
+            assert!(
+                names.contains(*s),
+                "table names unknown subcommand '{s}' for '{flag}'"
+            );
+        }
+    }
+}
+
+/// `TUI_ONLY_FLAGS` IS the top-level non-global flag set, minus built-ins
+/// (help/version) and the exempt deprecated `--project-only` — the clap
+/// definitions and the rejection list can't drift apart.
+#[test]
+fn tui_only_flags_match_the_top_level_flag_set() {
+    let cmd = Cli::command();
+    let builtin = |a: &clap::Arg| {
+        matches!(
+            a.get_action(),
+            ArgAction::Help | ArgAction::HelpShort | ArgAction::HelpLong | ArgAction::Version
+        )
+    };
+    let expected: BTreeSet<String> = cmd
+        .get_arguments()
+        .filter(|a| !a.is_global_set() && !builtin(a))
+        .map(|a| a.get_id().to_string())
+        .filter(|id| !is_ignored_flag_exempt(id))
+        .collect();
+    let listed: BTreeSet<String> = TUI_ONLY_FLAGS.iter().map(|s| s.to_string()).collect();
+    assert_eq!(expected, listed);
+}
+
+/// `check_flag_usage` reads `ArgMatches::value_source`: explicitly typed
+/// TUI-only/global-but-unsupported flags are usage errors carrying both
+/// names; accepted and absent flags pass through.
+#[test]
+fn flag_usage_rejects_unsupported_flags_by_value_source() {
+    for args in [
+        ["dbtl", "--watch", "check"].as_slice(),
+        // A TUI-only flag AFTER the subcommand never reaches the table —
+        // clap's own unknown-arg error exits 2 first. Kept in the list so
+        // both rejection paths are pinned.
+        ["dbtl", "check", "--watch"].as_slice(),
+        ["dbtl", "--theme", "default", "check"].as_slice(),
+        ["dbtl", "--run-results", "x.json", "check"].as_slice(),
+        ["dbtl", "check", "--run-results", "x.json"].as_slice(),
+        ["dbtl", "--diff", "x", "docs", "--out", "o"].as_slice(),
+        ["dbtl", "columns", "a.b", "--diff", "x"].as_slice(),
+        ["dbtl", "docs", "--out", "o", "--sql-dialect", "generic"].as_slice(),
+    ] {
+        match Cli::command().try_get_matches_from(args) {
+            Err(e) => assert_eq!(e.exit_code(), 2, "{args:?}: clap's own usage error"),
+            Ok(matches) => {
+                let Err(err) = check_flag_usage(&matches) else {
+                    panic!("{args:?} must be rejected");
+                };
+                assert_eq!(err.kind(), Some(ExitKind::Usage), "{args:?}");
+                let msg = err.to_string();
+                assert!(msg.contains("check") || msg.contains("docs") || msg.contains("columns"));
+            }
+        }
+    }
+
+    for args in [
+        ["dbtl", "check"].as_slice(),
+        ["dbtl", "--manifest", "m.json", "check"].as_slice(),
+        ["dbtl", "check", "--manifest", "m.json", "--diff", "b.json"].as_slice(),
+        ["dbtl", "--catalog", "c.json", "columns", "a.b"].as_slice(),
+        ["dbtl", "--sql-dialect", "generic", "columns", "a.b"].as_slice(),
+        // The deprecated --project-only is exempt — its own warning carries
+        // the "does nothing" message.
+        ["dbtl", "--project-only", "check"].as_slice(),
+    ] {
+        let matches = Cli::command().get_matches_from(args);
+        check_flag_usage(&matches).unwrap_or_else(|e| panic!("{args:?} must pass: {e}"));
+    }
+}

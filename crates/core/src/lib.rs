@@ -20,7 +20,9 @@ pub mod run_results;
 pub mod select;
 pub mod source;
 
-pub use catalog::{default_catalog_path, Catalog, CatalogColumn, CatalogNode, CatalogStat};
+pub use catalog::{
+    default_catalog_path, resolve_catalog_path, Catalog, CatalogColumn, CatalogNode, CatalogStat,
+};
 pub use cll::{
     closure_report, normalize_column, resolution_sql, ClosureDirection, ColumnEdge, ColumnEdgeKind,
     ColumnLineage, ColumnRef, ColumnReport, ColumnResolver, ColumnRow, Confidence,

@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::Context;
 
 impl App {
     /// The static-lint findings under the active [`LintConfig`](crate::LintConfig)
@@ -46,6 +47,35 @@ impl App {
     /// for real column types, row counts, byte sizes, and doc↔warehouse drift.
     pub fn catalog(&self) -> Option<&crate::Catalog> {
         self.catalog.as_deref()
+    }
+
+    /// Point the app at a specific `catalog.json` (`--catalog`). Like
+    /// [`set_run_results`](App::set_run_results): a load failure is the
+    /// caller's error to report — the App only ever stores a successfully
+    /// parsed file — and the path is re-read by [`reload`](App::reload). The
+    /// catalog tops the CLL resolver's column-list precedence AND feeds the
+    /// diff's column analysis, so both rebuild here under the current
+    /// dialect; the generation bumps like every style input.
+    pub fn set_catalog(&mut self, path: PathBuf) -> Result<()> {
+        self.catalog =
+            Some(Rc::new(crate::Catalog::load(&path).with_context(|| {
+                format!("failed to load catalog {}", path.display())
+            })?));
+        self.catalog_path = Some(path);
+        let dialect = self
+            .sql_dialect
+            .unwrap_or_else(|| SqlDialect::from_dag(&self.dag));
+        self.cll = SqlParseResolver::new(self.catalog.clone(), dialect);
+        if let Some(base) = &self.diff_base {
+            let base_dialect = self
+                .sql_dialect
+                .unwrap_or_else(|| SqlDialect::for_diff_baseline(&self.dag, base));
+            let base_res = SqlParseResolver::new(None, base_dialect);
+            self.diff = Some(compute_diff_with(base, &self.dag, &base_res, &self.cll));
+            self.diff_cll = Some(base_res);
+        }
+        self.generation += 1;
+        Ok(())
     }
 
     /// The detail-modal catalog block for a node: `catalog:` stats line (rows,

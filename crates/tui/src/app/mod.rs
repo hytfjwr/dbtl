@@ -41,9 +41,9 @@ use crate::effect::Effect;
 use crate::ui::theme::{self, Theme};
 use crate::{
     build_filtered_model_list, build_model_list, build_model_list_grouped, compute_diff_with,
-    coverage_gap, default_catalog_path, default_run_results_path,
-    load_dag_from_source_with_warnings, load_dag_with_warnings, ColumnRef, Dag, DagDiff, ModelList,
-    NodeDetail, NodeInfo, RunResults, SortMode, SqlDialect, SqlParseResolver, UiState,
+    coverage_gap, default_run_results_path, load_dag_from_source_with_warnings,
+    load_dag_with_warnings, resolve_catalog_path, ColumnRef, Dag, DagDiff, ModelList, NodeDetail,
+    NodeInfo, RunResults, SortMode, SqlDialect, SqlParseResolver, UiState,
 };
 
 mod analysis;
@@ -420,13 +420,15 @@ impl DataSource {
         }
     }
 
-    /// The catalog.json `dbt docs generate` would write next to this source
-    /// (the auto-detect target [`crate::default_catalog_path`] encodes).
-    fn default_catalog_path(&self) -> Option<PathBuf> {
-        match self {
-            DataSource::Manifest(m) => default_catalog_path(Some(m), None),
-            DataSource::Project(d) => default_catalog_path(None, Some(d)),
-        }
+    /// The catalog.json this source resolves to: `explicit` (an `--catalog`
+    /// override) wins, else the auto-detected sibling — the one
+    /// [`crate::resolve_catalog_path`] rule the CLI's resolver also follows.
+    fn catalog_path(&self, explicit: Option<&Path>) -> Option<PathBuf> {
+        let (manifest, project) = match self {
+            DataSource::Manifest(m) => (Some(m.as_path()), None),
+            DataSource::Project(d) => (None, Some(d.as_path())),
+        };
+        resolve_catalog_path(explicit, manifest, project)
     }
 
     /// The `.dbtl.yml` lint config for this source (the auto-detect target
@@ -471,7 +473,7 @@ impl App {
         // Same auto-detect for target/catalog.json — warehouse truth for the
         // detail modal (real types, row counts, schema.yml drift) AND the
         // CLL resolver's top-priority column list (the Rc shares one copy).
-        let catalog_path = source.default_catalog_path();
+        let catalog_path = source.catalog_path(None);
         let catalog = catalog_path
             .as_ref()
             .filter(|p| p.is_file())

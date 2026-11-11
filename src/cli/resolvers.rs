@@ -17,24 +17,43 @@ pub(super) fn owner_meta_key() -> String {
 }
 
 /// The CLL resolver for a resolved CURRENT source, built exactly like the
-/// app's: the auto-detected `target/catalog.json` (when present) tops the
-/// column/type priority chain; `--sql-dialect` pins the parse dialect, else
-/// it auto-selects from the manifest's adapter (an unknown adapter lands on
-/// generic with a stderr notice — the override suppresses it). Shared by
-/// `columns`, `impact`, and `check` so every surface resolves identically.
+/// app's: an explicit `--catalog` wins over the auto-detected
+/// `target/catalog.json` sibling (one [`dbtl::resolve_catalog_path`] rule the
+/// App follows too), and the catalog tops the column/type priority chain;
+/// `--sql-dialect` pins the parse dialect, else it auto-selects from the
+/// manifest's adapter (an unknown adapter lands on generic with a stderr
+/// notice — the override suppresses it). Shared by `columns`, `impact`, and
+/// `check` so every surface resolves identically.
+///
+/// An explicit catalog is a REQUIRED input — unreadable fails as an input
+/// error; the auto-detected sibling stays best-effort (missing or
+/// unreadable just means no catalog data).
 pub(super) fn cll_resolver(
     resolved: &ResolvedSource,
     sql_dialect: Option<dbtl::SqlDialect>,
-) -> dbtl::SqlParseResolver {
-    let catalog_path = if resolved.is_source {
-        dbtl::default_catalog_path(None, Some(std::path::Path::new(&resolved.label)))
+    catalog_flag: Option<&str>,
+) -> Result<dbtl::SqlParseResolver, CliError> {
+    let (manifest_arg, project_arg) = if resolved.is_source {
+        (None, Some(std::path::Path::new(&resolved.label)))
     } else {
-        dbtl::default_catalog_path(Some(std::path::Path::new(&resolved.label)), None)
+        (Some(std::path::Path::new(&resolved.label)), None)
     };
-    let catalog = catalog_path
-        .filter(|p| p.is_file())
-        .and_then(|p| dbtl::Catalog::load(&p).ok())
-        .map(std::rc::Rc::new);
+    let catalog = match (
+        catalog_flag,
+        dbtl::resolve_catalog_path(
+            catalog_flag.map(std::path::Path::new),
+            manifest_arg,
+            project_arg,
+        ),
+    ) {
+        (Some(_), Some(p)) => Some(std::rc::Rc::new(
+            dbtl::Catalog::load(&p)
+                .with_context(|| format!("failed to load catalog {}", p.display()))
+                .input()?,
+        )),
+        (_, Some(p)) => dbtl::Catalog::load(&p).ok().map(std::rc::Rc::new),
+        (_, None) => None,
+    };
     let dialect = sql_dialect.unwrap_or_else(|| dbtl::SqlDialect::from_dag(&resolved.dag));
     if sql_dialect.is_none() {
         if let Some(a) = dbtl::SqlDialect::unrecognized_adapter(&resolved.dag) {
@@ -43,7 +62,7 @@ pub(super) fn cll_resolver(
             );
         }
     }
-    dbtl::SqlParseResolver::new(catalog, dialect)
+    Ok(dbtl::SqlParseResolver::new(catalog, dialect))
 }
 
 /// The baseline side's diff resolver: no catalog (the baseline's warehouse
@@ -65,10 +84,12 @@ pub(super) fn baseline_resolver(
 /// source (same auto-detect as the TUI/docs), a malformed file fatal, and
 /// `--rules` overlaid as the authoritative rule selector (exactly the named
 /// rules run — the file still supplies thresholds and naming prefixes).
+/// Every failure is a usage error — a config the caller handed us that we
+/// cannot interpret.
 pub(super) fn load_lint_config(
     resolved: &ResolvedSource,
     rules: &[String],
-) -> Result<dbtl::LintConfig> {
+) -> Result<dbtl::LintConfig, CliError> {
     let (manifest_arg, project_arg) = if resolved.is_source {
         (None, Some(std::path::Path::new(&resolved.label)))
     } else {
@@ -77,20 +98,22 @@ pub(super) fn load_lint_config(
     let path = dbtl::lint_config_path(manifest_arg, project_arg);
     let mut cfg = match &path {
         Some(p) => dbtl::LintConfig::load(p)
-            .with_context(|| format!("check --lint: failed to read {}", p.display()))?,
+            .with_context(|| format!("check --lint: failed to read {}", p.display()))
+            .usage()?,
         None => dbtl::LintConfig::default(),
     };
     if !rules.is_empty() {
         for name in rules {
-            anyhow::ensure!(
-                dbtl::LintRule::from_name(name).is_some(),
-                "unknown lint rule '{name}' (valid rules: {})",
-                dbtl::LintRule::ALL
-                    .iter()
-                    .map(|r| r.name())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
+            if dbtl::LintRule::from_name(name).is_none() {
+                return Err(CliError::usage(anyhow::anyhow!(
+                    "unknown lint rule '{name}' (valid rules: {})",
+                    dbtl::LintRule::ALL
+                        .iter()
+                        .map(|r| r.name())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
         }
         for r in dbtl::LintRule::ALL {
             cfg.rules

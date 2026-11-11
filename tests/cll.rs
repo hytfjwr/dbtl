@@ -544,7 +544,7 @@ fn columns_errors_are_plain_text_and_nonzero() {
         ("stg_orders.no_such_col", "has no column 'no_such_col'"),
     ] {
         let out = run(&["columns", target, "--manifest", m.to_str().unwrap()]);
-        assert!(!out.status.success(), "{target} must fail");
+        assert_eq!(out.status.code(), Some(2), "{target} is a usage error");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             stderr.contains(needle),

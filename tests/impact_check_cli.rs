@@ -126,7 +126,12 @@ fn impact_json_is_a_serializable_diff_report() {
 fn impact_requires_a_baseline() {
     let m = fixture_manifest();
     let out = run(&["impact", "--manifest", m.to_str().unwrap()]);
-    assert!(!out.status.success(), "no --diff → clap usage error");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "no --diff → usage error, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -164,9 +169,10 @@ fn check_fails_under_coverage_threshold() {
         "--coverage-min",
         "100",
     ]);
-    assert!(
-        !out.status.success(),
-        "coverage gate under the threshold exits non-zero"
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "coverage gate under the threshold is a gate failure"
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -186,7 +192,7 @@ fn check_quiet_suppresses_report_but_keeps_exit_code() {
         "100",
         "--quiet",
     ]);
-    assert!(!out.status.success(), "gate still fails");
+    assert_eq!(out.status.code(), Some(1), "gate still fails");
     assert!(out.stdout.is_empty(), "quiet prints nothing");
 }
 
@@ -310,8 +316,9 @@ fn check_lint_reports_one_gate_per_rule() {
     // per rule, PASS or FAIL.
     let m = fixture_manifest();
     let out = run(&["check", "--manifest", m.to_str().unwrap(), "--lint"]);
-    assert!(
-        !out.status.success(),
+    assert_eq!(
+        out.status.code(),
+        Some(1),
         "fixture lint violations fail the gate, stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -382,7 +389,7 @@ fn check_rules_rejects_an_unknown_rule_name() {
         "--rules",
         "not_a_rule",
     ]);
-    assert!(!out.status.success(), "unknown rule is a hard error");
+    assert_eq!(out.status.code(), Some(2), "unknown rule is a usage error");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("unknown lint rule 'not_a_rule'"),
@@ -430,8 +437,9 @@ fn check_lint_diff_gates_on_new_violations_only() {
         "--diff",
         m.to_str().unwrap(),
     ]);
-    assert!(
-        !out.status.success(),
+    assert_eq!(
+        out.status.code(),
+        Some(1),
         "a NEW violation gates, stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -458,7 +466,7 @@ fn check_lint_format_json_serializes_the_report() {
         "--format",
         "json",
     ]);
-    assert!(!out.status.success(), "violations still fail the gate");
+    assert_eq!(out.status.code(), Some(1), "violations still fail the gate");
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
     assert!(v.get("scope").is_some() && v.get("checks").is_some());
     assert_eq!(v["failures"].as_u64().unwrap(), 6, "6 lint rules fail");
@@ -490,7 +498,11 @@ fn check_lint_malformed_dbtl_yml_is_fatal() {
     )
     .unwrap();
     let out = run(&["check", "--manifest", copied.to_str().unwrap(), "--lint"]);
-    assert!(!out.status.success(), "a malformed config is fatal");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a malformed config is a usage error"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("unknown lint rule 'bogus_rule'"),
@@ -677,8 +689,9 @@ fn check_no_breaking_fails_on_a_referenced_column_removal() {
         sample_project().to_str().unwrap(),
         "--no-breaking",
     ]);
-    assert!(
-        !out.status.success(),
+    assert_eq!(
+        out.status.code(),
+        Some(1),
         "the gate must fail, stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -775,8 +788,9 @@ fn check_no_breaking_rename_prints_old_to_new() {
         sample_project().to_str().unwrap(),
         "--no-breaking",
     ]);
-    assert!(
-        !out.status.success(),
+    assert_eq!(
+        out.status.code(),
+        Some(1),
         "an unmigrated rename gates, stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
