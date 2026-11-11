@@ -1,0 +1,23 @@
+# `dbtl lint` from pre-commit. `dbtl-lint` builds the binary from this
+# repository (pre-commit's `language: rust` runs `cargo install` on the
+# repo); `dbtl-lint-system` runs the `dbtl` already installed on PATH.
+# Both run once per commit (`pass_filenames: false` — lint reads the whole
+# project) and only when dbt project files changed.
+- id: dbtl-lint
+  name: dbtl lint
+  description: >-
+    Lint the dbt project with dbtl's structural rules, building dbtl from
+    this repository with cargo.
+  language: rust
+  entry: dbtl lint
+  pass_filenames: false
+  files: '\.(sql|py|ya?ml|csv|md)$'
+- id: dbtl-lint-system
+  name: dbtl lint (system dbtl)
+  description: >-
+    Lint the dbt project with dbtl's structural rules, using the dbtl
+    already installed on PATH.
+  language: system
+  entry: dbtl lint
+  pass_filenames: false
+  files: '\.(sql|py|ya?ml|csv|md)$'

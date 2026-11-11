@@ -94,6 +94,9 @@ tempfile.workspace = true
 # `cargo xtask synth` — one deterministic generator, not three copies.
 xtask = { path = "xtask" }
 unicode-width.workspace = true
+# Parses .pre-commit-hooks.yaml in tests/action_scripts.rs (field checks,
+# not just regex).
+serde_norway.workspace = true
 # Criterion harness for benches/pipeline.rs (synthetic-manifest pipeline cost).
 criterion = "0.5"
 
