@@ -385,7 +385,7 @@ fn column_coverage_counts_is_frozen() {
     // Declared columns carrying >=1 attached test / declared columns, over the
     // root-project testable set — the SAME numbers the stats dashboard and the
     // docs README quote.
-    assert_eq!(column_coverage_counts(&dag), (212, 322));
+    assert_eq!(column_coverage_counts(&dag, None), (212, 322));
 }
 
 #[test]

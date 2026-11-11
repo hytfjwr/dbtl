@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::{dbtl_cmd, manifest_path as fixture_manifest};
+use common::{dbtl_cmd, manifest_path as fixture_manifest, sample_manifest_path};
 use std::path::{Path, PathBuf};
 
 fn run(args: &[&str]) -> std::process::Output {
@@ -1101,4 +1101,129 @@ fn check_json_findings_carry_the_yml_line() {
         .expect("an undocumented_columns finding exists");
     assert_eq!(finding["location"]["file"], "models/schema.yml");
     assert_eq!(finding["location"]["line"], 7);
+}
+
+// ---- --select: findings restricted to the selected nodes ---------------------
+
+#[test]
+fn lint_select_restricts_findings_to_the_selection() {
+    // naming_conventions fires on agg_country_orders / cll_demo /
+    // cll_syntax project-wide. `--select fct_*` picks none of them → the
+    // rule passes; `--select cll_demo` keeps exactly its one finding.
+    let m = sample_manifest_path();
+    let out = lint_on(&m, &["--rules", "naming_conventions", "--select", "fct_*"]);
+    assert!(
+        out.status.success(),
+        "no fct_* node violates the prefix rule, stderr: {}",
+        stderr(&out)
+    );
+    assert!(out_text(&out).contains("PASS lint naming_conventions: none"));
+
+    let out = lint_on(
+        &m,
+        &["--rules", "naming_conventions", "--select", "cll_demo"],
+    );
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
+    let stdout = out_text(&out);
+    assert!(
+        stdout.contains("FAIL lint naming_conventions: 1 violation(s): cll_demo"),
+        "only the selected node's finding, got: {stdout}"
+    );
+    assert!(!stdout.contains("agg_country_orders"), "{stdout}");
+}
+
+#[test]
+fn lint_select_empty_match_warns_and_reports_zero_findings() {
+    let m = sample_manifest_path();
+    let out = lint_on(&m, &["--select", "no_such_node"]);
+    assert!(
+        out.status.success(),
+        "zero findings can't fail, stderr: {}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("matched no nodes"),
+        "the empty-selection warning: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn lint_select_usage_errors() {
+    let m = sample_manifest_path();
+    // A malformed spec is a usage error — before the data load.
+    let out = lint_on(&m, &["--select", "foo:bar"]);
+    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
+    assert!(stderr(&out).contains("foo:bar"), "stderr: {}", stderr(&out));
+
+    // `state:` without `--diff` — same usage class.
+    let out = lint_on(&m, &["--select", "state:modified"]);
+    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
+    assert!(stderr(&out).contains("--diff"), "stderr: {}", stderr(&out));
+}
+
+#[test]
+fn lint_select_conflicts_with_the_query_and_baseline_modes() {
+    // --select narrows a lint RUN — the frozen-baseline write path and the
+    // query modes don't produce a findings set to narrow, so pairing them
+    // is a usage error rather than a silently ignored flag.
+    let m = sample_manifest_path();
+    for extra in [
+        vec!["--select", "fct_*", "--write-baseline"],
+        vec!["--select", "fct_*", "--list-rules"],
+        vec!["--select", "fct_*", "--explain", "naming_conventions"],
+    ] {
+        let out = lint_on(&m, &extra);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{extra:?} is a usage error, stderr: {}",
+            stderr(&out)
+        );
+    }
+}
+
+#[test]
+fn dbtl_yml_exclude_specs_are_validated_as_selectors() {
+    // A rule `exclude:` entry is a selector — a malformed one fails the
+    // config load loudly (usage), it doesn't silently exclude nothing.
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    std::fs::write(
+        tmp.path().join(".dbtl.yml"),
+        "lint:\n  rules:\n    naming_conventions:\n      exclude: [\"foo:bar\"]\n",
+    )
+    .unwrap();
+    let out = lint_on(&m, &[]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a malformed exclude spec is fatal, stderr: {}",
+        stderr(&out)
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("naming_conventions") && err.contains("foo:bar"),
+        "the rule and the bad spec are named: {err}"
+    );
+}
+
+#[test]
+fn dbtl_yml_exclude_selectors_suppress_matching_findings() {
+    // The same grammar narrows the exclusion: a `path:`-scoped exclude
+    // drops the marts naming violations the rule would report.
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    std::fs::copy(sample_manifest_path(), &m).unwrap();
+    std::fs::write(
+        tmp.path().join(".dbtl.yml"),
+        "lint:\n  rules:\n    naming_conventions:\n      exclude: [\"path:marts\"]\n",
+    )
+    .unwrap();
+    let out = lint_on(&m, &["--rules", "naming_conventions"]);
+    assert!(
+        out.status.success(),
+        "every naming violation sits under marts/, stderr: {}",
+        stderr(&out)
+    );
 }

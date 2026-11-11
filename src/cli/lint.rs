@@ -142,7 +142,9 @@ pub(super) struct LintAux<'a> {
 /// the same run over the baseline dag narrowing gating to NEW findings (a
 /// finding whose [`dbtl::Finding::key`] exists on the baseline side is
 /// pre-existing noise, the same "new only" idea as the layer-violation
-/// gate).
+/// gate). With `selection`, only findings whose `node_uid` the selected
+/// set contains survive — narrowed BEFORE the baselined/pre-existing
+/// bookkeeping, so the report only ever sees selected findings.
 pub(super) fn evaluate_lint(
     dag: &dbtl::Dag,
     cfg: &dbtl::LintConfig,
@@ -150,6 +152,7 @@ pub(super) fn evaluate_lint(
     baseline: Option<&dbtl::Baseline>,
     fail_on: dbtl::FailOn,
     aux: LintAux<'_>,
+    selection: Option<&BTreeSet<String>>,
 ) -> LintGateOutcome {
     let outcome = dbtl::run_rules(
         dbtl::LintInput::new(dag, cfg)
@@ -158,6 +161,9 @@ pub(super) fn evaluate_lint(
     );
     let mut findings = outcome.findings;
     let skipped = outcome.skipped;
+    if let Some(sel) = selection {
+        findings.retain(|f| sel.contains(&f.node_uid));
+    }
     if let Some(b) = baseline {
         b.apply(&mut findings);
     }
@@ -314,6 +320,8 @@ pub struct LintArgs<'a> {
     pub step_summary: bool,
     /// `--path-prefix` — prepended to file paths in path-carrying formats.
     pub path_prefix: Option<&'a str>,
+    /// `--select` — the dbt-selector specs findings intersect.
+    pub select: &'a [String],
 }
 
 /// The lint config the query modes (`--list-rules`, `--explain`) print:
@@ -369,8 +377,11 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
         return Ok(());
     }
     // An unknown --rules name is a usage error — checked before the data
-    // load so it can't hide behind a missing-input error.
+    // load so it can't hide behind a missing-input error. Same for a
+    // malformed --select or a `state:` atom with no `--diff` baseline.
     validate_rule_names(args.rules)?;
+    validate_selector_specs(args.select, "--select")?;
+    require_diff_for_state(args.select, src.diff.is_some())?;
     // Same for a malformed --report spec or a --path-prefix with no
     // path-carrying format selected — all usage errors land before the load.
     let plan = OutputPlan::build(
@@ -447,6 +458,26 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
     let base_resolver = base
         .as_ref()
         .map(|(b, _)| src.baseline_resolver(&resolved.dag, b));
+    // `--select` narrows the report to findings on matching nodes —
+    // `state:` atoms compare against the SAME resolver-pair diff `check`
+    // computes (loaded only when a spec actually uses one). An empty match
+    // warns and reports zero findings.
+    let diff = match &base {
+        Some((b, _)) if specs_use_state(args.select) => Some(selector_diff(src, &resolved, b)?),
+        _ => None,
+    };
+    let selection = if args.select.is_empty() {
+        None
+    } else {
+        let sel = selector_set(&resolved.dag, diff.as_ref(), args.select);
+        if sel.is_empty() {
+            eprintln!(
+                "warning: --select '{}' matched no nodes",
+                args.select.join(" ")
+            );
+        }
+        Some(sel)
+    };
     let mut outcome = evaluate_lint(
         &resolved.dag,
         &cfg,
@@ -458,6 +489,7 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
             catalog: catalog.as_deref(),
             base_sql: base_resolver.as_ref(),
         },
+        selection.as_ref(),
     );
     // Best-effort yml line numbers — the file-reading pass `run_rules`
     // stays free of. Unreadable files simply keep `line` unset. Filled
@@ -745,7 +777,7 @@ mod tests {
         let dag = two_root_models();
         let cfg = cfg_only(&[dbtl::LintRule::RootModels]);
         // Plain run: both findings count, gate fails under the default.
-        let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Error, no_aux());
+        let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Error, no_aux(), None);
         assert_eq!(out.rules[0].counted.len(), 2);
         assert_eq!(out.rules[0].baselined, 0);
         assert!(out.failed && out.rules[0].status == GateStatus::Fail);
@@ -764,12 +796,21 @@ mod tests {
             Some(&frozen),
             dbtl::FailOn::Error,
             no_aux(),
+            None,
         );
         assert_eq!(out.rules[0].counted.len(), 1);
         assert_eq!(out.rules[0].baselined, 1);
         assert_eq!(out.findings[out.rules[0].counted[0]].node_uid, "model.p.b");
         // Self-diff: every finding is pre-existing — nothing counts.
-        let out = evaluate_lint(&dag, &cfg, Some(&dag), None, dbtl::FailOn::Error, no_aux());
+        let out = evaluate_lint(
+            &dag,
+            &cfg,
+            Some(&dag),
+            None,
+            dbtl::FailOn::Error,
+            no_aux(),
+            None,
+        );
         assert_eq!(out.rules[0].counted.len(), 0);
         assert_eq!(out.rules[0].pre_existing, 2);
         assert!(!out.failed && out.rules[0].status == GateStatus::Pass);
@@ -781,6 +822,7 @@ mod tests {
             Some(&frozen),
             dbtl::FailOn::Error,
             no_aux(),
+            None,
         );
         assert_eq!(out.rules[0].counted.len(), 0);
         assert_eq!(out.rules[0].pre_existing, 1);
@@ -794,15 +836,15 @@ mod tests {
         cfg.severities
             .insert(dbtl::LintRule::RootModels, Some(dbtl::Severity::Warn));
         // Warn findings under the default `error` threshold report but pass.
-        let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Error, no_aux());
+        let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Error, no_aux(), None);
         assert_eq!(out.rules[0].counted.len(), 2);
         assert!(!out.failed);
         assert_eq!(out.rules[0].status, GateStatus::Warn);
         // `--fail-on warn` fails on them.
-        let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Warn, no_aux());
+        let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Warn, no_aux(), None);
         assert!(out.failed && out.gating == 2);
         // `never` never fails.
-        let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Never, no_aux());
+        let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Never, no_aux(), None);
         assert!(!out.failed && out.rules[0].status == GateStatus::Warn);
     }
 }

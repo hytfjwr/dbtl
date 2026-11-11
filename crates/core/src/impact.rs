@@ -114,6 +114,14 @@ pub struct ImpactOpts<'a> {
     /// (`.dbtl.yml` `check.gates.changed_hubs.min_downstream`;
     /// [`PR_HUB_MIN_DOWNSTREAM`] by default).
     pub hub_min_downstream: usize,
+    /// A `--select` uid set the report is scoped to (`None` = the whole
+    /// diff — the default every existing surface keeps). The changed set
+    /// (added ∪ modified) intersects it, so the blast radius, hubs,
+    /// untested-changes, exposure and column readouts describe only the
+    /// selected changes; `added`/`modified`/`column_changes` listings
+    /// intersect it too (`removed` and the edge listings never do — they
+    /// name baseline-side names, not current-dag uids).
+    pub selection: Option<&'a BTreeSet<String>>,
 }
 
 impl Default for ImpactOpts<'_> {
@@ -121,6 +129,7 @@ impl Default for ImpactOpts<'_> {
         ImpactOpts {
             owner_key: "owner",
             hub_min_downstream: PR_HUB_MIN_DOWNSTREAM,
+            selection: None,
         }
     }
 }
@@ -144,15 +153,30 @@ pub fn diff_report(
             .map(|n| (n.name.clone(), n.resource_type.clone()))
             .unwrap_or_else(|| (uid.to_string(), String::new()))
     };
-    let mut added: Vec<(String, String)> = diff.added.iter().map(|uid| pair(uid)).collect();
+    // The current-dag listings intersect the selection; `removed` and the
+    // edge diffs don't (they name baseline-side names, not selectable uids).
+    let in_sel = |uid: &str| opts.selection.is_none_or(|s| s.contains(uid));
+    let mut added: Vec<(String, String)> = diff
+        .added
+        .iter()
+        .filter(|uid| in_sel(uid))
+        .map(|uid| pair(uid))
+        .collect();
     added.sort();
     let mut modified: Vec<(String, String)> = diff
         .modified
         .iter()
+        .filter(|(uid, _)| in_sel(uid))
         .map(|(uid, reasons)| (pair(uid).0, reasons.join("; ")))
         .collect();
     modified.sort();
-    let mut column_changes: Vec<ColumnChange> = diff.columns.values().flatten().cloned().collect();
+    let mut column_changes: Vec<ColumnChange> = diff
+        .columns
+        .iter()
+        .filter(|(uid, _)| in_sel(uid))
+        .flat_map(|(_, changes)| changes)
+        .cloned()
+        .collect();
     column_changes.sort_by(|a, b| {
         (a.node_name.as_str(), a.column.as_str(), a.kind).cmp(&(
             b.node_name.as_str(),
@@ -199,8 +223,10 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, opts: &ImpactOpt
         .iter()
         .chain(diff.modified.keys())
         .filter(|uid| {
-            dag.get(uid)
-                .is_some_and(|n| matches!(n.resource_type.as_str(), "model" | "seed" | "snapshot"))
+            opts.selection.is_none_or(|s| s.contains(uid.as_str()))
+                && dag.get(uid).is_some_and(|n| {
+                    matches!(n.resource_type.as_str(), "model" | "seed" | "snapshot")
+                })
         })
         .cloned()
         .collect();
@@ -284,7 +310,12 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, opts: &ImpactOpt
     // narrower selector names them plainly — no `+` fan-out — alongside the
     // changed buildable nodes themselves.
     let mut col_models: BTreeSet<String> = BTreeSet::new();
-    for changes in diff.columns.values() {
+    for (uid, changes) in &diff.columns {
+        // Column findings belong to a MODIFIED node — out-of-selection
+        // nodes contribute none, the same rule the listings apply.
+        if !opts.selection.is_none_or(|s| s.contains(uid)) {
+            continue;
+        }
         for ch in changes {
             if ch.class == ColumnChangeClass::NonBreaking {
                 continue;
@@ -376,6 +407,10 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, opts: &ImpactOpt
         .unwrap_or_default();
     let mut new_layer_violations: Vec<(String, String)> = current_v
         .difference(&base_v)
+        // A violation belongs to the CHILD (the referencing side — the same
+        // node the `layer_violation` lint flags). Selecting marts must not
+        // re-report a staging-side violation whose child is out of scope.
+        .filter(|(_, c)| opts.selection.is_none_or(|s| s.contains(c)))
         .map(|(p, c)| {
             let parent_name = dag.get(p).map_or_else(|| p.clone(), |n| n.name.clone());
             let child_name = dag.get(c).map_or_else(|| c.clone(), |n| n.name.clone());
@@ -447,8 +482,10 @@ pub fn layer_violation_edges(dag: &Dag) -> Vec<(String, String)> {
 /// the `All` package scope installed-package nodes exist in the graph but are
 /// never part of your project's test coverage. Under the default `Root` scope
 /// (or a single-package manifest) the predicate passes every node, so this is
-/// the exact count it always was.
-pub fn coverage_counts(dag: &Dag) -> (usize, usize) {
+/// the exact count it always was. `within` further narrows the counted set to
+/// a `--select` uid set (`None` = the whole project — the behavior every
+/// pre-selection caller keeps).
+pub fn coverage_counts(dag: &Dag, within: Option<&BTreeSet<String>>) -> (usize, usize) {
     // Resolve the owning package ONCE for the sweep — `is_root_project`
     // re-resolves it per call, an O(nodes) scan per node when no
     // `metadata.project_name` is recorded.
@@ -457,6 +494,9 @@ pub fn coverage_counts(dag: &Dag) -> (usize, usize) {
     let mut tested = 0;
     for n in dag.nodes().values() {
         if !primary.as_deref().is_none_or(|p| in_package(n, p)) {
+            continue;
+        }
+        if within.is_some_and(|s| !s.contains(&n.unique_id)) {
             continue;
         }
         if matches!(n.resource_type.as_str(), "model" | "snapshot" | "seed") {
@@ -487,12 +527,15 @@ pub fn coverage_counts(dag: &Dag) -> (usize, usize) {
 /// superset of schema-declared columns), so `declared` can read slightly
 /// larger there than on the same project's compiled manifest — the same
 /// documented divergence the `columns` consistency assert already carries.
-pub fn column_coverage_counts(dag: &Dag) -> (usize, usize) {
+pub fn column_coverage_counts(dag: &Dag, within: Option<&BTreeSet<String>>) -> (usize, usize) {
     let primary = dag.primary_package();
     let mut declared = 0;
     let mut covered = 0;
     for n in dag.nodes().values() {
         if !primary.as_deref().is_none_or(|p| in_package(n, p)) {
+            continue;
+        }
+        if within.is_some_and(|s| !s.contains(&n.unique_id)) {
             continue;
         }
         if !matches!(n.resource_type.as_str(), "model" | "snapshot" | "seed") {
@@ -548,12 +591,15 @@ fn column_documented(col: &ColumnInfo) -> bool {
 /// "of the things the project can document, how many are documented" shape,
 /// so `dbtl check`'s `doc_coverage` gate reads the same numbers any other
 /// surface would.
-pub fn doc_coverage_counts(dag: &Dag) -> (usize, usize) {
+pub fn doc_coverage_counts(dag: &Dag, within: Option<&BTreeSet<String>>) -> (usize, usize) {
     let primary = dag.primary_package();
     let mut total = 0;
     let mut documented = 0;
     for n in dag.nodes().values() {
         if !primary.as_deref().is_none_or(|p| in_package(n, p)) {
+            continue;
+        }
+        if within.is_some_and(|s| !s.contains(&n.unique_id)) {
             continue;
         }
         if n.resource_type != "model" {
@@ -574,12 +620,15 @@ pub fn doc_coverage_counts(dag: &Dag) -> (usize, usize) {
 /// whitespace-only doesn't count). A node with zero declared columns
 /// contributes nothing — the same "of the columns the project declares"
 /// framing the test-coverage metric uses.
-pub fn column_doc_coverage_counts(dag: &Dag) -> (usize, usize) {
+pub fn column_doc_coverage_counts(dag: &Dag, within: Option<&BTreeSet<String>>) -> (usize, usize) {
     let primary = dag.primary_package();
     let mut declared = 0;
     let mut documented = 0;
     for n in dag.nodes().values() {
         if !primary.as_deref().is_none_or(|p| in_package(n, p)) {
+            continue;
+        }
+        if within.is_some_and(|s| !s.contains(&n.unique_id)) {
             continue;
         }
         if n.resource_type != "model" {
@@ -1081,7 +1130,7 @@ mod tests {
     #[test]
     fn coverage_counts_matches_the_buildable_base() {
         let dag = Dag::build(&two_model_manifest());
-        assert_eq!(coverage_counts(&dag), (0, 2), "two models, no tests");
+        assert_eq!(coverage_counts(&dag, None), (0, 2), "two models, no tests");
     }
 
     #[test]
@@ -1127,7 +1176,7 @@ mod tests {
         );
         let dag = Dag::build(&m);
         // 1 of 3 declared columns is tested; `empty` contributes 0/0.
-        assert_eq!(column_coverage_counts(&dag), (1, 3));
+        assert_eq!(column_coverage_counts(&dag, None), (1, 3));
     }
 
     #[test]
@@ -1157,7 +1206,7 @@ mod tests {
         );
         let dag = Dag::build(&m);
         assert_eq!(
-            doc_coverage_counts(&dag),
+            doc_coverage_counts(&dag, None),
             (1, 3),
             "stg_x of stg_x+fct_x+blank: a whitespace-only description \
              is undocumented, and the seed never counts"
@@ -1188,7 +1237,7 @@ mod tests {
         .unwrap()
         .clone();
         let dag = Dag::build(&m);
-        assert_eq!(column_doc_coverage_counts(&dag), (1, 3));
+        assert_eq!(column_doc_coverage_counts(&dag, None), (1, 3));
     }
 
     #[test]

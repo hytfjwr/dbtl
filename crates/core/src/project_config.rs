@@ -197,6 +197,25 @@ impl ProjectConfig {
                         lint.severities.insert(rule, sev.as_effective());
                     }
                     if !settings.exclude.is_empty() {
+                        // Exclude specs are selectors — validated through the
+                        // ONE strict grammar the CLI `--select`/`--exclude`
+                        // flags use, so a typo'd spec errors here rather than
+                        // silently suppressing nothing at evaluation time.
+                        for spec in &settings.exclude {
+                            crate::select::validate_selector(spec).map_err(|e| {
+                                format!("invalid exclude selector for rule '{name}': {e}")
+                            })?;
+                            // `state:` needs a diff the lint evaluation
+                            // never builds — allowed by the grammar but it
+                            // would silently match nothing here.
+                            if crate::select::selector_uses_state(spec) {
+                                return Err(format!(
+                                    "invalid exclude selector for rule '{name}': \
+                                     'state:' selectors need a diff; rule excludes \
+                                     never have one"
+                                ));
+                            }
+                        }
                         lint.exclude.insert(rule, settings.exclude);
                     }
                     for (param, value) in settings.params {
@@ -993,6 +1012,28 @@ mod tests {
     fn exclude_must_be_a_string_list() {
         assert!(parse("lint:\n  rules:\n    root_models: {exclude: \"x\"}\n").is_err());
         assert!(parse("lint:\n  rules:\n    root_models: {exclude: [1]}\n").is_err());
+    }
+
+    #[test]
+    fn exclude_rejects_state_selectors() {
+        // `state:` parses the strict grammar fine but needs a diff the lint
+        // evaluation never builds — rejecting it at parse time keeps it from
+        // silently suppressing nothing.
+        for spec in ["state:modified", "state:new", "2+state:modified"] {
+            let err = parse(&format!(
+                "lint:\n  rules:\n    root_models: {{exclude: [\"{spec}\"]}}\n"
+            ))
+            .unwrap_err();
+            assert!(
+                err.contains("state:"),
+                "exclude [{spec}] must name state: in its error — {err}"
+            );
+        }
+        // Non-state selectors still pass validation.
+        assert!(
+            parse("lint:\n  rules:\n    root_models: {exclude: [\"stg_*\", \"tag:wip\"]}\n")
+                .is_ok()
+        );
     }
 
     #[test]

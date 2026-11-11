@@ -27,8 +27,8 @@ use clap::{CommandFactory, FromArgMatches};
 
 use cli::{
     build_app, check_flag_usage, exit_code, load_baseline, run_check, run_cli_reference,
-    run_columns, run_completions, run_docs, run_impact, run_lint, run_man, CheckArgs, Cli,
-    CliError, Commands, DataSourceArgs, LintArgs,
+    run_columns, run_completions, run_docs, run_impact, run_lint, run_ls, run_man, CheckArgs, Cli,
+    CliError, Commands, DataSourceArgs, DocsArgs, LintArgs,
 };
 use event_loop::{event_loop, find_dbt};
 use terminal::{
@@ -118,11 +118,28 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
             clean,
             check,
             lineage_depth,
+            select,
+            exclude,
         }) => {
-            return run_docs(out, &src, lineage_depth.as_deref(), *quiet, *clean, *check);
+            return run_docs(
+                &src,
+                &DocsArgs {
+                    out,
+                    lineage_depth: lineage_depth.as_deref(),
+                    quiet: *quiet,
+                    clean: *clean,
+                    check: *check,
+                    select,
+                    exclude,
+                },
+            );
         }
-        Some(Commands::Impact { format, report }) => {
-            return run_impact(*format, report, &src);
+        Some(Commands::Impact {
+            format,
+            report,
+            select,
+        }) => {
+            return run_impact(*format, report, select, &src);
         }
         Some(Commands::Check {
             coverage_min,
@@ -139,6 +156,7 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
             step_summary,
             path_prefix,
             docs_dir,
+            select,
             quiet,
         }) => {
             return run_check(
@@ -159,6 +177,7 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
                     step_summary: *step_summary,
                     path_prefix: path_prefix.as_deref(),
                     docs_dir: docs_dir.as_deref(),
+                    select,
                 },
             );
         }
@@ -173,6 +192,7 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
             no_baseline,
             list_rules,
             explain,
+            select,
             quiet,
         }) => {
             return run_lint(
@@ -189,8 +209,16 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
                     reports: report,
                     step_summary: *step_summary,
                     path_prefix: path_prefix.as_deref(),
+                    select,
                 },
             );
+        }
+        Some(Commands::Ls {
+            selector,
+            exclude,
+            output,
+        }) => {
+            return run_ls(selector, exclude, *output, &src);
         }
         Some(Commands::Columns {
             target,

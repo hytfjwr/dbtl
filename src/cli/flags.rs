@@ -19,14 +19,25 @@ use super::CliError;
 /// them. A global flag the subcommand doesn't list is an error when typed
 /// explicitly, no matter which side of the subcommand it sits on.
 pub const GLOBAL_FLAG_COMMANDS: &[(&str, &[&str])] = &[
-    ("manifest", &["docs", "impact", "check", "columns", "lint"]),
-    ("source", &["docs", "impact", "check", "columns", "lint"]),
-    ("project", &["docs", "impact", "check", "columns", "lint"]),
+    (
+        "manifest",
+        &["docs", "impact", "check", "columns", "lint", "ls"],
+    ),
+    (
+        "source",
+        &["docs", "impact", "check", "columns", "lint", "ls"],
+    ),
+    (
+        "project",
+        &["docs", "impact", "check", "columns", "lint", "ls"],
+    ),
     (
         "include_packages",
-        &["docs", "impact", "check", "columns", "lint"],
+        &["docs", "impact", "check", "columns", "lint", "ls"],
     ),
-    ("diff", &["impact", "check", "lint"]),
+    // `docs`/`ls` take `--diff` ONLY to feed `state:` selectors — each
+    // command rejects the flag when no `state:` atom is present.
+    ("diff", &["docs", "impact", "check", "lint", "ls"]),
     // `--run-results` feeds the TUI and `docs` — every other subcommand
     // rejects it (an empty list would mean TUI-only).
     ("run_results", &["docs"]),

@@ -68,7 +68,7 @@ pub use project_config::{
 #[cfg(feature = "schema")]
 pub use project_config::{project_config_schema, severity_setting_schema};
 pub use run_results::{default_run_results_path, RunResult, RunResults, RunStatus};
-pub use select::select;
+pub use select::{select, selector_uses_state, validate_selector};
 pub use source::{
     load_dag_from_source, load_dag_from_source_with_warnings, manifest_from_source,
     manifest_from_source_with_warnings,

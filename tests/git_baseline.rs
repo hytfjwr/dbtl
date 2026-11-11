@@ -386,3 +386,85 @@ fn git_baseline_missing_git_binary_is_an_input_error() {
         stderr(&out)
     );
 }
+
+// ---- `state:` selectors off a git baseline ----------------------------------
+
+#[test]
+fn state_selectors_resolve_against_git_revisions() {
+    // The sample project committed, then HEAD gains an added model and a
+    // touched model: `state:new`/`state:modified` compare HEAD against
+    // `git:HEAD~1` — the same change set `--select state:` on `check`
+    // intersects.
+    let repo = GitRepo::init();
+    repo.copy_in(Path::new(SAMPLE_PROJECT), ".");
+    repo.commit(&["."], "import fixture");
+    let sql = repo.root.join("models/staging/stg_orders.sql");
+    let text = std::fs::read_to_string(&sql).unwrap();
+    std::fs::write(&sql, format!("{text}\n-- touched\n")).unwrap();
+    repo.write("models/marts/brand_new.sql", "select 1 as id\n");
+    repo.commit(&["."], "one modified + one added");
+    let root = repo.root.to_str().unwrap().to_string();
+
+    // `ls state:new` — added only.
+    let out = run(&[
+        "ls",
+        "state:new",
+        "--project",
+        &root,
+        "--diff",
+        "git:HEAD~1",
+    ]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out), "brand_new\n");
+
+    // `check --select state:new` narrows every gate to the added node:
+    // the coverage population is brand_new alone (0/1), the untested gate
+    // fires on it as a changed node, and the modified stg_orders's hub
+    // and exposure readouts can't appear — it's out of scope.
+    let out = run(&[
+        "check",
+        "--project",
+        &root,
+        "--diff",
+        "git:HEAD~1",
+        "--select",
+        "state:new",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the added node is itself an untested change, stderr: {}",
+        stderr(&out)
+    );
+    let out_s = stdout(&out);
+    for needle in [
+        "PASS coverage: 0/1 (0%)",
+        "FAIL 1 changed node(s) without tests: brand_new",
+        "PASS changed hubs: none",
+        "PASS affected exposures: none",
+    ] {
+        assert!(out_s.contains(needle), "missing {needle:?} in:\n{out_s}");
+    }
+
+    // `check --select state:modified` keeps BOTH changes — brand_new
+    // still gates, and stg_orders's hub/exposure warnings return.
+    let out = run(&[
+        "check",
+        "--project",
+        &root,
+        "--diff",
+        "git:HEAD~1",
+        "--select",
+        "state:modified",
+    ]);
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
+    let out_s = stdout(&out);
+    for needle in [
+        "PASS coverage: 1/2 (50%)",
+        "FAIL 1 changed node(s) without tests: brand_new",
+        "WARN 1 changed hub(s)",
+        "WARN 1 affected exposure(s): orders_dashboard",
+    ] {
+        assert!(out_s.contains(needle), "missing {needle:?} in:\n{out_s}");
+    }
+}

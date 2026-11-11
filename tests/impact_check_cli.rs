@@ -802,3 +802,290 @@ fn check_no_breaking_rename_prints_old_to_new() {
         "old -> new in the failure line, got: {stdout:?}"
     );
 }
+
+// ---- --select: every gate intersects the selection ---------------------------
+
+/// A working copy where BOTH `stg_orders` and `dim_customers` carry a change —
+/// the two-node change set the selection tests narrow against.
+fn two_changed_project(tmp: &tempfile::TempDir) -> PathBuf {
+    let proj = tmp.path().join("proj");
+    copy_dir(&sample_project(), &proj);
+    for rel in [
+        "models/staging/stg_orders.sql",
+        "models/marts/dim_customers.sql",
+    ] {
+        let sql = proj.join(rel);
+        let text = std::fs::read_to_string(&sql).unwrap();
+        std::fs::write(&sql, format!("{text}\n-- touched\n")).unwrap();
+    }
+    proj
+}
+
+#[test]
+fn impact_select_narrows_the_change_set() {
+    // Two models changed; `--select stg_orders` reports ONLY that change —
+    // dim_customers drops out of `modified`, out of its churn_notebook
+    // exposure readout, and out of the ci command, while stg_orders's own
+    // downstream blast radius still reports.
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = two_changed_project(&tmp);
+    let out = run(&[
+        "impact",
+        "--source",
+        proj.to_str().unwrap(),
+        "--diff",
+        sample_project().to_str().unwrap(),
+        "--format",
+        "json",
+        "--select",
+        "stg_orders",
+    ]);
+    assert!(
+        out.status.success(),
+        "impact exits 0, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
+    assert_eq!(
+        v["modified"].as_array().unwrap(),
+        &[serde_json::json!(["stg_orders", "SQL changed"])],
+        "only the selected change reports"
+    );
+    let pr = &v["pr"];
+    assert_eq!(pr["affected_models"], 6, "stg_orders's downstream stays");
+    assert_eq!(
+        pr["untested_changes"].as_array().unwrap().len(),
+        0,
+        "dim_customers's change is out of scope"
+    );
+    let exposures: Vec<&str> = pr["affected_exposures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        exposures,
+        ["orders_dashboard (dashboard, owner: Finance Team <finance@example.com>)"],
+        "churn_notebook only rides the excluded dim_customers change"
+    );
+    assert_eq!(
+        pr["ci_command"].as_str().unwrap(),
+        "dbt build --select stg_orders+"
+    );
+}
+
+#[test]
+fn impact_select_with_no_match_warns_and_reports_an_empty_change_set() {
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = two_changed_project(&tmp);
+    let out = run(&[
+        "impact",
+        "--source",
+        proj.to_str().unwrap(),
+        "--diff",
+        sample_project().to_str().unwrap(),
+        "--format",
+        "json",
+        "--select",
+        "no_such_node",
+    ]);
+    assert!(
+        out.status.success(),
+        "an empty selection is still a valid answer, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("matched no nodes"),
+        "the empty-selection warning, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(v["modified"].as_array().unwrap().is_empty());
+    assert_eq!(v["pr"]["affected_models"], 0);
+}
+
+#[test]
+fn check_select_narrows_coverage_and_diff_gates() {
+    // The same run without --select FAILS the untested-changes gate on
+    // dim_customers; scoped to stg_orders the change is out of scope and
+    // every diff gate passes — and the coverage population shrinks to the
+    // selection too (1/1 instead of the project-wide 3/15).
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = two_changed_project(&tmp);
+    let base = sample_project().to_str().unwrap().to_string();
+    let out = run(&["check", "--source", proj.to_str().unwrap(), "--diff", &base]);
+    assert_eq!(out.status.code(), Some(1), "unselected fails");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("FAIL 1 changed node(s) without tests: dim_customers"));
+
+    let out = run(&[
+        "check",
+        "--source",
+        proj.to_str().unwrap(),
+        "--diff",
+        &base,
+        "--select",
+        "stg_orders",
+    ]);
+    assert!(
+        out.status.success(),
+        "the excluded change can't gate, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for needle in [
+        "PASS coverage: 1/1 (100%)",
+        "PASS untested changes: none",
+        "WARN 1 affected exposure(s): orders_dashboard",
+    ] {
+        assert!(stdout.contains(needle), "missing {needle:?} in:\n{stdout}");
+    }
+    assert!(
+        !stdout.contains("churn_notebook"),
+        "an out-of-scope change's exposure never prints: {stdout:?}"
+    );
+}
+
+#[test]
+fn check_select_narrows_lint_findings() {
+    // `--lint --select fct_orders` — the missing_primary_key_tests gate
+    // counts ONLY fct_orders (1 violation), not the project-wide 9.
+    let m = sample_manifest();
+    let out = run(&[
+        "check",
+        "--manifest",
+        m.to_str().unwrap(),
+        "--lint",
+        "--rules",
+        "missing_primary_key_tests",
+        "--select",
+        "fct_orders",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "fct_orders violates the rule, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("FAIL lint missing_primary_key_tests: 1 violation(s): fct_orders"),
+        "narrowed to the selection, got: {stdout:?}"
+    );
+    // And an `fct_*`-passing rule selected under the same spec passes.
+    let out = run(&[
+        "check",
+        "--manifest",
+        m.to_str().unwrap(),
+        "--lint",
+        "--rules",
+        "naming_conventions",
+        "--select",
+        "fct_*",
+    ]);
+    assert!(
+        out.status.success(),
+        "fct_* nodes satisfy the prefix rule, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn check_select_state_atoms_compare_against_the_diff_baseline() {
+    // `state:modified` picks the same added∪modified set the diff gates
+    // read — scoped to it, the unselected run's gate results are identical
+    // (both changes are in the selection).
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = two_changed_project(&tmp);
+    let base = sample_project().to_str().unwrap().to_string();
+    let out = run(&[
+        "check",
+        "--source",
+        proj.to_str().unwrap(),
+        "--diff",
+        &base,
+        "--select",
+        "state:modified",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the state: selection keeps the failing change, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("FAIL 1 changed node(s) without tests: dim_customers"));
+
+    // `state:new` selects nothing (no added nodes) — warning + all pass.
+    let out = run(&[
+        "check",
+        "--source",
+        proj.to_str().unwrap(),
+        "--diff",
+        &base,
+        "--select",
+        "state:new",
+    ]);
+    assert!(
+        out.status.success(),
+        "no added nodes → nothing to gate, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("matched no nodes"),
+        "the empty-selection warning: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn check_select_usage_errors() {
+    let m = sample_manifest().to_str().unwrap().to_string();
+    // A malformed spec is a usage error — BEFORE the load (a CI gate must
+    // never silently check an empty set).
+    let out = run(&["check", "--manifest", &m, "--select", "foo:bar"]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("foo:bar"),
+        "the failing fragment, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // `state:` without `--diff` — same usage class.
+    let out = run(&["check", "--manifest", &m, "--select", "state:modified"]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--diff"));
+}
+
+#[test]
+fn check_select_empty_match_warns_and_gates_pass() {
+    let m = sample_manifest();
+    let out = run(&[
+        "check",
+        "--manifest",
+        m.to_str().unwrap(),
+        "--select",
+        "no_such_node",
+    ]);
+    assert!(
+        out.status.success(),
+        "a gate over zero nodes passes, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("matched no nodes"),
+        "the warning, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS coverage: 0/0"));
+}
