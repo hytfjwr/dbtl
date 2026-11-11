@@ -1,0 +1,188 @@
+name: dbtl check
+description: >-
+  Run `dbtl check` on a dbt project — test coverage, structural lint, and
+  diff-impact gates against the pull request's base commit — emitting GitHub
+  annotations, a markdown report, a step summary, and optional sticky PR
+  comment and SARIF upload.
+author: hytfjwr
+branding:
+  icon: git-branch
+  color: green
+
+inputs:
+  version:
+    description: >-
+      The dbtl release tag to install — `vX.Y.Z` (`X.Y.Z` is also accepted
+      and normalized). Empty resolves to the tag this action is invoked at;
+      when the action is pinned to a SHA rather than a version tag there is
+      nothing to resolve, so set this input explicitly. `local` installs
+      nothing and uses the `dbtl` already on PATH.
+    required: false
+    default: ''
+  project-dir:
+    description: The dbt project directory, relative to the repository root.
+    required: false
+    default: '.'
+  base-ref:
+    description: >-
+      The git revision `dbtl check --diff` compares against. Empty defaults
+      to the pull request's base sha, or the pushed `before` commit; a
+      commit missing from a shallow checkout is fetched at depth 1. When
+      neither exists (a branch's first push, a non-PR/non-push event) no
+      diff runs.
+    required: false
+    default: ''
+  lint:
+    description: Run the lint gate set (`dbtl check --lint`).
+    required: false
+    default: 'true'
+  fail-on:
+    description: >-
+      The minimum severity that fails the check — `error`, `warn`, or
+      `never`. Empty follows the project's `.dbtl.yml` `fail_on`
+      (the shipped default is `error`).
+    required: false
+    default: ''
+  args:
+    description: >-
+      Extra arguments appended to `dbtl check`, split on whitespace —
+      quoting is not interpreted.
+    required: false
+    default: ''
+  step-summary:
+    description: Append the markdown report to the job's step summary.
+    required: false
+    default: 'true'
+  sarif:
+    description: >-
+      Write a SARIF report and upload it to code scanning
+      (`github/codeql-action/upload-sarif`, category `dbtl`). The calling
+      job needs `security-events: write`; the upload runs even when the
+      check fails and never changes the verdict. It always uses the job's
+      `GITHUB_TOKEN` — the code-scanning endpoint rejects user tokens —
+      not the `github-token` input.
+    required: false
+    default: 'false'
+  comment:
+    description: >-
+      Post the markdown report on the pull request, updating the existing
+      `<!-- dbtl:report -->` comment when one exists (sticky). The calling
+      job needs `pull-requests: write`; skipped with a warning on forked
+      pull requests, where the token is read-only.
+    required: false
+    default: 'false'
+  github-token:
+    description: >-
+      The token used for the pull request comment. The SARIF upload does
+      not take it — it always uses the job's `GITHUB_TOKEN`, the only
+      credential the code-scanning endpoint accepts.
+    required: false
+    default: ${{ github.token }}
+  dry-run:
+    description: >-
+      For tests: print the SARIF upload and PR comment calls to stdout
+      instead of making them (reports are still written and checked).
+    required: false
+    default: 'false'
+
+outputs:
+  exit-code:
+    description: >-
+      `dbtl check`'s exit code — 0 pass, 1 gate failure, 2 usage error,
+      3 input error. The action's last step exits with it.
+    value: ${{ steps.check.outputs.exit-code }}
+  report:
+    description: Path of the markdown report file — empty when none was written.
+    value: ${{ steps.check.outputs.report }}
+  sarif:
+    description: >-
+      Path of the SARIF file — empty when `sarif` was not requested or no
+      file was written.
+    value: ${{ steps.check.outputs.sarif }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install dbtl
+      shell: bash
+      env:
+        DBTL_VERSION: ${{ inputs.version }}
+        DBTL_ACTION_REF: ${{ github.action_ref }}
+        DBTL_ACTION_REPOSITORY: ${{ github.action_repository }}
+      run: bash "$GITHUB_ACTION_PATH/action/install.sh"
+
+    - name: Run dbtl check
+      id: check
+      shell: bash
+      env:
+        DBTL_PROJECT_DIR: ${{ inputs.project-dir }}
+        DBTL_BASE_REF: ${{ inputs.base-ref }}
+        DBTL_EVENT_NAME: ${{ github.event_name }}
+        DBTL_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        DBTL_PUSH_BEFORE: ${{ github.event.before }}
+        DBTL_LINT: ${{ inputs.lint }}
+        DBTL_FAIL_ON: ${{ inputs.fail-on }}
+        DBTL_ARGS: ${{ inputs.args }}
+        DBTL_STEP_SUMMARY: ${{ inputs.step-summary }}
+        DBTL_SARIF: ${{ inputs.sarif }}
+      run: bash "$GITHUB_ACTION_PATH/action/run.sh"
+
+    # Write-back never runs on forked pull requests — the token is
+    # read-only there, so attempting it would only fail noisily.
+    - name: Note skipped write-back on a forked pull request
+      if: >-
+        always() && steps.check.outputs.exit-code != '' &&
+        (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') &&
+        github.event.pull_request.head.repo.full_name != github.repository &&
+        (inputs.comment == 'true' || inputs.sarif == 'true') &&
+        inputs.dry-run != 'true'
+      shell: bash
+      run: echo "::warning::the dbtl report comment and SARIF upload are skipped on forked pull requests (the token is read-only)"
+
+    - name: Comment the report on the pull request
+      if: >-
+        always() && steps.check.outputs.exit-code != '' &&
+        inputs.comment == 'true' &&
+        (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') &&
+        (inputs.dry-run == 'true' ||
+         github.event.pull_request.head.repo.full_name == github.repository)
+      shell: bash
+      env:
+        DBTL_DRY_RUN: ${{ inputs.dry-run }}
+        DBTL_REPORT: ${{ steps.check.outputs.report }}
+        DBTL_PR_NUMBER: ${{ github.event.pull_request.number }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: bash "$GITHUB_ACTION_PATH/action/comment.sh"
+
+    - name: Print the SARIF upload plan (dry-run)
+      if: >-
+        always() && inputs.sarif == 'true' && inputs.dry-run == 'true'
+      shell: bash
+      env:
+        DBTL_SARIF_FILE: ${{ steps.check.outputs.sarif }}
+      run: bash "$GITHUB_ACTION_PATH/action/sarif_dry_run.sh"
+
+    - name: Upload the SARIF report
+      id: sarif-upload
+      if: >-
+        always() && steps.check.outputs.sarif != '' &&
+        inputs.sarif == 'true' && inputs.dry-run != 'true' &&
+        (github.event_name != 'pull_request' && github.event_name != 'pull_request_target' ||
+         github.event.pull_request.head.repo.full_name == github.repository)
+      uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+      continue-on-error: true
+      with:
+        sarif_file: ${{ steps.check.outputs.sarif }}
+        category: dbtl
+
+    - name: Note SARIF upload failure
+      if: always() && steps.sarif-upload.outcome == 'failure'
+      shell: bash
+      run: echo "::warning::the SARIF upload failed — the check verdict is unaffected"
+
+    - name: Exit with the check verdict
+      if: always()
+      shell: bash
+      env:
+        DBTL_EXIT_CODE: ${{ steps.check.outputs.exit-code }}
+      run: exit "${DBTL_EXIT_CODE:-1}"
