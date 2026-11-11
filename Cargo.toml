@@ -85,3 +85,9 @@ criterion = "0.5"
 [[bench]]
 name = "pipeline"
 harness = false
+
+# PTY-driven end-to-end TUI tests (tests/tui_pty/) — real terminals are
+# Unix-only, so the suite and its deps are cfg'd away elsewhere.
+[target."cfg(unix)".dev-dependencies]
+portable-pty = "0.9.0"
+vt100 = "0.18.1"
