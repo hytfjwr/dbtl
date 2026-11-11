@@ -17,7 +17,8 @@ use dbtl::ui::{draw as tui_draw, RenderCtx, UiState};
 use dbtl::{
     build_model_list, compute_diff, generate_docs, layout_density, load_dag_from_source,
     load_manifest, run_rules, select, App, ColumnLineage, ColumnRef, Dag, Density, GlyphMode,
-    LintConfig, PackageScope, RawManifest, RawNode, SortMode, SqlDialect, SqlParseResolver,
+    LintConfig, LintInput, PackageScope, RawManifest, RawNode, SortMode, SqlDialect,
+    SqlParseResolver,
 };
 use ratatui::{backend::TestBackend, Terminal};
 use std::path::PathBuf;
@@ -273,7 +274,8 @@ fn bench_lint(c: &mut Criterion) {
     let dag = Dag::build(&synth_manifest(&rich_params(4000)));
     let mut g = c.benchmark_group("lint");
     g.bench_function("4000", |b| {
-        b.iter(|| run_rules(black_box(&dag), &LintConfig::default()))
+        let config = LintConfig::default();
+        b.iter(|| run_rules(black_box(LintInput::new(&dag, &config))))
     });
     g.finish();
 }
