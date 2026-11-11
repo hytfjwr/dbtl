@@ -15,6 +15,14 @@ on:
         description: Git ref to check out and build
         required: true
         type: string
+      artifact-retention-days:
+        description: >-
+          Days intermediate artifacts are kept. A real release needs the
+          long default so a resume days later still finds release-dist;
+          dry runs pass a short value.
+        required: false
+        type: number
+        default: 90
 
 permissions: {}
 
@@ -58,7 +66,7 @@ jobs:
         with:
           name: dist-files
           path: dist
-          retention-days: 7
+          retention-days: ${{ inputs.artifact-retention-days }}
           if-no-files-found: error
 
   build:
@@ -124,6 +132,8 @@ jobs:
           sudo apt-get install -y musl-tools
 
       - name: Build
+        # Windows runs pwsh by default; Git Bash is present on every runner.
+        shell: bash
         env:
           TARGET: ${{ matrix.target }}
           # Ignored by non-musl targets; on musl they force musl-gcc for
@@ -134,9 +144,11 @@ jobs:
           CC_aarch64_unknown_linux_musl: musl-gcc
         run: cargo build --release --locked --target "$TARGET"
 
-      # A musl artifact must be fully static — prove it inside the job with
-      # the binary itself (ldd + a real run) rather than trusting the target
-      # name.
+      # A musl artifact must be fully static — prove it inside the job on
+      # the binary itself rather than trusting the target name. The gate is
+      # the ELF's own property: no PT_INTERP segment means no dynamic loader
+      # is ever consulted. (glibc's ldd is unreliable here — it cannot tell
+      # a dynamic musl binary from a static one either way.)
       - name: Verify the musl binary
         if: matrix.musl
         env:
@@ -144,9 +156,10 @@ jobs:
         run: |
           bin="target/${TARGET}/release/dbtl"
           file "$bin"
-          if ! ldd "$bin" 2>&1 | grep -q "not a dynamic executable"; then
-            echo "::error::$bin is not statically linked:"
-            ldd "$bin" || true
+          ldd "$bin" || true
+          if readelf -l "$bin" | grep -q INTERP; then
+            echo "::error::$bin requests a dynamic loader — not fully static:"
+            readelf -l "$bin" | grep -A2 INTERP
             exit 1
           fi
           "$bin" --version
@@ -159,6 +172,7 @@ jobs:
 
       - name: Package (tar.gz)
         if: matrix.archive == 'tar.gz'
+        shell: bash
         env:
           TARGET: ${{ matrix.target }}
           TAG: ${{ inputs.tag }}
@@ -189,7 +203,7 @@ jobs:
         with:
           name: dbtl-${{ matrix.target }}
           path: "dbtl-*.${{ matrix.archive }}"
-          retention-days: 7
+          retention-days: ${{ inputs.artifact-retention-days }}
           if-no-files-found: error
 
   # One job assembles the publishable set — the checksums and the SBOM come
@@ -217,15 +231,16 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Create checksums
-        run: |
-          cd dist
-          sha256sum dbtl-*.tar.gz dbtl-*.zip > checksums.txt
-          cat checksums.txt
-
       # The SBOM describes the shipped binary's dependency set: normal deps
       # only (dev-deps excluded), over every target platform (--target all
       # covers the per-platform crates that any single --target would miss).
+      # cargo-cyclonedx 0.5.x has no package-selection flag (create_sboms
+      # always walks every workspace member), so it also emits an xtask SBOM
+      # — discarded below. --describe binaries emits one SBOM per binary
+      # target, so dbtl_bin.cdx.json already contains only the shipped
+      # binary's dependency closure. Nor can it forward --locked to its
+      # internal `cargo metadata`, so the lockfile is verified untouched
+      # afterwards instead — every real build uses --locked anyway.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
@@ -239,7 +254,15 @@ jobs:
       - name: Generate the CycloneDX SBOM
         run: |
           cargo cyclonedx --format json --spec-version 1.5 --describe binaries --target all
+          git diff --exit-code -- Cargo.lock
           mv dbtl_bin.cdx.json "dist/dbtl-${TAG}.cdx.json"
+          rm -f xtask/xtask_bin.cdx.json
+
+      - name: Create checksums
+        run: |
+          cd dist
+          sha256sum dbtl-*.tar.gz dbtl-*.zip dbtl-*.cdx.json > checksums.txt
+          cat checksums.txt
 
       - name: Summarize artifacts
         run: |
@@ -263,5 +286,5 @@ jobs:
         with:
           name: release-dist
           path: dist
-          retention-days: 7
+          retention-days: ${{ inputs.artifact-retention-days }}
           if-no-files-found: error

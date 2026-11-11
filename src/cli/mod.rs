@@ -285,6 +285,19 @@ pub enum Commands {
         #[arg(long, value_enum, default_value = "markdown")]
         format: ImpactFormat,
     },
+    /// Print a shell completion script to stdout and exit — reads no data
+    /// source and accepts no global flags, so it runs anywhere (the release
+    /// packaging generates the shipped `completions/` files with it).
+    Completions {
+        /// The shell to generate the completion script for.
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Print the man page (roff) to stdout and exit. Hidden from `--help`:
+    /// it feeds release packaging (`man/dbtl.1`), not interactive
+    /// discovery.
+    #[command(hide = true)]
+    Man,
 }
 
 /// The `dbtl impact` / `dbtl columns` output format — Markdown for pasting
@@ -346,6 +359,7 @@ impl Cli {
 
 mod baseline;
 mod columns;
+mod completions;
 mod docs;
 mod exit;
 mod flags;
@@ -358,6 +372,7 @@ mod tests;
 
 pub use baseline::load_baseline;
 pub use columns::run_columns;
+pub use completions::{run_completions, run_man};
 pub use docs::run_docs;
 pub use exit::{exit_code, Classify, CliError};
 pub use flags::check_flag_usage;
