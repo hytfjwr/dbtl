@@ -473,6 +473,11 @@ pub enum Commands {
     /// discovery.
     #[command(hide = true)]
     Man,
+    /// Print the generated CLI reference (Markdown) to stdout and exit.
+    /// Hidden from `--help`: it feeds `docs/reference/cli.md`, not
+    /// interactive discovery.
+    #[command(hide = true)]
+    CliReference,
 }
 
 /// The `dbtl ls` output shape: plain listings for humans (`names`/`uids`),
@@ -552,6 +557,7 @@ mod gates;
 mod git_baseline;
 mod lint;
 mod ls;
+mod reference;
 mod report;
 mod resolve;
 mod resolvers;
@@ -569,6 +575,7 @@ pub use gates::{run_check, run_impact, CheckArgs};
 use lint::*;
 pub use lint::{run_lint, LintArgs};
 pub use ls::run_ls;
+pub use reference::run_cli_reference;
 use report::*;
 use resolve::*;
 pub use resolve::{build_app, DataSourceArgs, ResolvedSource};

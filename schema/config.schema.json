@@ -1,0 +1,75 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "GENERATED FILE — do not edit. Regenerate with: cargo xtask gen-docs",
+  "title": "dbtl config.yml",
+  "description": "User-level defaults at ~/.config/dbtl/config.yml (precedence: config < saved state < explicit CLI flags). Unknown keys are ignored.",
+  "type": "object",
+  "properties": {
+    "theme": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Default colour theme: a preset name or a theme under\n`~/.config/dbtl/themes/<name>.yml`. Lower precedence than\n`--theme`/`DBTL_THEME`.",
+      "default": null
+    },
+    "lens": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Default lineage lens name.",
+      "default": null
+    },
+    "density": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Default lineage density name.",
+      "default": null
+    },
+    "sort": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Default model-list sort name.",
+      "default": null
+    },
+    "group_by_meta": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Group the model list by this `meta` key's VALUE instead of the layer\ndirs (`group_by_meta: owner` → `owner=alice` groups, `(no owner)`\nlast; unset = the default layer grouping). The `.` sort cycle still\norders within each group.",
+      "default": null
+    },
+    "owner_meta_key": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The `meta` key the PR-impact pack collects as \"affected owners\"\n(default `owner`) — read by the `D` modal, its `e` export, and\n`dbtl impact`/`check`.",
+      "default": null
+    },
+    "lineage_collapse": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint",
+      "minimum": 0,
+      "description": "The sibling-collapse threshold: a lineage column stacking more than\nthis many same-parent siblings contracts the tail into one `+M more`\nmarker (default 8; `0` = never collapse). Config-only — it is a\ndisplay policy, not a per-project pref, so the state file ignores it.",
+      "default": null
+    },
+    "inspector": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Default inspector visibility pref (`auto`/`on`/`off`) — the\n`I` cycle. Same Option-layering as the other pref names.",
+      "default": null
+    }
+  }
+}

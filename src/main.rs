@@ -26,9 +26,9 @@ use anyhow::Context;
 use clap::{CommandFactory, FromArgMatches};
 
 use cli::{
-    build_app, check_flag_usage, exit_code, load_baseline, run_check, run_columns, run_completions,
-    run_docs, run_impact, run_lint, run_ls, run_man, CheckArgs, Cli, CliError, Commands,
-    DataSourceArgs, DocsArgs, LintArgs,
+    build_app, check_flag_usage, exit_code, load_baseline, run_check, run_cli_reference,
+    run_columns, run_completions, run_docs, run_impact, run_lint, run_ls, run_man, CheckArgs, Cli,
+    CliError, Commands, DataSourceArgs, DocsArgs, LintArgs,
 };
 use event_loop::{event_loop, find_dbt};
 use terminal::{
@@ -234,6 +234,9 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
         }
         Some(Commands::Man) => {
             return run_man();
+        }
+        Some(Commands::CliReference) => {
+            return run_cli_reference();
         }
         None => {}
     }

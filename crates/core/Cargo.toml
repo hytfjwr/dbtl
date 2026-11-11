@@ -8,9 +8,16 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+# Derives `schemars::JsonSchema` on the `.dbtl.yml` wire structs for
+# `cargo xtask gen-docs`; off by default so the `dbtl` binary never links it.
+schema = ["dep:schemars"]
+
 [dependencies]
 anyhow.workspace = true
 regex.workspace = true
+# Optional: `--features schema` only.
+schemars = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 # `.dbtl.yml` is dbtl's OWN config file — serde_norway like the user-level

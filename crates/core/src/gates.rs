@@ -95,6 +95,12 @@ impl CheckGate {
         self.info().needs_diff
     }
 
+    /// A one-line description of what the gate checks — the config
+    /// reference and the generated schema share it.
+    pub fn summary(self) -> &'static str {
+        self.info().summary
+    }
+
     /// The parameters `check.gates.<id>` accepts beyond `severity`.
     pub fn params(self) -> &'static [GateParamSpec] {
         self.info().params
@@ -105,6 +111,7 @@ impl CheckGate {
             CheckGate::Coverage => &CheckGateInfo {
                 id: "coverage",
                 title: "coverage",
+                summary: "Root-project models/snapshots/seeds with a test below `min` percent",
                 default_severity: Some(Severity::Error),
                 needs_diff: false,
                 params: MIN_PCT,
@@ -112,6 +119,7 @@ impl CheckGate {
             CheckGate::ColumnCoverage => &CheckGateInfo {
                 id: "column_coverage",
                 title: "column coverage",
+                summary: "Declared columns covered by the schema-test graph below `min` percent",
                 default_severity: None,
                 needs_diff: false,
                 params: MIN_PCT,
@@ -119,6 +127,7 @@ impl CheckGate {
             CheckGate::DocCoverage => &CheckGateInfo {
                 id: "doc_coverage",
                 title: "doc coverage",
+                summary: "Models/snapshots/seeds with a description below `min` percent",
                 default_severity: None,
                 needs_diff: false,
                 params: MIN_PCT,
@@ -126,6 +135,7 @@ impl CheckGate {
             CheckGate::NewLayerViolations => &CheckGateInfo {
                 id: "new_layer_violations",
                 title: "new layer violations",
+                summary: "Layer-violating edges the diff introduces (needs `--diff`)",
                 default_severity: Some(Severity::Error),
                 needs_diff: true,
                 params: NO_PARAMS,
@@ -133,6 +143,7 @@ impl CheckGate {
             CheckGate::UntestedChanges => &CheckGateInfo {
                 id: "untested_changes",
                 title: "untested changes",
+                summary: "Models added or modified by the diff that have no tests (needs `--diff`)",
                 default_severity: Some(Severity::Error),
                 needs_diff: true,
                 params: NO_PARAMS,
@@ -140,6 +151,7 @@ impl CheckGate {
             CheckGate::BreakingColumns => &CheckGateInfo {
                 id: "breaking_columns",
                 title: "breaking column changes",
+                summary: "Columns the diff removes or renames that dependents still reference (needs `--diff`)",
                 default_severity: None,
                 needs_diff: true,
                 params: NO_PARAMS,
@@ -147,6 +159,7 @@ impl CheckGate {
             CheckGate::ChangedHubs => &CheckGateInfo {
                 id: "changed_hubs",
                 title: "changed hubs",
+                summary: "Diff-changed models with `min_downstream` or more dependents (needs `--diff`)",
                 default_severity: Some(Severity::Warn),
                 needs_diff: true,
                 params: MIN_DOWNSTREAM,
@@ -154,6 +167,7 @@ impl CheckGate {
             CheckGate::AffectedExposures => &CheckGateInfo {
                 id: "affected_exposures",
                 title: "affected exposures",
+                summary: "Exposures whose upstream intersects the diff's blast radius (needs `--diff`)",
                 default_severity: Some(Severity::Warn),
                 needs_diff: true,
                 params: NO_PARAMS,
@@ -161,6 +175,7 @@ impl CheckGate {
             CheckGate::BlastRadius => &CheckGateInfo {
                 id: "blast_radius",
                 title: "blast radius",
+                summary: "The diff's blast radius — affected models over `max` (needs `--diff`)",
                 default_severity: None,
                 needs_diff: true,
                 params: MAX_COUNT,
@@ -168,6 +183,7 @@ impl CheckGate {
             CheckGate::DocsDrift => &CheckGateInfo {
                 id: "docs_drift",
                 title: "docs drift",
+                summary: "The generated docs under `dir` differ from the project's current output",
                 default_severity: Some(Severity::Error),
                 needs_diff: false,
                 params: DIR_PATH,
@@ -183,6 +199,8 @@ pub struct CheckGateInfo {
     pub id: &'static str,
     /// The report row title (`coverage`, `new layer violations`).
     pub title: &'static str,
+    /// A one-line description of what the gate checks.
+    pub summary: &'static str,
     /// `None` = the gate is off until a config entry or flag enables it.
     pub default_severity: Option<Severity>,
     /// Whether evaluation needs a `--diff` baseline.

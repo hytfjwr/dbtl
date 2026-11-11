@@ -29,6 +29,7 @@ pub const PROJECT_CONFIG_NAME: &str = ".dbtl.yml";
 /// `error` (the default), `warn` (warnings also fail), `never`
 /// (report-only). Read here and carried; the CLI decides where it applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum FailOn {
     Error,
@@ -445,13 +446,26 @@ pub fn project_config_path(
 /// becomes a warning (never a hard error — the file can grow project-level
 /// sections without breaking older binaries).
 #[derive(Debug, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default)]
 struct ProjectFile {
+    /// `error` | `warn` | `never` — the minimum severity at which findings
+    /// fail a run. `--fail-on` overrides it.
     fail_on: Option<FailOn>,
+    /// `lint:` — per-rule enables, severities, parameters, excludes, naming
+    /// prefixes, and the baseline path.
     lint: LintFile,
+    /// `check:` — gate severities/parameters and whether the lint gates
+    /// fold into `dbtl check`.
     check: CheckFile,
+    /// `docs:` — generated-docs options.
     docs: DocsFile,
+    /// The `meta:` key the affected-owners report reads (default `owner`;
+    /// wins over `config.yml`'s `owner_meta_key`).
     owner_meta_key: Option<String>,
+    // Unknown top-level keys collect here and warn — forward compat for
+    // sections a newer dbtl adds (never a hard error).
+    #[cfg_attr(feature = "schema", schemars(skip))]
     #[serde(flatten)]
     other: BTreeMap<String, serde_norway::Value>,
 }
@@ -460,10 +474,12 @@ struct ProjectFile {
 /// policy as `lint:`: a silently-ignored `lineage_dpeth` would generate a
 /// different doc set than the author intended.
 #[derive(Debug, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 struct DocsFile {
     /// `docs.lineage_depth` — `None` when unset; an invalid value fails the
     /// whole parse (a malformed config is fatal, never silently defaulted).
+    #[cfg_attr(feature = "schema", schemars(skip))]
     lineage_depth: Option<LineageDepth>,
     /// `docs.catalog` — opt in to the sibling `catalog.json` (same path rule
     /// as the CLI's auto-detect, but only when the file asks for it).
@@ -479,6 +495,7 @@ struct DocsFile {
 /// produce a gate-named error (the untagged bare/object forms would
 /// collapse every failure into a generic enum mismatch).
 #[derive(Debug, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 struct CheckFile {
     /// `check.lint` — include the lint gates in `check` runs without
@@ -486,6 +503,7 @@ struct CheckFile {
     lint: bool,
     /// `check.gates.<id>` → bare severity or `{severity, <params>}` —
     /// validated against the gate registry in [`parse_gate_entry`].
+    #[cfg_attr(feature = "schema", schemars(skip))]
     gates: BTreeMap<String, serde_norway::Value>,
 }
 
@@ -493,20 +511,43 @@ struct CheckFile {
 /// a hard error — a silently-ignored `model_fanout_threshld` would leave a
 /// CI gate running the wrong rule set.
 #[derive(Debug, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 struct LintFile {
     /// rule name → `bool` | settings object. Unknown rule names are
     /// validated separately so the error can list the valid set.
+    #[cfg_attr(feature = "schema", schemars(skip))]
     rules: BTreeMap<String, RuleSpec>,
     /// Compat flat keys — the same value `rules.<id>.threshold` sets; both
     /// spellings together are an error naming both keys.
     model_fanout_threshold: Option<usize>,
+    /// Compat flat key — the same value `rules.source_fanout.threshold`
+    /// sets; both spellings together are an error naming both keys.
     source_fanout_threshold: Option<usize>,
     /// layer dir → allowed prefixes; merges per-layer over the defaults.
     naming_prefixes: Option<BTreeMap<String, Vec<String>>>,
     /// The frozen-violations file — resolved against this file's directory
     /// in [`ProjectConfig::load`].
     baseline: Option<PathBuf>,
+}
+
+/// The JSON Schema for `.dbtl.yml`, derived from the same wire structs the
+/// parser deserializes — field names, `deny_unknown_fields`, and doc-comment
+/// descriptions can't drift from the parser. Members the derive can't
+/// express (`lint.rules`, `check.gates`, `docs.lineage_depth`, and the
+/// `flatten`ed top-level catch-all) are skipped here; the doc generator
+/// patches in the registry-driven shapes.
+#[cfg(feature = "schema")]
+pub fn project_config_schema() -> schemars::Schema {
+    schemars::schema_for!(ProjectFile)
+}
+
+/// The `error` | `warn` | `off` enum as a schema — the rule-settings and
+/// gate severities embed it (`severity: ~` folds to "unset", so the
+/// generator wraps it in `anyOf [enum, null]` where null is accepted).
+#[cfg(feature = "schema")]
+pub fn severity_setting_schema() -> schemars::Schema {
+    schemars::schema_for!(SeveritySetting)
 }
 
 /// `rules.<id>` accepts the compat `bool` (`false` = off, `true` = the
@@ -536,6 +577,7 @@ struct RuleSettings {
 
 /// The `severity:` wire value — `off` folds into "no severity" (disabled).
 #[derive(Debug, Clone, Copy, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 enum SeveritySetting {
     Error,

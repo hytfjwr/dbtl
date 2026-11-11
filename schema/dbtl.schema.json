@@ -1,0 +1,1853 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "GENERATED FILE — do not edit. Regenerate with: cargo xtask gen-docs",
+  "title": ".dbtl.yml",
+  "description": "Project-local dbtl policy (lint rules, check gates, docs options), discovered beside the data source. Unknown top-level keys are allowed but ignored with a warning.",
+  "type": "object",
+  "properties": {
+    "fail_on": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "error",
+            "warn",
+            "never"
+          ],
+          "description": "`fail_on` — the minimum severity at which findings fail the command:\n`error` (the default), `warn` (warnings also fail), `never`\n(report-only). Read here and carried; the CLI decides where it applies."
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "`error` | `warn` | `never` — the minimum severity at which findings\nfail a run. `--fail-on` overrides it.",
+      "default": null
+    },
+    "lint": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "model_fanout_threshold": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 1,
+          "description": "Compat flat keys — the same value `rules.<id>.threshold` sets; both\nspellings together are an error naming both keys.",
+          "default": null
+        },
+        "source_fanout_threshold": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 1,
+          "description": "Compat flat key — the same value `rules.source_fanout.threshold`\nsets; both spellings together are an error naming both keys.",
+          "default": null
+        },
+        "naming_prefixes": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": "layer dir → allowed prefixes; merges per-layer over the defaults.",
+          "default": null
+        },
+        "baseline": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The frozen-violations file — resolved against this file's directory\nin [`ProjectConfig::load`].",
+          "default": null
+        },
+        "rules": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "rule id → `false` (off) | `true` (the registry default) | a settings object (`severity`, `exclude`, and the rule's declared parameters). Unknown rule names are an error.",
+          "properties": {
+            "direct_join_to_source": {
+              "description": "a model directly depends on both a source and a model",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "multiple_sources_joined": {
+              "description": "a model directly depends on 2+ sources",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "source_fanout": {
+              "description": "a source directly feeds too many models",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    },
+                    "threshold": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "default": 2,
+                      "description": "minimum direct children to flag"
+                    }
+                  }
+                }
+              ]
+            },
+            "model_fanout": {
+              "description": "a model directly feeds too many leaf models",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    },
+                    "threshold": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "default": 5,
+                      "description": "minimum direct leaf children to flag"
+                    }
+                  }
+                }
+              ]
+            },
+            "root_models": {
+              "description": "a model has no parents",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "rejoining_upstream": {
+              "description": "a redundant hop: A->B->C while A->C already exists",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "marts_depend_on_source": {
+              "description": "a marts/intermediate model directly depends on a source",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "missing_primary_key_tests": {
+              "description": "a model lacks a primary-key test (unique+not_null on one column, or unique_combination_of_columns)",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    },
+                    "resource_types": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "model",
+                          "snapshot",
+                          "seed"
+                        ]
+                      },
+                      "default": [
+                        "model"
+                      ],
+                      "description": "resource kinds the primary-key test applies to"
+                    }
+                  }
+                }
+              ]
+            },
+            "public_models_without_contract": {
+              "description": "access: public without contract: enforced",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "undocumented_models": {
+              "description": "a model has no description",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "naming_conventions": {
+              "description": "a model's name misses its layer's prefix",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "layer_violation": {
+              "description": "a backward edge between logical layers",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "unused_sources": {
+              "description": "a source is declared but never referenced",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "duplicate_sources": {
+              "description": "two or more sources point at the same warehouse relation",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "staging_depends_on_staging": {
+              "description": "a staging model directly depends on another staging model",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "too_many_joins": {
+              "description": "a model directly depends on too many data resources",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    },
+                    "threshold": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "default": 7,
+                      "description": "minimum direct data-resource parents to flag"
+                    }
+                  }
+                }
+              ]
+            },
+            "chained_views": {
+              "description": "a chain of consecutive view/ephemeral models is too long",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    },
+                    "threshold": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "default": 5,
+                      "description": "minimum consecutive view/ephemeral chain length to flag"
+                    }
+                  }
+                }
+              ]
+            },
+            "exposure_parents_materializations": {
+              "description": "an exposure directly depends on a source or a view/ephemeral model",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "exposures_dependent_on_private_models": {
+              "description": "an exposure depends on a private/protected model",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "undocumented_sources": {
+              "description": "a source has no description",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "undocumented_columns": {
+              "description": "a model has declared columns without descriptions",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "undocumented_public_models": {
+              "description": "a public model lacks a model or column description",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "model_directories": {
+              "description": "a model's name prefix and directory point at different layers",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "required_meta_keys": {
+              "description": "a model is missing a required meta key",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    },
+                    "keys": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "default": [],
+                      "description": "meta keys every model must declare"
+                    }
+                  }
+                }
+              ]
+            },
+            "contract_columns_without_type": {
+              "description": "a contract-enforced model has declared columns without data_type",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "incremental_without_unique_key": {
+              "description": "an incremental model has no unique_key",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "sources_without_freshness": {
+              "description": "a source has no freshness configured",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "select_star": {
+              "description": "a model's final SELECT reads * or t.*",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "hard_coded_references": {
+              "description": "a model names a relation literally instead of ref()/source()",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "cartesian_join": {
+              "description": "a JOIN carries no join condition",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "unknown_column_reference": {
+              "description": "a model names a column a trusted upstream doesn't emit",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "forbidden_patterns": {
+              "description": "a model's raw SQL matches a configured forbidden pattern",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    },
+                    "patterns": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "format": "regex"
+                      },
+                      "default": [],
+                      "description": "regular expressions the raw SQL must not match (each item must compile as a regular expression)"
+                    }
+                  }
+                }
+              ]
+            },
+            "warehouse_type_drift": {
+              "description": "a declared column's data_type disagrees with the warehouse",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "columns_missing_in_warehouse": {
+              "description": "a declared column doesn't exist in the warehouse",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "description": "`lint:` — per-rule enables, severities, parameters, excludes, naming\nprefixes, and the baseline path."
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "lint": {
+          "type": "boolean",
+          "description": "`check.lint` — include the lint gates in `check` runs without\n`--lint`.",
+          "default": false
+        },
+        "gates": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "gate id → bare severity (`error` | `warn` | `off`) or `{severity, <params>}`. Unknown ids and params are errors.",
+          "properties": {
+            "coverage": {
+              "description": "Root-project models/snapshots/seeds with a test below `min` percent (default `error`)",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warn",
+                    "off"
+                  ],
+                  "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "min": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 100
+                    }
+                  }
+                }
+              ]
+            },
+            "column_coverage": {
+              "description": "Declared columns covered by the schema-test graph below `min` percent (default `off`)",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warn",
+                    "off"
+                  ],
+                  "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "min": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 100
+                    }
+                  }
+                }
+              ]
+            },
+            "doc_coverage": {
+              "description": "Models/snapshots/seeds with a description below `min` percent (default `off`)",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warn",
+                    "off"
+                  ],
+                  "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "min": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 100
+                    }
+                  }
+                }
+              ]
+            },
+            "new_layer_violations": {
+              "description": "Layer-violating edges the diff introduces (needs `--diff`) (default `error` — runs only under `--diff`)",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warn",
+                    "off"
+                  ],
+                  "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "untested_changes": {
+              "description": "Models added or modified by the diff that have no tests (needs `--diff`) (default `error` — runs only under `--diff`)",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warn",
+                    "off"
+                  ],
+                  "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "breaking_columns": {
+              "description": "Columns the diff removes or renames that dependents still reference (needs `--diff`) (default `off` — runs only under `--diff`)",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warn",
+                    "off"
+                  ],
+                  "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "changed_hubs": {
+              "description": "Diff-changed models with `min_downstream` or more dependents (needs `--diff`) (default `warn` — runs only under `--diff`)",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warn",
+                    "off"
+                  ],
+                  "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "min_downstream": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                }
+              ]
+            },
+            "affected_exposures": {
+              "description": "Exposures whose upstream intersects the diff's blast radius (needs `--diff`) (default `warn` — runs only under `--diff`)",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warn",
+                    "off"
+                  ],
+                  "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "blast_radius": {
+              "description": "The diff's blast radius — affected models over `max` (needs `--diff`) (default `off` — runs only under `--diff`)",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warn",
+                    "off"
+                  ],
+                  "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "max": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                }
+              ]
+            },
+            "docs_drift": {
+              "description": "The generated docs under `dir` differ from the project's current output (default `error`)",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warn",
+                    "off"
+                  ],
+                  "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "dir": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "a path, resolved against the `.dbtl.yml` directory"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "description": "`check:` — gate severities/parameters and whether the lint gates\nfold into `dbtl check`."
+    },
+    "docs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "catalog": {
+          "type": "boolean",
+          "description": "`docs.catalog` — opt in to the sibling `catalog.json` (same path rule\nas the CLI's auto-detect, but only when the file asks for it).",
+          "default": false
+        },
+        "run_results": {
+          "type": "boolean",
+          "description": "`docs.run_results` — opt in to the sibling `run_results.json`.",
+          "default": false
+        },
+        "lineage_depth": {
+          "description": "Mermaid ancestry depth per node page: an integer ≥ 1, or `all` for the whole closure (default 2).",
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "enum": [
+                "all"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\+?0*[1-9][0-9]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "`docs:` — generated-docs options."
+    },
+    "owner_meta_key": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The `meta:` key the affected-owners report reads (default `owner`;\nwins over `config.yml`'s `owner_meta_key`).",
+      "default": null,
+      "pattern": "\\S"
+    }
+  }
+}
