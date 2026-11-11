@@ -1,8 +1,8 @@
-//! Issue 10's home screen data product — the Dag-aware snapshot the loop
+//! The home screen data product — the Dag-aware snapshot the loop
 //! builds once per `(generation, home_stamp, search)` key and hands the
 //! renderer as plain data, keeping `RenderCtx` Dag-free.
 //!
-//! The section order is FIXED (§3: Resume → Recent → Bookmarks → Health →
+//! The section order is FIXED (Resume → Recent → Bookmarks → Health →
 //! Last run → Diff → Attention → Actions — the search bar is chrome, not a
 //! section, and a fixed `Tip` line closes the plan); empty sections drop
 //! except `Actions` (always carries the runnable set) and `Health` (always
@@ -20,22 +20,24 @@ use crate::model_list::match_indices;
 use crate::App;
 use crate::RunStatus;
 
-/// §3's per-section cap — `Recent`, `Bookmarks`, and `Attention` each show
+/// The per-section cap — `Recent`, `Bookmarks`, and `Attention` each show
 /// at most this many rows (the overflow reads `+N more`).
 const SECTION_CAP: usize = 5;
 
 /// A selectable home row's semantics — what Enter (`HomeOpen`) / a row click
 /// (`HomePick`) does with it. Deliberately tiny: everything that names a
-/// model opens it as a tab (the §2/T2 dedupe lives in `open_node_as_tab`),
+/// model opens it as a tab (the activate-or-open dedupe lives in
+/// `open_node_as_tab`),
 /// everything else is a `BINDINGS` command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HomeItem {
     /// Opens `uid` as a model tab — activating the existing tab when one is
-    /// already open (§2/T2, identical to `O` and palette `@`-new-tab).
+    /// already open (the activate-or-open rule, identical to `O` and
+    /// palette `@`-new-tab).
     Model { uid: String },
     /// Dispatches a `home`-flagged [`BINDINGS`] action — the builder already
-    /// filtered the unavailable ones out (§3: 使えない行は出さない), so the
-    /// row always runs.
+    /// filtered the unavailable ones out (unrunnable rows never render),
+    /// so the row always runs.
     Command { action: Action },
 }
 
@@ -63,7 +65,7 @@ pub struct HomeRow {
 /// `rows` its items (all selectable — headers live on the section, never
 /// inside `rows`, so `selectable` is a plain concatenation). `tail` is the
 /// cap's hidden count — the plan draws it as a non-selectable `+N more`
-/// line after the rows. `info` carries §3's non-selectable content lines
+/// line after the rows. `info` carries the non-selectable content lines
 /// (Health / Last run / Diff — content rows, not items).
 #[derive(Debug, Clone)]
 pub struct HomeSection {
@@ -73,13 +75,13 @@ pub struct HomeSection {
     pub tail: Option<usize>,
 }
 
-/// One non-selectable info line under a section header — §3's middle rows
+/// One non-selectable info line under a section header — the middle rows
 /// (Health / Last run / Diff) carry content, not items. Indexed through
 /// [`HomeData::info_flat`] so [`crate::ui::HomeLine`] stays `Copy`.
 #[derive(Debug, Clone)]
 pub enum HomeInfo {
     /// `coverage [gauge] {pct}% ({tested}/{total})   {tail}` — the gauge is
-    /// styled spaces (§15's no-gauge-glyphs rule), `tail` the
+    /// styled spaces (the no-gauge-glyphs rule), `tail` the
     /// `lint N   layer violations N   orphans N` counts.
     Gauge {
         tested: usize,
@@ -126,7 +128,7 @@ pub struct HomeData {
     /// `metadata.project_name`-style display name (the same readout the tab
     /// bar's project zone shows).
     pub project: String,
-    /// §3's 枠の題 data-source readout — `manifest {path}` / `source {dir}`.
+    /// The data-source readout — `manifest {path}` / `source {dir}`.
     pub source: String,
     /// `PackageScope::tag()` — `root` / `+pkgs`.
     pub scope: &'static str,
@@ -229,7 +231,8 @@ impl App {
         };
 
         // The stats dashboard's view — the SAME source the `S` modal reads,
-        // so home's counts can never diverge from it (§3: 数字を別に計算しない).
+        // so home's counts can never diverge from it (the numbers are never
+        // recomputed separately).
         let stats = self.compute_stats_view();
         // name→uid for the stats-name lists; uid-sorted insertion keeps the
         // winner deterministic when `--include-packages` carries same-named
@@ -265,7 +268,7 @@ impl App {
                 tail,
             });
         };
-        // §3's info rows (Health / Last run / Diff) are sections whose body
+        // The info rows (Health / Last run / Diff) are sections whose body
         // is content, not items — they carry `info` instead of `rows`.
         let push_info = |sections: &mut Vec<HomeSection>,
                          info_flat: &mut Vec<HomeInfo>,
@@ -284,10 +287,10 @@ impl App {
         };
         let mut info_flat = Vec::new();
 
-        // ---- §3's worklist (the section sits between Diff and Actions) ----
+        // ---- The worklist (the section sits between Diff and Actions) ----
         let (attention, att_tail) = self.attention_rows(&stats, &name_to_uid);
 
-        // Resume — the last model tab's root (§3 "前回のアクティブタブ").
+        // Resume — the last model tab's root.
         if let Some(row) = self
             .home_resume
             .as_deref()
@@ -302,7 +305,7 @@ impl App {
             });
         }
 
-        // Recent — the Issue 03 MRU verbatim (newest first), §3-capped at 5
+        // Recent — the MRU list verbatim (newest first), capped at 5
         // of its 10 entries (the MRU drawer/palette still sees them all).
         let recent: Vec<HomeRow> = self
             .recent
@@ -312,8 +315,9 @@ impl App {
             .collect();
         push_section(&mut sections, &mut selectable, "Recent", recent, None);
 
-        // Bookmarks — `BTreeSet` iteration is already uid-sorted (the spec's
-        // determinism rule); capped at 5, the overflow reads `+N more`.
+        // Bookmarks — `BTreeSet` iteration is already uid-sorted (the
+        // deterministic-ordering rule); capped at 5, the overflow reads
+        // `+N more`.
         let bookmarks: Vec<HomeRow> = self
             .bookmarks
             .iter()
@@ -328,7 +332,7 @@ impl App {
             extra,
         );
 
-        // Health — §3's middle info row, ALWAYS shown: the coverage gauge +
+        // Health — the middle info row, ALWAYS shown: the coverage gauge +
         // lint / layer-violation / orphan counts straight from `stats` (the
         // `S` dashboard's own numbers, never recomputed).
         let coverage = self.coverage_summary();
@@ -353,7 +357,7 @@ impl App {
         );
 
         // Last run — per-status counts over this Dag's covered nodes + the
-        // artifact's timestamp (`行を出さない` when no run_results loaded).
+        // artifact's timestamp (the row drops when no run_results loaded).
         if let Some(rr) = self.run_results() {
             let (mut error, mut warn, mut ok, mut other) = (0, 0, 0, 0);
             for uid in self.dag.nodes().keys() {
@@ -379,7 +383,7 @@ impl App {
             );
         }
 
-        // Diff — `+added ~modified -removed  vs {baseline}` (`行を出さない`
+        // Diff — `+added ~modified -removed  vs {baseline}` (the row drops
         // when no baseline loaded).
         if let Some(d) = self.diff() {
             push_info(
@@ -396,7 +400,7 @@ impl App {
             );
         }
 
-        // Attention — §3's worklist (computed above); capped at 5, the
+        // Attention — the worklist (computed above); capped at 5, the
         // overflow reads `+N more` (`S` shows the rest).
         push_section(
             &mut sections,
@@ -407,7 +411,7 @@ impl App {
         );
 
         // Actions — the `home`-flagged BINDINGS rows minus the unavailable
-        // ones (§3: 使えない行は出さない — a baseline-less `D` is dropped,
+        // ones (unrunnable rows never render — a baseline-less `D` is dropped,
         // never greyed, so a drawn row always runs).
         let actions: Vec<HomeRow> = BINDINGS
             .iter()
@@ -471,11 +475,11 @@ impl App {
         })
     }
 
-    /// The §3 worklist — returns `(rows, tail)`: `rows` are the §3-capped
+    /// The worklist — returns `(rows, tail)`: `rows` are the capped
     /// selectable entries and `tail` the overflow count the plan draws as
     /// `+N more`.
     ///
-    /// Class order (§3): last-run error/fail (name order) → models with no
+    /// Class order: last-run error/fail (name order) → models with no
     /// tests sorted by downstream count desc → then the softer classes
     /// (orphans → layer violations → lint findings). A model appearing in
     /// two classes keeps its FIRST (worst) row.
@@ -521,7 +525,7 @@ impl App {
                 ));
             }
         }
-        // 1 — models with no tests, most-depended-on first (§3's second
+        // 1 — models with no tests, most-depended-on first (the second
         // class): `coverage_gap` is the same predicate the Coverage lens
         // and the stats gauge read. Ties break on the name.
         let mut untested: Vec<(&str, &str, usize)> = self
@@ -618,7 +622,7 @@ impl App {
     /// The `/`-search's model rows over the UNFILTERED `model_list` (home
     /// search reaches models a `T`/`*` filter or a fold hid), empty query =
     /// all models (palette `@`'s contract). The syntax IS the list `/`'s
-    /// (§3: 構文は一覧の / と同じ): `!spec` routes through
+    /// (the same syntax as the list `/`): `!spec` routes through
     /// `select::select`'s dbt selectors, `?needle` through the full-text
     /// match (descriptions, columns, raw SQL), anything else through fuzzy
     /// name matching.
@@ -664,7 +668,7 @@ impl App {
     }
 }
 
-/// §3's per-section cap: keep the first [`SECTION_CAP`] rows and report the
+/// The per-section cap: keep the first [`SECTION_CAP`] rows and report the
 /// hidden remainder (the `+N more` tail) as `Some(n)` — `None` when nothing
 /// clipped, so the plan emits no tail line.
 fn cap_rows(mut rows: Vec<HomeRow>) -> (Vec<HomeRow>, Option<usize>) {

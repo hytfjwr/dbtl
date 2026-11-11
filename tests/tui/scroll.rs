@@ -155,7 +155,7 @@ pub(super) fn scrolled_render_still_shows_status_and_borders() {
     // still be present (the chrome doesn't get scrolled away).
     let (buffer, state, list) = render_after_keys(100, 30, &[KeyCode::Char('G')]);
     let text = buffer_to_string(&buffer);
-    assert!(text.contains("j/k move"), "the §8 hint row must remain");
+    assert!(text.contains("j/k move"), "the hint row must remain");
     // The selected node's name stays on screen — the list's marker row and
     // the lineage title both carry it after the scroll.
     assert!(

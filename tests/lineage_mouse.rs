@@ -1,8 +1,8 @@
-//! Issue 05's mouse overlays rendered through `draw` on a `TestBackend`: the
+//! the mouse overlays rendered through `draw` on a `TestBackend`: the
 //! hovered node's accent frame plus its direct-edge connector cells, every
 //! lineage-search match's accent frame with the `i/N` title, and the
 //! settled-hover tooltip. All of them are post-blit frame-buffer effects —
-//! the assertion split that pins Issue 05's core invariant: cell SYMBOLS must
+//! the assertion split that pins the core invariant: cell SYMBOLS must
 //! stay byte-identical whether or not the overlays are fed (the golden
 //! fixtures live in `lineage_layout`; this guards the frame-buffer level).
 //!
@@ -28,12 +28,12 @@ const STG: &str = "model.jaffle_finance.stg_finance__budgets";
 const SEED: &str = "seed.jaffle_finance.source_datetime_policy";
 const RPT: &str = "model.jaffle_finance.rpt_delivery_base_metrics";
 
-/// The DEFAULT theme's accent (`#87afff`) — the only colour the Issue-05
+/// The DEFAULT theme's accent (`#87afff`) — the only colour the
 /// overlays introduce. Kept as a literal so a theme retune fails loudly here
 /// rather than silently passing on a stale constant.
 const ACCENT: Color = Color::Indexed(111);
 
-/// Everything the loop hands the Issue-05 overlays, bundled so `render_with`
+/// Everything the loop hands the overlays, bundled so `render_with`
 /// can keep a signature instead of a borrow puzzle (the ctx fields borrow the
 /// CALLER's data, so a closure over locals can't feed them).
 #[derive(Default)]

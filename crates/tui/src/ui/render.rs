@@ -39,18 +39,18 @@ pub struct TabBarView<'a> {
 }
 
 /// The optional, colored, droppable chips rendered on the status bar's RIGHT
-/// side (screen-spec §8). Each field is `Option<&str>` (the BARE chip text —
+/// side. Each field is `Option<&str>` (the BARE chip text —
 /// the chip renderer adds the ` [..]`): absent ⇒ that chip is omitted, which is
 /// both graceful degradation on a narrow terminal AND the plug-in seam other
 /// features fill (coverage / bookmarks / sort). All borrows, so the struct
 /// stays a thin Dag-free bundle precomputed in the event loop (like
 /// `lineage_label`). The LEFT side's contextual hints travel separately in
-/// [`RenderCtx::hints`] — Issue 07 moved them out of this struct.
+/// [`RenderCtx::hints`] — moved them out of this struct.
 #[derive(Debug, Clone, Default)]
 pub struct StatusSegments<'a> {
     /// Blast radius of the selected node, e.g. `"impact ↓23 ↑5"` (ASCII `v`/`^`).
     /// Always-on (not user-toggled) and the highest-priority droppable chip, so
-    /// it survives narrow widths longest (§8's `impact` rule).
+    /// it survives narrow widths longest (the impact chip sheds last).
     pub impact: Option<&'a str>,
     /// Which pane has focus: `"list"` | `"lineage"`.
     pub focus: Option<&'a str>,
@@ -82,12 +82,12 @@ pub struct StatusSegments<'a> {
     /// segment renderer adds the `[..]`). Echoes the list-title tag so it
     /// stays visible while the list pane is hidden.
     pub filter: Option<&'a str>,
-    /// The active column-focus readout (Issue 09), e.g.
+    /// The active column-focus readout, e.g.
     /// `"column:fct_orders.total_amount ↑3 ↓7"` — the traced column's identity
     /// plus its transitive column-closure sizes. Sits right after `notify`:
     /// while a column is being traced it IS the headline readout.
     pub column: Option<&'a str>,
-    /// The unread-warning count (Issue 08), e.g. `"!3"` — the notification
+    /// The unread-warning count, e.g. `"!3"` — the notification
     /// centre's badge. Sits right after `impact` (before `column`): pending
     /// warnings outrank every other droppable readout. `None` when nothing
     /// is unread — the chip is absent, not `!0`.
@@ -105,7 +105,7 @@ pub struct RenderCtx<'a> {
     pub lineage: Option<&'a crate::Layout>,
     /// The interaction mode (drives which overlay, if any, is drawn on top).
     pub mode: &'a crate::action::Mode,
-    /// The contextual status-line hints (screen-spec §8 — the LEFT side),
+    /// The contextual status-line hints (the status line's LEFT side),
     /// generated from `BINDINGS` via
     /// [`status_hints`](crate::action::status_hints) and arriving
     /// priority-sorted. The event loop may REPLACE the list with a transient
@@ -113,7 +113,7 @@ pub struct RenderCtx<'a> {
     /// draws no hints.
     pub hints: &'a [crate::action::StatusHint],
     /// The screen cell the pointer currently hovers, resolved through the
-    /// SAME `hit_target` a click would use — the §6 hover cues (title-part
+    /// SAME `hit_target` a click would use — the pointer hover cues (title-part
     /// underline, status hint/chip emphasis) render from it. `None` (the
     /// default) draws every cue off.
     pub hover: Option<&'a HitTarget>,
@@ -148,7 +148,7 @@ pub struct RenderCtx<'a> {
     /// loop fills them from App state.
     pub segments: StatusSegments<'a>,
     /// The splitter currently hovered or being dragged — its border columns
-    /// draw in `theme.accent` (screen-spec §5 "境界列をアクセント色に"). `None`
+    /// draw in `theme.accent` (the splitter's hover/drag accent cue). `None`
     /// normally; the loop fills it from the hit-test/`DragState`.
     pub splitter_highlight: Option<Splitter>,
     /// Whether to draw the lineage minimap inset. Defaults to `false`, so every
@@ -164,22 +164,22 @@ pub struct RenderCtx<'a> {
     /// via `App::layer_bands`). `None` (the default) draws nothing, so every
     /// non-Layer render is untouched. Dag-free: plain precomputed data.
     pub layer_bands: Option<&'a [super::LayerBand]>,
-    /// The tab strip (Issue 03): `Some` draws the one-row bar at the top and
+    /// The tab strip: `Some` draws the one-row bar at the top and
     /// claims its row in `pane_layout`; `None` (the default — every headless
     /// render) leaves the row unclaimed, so pre-tab frames are byte-identical.
     /// Dag-free: labels + cell geometry arrive precomputed.
     pub tab_bar: Option<TabBarView<'a>>,
     /// The column-focus title suffix (`" [col:name]"`, pure ASCII), appended
     /// to the lineage pane title after the lens tag while a column is being
-    /// traced (Issue 09). `None` (the default) leaves every title unchanged.
+    /// traced. `None` (the default) leaves every title unchanged.
     /// Precomputed at the loop seam (`App::column_focus_label`) — Dag-free.
     pub col_suffix: Option<&'a str>,
-    /// The lineage node the pointer currently hovers (Issue 05's accent cue:
+    /// The lineage node the pointer currently hovers (the accent cue:
     /// its box frame + direct-edge cells paint `accent`). `None` (the
     /// default) while the pointer is elsewhere or a button is held — a
     /// style-only overlay, so it never reaches the layout cache keys.
     pub hover_node: Option<&'a str>,
-    /// Every node matching the open lineage search (Issue 05, §9 — each
+    /// Every node matching the open lineage search (each
     /// match's box frame accents, not just the cycled current). The loop
     /// fills it from `App::lineage_matches` while `Mode::Search(Lineage)` is
     /// up; the default empty slice accents nothing.
@@ -189,12 +189,12 @@ pub struct RenderCtx<'a> {
     /// query matches nothing). `None` in headless renders — the title then
     /// shows the query + caret alone.
     pub search_pos: Option<(usize, usize)>,
-    /// The settled-hover tooltip (Issue 05's §9 pointer summary — the loop
+    /// The settled-hover tooltip (the pointer summary — the loop
     /// arms it after 500 ms of stationary node hover, regardless of the
     /// inspector). A frame-buffer overlay like the toasts: `None` (the
     /// default) draws nothing.
     pub tooltip: Option<&'a super::overlay::TooltipView>,
-    /// The visible toast stack (Issue 08): up to 3 [`ToastLine`]s, newest
+    /// The visible toast stack: up to 3 [`ToastLine`]s, newest
     /// FIRST (drawn top-most at the upper-right, above every pane and modal).
     /// The event loop owns their per-level lifetimes — info ~2.5s, warning
     /// ~5s — stamping each as it drains [`App::take_notice_leveled`]
@@ -217,11 +217,11 @@ pub struct RenderCtx<'a> {
     /// renders (or whenever the list has models).
     pub empty_reason: Option<&'a str>,
     /// The folded group keys (`App::folded_groups`) — the group headers'
-    /// `▾`/`▸` marker (§10). `None` (the default) treats every group as open,
+    /// `▾`/`▸` marker. `None` (the default) treats every group as open,
     /// so headless renders without folds are untouched.
     pub folded_groups: Option<&'a std::collections::BTreeSet<String>>,
     /// The list-pane hit target the pointer hovers (`HitTarget::ListRow` /
-    /// `ListHeader` — §6's hover tint: the row paints `theme.surface`). `None`
+    /// `ListHeader` — the pointer hover tint: the row paints `theme.surface`). `None`
     /// (the default) draws no tint. The loop fills it from the same
     /// [`hit_target`](super::geom::hit_target) the click path uses — the
     /// tinted row is exactly the row a click would hit.
@@ -232,14 +232,14 @@ pub struct RenderCtx<'a> {
     /// App's active theme (`--theme` / Ctrl-t). A borrow, like every other
     /// field — themes are data, never a global.
     pub theme: &'a theme::Theme,
-    /// The inspector pane's snapshot (Issue 04): the cached
+    /// The inspector pane's snapshot: the cached
     /// [`InspectorView`](crate::InspectorView) for the lineage cursor's node,
     /// `as_deref()`'d from `App::inspector_view` at the loop seam. `None` in
     /// headless renders or when the Dag is empty — the pane then draws
     /// nothing (its rect may not even be allocated). Dag-free, like every
     /// other field.
     pub inspector: Option<&'a crate::InspectorView>,
-    /// The home screen's data snapshot (Issue 10): `as_deref()`'d
+    /// The home screen's data snapshot: `as_deref()`'d
     /// `App::home_data` at the loop seam, `Some` exactly while the fixed
     /// home tab is active — its presence IS the body switch (the whole
     /// `list+lineage+inspector` band draws the home view instead). `None`
@@ -256,7 +256,7 @@ pub struct RenderCtx<'a> {
     pub home_scroll: usize,
 }
 
-/// One visible toast in the top-right stack (Issue 08): the severity drives
+/// One visible toast in the top-right stack: the severity drives
 /// the border colour (info → accent, warning → warn) and, on the loop side,
 /// the on-screen TTL. `toasts[0]` is the newest — drawn on top.
 #[derive(Debug, Clone, Copy)]
@@ -351,13 +351,13 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         _ => None,
     };
     if let Some(home) = ctx.home {
-        // Issue 10: the active home tab swaps the WHOLE body band for the
+        // the active home tab swaps the WHOLE body band for the
         // home view — the list/lineage/inspector panes don't exist here.
         let body = rects.list.union(rects.lineage).union(rects.inspector);
         super::home::draw_home(frame, body, home, ctx);
     } else {
         // The inline list draws iff `pane_layout` allocated it columns — the
-        // resolved rect, not the raw pref: §12's narrow band zeroes the rect
+        // resolved rect, not the raw pref: the narrow band zeroes the rect
         // while `list_visible` stays true (the list then lives as the
         // drawer). The rect test is the same one `hit_target` reports list
         // targets under, so "drawn == hit-testable" holds by construction.
@@ -399,7 +399,7 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
             ctx.hover,
             ctx.theme,
         );
-        // The right inspector pane (Issue 04): a published snapshot IS the
+        // The right inspector pane: a published snapshot IS the
         // resolved visibility answer — the loop sets `ctx.inspector` only
         // when the pane is on screen, has a nonzero rect, and has a node to
         // describe.
@@ -407,7 +407,7 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
             super::inspector::draw_inspector_pane(frame, rects.inspector, ctx, view);
         }
 
-        // §12's narrow-band drawer: the SAME list pane floated over the
+        // The narrow-band drawer: the SAME list pane floated over the
         // lineage's left edge — the same `draw_list` pass (same
         // offset/sticky/fold/chrome) the inline pane gets, so a row means
         // the same thing on either surface. Drawn AFTER the panes it
@@ -438,7 +438,7 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
 
         // Restamp the splitter's border columns with the accent while it's
         // hovered/dragged — cheap chrome-level feedback over both panes'
-        // drawn borders (screen-spec §5). The status row and modals draw on
+        // drawn borders. The status row and modals draw on
         // top regardless (the strip only spans body rows, so nothing
         // overlaps).
         if let Some(which) = ctx.splitter_highlight {
@@ -457,7 +457,7 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
 
     // Overlays: a stacked mode (the `y` which-key / the node menu / help over
     // a modal) draws its origin's overlay UNDER itself first, then the whole
-    // screen minus the top box is dimmed to `text_faint` (screen-spec §9),
+    // screen minus the top box is dimmed to `text_faint`,
     // then the top overlay paints. `overlay_rect` is the single rect
     // authority — the hit-test routes clicks by the same box. The tab strip
     // already drew above, so a covering overlay dims/covers it too (the
@@ -478,8 +478,8 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
         draw_overlay(frame, area, lin_inner, ctx.mode, ctx);
     }
 
-    // The settled-hover tooltip floats over the panes (§9's pointer summary —
-    // the event loop arms it only while a hover is settled, so a covering
+    // The settled-hover tooltip floats over the panes (the event loop arms it
+    // only while a hover is settled, so a covering
     // overlay can never coexist with one). It layers under the toast stack:
     // a toast is a one-shot acknowledgement and always wins.
     if let Some(tip) = ctx.tooltip {
@@ -493,7 +493,7 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
     }
 }
 
-/// Render ONLY the §12 too-small screen: below
+/// Render ONLY the too-small gate screen: below
 /// [`MIN_TERMINAL_W`](super::geom::MIN_TERMINAL_W)×[`MIN_TERMINAL_H`](super::geom::MIN_TERMINAL_H)
 /// every pane, status line, tab strip, and overlay is suppressed — the whole
 /// frame is the one centered message `terminal too small: WxH (need 50x12)`.
@@ -570,11 +570,11 @@ fn draw_overlay(
     }
 }
 
-/// Paint the one-row tab strip (Issue 03, §2): ` {n} {name} × ` cells over a
+/// Paint the one-row tab strip: ` {n} {name} × ` cells over a
 /// `surface` band — the active tab `surface_hi`+`accent` bold, the others dim —
 /// `‹`/`›` overflow arrows on whichever side hides tabs, ` + ` pinned at the
 /// strip's right end, and the project name dim at the bar's right edge. The
-/// hover cues come from §6: a hovered tab emphasises its `×`, a hovered `×`
+/// hover cues: a hovered tab emphasises its `×`, a hovered `×`
 /// turns `danger`, and `+`/arrows take the accent.
 ///
 /// Everything positional arrives resolved in `view.layout` (the same
@@ -609,7 +609,7 @@ fn draw_tab_bar(
         } else {
             Style::default().bg(t.surface).fg(t.text_dim)
         };
-        // The `×` restyle ladder: hovered close → danger (§6); hovered tab
+        // The `×` restyle ladder: hovered close → danger; hovered tab
         // body → accent emphasis; otherwise the quiet `text_faint`.
         let close_st = if matches!(hover, Some(HitTarget::TabClose(i)) if *i == cell.index) {
             base.patch(Style::default().fg(t.danger))
@@ -681,7 +681,7 @@ fn draw_tab_bar(
 ///
 /// The visible window is exactly `list.rows[offset .. offset + inner_height]` —
 /// the *same* row sequence `UiState::ensure_visible` measures against, which is
-/// what guarantees the selected model's row is never clipped. The §10 sticky
+/// what guarantees the selected model's row is never clipped. The sticky
 /// header then overwrites the FIRST window line (never inserts one) — a
 /// rendering-only overlay that leaves model-space and display-row-space
 /// untouched (`hit_target` resolves the covered row through the same
@@ -765,7 +765,7 @@ fn draw_list(
             }
         }
     }
-    // §10's sticky header: while the window's first display row is a model
+    // The sticky header: while the window's first display row is a model
     // mid-group, pin its owning header over that first line (an overwrite —
     // never an inserted row — so display-row-space stays exact). The pin is
     // suppressed while the selected model IS that row (it must keep its
@@ -780,7 +780,7 @@ fn draw_list(
 
     frame.render_widget(Paragraph::new(lines), inner);
 
-    // §6's hover cue: the row under the pointer paints `theme.surface` (a
+    // The pointer hover cue: the row under the pointer paints `theme.surface` (a
     // one-row bg band over the drawn text — `set_style`-like: it tints every
     // cell of the row, glyphs untouched). The SELECTED row skips it (the
     // reversed marker is already the stronger affordance), and the row is
@@ -815,7 +815,7 @@ fn draw_list(
     // invariant). An EMPTY list shows the reason (`empty_reason`); a live list
     // search with an EMPTY query shows the syntax hint on a non-empty list
     // (it covers the top row for that frame only — it vanishes on the first
-    // keystroke, per the spec's "while the input is empty").
+    // keystroke — it only shows while the input is empty).
     let stamp: Option<String> = if list.is_empty() {
         empty_reason.map(str::to_string)
     } else if search == Some("") {
@@ -829,10 +829,10 @@ fn draw_list(
     if let Some(text) = stamp {
         if inner.height > 0 {
             // The empty reason goes BELOW any surviving display rows (the
-            // all-folded pane still draws its `▸` headers — §10 says folded
+            // all-folded pane still draws its `▸` headers — folded
             // headers never vanish); a truly empty list's row_count is 0,
             // so the same math lands on row 0. The non-empty search hint
-            // always stamps interior row 0 (§11).
+            // always stamps interior row 0.
             let y = if list.is_empty() {
                 list.row_count()
                     .saturating_sub(state.offset())
@@ -871,9 +871,9 @@ fn draw_list(
 }
 
 /// One list group-header line: `▾ Title (N)` while open, `▸ Title (N)` while
-/// folded — the §15 fold marker via the shared [`Chrome`], the layer's own
+/// folded — the fold marker via the shared [`Chrome`], the layer's own
 /// accent + bold, the count reporting the FULL membership even folded. Used
-/// both for real header rows and the §10 sticky pin (one shape, one style).
+/// both for real header rows and the sticky pin (one shape, one style).
 fn list_header_line(
     layer: &str,
     count: usize,
@@ -894,7 +894,7 @@ fn list_header_line(
     Line::styled(label, accent)
 }
 
-/// One list model row — §10's width-tiered columns on the pane's INNER width:
+/// One list model row — the width-tiered columns on the pane's INNER width:
 /// `< 30` name only; `30..=43` name + the direct `↑u ↓d` badges (plus the
 /// Coverage lens's `t:N` and the `★` bookmark, the pre-tier suffixes); `>= 44`
 /// adds the materialization tag + `t:N` to the suffix
@@ -947,7 +947,7 @@ fn list_model_line(
     let coverage = state.lens() == LineageLens::Coverage;
 
     // The right-aligned suffix column(s) — everything after the name field.
-    // Tier order inside the wide suffix is the spec's: tag, then `t:N`, then
+    // Tier order inside the wide suffix is fixed: tag, then `t:N`, then
     // the direct-edge badges; `★` always tails.
     let mut suffix = String::new();
     if inner_w >= 44 {
@@ -1040,7 +1040,7 @@ fn title_case(s: &str) -> String {
 
 /// Convert a [`StatusSegments`] into the priority-ordered chip list
 /// [`status_layout`](super::status_layout) and `draw_status` share — the
-/// `(chip, bracketed-label)` pairs in §8's keep order (`Impact` survives
+/// `(chip, bracketed-label)` pairs in the keep order (`Impact` survives
 /// longest, `View` sheds first). The single producer for chips, so the
 /// draw and the hit-test can never disagree on which chips exist.
 pub fn status_chips(segments: &StatusSegments) -> Vec<(super::StatusChip, String)> {
@@ -1051,7 +1051,7 @@ pub fn status_chips(segments: &StatusSegments) -> Vec<(super::StatusChip, String
             v.push((chip, format!("[{txt}]")));
         }
     };
-    // Declaration order == §8's survival order (see [`StatusChip`]).
+    // Declaration order == the survival order (see [`StatusChip`]).
     push(C::Impact, segments.impact);
     push(C::Notify, segments.notify);
     push(C::Column, segments.column);
@@ -1084,12 +1084,12 @@ fn chip_color(chip: super::StatusChip, t: &theme::Theme) -> Color {
     }
 }
 
-/// Draw the bottom status line (screen-spec §8): the contextual hints
+/// Draw the bottom status line: the contextual hints
 /// left-anchored (key in `accent`, description in `text_dim`), the chips
 /// right-anchored in their semantic colours — all placed by the shared
 /// [`status_layout`](super::status_layout) the hit-test also consumed, so
 /// every drawn span answers the click its `HitTarget` promises. The hovered
-/// span draws BOLD (§6's emphasis cue); the inert `StatusBar` cells keep
+/// span draws BOLD (the emphasis cue); the inert `StatusBar` cells keep
 /// the plain surface band.
 fn draw_status(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
     use unicode_width::UnicodeWidthStr;

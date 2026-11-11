@@ -200,11 +200,11 @@ fn run(cli: &Cli) -> Result<()> {
     // Layered prefs: config defaults under the per-project saved state (the
     // state's `Some` fields win); --select/--diff below still override both.
     // The saved state is bound because `load_themes` below also consumes its
-    // `theme` field (§13's precedence: flag > saved > config).
+    // `theme` field (the precedence: flag > saved > config).
     app.apply_prefs(&config.as_prefs());
     let saved = state::load_state(app.project_root());
     app.apply_prefs(&saved);
-    // §3/H2: a project with NO state file starts on the home tab (the
+    // A project with NO state file starts on the home tab (the
     // "project health + where to look next" screen). An existing file
     // resumes its saved strip as before — and `--select` below always wins
     // (it opens/activates the model's tab over whatever landing came first).
@@ -215,8 +215,8 @@ fn run(cli: &Cli) -> Result<()> {
         // Fail as plain text before the terminal is touched, like a load error.
         // Plain model name first; on a miss, try it as a dbt selector spec
         // (`--select 'tag:nightly'` → the first matching model, sorted).
-        // Issue 03: `--select` starts on the model's TAB — activating it when
-        // it is already open, appending one when it is not (§2/§13 H2).
+        // `--select` starts on the model's TAB — activating it when
+        // it is already open, appending one when it is not.
         let found = app.open_tab_by_name(name)
             || dbtl::select(&app.dag, app.diff(), name)
                 .iter()
@@ -245,7 +245,7 @@ fn run(cli: &Cli) -> Result<()> {
     }
 
     // Resolve the colour themes (presets + user files) and the start index.
-    // §13 precedence: an explicit --theme/DBTL_THEME wins (a bad one fails as
+    // The precedence: an explicit --theme/DBTL_THEME wins (a bad one fails as
     // plain text pre-TTY), then the saved theme, then config.yml's. A saved
     // or config name that no longer resolves (a deleted theme file) warns and
     // falls back to the default — state is best-effort, never a startup error.

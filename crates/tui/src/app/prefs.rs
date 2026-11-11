@@ -265,7 +265,7 @@ impl App {
         self.set_notice(format!("theme: {name}"));
     }
 
-    /// The notification log's capacity (Issue 08): the centre keeps the
+    /// The notification log's capacity: the centre keeps the
     /// newest `NOTIFICATION_CAP` entries; the oldest evicts beyond it.
     /// Memory-only — the log is never persisted.
     pub const NOTIFICATION_CAP: usize = 100;

@@ -46,7 +46,7 @@ pub fn minimap_rect(
 }
 
 /// The scroll offsets a minimap cell `(col, row)` asks for — click-to-centre
-/// and drag-scrub share it (§6: `ミニマップ` click moves the viewport, drag
+/// and drag-scrub share it (a click moves the viewport, a drag
 /// pans). Each minimap cell covers a `sx`×`sy` block of grid cells (the same
 /// division [`draw_minimap`] stamps with — ceil so the whole grid maps inside
 /// the inset), so the cell maps back to its block's CENTRE in grid space and

@@ -271,7 +271,7 @@ impl App {
                     _ => LensTint::HeatHigh,
                 }
             }
-            // Column impact (Issue 09): the models the traced column's
+            // Column impact: the models the traced column's
             // downstream closure reaches glow — the "who does this column
             // feed" answer. No active focus → the lens tints nothing (the
             // CycleLens arm also skips it while unfocused).
@@ -285,7 +285,7 @@ impl App {
                     LensTint::None
                 }
             }
-            // Primary-key guarantee (Issue 11): models lacking the SHARED
+            // Primary-key guarantee: models lacking the SHARED
             // `has_pk_guarantee` predicate — the same one
             // `missing_primary_key_tests` evaluates, so a node this lens tints
             // is exactly the set `dbtl check --lint` flags under that rule.

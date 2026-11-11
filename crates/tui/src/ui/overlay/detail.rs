@@ -115,7 +115,7 @@ fn detail_column_rows(dv: &DetailView) -> (Vec<(String, String, String)>, bool) 
 }
 
 /// The fixed-width ASCII badge for a test kind — pure ASCII in BOTH glyph
-/// modes per the Issue 11 spec (no ambiguous-width glyphs on this surface):
+/// modes per the contract (no ambiguous-width glyphs on this surface):
 /// `NN` not_null, `U` unique, `R` relationships, `AV` accepted_values,
 /// `AR` accepted_range, `*` anything else. `ends_with` catches
 /// package-namespaced spellings (`dbt_utils.accepted_range`, a package's
@@ -161,7 +161,7 @@ fn column_badges<'a>(dv: &'a DetailView, column: &str) -> Vec<&'a str> {
 
 /// The columns section: header + one row per [`detail_column_rows`] entry,
 /// each with the h/l cursor marker (`> `, the shared `SELECTED_MARKER`), the
-/// per-column test-kind badges (Issue 11), and the one-hop column-level
+/// per-column test-kind badges, and the one-hop column-level
 /// up/down edge counts in the chrome badge glyphs.
 fn detail_column_lines(
     dv: &DetailView,
@@ -219,7 +219,7 @@ fn detail_column_lines(
 /// One test's display text — `kind(col)` plus the resolved `-> target.col`
 /// jump hint for relationships and the `name in:N given:M expect:K` shape
 /// for unit tests. Shared by the structure modal's tests section and the
-/// inspector pane (Issue 04): one row spelling, never two.
+/// inspector pane: one row spelling, never two.
 pub(crate) fn test_row_text(test: &crate::TestInfo) -> String {
     let col = test
         .column_name
@@ -264,7 +264,7 @@ pub(crate) fn test_row_text(test: &crate::TestInfo) -> String {
 /// The tests section: header + one row per attached test — the plain
 /// `kind(col)` for schema tests, a `-> target.col` jump hint for resolved
 /// `relationships` targets, and the `in:N given:M expect:K` shape for unit
-/// tests (Issue 11). The tests-section h/l cursor (`test_index`, owned via
+/// tests. The tests-section h/l cursor (`test_index`, owned via
 /// `Tab`) lands only on resolved relationships targets — the rows Enter can
 /// re-root to — so it renders the same `> ` marker the columns side does.
 fn detail_test_lines(dv: &DetailView, t: &theme::Theme) -> Vec<Line<'static>> {

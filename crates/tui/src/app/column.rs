@@ -1,4 +1,4 @@
-//! Column-level lineage focus (Issue 09): the traced-column state plus the
+//! Column-level lineage focus: the traced-column state plus the
 //! derived payload every surface consumes — the filtered subgraph, the
 //! per-box column rows, the status chip, the ColumnImpact lens set, and the
 //! `Mode::Columns` modal rows.
@@ -18,7 +18,7 @@ use crate::{
 
 use super::App;
 
-/// The traced-column state (Issue 09 A): which column is being traced plus
+/// The traced-column state: which column is being traced plus
 /// the precomputed payload the filtered subgraph, the box column rows, the
 /// status chip, and the lens all read. Rebuilt on every enter/step — the
 /// lazy engine memoizes per call, so a step pays only for the region it
@@ -276,7 +276,7 @@ impl App {
             .map(|f| format!(" [col:{}]", f.col.column))
     }
 
-    /// The `Mode::Columns` payload for `col` (Issue 09 C): the upstream and
+    /// The `Mode::Columns` payload for `col`: the upstream and
     /// downstream column closures as a hop-indented tree, each entry row
     /// carrying its node's uid for the Enter jump. Deterministic: each BFS
     /// level expands in `(node, column)` order and a shared `seen` set lists

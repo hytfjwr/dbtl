@@ -6,7 +6,7 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
             if app.ui_state.focus() == Focus::Inspector {
                 // Inspector focus: j/k scroll the pane's content; h/l have no
                 // meaning there (the column cursor is a mouse affordance —
-                // §4's keyboard set is scroll + Enter only).
+                // the keyboard set is scroll + Enter only).
                 let scroll = app.ui_state.inspector_scroll();
                 app.ui_state
                     .set_inspector_scroll(if action == Action::MoveDown {
@@ -34,7 +34,7 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
                     app.move_lineage_cursor(dir);
                 }
             } else {
-                // §2 T1: a list-cursor move IS the selection — adopt it as the
+                // A list-cursor move IS the selection — adopt it as the
                 // tab's root (with history). Guarded on the index actually
                 // changing, so a boundary-clamped keypress (or an h/l no-op on
                 // the list) never re-roots a detached tab onto the cursor.
@@ -60,7 +60,7 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
                     });
             } else {
                 // UiState-only arm: forward to the sub-reducer, then adopt on
-                // the same changed-index rule as the move keys (§2 T1).
+                // the same changed-index rule as the move keys.
                 let before = app.ui_state.selected();
                 reduce_selection(&mut app.ui_state, action);
                 if app.ui_state.selected() != before {

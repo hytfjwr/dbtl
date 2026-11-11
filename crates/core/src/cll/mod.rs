@@ -1,8 +1,8 @@
 //! Column-level lineage (CLL) v0: the shared data model, the replaceable
-//! [`ColumnResolver`] boundary, and Issue 07's name-match approximation
+//! [`ColumnResolver`] boundary, and the name-match approximation
 //! ([`NameMatchResolver`]).
 //!
-//! The API is the contract later stages rely on: Issue 08's real SQL parser
+//! The API is the contract later stages rely on: the real SQL parser
 //! implements the same [`ColumnResolver`] trait and drops into every consumer
 //! (the lazy [`ColumnLineage`] engine, the structure modal, the `y` menu, and
 //! `dbtl columns`) without a signature change. Only [`NameMatchResolver`]'s
@@ -30,7 +30,7 @@ use crate::dag::Dag;
 /// lowercase (Snowflake uppercases, Postgres/Redshift lowercase — v0 picks one
 /// canonical form rather than guessing the dialect); a double-quoted,
 /// backticked, or bracketed name keeps its written case, sans quotes.
-/// Dialect-aware casing is Issue 08's problem.
+/// Dialect-aware casing is the parser stage's problem.
 pub fn normalize_column(name: &str) -> String {
     let t = name.trim();
     let b = t.as_bytes();
@@ -111,9 +111,9 @@ impl std::fmt::Display for ColumnEdgeKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Confidence {
-    /// Resolved by a real SQL parser — Issue 08 emits this; v0 never does.
+    /// Resolved by a real SQL parser — the parser stage emits this; v0 never does.
     Exact,
-    /// Issue 07's name-match approximation: directionally right, can
+    /// The name-match approximation: directionally right, can
     /// over-connect (a qualified `t.x` binds to every parent that has `x`).
     NameMatch,
     /// Resolved from a `target/compiled/` file older than its source `.sql` —
@@ -165,7 +165,7 @@ pub fn resolution_sql<'a>(dag: &'a Dag, node: &str) -> Option<(&'a str, Confiden
         .map(|code| (code, Confidence::NameMatch))
 }
 
-/// The replaceable boundary Issue 08 plugs into. A resolver answers two
+/// The replaceable boundary the parser stage plugs into. A resolver answers two
 /// questions *per node*: what its output columns are called, and which parent
 /// columns feed them. Everything else (lazy traversal, the TUI, the CLI) is
 /// built on this and never sees the resolution strategy.
@@ -264,7 +264,7 @@ pub struct ColumnLineage<'a, R: ColumnResolver + ?Sized> {
 
 impl<'a, R: ColumnResolver + ?Sized> ColumnLineage<'a, R> {
     /// A lineage engine over `dag` driven by `resolver` — explicitly supplied,
-    /// so tests pin behaviour to a chosen strategy (the Issue 08 parser slots
+    /// so tests pin behaviour to a chosen strategy (the parser slots
     /// in behind the same trait).
     pub fn new(dag: &'a Dag, resolver: &'a R) -> Self {
         ColumnLineage {
@@ -366,7 +366,7 @@ impl<'a, R: ColumnResolver + ?Sized> ColumnLineage<'a, R> {
     /// All of `node`'s output columns (per the resolver's column list) with
     /// their `(upstream, downstream)` ONE-HOP column-edge counts — the direct
     /// parent columns feeding each output, and the direct child columns it
-    /// feeds (the Issue 07 spec's `↑u ↓d`, not transitive closure sizes).
+    /// feeds (the direct-edge `↑u ↓d` counts, not transitive closure sizes).
     /// Resolves `node` and its direct children once (memoized). `BTreeMap` →
     /// deterministic iteration order (normalized name).
     pub fn column_counts(&self, node: &str) -> BTreeMap<String, (usize, usize)> {
@@ -379,7 +379,7 @@ impl<'a, R: ColumnResolver + ?Sized> ColumnLineage<'a, R> {
     }
 
     /// The explicitly-eager answer for callers that genuinely need the whole
-    /// graph (the Issue 10 full-lineage compute): resolve every node once,
+    /// graph (the full-lineage compute): resolve every node once,
     /// concatenate in-edges, sort + dedup.
     pub fn resolve_all(&self) -> Vec<ColumnEdge> {
         let mut uids: Vec<&String> = self.dag.nodes().keys().collect();

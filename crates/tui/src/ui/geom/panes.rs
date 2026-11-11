@@ -3,7 +3,7 @@ use super::*;
 pub const DEFAULT_LIST_WIDTH: u16 = 34;
 pub const MIN_LIST_WIDTH: u16 = 18;
 /// The inspector pane's default and minimum width in columns (the pane itself
-/// arrives in Issue 04; the width pref exists ahead of it).
+/// isn't drawn yet; the width pref exists ahead of it).
 pub const DEFAULT_INSPECTOR_WIDTH: u16 = 42;
 pub const MIN_INSPECTOR_WIDTH: u16 = 30;
 /// The lineage pane's minimum width in columns — the floor every other pane
@@ -14,14 +14,14 @@ const LIST_MAX_PCT: u16 = 60;
 /// The inspector pane's maximum width: 50% of the terminal width.
 const INSPECTOR_MAX_PCT: u16 = 50;
 
-/// The smallest terminal the normal UI renders on (§12): below this in
+/// The smallest terminal the normal UI renders on: below this in
 /// either dimension the event loop draws only the `terminal too small`
 /// screen — no panes, no overlays, no pointer routing.
 pub const MIN_TERMINAL_W: u16 = 50;
 /// The minimum terminal height, paired with [`MIN_TERMINAL_W`].
 pub const MIN_TERMINAL_H: u16 = 12;
 
-/// Below this terminal width the list never sits inline (§12): the saved
+/// Below this terminal width the list never sits inline: the saved
 /// `list_visible` pref is overridden and the list exists only as the
 /// overlay drawer `Ctrl-b` opens. The band edge is exclusive — at exactly
 /// [`LIST_AUTO_HIDE_W`] columns the inline pane layout applies again.
@@ -30,11 +30,11 @@ pub const LIST_AUTO_HIDE_W: u16 = 80;
 /// the default list width, bounded by the same 60% the inline pane caps at.
 const LIST_DRAWER_PCT: u16 = 60;
 
-/// The `inspector: auto` visibility floor (§4/§12): the auto pref shows the
+/// The `inspector: auto` visibility floor: the auto pref shows the
 /// pane at this many columns or wider, never below it.
 pub const INSPECTOR_AUTO_W: u16 = 160;
 
-/// Whether the terminal falls under §12's minimum usable size — the
+/// Whether the terminal falls under the minimum usable size — the
 /// whole-UI yield condition the event loop checks before drawing or
 /// routing any input.
 pub fn terminal_too_small(area: Rect) -> bool {
@@ -42,7 +42,7 @@ pub fn terminal_too_small(area: Rect) -> bool {
 }
 
 /// The narrow-band list drawer's width for a body `body_w` columns wide:
-/// `min(34, 60%)` per §12 — the default list width, capped by the same
+/// `min(34, 60%)` — the default list width, capped by the same
 /// terminal share the inline pane gets. Never called above the band
 /// ([`pane_layout`] gates the rect itself).
 pub fn list_drawer_width(body_w: u16) -> u16 {
@@ -71,8 +71,8 @@ impl Splitter {
 }
 
 /// The layout inputs [`pane_layout`] resolves: which panes exist and the
-/// user's saved column widths (columns, not ratios — §5). One value covers
-/// every pane so Issues 03 (tab bar) and 04 (inspector) extend the struct,
+/// user's saved column widths (columns, not ratios). One value covers
+/// every pane so the tab bar and inspector extend the struct,
 /// not the signature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneConfig {
@@ -80,23 +80,23 @@ pub struct PaneConfig {
     pub list_visible: bool,
     /// The list pane's saved width in columns.
     pub list_width: u16,
-    /// Show the right inspector pane (Issue 04 fills it; until then the field
+    /// Show the right inspector pane (until the pane lands the field
     /// exists so turning it on is a flag flip, not a redesign).
     pub inspector_visible: bool,
     /// The inspector pane's saved width in columns.
     pub inspector_width: u16,
-    /// Show the one-row tab bar above the body (Issue 03 fills it; until then
+    /// Show the one-row tab bar above the body (until the bar lands
     /// the field exists so turning it on is a flag flip, not a redesign).
     pub tab_bar: bool,
     /// Open the list as the narrow-band overlay drawer (the <80-columns
-    /// meaning of `Ctrl-b`, §12). Inert above the band — `pane_layout` only
+    /// meaning of `Ctrl-b`). Inert above the band — `pane_layout` only
     /// ever carves the rect while `body.width < LIST_AUTO_HIDE_W`, so a stale
     /// flag is ignored rather than honoured.
     pub list_drawer: bool,
 }
 
 impl Default for PaneConfig {
-    /// The spec §1 defaults: list shown at 34, inspector hidden at a saved 42,
+    /// The layout defaults: list shown at 34, inspector hidden at a saved 42,
     /// no tab bar, no drawer.
     fn default() -> Self {
         PaneConfig {
@@ -116,7 +116,7 @@ impl Default for PaneConfig {
 /// the event loop's viewport math all read — they can never disagree.
 #[derive(Debug, Clone, Copy)]
 pub struct PaneRects {
-    /// The tab-bar strip above the body (zero height until Issue 03).
+    /// The tab-bar strip above the body (zero height until the bar lands).
     pub tab_bar: Rect,
     /// Left model-list pane (with border). Zero-width while hidden or fully
     /// squeezed on a narrow terminal (mouse `within` tests on it are then
@@ -124,18 +124,18 @@ pub struct PaneRects {
     pub list: Rect,
     /// Centre lineage pane (with border).
     pub lineage: Rect,
-    /// Right inspector pane (with border; zero width until Issue 04 shows it).
+    /// Right inspector pane (with border; zero width until it is shown).
     pub inspector: Rect,
     /// Bottom status/help line.
     pub status: Rect,
     /// The list|lineage splitter strip: the adjacent two border columns where
-    /// the panes meet, spanning the body (either side is grabbable — §5).
+    /// the panes meet, spanning the body (either side is grabbable).
     /// `None` when no boundary exists to grab (a neighbour has no border).
     pub list_splitter: Option<Rect>,
     /// The lineage|inspector splitter strip — `None` while the inspector is
-    /// hidden (everywhere today; Issue 04 turns it on).
+    /// hidden (everywhere today; the pane turns it on).
     pub inspector_splitter: Option<Rect>,
-    /// The narrow-band list drawer (§12): the same bordered list, floating
+    /// The narrow-band list drawer: the same bordered list, floating
     /// over the lineage pane's left edge at `min(34, 60%)` of the body.
     /// `Some` only while the body is narrower than [`LIST_AUTO_HIDE_W`] AND
     /// `cfg.list_drawer` is set — above the band the flag is ignored, and
@@ -153,7 +153,7 @@ impl PaneRects {
     }
 }
 
-/// Clamp a requested list-pane width to the §1 floor and the terminal-width
+/// Clamp a requested list-pane width to the minimum floor and the terminal-width
 /// cap (`terminal_w` columns). The floor wins over the cap on a degenerate
 /// terminal (the squeeze below the floor is the layout's job, not the pref's).
 pub fn clamp_list_width(w: u16, terminal_w: u16) -> u16 {
@@ -162,7 +162,7 @@ pub fn clamp_list_width(w: u16, terminal_w: u16) -> u16 {
     w.clamp(MIN_LIST_WIDTH, cap.max(MIN_LIST_WIDTH))
 }
 
-/// Clamp a requested inspector-pane width to the §1 floor and cap, like
+/// Clamp a requested inspector-pane width to the minimum floor and cap, like
 /// [`clamp_list_width`].
 pub fn clamp_inspector_width(w: u16, terminal_w: u16) -> u16 {
     let cap = (terminal_w as u32 * INSPECTOR_MAX_PCT as u32 / 100) as u16;
@@ -174,7 +174,7 @@ pub fn clamp_inspector_width(w: u16, terminal_w: u16) -> u16 {
 /// cell was grabbed, `1` = the right pane's), and `anchor` the dragged pane's
 /// FIXED outer edge (the list's left edge — its `x`; the inspector's right
 /// edge — its `x + width`; both sit at a terminal edge in this layout).
-/// Saturates at 0; the §1 min/max clamp is the caller's
+/// Saturates at 0; the min/max clamp is the caller's
 /// (`clamp_list_width`/`clamp_inspector_width`), so a drag past a bound
 /// clamps instead of sticking.
 pub fn splitter_drag_width(which: Splitter, at_x: u16, grab_off: u16, anchor: u16) -> u16 {
@@ -191,11 +191,11 @@ pub fn splitter_drag_width(which: Splitter, at_x: u16, grab_off: u16, anchor: u1
 /// (0/1 rows) + body + one status row. Horizontal inside the body: list +
 /// lineage + inspector. The single source of truth for screen geometry.
 ///
-/// Widths are the saved column counts clamped to §1's min/max (60% / 50% of
+/// Widths are the saved column counts clamped to the min/max (60% / 50% of
 /// the terminal). When the terminal is too narrow to honour every minimum,
 /// the DISPLAYED widths shrink — inspector first, then the list, each toward
 /// its floor and then below it — while the lineage's 40-column floor holds to
-/// the last. The saved values in `cfg` are never touched (§5).
+/// the last. The saved values in `cfg` are never touched.
 ///
 /// With `cfg.list_visible = false` the list rect is zero-width (the lineage
 /// pane takes the freed space) so mouse `within` tests on it stay false.
@@ -210,8 +210,8 @@ pub fn pane_layout(area: Rect, cfg: &PaneConfig) -> PaneRects {
         .split(area);
     let (tab_bar, body, status) = (chunks[0], chunks[1], chunks[2]);
 
-    // Desired widths: saved values clamped to each pane's §1 floor and
-    // terminal-width cap. §12's narrow band overrides the list pref FIRST:
+    // Desired widths: saved values clamped to each pane's floor and
+    // terminal-width cap. The narrow band overrides the list pref FIRST:
     // below `LIST_AUTO_HIDE_W` columns the pane never sits inline — the
     // drawer below is the only list surface there, so the explicit `Ctrl-b`
     // pref wins everywhere except the mandatory drawer band.
@@ -226,7 +226,7 @@ pub fn pane_layout(area: Rect, cfg: &PaneConfig) -> PaneRects {
         0
     };
     // The deficit under the lineage's 40-column floor — how much the three
-    // panes over-spend the body — is absorbed in §5 order (inspector first,
+    // panes over-spend the body — is absorbed in shrink order (inspector first,
     // then the list), first down to each pane's floor, then below it (a
     // width can reach 0: the pane simply isn't drawn and no splitter exists
     // to grab). u32 math: `list + inspector + floor` can exceed u16::MAX.
@@ -270,7 +270,7 @@ pub fn pane_layout(area: Rect, cfg: &PaneConfig) -> PaneRects {
             height: body.height,
         })
     };
-    // §12's list drawer: the narrow band's only list surface — the same
+    // The list drawer: the narrow band's only list surface — the same
     // bordered pane floated over the lineage's left edge, full body height,
     // `min(34, 60%)` wide. Gated on the band itself so a stale flag at ≥80
     // columns resolves to `None` exactly like a closed one.

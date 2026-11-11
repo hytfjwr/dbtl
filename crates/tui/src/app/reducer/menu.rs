@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn apply(app: &mut App, action: Action) -> Arm {
     let out: Outcome = match action {
-        // ---- node context menu (Issue 06) ----
+        // ---- node context menu ----
         // `a` (and the event loop's right-click, which goes through
         // `App::open_menu` directly) opens the context menu for the CURRENT
         // node: over a Detail/Sql modal that's the modal's own node (the same
@@ -90,7 +90,7 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
             out.reanchor |= crate::action::reanchors_lineage(action);
             return Arm::Early(out);
         }
-        // ---- pointer row actions (Issue 06 mouse) ----
+        // ---- pointer row actions (mouse) ----
         // A row click in a row-bearing overlay is a SELECTION first (per the
         // modal-mouse rule); a double-click then fires the row's execute
         // action. None of these are key-bound — the event loop produces them.

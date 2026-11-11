@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- notification centre (Issue 08) --------------------------------------
+// ---- notification centre --------------------------------------
 
 /// The centre's content lines: `HH:MM:SS  level  text` newest-first — the
 /// stamp dim, the level `warn`-coloured (bold) or dim (`info`), the text

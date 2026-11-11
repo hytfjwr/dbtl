@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- Issue 03: tabs -------------------------------------------------------
+// ---- tabs -------------------------------------------------------
 
 #[test]
 fn tab_actions_open_dedupe_close_and_cycle() {
@@ -19,7 +19,7 @@ fn tab_actions_open_dedupe_close_and_cycle() {
     assert_eq!(a.active_tab(), 2);
     assert_eq!(a.selected_unique_id().as_deref(), Some(m1.as_str()));
 
-    // `O` on an already-open model dedupes — activates, never appends (T2).
+    // `O` on an already-open model dedupes — activates, never appends.
     apply_action(&mut a, Action::TabOpen);
     assert_eq!(a.tab_count(), 3);
 
@@ -45,7 +45,7 @@ fn tab_actions_open_dedupe_close_and_cycle() {
     apply_action(&mut a, Action::TabActivate(9));
     assert_eq!(a.active_tab(), 1, "position 9 doesn't exist — no-op");
 
-    // `X` on a mid-strip tab: the RIGHT neighbour takes over (§2).
+    // `X` on a mid-strip tab: the RIGHT neighbour takes over.
     a.activate_tab(1);
     apply_action(&mut a, Action::TabClose);
     assert_eq!(a.tab_count(), 3);
@@ -61,8 +61,8 @@ fn tab_actions_open_dedupe_close_and_cycle() {
     assert_eq!(a.tab_count(), 2);
     assert_eq!(a.selected_unique_id().as_deref(), Some(m1.as_str()));
 
-    // Closing the LAST model tab lands on home (§2 — Issue 10's
-    // replacement for "the last tab refuses").
+    // Closing the LAST model tab lands on home (the home landing replaces
+    // "the last tab refuses").
     apply_action(&mut a, Action::TabClose);
     assert_eq!(a.tab_count(), 1);
     assert!(a.home_active(), "the last model tab's close lands on home");
@@ -394,7 +394,7 @@ fn reload_prunes_non_model_ids_from_tab_history() {
 
 #[test]
 fn tabs_beyond_nine_open_unnumbered_and_off_the_digit_keys() {
-    // §2: no cap — positions 10+ draw without a `{n} ` prefix and sit outside
+    // No cap — positions 10+ draw without a `{n} ` prefix and sit outside
     // the `1`..=`9` key map (the BINDINGS rows stop at 9).
     let mut a = app();
     for i in 1..12 {
@@ -422,8 +422,8 @@ fn tabs_beyond_nine_open_unnumbered_and_off_the_digit_keys() {
 
 #[test]
 fn selecting_in_the_list_re_roots_only_the_active_tab() {
-    // Spec: 一覧でモデルを選ぶとアクティブタブの root だけが変わる — the
-    // other tabs' roots are untouched by list navigation.
+    // The rule: picking a model in the list changes only the active tab's
+    // root — the other tabs' roots are untouched by list navigation.
     let mut a = app();
     let (_root0, m1, m2) = three_models(&a);
     a.open_node_as_tab(&m1); // tab 2 roots m1

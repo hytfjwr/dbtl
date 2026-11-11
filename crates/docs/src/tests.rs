@@ -199,7 +199,7 @@ fn seed_with_accepted_values_test_lists_it() {
 
 #[test]
 fn relationships_test_target_is_linked_in_the_tests_table() {
-    // Issue 11: pos_ord's relationships test targets the pos_pay source —
+    // pos_ord's relationships test targets the pos_pay source —
     // the Tests table resolves the `to:` name and links its page.
     let dag = fixture_dag();
     let out = generate_docs(&dag, "p", "src", PackageScope::Root);
@@ -378,7 +378,7 @@ fn hostile_names_and_descriptions_do_not_break_markdown_or_mermaid() {
     assert_eq!(out, again, "deterministic even with hostile data");
 }
 
-// ---- Sprint 2 additions ----
+// ---- Doc-page additions ----
 
 /// Pull every `models/…md` target out of a `click <id> "<href>"` line.
 fn click_targets(markdown: &str) -> Vec<String> {
@@ -659,7 +659,7 @@ fn split_diagrams_cover_every_node_exactly_once() {
 }
 
 #[test]
-fn full_doc_set_is_byte_identical_with_all_sprint2_additions() {
+fn full_doc_set_is_byte_identical_with_all_added_pages() {
     // The end-to-end determinism guarantee covering the new surface: click
     // links, legends, the stats summary, and (via the large dag) the split.
     let small = fixture_dag();

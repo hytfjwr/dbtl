@@ -164,7 +164,7 @@ pub enum Action {
     ToggleUntestedFilter,
     ToggleBookmarkFilter,
     /// Fold/unfold the list group the cursor sits in (`-`; the group-header
-    /// click's keyboard twin — screen-spec §10).
+    /// click's keyboard twin).
     ToggleGroupFold,
     /// Run `dbt parse` in the project root and adopt the regenerated
     /// `target/manifest.json` (upgrade source-mode's inferred lineage to the
@@ -192,7 +192,7 @@ pub enum Action {
     /// [`PrImpact::ci_command`] (every changed node with `+` fan-out),
     /// ignoring the column narrowing.
     YankPrSelectorWide,
-    // --- column-level lineage focus (Issue 09) ---
+    // --- column-level lineage focus ---
     /// Enter column focus on the structure modal's cursored column: the
     /// lineage pane filters to the column's related models and draws the
     /// related columns inside each box. Falls back to `DetailClose`
@@ -216,20 +216,20 @@ pub enum Action {
     /// (records re-root history, like a lineage click). A non-model row
     /// notices instead of jumping.
     ColumnJump,
-    // --- pane widths (Issue 02; screen-spec §5) ---
-    /// `<`: shrink the focused pane's saved width by §5's 4-column step —
-    /// the list, until Issue 04's inspector gains a focus target.
+    // --- pane widths ---
+    /// `<`: shrink the focused pane's saved width by the 4-column step —
+    /// the list, until the inspector gains a focus target.
     PaneNarrow,
     /// `>`: grow the focused pane's saved width by the same step.
     PaneWiden,
-    /// `=`: every resizable pane's saved width back to its §1 default.
+    /// `=`: every resizable pane's saved width back to its default.
     PaneWidthsReset,
     /// Open the notification centre (`Ctrl-n`): the scrollable log of recent
-    /// notifications (`HH:MM:SS  level  text`, newest first — Issue 08).
+    /// notifications (`HH:MM:SS  level  text`, newest first).
     /// Opening it is the read gesture that zeroes the `!N` unread-warning
     /// count.
     NotificationsOpen,
-    // --- node context menu (Issue 06) ---
+    // --- node context menu ---
     /// Open the node context menu (`a`, or a right-click on a node): a
     /// BINDINGS-derived action list over the node under the cursor/pointer.
     /// Over the structure / SQL modal the menu targets the modal's node.
@@ -257,9 +257,9 @@ pub enum Action {
     /// Move the columns modal's row cursor to `i` (a row click; double-click
     /// then fires the existing [`ColumnJump`](Action::ColumnJump)).
     ColumnPick(usize),
-    // --- tabs (Issue 03; screen-spec §2) ---
+    // --- tabs ---
     /// `O`: open the focus target's model in a NEW tab right of the active
-    /// one (already-open roots just activate their tab — T2 dedupe).
+    /// one (already-open roots just activate their tab — dedupe).
     TabOpen,
     /// `X` / `Ctrl-w`: close the ACTIVE tab — the right neighbour (else the
     /// left) takes over; the last tab refuses with a toast.
@@ -270,9 +270,9 @@ pub enum Action {
     /// `1`..=`9`: activate the tab at that 1-based position (tabs from
     /// position 10 carry no number and are unreachable by digit). Position
     /// counts MODEL tabs only — the home tab sits left of position 1 and is
-    /// reached via `~`/`{`/`}` (Issue 10).
+    /// reached via `~`/`{`/`}`.
     TabActivate(u8),
-    // --- home tab (Issue 10; screen-spec §3) ---
+    // --- home tab ---
     /// `~`: activate the home tab (no-op while already on it).
     HomeGo,
     /// `j`/`k`/`↑`/`↓` on the home screen: move the item cursor over the
@@ -280,12 +280,12 @@ pub enum Action {
     /// the search-results list while `/` search is open).
     HomeMove(Direction),
     /// `Enter` on the home screen: open the item under the cursor — already
-    /// open activates its tab, else a new tab (§3's "開く" rule).
+    /// open activates its tab, else a new tab (the open rule).
     HomeOpen,
     /// A click on home item `i` (its flattened selectable index): select it
-    /// and open it in one gesture (§6 — items open on click).
+    /// and open it in one gesture (items open on click).
     HomePick(usize),
-    // --- inspector pane (Issue 04; screen-spec §4) ---
+    // --- inspector pane ---
     /// `I`: cycle the inspector visibility pref `auto → on → off` (the
     /// persisted value; the width-aware auto rule resolves at draw time).
     ToggleInspector,
@@ -302,7 +302,7 @@ pub enum SearchTarget {
     List,
     /// Jump to a matching node within the current lineage subgraph.
     Lineage,
-    /// The home screen's `/` field (§3): same syntax as `List` (`!` selector /
+    /// The home screen's `/` field: same syntax as `List` (`!` selector /
     /// `?` full-text), results replace the home sections. Enter opens the
     /// picked model in a tab rather than re-rooting.
     Home,

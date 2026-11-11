@@ -3,7 +3,7 @@ use super::*;
 impl App {
     /// Re-root the lineage to `unique_id`, recording the move in the active
     /// tab's back stack (and clearing its forward stack) — the browser-style
-    /// history for every selection change (§2 T1: picking a model in the list,
+    /// history for every selection change (picking a model in the list,
     /// clicking, searching, cycling bookmarks all land here). No-op if the
     /// target isn't a selectable model. A re-root also ends any column focus:
     /// "jump to that model" means land on the model's own lineage, not keep
@@ -72,7 +72,7 @@ impl App {
     /// never the list), `None` for a root-less tab. The single accessor for
     /// "the rooted selection"; every `selected_*` projection derives from it.
     /// Distinct from [`list_sel_uid`](App::list_sel_uid) when the root is
-    /// filtered out of the active list (the §2 detach).
+    /// filtered out of the active list (the detach).
     pub fn selected_node(&self) -> Option<&NodeInfo> {
         self.tab().root.as_deref().and_then(|uid| self.dag.get(uid))
     }
@@ -95,7 +95,7 @@ impl App {
             .map(|n| n.unique_id.clone())
     }
 
-    /// §2 T1: adopt the list cursor's model as the active tab's root — the
+    /// Adopt the list cursor's model as the active tab's root — the
     /// browser-link rule that lands every list selection on the tab's own
     /// history. Called after every list-move arm (and by the event loop's
     /// wheel over the list pane); a same-uid landing is a no-op inside
@@ -214,7 +214,7 @@ impl App {
     }
 
     /// Move the selection to the model with this `unique_id` in the active
-    /// list, if present. The selection IS the active tab's root (§2): a
+    /// list, if present. The selection IS the active tab's root: a
     /// successful select moves the list cursor onto the match, writes the
     /// tab's `root`, and records the model in `recent` — while landing on a
     /// different uid clears the tab's sibling-collapse expansions (the

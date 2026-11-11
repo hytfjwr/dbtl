@@ -5,13 +5,13 @@
 //! Split by surface, all re-exported below so `crate::ui::geom::X` paths are
 //! unchanged:
 //! - [`panes`]    — the three-pane layout (list / lineage / inspector), widths,
-//!   splitters, and the §12 responsive verdicts.
+//!   splitters, and the responsive verdicts.
 //! - [`overlays`] — centered / modal / menu / yank / tooltip rects and the
 //!   stacked-underlay resolver.
 //! - [`lineage`]  — the lineage pane's centred content rect, clipped-edge
 //!   markers, and the scrollbar thumb.
 //! - [`tabs`]     — the tab strip's cell layout.
-//! - [`status`]   — the §8 status line (chips + spans) and lineage-title span
+//! - [`status`]   — the status line (chips + spans) and lineage-title span
 //!   placement shared by draw and hit-test.
 //! - [`hit`]      — `HitTarget` / `HitGeometry` / `hit_target` / `hit_test`,
 //!   the point→target router.

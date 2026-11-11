@@ -29,7 +29,7 @@ pub struct TabBarLayout {
     /// The `›` scroll-forward cell, present iff tabs hide on the right.
     pub right_arrow: Option<Rect>,
     /// The ` + ` new-tab cell — pinned at the scrollable strip's right end,
-    /// so it never scrolls away with the tab run (§2).
+    /// so it never scrolls away with the tab run.
     pub plus: Rect,
     /// The right-aligned project-name zone (draw-only — no hit target).
     /// `None` when the strip left no room for it.
@@ -54,7 +54,7 @@ const PLUS_W: u16 = 3;
 /// ` ⌂ ` with no `×` glyph or close target). `scroll` is the intended
 /// first-visible index (the stored wheel/arrow offset); with
 /// `ensure_active` the resolved scroll also keeps the ACTIVE tab inside the
-/// window — the §2 "アクティブタブは常に見える位置までスクロールする" —
+/// window — the keep-the-active-tab-visible scroll —
 /// applied when a switch/structure change could leave it hidden (a manual
 /// `‹`/`›`/wheel scroll passes `false`: the user may look around the strip).
 ///
@@ -124,7 +124,7 @@ pub fn tab_bar_layout(
     let zone_r = out.plus.x;
     let mut zone_w = zone_r.saturating_sub(zone_l) as usize;
 
-    // §2's pinned `⌂`: a leading unclosable cell (the home tab) sits fixed
+    // The pinned `⌂`: a leading unclosable cell (the home tab) sits fixed
     // at the strip's left edge like `+` sits at the right — the scroll
     // window then windows only the tabs after it, so it can never scroll
     // off or gain a left arrow.

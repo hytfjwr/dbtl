@@ -38,12 +38,12 @@ fn render(app: &mut App, width: u16, height: u16) -> Buffer {
 }
 
 /// [`render`] plus an optional toast stack (the transient copy/bookmark
-/// acknowledgement, Issue 08), mirroring the event loop's `ctx.toasts` wiring.
+/// acknowledgement), mirroring the event loop's `ctx.toasts` wiring.
 fn render_with_toasts(app: &mut App, width: u16, height: u16, toasts: &[ToastLine]) -> Buffer {
     render_ctx(app, width, height, toasts, None, None)
 }
 
-/// [`render`] plus the Issue-05 pointer overlays: the hovered node's accent
+/// [`render`] plus the pointer overlays: the hovered node's accent
 /// frame (`hover`), the search-match frames + `i/N` title (derived from the
 /// app's mode like the loop computes them), and the settled-hover tooltip.
 fn render_mouse(
@@ -78,13 +78,13 @@ fn render_ctx(
         (Some(lay), dbtl::ui::LineageLens::Layer) => Some(app.layer_bands(lay)),
         _ => None,
     };
-    // Mirror the loop's narrow-band publish (§12): below 80 columns the list
+    // Mirror the loop's narrow-band publish: below 80 columns the list
     // exists only as the drawer overlay, so a guard scenario exercises the
     // drawer whenever the loop would.
     app.ui_state
         .set_list_auto_hidden(width < dbtl::ui::LIST_AUTO_HIDE_W);
-    // Mirror the loop's inspector visibility seam (Issue 04): `auto` resolves
-    // against the rendered width (§12's >=160 rule), `on`/`off` always/never
+    // Mirror the loop's inspector visibility seam: `auto` resolves
+    // against the rendered width (the >=160 rule), `on`/`off` always/never
     // show — so a guard scenario exercises the pane whenever the loop would.
     let want = app.ui_state.inspector_policy().shown_at(width);
     app.ui_state.set_inspector_shown(want);
@@ -107,7 +107,7 @@ fn render_ctx(
         None
     };
     app.ui_state.set_inspector_shown(inspector.is_some());
-    // The contextual status hints (§8 — BINDINGS-generated, ASCII-safe in
+    // The contextual status hints (BINDINGS-generated, ASCII-safe in
     // both glyph modes since the key labels are); scanned under the guard.
     let hints = app.status_hints();
     let label = app.lineage_view_label();
@@ -141,7 +141,7 @@ fn render_ctx(
     // REAL value so the guard actually scans the rendered badge glyphs for
     // ASCII-safety (a hardcoded `↓`/`↑` would fail this render).
     let impact_s = app.impact_status();
-    // The unread-warning badge `!N` (Issue 08, pure ASCII by contract),
+    // The unread-warning badge `!N` (pure ASCII by contract),
     // mirroring the loop's wiring.
     let notify_s = if app.unread_warnings() > 0 {
         Some(format!("!{}", app.unread_warnings()))
@@ -158,7 +158,7 @@ fn render_ctx(
     // The whole-graph overview title (`None` outside it), mirroring the
     // loop's wiring so the overview surface is under the guard too.
     let overview_title = app.overview_title();
-    // The column-focus surfaces (Issue 09): the `column:m.c ^N vM` status
+    // The column-focus surfaces: the `column:m.c ^N vM` status
     // chip (ASCII badges under the guard) and the ` [col:name]` title suffix
     // (pure ASCII by contract).
     let column_s = app.column_status();
@@ -211,7 +211,7 @@ fn render_ctx(
         ctx.folded_groups = Some(&app.folded_groups);
         ctx.layer_bands = layer_bands.as_deref();
         ctx.toasts = toasts;
-        // The Issue-05 pointer overlays, computed exactly like the loop does:
+        // The pointer overlays, computed exactly like the loop does:
         // the search-match frames + `i/N` title ride the app's open search,
         // the hover accent + settled tooltip arrive as parameters.
         let (search_matches, search_pos) = match &app.mode {
@@ -226,7 +226,7 @@ fn render_ctx(
             }
             _ => (Vec::new(), None),
         };
-        // Mirror the loop's home wiring (Issue 10): while the fixed home tab
+        // Mirror the loop's home wiring: while the fixed home tab
         // is active the whole body band draws the home screen — its `~`/`..`
         // chrome and the health gauge's styled spaces are under the same
         // all-ASCII scan as every other surface.
@@ -254,7 +254,7 @@ fn render_ctx(
             project: Some(app.stats.project.as_str()),
             hover: None,
         });
-        // Mirror the loop's inspector draw seam (Issue 04): the published
+        // Mirror the loop's inspector draw seam: the published
         // snapshot rides `RenderCtx` so the pane's marks/badges/scrollbar
         // are under the same all-ASCII scan.
         ctx.inspector = inspector.as_deref();
@@ -371,7 +371,7 @@ fn detail_modal_is_all_ascii() {
 
 #[test]
 fn detail_modal_badges_and_tests_section_are_all_ascii() {
-    // Issue 11 surfaces: the `[NN U]`/`[NN R]` column badge trails, the
+    // surfaces: the `[NN U]`/`[NN R]` column badge trails, the
     // `-> target` relationships row, the tests-section `> ` cursor, and the
     // `Tab tests`/`Enter/c jump` title hints — every glyph pure ASCII in
     // BOTH glyph modes by construction.
@@ -529,7 +529,7 @@ fn minimap_inset_is_all_ascii() {
 #[test]
 fn toast_stack_is_all_ascii() {
     // The stacked toasts float over the top-right with the glyph-mode border
-    // set (info + warning rows stacked, Issue 08), and overflow truncation
+    // set (info + warning rows stacked), and overflow truncation
     // appends a plain ".." (never an ellipsis glyph).
     let mut app = ascii_app();
     let stack = [
@@ -565,7 +565,7 @@ fn toast_stack_is_all_ascii() {
 
 #[test]
 fn notification_center_and_chip_are_all_ascii() {
-    // Issue 08: the `Ctrl-n` centre modal (rows `HH:MM:SS  level  text` — the
+    // the `Ctrl-n` centre modal (rows `HH:MM:SS  level  text` — the
     // `warn`/`info` labels and stamp are plain ASCII), the `!N` unread chip,
     // and the empty state, all under the ASCII guard.
     let mut app = ascii_app();
@@ -648,7 +648,7 @@ fn overview_pane_is_all_ascii() {
 
 #[test]
 fn column_focus_and_columns_modal_are_all_ascii() {
-    // Issue 09's surfaces under the guard: the traced column's `>` row and the
+    // the surfaces under the guard: the traced column's `>` row and the
     // kind marks (`-`/`%`/`~`/`*` — `·` must NOT leak: it is ambiguous-width,
     // so `col_mark` resolves it to `-` here), the `^N vM` status badges, the
     // ` [col:name]` title suffix, and the column modal's bracket chrome.
@@ -671,8 +671,8 @@ fn column_focus_and_columns_modal_are_all_ascii() {
 }
 
 #[test]
-fn issue09_surfaces_are_all_ascii() {
-    // Every NEW Issue-09 surface, in ASCII glyph mode: the empty-query search
+fn search_palette_surfaces_are_all_ascii() {
+    // Every NEW surface, in ASCII glyph mode: the empty-query search
     // hint's `^ history` arrow, the zero-match line's `-` dash, the empty
     // list's scope reason, the empty lineage's reason, the palette's Recent/
     // Commands headers + unavailable reason + `@` model rows, and the help
@@ -775,7 +775,7 @@ fn menu_stacked_over_modal_is_all_ascii() {
 
 #[test]
 fn inspector_pane_is_all_ascii() {
-    // Issue 04's pane under the guard: the `v`/`x`/`!` lint and test marks,
+    // the pane under the guard: the `v`/`x`/`!` lint and test marks,
     // the `^N vM` column badges, and the scrollbar thumb must all resolve to
     // ASCII here — including a forced `On` narrow-screen render (the pane
     // squeezes but stays ASCII) and a focused-column pick.
@@ -800,8 +800,8 @@ fn inspector_pane_is_all_ascii() {
 }
 
 #[test]
-fn issue05_pointer_surfaces_are_all_ascii() {
-    // Issue 05's surfaces under the guard: the settled-hover tooltip (border
+fn pointer_surfaces_are_all_ascii() {
+    // the surfaces under the guard: the settled-hover tooltip (border
     // set + `^`/`v` stats badges — `↑`/`↓` must NOT leak), the hovered node's
     // accent frame, and the lineage-search title's `i/N` + `_` caret (the
     // `▏` unicode caret is ambiguous-width and must not leak either).
@@ -845,7 +845,7 @@ fn issue05_pointer_surfaces_are_all_ascii() {
 
 #[test]
 fn folded_groups_and_row_truncation_are_all_ascii() {
-    // Issue 11's list surfaces under the guard: the `v` open / `>` folded
+    // the list surfaces under the guard: the `v` open / `>` folded
     // group markers, the `..` middle-elision, and the all-folded empty reason
     // — `▾`/`▸`/`…` must never reach an ASCII frame.
     let mut app = ascii_app();
@@ -914,7 +914,7 @@ fn folded_groups_and_row_truncation_are_all_ascii() {
 
 #[test]
 fn too_small_screen_is_all_ascii() {
-    // §12's gate screen in ASCII mode: the `×` in `WxH` / `50×12` degrades to
+    // The gate screen in ASCII mode: the `×` in `WxH` / `50×12` degrades to
     // `x` — the whole frame is the one message, nothing else draws.
     let app = ascii_app();
     let backend = TestBackend::new(48, 11);
@@ -944,7 +944,7 @@ fn too_small_screen_is_all_ascii() {
 
 #[test]
 fn narrow_band_drawer_is_all_ascii() {
-    // §12's <80 band: the inline list is gone and the open drawer floats the
+    // The <80 band: the inline list is gone and the open drawer floats the
     // same bordered list over the lineage — pure ASCII chrome in ASCII mode.
     let mut app = ascii_app();
     app.ui_state.set_list_drawer(true);
@@ -956,7 +956,7 @@ fn narrow_band_drawer_is_all_ascii() {
     assert_eq!(buffer.cell((33, 1)).unwrap().symbol(), "+");
 }
 
-// ---- Issue 10: the home screen ------------------------------------------------
+// ---- the home screen ------------------------------------------------
 
 #[test]
 fn home_screen_and_its_search_are_all_ascii() {

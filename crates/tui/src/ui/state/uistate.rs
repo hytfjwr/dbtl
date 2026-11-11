@@ -19,7 +19,7 @@ pub struct UiState {
     pub(super) focus: Focus,
     /// Whether the left model-list pane is shown — the USER'S PREF (the
     /// `Ctrl-b` toggle's persisted value), not the on-screen answer: below
-    /// §12's 80-column band edge the pane is always hidden and the list lives
+    /// the 80-column band edge the pane is always hidden and the list lives
     /// only as the [`list_drawer`](UiState::list_drawer) overlay. While the
     /// resolved surface is hidden, focus is pinned to [`Focus::RightPane`]
     /// (the toggles and [`toggle_focus`](UiState::toggle_focus) all read
@@ -27,12 +27,12 @@ pub struct UiState {
     /// invisible list.
     list_visible: bool,
     /// Whether the narrow-band drawer is open — the ONLY list surface below
-    /// 80 columns (§12). A transient UI state, never persisted: above the
+    /// 80 columns. A transient UI state, never persisted: above the
     /// band `pane_layout` ignores the flag outright, and in the band it is
     /// independent of `list_visible` (the pref governs the inline pane that
     /// can only exist ≥80).
     list_drawer: bool,
-    /// The event loop's published answer to "is the terminal in §12's narrow
+    /// The event loop's published answer to "is the terminal in the narrow
     /// band" — the <80-columns verdict that turns `list_visible` into a
     /// drawer-only surface. Only the loop writes it (the reducer and the
     /// prefs stay size-blind); [`list_shown`](UiState::list_shown) and the
@@ -90,7 +90,7 @@ pub struct UiState {
     /// The inspector's column-row cursor — an index into
     /// [`InspectorView::detail`]'s `col_names`, or `usize::MAX` when no row
     /// is cursored (the default — `j`/`k` then scroll instead of moving a
-    /// cursor, per §4's "cursor stays a mouse/pick affordance" reading).
+    /// cursor, per the "cursor stays a mouse/pick affordance" reading).
     inspector_col: usize,
     /// One-shot "reveal the picked row" intent: [`set_inspector_col`] arms
     /// it, the event loop's scroll clamp consumes it via
@@ -184,7 +184,7 @@ impl UiState {
     }
 
     /// Whether any list surface is on screen this frame — the inline pane
-    /// above §12's narrow band, the overlay drawer inside it. The single
+    /// above the narrow band, the overlay drawer inside it. The single
     /// "is the list reachable" verdict the focus ring reads: a hidden list
     /// can never hold focus, and only while this is true may `Focus::List`
     /// stand.
@@ -196,7 +196,7 @@ impl UiState {
         }
     }
 
-    /// Whether the narrow-band drawer is open (§12). The event loop writes
+    /// Whether the narrow-band drawer is open. The event loop writes
     /// it; [`pane_config`](UiState::pane_config) relays it to `pane_layout`
     /// so the drawn rect and the resolved rect stay one value.
     pub fn list_drawer(&self) -> bool {
@@ -226,8 +226,8 @@ impl UiState {
         }
     }
 
-    /// Toggle the narrow-band drawer — the <80-columns meaning of `Ctrl-b`
-    /// (§12). Above the band the flag is inert, so the loop keeps the pref
+    /// Toggle the narrow-band drawer — the <80-columns meaning of `Ctrl-b`.
+    /// Above the band the flag is inert, so the loop keeps the pref
     /// meaning there instead of reaching this.
     pub fn toggle_list_drawer(&mut self) {
         self.set_list_drawer(!self.list_drawer);
@@ -333,7 +333,7 @@ impl UiState {
     }
 
     /// Set the list pane's saved width directly (the `<`/`>` post-clamp and
-    /// state restore). A stored width below the §1 floor still displays at
+    /// state restore). A stored width below the floor still displays at
     /// the floor — `pane_layout` clamps — so this only guards a literal 0.
     pub fn set_list_width(&mut self, w: u16) {
         self.list_width = w.max(1);
@@ -345,7 +345,7 @@ impl UiState {
     }
 
     /// `<`/`>`: nudge the list pane's saved width by `delta` columns (signed),
-    /// floored at the §1 minimum. The size-aware maximum (60% of the
+    /// floored at the minimum. The size-aware maximum (60% of the
     /// terminal) is the layout's clamp and the loop's post-clamp — this layer
     /// never sees pane size (same size-blind split as `wheel_lineage`).
     pub fn nudge_list_width(&mut self, delta: i32) {
@@ -365,7 +365,7 @@ impl UiState {
     }
 
     /// Apply a splitter drag's resolved width to the pane pref, clamped to the
-    /// §1 min/max for `terminal_w` — the size-aware caller (the event loop, or
+    /// min/max for `terminal_w` — the size-aware caller (the event loop, or
     /// a headless test) resolves the pointer to `w` via
     /// `geom::splitter_drag_width`; the write is the same one the keys make.
     pub fn set_pane_width(&mut self, which: super::geom::Splitter, w: u16, terminal_w: u16) {
@@ -379,7 +379,7 @@ impl UiState {
         }
     }
 
-    /// Reset a pane's saved width to its §1 default (double-click on its
+    /// Reset a pane's saved width to its default (double-click on its
     /// splitter, or `=` for both).
     pub fn reset_pane_width(&mut self, which: super::geom::Splitter) {
         match which {
@@ -502,7 +502,7 @@ impl UiState {
 
     /// The `geom::PaneConfig` for the current view prefs — the ONE derivation
     /// every `pane_layout` caller (draw, hit-test, viewport math) shares. The
-    /// tab bar claims its row (Issue 03); the inspector reads the loop's
+    /// tab bar claims its row; the inspector reads the loop's
     /// RESOLVED `inspector_shown` (the width-aware answer), never the raw
     /// pref; `list_drawer` relays the narrow-band overlay flag (pane_layout
     /// itself gates it on the band, so the flag is harmless above 80).
@@ -525,7 +525,7 @@ impl UiState {
         // The `Tab` ring walks the FIXED `List → RightPane → Inspector` order,
         // skipping panes that aren't on screen (`Focus::Inspector` is skipped
         // while the pane is hidden, `Focus::List` while the list is hidden) —
-        // §4's 一覧 → Lineage → インスペクタ → 一覧.
+        // the List -> Lineage -> Inspector cycle.
         for _ in 0..3 {
             self.focus = self.focus.next();
             match self.focus {
@@ -564,7 +564,7 @@ impl UiState {
     }
 
     /// Write both lineage scroll offsets as pan/minimap intent — the pointer
-    /// gestures' write path (§6: blank-space drag pans, minimap click/drag
+    /// gestures' write path (blank-space drag pans, minimap click/drag
     /// scrubs). Same unvalidated-intent contract as the wheel setters: the
     /// caller resolves the pure cell math (geom's `pan_offset` /
     /// `minimap_scroll_to`) and this stores it; the loop's

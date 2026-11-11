@@ -98,7 +98,7 @@ pub(super) fn node_markdown(
     // Tests — the `Target` column resolves a `relationships` test's `to:`
     // (linked to the target's own page when it has one), and `Rows` carries
     // the unit-test shape (`in:`/`given:`/`expect:` counts) the manifest
-    // records (Issue 11).
+    // records.
     s.push_str("\n## Tests\n\n");
     let tests = dag.tests(uid);
     if tests.is_empty() {

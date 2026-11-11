@@ -1,5 +1,5 @@
 //! The status-line and pane-title producers the event loop's draw + hit-test
-//! share (Issue 07, screen-spec §8): which contextual hints the `BINDINGS`
+//! share: which contextual hints the `BINDINGS`
 //! table offers in the current context, and which [`Action`] a status chip's
 //! click dispatches. These are the Dag/App-aware seams — the pure placement
 //! math lives in [`crate::ui::status_layout`] /
@@ -14,7 +14,7 @@ impl App {
     /// The contextual status hints for the CURRENT mode/focus — `BINDINGS`-
     /// generated (`status_hints`), so they can never teach a key that doesn't
     /// dispatch. A live column trace or the overview supersedes the pane
-    /// context exactly like the §8 table prescribes. The event loop may
+    /// context exactly like the context table prescribes. The event loop may
     /// REPLACE this list with a transient readout (splitter hover/drag —
     /// `action: None`, the pointer is the gesture).
     pub fn status_hints(&self) -> Vec<StatusHint> {
@@ -26,7 +26,7 @@ impl App {
         )
     }
 
-    /// The action a status chip's click dispatches (§8's chip table) —
+    /// The action a status chip's click dispatches (the chip table) —
     /// `None` for the inert readouts (impact / scope / position / the
     /// persistent-filter tag). The lens chips go through
     /// [`Action::SetLens`], not `CycleLens`: a click can pick a specific lens
@@ -66,7 +66,7 @@ impl App {
     /// the loop's [`RenderCtx`](crate::ui::RenderCtx) build supplies, so the
     /// hit-test's spans overlay exactly what the title row drew. The pane
     /// width is the only size-aware input; everything else is App state.
-    /// `search` carries the query AND its cycled match position (§9's `i/N`).
+    /// `search` carries the query AND its cycled match position (the `i/N`).
     #[allow(clippy::too_many_arguments)]
     pub fn lineage_title(
         &self,

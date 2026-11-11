@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- Issue 11: group folding (list pipeline stage) -------------------------
+// ---- group folding (list pipeline stage) -------------------------
 
 #[test]
 fn dash_binding_dispatches_toggle_group_fold() {
@@ -52,7 +52,7 @@ fn fold_hiding_the_selection_moves_the_cursor_to_the_next_visible_model() {
     // Park the selection mid-staging (index 5), then fold: the cursor's model
     // leaves the list, so the cursor lands where staging's models vacated —
     // the next group's first model (intermediate index 0 post-fold). The
-    // ROOT stays on the hidden model (the §2 detach — same rule as a
+    // ROOT stays on the hidden model (the detach — same rule as a
     // filtered-out root).
     let hidden = a.active_list().models[5].unique_id.clone();
     a.select_by_unique_id(&hidden);
@@ -251,7 +251,7 @@ fn apply_prefs_restores_folded_groups_and_prunes_dead_keys() {
 fn restored_all_fold_then_dash_reopens_the_roots_group() {
     // Persisted all-groups-folded restore, then `-`: the cursor has no model
     // under it (the list is empty), so `-` falls back to the ROOT's group —
-    // the only `-` path that can re-OPEN a fold (§10's 畳む / 開く).
+    // the only `-` path that can re-OPEN a fold.
     let mut a = app();
     let prefs = crate::persist::PersistedState {
         folded_groups: ["staging", "intermediate", "marts", "utilities"]
@@ -465,7 +465,7 @@ fn folded_model_still_opens_as_a_tab() {
     assert_eq!(
         a.selected_unique_id().as_deref(),
         Some(uid),
-        "the new tab roots on the folded model (the §2 detach)"
+        "the new tab roots on the folded model (the detach)"
     );
     // A genuinely non-model node still refuses: the toast names its kind.
     let source_uid = a

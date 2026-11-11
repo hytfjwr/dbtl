@@ -365,7 +365,7 @@ fn docs_cli_prints_one_warning_per_unhandled_kind_to_stderr() {
     let _ = std::fs::remove_dir_all(&out_dir);
 }
 
-/// Issue 08: routing startup warnings into the TUI's notification log must
+/// Routing startup warnings into the TUI's notification log must
 /// not change what reaches stderr on the TUI path. Warnings are printed by
 /// `resolve_source` BEFORE terminal init.
 ///

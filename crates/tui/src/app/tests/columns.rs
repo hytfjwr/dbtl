@@ -1,7 +1,7 @@
 use super::*;
 
 // ---------------------------------------------------------------------------
-// Column-level lineage (Issue 07): the structure modal's column rows carry
+// Column-level lineage: the structure modal's column rows carry
 // up/down ONE-HOP edge counts, h/l walks a column cursor, and `y l` yanks the
 // selected column's downstream closure as the shared ColumnReport markdown.
 // The sample fixture's `cll_demo` is the predictable end: it declares no
@@ -20,7 +20,7 @@ fn detail_open_snapshots_column_counts_and_inferred_names() {
     assert_eq!(dv.col_index, 0, "cursor homes to the first column");
     for c in &dv.col_names {
         // One-hop counts (direct parents in / direct children out) — the
-        // Issue 07 spec, NOT the transitive closure (which was 6 here).
+        // contract, NOT the transitive closure (which was 6 here).
         assert_eq!(dv.col_counts[c], (4, 0), "{c} one-hop counts");
     }
     assert!(!dv.stale, "the frozen fixture's compiled SQL is fresh");
@@ -100,7 +100,7 @@ fn yank_column_lineage_copies_the_selected_columns_downstream_closure() {
     assert!(text.contains("`fct_orders.id`"));
     assert_eq!(a.take_notice().as_deref(), Some("Copied column lineage"));
     // One-shot close RESTORES the structure modal the which-key stacked over
-    // (Issue 06's nested-overlay rule — `back` is the Detail mode).
+    // (the nested-overlay rule — `back` is the Detail mode).
     assert!(matches!(a.mode, Mode::Detail(_)), "returns to the modal");
 }
 
@@ -343,7 +343,7 @@ fn set_group_by_meta_treats_blank_keys_as_none() {
     assert_eq!(a.group_by_meta, None, "empty key → None");
 }
 
-// ---- column-level lineage focus (Issue 09) ---------------------------------
+// ---- column-level lineage focus ---------------------------------
 //
 // The CLL-demo fixture (`SAMPLE` = `tests/fixtures/sample_manifest.json`):
 // `raw.orders → stg_orders → fct_orders → cll_demo`, exercising all four edge

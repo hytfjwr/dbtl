@@ -783,7 +783,7 @@ fn ingest_compiled_empty_package_name_uses_uid_segment() {
     assert_eq!(dag.compiled_code("model.p.e"), Some("select 3"));
 }
 
-// ---- Issue 11: the shared PK predicate + relationships metadata ----
+// ---- the shared PK predicate + relationships metadata ----
 
 fn ti(kind: &str, col: Option<&str>) -> TestInfo {
     TestInfo {

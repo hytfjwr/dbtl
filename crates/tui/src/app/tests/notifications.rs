@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- Issue 08: notification log, unread chip, Ctrl-n centre ---------------
+// ---- notification log, unread chip, Ctrl-n centre ---------------
 
 #[test]
 fn leveled_notice_drains_level_and_keeps_text_compat() {
@@ -107,7 +107,7 @@ fn startup_warnings_join_the_log_as_unread_warnings() {
     assert_eq!(view.rows[0].text, "(scope) ambiguous root", "newest first");
 }
 
-/// Effect-failure overwrite (Issue 08 acceptance): a failed effect must not
+/// Effect-failure overwrite (the acceptance rule): a failed effect must not
 /// leave its optimistic success notice behind — the pending channel is
 /// last-write-wins, so the drain surfaces ONLY the failure (no success toast,
 /// no success log entry).

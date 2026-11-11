@@ -2,7 +2,7 @@
 //! model the modal draws (Selection commands + `Recent`/`Commands` headers +
 //! `@`-search model results, each command carrying its availability mark) and
 //! [`App::unavailable_reason`] is the shared "would this Action do nothing
-//! right now" predicate the palette — and later the Issue 06 menu — uses to
+//! right now" predicate the palette — and later the menu — uses to
 //! grey rows. Also home to the two persisted recall lists: `search_history`
 //! (`/`-mode Up/Down) and `palette_recent` (the Recent section).
 
@@ -14,7 +14,7 @@ use crate::model_list::match_indices;
 
 use super::{App, ListFilter};
 
-/// Persisted caps (screen spec §13): the last 20 confirmed list-search
+/// Persisted caps: the last 20 confirmed list-search
 /// queries, the last 5 palette-run commands.
 pub const SEARCH_HISTORY_MAX: usize = 20;
 pub const PALETTE_RECENT_MAX: usize = 5;
@@ -47,8 +47,8 @@ impl App {
         // user is hunting, not picking a favourite). Recent rows mirror live
         // BINDINGS entries — `palette_binding_named` drops names whose action
         // is gone, so the section can never become a second command source.
-        // The full list follows UNFILTERED by recency (spec: "続いて全コマンド"
-        // — a recent command appears twice, once as the shortcut).
+        // The full list follows UNFILTERED by recency (all commands still
+        // follow — a recent command appears twice, once as the shortcut).
         if query.trim().is_empty() && !self.palette_recent.is_empty() {
             let recents: Vec<PaletteRow> = self
                 .palette_recent
@@ -119,7 +119,7 @@ impl App {
     /// the palette greys the row and Enter toasts the reason instead of
     /// running it. The predicate mirrors each apply arm's own no-op
     /// conditions (e.g. `D` with no baseline loaded), so the palette's marks
-    /// can't drift from real behaviour — and Issue 06's menu greys the same
+    /// can't drift from real behaviour — and the menu greys the same
     /// commands. `None` = runs. `String` not `&'static str`: the list-empty
     /// reasons are built at runtime (glyph-mode dash, the active filter's
     /// name).

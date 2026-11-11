@@ -103,7 +103,7 @@ pub enum LensTint {
     RunWarn,
     /// RunStatus lens: the node's last run was `skipped` (muted).
     RunSkip,
-    /// Column-impact lens (Issue 09): a node on the traced column's DOWNSTREAM
+    /// Column-impact lens: a node on the traced column's DOWNSTREAM
     /// blast radius — gold, the "this column reaches it" answer.
     ColumnImpact,
 }

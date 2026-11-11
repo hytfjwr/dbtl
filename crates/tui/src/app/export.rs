@@ -84,7 +84,7 @@ impl App {
     /// Pasteable into tickets/docs as a monospace block. `None` when nothing
     /// is selected / the subgraph is empty.
     ///
-    /// Policy (Issue 13): the ASCII export is SCREEN-EQUIVALENT — the existing
+    /// Policy: the ASCII export is SCREEN-EQUIVALENT — the existing
     /// "the yank IS the pane's diagram" rule — so collapse markers appear in
     /// the text exactly as on screen (expand first, then yank, to capture the
     /// members). The structured exports ([`lineage_mermaid`]/[`lineage_dot`])

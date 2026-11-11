@@ -68,12 +68,12 @@ pub struct KeyBinding {
     pub triggers: &'static [Trigger],
     pub action: Action,
     pub help: &'static str,
-    /// The home screen's Actions row (§3): `true` marks this row eligible for
+    /// The home screen's Actions row: `true` marks this row eligible for
     /// the home "Actions" line — the row's `key_label()`/`help` render there
     /// verbatim, and [`App::unavailable_reason`] still filters the unusable
     /// ones out (a baseline-less `D` never shows).
     pub home: bool,
-    /// Status-line hint annotations (screen-spec §8): offer this row's action
+    /// Status-line hint annotations: offer this row's action
     /// as a `{key} {desc}` hint while `ctx` is the on-screen context. Rows
     /// sharing `(ctx, prio, desc)` merge into ONE hint (`j` + `k` →
     /// `j/k move`); `prio` is the drop-priority — higher values shed first on
@@ -81,7 +81,7 @@ pub struct KeyBinding {
     pub hints: &'static [Hint],
 }
 
-/// The on-screen context a status hint is offered in — the §8 table's "状況"
+/// The on-screen context a status hint is offered in — the "situation"
 /// column. `Any` emits in every context (the `?` escape hatch every screen
 /// keeps); the pane contexts are Selection-mode only and supersede each
 /// other: a live column trace or the whole-graph overview replaces the pane
@@ -98,9 +98,9 @@ pub enum HintCtx {
     Traced,
     /// The whole-graph overview (`w`) — the browser-like home page.
     Overview,
-    /// The inspector pane owns the focus (Issue 04's third pane).
+    /// The inspector pane owns the focus (the third pane).
     Inspector,
-    /// The home tab is active (Issue 10; §8's `j/k move ⏎ open / search
+    /// The home tab is active (the `j/k move ⏎ open / search
     /// 1-9 tabs q quit` row).
     Home,
 }
@@ -209,7 +209,7 @@ pub fn status_hints(mode: ModeKind, focus: Focus, traced: bool, overview: bool) 
     let ctxs: &[HintCtx] = match mode {
         ModeKind::Selection => {
             if traced {
-                // A live trace supersedes even the `?` escape hatch — §8's
+                // A live trace supersedes even the `?` escape hatch — the
                 // traced row is a self-contained story (`h/l`, `K`, `Esc`).
                 &[HintCtx::Traced]
             } else if overview {
@@ -222,7 +222,7 @@ pub fn status_hints(mode: ModeKind, focus: Focus, traced: bool, overview: bool) 
                 }
             }
         }
-        // §8's home row: `j/k move  ⏎ open  / search  1-9 tabs  q quit`.
+        // The home row: `j/k move  ⏎ open  / search  1-9 tabs  q quit`.
         ModeKind::Home => &[HintCtx::Any, HintCtx::Home],
         _ => &[HintCtx::Any],
     };
@@ -273,7 +273,7 @@ pub fn status_hints(mode: ModeKind, focus: Focus, traced: bool, overview: bool) 
         .collect()
 }
 
-/// Join a merged hint's member key labels the §8 way: 3+ single-char labels
+/// Join a merged hint's member key labels: 3+ single-char labels
 /// that form a contiguous ASCII range collapse to `a-z` (`1..9` → `1-9`), 3+
 /// single chars join bare (`hjkl`), exactly two join `/` (`j/k`), and
 /// anything else joins `/` (`Down/Up`). Deterministic — labels arrive sorted.
@@ -380,7 +380,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('>'))], action: A::PaneWiden, help: "widen pane 4 cols", hints: &[], home: false },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('='))], action: A::PaneWidthsReset, help: "reset pane widths", hints: &[], home: false },
     KeyBinding { mode: M::Selection, triggers: &[Ctrl('n')], action: A::NotificationsOpen, help: "notification center", hints: &[], home: false },
-    // ---- tabs (Issue 03; §2): `O` opens the cursor's model in a new tab,
+    // ---- tabs: `O` opens the cursor's model in a new tab,
     // `X`/Ctrl-w closes, `{`/`}` cycle, `1`-`9` jump straight to a tab. ----
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('O'))], action: A::TabOpen, help: "open node in new tab", hints: &[Hint::list(40, "new tab"), Hint::lineage(30, "new tab")], home: false },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('X')), Ctrl('w')], action: A::TabClose, help: "close tab", hints: &[], home: false },
@@ -395,9 +395,9 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('7'))], action: A::TabActivate(7), help: "go to tab 7", hints: &[Hint::overview(40, "tabs")], home: false },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('8'))], action: A::TabActivate(8), help: "go to tab 8", hints: &[Hint::overview(40, "tabs")], home: false },
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('9'))], action: A::TabActivate(9), help: "go to tab 9", hints: &[Hint::overview(40, "tabs")], home: false },
-    // ---- inspector (Issue 04; §4): `I` cycles the pane's visibility pref. ----
+    // ---- inspector: `I` cycles the pane's visibility pref. ----
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('I'))], action: A::ToggleInspector, help: "inspector pane auto / on / off", hints: &[], home: false },
-    // ---- home tab (Issue 10; §3): `~` jumps to the fixed left tab. ----
+    // ---- home tab: `~` jumps to the fixed left tab. ----
     KeyBinding { mode: M::Selection, triggers: &[Key(Char('~'))], action: A::HomeGo, help: "go to home tab", hints: &[], home: false },
     // ---- Yank prefix mode (`y` + one key): the second key is the SAME letter
     // the single-key binding always used, so muscle memory carries over as
@@ -481,7 +481,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Diff, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up", hints: &[Hint::any(15, "page")], home: false },
     KeyBinding { mode: M::Diff, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top", hints: &[Hint::any(20, "jump")], home: false },
     KeyBinding { mode: M::Diff, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom", hints: &[Hint::any(20, "jump")], home: false },
-    // ---- Column lineage modal (Issue 09): j/k move the ROW cursor (a
+    // ---- Column lineage modal: j/k move the ROW cursor (a
     // selection the loop scroll-follows), d/u/g/G page the viewport like every
     // other modal, Enter re-roots to the row's model. ----
     KeyBinding { mode: M::Columns, triggers: &[Key(Esc), Key(Char('q'))], action: A::DetailClose, help: "close", hints: &[Hint::any(80, "close")], home: false },
@@ -493,7 +493,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Columns, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up", hints: &[Hint::any(15, "page")], home: false },
     KeyBinding { mode: M::Columns, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top", hints: &[Hint::any(20, "jump")], home: false },
     KeyBinding { mode: M::Columns, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom", hints: &[Hint::any(20, "jump")], home: false },
-    // ---- Notification centre (Issue 08; reuses DetailClose + DetailScroll) ----
+    // ---- Notification centre (reuses DetailClose + DetailScroll) ----
     // `Ctrl-n` opens it from Selection and toggles it closed while open.
     KeyBinding { mode: M::Notifications, triggers: &[Key(Esc), Key(Enter), Key(Char('q')), Ctrl('n')], action: A::DetailClose, help: "close", hints: &[Hint::any(80, "close")], home: false },
     KeyBinding { mode: M::Notifications, triggers: &[Key(Char('j')), Key(Down)], action: A::DetailScroll(Direction::Down), help: "scroll down", hints: &[Hint::any(10, "scroll")], home: false },
@@ -502,7 +502,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     KeyBinding { mode: M::Notifications, triggers: &[Key(Char('u')), Key(PageUp), Ctrl('u')], action: A::DetailScrollPage(Direction::Up), help: "page up", hints: &[Hint::any(15, "page")], home: false },
     KeyBinding { mode: M::Notifications, triggers: &[Key(Char('g'))], action: A::DetailScrollHome, help: "jump to top", hints: &[Hint::any(20, "jump")], home: false },
     KeyBinding { mode: M::Notifications, triggers: &[Key(Char('G'))], action: A::DetailScrollEnd, help: "jump to bottom", hints: &[Hint::any(20, "jump")], home: false },
-    // ---- Node context menu (Issue 06): only nav / run / close live here —
+    // ---- Node context menu: only nav / run / close live here —
     // an item's OWN shortcut (the trigger of the BINDINGS row its layout
     // slot names) is resolved by the dispatcher's item lookup, never a
     // fixed row. ----
@@ -523,7 +523,7 @@ pub static BINDINGS: &[KeyBinding] = &[
     // reuse the palette/search rows use), so `?`/`q` close is suspended until
     // the filter is committed (Enter) or cleared (Esc); see dispatch().
     KeyBinding { mode: M::Help, triggers: &[Key(Char('/'))], action: A::SearchOpen, help: "filter help lines", hints: &[Hint::any(30, "filter")], home: false },
-    // ---- Home tab (Issue 10; §3 操作): j/k move over model items, Enter
+    // ---- Home tab: j/k move over model items, Enter
     // opens (activate-or-new-tab), `/` types into the search field, `Esc`
     // lives in the Search rows. The Actions-row commands rebind here so the
     // same keys work while the home tab is active. ----

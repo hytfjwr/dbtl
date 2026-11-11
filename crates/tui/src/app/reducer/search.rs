@@ -14,7 +14,7 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
                 return Arm::Early(Outcome::cont());
             }
             let target = if app.home_active() {
-                // Issue 10: `/` on home searches models for a TAB to open —
+                // `/` on home searches models for a TAB to open —
                 // no list cursor exists, so there is no origin to restore.
                 SearchTarget::Home
             } else if app.ui_state.focus() == Focus::List {
@@ -159,7 +159,7 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
                         }
                         app.refilter();
                     } else {
-                        // Browsing IS selecting (§2 T1): a moved cursor adopts
+                        // Browsing IS selecting: a moved cursor adopts
                         // its model — same changed-index guard as move keys.
                         let before = app.ui_state.selected();
                         match dir {
@@ -282,7 +282,7 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
                         ..
                     }) => {
                         // A greyed command can't run: keep the palette open
-                        // and toast WHY (the spec's "reason on Enter").
+                        // and toast WHY (the "reason on Enter" rule).
                         if let Some(reason) = unavailable {
                             if let Mode::Palette(p) = &mut app.mode {
                                 p.selected = p.selected.min(rows.len() - 1);
@@ -304,10 +304,10 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
                         }
                     }
                     // `@` model search: Enter re-roots to the model — the
-                    // spec's "active tab root" (`jump_to` records history like
+                    // "active tab root" rule (`jump_to` records history like
                     // a click does). The `+` cell's `new_tab` palette instead
                     // opens the model AS a new tab (dedupes to its tab when
-                    // already open — §2/§7).
+                    // already open).
                     Some(PaletteRow::Model { uid, .. }) => {
                         app.mode = app.idle_mode();
                         if new_tab {
@@ -339,7 +339,7 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
                 }
                 Some((SearchTarget::Home, query)) => {
                     // Home search: Enter opens the highlighted result AS A
-                    // TAB (T2 dedupes) and records the query — the same
+                    // TAB (dedupes) and records the query — the same
                     // `search_history` the list target's recall browses. The
                     // close restores nothing (home has no list cursor).
                     app.record_search_query(&query);

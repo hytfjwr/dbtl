@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- Issue 06: node context menu + nested overlay returns -------------------
+// ---- node context menu + nested overlay returns -------------------
 //
 // `a` (or a right-click — `App::click_target` covers that path above) opens the
 // BINDINGS-derived context menu for the node under the cursor / modal; the menu
@@ -39,7 +39,7 @@ fn menu_open_over_detail_and_sql_targets_the_modal_node() {
         matches!(ms.back.as_deref(), Some(Mode::Detail(_))),
         "the structure modal rides in `back`"
     );
-    // Esc closes the menu and restores the stacked modal — Issue 06's
+    // Esc closes the menu and restores the stacked modal — the
     // nested-overlay return rule.
     apply_action(&mut a, Action::DetailClose);
     match &a.mode {

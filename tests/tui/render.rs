@@ -33,7 +33,7 @@ pub(super) fn row_text(buffer: &Buffer, y: u16) -> String {
     out
 }
 
-/// The §8 hints a Selection/list-focused frame shows — the same call the
+/// The hints a Selection/list-focused frame shows — the same call the
 /// event loop makes (`App::status_hints` needs an App; these helpers render
 /// from a bare list, so the pure generator is called directly with the
 /// matching context).
@@ -125,11 +125,11 @@ pub(super) fn selected_row_is_visually_distinguished() {
 pub(super) fn status_help_line_present() {
     let buffer = render(100, 30);
     let text = buffer_to_string(&buffer);
-    // §8's contextual hints (BINDINGS-generated) render on the left of the
+    // The contextual hints (BINDINGS-generated) render on the left of the
     // status row.
     assert!(
         text.contains("j/k move") && text.contains("? help"),
-        "the §8 hint row must be present: {text:?}"
+        "the hint row must be present: {text:?}"
     );
     // The selected node's name is echoed in the lineage pane title.
     assert!(
@@ -172,7 +172,7 @@ pub(super) fn hidden_list_pane_renders_lineage_full_width() {
 
 #[test]
 pub(super) fn explicit_list_width_places_the_splitter_deterministically() {
-    // §5: the saved width is COLUMNS, not a ratio — the boundary strip lands
+    // The saved width is COLUMNS, not a ratio — the boundary strip lands
     // on the two border columns the pure layout reports, so a RenderCtx with
     // a fixed width draws deterministically.
     let render_at = |saved: u16| -> Buffer {
@@ -200,7 +200,7 @@ pub(super) fn explicit_list_width_places_the_splitter_deterministically() {
     assert_eq!(buffer.cell((19, 0)).unwrap().symbol(), "╮");
     assert_eq!(buffer.cell((20, 0)).unwrap().symbol(), "╭");
     assert_eq!(buffer.cell((20, 25)).unwrap().symbol(), "│");
-    // Saved 90 clamps to the §1 60%-of-terminal cap at 100 cols: 59 | 60.
+    // Saved 90 clamps to the 60%-of-terminal cap at 100 cols: 59 | 60.
     let buffer = render_at(90);
     assert_eq!(buffer.cell((59, 0)).unwrap().symbol(), "╮");
     assert_eq!(buffer.cell((60, 0)).unwrap().symbol(), "╭");
@@ -209,7 +209,7 @@ pub(super) fn explicit_list_width_places_the_splitter_deterministically() {
 
 #[test]
 pub(super) fn splitter_hover_hint_and_accent_strip_render() {
-    // §5: hovering a boundary restamps its 2 border columns accent and shows
+    // Hovering a boundary restamps its 2 border columns accent and shows
     // the hint in the status row (the loop supplies both ctx inputs; draw
     // just paints them).
     let backend = TestBackend::new(100, 30);
@@ -238,7 +238,7 @@ pub(super) fn splitter_hover_hint_and_accent_strip_render() {
     let status = row_text(&buffer, 29);
     assert!(
         status.contains("drag to resize · double-click to reset"),
-        "the §5 hover hint renders in the status row: {status:?}"
+        "the hover hint renders in the status row: {status:?}"
     );
 }
 
@@ -365,7 +365,7 @@ pub(super) fn detail_modal_impact_line_targets_the_cursored_node_not_the_root() 
     app.select_by_unique_id("model.jaffle_finance.int_shoppers__combined");
     app.ui_state.set_focus(Focus::RightPane);
     // Put the lineage cursor onto the shoppers source (the deterministic path the
-    // event loop uses for a click on a non-selectable node — M1's single click
+    // event loop uses for a click on a non-selectable node — the single click
     // moves the cursor there rather than re-rooting).
     let src = "source.jaffle_finance.dev_lake_jaffle_payment.shoppers";
     app.click_target(
@@ -401,7 +401,7 @@ pub(super) fn detail_modal_impact_line_targets_the_cursored_node_not_the_root() 
 
 #[test]
 pub(super) fn detail_modal_renders_column_counts_cursor_and_inferred_tag() {
-    // Column-level lineage (Issue 07): the structure modal's column rows carry
+    // Column-level lineage: the structure modal's column rows carry
     // `↑u ↓d` ONE-HOP edge-count badges and an h/l cursor; a model with no
     // declared columns renders the resolver's inferred names under a [from
     // SQL] tag. `cll_demo` is the predictable case: every output has
@@ -445,7 +445,7 @@ pub(super) fn detail_modal_renders_column_counts_cursor_and_inferred_tag() {
 
 #[test]
 pub(super) fn detail_modal_renders_column_badges_and_relationship_targets() {
-    // Issue 11: pos_ord declares `id` (unique+not_null -> `[NN U]`) and
+    // pos_ord declares `id` (unique+not_null -> `[NN U]`) and
     // `lg_id` (not_null+relationships -> `[NN R]`); the tests section resolves
     // the `to:` target and Tab lands the h/l cursor on the jumpable row.
     use dbtl::app::{apply_action, App};
@@ -497,7 +497,7 @@ pub(super) fn detail_modal_renders_column_badges_and_relationship_targets() {
 
 #[test]
 pub(super) fn stats_modal_renders_column_coverage() {
-    // Issue 11: the column-coverage gauge line reaches the buffer — the same
+    // the column-coverage gauge line reaches the buffer — the same
     // numbers the docs README quotes.
     let sv = stats_view_with(0, 0, 0);
     let text = buffer_to_string(&render_stats_modal(sv, 100, 40));

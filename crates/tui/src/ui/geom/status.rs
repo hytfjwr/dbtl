@@ -1,14 +1,14 @@
 use super::*;
 
 // ---------------------------------------------------------------------------
-// Status line + pane title placement (screen-spec §8): ONE pure calculation
+// Status line + pane title placement: ONE pure calculation
 // per surface — `draw_status`/`draw_lineage_pane` render from it and
 // `hit_target` routes clicks through it, so a cell can never hit a span the
 // screen did not draw (nor draw one it cannot hit).
 // ---------------------------------------------------------------------------
 
 /// Which droppable status chip a [`ChipSpan`] renders — the click-dispatch
-/// key. The declaration order IS the §8 drop order: `Impact` is the headline
+/// key. The declaration order IS the drop order: `Impact` is the headline
 /// (sheds last), `View` sheds first, and the `!N` notification badge sits
 /// right after `Impact`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,7 +31,7 @@ pub enum StatusChip {
     /// Bookmark count (`bm:N`) — jumps to the next bookmark.
     Bookmarks,
     /// The persistent list filter (`marked`/`untested`) — inert readout
-    /// (§8's chip table gives it no click action; `T`/`*` untoggle it).
+    /// (the chip table gives it no click action; `T`/`*` untoggle it).
     Filter,
     /// Non-default list sort (`sort:tests`) — cycles the sort.
     Sort,
@@ -58,7 +58,7 @@ pub struct StatusSpan {
     pub target: HitTarget,
 }
 
-/// The pure status-line placement (§8): contextual hints left-anchored,
+/// The pure status-line placement: contextual hints left-anchored,
 /// status chips right-anchored, both droppable at their low-priority ends.
 /// `draw_status` renders exactly these spans; `hit_target` maps a cell to the
 /// same ones.
@@ -89,7 +89,7 @@ fn chip_w(label: &str) -> u16 {
     (1 + UnicodeWidthStr::width(label)) as u16
 }
 
-/// Place `hints` + `chips` on a `width`-column status line (§8). The inputs
+/// Place `hints` + `chips` on a `width`-column status line. The inputs
 /// arrive PRIORITY-SORTED (highest-survival first): a too-narrow line sheds
 /// the hints' tail first, then the chips' tail — the kept spans tile `[0,
 /// hints_w)` left-to-right and `[width - chips_w, width)` right-aligned.
@@ -99,7 +99,7 @@ pub fn status_layout(
     hints: &[crate::action::StatusHint],
     chips: &[(StatusChip, String)],
 ) -> StatusLayout {
-    // §8's shed order on a short line: the HINTS' tail first (lowest
+    // The shed order on a short line: the HINTS' tail first (lowest
     // priority out), then — only once the hints are gone — the chips' tail.
     // The kept set is always a PREFIX of each priority-sorted input.
     let mut kept_h = hints.len();

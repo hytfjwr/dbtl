@@ -1,18 +1,18 @@
 use super::*;
 
-/// The live pane drag: which surface owns the tracking (§5 splitter, §6
+/// The live pane drag: which surface owns the tracking (splitter,
 /// lineage pan / minimap scrub). A single slot covers every drag surface —
 /// the press cell picks it once, and mid-drag motion never re-hit-tests, so
 /// a pointer dragged past a bound keeps the grabbed surface's tracking.
 #[derive(Clone, Copy)]
 pub(super) enum PaneDrag {
-    /// A pane-boundary resize (§5).
+    /// A pane-boundary resize.
     Splitter(SplitterDrag),
-    /// A lineage pan (§6): the press cell plus the scroll offset at press
+    /// A lineage pan: the press cell plus the scroll offset at press
     /// time, replayed through [`pan_offset`] so the diagram tracks the
     /// pointer 1:1 in both axes. Begins on ANY interior cell — blank or
     /// node — because the router only reports it once the 1-cell threshold
-    /// already ruled the gesture a drag, never a click (M3).
+    /// already ruled the gesture a drag, never a click.
     LineagePan {
         /// The press cell.
         origin: ratatui::layout::Position,
@@ -37,7 +37,7 @@ pub(super) struct SplitterDrag {
     pub(super) grab_off: u16,
 }
 
-/// The settled-hover tooltip's live state (Issue 05): which node's hover
+/// The settled-hover tooltip's live state: which node's hover
 /// armed it, the lineage viewport at arm time, when the rest began, and
 /// whether the [`TOOLTIP_DELAY`] timer already fired. The loop owns the
 /// clock; both the reducer and the renderer stay clock-free.
@@ -50,11 +50,11 @@ pub(super) struct HoverTip {
     pub(super) visible: bool,
 }
 
-/// The stationary-hover delay before the tooltip shows (§9).
+/// The stationary-hover delay before the tooltip shows.
 pub(super) const TOOLTIP_DELAY: Duration = Duration::from_millis(500);
 
-/// Reconcile the settled-hover state against the freshest inputs (§9's
-/// "消す条件": press / drag / scroll / leave). The tip arms only while the
+/// Reconcile the settled-hover state against the freshest inputs (the
+/// dismissal inputs: press / drag / scroll / leave). The tip arms only while the
 /// resolved hover rests on a lineage node that is ALSO a real Dag node —
 /// a `+M more` marker is display chrome: it accents its frame but has no
 /// `dag.get`, so arming would just dirty the 500ms flip for a `tip_view`
@@ -110,7 +110,7 @@ pub(super) fn begin_pane_drag(
                 grab_off: origin.x.saturating_sub(strip.x),
             }))
         }
-        // §6: a drag that began anywhere inside the drawn lineage — blank
+        // A drag that began anywhere inside the drawn lineage — blank
         // space or a node box alike — pans the diagram. `None` while the
         // pane holds no layout (an empty pane has nothing to pan).
         HitTarget::LineageNode(_) | HitTarget::LineageBlank if lineage.is_some() => {
@@ -151,7 +151,7 @@ pub(super) fn apply_pane_drag(
 }
 
 /// Centre the lineage viewport on the grid block minimap cell `(col, row)`
-/// covers — §6's click-to-centre and each step of a scrub share it. The
+/// covers — the click-to-centre and each step of a scrub share it. The
 /// pure [`minimap_scroll_to`] maps through the same block division the draw
 /// stamps; `pan_lineage` stores the intent and the loop's `clamp_lineage`
 /// bounds the far edge, the same contract `wheel_lineage` keeps.
@@ -193,7 +193,7 @@ pub(super) fn minimap_scroll_at(
 /// Write the width a live drag asks for: the pointer's column resolved
 /// through [`splitter_drag_width`] (grab-offset honoured) against the
 /// dragged pane's FIXED outer edge — the list's left `x`, the inspector's
-/// right edge — then clamped to the §1 min/max for this terminal inside
+/// right edge — then clamped to the pane min/max for this terminal inside
 /// `set_pane_width`, so a dragged-out-of-range value clamps identically to
 /// the `<`/`>` keys.
 pub(super) fn apply_splitter_drag(app: &mut App, drag: SplitterDrag, pointer_x: u16, area: Rect) {
@@ -241,9 +241,9 @@ pub(super) fn apply_mouse(app: &mut App, outcome: &mut Outcome, action: Action) 
 /// [`App::click_target`]); every other mouse-live mode routes through the
 /// covering overlay's rect — its interior rows, its inert frame, and the
 /// click-outside dismissal ([`overlay_click`]). `Search` stays pointer-inert.
-/// Over the tab strip the wheel scrolls the STRIP, not the panes (§6).
+/// Over the tab strip the wheel scrolls the STRIP, not the panes.
 ///
-/// `chrome` is the §8/§6 span geometry the last draw painted (the loop's
+/// `chrome` is the status/title span geometry the last draw painted (the loop's
 /// stash) — status hints/chips and title parts hit-test against the exact
 /// cells the screen showed.
 pub(super) fn handle_mouse(
@@ -273,7 +273,7 @@ pub(super) fn handle_mouse(
             // covering overlay scrolls its own content instead.
             if matches!(app.mode, Mode::Selection | Mode::Home) {
                 let shift = me.modifiers.contains(KeyModifiers::SHIFT);
-                // §6: the wheel over the tab strip scrolls the STRIP (one
+                // The wheel over the tab strip scrolls the STRIP (one
                 // tab per notch) — the panes below never see it.
                 if within(rects.tab_bar, me.column, me.row) {
                     app.scroll_tab_bar(if down { 1 } else { -1 });
@@ -344,11 +344,11 @@ pub(super) fn handle_mouse(
             };
             // A press is gesture-less but not state-free: the held button is
             // an input the hover reconcile reads (a settled tooltip drops on
-            // press — §9's "消す条件"). Without a dirty pass the reconcile
-            // would never observe `mouse.press()` — the router clears it on
-            // release before the Click gesture, so a whole click would slide
-            // under a visible tip. Deduped moves and stray events still cost
-            // nothing.
+            // press — one of the dismissal inputs). Without a dirty pass
+            // the reconcile would never observe `mouse.press()` — the
+            // router clears it on release before the Click gesture, so a
+            // whole click would slide under a visible tip. Deduped moves
+            // and stray events still cost nothing.
             let pressed = matches!(input, MouseInput::Press { .. });
             let Some(gesture) = mouse.feed(input, Instant::now()) else {
                 return MouseHandled {
@@ -362,7 +362,7 @@ pub(super) fn handle_mouse(
             // The panes-owning idle modes (`Selection` and `Home`) route
             // clicks to the chrome/body hit-test; covering-overlay modes
             // take `overlay_click` instead. `Home` shares `click_target` —
-            // its `HomeRow` arm IS the row's Enter (§3: 項目はクリックでも開く).
+            // its `HomeRow` arm IS the row's Enter (a home row opens on click).
             let panes_own = matches!(app.mode, Mode::Selection | Mode::Home);
             // One consume per emitted gesture: a pick that closed a
             // transient overlay flags its follow-up `DoubleClick` inert (see
@@ -393,7 +393,7 @@ pub(super) fn handle_mouse(
             // abandoned), a mode flip ends pointer routing, and a non-left
             // drag never resizes/pans. Anything else clears it HERE — the
             // '_' fallback arm is the last place a stale splitter drag can
-            // hide (the Issue 02 carry-over), so no abandoned drag resizes
+            // hide (the stale-drag carry-over), so no abandoned drag resizes
             // or pans on a later unrelated event.
             let continues_drag = sel
                 && match &gesture {
@@ -437,19 +437,19 @@ pub(super) fn handle_mouse(
                     };
                     if let Some(t) = target.as_ref() {
                         if sel {
-                            // §6's M1 table: a double-click is NOT the click
+                            // The double-click table: a double-click is NOT the click
                             // action twice — a node double IS Enter, a list
                             // row's double opens the structure modal, and
                             // every other target takes no second action.
                             let double_left = matches!(gesture, MouseOutcome::DoubleClick { .. })
                                 && *button == MouseButton::Left;
                             match t {
-                                // §5: a splitter double-click resets that
+                                // A splitter double-click resets that
                                 // pane's saved width to default.
                                 HitTarget::PaneBorder(which) if double_left => {
                                     app.ui_state.reset_pane_width(*which);
                                 }
-                                // §6/M1: a lineage node's double-click IS
+                                // A lineage node's double-click IS
                                 // Enter — park the cursor on it, then run the
                                 // Enter arm itself (a model re-roots, a
                                 // `+M more` marker expands, anything else
@@ -458,7 +458,7 @@ pub(super) fn handle_mouse(
                                     app.commit_lineage_node(uid);
                                     apply_mouse(app, &mut outcome, Action::DetailOpen);
                                 }
-                                // §6: a list row's double-click opens the
+                                // A list row's double-click opens the
                                 // structure modal — the first Click already
                                 // re-rooted and took list focus, so
                                 // `DetailOpen` resolves the row's model
@@ -501,22 +501,22 @@ pub(super) fn handle_mouse(
                                         }
                                     }
                                 }
-                                // §6 marks double-click "—" everywhere else:
+                                // Everywhere else a double-click is inert:
                                 // tabs, `×`, `+`, arrows, inspector rows,
                                 // blanks, the minimap and the status bar take
                                 // no second action (a `×` double-click must
                                 // NOT close the tab that slid under the
-                                // pointer; Issue 05 gives inspector rows
-                                // theirs).
+                                // pointer; inspector rows keep their own
+                                // rule).
                                 _ if double_left => {}
-                                // §6: a left click on the minimap centres the
+                                // A left click on the minimap centres the
                                 // viewport on the cell's covered grid block —
                                 // the drag scrubs through the same mapping.
                                 // Left only, like every pane gesture.
                                 HitTarget::Minimap if *button == MouseButton::Left => {
                                     minimap_scroll_at(app, lineage, area, at.x, at.y);
                                 }
-                                // §12: a pick on a drawer row IS "selecting a
+                                // A pick on a drawer row IS "selecting a
                                 // model from the drawer" — the same
                                 // `click_target` arm the inline list runs —
                                 // then the surface's job is done and it
@@ -547,7 +547,7 @@ pub(super) fn handle_mouse(
                                     app.ui_state.set_list_drawer(false);
                                 }
                                 _ => {
-                                    // §8/§6's clickable chrome returns a
+                                    // Clickable chrome returns a
                                     // real Outcome (a hint's action, a chip's
                                     // dispatch) — merge it like every other
                                     // reducer result.
@@ -558,7 +558,7 @@ pub(super) fn handle_mouse(
                                 }
                             }
                         } else if matches!(app.mode, Mode::Home) {
-                            // §3's home surface: rows, the `⌂`/`+`/tab
+                            // The home surface: rows, the `⌂`/`+`/tab
                             // cells, arrows, status hints and chips all
                             // resolve through `click_target` — a `HomeRow`
                             // click is the row's Enter (`HomePick`), chrome
@@ -587,7 +587,7 @@ pub(super) fn handle_mouse(
                         }
                     }
                 }
-                // §5/§6: a drag's press cell picks its surface once — pane
+                // A drag's press cell picks its surface once — pane
                 // boundary (resize), drawn lineage (pan), or minimap (scrub)
                 // — and the stored drag tracks the pointer from then on:
                 // mid-drag motion never re-hit-tests, so a pointer dragged
@@ -762,7 +762,7 @@ pub(super) fn overlay_click(
     }
 }
 
-/// The §8/§6 span geometry the last draw painted — the status line's
+/// The status/title span geometry the last draw painted — the status line's
 /// hint/chip placement and the lineage title's crumb/`[{v}]`/`[lens:…]`
 /// placement — stashed by the loop and handed to [`hit_geometry`] so a
 /// hover/click lands on the exact spans the screen showed.
@@ -798,7 +798,7 @@ impl ChromeGeom {
 /// `Layout`, and `UiState`'s scroll offsets — so a click lands on what the
 /// screen shows. `overlay` is the covering overlay's outer rect
 /// ([`overlay_rect`]'s output) — `None` while the panes are the surface.
-/// `status`/`title` are the §8/§6 layouts the loop stashed after the last
+/// `status`/`title` are the layouts the loop stashed after the last
 /// draw — the hit-test reads the SAME spans the frame painted.
 pub(super) fn hit_geometry<'a>(
     app: &'a App,
@@ -835,7 +835,7 @@ pub(super) fn hit_geometry<'a>(
     }
 }
 
-/// Route §12's drawer-owned keys in the narrow band — `Esc` closes an open
+/// Route the drawer-owned keys in the narrow band — `Esc` closes an open
 /// drawer, `Ctrl-b` toggles it. Returns `true` when the key was consumed
 /// HERE, so the caller leaves the reducer (and the inline-list pref
 /// `Ctrl-b` guards) untouched. Outside the band the keys keep their
@@ -897,7 +897,7 @@ pub(super) fn wheel(app: &mut App, rects: &PaneRects, col: u16, row: u16, down: 
     if app.home_active() {
         return;
     }
-    // §12's drawer owns the wheel while it floats: its interior IS the list
+    // The drawer owns the wheel while it floats: its interior IS the list
     // surface (the same notch→cursor+adopt the inline pane gets) and its
     // frame is inert chrome. Cells OUTSIDE it keep their pane meaning — the
     // lineage to the right of the drawer stays scrollable; only clicks
@@ -915,10 +915,10 @@ pub(super) fn wheel(app: &mut App, rects: &PaneRects, col: u16, row: u16, down: 
         }
     }
     if within(pane_interior(rects.list), col, row) {
-        // §2 T1: a wheel notch over the list moves the CURSOR — adopt it as
-        // the active tab's root exactly like a j/k move (guarded on the
-        // index actually changing, so a clamped notch at the boundary
-        // never re-roots a detached tab).
+        // Browsing is selecting: a wheel notch over the list moves the
+        // CURSOR — adopt it as the active tab's root exactly like a j/k
+        // move (guarded on the index actually changing, so a clamped
+        // notch at the boundary never re-roots a detached tab).
         let before = app.ui_state.selected();
         app.ui_state.wheel_list(down);
         if app.ui_state.selected() != before {

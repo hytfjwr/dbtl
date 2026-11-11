@@ -1,9 +1,9 @@
 use super::*;
 
-// ---- Issue 07: clickable status hints/chips + title chrome -----------------
+// ---- Clickable status hints/chips + title chrome ---------------------------
 //
-// §8/§6's chrome targets dispatch through `click_target` exactly like the
-// pane targets: a hint runs its own `Action`, a chip the §8 table's, a crumb
+// The chrome targets dispatch through `click_target` exactly like the
+// pane targets: a hint runs its own `Action`, a chip the chip table's, a crumb
 // replays `history_back`, the `[{v}]`/`[lens:…]` tags ResetView/CycleLens.
 
 #[test]
@@ -29,7 +29,7 @@ fn click_target_status_hint_dispatches_its_action_and_none_is_inert() {
 #[test]
 fn click_target_status_chips_follow_the_chip_table() {
     use crate::ui::StatusChip;
-    // §8's chip click table, driven through the production seam.
+    // The chip click table, driven through the production seam.
     let mut a = sample_app();
 
     a.click_target(
@@ -104,7 +104,7 @@ fn click_target_status_chips_follow_the_chip_table() {
 
 #[test]
 fn click_target_title_crumb_replays_history_back() {
-    // §6: a breadcrumb entry's click = `b` pressed its step count — the SAME
+    // A breadcrumb entry's click = `b` pressed its step count — the SAME
     // history mechanism, no second model.
     let mut a = sample_app();
     a.select_by_unique_id("model.sample.stg_orders");

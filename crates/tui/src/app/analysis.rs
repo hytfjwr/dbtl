@@ -57,7 +57,7 @@ impl App {
         // AND zero kept children).
         let mut transitive: Vec<(String, String, usize)> = Vec::new();
         let mut orphans: Vec<String> = Vec::new();
-        // CLL v1: models that could not be parsed fell back to the Issue 07
+        // CLL v1: models that could not be parsed fell back to the
         // name-match approximation. Resolving here records each model's
         // fallback flag (the resolutions stay memoized for later browsing), so
         // the dashboard can report the same count `dbtl columns` prints.
@@ -212,7 +212,7 @@ impl App {
 
     /// The per-column `(upstream, downstream)` ONE-HOP column-edge counts for
     /// a node — the structure modal's `↑u ↓d` counts beside each column row
-    /// (direct parents in / direct children out, per the Issue 07 spec).
+    /// (direct parents in / direct children out, per the contract).
     /// Drives the app-owned [`SqlParseResolver`](crate::SqlParseResolver)
     /// through a fresh lazy [`ColumnLineage`](crate::ColumnLineage) (the
     /// resolver's own per-uid memos persist; the engine's per-node memo is

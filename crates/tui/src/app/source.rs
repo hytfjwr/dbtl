@@ -186,8 +186,8 @@ impl App {
         }
         // Drop the tabs whose root vanished from the rebuilt graph — a root
         // that survives but is no longer a `model` can't be re-rooted either
-        // (§2: 消えたモデルのタブは捨てる). The HOME tab always survives
-        // (Issue 10's fixed left tab); it can never empty the strip.
+        // (a vanished model's tab drops). The HOME tab always survives
+        // (the fixed left tab); it can never empty the strip.
         // The `is_rootable` rule, inlined (not `App::is_rootable`) so the
         // predicate borrows `dag` disjoint from the `tabs` iteration below.
         let live = |t: &TabState| {

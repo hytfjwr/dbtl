@@ -151,7 +151,7 @@ pub fn build_app(cli: &Cli) -> Result<App> {
         App::new(dag, PathBuf::from(label))
     };
     app.set_scope(scope);
-    // Issue 08: the load/scope warnings that already went to stderr also join
+    // The load/scope warnings that already went to stderr also join
     // the notification log as unread WARNING entries — opening `Ctrl-n`
     // replays what scrolled past before the TUI came up. One stamp per batch
     // (now_hhmmss spawns `date`; per-line stamping would fork per warning).

@@ -37,11 +37,11 @@ pub enum LineageLens {
     /// Last-run `execution_time` heat: the slowest nodes glow on the same
     /// low/mid/high ramp the DegreeHeat lens uses.
     RunTime,
-    /// Column impact (Issue 09): the nodes the TRACED column's closure reaches
+    /// Column impact: the nodes the TRACED column's closure reaches
     /// downstream glow — the "who does this column feed" answer. Skipped by
     /// `CycleLens` while no column focus is active.
     ColumnImpact,
-    /// Primary-key guarantee (Issue 11): models lacking the shared
+    /// Primary-key guarantee: models lacking the shared
     /// [`has_pk_guarantee`](crate::has_pk_guarantee) predicate — a `unique` +
     /// `not_null` pair on one column, or a `unique_combination_of_columns`
     /// test — are violation-coloured. Data-free (needs only `Dag::tests`), so
@@ -68,7 +68,7 @@ impl LineageLens {
     }
 }
 
-/// The inspector pane's visibility pref (screen-spec §4): what `I` cycles and
+/// The inspector pane's visibility pref: what `I` cycles and
 /// what persists — NOT the effective on-screen state, which the event loop
 /// resolves per frame from this value + the terminal width (the only
 /// size-aware layer) and stores back via [`UiState::set_inspector_shown`].
@@ -77,13 +77,13 @@ impl LineageLens {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InspectorPolicy {
     /// Width-driven (the default): the pane shows itself at terminals
-    /// ≥160 columns and hides below — §12's complete "160 列以上で自動"
-    /// rule, resolved via [`shown_at`](InspectorPolicy::shown_at).
+    /// ≥160 columns and hides below — the ">=160 shows it" rule,
+    /// resolved via [`shown_at`](InspectorPolicy::shown_at).
     #[default]
     Auto,
     /// Always request the pane — `pane_layout` still display-clamps its
     /// width when the terminal can't fit it, so `On` at a tiny terminal can
-    /// still yield a zero-width pane (never an error, by §1's clamp rule).
+    /// still yield a zero-width pane (never an error, by the clamp rule).
     On,
     /// Never show the pane (and never accept its focus).
     Off,
@@ -101,7 +101,7 @@ impl InspectorPolicy {
 
     /// The on-screen answer for a terminal `width` columns wide: `On`/`Off`
     /// answer for themselves (explicit prefs beat every automatic decision),
-    /// `Auto` resolves to §12's "≥160 columns" floor. The event loop resolves
+    /// `Auto` resolves to the "≥160 columns" floor. The event loop resolves
     /// the pref through this every frame — the single pure predicate the
     /// width boundary lives behind, so the 159/160 edge is unit-testable.
     pub fn shown_at(self, width: u16) -> bool {
@@ -135,14 +135,14 @@ impl InspectorPolicy {
 }
 
 /// Which pane currently has focus: the left model list, the center lineage
-/// pane, or the right inspector pane (Issue 04).
+/// pane, or the right inspector pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     /// The left model list pane.
     List,
     /// The center lineage pane.
     RightPane,
-    /// The right inspector pane (Issue 04) — reachable via `Tab` only while
+    /// The right inspector pane — reachable via `Tab` only while
     /// the pane is shown; `j`/`k`/`d`/`u`/`g`/`G`/`h`/`l` and the wheel act
     /// on its content while focused.
     Inspector,
@@ -151,8 +151,8 @@ pub enum Focus {
 impl Focus {
     /// The next pane in the `Tab` ring (the ORDER — visibility filtering is
     /// [`UiState::toggle_focus`]'s job, since only UiState knows which panes
-    /// are on screen). `List → RightPane → Inspector → List` (§4's
-    /// 一覧 → Lineage → インスペクタ → 一覧).
+    /// are on screen). `List → RightPane → Inspector → List` (the pane
+    /// cycle).
     pub(super) fn next(self) -> Self {
         match self {
             Focus::List => Focus::RightPane,

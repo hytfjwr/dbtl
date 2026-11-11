@@ -1,7 +1,7 @@
 use super::*;
 
 // ============================================================================
-// Issue 09 — search hint/zero-match, palette Recent/@/unavailable/no-match,
+// search hint/zero-match, palette Recent/@/unavailable/no-match,
 // help /-filter, empty-list + empty-lineage reasons
 // ============================================================================
 
@@ -14,7 +14,7 @@ pub(super) fn search_empty_query_stamps_the_syntax_hint() {
     use dbtl::Action;
     let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
     apply_action(&mut app, Action::SearchOpen);
-    // The resizable list pane defaults to 34 cols — widen it (Issue 02's
+    // The resizable list pane defaults to 34 cols — widen it (via
     // `set_list_width`) so the whole hint line fits inside the pane.
     app.ui_state.set_list_width(60);
     let text = buffer_to_string(&render_app(&app, 200, 30));
@@ -29,7 +29,7 @@ pub(super) fn search_empty_query_stamps_the_syntax_hint() {
     // The arrow comes from Chrome: ↑ in Unicode mode, ^ in ASCII.
     assert!(text.contains("↑ history"), "the history hint renders");
 
-    // §11 position: the hint stamps the FIRST interior row (interior row 0,
+    // The position: the hint stamps the FIRST interior row (interior row 0,
     // not a row under the headers or the pane's last row).
     let inner = dbtl::ui::pane_interior(
         dbtl::ui::pane_layout(

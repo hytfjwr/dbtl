@@ -119,7 +119,7 @@ pub(super) fn status_bar_renders_hints_left_and_chips_right() {
     }
     let text = buffer_to_string(&terminal.backend().buffer().clone());
 
-    // §8's list-focus hint row, generated from BINDINGS.
+    // The list-focus hint row, generated from BINDINGS.
     assert!(text.contains("j/k move"), "hint row renders");
     assert!(text.contains("/ search"), "the search hint renders");
     // The colored chips render on the right, bracketed by the chip renderer.
@@ -137,7 +137,7 @@ pub(super) fn status_bar_renders_hints_left_and_chips_right() {
 #[test]
 pub(super) fn status_bar_drops_the_hint_tail_then_the_chip_tail_on_a_narrow_line() {
     use dbtl::ui::StatusSegments;
-    // §8's shed order on a 60-col line: the hints' low-priority tail drops
+    // The shed order on a 60-col line: the hints' low-priority tail drops
     // first (`? help` then `Tab lineage`), the kept hints + the chips that
     // still fit render.
     let list = fixture_list();
@@ -168,7 +168,7 @@ pub(super) fn status_bar_drops_the_hint_tail_then_the_chip_tail_on_a_narrow_line
 pub(super) fn status_segments_render_at_80_cols() {
     // Regression guard: at the standard 80-col terminal the hint row AND a
     // chip must still render (the old monolithic core could crowd the whole
-    // line out; §8's prefix-drop keeps the highest-priority pieces).
+    // line out; the prefix-drop keeps the highest-priority pieces).
     use dbtl::app::{apply_action, App};
     use dbtl::ui::StatusSegments;
     use dbtl::Action;
@@ -203,7 +203,7 @@ pub(super) fn status_segments_render_at_80_cols() {
 
 #[test]
 pub(super) fn status_impact_segment_renders_and_survives_narrowest_droppable_line() {
-    // The impact chip is §8's top-survival chip (status_chips index 0): it
+    // The impact chip is the top-survival chip (status_chips index 0): it
     // renders at a normal width and is the LAST chip dropped when the line
     // narrows.
     use dbtl::app::App;

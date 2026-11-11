@@ -81,7 +81,7 @@ fn restore_is_idempotent_and_tty_free() {
     ratatui::restore();
 }
 
-/// Issue 08: the stack holds at most 3 toasts, newest on top — a 4th push
+/// The stack holds at most 3 toasts, newest on top — a 4th push
 /// evicts the OLDEST entry so a burst never wedges on stale text.
 #[test]
 fn toast_stack_caps_at_three_and_evicts_oldest() {
@@ -195,7 +195,7 @@ fn find_in_path_dirs_resolves_executables_only() {
 }
 
 // ------------------------------------------------------------------
-// §5 splitter gestures through `handle_mouse`: MouseEvent -> MouseRouter
+// Splitter gestures through `handle_mouse`: MouseEvent -> MouseRouter
 // -> pane_layout hit-test -> set_pane_width — the same path the loop feeds
 // (headless: the router is pure, only `Instant::now()` comes from here).
 // ------------------------------------------------------------------
@@ -229,7 +229,7 @@ fn feed(
     feed_l(app, router, drag, kind, x, y, None);
 }
 
-/// [`feed`] with a real lineage `Layout` — the Issue 05 gestures (lineage
+/// [`feed`] with a real lineage `Layout` — the pointer gestures (lineage
 /// pan, minimap, node hover) hit-test against the drawn diagram. Geometry
 /// at 100x30 with the fixture: tab strip row 0, body rows 1..29, list
 /// 0..34 (splitter cols 33-34), lineage interior 35..99 x 2..28; the
@@ -256,7 +256,7 @@ fn feed_l(
     );
 }
 
-/// [`feed_l`] at a caller-chosen terminal `area` — the §12 drawer only
+/// [`feed_l`] at a caller-chosen terminal `area` — the drawer only
 /// exists below 80 columns, so its gestures feed a narrow band.
 #[allow(clippy::too_many_arguments)]
 fn feed_area(
@@ -280,7 +280,7 @@ fn feed_area(
     );
 }
 
-/// The narrow band the §12 drawer tests feed: 60x24 puts `pane_layout`
+/// The narrow band the drawer tests feed: 60x24 puts `pane_layout`
 /// under `LIST_AUTO_HIDE_W`, so the flag-backed rect actually resolves.
 const BAND: Rect = Rect::new(0, 0, 60, 24);
 
@@ -515,7 +515,7 @@ fn splitter_double_click_resets_the_saved_width() {
     assert_eq!(
         app.ui_state.list_width(),
         dbtl::ui::DEFAULT_LIST_WIDTH,
-        "the double-click resets to the §1 default"
+        "the double-click resets to the default"
     );
 }
 
@@ -583,7 +583,7 @@ fn non_splitter_drag_and_right_button_are_inert() {
 
 #[test]
 fn wheel_over_the_list_adopts_the_cursor_model_as_tab_root() {
-    // §2 T1 review: a wheel notch over the list moves the CURSOR, and
+    // Browsing is selecting: a wheel notch over the list moves the CURSOR, and
     // like a j/k move the cursor's model becomes the active tab's root
     // (with the history push) — root≠cursor must not detach here.
     let mut app = fixture_app();
@@ -619,12 +619,12 @@ fn wheel_over_the_list_adopts_the_cursor_model_as_tab_root() {
 }
 
 // ------------------------------------------------------------------
-// §6 Issue 05 gestures: lineage pan (blank AND node-origin), the
+// Pointer gestures: lineage pan (blank AND node-origin), the
 // minimap's click-to-centre + drag-scrub, the hover resolution the
 // accent frame keys off, and the abandoned-drag carry-over fix.
 // ------------------------------------------------------------------
 
-/// §6/M3: a drag that began on lineage blank space pans the diagram 1:1
+/// Pan, never a click: a drag that began on lineage blank space pans the diagram 1:1
 /// in BOTH axes — the release is a DragEnd, so it can never become the
 /// click that would refocus the pane.
 #[test]
@@ -675,7 +675,7 @@ fn lineage_blank_drag_pans_horizontally_and_vertically() {
     assert!(drag.is_none(), "release ends the pan");
 }
 
-/// §6/M3: a drag that began ON a node box is a pan — not a click. The
+/// A drag that began ON a node box is a pan — not a click. The
 /// cursor the click would have committed stays home, and the release
 /// (a DragEnd) never turns into one either.
 #[test]
@@ -711,7 +711,7 @@ fn lineage_node_drag_pans_and_never_clicks() {
     );
 }
 
-/// §6: a left click on the minimap centres the viewport on the clicked
+/// A left click on the minimap centres the viewport on the clicked
 /// cell's grid block — (95,4) is 12 cells into the 16-wide inset.
 #[test]
 fn minimap_click_centres_the_viewport() {
@@ -737,7 +737,7 @@ fn minimap_click_centres_the_viewport() {
     assert_eq!(app.ui_state.lineage_scroll_x(), 68);
 }
 
-/// §6: a minimap drag scrubs the viewport — every tracked cell recentres
+/// A minimap drag scrubs the viewport — every tracked cell recentres
 /// through the same `minimap_scroll_to` mapping the click uses.
 #[test]
 fn minimap_drag_scrubs_the_viewport() {
@@ -809,7 +809,7 @@ fn hover_tracks_the_node_under_the_pointer() {
     assert_eq!(router.hover(), Some(&HitTarget::LineageBlank));
 }
 
-/// Issue 02 carry-over: a splitter drag abandoned by a superseding press
+/// Stale-drag carry-over: a splitter drag abandoned by a superseding press
 /// can never resize on the new press's motion. The router keeps the
 /// newest press, so the in-flight drag is orphaned — the gesture gate
 /// must clear it, not keep it tracking.
@@ -854,7 +854,7 @@ fn abandoned_splitter_drag_clears_on_a_superseding_press() {
     assert!(drag.is_none());
 }
 
-/// Issue 02 carry-over, second half: a mode change mid-drag abandons it
+/// Stale-drag carry-over, second half: a mode change mid-drag abandons it
 /// too — the stored drag is cleared the moment pointer routing leaves
 /// `Selection`, so a later inert-mode move can't resize either.
 #[test]
@@ -888,7 +888,7 @@ fn abandoned_splitter_drag_clears_on_a_mode_change() {
 }
 
 // ------------------------------------------------------------------
-// §9 Issue 05 review: the settled tooltip drops on press / scroll /
+// The settled tooltip drops on press / scroll /
 // leave, and never arms for a `+M more` display-chrome marker.
 // ------------------------------------------------------------------
 
@@ -919,7 +919,7 @@ fn a_press_dirties_so_the_reconcile_observes_the_held_button() {
     assert!(router.press().is_some(), "the press is now observable");
 }
 
-/// §9's "消す条件": the tip drops on a press (even though the same node
+/// The dismissal inputs: the tip drops on a press (even though the same node
 /// still sits under the pointer) and on a viewport move that leaves the
 /// SAME node under the pointer — the anchored box went stale.
 #[test]
@@ -970,7 +970,7 @@ fn tooltip_never_arms_for_a_collapse_marker() {
     assert!(tip.is_some(), "a real node still arms the tip");
 }
 
-// ---- §12 narrow-band drawer: loop-level gestures ----
+// ---- Narrow-band drawer: loop-level gestures ----
 
 /// A left press+release at a cell — one full click through the router.
 fn click(
@@ -1151,7 +1151,7 @@ fn drawer_wheel_scrolls_the_list() {
     );
 }
 
-// ---- Issue 10: the home body is a panes-owning surface -------------
+// ---- The home body is a panes-owning surface -------------
 
 /// The first cell hit-testing as `HomeRow(i)` under `g` — aimed by the
 /// test instead of hardcoded, like [`list_row_cell`].
@@ -1203,7 +1203,7 @@ fn click_at(
 /// The wide layout the home tests share (tab strip + body band).
 const WIDE: Rect = Rect::new(0, 0, 100, 30);
 
-/// §3's 項目はクリックでも開く: a release-confirmed click through
+/// Home rows open on click: a release-confirmed click through
 /// `handle_mouse` on a `HomeRow` cell IS the row's Enter — the model
 /// tab activates (this is the routing the mode gate used to drop).
 #[test]
@@ -1285,7 +1285,7 @@ fn home_wheel_moves_the_home_cursor() {
     assert_eq!(app.home_sel, 0);
 }
 
-/// §12's drawer flag can never shadow the home body: entering home
+/// The drawer flag can never shadow the home body: entering home
 /// clears it, and even a stale flag loses to the home arm's hit order.
 #[test]
 fn drawer_flag_cannot_shadow_the_home_body() {

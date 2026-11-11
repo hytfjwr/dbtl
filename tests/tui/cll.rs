@@ -1,7 +1,7 @@
 use super::*;
 
 // ============================================================================
-// Column-level lineage (Issue 09): focus view, status chip, title suffix,
+// Column-level lineage: focus view, status chip, title suffix,
 // column modal — rendered through the real draw() pipeline.
 // ============================================================================
 

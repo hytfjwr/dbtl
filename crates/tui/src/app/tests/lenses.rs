@@ -678,11 +678,7 @@ fn pane_width_keys_step_the_saved_list_width_by_four() {
         "a pure view-pref write"
     );
     assert!(matches!(a.mode, Mode::Selection));
-    assert_eq!(
-        a.ui_state.list_width(),
-        38,
-        "`>` widens by the §5 4-col step"
-    );
+    assert_eq!(a.ui_state.list_width(), 38, "`>` widens by the 4-col step");
     apply_action(&mut a, Action::PaneNarrow);
     apply_action(&mut a, Action::PaneNarrow);
     assert_eq!(a.ui_state.list_width(), 30, "`<` narrows by the same step");
@@ -692,7 +688,7 @@ fn pane_width_keys_step_the_saved_list_width_by_four() {
 #[test]
 fn pane_narrow_stops_at_the_floor_and_reset_restores_defaults() {
     let mut a = app();
-    // `<` past the §1 floor (18 cols) clamps, never wraps.
+    // `<` past the floor (18 cols) clamps, never wraps.
     for _ in 0..10 {
         apply_action(&mut a, Action::PaneNarrow);
     }
@@ -701,8 +697,8 @@ fn pane_narrow_stops_at_the_floor_and_reset_restores_defaults() {
         MIN_LIST_WIDTH,
         "the saved width floors, it never wraps"
     );
-    // `=` restores BOTH panes' §1 defaults — the inspector's saved value too,
-    // though its pane only materializes in Issue 04.
+    // `=` restores BOTH panes' defaults — the inspector's saved value too,
+    // though its pane isn't drawn yet.
     a.ui_state.set_inspector_width(60);
     apply_action(&mut a, Action::PaneWidthsReset);
     assert_eq!(a.ui_state.list_width(), DEFAULT_LIST_WIDTH);

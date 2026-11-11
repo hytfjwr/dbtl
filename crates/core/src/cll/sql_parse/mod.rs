@@ -1,4 +1,4 @@
-//! CLL v1 (Issue 08): [`sqlparser`]-backed column resolution.
+//! CLL v1: [`sqlparser`]-backed column resolution.
 //!
 //! [`SqlParseResolver`] implements [`ColumnResolver`] like
 //! [`NameMatchResolver`], but instead of matching raw identifier *names*
@@ -10,7 +10,7 @@
 //!
 //! When a model has no resolvable SQL, or the parse fails, the resolver
 //! degrades **per model** to [`NameMatchResolver`] — the model's edges and
-//! column list then come from Issue 07's approximation and carry
+//! column list then come from the approximation and carry
 //! [`Confidence::NameMatch`]. The set of uids that fell back is recorded so
 //! the CLI can count them (`dbtl columns` prints a stderr summary) and the
 //! detail modal can tag the node's resolution `[name-match]`.
@@ -96,7 +96,7 @@ use scope::*;
 /// [`SqlParseResolver::exprs_memo`] shape.
 type ExprMap = BTreeMap<String, Option<Rc<BTreeMap<String, String>>>>;
 
-/// The Issue 08 resolver: parses each model's SQL (compiled first, raw as
+/// The parser-backed resolver: parses each model's SQL (compiled first, raw as
 /// the documented fallback) with `sqlparser`, resolves column references
 /// against a real FROM/JOIN/CTE scope, and classifies edges passthrough /
 /// rename / transform / filter-or-join. Per-model degradation to

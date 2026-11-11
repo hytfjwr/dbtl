@@ -73,8 +73,8 @@ pub fn dispatch(mode: &Mode, key: KeyEvent) -> Option<Action> {
 }
 
 /// The [`Action`] `Esc` produces in `mode` — resolved through [`BINDINGS`], so
-/// an outside click sends literally the same action the key sends ("Esc と同
-/// じ", screen-spec §6). `None` for modes with no `Esc` trigger.
+/// an outside click sends literally the same action the key sends (the
+/// same-as-Esc rule). `None` for modes with no `Esc` trigger.
 pub fn esc_action(mode: &Mode) -> Option<Action> {
     let mk = mode.kind();
     BINDINGS
@@ -112,7 +112,7 @@ static DYNAMIC_HELP: &[(ModeKind, &str, &str)] = &[
     (ModeKind::Palette, "a-z..", "type to filter commands"),
     (ModeKind::Palette, "@name", "search models / re-root"),
     (ModeKind::Help, "a-z..", "type to filter help lines"),
-    // §6's pointer table: clicks confirm on release; a second click on the
+    // The pointer table: clicks confirm on release; a second click on the
     // same cell inside 400ms is a double-click.
     (
         ModeKind::Selection,

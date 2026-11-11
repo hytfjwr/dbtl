@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn apply(app: &mut App, action: Action) -> Arm {
     let out: Outcome = match action {
-        // ---- column-level lineage (Issue 09) ----
+        // ---- column-level lineage ----
         Action::ColumnFocusEnter => {
             // Enter is contextual over the structure modal: while the tests
             // section owns the cursor it jumps to the relationships `to:`

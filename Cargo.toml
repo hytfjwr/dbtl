@@ -76,6 +76,8 @@ serde_json.workspace = true
 # Temp dbt projects for the symlink-loop regression test (tests/source_fixture.rs).
 tempfile = "3"
 unicode-width.workspace = true
+# The repo_hygiene scan's pattern engine (workspace-pinned).
+regex.workspace = true
 # Criterion harness for benches/pipeline.rs (synthetic-manifest pipeline cost).
 criterion = "0.5"
 

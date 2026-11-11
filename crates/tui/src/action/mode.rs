@@ -15,9 +15,9 @@ pub enum Mode {
     /// Baseline-diff summary (scrollable sections; needs a `--diff` baseline).
     Diff(DiffView),
     /// Column-lineage tree for one column (scrollable, Enter jumps to the
-    /// row's model — Issue 09 C).
+    /// row's model).
     Columns(ColumnView),
-    /// Notification centre (`Ctrl-n`, Issue 08): the recent-notification log,
+    /// Notification centre (`Ctrl-n`): the recent-notification log,
     /// scrollable, newest first.
     Notifications(NotificationsView),
     /// Command palette: a fuzzy finder over every Selection-mode command.
@@ -31,12 +31,12 @@ pub enum Mode {
         back: Option<Box<Mode>>,
         sel: usize,
     },
-    /// The node context menu (Issue 06): right-click on a node or `a`.
+    /// The node context menu: right-click on a node or `a`.
     Menu(MenuState),
     /// The `?` keybindings overlay (scrollable, `/`-filterable; `back`
-    /// restores the mode it was opened over — Issue 09).
+    /// restores the mode it was opened over).
     Help(HelpView),
-    /// The home tab is ACTIVE (Issue 10, §3): the body draws the home screen
+    /// The home tab is ACTIVE: the body draws the home screen
     /// instead of the three panes. NOT a modal — it is the idle mode while
     /// `tabs[0]` (the unclosable home tab) is active; overlays (help, stats,
     /// search) still stack on top and close back to it. The item cursor

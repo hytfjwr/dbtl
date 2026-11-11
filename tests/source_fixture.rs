@@ -761,7 +761,7 @@ fn tests_and_data_tests_merge_instead_of_dropping_the_file() {
 
 #[test]
 fn schema_relationships_test_resolves_ref_and_source_targets() {
-    // Issue 11: `synth_tests` resolves a `relationships` test's `to:` through
+    // `synth_tests` resolves a `relationships` test's `to:` through
     // the same ref()/source() extractors the .sql scan uses, so `Dag::build`
     // fills `ref_uid`/`ref_name`/`ref_column` identically in both load modes.
     use std::fs;

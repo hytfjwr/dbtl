@@ -1,8 +1,8 @@
 use super::*;
 
-// ---- Issue 04: the inspector pane ----------------------------------------------
+// ---- The inspector pane --------------------------------------------------------
 
-/// The inspector's target rule (§4): the list selection while the list is
+/// The inspector's target rule: the list selection while the list is
 /// focused; the lineage cursor's node while the lineage or inspector pane is
 /// focused; the rooted selection when the cursor is home.
 #[test]

@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- node context menu (Issue 06) ------------------------------------------
+// ---- node context menu ------------------------------------------
 
 /// Draw the node context menu into `rect` (precomputed by
 /// [`super::geom::menu_rect`] — the same rect the hit-test routes into):
@@ -8,7 +8,7 @@ use super::*;
 /// columns come from the [`MenuState`] snapshot, which was built off
 /// [`BINDINGS`](crate::action::BINDINGS) at open — nothing is re-resolved
 /// here). The selected item row is reversed; separators draw a full-width
-/// chrome rule (the `─`/`-` glyph pair from screen-spec §15).
+/// chrome rule (the `─`/`-` glyph pair).
 pub(crate) fn draw_menu(
     frame: &mut Frame,
     rect: Rect,

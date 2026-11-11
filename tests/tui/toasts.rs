@@ -111,7 +111,7 @@ pub(super) fn toast_floats_above_modal_overlays() {
     );
 }
 
-/// Issue 08: toasts stack up to 3, `toasts[0]` (the newest) on TOP — each box
+/// Toasts stack up to 3, `toasts[0]` (the newest) on TOP — each box
 /// sized to its own text, 3 rows apart starting at y=1.
 #[test]
 pub(super) fn toast_stack_renders_up_to_three_newest_on_top() {
@@ -210,7 +210,7 @@ pub(super) fn warning_toast_border_differs_from_info() {
     assert_eq!(warn_fg, theme.warn, "warning border = warn");
 }
 
-/// Issue 08: the `Ctrl-n` centre renders `HH:MM:SS  level  text` rows
+/// The `Ctrl-n` centre renders `HH:MM:SS  level  text` rows
 /// newest-first inside the shared scrollable-modal chrome.
 #[test]
 pub(super) fn notification_center_renders_rows_newest_first() {
@@ -306,7 +306,7 @@ pub(super) fn notify_chip_renders_and_drops_on_narrow() {
 
 /// On a terminal too short to float the box above the status bar (the 3-row
 /// toast sits at y=1, so height 4 would land its bottom border ON the status
-/// row), the toast is skipped entirely — the §8 hint row survives.
+/// row), the toast is skipped entirely — the hint row survives.
 #[test]
 pub(super) fn toast_skips_tiny_terminals_and_never_covers_the_status_bar() {
     let backend = TestBackend::new(60, 4);

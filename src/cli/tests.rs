@@ -79,7 +79,7 @@ fn all_scope_keeps_every_package_node() {
     assert!(scoped.contains("model.aaa_pkg.a"));
 }
 
-/// Issue 08: the load warnings the fusion fixture produces (unsupported
+/// The load warnings the fusion fixture produces (unsupported
 /// resource types) already printed to stderr must ALSO land in the
 /// App's notification log as unread WARNING rows — `Ctrl-n` replays them
 /// after the TUI opens, and `!N` counts them.

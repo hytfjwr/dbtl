@@ -26,7 +26,7 @@ pub(crate) fn draw_palette(
     // ~60% × ~60%, min-clamped so the box never collapses on a tiny terminal.
     let rect = centered_rect(60, 60, area).intersection(area);
     let chrome = super::chrome(glyphs);
-    // The `@` model-search mode re-titles the box (Issue 03): the `+`
+    // The `@` model-search mode re-titles the box: the `+`
     // palette's `new_tab` arm lands Enter in a NEW tab, a plain `@` query
     // re-roots — neither runs a command.
     let title = if state.new_tab {
@@ -241,7 +241,7 @@ pub(crate) fn draw_palette(
         }
     }
     if selectable == 0 {
-        // No candidates at all — the spec's one-line zero-match message.
+        // No candidates at all — the one-line zero-match message.
         let msg = if state.query.starts_with('@') {
             "no matching models"
         } else {
@@ -296,8 +296,8 @@ pub(crate) fn draw_yank_menu(
 }
 
 /// Dim every buffer cell OUTSIDE `rect`: a style-only pass — `fg` becomes
-/// `text_faint`, glyphs untouched, so ASCII mode loses nothing (screen-spec
-/// §9's "モーダルの外側を暗く"). Runs right before the overlay paints, so the
+/// `text_faint`, glyphs untouched, so ASCII mode loses nothing (the
+/// dim-the-modal's-exterior rule). Runs right before the overlay paints, so the
 /// box itself keeps full colour. One buffer scan per frame while an overlay
 /// is up.
 pub(crate) fn dim_exterior(frame: &mut Frame, except: Rect, t: &theme::Theme) {
