@@ -49,7 +49,7 @@ serde_norway = "0.9"
 # Scalar events carry TScalarStyle, which is the ONLY way to tell a plain
 # `yes` (PyYAML: bool) from a quoted `"yes"` (PyYAML: string) — serde_yaml-
 # family `Value` types erase that distinction before we can see it.
-yaml-rust2 = "0.9"
+yaml-rust2 = "0.13"
 # Status-bar segment width measurement (src/ui/render.rs) AND the ascii_guard test
 # (data cells that are unambiguously WIDE render fine everywhere; only
 # ambiguous-width chrome is banned). A normal dependency so `src/` can use it.
