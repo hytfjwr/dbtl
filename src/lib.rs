@@ -14,5 +14,8 @@
 
 pub use dbtl_core::*;
 pub use dbtl_docs as docs;
-pub use dbtl_docs::{generate_docs, generate_docs_with_findings, GENERATED_MARKER};
+pub use dbtl_docs::{
+    generate_docs, generate_docs_with_findings, generate_docs_with_options, DocsOptions,
+    GENERATED_MARKER,
+};
 pub use dbtl_tui::*;

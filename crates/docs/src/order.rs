@@ -12,7 +12,16 @@ pub(super) const FULL_GRAPH_NODE_LIMIT: usize = 150;
 /// Resource types in their README display order. Anything not listed is grouped
 /// under "other" by [`readme_order`] (sorted by uid), so an unexpected kind is
 /// never dropped.
-pub(super) const RESOURCE_ORDER: &[&str] = &["model", "snapshot", "seed", "source", "exposure"];
+pub(super) const RESOURCE_ORDER: &[&str] = &[
+    "model",
+    "snapshot",
+    "seed",
+    "source",
+    "exposure",
+    "semantic_model",
+    "metric",
+    "saved_query",
+];
 
 /// All nodes in a deterministic logical order for the README table:
 /// - models first, in dbt layer order ([`layer_rank`]) then by name/unique_id —

@@ -29,7 +29,7 @@ pub use cll::{
     ColumnLineage, ColumnRef, ColumnReport, ColumnResolver, ColumnRow, Confidence,
     NameMatchResolver, SqlDialect, SqlParseResolver,
 };
-pub use compiled::{default_compiled_dir, default_target_dir, CompiledSql};
+pub use compiled::{default_compiled_dir, default_target_dir, CompiledOrigin, CompiledSql};
 pub use dag::{
     coverage_gap, has_pk_guarantee, in_package, is_exposure, load_dag, load_dag_with_warnings,
     unhandled_resource_types, ColumnInfo, Dag, Edge, ExposureInfo, MacroInfo, NodeDetail, NodeInfo,
@@ -50,13 +50,15 @@ pub use lint::{
 };
 pub use manifest::{
     load_manifest, RawConfig, RawDependsOn, RawExposure, RawExposureOwner, RawManifest,
-    RawMetadata, RawNode, RawSource, RawTestMetadata, RawUnitTest, RawUnitTestIo,
+    RawMetadata, RawNode, RawSemanticResource, RawSource, RawTestMetadata, RawUnitTest,
+    RawUnitTestIo,
 };
 pub use mermaid::{
     mermaid_ids, mermaid_label, node_kind, subgraph_mermaid, subgraph_mermaid_linked,
 };
 pub use project_config::{
-    project_config_candidates, project_config_path, FailOn, ProjectConfig, PROJECT_CONFIG_NAME,
+    project_config_candidates, project_config_path, DocsConfig, FailOn, LineageDepth,
+    ProjectConfig, PROJECT_CONFIG_NAME,
 };
 pub use run_results::{default_run_results_path, RunResult, RunResults, RunStatus};
 pub use select::select;

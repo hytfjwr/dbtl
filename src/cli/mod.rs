@@ -151,6 +151,11 @@ pub enum Commands {
         /// stale marked file. Prints one line per difference for the CI log.
         #[arg(long, conflicts_with = "clean")]
         check: bool,
+        /// Per-node lineage-diagram depth: a hop count (`2`, `1`, …) or `all`
+        /// for the node's whole closure. Overrides `.dbtl.yml`'s
+        /// `docs.lineage_depth`; the shipped default is `2`.
+        #[arg(long, value_name = "N|all")]
+        lineage_depth: Option<String>,
     },
     /// Print the PR impact pack for a `--diff` baseline comparison to stdout
     /// and exit — Markdown by default (paste into a PR description), `--format

@@ -287,3 +287,170 @@ fn check_fails_on_empty_or_absent_output_dir() {
     let stdout = String::from_utf8_lossy(&result.stdout);
     assert!(stdout.contains("missing: README.md"), "got: {stdout}");
 }
+
+#[test]
+fn node_pages_land_in_resource_type_directories_on_disk() {
+    // The directories are the on-disk contract: every resource type the
+    // fixture exercises gets its own dir of pages.
+    let out = temp_out("typedirs");
+    let _ = std::fs::remove_dir_all(&out);
+    assert!(run_docs(&out, false).status.success());
+    for dir in ["models", "sources", "seeds", "snapshots", "exposures"] {
+        let d = out.join(dir);
+        assert!(d.is_dir(), "{dir}/ exists");
+        assert!(
+            std::fs::read_dir(&d).unwrap().next().is_some(),
+            "{dir}/ holds at least one page"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn lineage_depth_flag_controls_the_per_node_diagram() {
+    // `all` → the closure diagram; `1` → the 1-hop neighbourhood. The caption
+    // is the observable contract on disk.
+    let all = temp_out("depth_all");
+    let one = temp_out("depth_one");
+    let _ = std::fs::remove_dir_all(&all);
+    let _ = std::fs::remove_dir_all(&one);
+    let a = run_docs_flags(&all, &["--lineage-depth", "all"]);
+    assert!(a.status.success(), "all: {}", lossy(&a.stderr));
+    let o = run_docs_flags(&one, &["--lineage-depth", "1"]);
+    assert!(o.status.success(), "1: {}", lossy(&o.stderr));
+    let a_page = std::fs::read_to_string(
+        all.join("models/model.jaffle_finance.fct_subscription_process.md"),
+    )
+    .expect("a model page");
+    let o_page = std::fs::read_to_string(
+        one.join("models/model.jaffle_finance.fct_subscription_process.md"),
+    )
+    .expect("a model page");
+    assert!(a_page.contains("Full lineage (all"), "all → full: {a_page}");
+    assert!(
+        o_page.contains("Lineage within 1 hops"),
+        "1 → 1 hop: {o_page}"
+    );
+    let _ = std::fs::remove_dir_all(&all);
+    let _ = std::fs::remove_dir_all(&one);
+}
+
+#[test]
+fn invalid_lineage_depth_is_a_usage_error() {
+    // Not an integer ≥ 1, not `all` → exit code 2 (usage), not a crash.
+    for bad in ["0", "-1", "two", "", "2.5"] {
+        let out = temp_out("depth_bad");
+        let _ = std::fs::remove_dir_all(&out);
+        let result = run_docs_flags(&out, &["--lineage-depth", bad]);
+        assert_eq!(
+            result.status.code(),
+            Some(2),
+            "--lineage-depth {bad:?} must be a usage error (exit 2), \
+             stdout: {} stderr: {}",
+            lossy(&result.stdout),
+            lossy(&result.stderr)
+        );
+    }
+}
+
+/// Copy the fixture manifest into a fresh dir so a `.dbtl.yml` can sit next
+/// to it — the file discovery is `<manifest-dir>/.dbtl.yml` for a manifest
+/// not under `target/`.
+fn manifest_in_temp(label: &str) -> PathBuf {
+    let dir = temp_out(label);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp project dir");
+    std::fs::copy(fixture_manifest(), dir.join("manifest.json")).expect("copy manifest");
+    dir
+}
+
+#[test]
+fn dbtl_yml_docs_lineage_depth_applies_without_the_flag() {
+    let dir = manifest_in_temp("cfg_depth");
+    std::fs::write(dir.join(".dbtl.yml"), "docs:\n  lineage_depth: 1\n").unwrap();
+    let out = dir.join("out");
+    let result = dbtl_cmd()
+        .arg("docs")
+        .arg("--manifest")
+        .arg(dir.join("manifest.json"))
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .expect("run docs");
+    assert!(result.status.success(), "{}", lossy(&result.stderr));
+    let page = std::fs::read_to_string(
+        out.join("models/model.jaffle_finance.fct_subscription_process.md"),
+    )
+    .expect("a model page");
+    assert!(
+        page.contains("Lineage within 1 hops"),
+        "docs.lineage_depth: 1 configured the diagram: {page}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn lineage_depth_flag_beats_dbtl_yml() {
+    // CLI > config > default.
+    let dir = manifest_in_temp("cfg_flag_beats");
+    std::fs::write(dir.join(".dbtl.yml"), "docs:\n  lineage_depth: 1\n").unwrap();
+    let out = dir.join("out");
+    let result = dbtl_cmd()
+        .arg("docs")
+        .arg("--manifest")
+        .arg(dir.join("manifest.json"))
+        .arg("--out")
+        .arg(&out)
+        .arg("--lineage-depth")
+        .arg("all")
+        .output()
+        .expect("run docs");
+    assert!(result.status.success(), "{}", lossy(&result.stderr));
+    let page = std::fs::read_to_string(
+        out.join("models/model.jaffle_finance.fct_subscription_process.md"),
+    )
+    .expect("a model page");
+    assert!(
+        page.contains("Full lineage (all"),
+        "the flag overrides docs.lineage_depth: {page}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn clean_removes_old_flat_layout_pages() {
+    // Pages generated by an older dbtl under the single flat `models/` dir
+    // (e.g. a SOURCE page at `models/source.p.s.md`) are marked stale the
+    // moment the layout changed: `--clean` deletes them, `--check` reports
+    // them — a hand-written file under `models/` is still untouchable.
+    let out = temp_out("old_layout");
+    let _ = std::fs::remove_dir_all(&out);
+    assert!(run_docs(&out, false).status.success());
+
+    let old_source = out.join("models/source.jaffle_finance.pos_pay.md");
+    std::fs::write(&old_source, format!("{MARKER}\n\n# pos_pay\n")).unwrap();
+    let old_snapshot = out.join("models/snapshot.jaffle_finance.snap.md");
+    std::fs::write(&old_snapshot, format!("{MARKER}\n\n# snap\n")).unwrap();
+
+    // --check reports them stale without deleting.
+    let check = run_docs_flags(&out, &["--check"]);
+    assert_eq!(check.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&check.stdout);
+    assert!(
+        stdout.contains("stale: models/source.jaffle_finance.pos_pay.md"),
+        "old-layout source page reported stale: {stdout}"
+    );
+    assert!(old_source.is_file(), "--check never deletes");
+
+    // --clean removes them.
+    let clean = run_docs_flags(&out, &["--clean"]);
+    assert!(clean.status.success(), "clean: {}", lossy(&clean.stderr));
+    assert!(!old_source.exists(), "old source page removed");
+    assert!(!old_snapshot.exists(), "old snapshot page removed");
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+/// Lossy-decode process output for assertion messages.
+fn lossy(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).into_owned()
+}

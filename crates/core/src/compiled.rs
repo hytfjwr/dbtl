@@ -51,6 +51,25 @@ pub struct CompiledSql {
     /// `compiled_code`: it ships in the same artifact as `raw_code`, so it is
     /// exactly as fresh as the manifest itself.
     pub stale: bool,
+    /// Where the expansion came from. Consumers whose output must not depend
+    /// on the local checkout's `target/` state read only
+    /// [`CompiledOrigin::Manifest`] entries; the interactive preview reads
+    /// either.
+    pub origin: CompiledOrigin,
+}
+
+/// The source a node's compiled SQL was read from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CompiledOrigin {
+    /// The manifest's own `compiled_code` field — part of the artifact, so
+    /// identical wherever the manifest travels.
+    Manifest,
+    /// A `target/compiled/` file read at load — local-checkout state that
+    /// varies run to run and machine to machine. The default: an unset
+    /// `origin` must behave like "not the manifest's own field" — never
+    /// accidentally privileged.
+    #[default]
+    File,
 }
 
 /// The on-disk compiled file for a node:

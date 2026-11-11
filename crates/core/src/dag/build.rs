@@ -60,6 +60,7 @@ impl Dag {
                     CompiledSql {
                         code: code.clone(),
                         stale: false,
+                        origin: CompiledOrigin::Manifest,
                     },
                 );
             }
@@ -382,8 +383,14 @@ impl Dag {
             let local = primary.as_deref().is_none_or(|p| p == pkg);
             let stale = project_root
                 .is_some_and(|root| crate::compiled::is_stale(&path, root, local, pkg, ofp));
-            self.compiled
-                .insert(uid.clone(), CompiledSql { code, stale });
+            self.compiled.insert(
+                uid.clone(),
+                CompiledSql {
+                    code,
+                    stale,
+                    origin: CompiledOrigin::File,
+                },
+            );
         }
     }
 }

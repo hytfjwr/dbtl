@@ -127,23 +127,6 @@ pub(super) fn load_project_config(
     Ok(ProjectConfigFile { config, path })
 }
 
-/// The lint config for `check --lint` and `docs`: `.dbtl.yml` beside the
-/// resolved data source plus `--rules` overlaid as the authoritative rule
-/// selector (exactly the named rules run — the file still supplies
-/// thresholds and naming prefixes). Every failure is a usage error — a
-/// config the caller handed us that we cannot interpret.
-pub(super) fn load_lint_config(
-    resolved: &ResolvedSource,
-    rules: &[String],
-) -> Result<dbtl::LintConfig, CliError> {
-    let (manifest_arg, project_arg) = resolved_config_args(resolved);
-    let mut cfg = load_project_config(manifest_arg.as_deref(), project_arg.as_deref())?
-        .config
-        .lint;
-    apply_rules_overlay(&mut cfg, rules)?;
-    Ok(cfg)
-}
-
 /// Every `--rules` name must be a registry rule — checked before the data
 /// source loads so an unknown name is a usage error, never masked behind a
 /// missing-input error.
@@ -218,6 +201,18 @@ mod tests {
         }
     }
 
+    /// The production composition under test: `.dbtl.yml` beside the
+    /// resolved source → the `lint:` section → the `--rules` overlay.
+    fn lint_cfg_for(resolved: &ResolvedSource, rules: &[String]) -> dbtl::LintConfig {
+        let (manifest_arg, project_arg) = resolved_config_args(resolved);
+        let mut cfg = load_project_config(manifest_arg.as_deref(), project_arg.as_deref())
+            .unwrap()
+            .config
+            .lint;
+        apply_rules_overlay(&mut cfg, rules).unwrap();
+        cfg
+    }
+
     #[test]
     fn rules_flag_is_the_authoritative_selector() {
         // Named rules run even when the file turns them off — at the
@@ -230,11 +225,10 @@ mod tests {
         )
         .unwrap();
         let resolved = resolved_at(dir.path());
-        let cfg = load_lint_config(
+        let cfg = lint_cfg_for(
             &resolved,
             &["root_models".to_string(), "source_fanout".to_string()],
-        )
-        .unwrap();
+        );
         assert!(cfg.enabled(dbtl::LintRule::RootModels));
         assert_eq!(
             cfg.severity(dbtl::LintRule::RootModels),
@@ -251,7 +245,7 @@ mod tests {
             "unnamed rules go off under --rules"
         );
         // No --rules → the file's off applies.
-        let cfg = load_lint_config(&resolved, &[]).unwrap();
+        let cfg = lint_cfg_for(&resolved, &[]);
         assert!(!cfg.enabled(dbtl::LintRule::RootModels));
         assert_eq!(
             cfg.severity(dbtl::LintRule::SourceFanout),

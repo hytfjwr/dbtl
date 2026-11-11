@@ -122,6 +122,7 @@ impl Dag {
             CompiledSql {
                 code: code.to_string(),
                 stale,
+                origin: crate::compiled::CompiledOrigin::File,
             },
         );
     }

@@ -65,7 +65,11 @@ pub(super) fn push_stats_summary(s: &mut String, dag: &Dag, files: &BTreeMap<Str
         });
         for node in orphans {
             match files.get(&node.unique_id) {
-                Some(rel) => s.push_str(&format!("- [{}]({})\n", node.name, rel)),
+                Some(rel) => s.push_str(&format!(
+                    "- [{}]({})\n",
+                    node.name,
+                    page_link("README.md", rel)
+                )),
                 None => s.push_str(&format!("- {}\n", node.name)),
             }
         }
@@ -78,10 +82,11 @@ pub(super) fn push_stats_summary(s: &mut String, dag: &Dag, files: &BTreeMap<Str
 /// numbers. Rendered only when lint ran (`Some`); a clean run is still stated
 /// ("No violations."), an absent run adds nothing.
 ///
-/// Layout: a rule → count table in [`LintRule::ALL`] order (violating rules
-/// only), then a per-rule list of the violating nodes, each linked to its page
-/// — deterministic by construction (rules in eval order, findings in sorted
-/// `unique_id` order).
+/// Layout: a rule → severity + count table in registry order (violating
+/// rules only), then a per-rule list of the violating nodes, each linked to
+/// its page — deterministic by construction (rules in eval order, findings
+/// in sorted `unique_id` order). A finding the baseline file freezes carries
+/// a `(baselined)` suffix, and the totals line counts them.
 pub(super) fn push_lint_summary(
     s: &mut String,
     dag: &Dag,
@@ -98,36 +103,57 @@ pub(super) fn push_lint_summary(
         s.push_str("No violations.\n");
         return;
     }
-    s.push_str("| Rule | Findings |\n");
-    s.push_str("| --- | --- |\n");
-    for rule in LintRule::ALL {
-        let n = findings.iter().filter(|f| f.rule == rule).count();
-        if n > 0 {
-            s.push_str(&format!("| `{}` | {n} |\n", rule.name()));
+    s.push_str("| Rule | Severity | Findings |\n");
+    s.push_str("| --- | --- | --- |\n");
+    // Registry order, not ALL order — the rule registry is the ordering
+    // contract for every lint surface (the two agree by construction).
+    for info in dbtl_core::lint::REGISTRY {
+        let fs: Vec<&Finding> = findings.iter().filter(|f| f.rule == info.rule).collect();
+        if !fs.is_empty() {
+            s.push_str(&format!(
+                "| `{}` | {} | {} |\n",
+                info.rule.name(),
+                fs[0].severity.name(),
+                fs.len()
+            ));
         }
     }
+    let baselined = findings.iter().filter(|f| f.baselined).count();
+    let baselined_note = if baselined > 0 {
+        format!(" ({baselined} baselined)")
+    } else {
+        String::new()
+    };
     s.push_str(&format!(
-        "\n{} finding(s) across {} rule(s).\n",
+        "\n{} finding(s) across {} rule(s){}.\n",
         findings.len(),
-        LintRule::ALL
+        dbtl_core::lint::REGISTRY
             .iter()
-            .filter(|r| findings.iter().any(|f| f.rule == **r))
-            .count()
+            .filter(|i| findings.iter().any(|f| f.rule == i.rule))
+            .count(),
+        baselined_note
     ));
-    for rule in LintRule::ALL {
-        let fs: Vec<&Finding> = findings.iter().filter(|f| f.rule == rule).collect();
+    for info in dbtl_core::lint::REGISTRY {
+        let fs: Vec<&Finding> = findings.iter().filter(|f| f.rule == info.rule).collect();
         if fs.is_empty() {
             continue;
         }
-        s.push_str(&format!("\n### `{}`\n\n", rule.name()));
+        s.push_str(&format!("\n### `{}`\n\n", info.rule.name()));
         for f in fs {
             let name = dag
                 .get(&f.node_uid)
                 .map(|n| n.name.as_str())
                 .unwrap_or(&f.node_uid);
+            let baselined = if f.baselined { " (baselined)" } else { "" };
             match files.get(&f.node_uid) {
-                Some(rel) => s.push_str(&format!("- [{}]({}) — {}\n", name, rel, f.message)),
-                None => s.push_str(&format!("- {name} — {}\n", f.message)),
+                Some(rel) => s.push_str(&format!(
+                    "- [{}]({}) — {}{}\n",
+                    name,
+                    page_link("README.md", rel),
+                    f.message,
+                    baselined
+                )),
+                None => s.push_str(&format!("- {name} — {}{}\n", f.message, baselined)),
             }
         }
     }
