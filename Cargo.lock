@@ -503,7 +503,6 @@ dependencies = [
  "dbtl-docs",
  "dbtl-tui",
  "ratatui",
- "regex",
  "serde",
  "serde_json",
  "tempfile",

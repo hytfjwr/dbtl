@@ -1172,8 +1172,8 @@ mod tests {
     #[test]
     fn mid_truncate_budgets_cjk_by_cells_not_chars() {
         use unicode_width::UnicodeWidthStr;
-        // あいうえお = 10 cells (2/char). Budget 7 → head+`…`+tail ≤ 7
-        // (avail 6 → tail お / head あい), tail preserved, chars stay whole.
+        // five 2-cell kana = 10 cells. Budget 7 → head+`…`+tail ≤ 7
+        // (avail 6 → tail 1 char / head 2), tail preserved, chars stay whole.
         let (t, _) = mid_truncate_indexed("あいうえお", 7, "…");
         assert_eq!(t, "あい…お");
         assert!(UnicodeWidthStr::width(t.as_str()) <= 7);
