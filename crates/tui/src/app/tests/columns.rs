@@ -645,8 +645,8 @@ fn column_focus_survives_an_overview_round_trip() {
 
 #[test]
 fn detail_enter_on_a_columnless_modal_keeps_the_classic_close() {
-    // A node whose modal has no column rows keeps Enter == close (the Issue
-    // 07 contract — the focus arm only fires with a live column cursor). A
+    // A node whose modal has no column rows keeps Enter == close (the focus
+    // arm only fires with a live column cursor). A
     // seed is guaranteed columnless (no SQL for the resolver, no declared
     // columns); navigate the lineage cursor onto it — fct_orders' upstream
     // subgraph contains the seed — so DetailOpen builds its modal.

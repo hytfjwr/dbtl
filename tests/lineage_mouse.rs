@@ -339,7 +339,7 @@ fn tooltip_flips_left_when_the_right_side_overflows() {
 
 #[test]
 fn overlays_never_move_a_glyph() {
-    // The invariant the whole issue stands on: feeding the accent overlays
+    // The invariant these overlays stand on: feeding the accent overlays
     // changes only styles, never a symbol — the buffer-level form of the
     // golden fixtures' byte identity.
     let (a, _interior) = render_with(100, 30, &Scene::default());

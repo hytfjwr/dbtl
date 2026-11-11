@@ -73,8 +73,8 @@ pub struct UiState {
     /// `reduce_selection`); the DISPLAYED width is `geom::pane_layout`'s
     /// clamp of this value to the terminal.
     list_width: u16,
-    /// The inspector pane's saved width in columns. Stored ahead of Issue
-    /// 04's pane so `=` and the persisted state already carry it.
+    /// The inspector pane's saved width in columns. The field predates the
+    /// pane itself, so `=` and the persisted state already carry it.
     inspector_width: u16,
     /// The inspector visibility pref (`I` cycles it; persisted). Pure data —
     /// the width-aware `auto` resolution happens in the event loop, which

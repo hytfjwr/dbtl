@@ -482,11 +482,10 @@ impl App {
 }
 
 /// Middle-elide `name` to at most `max` display chars, keeping head and tail
-/// (`stg_payment__…_departments` — the name-display rule: dbt names share
-/// prefixes, so
-/// the tail is what distinguishes them). The ellipsis is `..` — never the
-/// `…` char, which is ambiguous-width on CJK terminals (the same rule the
-/// breadcrumb follows).
+/// (`stg_payment__…_departments` — dbt names share prefixes, so the tail is
+/// what distinguishes them). The ellipsis is `..` — never the `…` char,
+/// which is ambiguous-width on CJK terminals (the same rule the breadcrumb
+/// follows).
 fn mid_truncate(name: &str, max: usize) -> String {
     let chars: Vec<char> = name.chars().collect();
     if chars.len() <= max {

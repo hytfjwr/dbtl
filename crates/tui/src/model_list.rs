@@ -198,7 +198,7 @@ impl ModelList {
     /// header scrolled off above — AND that row is not the selected one
     /// (the pin would hide the selection marker). An accessor over `rows`
     /// only — pinning is rendering/hit-test chrome, never a model-space or
-    /// display-row-space mutation (the issue's rendering-only rule).
+    /// display-row-space mutation (rendering only — no model state moves).
     pub fn sticky_header(&self, offset: usize, selected: usize) -> Option<&DisplayRow> {
         match self.rows.get(offset) {
             Some(DisplayRow::Model { model_index, .. }) if *model_index != selected => self

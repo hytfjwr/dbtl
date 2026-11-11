@@ -10,8 +10,8 @@ pub struct ResolvedSource {
     pub label: String,
     pub is_source: bool,
     /// The collected warnings (loader first, then scope). `build_app` feeds
-    /// them to the App's notification log as unread WARNING entries (Issue
-    /// 08) so they stay visible after the TUI opens; non-TUI callers ignore
+    /// them to the App's notification log as unread WARNING entries so they
+    /// stay visible after the TUI opens; non-TUI callers ignore
     /// them — stderr output is unchanged.
     pub warnings: Vec<String>,
 }
