@@ -1,0 +1,44 @@
+name: Demo
+
+# Manual only — renders demo/demo.tape into demo/demo.gif and uploads it as
+# a workflow artifact for README/docs use. Nothing is committed back.
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  demo:
+    name: Render demo GIF
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build dbtl
+        run: cargo build --release --locked
+
+      - name: Render the demo
+        uses: charmbracelet/vhs-action@f6d7db07a432fcd3b06772628d36a57f96d95dcf # v2.1.1
+        with:
+          path: demo/demo.tape
+
+      - name: Upload the GIF
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: demo-gif
+          path: demo/demo.gif
+          if-no-files-found: error
