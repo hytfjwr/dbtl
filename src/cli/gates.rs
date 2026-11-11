@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 pub fn run_impact(
     format: ImpactFormat,
     reports: &[String],
+    select: &[String],
     src: &DataSourceArgs,
 ) -> Result<(), CliError> {
     // The baseline is `impact`'s reason to exist — missing is a usage error,
@@ -23,6 +24,9 @@ pub fn run_impact(
     for spec in reports {
         files.push(parse_report_spec(spec, IMPACT_FORMATS)?);
     }
+    // A malformed --select is a usage error — checked before the load so it
+    // can't hide behind a missing-input error.
+    validate_selector_specs(select, "--select")?;
     let scope = src.scope;
     let resolved = src.resolve()?;
     let (base, label) = load_baseline(diff_path, scope, &src.project_dir())?;
@@ -35,9 +39,20 @@ pub fn run_impact(
     // The same resolver pair the TUI diffs through (catalog-backed current,
     // catalog-less baseline) so the report's column analysis matches the
     // `D` modal byte-for-byte.
-    let cur_res = src.cll_resolver(&resolved)?;
-    let base_res = src.baseline_resolver(&resolved.dag, &base);
-    let diff = dbtl::compute_diff_with(&base, &resolved.dag, &base_res, &cur_res);
+    let diff = selector_diff(src, &resolved, &base)?;
+    // --select narrows the whole payload: `added`/`modified`/`column_changes`
+    // intersect the selection while `removed` and the edge listings stay
+    // (they name nodes the current dag can't resolve). An empty match warns
+    // — the report then shows an empty change set, still a valid answer.
+    let selection = if select.is_empty() {
+        None
+    } else {
+        let sel = selector_set(&resolved.dag, Some(&diff), select);
+        if sel.is_empty() {
+            eprintln!("warning: --select '{}' matched no nodes", select.join(" "));
+        }
+        Some(sel)
+    };
     let report = dbtl::diff_report(
         &resolved.dag,
         Some(&base),
@@ -47,6 +62,7 @@ pub fn run_impact(
         &dbtl::ImpactOpts {
             owner_key: &owner_key,
             hub_min_downstream: pc.config.check.min_downstream(),
+            selection: selection.as_ref(),
         },
     );
     let project = resolved.dag.project_name().unwrap_or("dbt");
@@ -117,6 +133,8 @@ pub struct CheckArgs<'a> {
     pub path_prefix: Option<&'a str>,
     /// `--docs-dir` — gate on generated-docs freshness in this directory.
     pub docs_dir: Option<&'a str>,
+    /// `--select` — the dbt-selector specs every gate intersects.
+    pub select: &'a [String],
 }
 
 /// Merge `.dbtl.yml`'s `check:` section with the CLI overrides into the
@@ -236,6 +254,11 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
     // error. Same for a malformed --report spec or a --path-prefix with no
     // path-carrying format selected.
     validate_rule_names(args.rules)?;
+    // A malformed --select is a usage error (a CI gate must never silently
+    // check an empty set), and a `state:` atom needs the `--diff` baseline
+    // it compares against — both checked before the data load.
+    validate_selector_specs(args.select, "--select")?;
+    require_diff_for_state(args.select, src.diff.is_some())?;
     let plan = OutputPlan::build(
         args.format,
         args.quiet,
@@ -262,6 +285,37 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
     let owner_key = owner_meta_key(pc.config.owner_meta_key.as_deref());
     let lint_active = args.lint || !args.rules.is_empty() || check_cfg.lint;
 
+    // The baseline loads once and feeds EVERYTHING diff-aware — the diff
+    // gates, the lint new-violation comparison, and `--select`'s `state:`
+    // atoms — and the DagDiff is computed once through the same resolver
+    // pair `dbtl impact` uses, so all three see the identical change set.
+    let base_ctx = match src.diff {
+        Some(d) => Some(load_baseline(d, scope, &src.project_dir())?),
+        None => None,
+    };
+    let diff = match &base_ctx {
+        Some((base, _)) => Some(selector_diff(src, &resolved, base)?),
+        None => None,
+    };
+    // `--select` evaluates once into the uid set every gate intersects:
+    // the coverage counts shrink to it, the diff gates read a
+    // selection-narrowed `diff_report`, lint keeps only findings inside
+    // it. `docs_drift` deliberately ignores it — a docs freshness
+    // comparison is whole-set by definition. An empty match warns and
+    // runs on (a gate on zero nodes passes).
+    let selection = if args.select.is_empty() {
+        None
+    } else {
+        let sel = selector_set(dag, diff.as_ref(), args.select);
+        if sel.is_empty() {
+            eprintln!(
+                "warning: --select '{}' matched no nodes",
+                args.select.join(" ")
+            );
+        }
+        Some(sel)
+    };
+
     // The shared report: gates in evaluation order, the context lines
     // (`baseline:`/`affected owners:`) anchored where the line report has
     // always printed them — after `scope:` + the coverage family.
@@ -271,9 +325,10 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
     // ---- the coverage family (no baseline needed) --------------------
     // Each reads a shared `*_counts` core function — the same numbers the
     // TUI gauges and `dbtl docs` summaries quote, so the gate can never
-    // count differently from the surfaces.
+    // count differently from the surfaces. `selection` narrows the counted
+    // population; `None` is the untouched whole-project count.
     if let Some(sev) = check_cfg.severity(G::Coverage) {
-        let (tested, total) = dbtl::coverage_counts(dag);
+        let (tested, total) = dbtl::coverage_counts(dag, selection.as_ref());
         // No buildable nodes → nothing untested → 100%.
         let pct = (tested * 100).checked_div(total).unwrap_or(100);
         let min = check_cfg.min(G::Coverage);
@@ -288,7 +343,7 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
         );
     }
     if let Some(sev) = check_cfg.severity(G::ColumnCoverage) {
-        let (covered, declared) = dbtl::column_coverage_counts(dag);
+        let (covered, declared) = dbtl::column_coverage_counts(dag, selection.as_ref());
         // No declared columns → nothing to cover → 100%.
         let pct = (covered * 100).checked_div(declared).unwrap_or(100);
         let min = check_cfg.min(G::ColumnCoverage);
@@ -303,7 +358,7 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
         );
     }
     if let Some(sev) = check_cfg.severity(G::DocCoverage) {
-        let (documented, total) = dbtl::doc_coverage_counts(dag);
+        let (documented, total) = dbtl::doc_coverage_counts(dag, selection.as_ref());
         let pct = (documented * 100).checked_div(total).unwrap_or(100);
         let min = check_cfg.min(G::DocCoverage);
         push_gate(
@@ -318,30 +373,27 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
     }
 
     // ---- the diff gates ----------------------------------------------
-    // The baseline loads once and feeds BOTH the diff gates and the lint
-    // new-violation comparison.
-    let base_ctx = match src.diff {
-        Some(d) => Some(load_baseline(d, scope, &src.project_dir())?),
-        None => None,
-    };
+    // The same baseline/DagDiff pair `--select`'s `state:` atoms and the
+    // lint narrowing already read — one change set per run.
     if let Some((base, label)) = &base_ctx {
         // Resolver-aware diff — the same pair `run_impact` and the TUI's `D`
         // modal use — so the breaking-columns gate rides the identical column
         // analysis the reviewer reads, and the report's `impact` block IS
         // the same payload `dbtl impact` prints (the hub list included —
-        // `min_downstream` comes from the same `check:` resolution).
-        let cur_res = src.cll_resolver(&resolved)?;
-        let base_res = src.baseline_resolver(dag, base);
-        let diff = dbtl::compute_diff_with(base, dag, &base_res, &cur_res);
+        // `min_downstream` comes from the same `check:` resolution, and the
+        // `selection` is the same set `--select` narrowed the coverage
+        // counts to).
+        let diff = diff.as_ref().expect("a baseline always yields a diff");
         let payload = dbtl::diff_report(
             dag,
             Some(base),
-            &diff,
+            diff,
             label,
             scope,
             &dbtl::ImpactOpts {
                 owner_key: &owner_key,
                 hub_min_downstream: check_cfg.min_downstream(),
+                selection: selection.as_ref(),
             },
         );
         let pr = &payload.pr;
@@ -397,7 +449,14 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
                 // `old -> new` so the log shows the exact migration to ask
                 // for.
                 G::BreakingColumns => {
-                    let breaking = diff.breaking_referenced();
+                    // Like every diff gate: the breaking changes ON
+                    // selected nodes — a column break outside the
+                    // selection doesn't gate.
+                    let breaking: Vec<_> = diff
+                        .breaking_referenced()
+                        .into_iter()
+                        .filter(|ch| selection.as_ref().is_none_or(|s| s.contains(&ch.node)))
+                        .collect();
                     let names = breaking
                         .iter()
                         .map(|ch| match &ch.renamed_from {
@@ -509,8 +568,11 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
                 // depth from `.dbtl.yml`/defaults exactly like `docs
                 // --check` without the flag. `src` feeds the aux lint
                 // inputs AND the explicit-artifact opt-ins `docs --check`
-                // honours, so this gate can never disagree with it.
-                let files = docs_file_set(src, &resolved, scope, None)?;
+                // honours, so this gate can never disagree with it. And
+                // --select never narrows it: a docs freshness comparison
+                // is whole-set by definition (`DocsScope::default` = no
+                // narrowing).
+                let files = docs_file_set(src, &resolved, scope, None, &DocsScope::default())?;
                 let drift = docs_differences(&dir, &files);
                 if drift.total() == 0 {
                     gates.push(GateResult::new(
@@ -582,6 +644,7 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
                 catalog: lint_catalog.as_deref(),
                 base_sql: lint_base_resolver.as_ref(),
             },
+            selection.as_ref(),
         );
         // The same best-effort yml line fill `dbtl lint` reports —
         // filled before `lint_gates` lifts the findings into the Report.

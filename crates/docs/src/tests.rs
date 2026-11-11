@@ -542,7 +542,7 @@ fn readme_coverage_summary_matches_coverage_counts() {
     // segment / `dbtl check` use): testable = model|snapshot|seed in the
     // root project, tested = those with ≥1 test.
     let dag = fixture_dag();
-    let (tested, testable) = coverage_counts(&dag);
+    let (tested, testable) = coverage_counts(&dag, None);
     let pct = tested * 100 / testable;
     let out = generate_docs(&dag, "p", "src", PackageScope::Root);
     let readme = file(&out, "README.md");
@@ -569,7 +569,7 @@ fn readme_column_coverage_matches_column_coverage_counts() {
     // declared columns carrying ≥1 test over the root-project testable
     // set (212/322 on the frozen fixture).
     let dag = fixture_dag();
-    let (tested, declared) = column_coverage_counts(&dag);
+    let (tested, declared) = column_coverage_counts(&dag, None);
     let pct = tested * 100 / declared;
     let out = generate_docs(&dag, "p", "src", PackageScope::Root);
     let readme = file(&out, "README.md");

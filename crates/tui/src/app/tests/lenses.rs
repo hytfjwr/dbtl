@@ -583,7 +583,7 @@ fn stats_view_column_coverage_matches_the_shared_counts() {
     let sv = a.compute_stats_view();
     assert_eq!(
         (sv.col_tested, sv.col_declared),
-        crate::column_coverage_counts(&a.dag),
+        crate::column_coverage_counts(&a.dag, None),
         "the modal quotes the shared helper verbatim"
     );
     assert_eq!((sv.col_tested, sv.col_declared), (212, 322), "frozen");

@@ -203,9 +203,13 @@ fn flag_usage_rejects_unsupported_flags_by_value_source() {
         ["dbtl", "--theme", "default", "check"].as_slice(),
         ["dbtl", "--run-results", "x.json", "check"].as_slice(),
         ["dbtl", "check", "--run-results", "x.json"].as_slice(),
-        ["dbtl", "--diff", "x", "docs", "--out", "o"].as_slice(),
         ["dbtl", "columns", "a.b", "--diff", "x"].as_slice(),
         ["dbtl", "lint", "--run-results", "x.json"].as_slice(),
+        // `ls` accepts only the source flags + --diff — the other globals
+        // are usage errors there too.
+        ["dbtl", "ls", "tag:x", "--run-results", "y.json"].as_slice(),
+        ["dbtl", "ls", "tag:x", "--catalog", "c.json"].as_slice(),
+        ["dbtl", "ls", "tag:x", "--sql-dialect", "generic"].as_slice(),
     ] {
         match Cli::command().try_get_matches_from(args) {
             Err(e) => assert_eq!(e.exit_code(), 2, "{args:?}: clap's own usage error"),
@@ -220,6 +224,8 @@ fn flag_usage_rejects_unsupported_flags_by_value_source() {
                         || msg.contains("docs")
                         || msg.contains("columns")
                         || msg.contains("lint")
+                        || msg.contains("ls"),
+                    "{args:?}: the message must name the subcommand — {msg}"
                 );
             }
         }
@@ -247,6 +253,13 @@ fn flag_usage_rejects_unsupported_flags_by_value_source() {
         ]
         .as_slice(),
         ["dbtl", "lint", "--sql-dialect", "generic"].as_slice(),
+        // `docs`/`ls` take `--diff` at the flag level (it feeds `state:`
+        // selectors; the "no state: ⇒ --diff is a usage error" pairing is
+        // the command's own runtime check, covered by the CLI tests).
+        ["dbtl", "--diff", "x", "docs", "--out", "o"].as_slice(),
+        ["dbtl", "docs", "--out", "o", "--diff", "b.json"].as_slice(),
+        ["dbtl", "ls", "tag:x", "--diff", "b.json"].as_slice(),
+        ["dbtl", "ls", "tag:x", "--manifest", "m.json"].as_slice(),
         // The deprecated --project-only is exempt — its own warning carries
         // the "does nothing" message.
         ["dbtl", "--project-only", "check"].as_slice(),

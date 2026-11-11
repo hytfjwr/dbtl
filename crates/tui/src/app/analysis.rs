@@ -31,6 +31,9 @@ impl App {
                 // `check.gates.changed_hubs.min_downstream` belongs to the
                 // CI gate, not the interactive view.
                 hub_min_downstream: crate::PR_HUB_MIN_DOWNSTREAM,
+                // The interactive pack covers the whole diff — `--select`
+                // narrowing is a CI-gate input, not a modal one.
+                selection: None,
             },
         );
         Some(DiffView {
@@ -74,7 +77,7 @@ impl App {
         let (testable_tested, testable_total) = self.coverage_summary();
         // Column-level coverage likewise: the SHARED `column_coverage_counts`
         // `dbtl docs`' README also quotes — same root-project testable base.
-        let (col_tested, col_declared) = crate::column_coverage_counts(&self.dag);
+        let (col_tested, col_declared) = crate::column_coverage_counts(&self.dag, None);
         // Every count/list the dashboard reports describes the ROOT project —
         // the same [`Dag::is_root_project`] scope `coverage_counts` and
         // `dbtl check` share. Under the `All` package scope installed-package
@@ -319,7 +322,7 @@ impl App {
     /// ONE coverage source — the status `cov` segment, the `t` lens, the stats
     /// dashboard, and `dbtl check --coverage-min` can never disagree.
     pub fn coverage_summary(&self) -> (usize, usize) {
-        crate::coverage_counts(&self.dag)
+        crate::coverage_counts(&self.dag, None)
     }
 }
 
