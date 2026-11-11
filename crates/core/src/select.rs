@@ -19,7 +19,14 @@
 //! `2+name` = the node plus ≤2 upstream hops; `name+` = node + all downstream;
 //! `+name+` = both directions. `state:modified[+]` selects the [`DagDiff`]
 //! changed set (added ∪ modified) when a diff is loaded — the in-app
-//! equivalent of `dbt --select state:modified+`.
+//! equivalent of `dbt --select state:modified+`; `state:new` is the added
+//! side alone.
+//!
+//! The evaluator stays permissive on purpose — an unknown atom or a `state:`
+//! selector without a diff just yields an empty set, so the interactive `!`
+//! search never errors mid-typing. Command-line surfaces (`--select`,
+//! `--exclude`, `dbtl ls`, `.dbtl.yml` `exclude:`) share the ONE strict
+//! grammar check [`validate_selector`] instead.
 //!
 //! Returned set = `unique_id`s.
 
@@ -143,6 +150,7 @@ fn evaluate_atom(dag: &Dag, diff: Option<&DagDiff>, atom: &str) -> BTreeSet<Stri
         }
         Some(("state", s)) => match (s, diff) {
             ("modified", Some(d)) => d.added.iter().chain(d.modified.keys()).cloned().collect(),
+            ("new", Some(d)) => d.added.iter().cloned().collect(),
             _ => BTreeSet::new(),
         },
         _ => {
@@ -164,6 +172,125 @@ fn evaluate_atom(dag: &Dag, diff: Option<&DagDiff>, atom: &str) -> BTreeSet<Stri
                     .collect()
             }
         }
+    }
+}
+
+/// Strictly validate a selector `spec` for the non-interactive surfaces
+/// (`--select`, `--exclude`, `dbtl ls`, `.dbtl.yml` `exclude:`) — every
+/// factor must carry a known atom, hops must be well formed, and no `,`/
+/// whitespace may separate nothing. `Ok(())` means [`select`] evaluates
+/// exactly what the user wrote; `Err` names the offending piece for a
+/// usage-error report.
+///
+/// The permissive [`select`] treats a typo (`foo:bar`) as an empty match —
+/// right for an interactive `!` search, wrong for a CI flag where it would
+/// silently check nothing. This shares the SAME grammar `select` parses so
+/// the two can't drift: the error cases are exactly the inputs the lenient
+/// evaluator would misread.
+pub fn validate_selector(spec: &str) -> Result<(), String> {
+    if spec.trim().is_empty() {
+        return Err("empty selector".to_string());
+    }
+    for term in spec.split_whitespace() {
+        for factor in term.split(',') {
+            validate_factor(factor)?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether any atom in `spec` is a `state:` selector — used to decide
+/// whether the invocation needs a `--diff` baseline (and, for `ls`/`docs`,
+/// whether `--diff` is meaningful at all). Call after [`validate_selector`]
+/// — a malformed spec reports its own error first, so this only needs to
+/// read well-formed input.
+pub fn selector_uses_state(spec: &str) -> bool {
+    spec.split_whitespace()
+        .flat_map(|term| term.split(','))
+        .map(factor_atom)
+        .any(|atom| atom.starts_with("state:"))
+}
+
+/// The atom text a factor carries — the same leading `+`/`<N>+` then
+/// trailing `+` split [`evaluate_factor`] performs (`x+` reads as atom `x`
+/// plus the downstream hop; `2+` is `N+` with no atom). Whatever remains is
+/// the atom, possibly malformed — the caller decides what to do with it.
+fn factor_atom(factor: &str) -> &str {
+    let rest = match factor.split_once('+') {
+        Some(("", rest)) => rest,
+        Some((lead, rest)) if lead.chars().all(|c| c.is_ascii_digit()) => rest,
+        Some((lead, "")) => lead,
+        _ => factor,
+    };
+    rest.strip_suffix('+').unwrap_or(rest)
+}
+
+/// One comma-separated factor under [`validate_selector`].
+fn validate_factor(factor: &str) -> Result<(), String> {
+    if factor.is_empty() {
+        return Err("an empty selector term (a ',' needs a selector on both sides)".to_string());
+    }
+    // Mirror evaluate_factor's hop split: a leading `+` or `<N>+` is fine,
+    // a NON-numeric lead before a non-empty rest is `a+b`-style nonsense —
+    // the lenient evaluator would read it as the literal name `a+b`.
+    if let Some((lead, rest)) = factor.split_once('+') {
+        if !lead.is_empty() && !lead.chars().all(|c| c.is_ascii_digit()) && !rest.is_empty() {
+            return Err(format!(
+                "invalid hop '{lead}+' in '{factor}' — hop counts must be a number"
+            ));
+        }
+    }
+    let atom = factor_atom(factor);
+    if atom.is_empty() {
+        return Err(format!("'{factor}' — a '+' hop needs a selector to expand"));
+    }
+    if atom.contains('+') {
+        return Err(format!(
+            "invalid factor '{factor}' — only one leading and one trailing '+' hop are allowed"
+        ));
+    }
+    validate_atom(atom)
+}
+
+/// The known `method:` forms under [`validate_selector`]; a bare name or
+/// glob (no `:`) always parses.
+fn validate_atom(atom: &str) -> Result<(), String> {
+    // `config.*` is checked before the generic `method:` split — the key is
+    // dotted (`config.materialized:`), like `evaluate_atom` handles it.
+    if let Some(c) = atom.strip_prefix("config.") {
+        return match c.split_once(':') {
+            Some(("materialized", "")) => {
+                Err("config.materialized: needs a non-empty value".to_string())
+            }
+            Some(("materialized", _)) => Ok(()),
+            _ => Err(format!(
+                "unknown config selector 'config.{c}' (supported: config.materialized:<value>)"
+            )),
+        };
+    }
+    if let Some(m) = atom.strip_prefix("meta:") {
+        let key = m.split_once('=').map_or(m, |(k, _)| k);
+        if key.is_empty() {
+            return Err("meta: needs a key (meta:<key> or meta:<key>=<value>)".to_string());
+        }
+        return Ok(());
+    }
+    match atom.split_once(':') {
+        None => Ok(()), // bare name / glob
+        Some(("tag", "")) => Err("tag: needs a non-empty value".to_string()),
+        Some(("tag", _)) => Ok(()),
+        Some(("path", "")) => Err("path: needs a non-empty value".to_string()),
+        Some(("path", _)) => Ok(()),
+        Some(("exposure", "")) => Err("exposure: needs a non-empty value".to_string()),
+        Some(("exposure", _)) => Ok(()),
+        Some(("state", "modified" | "new")) => Ok(()),
+        Some(("state", s)) => Err(format!(
+            "unknown state selector 'state:{s}' (supported: modified, new)"
+        )),
+        Some((method, _)) => Err(format!(
+            "unknown selector method '{method}:' in '{atom}' (supported: tag:, path:, \
+             config.materialized:, exposure:, state:, meta:, or a node name)"
+        )),
     }
 }
 
@@ -554,6 +681,148 @@ mod tests {
             names(&select(&d, None, "*+")),
             vec!["fct", "int", "other", "stg"],
             "glob + trailing-hop: every node seeds its downstream expansion"
+        );
+    }
+
+    /// A diff where `stg` is a NEW node and `other` merely changed — the
+    /// `state:` atoms must read the two sets differently.
+    fn changed_diff() -> DagDiff {
+        let mut d = DagDiff::default();
+        d.added.insert("model.p.stg".to_string());
+        d.modified
+            .insert("model.p.other".to_string(), vec!["SQL changed".to_string()]);
+        d
+    }
+
+    #[test]
+    fn state_new_selects_added_only() {
+        let d = dag();
+        let diff = changed_diff();
+        assert_eq!(
+            names(&select(&d, Some(&diff), "state:new")),
+            vec!["stg"],
+            "state:new = added only"
+        );
+        assert_eq!(
+            names(&select(&d, Some(&diff), "state:modified")),
+            vec!["other", "stg"],
+            "state:modified = added ∪ modified"
+        );
+        // Hop expansion rides both forms.
+        assert_eq!(
+            names(&select(&d, Some(&diff), "state:new+")),
+            vec!["fct", "int", "stg"],
+            "state:new+ = added nodes and their downstream"
+        );
+        // No diff → both are empty sets (the permissive-eval contract).
+        assert!(select(&d, None, "state:new").is_empty());
+        assert!(select(&d, None, "state:modified").is_empty());
+    }
+
+    // ---- validate_selector -------------------------------------------------
+
+    /// The accepted grammar — every shape the evaluator understands.
+    #[test]
+    fn validate_accepts_the_full_grammar() {
+        for spec in [
+            "stg",
+            "stg_*",
+            "tag:nightly",
+            "path:marts/",
+            "config.materialized:table",
+            "exposure:dashboard",
+            "state:modified",
+            "state:new",
+            "meta:owner",
+            "meta:owner=alice",
+            "+stg",
+            "stg+",
+            "+stg+",
+            "2+stg",
+            "2+stg+",
+            "stg fct",                     // union
+            "tag:nightly,stg",             // intersection
+            "stg+ tag:nightly,path:marts", // compound
+        ] {
+            assert_eq!(validate_selector(spec), Ok(()), "{spec:?} must parse");
+        }
+    }
+
+    /// Every malformed shape the lenient evaluator would silently misread —
+    /// each rejected with an error naming the bad piece.
+    #[test]
+    fn validate_rejects_malformed_selectors() {
+        let cases: &[(&str, &str)] = &[
+            // unknown method:
+            ("foo:bar", "unknown selector method 'foo:'"),
+            ("state:", "unknown state selector 'state:'"),
+            ("state:added", "unknown state selector 'state:added'"),
+            ("config.tag:x", "unknown config selector 'config.tag:x'"),
+            ("config:", "unknown selector method 'config:'"),
+            // empty values:
+            ("tag:", "tag: needs a non-empty value"),
+            ("path:", "path: needs a non-empty value"),
+            ("exposure:", "exposure: needs a non-empty value"),
+            (
+                "config.materialized:",
+                "config.materialized: needs a non-empty value",
+            ),
+            ("meta:", "meta: needs a key"),
+            ("meta:=v", "meta: needs a key"),
+            // hops with no atom:
+            ("+", "a '+' hop needs a selector"),
+            ("2+", "a '+' hop needs a selector"),
+            ("++", "a '+' hop needs a selector"),
+            // non-numeric / extra hops:
+            ("a+b", "invalid hop 'a+'"),
+            ("x+y+", "invalid hop 'x+'"),
+            ("+a+b", "only one leading and one trailing"),
+            // broken intersections / specs:
+            ("a,,b", "an empty selector term"),
+            ("a,", "an empty selector term"),
+            (",a", "an empty selector term"),
+            ("   ", "empty selector"),
+            ("", "empty selector"),
+        ];
+        for (spec, needle) in cases {
+            let Err(msg) = validate_selector(spec) else {
+                panic!("{spec:?} must be rejected");
+            };
+            assert!(
+                msg.contains(needle),
+                "{spec:?}: error {msg:?} must mention {needle:?}"
+            );
+        }
+    }
+
+    /// Validation accepts exactly what evaluation reads — `x+` is the atom
+    /// `x` plus a downstream hop, never the (atom-less) `x+`-as-upstream
+    /// misread.
+    #[test]
+    fn validate_matches_the_evaluator_for_edge_hops() {
+        // `x+` — trailing hop on a bare name: valid.
+        assert_eq!(validate_selector("stg+"), Ok(()));
+        // `2+` — a bounded upstream hop with NO atom: invalid.
+        assert!(validate_selector("2+").is_err());
+        // `+x` / `+x+` — unbounded upstream (plus downstream): valid.
+        assert_eq!(validate_selector("+stg"), Ok(()));
+        assert_eq!(validate_selector("+stg+"), Ok(()));
+        // `meta:k=v+` — hop applies to the whole meta atom: valid.
+        assert_eq!(validate_selector("meta:k=v+"), Ok(()));
+        // `state:modified+` — hop applies to the state atom: valid.
+        assert_eq!(validate_selector("state:modified+"), Ok(()));
+    }
+
+    #[test]
+    fn selector_uses_state_flags_only_state_atoms() {
+        assert!(selector_uses_state("state:modified"));
+        assert!(selector_uses_state("state:new+"));
+        assert!(selector_uses_state("2+state:modified"));
+        assert!(selector_uses_state("stg state:new,tag:x"));
+        assert!(!selector_uses_state("stg"));
+        assert!(
+            !selector_uses_state("tag:state:x"),
+            "a state-looking VALUE isn't the method"
         );
     }
 }

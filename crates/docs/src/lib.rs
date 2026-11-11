@@ -106,6 +106,17 @@ pub struct DocsOptions<'a> {
     /// heading bullet (the artifact's own status string, `none` for an
     /// uncovered node). Never auto-detected, like [`catalog`](Self::catalog).
     pub run_results: Option<&'a RunResults>,
+    /// A `--select`-resolved uid set to generate pages for — `None` emits
+    /// the whole project (the byte-identical pre-selection contract). Only
+    /// these nodes get pages; links into nodes outside the set degrade to
+    /// plain names; the README's Nodes table and lineage cover only the set
+    /// while its Summary counts stay project-wide.
+    pub nodes: Option<&'a BTreeSet<String>>,
+    /// The `--select` spec string, echoed on the README's `Selection:` line
+    /// (`None` = no selection ran — the line stays out entirely).
+    pub select_label: Option<&'a str>,
+    /// The `--exclude` spec string, echoed on the README's `Excluding:` line.
+    pub exclude_label: Option<&'a str>,
 }
 
 impl std::fmt::Debug for DocsOptions<'_> {
@@ -118,6 +129,9 @@ impl std::fmt::Debug for DocsOptions<'_> {
             .field("resolver", &self.resolver.is_some())
             .field("catalog", &self.catalog.is_some())
             .field("run_results", &self.run_results.is_some())
+            .field("nodes", &self.nodes.map(<BTreeSet<String>>::len))
+            .field("select_label", &self.select_label)
+            .field("exclude_label", &self.exclude_label)
             .finish()
     }
 }
@@ -130,6 +144,9 @@ impl Default for DocsOptions<'_> {
             resolver: None,
             catalog: None,
             run_results: None,
+            nodes: None,
+            select_label: None,
+            exclude_label: None,
         }
     }
 }
@@ -194,7 +211,13 @@ pub fn generate_docs_with_options(
     // Assign every node a stable relative file path up front, so both the node
     // pages AND the README links resolve through the SAME map — a link can
     // never point at a file that was named differently (no broken links).
-    let files = node_files(dag);
+    let mut files = node_files(dag);
+    // A selection restricts the generated set — paths still come from the
+    // FULL filename map, so a selected node's page lands where the
+    // unselected run would put it (stable across runs of either shape).
+    if let Some(nodes) = options.nodes {
+        files.retain(|uid, _| nodes.contains(uid));
+    }
 
     // Findings grouped by node uid (each group's order is the run_rules rule
     // order — deterministic). `None` when lint didn't run → no section at all.
@@ -240,7 +263,14 @@ pub fn generate_docs_with_options(
         let body = node_markdown(&ctx, uid, node_findings.as_deref(), options.lineage_depth);
         out.push((rel_path.clone(), format!("{GENERATED_MARKER}\n\n{body}")));
     }
-    let index = readme_markdown(&ctx, project_name, source_label, scope, options.findings);
+    let index = readme_markdown(
+        &ctx,
+        project_name,
+        source_label,
+        scope,
+        options.findings,
+        options,
+    );
     out.push((
         "README.md".to_string(),
         format!("{GENERATED_MARKER}\n\n{index}"),

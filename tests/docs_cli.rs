@@ -8,7 +8,7 @@
 //! terminal init, like `--list-themes`).
 
 mod common;
-use common::{dbtl_cmd, manifest_path as fixture_manifest};
+use common::{dbtl_cmd, manifest_path as fixture_manifest, sample_manifest_path};
 use std::path::PathBuf;
 
 /// A unique temp output dir under the OS temp root (PID + a label keep parallel
@@ -719,4 +719,223 @@ fn docs_check_is_artifact_blind_without_opt_in() {
 /// Lossy-decode process output for assertion messages.
 fn lossy(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
+}
+
+// ---- --select / --exclude: a narrowed generated set ----------------------------
+
+/// `docs` against the small sample manifest with caller-supplied flags —
+/// the selection tests pin exact page names, so the jaffle fixture (used
+/// by the shared helpers above) is too big for readable assertions.
+fn run_docs_sample(out: &PathBuf, flags: &[&str]) -> std::process::Output {
+    let mut cmd = dbtl_cmd();
+    cmd.arg("docs")
+        .arg("--manifest")
+        .arg(sample_manifest_path())
+        .arg("--out")
+        .arg(out);
+    for f in flags {
+        cmd.arg(f);
+    }
+    cmd.output().expect("failed to run dbtl docs")
+}
+
+/// Every generated file under `dir`, relative and sorted.
+fn generated_files(dir: &std::path::Path) -> Vec<String> {
+    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let e = e.unwrap();
+            if e.file_type().unwrap().is_dir() {
+                walk(root, &e.path(), out);
+            } else {
+                out.push(
+                    e.path()
+                        .strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+            }
+        }
+    }
+    let mut v = Vec::new();
+    if dir.is_dir() {
+        walk(dir, dir, &mut v);
+    }
+    v.sort();
+    v
+}
+
+#[test]
+fn select_generates_only_the_selected_pages() {
+    let out = temp_out("select_one");
+    let _ = std::fs::remove_dir_all(&out);
+    let r = run_docs_sample(&out, &["--select", "fct_orders"]);
+    assert!(r.status.success(), "stderr: {}", lossy(&r.stderr));
+    assert_eq!(
+        generated_files(&out),
+        ["README.md", "models/model.sample.fct_orders.md"],
+        "one node page + the README"
+    );
+    let readme = std::fs::read_to_string(out.join("README.md")).unwrap();
+    assert!(readme.contains("Selection: `fct_orders`"), "{readme}");
+    // The Nodes table lists only the generated node…
+    assert!(readme.contains("| fct_orders |"), "{readme}");
+    assert!(!readme.contains("| stg_orders |"), "{readme}");
+    // …while the Summary counts stay project-wide.
+    assert!(readme.contains("total nodes: 21"), "{readme}");
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn select_and_exclude_compose_as_include_then_subtract() {
+    let out = temp_out("select_excl");
+    let _ = std::fs::remove_dir_all(&out);
+    let r = run_docs_sample(&out, &["--select", "path:marts", "--exclude", "fct_*"]);
+    assert!(r.status.success(), "stderr: {}", lossy(&r.stderr));
+    let files = generated_files(&out);
+    for keep in [
+        "models/model.sample.agg_country_orders.md",
+        "models/model.sample.cll_demo.md",
+        "models/model.sample.cll_syntax.md",
+        "models/model.sample.dim_customers.md",
+    ] {
+        assert!(
+            files.contains(&keep.to_string()),
+            "{keep} generated: {files:?}"
+        );
+    }
+    assert!(
+        !files.iter().any(|f| f.contains("fct_")),
+        "the fct_* exclusion subtracted: {files:?}"
+    );
+    let readme = std::fs::read_to_string(out.join("README.md")).unwrap();
+    assert!(readme.contains("Selection: `path:marts`"), "{readme}");
+    assert!(readme.contains("Excluding: `fct_*`"), "{readme}");
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn exclude_alone_subtracts_from_the_whole_graph() {
+    let out = temp_out("exclude_only");
+    let _ = std::fs::remove_dir_all(&out);
+    let r = run_docs_sample(&out, &["--exclude", "path:staging"]);
+    assert!(r.status.success(), "stderr: {}", lossy(&r.stderr));
+    let files = generated_files(&out);
+    // The staging models' pages are gone; the marts set stays complete.
+    assert!(!files.iter().any(|f| f.contains("stg_")), "{files:?}");
+    assert!(files.contains(&"models/model.sample.fct_orders.md".to_string()));
+    let readme = std::fs::read_to_string(out.join("README.md")).unwrap();
+    assert!(
+        readme.contains("Excluding: `path:staging`") && !readme.contains("Selection:"),
+        "only the Excluding line prints: {readme}"
+    );
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn links_to_ungenerated_pages_degrade_to_names() {
+    // fct_orders's upstream neighbours have no page this run — the deps
+    // list and the Mermaid clicks render them by name only, never as
+    // links into files that don't exist.
+    let out = temp_out("link_degrade");
+    let _ = std::fs::remove_dir_all(&out);
+    let r = run_docs_sample(&out, &["--select", "fct_orders"]);
+    assert!(r.status.success());
+    let page = std::fs::read_to_string(out.join("models/model.sample.fct_orders.md")).unwrap();
+    assert!(page.contains("- stg_orders"), "plain-name dep: {page}");
+    assert!(
+        !page.contains("[stg_orders]("),
+        "no link to an ungenerated page: {page}"
+    );
+    assert_eq!(
+        page.matches("click ").count(),
+        1,
+        "only the generated node's own click line: {page}"
+    );
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn empty_selection_warns_and_writes_only_the_readme() {
+    let out = temp_out("empty_sel");
+    let _ = std::fs::remove_dir_all(&out);
+    let r = run_docs_sample(&out, &["--select", "no_such_node"]);
+    assert!(r.status.success(), "stderr: {}", lossy(&r.stderr));
+    assert!(
+        lossy(&r.stderr).contains("matched no nodes"),
+        "the empty-selection warning: {}",
+        lossy(&r.stderr)
+    );
+    assert_eq!(generated_files(&out), ["README.md"]);
+    let readme = std::fs::read_to_string(out.join("README.md")).unwrap();
+    assert!(readme.contains("Selection: `no_such_node`"), "{readme}");
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn selected_runs_are_byte_deterministic() {
+    let a = temp_out("det_a");
+    let b = temp_out("det_b");
+    let _ = std::fs::remove_dir_all(&a);
+    let _ = std::fs::remove_dir_all(&b);
+    let flags = ["--select", "stg_orders+"];
+    assert!(run_docs_sample(&a, &flags).status.success());
+    assert!(run_docs_sample(&b, &flags).status.success());
+    let files_a = generated_files(&a);
+    assert_eq!(files_a, generated_files(&b), "same file set");
+    for rel in files_a {
+        assert_eq!(
+            std::fs::read(a.join(&rel)).unwrap(),
+            std::fs::read(b.join(&rel)).unwrap(),
+            "{rel} identical across runs"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&a);
+    let _ = std::fs::remove_dir_all(&b);
+}
+
+#[test]
+fn select_conflicts_with_clean_and_check() {
+    // --clean/--check reason over the whole generated set — a partial set
+    // can't run a full-set comparison, so clap rejects the pairing.
+    let out = temp_out("conflicts");
+    let _ = std::fs::remove_dir_all(&out);
+    for flag in ["--clean", "--check"] {
+        let r = run_docs_sample(&out, &["--select", "fct_orders", flag]);
+        assert_eq!(
+            r.status.code(),
+            Some(2),
+            "--select + {flag} is a usage error, stderr: {}",
+            lossy(&r.stderr)
+        );
+        let r = run_docs_sample(&out, &["--exclude", "fct_*", flag]);
+        assert_eq!(
+            r.status.code(),
+            Some(2),
+            "--exclude + {flag} is a usage error, stderr: {}",
+            lossy(&r.stderr)
+        );
+    }
+}
+
+#[test]
+fn invalid_selectors_and_orphaned_diff_are_usage_errors() {
+    let out = temp_out("sel_errors");
+    let _ = std::fs::remove_dir_all(&out);
+    // A malformed spec fails before the data load…
+    let r = run_docs_sample(&out, &["--select", "foo:bar"]);
+    assert_eq!(r.status.code(), Some(2), "stderr: {}", lossy(&r.stderr));
+    assert!(lossy(&r.stderr).contains("foo:bar"));
+    let r = run_docs_sample(&out, &["--exclude", "state:bogus"]);
+    assert_eq!(r.status.code(), Some(2), "stderr: {}", lossy(&r.stderr));
+    // …a `state:` spec without `--diff`…
+    let r = run_docs_sample(&out, &["--select", "state:modified"]);
+    assert_eq!(r.status.code(), Some(2), "stderr: {}", lossy(&r.stderr));
+    assert!(lossy(&r.stderr).contains("--diff"), "{}", lossy(&r.stderr));
+    // …and `--diff` without a `state:` spec — `--diff` on docs exists only
+    // to feed `state:`.
+    let m = sample_manifest_path().to_str().unwrap().to_string();
+    let r = run_docs_sample(&out, &["--diff", &m]);
+    assert_eq!(r.status.code(), Some(2), "stderr: {}", lossy(&r.stderr));
+    assert!(lossy(&r.stderr).contains("state:"), "{}", lossy(&r.stderr));
 }

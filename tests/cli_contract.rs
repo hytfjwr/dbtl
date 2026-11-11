@@ -408,6 +408,22 @@ fn data_flags_parse_before_or_after_the_subcommand() {
             "--include-packages".into(),
         ],
     );
+
+    // `ls`: the positional selector plus the data flag in either order.
+    assert_position_equivalent(
+        &[
+            "--manifest".into(),
+            m_str.into(),
+            "ls".into(),
+            "fct_*".into(),
+        ],
+        &[
+            "ls".into(),
+            "fct_*".into(),
+            "--manifest".into(),
+            m_str.into(),
+        ],
+    );
 }
 
 // ---- flags a subcommand doesn't consume are rejected ---------------------
@@ -435,6 +451,7 @@ fn unsupported_flags_are_rejected_not_ignored() {
         ("impact", &["--manifest", m_str, "--diff", m_str]),
         ("columns", &["a.b", "--manifest", m_str]),
         ("lint", &["--manifest", m_str]),
+        ("ls", &["x", "--manifest", m_str]),
     ];
     for (flag_args, spelled) in tui_flags {
         for (sub, sub_args) in subs {
@@ -481,6 +498,16 @@ fn unsupported_flags_are_rejected_not_ignored() {
             ],
             "--run-results",
             "impact",
+        ),
+        (
+            vec!["--run-results", "r.json", "ls", "x", "--manifest", m_str],
+            "--run-results",
+            "ls",
+        ),
+        (
+            vec!["ls", "x", "--manifest", m_str, "--sql-dialect", "generic"],
+            "--sql-dialect",
+            "ls",
         ),
         (
             vec!["--diff", m_str, "docs", "--out", "/tmp/dbtl_flag_docs"],

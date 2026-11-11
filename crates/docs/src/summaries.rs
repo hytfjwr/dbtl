@@ -14,11 +14,11 @@ use super::*;
 /// dependency context but are never part of the project's health numbers.
 /// Both are order-independent / sorted, so the section is deterministic.
 pub(super) fn push_stats_summary(s: &mut String, dag: &Dag, files: &BTreeMap<String, String>) {
-    let (tested, testable) = coverage_counts(dag);
+    let (tested, testable) = coverage_counts(dag, None);
     // Column-level coverage: the SAME `column_coverage_counts` the
     // stats dashboard's "Column coverage" gauge quotes — declared columns
     // carrying ≥1 test over the root-project testable set.
-    let (col_tested, col_declared) = column_coverage_counts(dag);
+    let (col_tested, col_declared) = column_coverage_counts(dag, None);
     // Resolve the owning package ONCE for the orphan sweep — `is_root_project`
     // re-resolves per call.
     let primary = dag.primary_package();

@@ -1,4 +1,39 @@
+use std::collections::BTreeSet;
+
 use super::*;
+
+/// The `docs` subcommand's options, bundled like `CheckArgs`/`LintArgs` so
+/// the runner's signature stays readable (the fields map 1:1 onto the clap
+/// variant's args).
+pub struct DocsArgs<'a> {
+    /// `--out` — the output directory.
+    pub out: &'a str,
+    /// `--lineage-depth` — `N`/`all`, overrides `.dbtl.yml`.
+    pub lineage_depth: Option<&'a str>,
+    /// `--quiet`.
+    pub quiet: bool,
+    /// `--clean` — delete stale marked pages after writing.
+    pub clean: bool,
+    /// `--check` — compare instead of writing.
+    pub check: bool,
+    /// `--select` — generate only the matching nodes' pages.
+    pub select: &'a [String],
+    /// `--exclude` — subtract the matching nodes from the generated set.
+    pub exclude: &'a [String],
+}
+
+/// What `docs --select`/`--exclude` narrowed the generated set to — every
+/// `None` is the untouched whole-graph doc set (`check --docs-dir` passes
+/// exactly that: a freshness gate compares the FULL set, selection or not).
+#[derive(Default)]
+pub(super) struct DocsScope<'a> {
+    /// The generated node uid set (`None` = every node, byte-identical).
+    pub nodes: Option<&'a BTreeSet<String>>,
+    /// The `--select` spec(s) the README echoes.
+    pub select_label: Option<&'a str>,
+    /// The `--exclude` spec(s) the README echoes.
+    pub exclude_label: Option<&'a str>,
+}
 
 /// Run the `docs` subcommand: resolve the data source (shared with the TUI),
 /// generate the Markdown doc set in memory (the pure [`dbtl::generate_docs`]),
@@ -9,21 +44,72 @@ use super::*;
 /// one-line summary to stdout on success. Every failure (load error, IO error)
 /// returns `Err`, which `main` reports as plain text + the exit code its
 /// [`ExitKind`] assigns — no panic, no terminal init.
-pub fn run_docs(
-    out: &str,
-    src: &DataSourceArgs,
-    lineage_depth: Option<&str>,
-    quiet: bool,
-    clean: bool,
-    check: bool,
-) -> Result<(), CliError> {
+pub fn run_docs(src: &DataSourceArgs, args: &DocsArgs) -> Result<(), CliError> {
     let scope = src.scope;
+    // `--select`/`--exclude` carry the ONE strict selector grammar —
+    // validated before the load so a typo is a usage error, never a
+    // silently-empty page set. `--diff` on docs exists ONLY to feed `state:`
+    // atoms: either half alone is a usage error (clap already rejects
+    // --clean/--check combinations — a partial set can't run a full-set
+    // comparison).
+    validate_selector_specs(args.select, "--select")?;
+    validate_selector_specs(args.exclude, "--exclude")?;
+    let all_specs: Vec<String> = args
+        .select
+        .iter()
+        .chain(args.exclude.iter())
+        .cloned()
+        .collect();
+    require_diff_for_state(&all_specs, src.diff.is_some())?;
+    if src.diff.is_some() && !specs_use_state(&all_specs) {
+        return Err(CliError::usage(anyhow::anyhow!(
+            "--diff on 'dbtl docs' is only meaningful with a 'state:' selector"
+        )));
+    }
     let resolved = src.resolve()?;
-    let files = docs_file_set(src, &resolved, scope, lineage_depth)?;
+    let dag = &resolved.dag;
+    // Only `state:` selectors reach here with `--diff` — the comparison
+    // uses the same resolver pair `impact`/`check` build, so `state:` picks
+    // the same change set the impact report counts.
+    let diff = match src.diff {
+        Some(d) => {
+            let (base, _) = load_baseline(d, scope, &src.project_dir())?;
+            Some(selector_diff(src, &resolved, &base)?)
+        }
+        None => None,
+    };
+    // The effective page set: `--select` resolves it, `--exclude` subtracts
+    // (no --select = the whole graph minus the exclusions). An empty set
+    // still writes the README — with a warning on stderr.
+    let selecting = !args.select.is_empty() || !args.exclude.is_empty();
+    let selected = if selecting {
+        let mut set: BTreeSet<String> = if args.select.is_empty() {
+            dag.nodes().keys().cloned().collect()
+        } else {
+            selector_set(dag, diff.as_ref(), args.select)
+        };
+        for uid in selector_set(dag, diff.as_ref(), args.exclude) {
+            set.remove(&uid);
+        }
+        if set.is_empty() {
+            eprintln!("warning: --select/--exclude matched no nodes — writing the README only");
+        }
+        Some(set)
+    } else {
+        None
+    };
+    let select_label = (!args.select.is_empty()).then(|| args.select.join(" "));
+    let exclude_label = (!args.exclude.is_empty()).then(|| args.exclude.join(" "));
+    let doc_scope = DocsScope {
+        nodes: selected.as_ref(),
+        select_label: select_label.as_deref(),
+        exclude_label: exclude_label.as_deref(),
+    };
+    let files = docs_file_set(src, &resolved, scope, args.lineage_depth, &doc_scope)?;
 
-    let out_dir = PathBuf::from(out);
-    if check {
-        return check_docs(&out_dir, &files, quiet);
+    let out_dir = PathBuf::from(args.out);
+    if args.check {
+        return check_docs(&out_dir, &files, args.quiet);
     }
 
     for (rel_path, contents) in &files {
@@ -35,16 +121,16 @@ pub fn run_docs(
         std::fs::write(&path, contents)
             .with_context(|| format!("failed to write {}", path.display()))?;
     }
-    if clean {
+    if args.clean {
         let removed = remove_stale_docs(&out_dir, &files)?;
-        if !quiet && !removed.is_empty() {
+        if !args.quiet && !removed.is_empty() {
             println!("removed {} stale file(s)", removed.len());
         }
     }
     // The success summary is the only stdout `docs` writes; `--quiet` drops it
     // for CI. Errors are returned as `Err` and printed to stderr by `main`
     // either way, so silencing stdout never hides a failure.
-    if !quiet {
+    if !args.quiet {
         println!("wrote {} files to {}", files.len(), out_dir.display());
     }
     Ok(())
@@ -113,6 +199,7 @@ pub(super) fn docs_file_set(
     resolved: &ResolvedSource,
     scope: dbtl::PackageScope,
     lineage_depth: Option<&str>,
+    sel: &DocsScope,
 ) -> Result<Vec<(String, String)>, CliError> {
     let provenance = if resolved.is_source {
         format!("project source ({})", resolved.label)
@@ -192,6 +279,9 @@ pub(super) fn docs_file_set(
             resolver: Some(&resolver),
             catalog: catalog.as_deref(),
             run_results: run_results.as_ref(),
+            nodes: sel.nodes,
+            select_label: sel.select_label,
+            exclude_label: sel.exclude_label,
         },
     ))
 }
