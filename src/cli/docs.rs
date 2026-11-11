@@ -7,25 +7,17 @@ use super::*;
 /// on-disk set differs; `--clean` additionally deletes marked generated files
 /// the run did not regenerate (stale pages of removed models). Prints a
 /// one-line summary to stdout on success. Every failure (load error, IO error)
-/// returns `Err`, which `main` reports as plain text + a non-zero exit — no
-/// panic, no terminal init.
-#[allow(clippy::too_many_arguments)] // the subcommand's flat flag set
+/// returns `Err`, which `main` reports as plain text + the exit code its
+/// [`ExitKind`] assigns — no panic, no terminal init.
 pub fn run_docs(
     out: &str,
-    manifest: &Option<String>,
-    source: &Option<String>,
-    project: &str,
+    src: &DataSourceArgs,
     quiet: bool,
     clean: bool,
     check: bool,
-    include_packages: bool,
-) -> Result<()> {
-    let scope = if include_packages {
-        dbtl::PackageScope::All
-    } else {
-        dbtl::PackageScope::Root
-    };
-    let resolved = resolve_source(manifest, source, project, scope)?;
+) -> Result<(), CliError> {
+    let scope = src.scope;
+    let resolved = src.resolve()?;
     let provenance = if resolved.is_source {
         format!("project source ({})", resolved.label)
     } else {
@@ -113,13 +105,14 @@ pub(super) fn marked_docs_on_disk(out_dir: &std::path::Path) -> Vec<String> {
 
 /// `docs --check`: compare the in-memory generated set against what's on disk
 /// without writing anything. Prints one sorted line per difference — a
-/// `missing:` page, a `changed:` page, or a `stale:` marked file — then returns
-/// `Err` so `main` exits 1. An exact match exits 0.
+/// `missing:` page, a `changed:` page, or a `stale:` marked file — then
+/// returns a gate failure (the check ran and the invariant did not hold).
+/// An exact match exits 0.
 pub(super) fn check_docs(
     out_dir: &std::path::Path,
     files: &[(String, String)],
     quiet: bool,
-) -> Result<()> {
+) -> Result<(), CliError> {
     let expected: std::collections::HashSet<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
     let mut problems: Vec<String> = Vec::new();
 
@@ -146,7 +139,10 @@ pub(super) fn check_docs(
     for p in &problems {
         println!("{p}");
     }
-    anyhow::bail!("docs are out of date: {} difference(s)", problems.len())
+    Err(CliError::gate(anyhow::anyhow!(
+        "docs are out of date: {} difference(s)",
+        problems.len()
+    )))
 }
 
 /// `docs --clean`: delete marked generated files under `out_dir` that this run

@@ -16,11 +16,74 @@ pub struct ResolvedSource {
     pub warnings: Vec<String>,
 }
 
-/// The shared data-source resolution, identical for the TUI and the `docs`
-/// subcommand. Explicit `manifest` / `source` win; otherwise auto-detect under
-/// `project`: a compiled `target/manifest.json` if present (full fidelity), else
-/// parse the project from source. The TUI ([`build_app`]) and docs both go
-/// through here so the precedence can never diverge.
+/// The global data-source inputs every non-interactive subcommand consumes —
+/// bundled once so `run_*` signatures stay short and every command resolves
+/// exactly the way `build_app` does. The fields are all `global` clap args,
+/// so [`DataSourceArgs::from_cli`] sees them whether they were typed before
+/// or after the subcommand.
+pub struct DataSourceArgs<'a> {
+    /// `--manifest`.
+    pub manifest: &'a Option<String>,
+    /// `--source`.
+    pub source: &'a Option<String>,
+    /// `--project` (`.` when unset).
+    pub project: &'a str,
+    /// `--diff` — the baseline, for the commands that compare.
+    pub diff: Option<&'a str>,
+    /// `--catalog` — an explicit catalog.json override.
+    pub catalog: Option<&'a str>,
+    /// The package scope `--include-packages` computes to.
+    pub scope: dbtl::PackageScope,
+    /// `--sql-dialect` — the parse-dialect pin, if given.
+    pub sql_dialect: Option<dbtl::SqlDialect>,
+}
+
+impl<'a> DataSourceArgs<'a> {
+    /// Bundle the global flags of a parsed `Cli`.
+    pub fn from_cli(cli: &'a Cli) -> Self {
+        Self {
+            manifest: &cli.manifest,
+            source: &cli.source,
+            project: &cli.project,
+            diff: cli.diff.as_deref(),
+            catalog: cli.catalog.as_deref(),
+            scope: cli.package_scope(),
+            sql_dialect: cli.sql_dialect,
+        }
+    }
+
+    /// Load the graph through the shared [`resolve_source`] rule.
+    pub fn resolve(&self) -> Result<ResolvedSource, CliError> {
+        resolve_source(self.manifest, self.source, self.project, self.scope)
+    }
+
+    /// The current-side CLL resolver for a resolved source — `--catalog` and
+    /// `--sql-dialect` included.
+    pub fn cll_resolver(
+        &self,
+        resolved: &ResolvedSource,
+    ) -> Result<dbtl::SqlParseResolver, CliError> {
+        cll_resolver(resolved, self.sql_dialect, self.catalog)
+    }
+
+    /// The baseline-side diff resolver (no baseline catalog — its warehouse
+    /// record is never loaded), sharing the current side's dialect rule.
+    pub fn baseline_resolver(
+        &self,
+        current: &dbtl::Dag,
+        base: &dbtl::Dag,
+    ) -> dbtl::SqlParseResolver {
+        baseline_resolver(current, base, self.sql_dialect)
+    }
+}
+
+/// The shared data-source resolution, identical for the TUI and the
+/// subcommands. Explicit `manifest` / `source` win; otherwise auto-detect
+/// under `project`: a compiled `target/manifest.json` if present (full
+/// fidelity), else parse the project from source. The TUI ([`build_app`])
+/// and the subcommands all go through here so the precedence can never
+/// diverge. Every failure here is an input error — a named file/dir that
+/// could not be read.
 ///
 /// `scope` is applied to the loaded graph on the way out (the default `Root`
 /// scope prunes installed-package nodes — manifest mode's `nodes` map mixes
@@ -31,9 +94,9 @@ pub fn resolve_source(
     source: &Option<String>,
     project: &str,
     scope: dbtl::PackageScope,
-) -> Result<ResolvedSource> {
+) -> Result<ResolvedSource, CliError> {
     if let Some(path) = manifest {
-        let (dag, mut warnings) = load_dag_with_warnings(path)?;
+        let (dag, mut warnings) = load_dag_with_warnings(path).input()?;
         for w in &warnings {
             eprintln!("warning: {w}");
         }
@@ -47,7 +110,7 @@ pub fn resolve_source(
         });
     }
     if let Some(dir) = source {
-        let (dag, mut warnings) = load_dag_from_source_with_warnings(dir)?;
+        let (dag, mut warnings) = load_dag_from_source_with_warnings(dir).input()?;
         for w in &warnings {
             eprintln!("warning: {w}");
         }
@@ -63,7 +126,7 @@ pub fn resolve_source(
     let project = PathBuf::from(project);
     let manifest = project.join("target").join("manifest.json");
     if manifest.is_file() {
-        let (dag, mut warnings) = load_dag_with_warnings(&manifest)?;
+        let (dag, mut warnings) = load_dag_with_warnings(&manifest).input()?;
         for w in &warnings {
             eprintln!("warning: {w}");
         }
@@ -76,7 +139,7 @@ pub fn resolve_source(
             warnings,
         })
     } else if project.join("dbt_project.yml").is_file() {
-        let (dag, mut warnings) = load_dag_from_source_with_warnings(&project)?;
+        let (dag, mut warnings) = load_dag_from_source_with_warnings(&project).input()?;
         for w in &warnings {
             eprintln!("warning: {w}");
         }
@@ -89,11 +152,11 @@ pub fn resolve_source(
             warnings,
         })
     } else {
-        anyhow::bail!(
+        Err(CliError::input(anyhow::anyhow!(
             "no data source under {}: neither target/manifest.json nor dbt_project.yml found \
              (pass --manifest <file> or --source <dir>)",
             project.display()
-        )
+        )))
     }
 }
 /// Apply the loaded graph's package scope: `All` keeps the manifest's full
@@ -136,7 +199,7 @@ pub(super) fn apply_package_scope(
 /// present (full fidelity), else parse the project from source. The package
 /// scope (`--include-packages`) is applied inside [`resolve_source`] and
 /// recorded on the App so `reload` re-scopes the same way.
-pub fn build_app(cli: &Cli) -> Result<App> {
+pub fn build_app(cli: &Cli) -> Result<App, CliError> {
     let scope = cli.package_scope();
     let resolved = resolve_source(&cli.manifest, &cli.source, &cli.project, scope)?;
     let ResolvedSource {
@@ -169,10 +232,14 @@ pub fn build_app(cli: &Cli) -> Result<App> {
             format!("column lineage: unknown adapter '{a}' — using the generic SQL dialect"),
         );
     }
-    // An explicit --run-results overrides the auto-detected sibling; its load
-    // error IS user-facing (unlike the silent auto-detect).
+    // Explicit side-maps override the auto-detected siblings; a load error
+    // IS user-facing (unlike the silent auto-detect). Both setters preserve
+    // each other's state, so the order carries no semantics.
+    if let Some(cat) = &cli.catalog {
+        app.set_catalog(PathBuf::from(cat)).input()?;
+    }
     if let Some(rr) = &cli.run_results {
-        app.set_run_results(PathBuf::from(rr))?;
+        app.set_run_results(PathBuf::from(rr)).input()?;
     }
     Ok(app)
 }
