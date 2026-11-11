@@ -187,9 +187,10 @@ impl App {
     /// The [`LensTint`] for one node under the ACTIVE `lens`. The single place each
     /// lens's per-node metric is mapped to a semantic tint (the render layer turns
     /// the tint into a `Color`); `violation_nodes` / `lint_nodes` are the
-    /// precomputed project-wide incident sets (empty unless the lens is
-    /// `LayerViolation` / `Lint`). Returns `LensTint::None` for `Off` and for
-    /// nodes a lens doesn't tint.
+    /// precomputed project-wide lookups (empty unless the lens is
+    /// `LayerViolation` / `Lint` — a uid set for the former, uid -> worst
+    /// finding severity for the latter). Returns `LensTint::None` for `Off`
+    /// and for nodes a lens doesn't tint.
     pub(super) fn lens_tint(
         &self,
         lens: LineageLens,

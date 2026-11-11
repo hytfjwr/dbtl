@@ -328,7 +328,7 @@ The initial rule set (all enabled by default):
 | `source_fanout` | a source directly feeds ≥ `source_fanout_threshold` models (default 2) |
 | `model_fanout` | a model directly feeds ≥ `model_fanout_threshold` leaf models (default 5, the hub threshold) |
 | `root_models` | a model has no parents |
-| `rejoining_upstream` | a redundant hop: A->B->C while A->C also exists and B has no other data-node child (endpoint resources like exposures don't count as a use) |
+| `rejoining_upstream` | a redundant hop: A→B→C while A→C also exists and B has no other data-node child (endpoint resources like exposures don't count as a use) |
 | `marts_depend_on_source` | a marts/intermediate model directly depends on a source (layer resolved prefix-first — `staging/fct_x` counts as marts) |
 | `missing_primary_key_tests` | a model lacks `unique`+`not_null` on the same column or `unique_combination_of_columns` |
 | `public_models_without_contract` | `access: public` without `contract: enforced` |

@@ -173,10 +173,10 @@ pub struct App {
     pub model_list: ModelList,
     /// The filtered view while a list search is active; `None` otherwise.
     pub filter: Option<ModelList>,
-    /// The persistent left-pane filter (`T` untested / `*` bookmarked). Unlike
-    /// the transient search `filter`, it survives mode changes; a list search
-    /// narrows ON TOP of it ([`refilter`](App::refilter) builds from
-    /// `unfolded_base`).
+    /// The persistent left-pane filter (`T` untested / `*` bookmarked /
+    /// `F` linted). Unlike the transient search `filter`, it survives mode
+    /// changes; a list search narrows ON TOP of it
+    /// ([`refilter`](App::refilter) builds from `unfolded_base`).
     pub list_filter: ListFilter,
     /// The `list_filter` view of `model_list` (`None` when `list_filter` is
     /// `All`). Rebuilt ONLY by [`apply_list_filter`](App::apply_list_filter).
