@@ -376,6 +376,7 @@ fn action_yml_declares_the_contracted_inputs_and_outputs() {
         "sarif",
         "comment",
         "github-token",
+        "dry-run",
     ] {
         assert!(
             manifest["inputs"][input].is_mapping(),

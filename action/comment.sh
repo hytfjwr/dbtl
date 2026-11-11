@@ -16,10 +16,26 @@ fi
 
 # GitHub caps comment bodies at 65536 characters; an oversized report is
 # truncated and pointed at the step summary, which carries the full text.
+# `head -c` can land inside a multi-byte UTF-8 character, so the cut is
+# backed off to the last complete character boundary: scan the tail bytes
+# for a dangling sequence (continuation bytes 0x80-0xBF after a lead byte
+# that expects more of them) and drop it.
 body="$report"
 if [ "$(wc -c <"$report")" -gt 65000 ]; then
 	body="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dbtl-report-truncated.md"
-	head -c 65000 "$report" >"$body"
+	drop="$(head -c 65000 "$report" | tail -c 4 | od -An -v -tu1 | awk '
+		{ for (i = 1; i <= NF; i++) b[++n] = $i }
+		END {
+			k = 0
+			while (n - k >= 1 && b[n - k] >= 128 && b[n - k] <= 191) k++
+			if (n - k < 1) drop = n
+			else if (b[n - k] >= 192) {
+				need = b[n - k] >= 240 ? 4 : b[n - k] >= 224 ? 3 : 2
+				drop = (k + 1 < need) ? k + 1 : 0
+			} else drop = k
+			print drop + 0
+		}')"
+	head -c $((65000 - drop)) "$report" > "$body"
 	printf '\n\n_Report truncated — see the job summary for the full dbtl check report._\n' >>"$body"
 fi
 

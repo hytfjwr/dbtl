@@ -58,7 +58,9 @@ inputs:
       Write a SARIF report and upload it to code scanning
       (`github/codeql-action/upload-sarif`, category `dbtl`). The calling
       job needs `security-events: write`; the upload runs even when the
-      check fails and never changes the verdict.
+      check fails and never changes the verdict. It always uses the job's
+      `GITHUB_TOKEN` — the code-scanning endpoint rejects user tokens —
+      not the `github-token` input.
     required: false
     default: 'false'
   comment:
@@ -70,7 +72,10 @@ inputs:
     required: false
     default: 'false'
   github-token:
-    description: The token used for the pull request comment and the SARIF upload.
+    description: >-
+      The token used for the pull request comment. The SARIF upload does
+      not take it — it always uses the job's `GITHUB_TOKEN`, the only
+      credential the code-scanning endpoint accepts.
     required: false
     default: ${{ github.token }}
   dry-run:
