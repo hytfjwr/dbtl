@@ -18,7 +18,8 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, ExitStatus, MasterP
 use vt100::Parser;
 
 /// The committed jaffle_finance manifest every session loads.
-const FIXTURE_MANIFEST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifest.json");
+pub const FIXTURE_MANIFEST: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifest.json");
 
 /// The terminal size every session starts at (unless a test resizes away).
 pub const COLS: u16 = 160;
@@ -31,14 +32,15 @@ const POLL: Duration = Duration::from_millis(25);
 //
 // crossterm's keyboard-enhancement probe writes `ESC [ ? u` + `ESC [ c` (kitty
 // flags query + primary device attributes); the ambiguous-width probe writes
-// `ESC [ 6 n` (device status report — cursor position). Answers:
-// `ESC [ ? 0 u` (no kitty flags active), `ESC [ ? 6 c` (a DA response),
-// `ESC [ 1 ; 2 R` (cursor at row 1, col 2 — a 1-cell ambiguous width). The
+// `ESC [ 6 n` (device status report — cursor position). Each pattern gets
+// exactly its own answer — `?u` → `?0u` (no kitty flags active), `c` → `?6c`
+// (a DA response), `6n` → `1;2R` (cursor at row 1, col 2 — a 1-cell ambiguous
+// width) — so a combined `?u`+`c` write still yields one reply per query. The
 // queries are pure ASCII, so matching raw bytes keeps them detectable even
 // when a read chunk splits a UTF-8 sequence mid-character.
 const QUERIES: &[(&[u8], &[u8])] = &[
-    (b"\x1b[?u", b"\x1b[?0u\x1b[?6c"),
-    (b"\x1b[c", b"\x1b[?0u\x1b[?6c"),
+    (b"\x1b[?u", b"\x1b[?0u"),
+    (b"\x1b[c", b"\x1b[?6c"),
     (b"\x1b[6n", b"\x1b[1;2R"),
 ];
 
@@ -152,13 +154,6 @@ impl TuiSession {
             .join("\n")
     }
 
-    /// One visible row's text (0-based).
-    pub fn row_text(&self, row: u16) -> String {
-        let p = self.parser.lock().expect("parser");
-        let rows: Vec<String> = p.screen().rows(0, self.cols).collect();
-        rows.into_iter().nth(usize::from(row)).unwrap_or_default()
-    }
-
     /// Poll the screen until `needle` shows or `timeout` elapses. Returns the
     /// screen on success; on failure the error carries the last screen dump
     /// plus whether the child had already exited.
@@ -269,7 +264,14 @@ impl Drop for TuiSession {
             let _ = child.wait();
         }
         if let Some(h) = self.reader.take() {
-            let _ = h.join();
+            match h.join() {
+                Ok(()) => {}
+                // A panicked reader must not vanish into the JoinHandle —
+                // re-throw it unless we're already unwinding a test panic
+                // (a second panic in Drop would abort the process).
+                Err(e) if !std::thread::panicking() => std::panic::resume_unwind(e),
+                Err(_) => {}
+            }
         }
     }
 }

@@ -15,8 +15,9 @@
 
 mod harness;
 
-use harness::TuiSession;
+use harness::{TuiSession, FIXTURE_MANIFEST};
 use std::time::Duration;
+use unicode_width::UnicodeWidthStr;
 
 /// Per-scenario upper bound: covers cold launches on loaded CI runners while
 /// still failing a wedged session in reasonable time.
@@ -76,11 +77,12 @@ fn enter_opens_the_selected_model_tab() {
     if let Err(e) = t.wait_for("model:45", TIMEOUT) {
         panic!("{e}");
     }
-    let tab_row = t.row_text(0);
-    assert!(
-        tab_row.contains(&format!("1 {name}")),
-        "the tab strip labels the opened tab `1 {name}`:\n{tab_row}"
-    );
+    // The lineage pane's title names the active tab's root — the full name,
+    // unlike the tab strip's length-capped labels. It must be the exact
+    // model the ` > ` row was pointing at when Enter went out.
+    if let Err(e) = t.wait_for(&format!("Lineage: {name}"), TIMEOUT) {
+        panic!("{e}");
+    }
 }
 
 #[test]
@@ -101,6 +103,14 @@ fn slash_search_filters_and_esc_restores() {
     if let Err(e) = t.wait_for("[Health]", TIMEOUT) {
         panic!("{e}");
     }
+}
+
+/// The name on the list row carrying the `> ` selection marker — scraped the
+/// same way rows are found, so selection assertions compare tokens exactly.
+fn selected_list_name(screen: &str) -> Option<&str> {
+    screen
+        .lines()
+        .find_map(|l| l.strip_prefix("│  > ")?.split_whitespace().next())
 }
 
 /// The Enter-hint the status line shows for the currently focused pane —
@@ -194,17 +204,9 @@ fn sgr_click_on_a_list_row_selects_that_model() {
     // keeps pane interiors elsewhere on the row from matching. Names may be
     // mid-truncated (`stg_financ…scal_years`); the rendered text is what
     // both the click target and the marker assertion use.
-    let (name, y) = {
+    let (name, x, y) = {
         let screen = t.screen_text();
-        let selected = screen
-            .lines()
-            .find_map(|l| {
-                l.strip_prefix("│  > ")?
-                    .split_whitespace()
-                    .next()
-                    .map(str::to_string)
-            })
-            .unwrap_or_default();
+        let selected = selected_list_name(&screen).unwrap_or("").to_string();
         let mut found = None;
         for (y, line) in screen.lines().enumerate() {
             let Some(rest) = line.strip_prefix("│    ") else {
@@ -216,16 +218,24 @@ fn sgr_click_on_a_list_row_selects_that_model() {
                         .chars()
                         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "_…".contains(c));
                 if model_shaped && name != selected {
-                    found = Some((name.to_string(), y));
+                    // The click column comes from the screen too: the display
+                    // width of everything before the name in this row (+1 —
+                    // SGR coords are 1-based), never a hardcoded cell.
+                    let byte_off = line.len() - rest.len() + rest.find(name).unwrap();
+                    let x = UnicodeWidthStr::width(&line[..byte_off]) as u16 + 1;
+                    found = Some((name.to_string(), x, y as u16 + 1));
                     break;
                 }
             }
         }
         found.unwrap_or_else(|| panic!("no unselected list row found:\n{screen}"))
     };
-    // The name begins at column 5 (border + 4-cell lead-in), 1-based col 6.
-    t.click(6, (y + 1) as u16);
-    if let Err(e) = t.wait_for(&format!("> {name}"), TIMEOUT) {
+    t.click(x, y);
+    // Exact-match the selected marker's row token — a `> {name}` substring
+    // could prefix-collide with a longer name or land inside a breadcrumb.
+    if let Err(e) = t.wait_until(format!("{name:?} selected"), TIMEOUT, |s| {
+        selected_list_name(s) == Some(name.as_str())
+    }) {
         panic!("{e}");
     }
 }
@@ -247,12 +257,7 @@ fn an_unanswered_deadline_still_kills_the_child() {
     // Queries never answered: the launch takes the crossterm probe's own
     // ~2s fallback, so a short deadline on impossible text must still fire —
     // and Drop must reap the child rather than leak it.
-    let mut t = TuiSession::spawn_at(
-        160,
-        44,
-        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifest.json"),
-        false,
-    );
+    let mut t = TuiSession::spawn_at(160, 44, FIXTURE_MANIFEST, false);
     let err = t
         .wait_for("zzz-this-text-never-renders", Duration::from_secs(4))
         .expect_err("the impossible needle must time out");
