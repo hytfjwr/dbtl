@@ -124,6 +124,8 @@ jobs:
           sudo apt-get install -y musl-tools
 
       - name: Build
+        # Windows runs pwsh by default; Git Bash is present on every runner.
+        shell: bash
         env:
           TARGET: ${{ matrix.target }}
           # Ignored by non-musl targets; on musl they force musl-gcc for
