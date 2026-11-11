@@ -30,6 +30,8 @@ fn synthesizes_nodes_and_sources() {
         "model.sample.dim_customers",
         "model.sample.agg_country_orders",
         "model.sample.fct_customer_history",
+        "model.sample.fct_line_items",
+        "model.sample.fct_daily_orders",
         "seed.sample.country_codes",
         "snapshot.sample.orders_snapshot",
         "snapshot.sample.customers_snapshot",
@@ -38,6 +40,8 @@ fn synthesizes_nodes_and_sources() {
     }
     assert!(m.sources.contains_key("source.sample.raw.orders"));
     assert!(m.sources.contains_key("source.sample.raw.customers"));
+    assert!(m.sources.contains_key("source.sample.raw.payments"));
+    assert!(m.sources.contains_key("source.sample.archive.audit_log"));
 }
 
 #[test]
@@ -200,8 +204,8 @@ fn schema_tests_are_captured_but_never_dag_nodes() {
 #[test]
 fn builds_dag_with_expected_counts_and_lineage() {
     let dag = load_dag_from_source(PROJECT).unwrap();
-    assert_eq!(dag.count_by_resource_type("model"), 8, "model count");
-    assert_eq!(dag.count_by_resource_type("source"), 2, "source count");
+    assert_eq!(dag.count_by_resource_type("model"), 10, "model count");
+    assert_eq!(dag.count_by_resource_type("source"), 4, "source count");
     assert_eq!(dag.count_by_resource_type("seed"), 2, "seed count");
     assert_eq!(dag.count_by_resource_type("snapshot"), 3, "snapshot count");
 
@@ -289,6 +293,131 @@ fn source_table_metadata_is_carried() {
         Some("models/staging/schema.yml"),
         "source path is the declaring schema file"
     );
+}
+
+#[test]
+fn unique_key_follows_dbt_precedence() {
+    // The full chain — in-file config() > schema.yml `config:` > the
+    // `dbt_project.yml` tree — resolves into one normalized Vec<String>
+    // (consistency.rs pins byte-parity with real dbt for every node).
+    let dag = load_dag_from_source(PROJECT).unwrap();
+    let uk = |uid: &str| {
+        dag.detail(uid)
+            .unwrap_or_else(|| panic!("{uid} detail"))
+            .unique_key
+            .clone()
+    };
+    // dim_customers: in-file `unique_key="id"` beats the schema's
+    // `customer_id`.
+    assert_eq!(uk("model.sample.dim_customers"), vec!["id".to_string()]);
+    // fct_line_items: schema.yml's list form beats the `tree_shadowed`
+    // project-tree leaf.
+    assert_eq!(
+        uk("model.sample.fct_line_items"),
+        vec!["order_id".to_string(), "line_no".to_string()]
+    );
+    // stg_two_configs: nothing declares above the tree — `+unique_key` lands.
+    assert_eq!(
+        uk("model.sample.stg_two_configs"),
+        vec!["tree_uk".to_string()]
+    );
+    // fct_daily_orders: incremental with no unique_key anywhere — empty.
+    assert!(uk("model.sample.fct_daily_orders").is_empty());
+    // Snapshots pick it up too (yaml `config:` and the {% config() %} block).
+    assert_eq!(
+        uk("snapshot.sample.customers_snapshot"),
+        vec!["id".to_string()]
+    );
+    assert_eq!(
+        uk("snapshot.sample.orders_snapshot"),
+        vec!["id".to_string()]
+    );
+}
+
+#[test]
+fn patch_path_records_the_declaring_yml() {
+    // `patch_path` = the schema file the node was declared in (project-root
+    // relative — the same normalization manifest mode applies to
+    // `pkg://path`). Nodes with no schema entry keep `None`.
+    let dag = load_dag_from_source(PROJECT).unwrap();
+    let pp = |uid: &str| {
+        dag.detail(uid)
+            .unwrap_or_else(|| panic!("{uid} detail"))
+            .patch_path
+            .clone()
+    };
+    assert_eq!(
+        pp("model.sample.stg_orders").as_deref(),
+        Some("models/staging/schema.yml")
+    );
+    assert_eq!(
+        pp("model.sample.fct_line_items").as_deref(),
+        Some("models/marts/schema.yml")
+    );
+    // A `seeds:` entry in staging/schema.yml patches to THAT file.
+    assert_eq!(
+        pp("seed.sample.country_codes").as_deref(),
+        Some("models/staging/schema.yml")
+    );
+    assert_eq!(
+        pp("snapshot.sample.customers_snapshot").as_deref(),
+        Some("snapshots/snapshots.yml")
+    );
+    // No schema entry → None (sql-file-only declarations and
+    // `{% snapshot %}` blocks aren't yml-patched resources).
+    assert_eq!(pp("model.sample.stg_two_configs"), None);
+    assert_eq!(pp("model.sample.fct_customer_history"), None);
+    assert_eq!(pp("snapshot.sample.orders_snapshot"), None);
+}
+
+#[test]
+fn source_ingestion_fields_follow_dbt_semantics() {
+    // loader: source-level only, cascades to every table (dbt ignores
+    // table-level and `+loader` declarations).
+    // loaded_at_field: table overrides the source, an explicit table `null`
+    // clears it, `+loaded_at_field` never lands.
+    // freshness: per-threshold merge table > source > `+freshness`; an
+    // explicit `freshness: null` at a level stops the walk below it.
+    let dag = load_dag_from_source(PROJECT).unwrap();
+    let d = |uid: &str| dag.detail(uid).unwrap_or_else(|| panic!("{uid} detail"));
+
+    // raw.orders: table-level overrides over the source-level values.
+    let orders = d("source.sample.raw.orders");
+    assert_eq!(orders.loader.as_deref(), Some("fivetran"));
+    assert_eq!(orders.loaded_at_field.as_deref(), Some("loaded_at"));
+    let warn = orders.freshness_warn_after.as_ref().expect("warn_after");
+    assert_eq!(warn.count, 12);
+    let err = orders.freshness_error_after.as_ref().expect("error_after");
+    assert_eq!(err.count, 6);
+
+    // raw.payments: pure source-level inheritance.
+    let payments = d("source.sample.raw.payments");
+    assert_eq!(payments.loader.as_deref(), Some("fivetran"));
+    assert_eq!(payments.loaded_at_field.as_deref(), Some("updated_at"));
+    assert_eq!(
+        payments.freshness_error_after.as_ref().map(|t| t.count),
+        Some(24)
+    );
+
+    // raw.customers: `freshness: null` and `loaded_at_field: null` clear
+    // every inherited value — loader still cascades.
+    let customers = d("source.sample.raw.customers");
+    assert_eq!(customers.loader.as_deref(), Some("fivetran"));
+    assert_eq!(customers.loaded_at_field, None);
+    assert!(!customers.has_freshness());
+
+    // archive.audit_log: no schema-level ingestion keys — only the
+    // `sources:` tree `+freshness` lands; `+loader`/`+loaded_at_field` are
+    // ignored by real dbt and so never synthesized.
+    let audit = d("source.sample.archive.audit_log");
+    assert_eq!(audit.loader, None);
+    assert_eq!(audit.loaded_at_field, None);
+    assert_eq!(
+        audit.freshness_warn_after.as_ref().map(|t| t.count),
+        Some(48)
+    );
+    assert_eq!(audit.freshness_error_after, None);
+    assert!(audit.has_freshness());
 }
 
 #[test]

@@ -4,6 +4,14 @@ sources:
   - name: raw
     database: analytics
     schema: raw_data
+    # Ingestion metadata: `loader`/`loaded_at_field`/`freshness` at source
+    # level cascade to every table; a table may override or explicitly null
+    # them out (dbt's real per-key precedence, pinned by consistency.rs).
+    loader: fivetran
+    loaded_at_field: updated_at
+    freshness:
+      warn_after: {count: 12, period: hour}
+      error_after: {count: 24, period: hour}
     # Source-level `meta:` cascades to every table; a table's own `meta:`
     # overrides it per key (dbt's shallow merge).
     meta:
@@ -11,6 +19,12 @@ sources:
       shared: "yes"
     tables:
       - name: orders
+        # Table-level `loaded_at_field` overrides the source-level value;
+        # table-level `freshness` merges per threshold with the source's
+        # (this error_after keeps the inherited warn_after).
+        loaded_at_field: loaded_at
+        freshness:
+          error_after: {count: 6, period: hour}
         meta:
           owner: payments-eng
         # Whitespace-controlled docs block ({%- docs -%}).
@@ -26,9 +40,26 @@ sources:
           - name: country_code
           - name: disabled_flag
       - name: customers
+        # `freshness: null`/`loaded_at_field: null` on the table CLEAR the
+        # inherited source-level values — the effective source has none.
+        freshness: null
+        loaded_at_field: null
         # A Jinja comment in a description vanishes entirely for dbt —
         # including the doc() inside it (an undefined one errors nothing).
         description: "{# hidden {{ doc('undefined_doc') }} #}Raw customers"
+      - name: payments
+        # No freshness/loaded_at/loader keys: inherits the source-level
+        # values unchanged.
+        description: "Settled payments, one row per charge"
+  # A second source with NO ingestion keys in schema.yml — the
+  # `sources:` `+freshness`/`+loaded_at_field` tree config in dbt_project.yml
+  # is the only place they can come from.
+  - name: archive
+    database: analytics
+    schema: archive_data
+    tables:
+      - name: audit_log
+        description: "Quarterly audit archive (tree-configured freshness)"
 
 models:
   - name: stg_schema_disabled

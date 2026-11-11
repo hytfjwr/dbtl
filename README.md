@@ -378,6 +378,8 @@ when you set `fail_on: warn` or raise a rule to `severity: error`:
 | `model_directories` | a model's prefix-derived layer disagrees with its directory-derived layer |
 | `required_meta_keys` | a model is missing a key listed in `keys` (empty by default = no-op) |
 | `contract_columns_without_type` | an enforced-contract model has a declared column without `data_type` |
+| `incremental_without_unique_key` | an incremental model has no `unique_key` (suppress append-style models with `exclude:`/`meta.dbtl.ignore`) |
+| `sources_without_freshness` | a source has no freshness configured (`warn_after`/`error_after` at source or table level) |
 
 Rule policy lives in the **project-local `.dbtl.yml`** — deliberately *not*
 `~/.config/dbtl/config.yml`, because a CI gate must not depend on the

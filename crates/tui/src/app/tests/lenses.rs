@@ -376,13 +376,15 @@ fn violation_lens_tints_both_incident_nodes_and_spares_the_rest() {
 
 #[test]
 fn lint_findings_are_computed_once_from_the_shared_rules() {
-    // The fixture has 38 findings under the shipped defaults — the 27
-    // error-severity gate findings plus 11 warn-severity `unused_sources`
-    // (frozen counts in tests/manifest_fixture.rs) — the App computes them
-    // once at construction and every surface (lens, stats worklist) reads
-    // that one vector.
+    // The fixture has 82 findings under the shipped defaults — the 27
+    // error-severity gate findings plus the warn-severity set: 11
+    // `unused_sources`, 6 `incremental_without_unique_key`, 38
+    // `sources_without_freshness` (frozen counts in
+    // tests/manifest_fixture.rs) — the App computes them once at
+    // construction and every surface (lens, stats worklist) reads that one
+    // vector.
     let a = app();
-    assert_eq!(a.lint_findings().len(), 38, "the frozen fixture count");
+    assert_eq!(a.lint_findings().len(), 82, "the frozen fixture count");
     assert!(
         a.lint_findings()
             .iter()
@@ -534,7 +536,7 @@ fn stats_view_carries_the_lint_worklist_from_the_shared_findings() {
     // the numbers can never drift from `dbtl check --lint` or the lens.
     let a = app();
     let sv = a.compute_stats_view();
-    assert_eq!(sv.lint_findings.len(), 7, "7 rules have findings (frozen)");
+    assert_eq!(sv.lint_findings.len(), 9, "9 rules have findings (frozen)");
     assert_eq!(sv.lint_findings[0].rule, "direct_join_to_source");
     assert_eq!(
         sv.lint_findings[0].names.len(),
@@ -564,9 +566,11 @@ fn stats_view_carries_the_lint_worklist_from_the_shared_findings() {
         );
     }
     // The severity split — the frozen fixture's 27 gate findings are
-    // error-severity, the 11 `unused_sources` warn-severity (frozen in
-    // tests/manifest_fixture.rs), matching `dbtl check --lint`'s counts.
-    assert_eq!((sv.lint_errors, sv.lint_warnings), (27, 11));
+    // error-severity, the warn side 55 (11 `unused_sources` + 6
+    // `incremental_without_unique_key` + 38 `sources_without_freshness`,
+    // frozen in tests/manifest_fixture.rs), matching `dbtl check --lint`'s
+    // counts.
+    assert_eq!((sv.lint_errors, sv.lint_warnings), (27, 55));
 }
 
 #[test]

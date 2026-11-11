@@ -331,21 +331,22 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
     if lint_active {
         let mut cfg = pc.config.lint;
         apply_rules_overlay(&mut cfg, args.rules)?;
+        let candidates =
+            dbtl::project_config_candidates(manifest_arg.as_deref(), project_arg.as_deref());
         let baseline = load_lint_baseline_file(
-            &lint_baseline_path(
-                &cfg.baseline,
-                config_found,
-                &dbtl::project_config_candidates(manifest_arg.as_deref(), project_arg.as_deref()),
-            ),
+            &lint_baseline_path(&cfg.baseline, config_found, &candidates),
             baseline_explicit,
         )?;
-        let outcome = evaluate_lint(
+        let mut outcome = evaluate_lint(
             dag,
             &cfg,
             base_ctx.as_ref().map(|(b, _)| b),
             baseline.as_ref(),
             fail_on,
         );
+        // The same best-effort yml line fill `dbtl lint` reports —
+        // filled before `lint_gates` lifts the findings into the Report.
+        dbtl::fill_finding_lines(&mut outcome.findings, dag, &lint_project_root(&candidates));
         gates.extend(lint_gates(dag, &outcome));
     }
 

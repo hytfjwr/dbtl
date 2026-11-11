@@ -357,6 +357,7 @@ fn lint_surfaces_are_all_ascii() {
                 path: Some(format!("staging/{name}.sql")),
                 config: dbtl::RawConfig {
                     materialized: Some("view".into()),
+                    ..Default::default()
                 },
                 ..Default::default()
             },

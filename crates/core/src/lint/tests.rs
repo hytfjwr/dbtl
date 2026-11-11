@@ -598,8 +598,11 @@ fn findings_are_deterministic_and_rule_ordered() {
 #[test]
 fn installed_package_nodes_are_not_flagged() {
     // model.pkg.other is an installed package's model: it must not flag
-    // even though it has no parents/docs. PackageScope::All keeps it in
-    // the graph; root-project scoping must still exclude it.
+    // even though it has no parents/docs. It is also an incremental model
+    // without a unique_key, and source.pkg.s.t a source without freshness —
+    // both would trip the new warn rules if root-project scoping broke.
+    // PackageScope::All keeps them in the graph; scoping must still exclude
+    // them.
     let m = manifest(
         vec![
             model("stg_a", "staging/stg_a.sql"),
@@ -610,23 +613,36 @@ fn installed_package_nodes_are_not_flagged() {
                     resource_type: "model".into(),
                     path: Some("staging/other.sql".into()),
                     package_name: Some("pkg".into()),
+                    config: crate::manifest::RawConfig {
+                        materialized: Some("incremental".into()),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             ),
         ],
-        vec![],
+        vec![(
+            "source.pkg.s.t".to_string(),
+            RawSource {
+                name: "t".into(),
+                resource_type: "source".into(),
+                package_name: Some("pkg".into()),
+                ..Default::default()
+            },
+        )],
         &[],
     );
     let mut m = m;
     m.metadata.project_name = Some("p".into());
     let dag = Dag::build(&m);
     assert!(dag.contains("model.pkg.other"), "package node kept in dag");
+    assert!(dag.contains("source.pkg.s.t"), "package source kept in dag");
     let f = run_rules(LintInput::new(&dag, &LintConfig::default()));
     for rule in LintRule::ALL {
         assert!(
             flagged(&f, rule)
                 .iter()
-                .all(|u| !u.starts_with("model.pkg.")),
+                .all(|u| !u.starts_with("model.pkg.") && !u.starts_with("source.pkg.")),
             "{} flagged an installed-package node",
             rule.name()
         );
@@ -772,6 +788,8 @@ fn registry_rows_carry_the_fixed_metadata() {
             "model_directories",
             "required_meta_keys",
             "contract_columns_without_type",
+            "incremental_without_unique_key",
+            "sources_without_freshness",
         ]
     );
     // The original twelve gate at error severity (that was the only
@@ -1378,6 +1396,7 @@ fn mat_model(name: &str, materialized: &str) -> (String, RawNode) {
             path: Some(format!("staging/{name}.sql")),
             config: crate::manifest::RawConfig {
                 materialized: Some(materialized.into()),
+                ..Default::default()
             },
             ..Default::default()
         },
@@ -2251,4 +2270,389 @@ fn exclude_and_meta_suppression_reach_the_new_rules() {
         vec!["model.p.stg_b"],
         "meta.dbtl.ignore suppresses stg_ignored's finding; stg_b still flags"
     );
+}
+
+// ---- incremental_without_unique_key ----------------------------------------------
+
+/// A model literal with a materialization and (optional) `unique_key` —
+/// `unique_key` rides the wire `Value` shape (bare string or list).
+fn keyed_model(
+    name: &str,
+    materialized: &str,
+    unique_key: Option<serde_json::Value>,
+) -> (String, RawNode) {
+    (
+        format!("model.p.{name}"),
+        RawNode {
+            name: name.into(),
+            resource_type: "model".into(),
+            path: Some(format!("marts/{name}.sql")),
+            original_file_path: Some(format!("models/marts/{name}.sql")),
+            config: crate::manifest::RawConfig {
+                materialized: Some(materialized.into()),
+                unique_key,
+            },
+            ..Default::default()
+        },
+    )
+}
+
+#[test]
+fn incremental_without_unique_key_flags_unkeyed_incrementals() {
+    let m = manifest(
+        vec![
+            keyed_model("no_key", "incremental", None),
+            keyed_model("scalar", "incremental", Some(serde_json::json!("id"))),
+            keyed_model("listed", "incremental", Some(serde_json::json!(["a", "b"]))),
+            keyed_model("tbl", "table", None),
+        ],
+        vec![],
+        &[],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::IncrementalWithoutUniqueKey),
+        vec!["model.p.no_key"],
+        "only the unkeyed incremental flags (a table never does)"
+    );
+    let hit = f
+        .iter()
+        .find(|f| f.rule == LintRule::IncrementalWithoutUniqueKey)
+        .unwrap();
+    assert_eq!(
+        hit.severity,
+        Severity::Warn,
+        "the new rule defaults to warn"
+    );
+    assert_eq!(
+        hit.location.as_ref().unwrap().file,
+        "models/marts/no_key.sql"
+    );
+}
+
+#[test]
+fn incremental_without_unique_key_honours_exclude_and_meta_ignore() {
+    // The shared suppression machinery reaches the new rules like any
+    // other — exclude by selector, or `meta.dbtl.ignore` on the node.
+    let mut ignored = keyed_model("ignored", "incremental", None);
+    ignored.1.meta = serde_json::json!({"dbtl": {"ignore": ["incremental_without_unique_key"]}})
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let m = manifest(
+        vec![
+            keyed_model("excluded", "incremental", None),
+            ignored,
+            keyed_model("still_bad", "incremental", None),
+        ],
+        vec![],
+        &[],
+    );
+    let cfg = config_from(
+        "lint:\n  rules:\n    incremental_without_unique_key: {exclude: [\"excluded\"]}\n",
+    );
+    assert_eq!(
+        flagged(
+            &findings_of(&m, &cfg),
+            LintRule::IncrementalWithoutUniqueKey
+        ),
+        vec!["model.p.still_bad"]
+    );
+}
+
+// ---- sources_without_freshness ----------------------------------------------------
+
+/// A source literal with (optional) freshness — `threshold` builds the
+/// wire `{count, period}` shape real dbt emits (nulls included).
+fn threshold(
+    count: Option<i64>,
+    period: Option<&str>,
+) -> Option<crate::manifest::RawFreshnessThreshold> {
+    Some(crate::manifest::RawFreshnessThreshold {
+        count,
+        period: period.map(str::to_string),
+    })
+}
+
+fn fresh_source(
+    name: &str,
+    freshness: Option<crate::manifest::RawFreshness>,
+) -> (String, RawSource) {
+    (
+        format!("source.p.{name}"),
+        RawSource {
+            name: name.split('.').next_back().unwrap().into(),
+            resource_type: "source".into(),
+            original_file_path: Some("models/schema.yml".into()),
+            freshness,
+            ..Default::default()
+        },
+    )
+}
+
+#[test]
+fn sources_without_freshness_flags_unconfigured_sources() {
+    let m = manifest(
+        vec![],
+        vec![
+            fresh_source("s.bare", None),
+            // `freshness: null` on the wire (a table's explicit clear) —
+            // just as unconfigured as a missing block.
+            fresh_source("s.cleared", None),
+            // An all-null threshold carries no signal.
+            fresh_source(
+                "s.null_threshold",
+                Some(crate::manifest::RawFreshness {
+                    warn_after: None,
+                    error_after: threshold(None, None),
+                }),
+            ),
+            fresh_source(
+                "s.warned",
+                Some(crate::manifest::RawFreshness {
+                    warn_after: threshold(Some(12), Some("hour")),
+                    error_after: None,
+                }),
+            ),
+            // error_after alone counts — warn_after is not required.
+            fresh_source(
+                "s.errored",
+                Some(crate::manifest::RawFreshness {
+                    warn_after: None,
+                    error_after: threshold(Some(6), Some("hour")),
+                }),
+            ),
+        ],
+        &[],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let mut got = flagged(&f, LintRule::SourcesWithoutFreshness);
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec![
+            "source.p.s.bare",
+            "source.p.s.cleared",
+            "source.p.s.null_threshold"
+        ],
+        "a configured threshold on either side is effective freshness"
+    );
+    // The finding lands on the declaring yml — the source's own
+    // original_file_path (not a patch_path; dbt doesn't emit one).
+    let hit = f
+        .iter()
+        .find(|f| f.rule == LintRule::SourcesWithoutFreshness)
+        .unwrap();
+    assert_eq!(hit.location.as_ref().unwrap().file, "models/schema.yml");
+}
+
+#[test]
+fn sources_without_freshness_honours_exclude_and_meta_ignore() {
+    let mut ignored = fresh_source("s.ignored", None);
+    ignored.1.meta = serde_json::json!({"dbtl": {"ignore": ["sources_without_freshness"]}})
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let m = manifest(
+        vec![],
+        vec![
+            fresh_source("s.excluded", None),
+            ignored,
+            fresh_source("s.still_bad", None),
+        ],
+        &[],
+    );
+    let cfg =
+        config_from("lint:\n  rules:\n    sources_without_freshness: {exclude: [\"excluded\"]}\n");
+    assert_eq!(
+        flagged(&findings_of(&m, &cfg), LintRule::SourcesWithoutFreshness),
+        vec!["source.p.s.still_bad"]
+    );
+}
+
+// ---- the location envelope: which file a finding points at -------------------------
+
+/// A model literal carrying `original_file_path` and (optional)
+/// `patch_path` — the two files the envelope chooses between.
+fn filed_model(name: &str, ofp: &str, patch: Option<&str>) -> (String, RawNode) {
+    (
+        format!("model.p.{name}"),
+        RawNode {
+            name: name.into(),
+            resource_type: "model".into(),
+            path: Some(format!("marts/{name}.sql")),
+            original_file_path: Some(ofp.into()),
+            patch_path: patch.map(|p| format!("sample://{p}")),
+            ..Default::default()
+        },
+    )
+}
+
+fn file_of(findings: &[Finding], rule: LintRule, uid: &str) -> Option<String> {
+    findings
+        .iter()
+        .find(|f| f.rule == rule && f.node_uid == uid)
+        .and_then(|f| f.location.as_ref().map(|l| l.file.clone()))
+}
+
+#[test]
+fn location_file_follows_the_rule_kind() {
+    // undocumented_models fires on a model with no description; root_models
+    // fires on the SAME model (no parents) — same node, different file:
+    // the yaml-declared-attribute rules take patch_path, the graph rules
+    // keep original_file_path.
+    let m = manifest(
+        vec![
+            filed_model(
+                "declared",
+                "models/marts/declared.sql",
+                Some("models/marts/schema.yml"),
+            ),
+            filed_model("unpatched", "models/marts/unpatched.sql", None),
+        ],
+        vec![source("s.bare")],
+        &[],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        file_of(&f, LintRule::UndocumentedModels, "model.p.declared"),
+        Some("models/marts/schema.yml".to_string()),
+        "a yml-declared-attribute finding prefers the declaring yml"
+    );
+    assert_eq!(
+        file_of(&f, LintRule::UndocumentedModels, "model.p.unpatched"),
+        Some("models/marts/unpatched.sql".to_string()),
+        "no patch → the model's own file"
+    );
+    assert_eq!(
+        file_of(&f, LintRule::RootModels, "model.p.declared"),
+        Some("models/marts/declared.sql".to_string()),
+        "a graph finding keeps the .sql even when a patch exists"
+    );
+    assert_eq!(
+        file_of(&f, LintRule::MissingPrimaryKeyTests, "model.p.declared"),
+        Some("models/marts/schema.yml".to_string()),
+        "test declarations live in the yml too"
+    );
+    // A source finding points at its declaring yml — the source's own
+    // original_file_path (dbt emits no patch_path on sources).
+    let mut src = source("s.bare");
+    src.1.original_file_path = Some("models/staging/schema.yml".into());
+    let m2 = manifest(vec![], vec![src], &[]);
+    let f2 = findings_of(&m2, &LintConfig::default());
+    assert_eq!(
+        file_of(&f2, LintRule::UnusedSources, "source.p.s.bare"),
+        Some("models/staging/schema.yml".to_string()),
+    );
+}
+
+// ---- yaml_name_line -----------------------------------------------------------------
+
+fn names(parts: &[&str]) -> Vec<String> {
+    parts.iter().map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn yaml_name_line_finds_source_model_and_column_entries() {
+    let yml = "version: 2\n\nsources:\n  - name: raw\n    tables:\n      - name: orders\n      - name: customers\n\nmodels:\n  - name: stg_a\n    columns:\n      - name: id\n        description: x\n      - name: status\n";
+    // [source, table] / [model] / [model, column] — 1-based lines.
+    assert_eq!(yaml_name_line(yml, &names(&["raw", "orders"])), Some(6));
+    assert_eq!(yaml_name_line(yml, &names(&["raw", "customers"])), Some(7));
+    assert_eq!(yaml_name_line(yml, &names(&["stg_a"])), Some(10));
+    assert_eq!(yaml_name_line(yml, &names(&["stg_a", "id"])), Some(12));
+    assert_eq!(yaml_name_line(yml, &names(&["stg_a", "status"])), Some(14));
+    // Unknown names → None; a name outside the chain's block → None.
+    assert_eq!(yaml_name_line(yml, &names(&["ghost"])), None);
+    assert_eq!(yaml_name_line(yml, &names(&["raw", "status"])), None);
+}
+
+#[test]
+fn yaml_name_line_respects_block_boundaries() {
+    // `status` exists under BOTH models — the chain descends into the
+    // matching parent's block, so each column resolves in its own model.
+    let yml = "models:\n  - name: a\n    columns:\n      - name: status\n  - name: b\n    columns:\n      - name: status\n";
+    assert_eq!(yaml_name_line(yml, &names(&["a", "status"])), Some(4));
+    assert_eq!(yaml_name_line(yml, &names(&["b", "status"])), Some(7));
+    // A `raw` model and a `raw` SOURCE in one file: the chain retries the
+    // next same-name entry when the first block can't complete it.
+    let both = "models:\n  - name: raw\n    description: a model\n\nsources:\n  - name: raw\n    tables:\n      - name: orders\n";
+    assert_eq!(
+        yaml_name_line(both, &names(&["raw", "orders"])),
+        Some(8),
+        "the first `raw` (a model) can't complete the chain — the source's wins"
+    );
+    // A name deeper than the block's end never matches: the search stops
+    // at the first line back at the parent's indent.
+    let yml = "sources:\n  - name: raw\n    tables:\n      - name: orders\n  - name: other\n    tables: []\n";
+    assert_eq!(yaml_name_line(yml, &names(&["other", "orders"])), None);
+}
+
+#[test]
+fn yaml_name_line_handles_quotes_and_comments() {
+    // Quoted `- name:` values match the bare name; comment and blank lines
+    // don't end a block.
+    let yml = "sources:\n  - name: \"raw\"\n    # a comment inside the block\n\n    tables:\n      - name: 'orders'\n";
+    assert_eq!(yaml_name_line(yml, &names(&["raw", "orders"])), Some(6));
+    assert_eq!(yaml_name_line(yml, &names(&["raw"])), Some(2));
+    // A `- name:` with no value can't match.
+    let yml = "models:\n  - name:\n    description: x\n  - name: real\n";
+    assert_eq!(yaml_name_line(yml, &names(&["real"])), Some(4));
+}
+
+// ---- fill_finding_lines --------------------------------------------------------------
+
+#[test]
+fn fill_finding_lines_resolves_lines_and_survives_missing_files() {
+    // One model declared in schema.yml with two undescribed columns (the
+    // finding lands on the FIRST offending column's line), one source in
+    // the same file, and one model whose yml is absent from disk — its
+    // line stays unset, never an error.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    std::fs::write(
+        dir.path().join("models/schema.yml"),
+        "version: 2\n\nsources:\n  - name: s\n    tables:\n      - name: bare\n\nmodels:\n  - name: m\n    columns:\n      - name: id\n      - name: amt\n",
+    )
+    .unwrap();
+    let cols = |name: &str| (name.to_string(), serde_json::json!({"name": name}));
+    let mut m_cols = serde_json::Map::new();
+    m_cols.extend([cols("id"), cols("amt")]);
+    let mut declared = filed_model("m", "models/m.sql", Some("models/schema.yml"));
+    declared.1.description = Some("documented".into());
+    declared.1.columns = m_cols;
+    let mut ghost = filed_model("ghost", "models/ghost.sql", Some("models/ghost.yml"));
+    ghost.1.description = Some("documented".into());
+    ghost.1.columns = serde_json::Map::from_iter([cols("x")]);
+    let mut src = source("s.bare");
+    src.1.original_file_path = Some("models/schema.yml".into());
+    let m = manifest(vec![declared, ghost], vec![src], &[]);
+    let dag = Dag::build(&m);
+    let mut f = run_rules(LintInput::new(&dag, &LintConfig::default()));
+    fill_finding_lines(&mut f, &dag, dir.path());
+    let line_of = |rule, uid| {
+        f.iter()
+            .find(|x| x.rule == rule && x.node_uid == uid)
+            .and_then(|x| x.location.as_ref().and_then(|l| l.line))
+    };
+    assert_eq!(
+        line_of(LintRule::UndocumentedColumns, "model.p.m"),
+        Some(11),
+        "the first undescribed column's `- name:` line"
+    );
+    assert_eq!(
+        line_of(LintRule::UnusedSources, "source.p.s.bare"),
+        Some(6),
+        "a source finding descends [source, table]"
+    );
+    assert_eq!(
+        line_of(LintRule::SourcesWithoutFreshness, "source.p.s.bare"),
+        Some(6)
+    );
+    // The missing file just leaves the line unset.
+    assert_eq!(
+        line_of(LintRule::UndocumentedColumns, "model.p.ghost"),
+        None
+    );
+    // A graph finding on a .sql file is never line-filled.
+    assert_eq!(line_of(LintRule::RootModels, "model.p.m"), None);
 }

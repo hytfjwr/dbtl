@@ -48,8 +48,8 @@ use yaml_rust2::parser::{Event, MarkedEventReceiver, Tag};
 use yaml_rust2::scanner::{Marker, TScalarStyle};
 
 use crate::{
-    Dag, RawConfig, RawDependsOn, RawExposure, RawExposureOwner, RawManifest, RawMetadata, RawNode,
-    RawSource, RawTestMetadata,
+    Dag, RawConfig, RawDependsOn, RawExposure, RawExposureOwner, RawFreshness,
+    RawFreshnessThreshold, RawManifest, RawMetadata, RawNode, RawSource, RawTestMetadata,
 };
 
 /// Parse a dbt project directory and build its [`Dag`] from source.
@@ -145,6 +145,10 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
     // `tree_mat` (the meta precedence chain is the same shape: in-file
     // config(meta=…) > schema.yml meta/config.meta > project tree).
     let mut tree_meta: HashMap<String, serde_json::Map<String, serde_json::Value>> = HashMap::new();
+    // uid -> dbt_project.yml tree `+unique_key` — filled like `tree_mat`
+    // (in-file config() > schema.yml config: > tree), the whole declared
+    // value (dbt accepts a string or a string list).
+    let mut tree_uk: HashMap<String, serde_json::Value> = HashMap::new();
 
     // --- docs blocks (.md) ---
     // dbt renders `{{ doc('x') }}` in descriptions from `{% docs x %}…{% enddocs %}`
@@ -221,6 +225,9 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
         if !tree.meta.is_empty() {
             tree_meta.insert(uid.clone(), tree.meta.clone());
         }
+        if let Some(uk) = &tree.unique_key {
+            tree_uk.insert(uid.clone(), uk.clone());
+        }
         nodes.insert(
             uid.clone(),
             RawNode {
@@ -230,6 +237,10 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                 original_file_path: Some(rel_path(dir, &file)),
                 config: RawConfig {
                     materialized: pat.materialized(&stripped),
+                    // In-file `config(unique_key=…)` is the HIGHEST
+                    // precedence level — the same chain `materialized`
+                    // follows (schema.yml and the tree fill below it).
+                    unique_key: config_unique_key(&stripped),
                 },
                 // In-file `config(meta={…})` is the HIGHEST precedence level;
                 // schema.yml and the project tree merge under it per key.
@@ -270,6 +281,9 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
         if !tree.meta.is_empty() {
             tree_meta.insert(uid.clone(), tree.meta.clone());
         }
+        if let Some(uk) = &tree.unique_key {
+            tree_uk.insert(uid.clone(), uk.clone());
+        }
         nodes.insert(
             uid.clone(),
             RawNode {
@@ -280,6 +294,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                 // dbt records seeds with materialization "seed".
                 config: RawConfig {
                     materialized: Some("seed".to_string()),
+                    ..Default::default()
                 },
                 columns: csv_header_columns(&file, &docs, &mut warnings),
                 ..Default::default()
@@ -325,6 +340,9 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             if !tree.meta.is_empty() {
                 tree_meta.insert(uid.clone(), tree.meta.clone());
             }
+            if let Some(uk) = &tree.unique_key {
+                tree_uk.insert(uid.clone(), uk.clone());
+            }
             nodes.insert(
                 uid.clone(),
                 RawNode {
@@ -334,6 +352,10 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                     original_file_path: Some(ofp.clone()),
                     config: RawConfig {
                         materialized: Some("snapshot".to_string()),
+                        // The `{{ config(…) }}` inside a `{% snapshot %}`
+                        // block carries `unique_key` — extracted file-wide
+                        // like the other pattern extractors.
+                        unique_key: config_unique_key(&stripped),
                     },
                     // The `{{ config(…) }}` inside a `{% snapshot %}` block is
                     // extracted file-wide like the other pattern extractors
@@ -444,6 +466,9 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             if !tree.meta.is_empty() {
                 tree_meta.insert(uid.clone(), tree.meta.clone());
             }
+            if let Some(uk) = &tree.unique_key {
+                tree_uk.insert(uid.clone(), uk.clone());
+            }
             // dbt records a YAML-defined snapshot's `path` as a virtual
             // `<name>.sql` (there is no real .sql file; dbt ≤1.11 prefixed the
             // declaring yml, 1.12 records the bare name — the loader tracks the
@@ -458,6 +483,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                     original_file_path: Some(rel_path(dir, file)),
                     config: RawConfig {
                         materialized: Some("snapshot".to_string()),
+                        ..Default::default()
                     },
                     raw_code: Some(sql.clone()),
                     ..Default::default()
@@ -560,6 +586,27 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                         // — each overrides the previous per key (dbt's
                         // shallow merge, verified).
                         meta: source_meta(tree.meta, src, tbl, &mut warnings),
+                        // Source-level only: dbt cascades it to every table
+                        // and ignores table-level/`+loader` declarations
+                        // (verified on 1.12.6).
+                        loader: src.loader.clone(),
+                        // Table-level `loaded_at_field:` overrides the
+                        // source's; the table's explicit `null` clears the
+                        // inherited value (`+loaded_at_field` is one dbt
+                        // ignores — deliberately not resolved).
+                        loaded_at_field: match &tbl.loaded_at_field {
+                            Some(v) => v.clone(),
+                            None => src.loaded_at_field.clone(),
+                        },
+                        // `freshness:` merges PER THRESHOLD down
+                        // table > source > `+freshness` — a table's
+                        // `error_after` keeps the inherited `warn_after`
+                        // (verified); `freshness: null` clears it all.
+                        freshness: effective_freshness(
+                            &tbl.freshness,
+                            &src.freshness,
+                            &tree.freshness,
+                        ),
                     },
                 );
                 synth_tests(&mut nodes, &mut test_ctx, &uid, &tbl.name, None, &tbl.tests);
@@ -645,6 +692,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             &mut test_ctx,
             "model",
             &schema.models,
+            &yml_path,
             &docs,
             &mut warnings,
         );
@@ -653,6 +701,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             &mut test_ctx,
             "seed",
             &schema.seeds,
+            &yml_path,
             &docs,
             &mut warnings,
         );
@@ -661,6 +710,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             &mut test_ctx,
             "snapshot",
             &schema.snapshots,
+            &yml_path,
             &docs,
             &mut warnings,
         );
@@ -683,6 +733,12 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             for (k, v) in tree {
                 node.meta.entry(k.clone()).or_insert_with(|| v.clone());
             }
+        }
+        // `+unique_key` sits under in-file `config(unique_key=…)` and
+        // schema.yml `config: unique_key:` — the whole declared value (a
+        // bare string or a string list; `Dag::build` normalizes either).
+        if node.config.unique_key.is_none() {
+            node.config.unique_key = tree_uk.get(uid).cloned();
         }
     }
 

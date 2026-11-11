@@ -441,6 +441,43 @@ pub static REGISTRY: &[RuleInfo] = &[
         params: &[],
         requires: Requires::Graph,
     },
+    RuleInfo {
+        rule: LintRule::IncrementalWithoutUniqueKey,
+        id: "incremental_without_unique_key",
+        category: Category::Modeling,
+        default_severity: Severity::Warn,
+        summary: "an incremental model has no unique_key",
+        rationale: "An incremental run merges new rows into the existing \
+                    table; without a unique_key dbt cannot match incoming \
+                    rows to existing ones, so every run risks silently \
+                    duplicating data. Append-style strategies deliberately \
+                    carry no key — this rule does not read \
+                    incremental_strategy, so suppress those models with \
+                    `exclude:` or meta.dbtl.ignore when the missing key is \
+                    intended.",
+        example: "fct_events materializes incrementally but declares no \
+                  unique_key. Fix: set unique_key: event_id in its config \
+                  (or a list for a composite grain).",
+        params: &[],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::SourcesWithoutFreshness,
+        id: "sources_without_freshness",
+        category: Category::Testing,
+        default_severity: Severity::Warn,
+        summary: "a source has no freshness configured",
+        rationale: "Freshness is the only contract a raw feed offers: \
+                    without warn_after/error_after thresholds \
+                    `dbt source freshness` can never flag the table stale, \
+                    so a dead upstream pipeline stays invisible until a \
+                    model starts serving old data.",
+        example: "source raw declares tables but no freshness block. Fix: \
+                  add freshness: {warn_after: {count: 12, period: hour}} at \
+                  the source level — it cascades to every table.",
+        params: &[],
+        requires: Requires::Graph,
+    },
 ];
 
 /// A rule family — used for grouping in `--list-rules`-style output and for

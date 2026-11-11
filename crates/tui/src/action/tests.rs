@@ -26,7 +26,7 @@ fn detail_mode() -> Mode {
     Mode::Detail(DetailView {
         model_id: "m".into(),
         name: "m".into(),
-        detail: NodeDetail::default(),
+        detail: Box::new(NodeDetail::default()),
         tests: vec![],
         downstream_count: 0,
         upstream_count: 0,

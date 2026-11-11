@@ -243,6 +243,17 @@ pub(super) fn load_lint_baseline_file(
     }
 }
 
+/// The directory a finding's `location.file` is relative to — the project
+/// root the `.dbtl.yml` candidates already encode (source mode: the project
+/// dir; a `<root>/target/manifest.json`: the root; a manifest elsewhere:
+/// its own dir — files that don't resolve there just keep `line` unset).
+pub(super) fn lint_project_root(candidates: &[PathBuf]) -> PathBuf {
+    candidates
+        .first()
+        .and_then(|p| p.parent().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 /// The `lint` subcommand's options, bundled so the runner's signature stays
 /// readable (the fields map 1:1 onto the clap variant's args).
 pub struct LintArgs<'a> {
@@ -388,12 +399,20 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
         Some(d) => Some(load_baseline(d, src.scope)?),
         None => None,
     };
-    let outcome = evaluate_lint(
+    let mut outcome = evaluate_lint(
         &resolved.dag,
         &cfg,
         base.as_ref().map(|(b, _)| b),
         baseline.as_ref(),
         fail_on,
+    );
+    // Best-effort yml line numbers — the file-reading pass `run_rules`
+    // stays free of. Unreadable files simply keep `line` unset. Filled
+    // before the Report build so every format carries them.
+    dbtl::fill_finding_lines(
+        &mut outcome.findings,
+        &resolved.dag,
+        &lint_project_root(&candidates),
     );
     // One gate per rule — the same `lint:*` gates `check --lint` reports,
     // rendered by the same formats.

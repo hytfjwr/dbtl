@@ -93,15 +93,35 @@ fn details_are_identical_modulo_profile_data() {
         assert_eq!(md.materialized, sd.materialized, "{uid} materialized");
         assert_eq!(md.description, sd.description, "{uid} description");
         assert_eq!(md.tags, sd.tags, "{uid} tags");
+        assert_eq!(md.unique_key, sd.unique_key, "{uid} unique_key");
+        // The declaring-yml provenance — the manifest's `pkg://path` scheme
+        // is stripped on ingest so both sides hold the project-relative path.
+        assert_eq!(md.patch_path, sd.patch_path, "{uid} patch_path");
         assert_eq!(
             md.original_file_path, sd.original_file_path,
             "{uid} original_file_path"
         );
         // database/schema come from the PROFILE for non-sources (unknowable
         // without a connection); sources carry them in schema.yml — compare.
+        // The source-only ingestion fields are declared/cascaded in
+        // schema.yml (+ the `sources:` tree for `+freshness`), so both modes
+        // must resolve them identically too.
         if info.resource_type == "source" {
             assert_eq!(md.schema, sd.schema, "{uid} schema");
             assert_eq!(md.database, sd.database, "{uid} database");
+            assert_eq!(
+                md.loaded_at_field, sd.loaded_at_field,
+                "{uid} loaded_at_field"
+            );
+            assert_eq!(md.loader, sd.loader, "{uid} loader");
+            assert_eq!(
+                md.freshness_warn_after, sd.freshness_warn_after,
+                "{uid} freshness_warn_after"
+            );
+            assert_eq!(
+                md.freshness_error_after, sd.freshness_error_after,
+                "{uid} freshness_error_after"
+            );
         }
         // Seed columns: source mode reads the CSV header dbt doesn't record.
         if info.resource_type != "seed" {

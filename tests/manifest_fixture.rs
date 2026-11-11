@@ -234,7 +234,9 @@ fn warn_severity_rules_match_frozen_fixture_counts() {
     // The warn-by-default rules' counts on the same fixture, pinned
     // separately from the gate set (which is switched off here). Verified
     // by hand: 11 of the fixture's sources feed nothing at all — not even
-    // an exposure — and nothing else on this graph matches a warn rule.
+    // an exposure; 6 incremental models declare no unique_key; and none of
+    // its 38 sources carries a freshness block — nothing else on this graph
+    // matches a warn rule.
     let dag = fixture_dag();
     let mut cfg = LintConfig::default();
     for rule in LintRule::ALL {
@@ -247,7 +249,11 @@ fn warn_severity_rules_match_frozen_fixture_counts() {
     for f in &findings {
         *counts.entry(f.rule.name()).or_default() += 1;
     }
-    let expected: BTreeMap<&str, usize> = BTreeMap::from([("unused_sources", 11)]);
+    let expected: BTreeMap<&str, usize> = BTreeMap::from([
+        ("incremental_without_unique_key", 6),
+        ("sources_without_freshness", 38),
+        ("unused_sources", 11),
+    ]);
     assert_eq!(
         counts, expected,
         "the warn-severity rules' fixture counts drifted"

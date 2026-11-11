@@ -147,6 +147,7 @@ fn diff_base_dag() -> Dag {
                 path: Some(format!("marts/{name}.sql")),
                 config: RawConfig {
                     materialized: Some(mat.into()),
+                    ..Default::default()
                 },
                 ..Default::default()
             },
@@ -184,6 +185,7 @@ fn diff_current_dag() -> Dag {
                 path: Some(format!("marts/{name}.sql")),
                 config: RawConfig {
                     materialized: Some(mat.into()),
+                    ..Default::default()
                 },
                 ..Default::default()
             },
@@ -235,6 +237,7 @@ fn pr_model(name: &str, layer: &str, sql: &str) -> crate::RawNode {
         raw_code: Some(sql.to_string()),
         config: crate::RawConfig {
             materialized: Some("view".into()),
+            ..Default::default()
         },
         ..Default::default()
     }

@@ -355,6 +355,7 @@ fn manifest_from_plan(params: &SynthParams, plan: &Plan, sql_bodies: bool) -> Ra
                 description: Some(model.description.clone()),
                 config: RawConfig {
                     materialized: Some(model.materialized.to_string()),
+                    ..Default::default()
                 },
                 columns: columns_json(&model.columns),
                 tags: model.tags.clone(),

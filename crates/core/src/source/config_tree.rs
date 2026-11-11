@@ -1,7 +1,7 @@
 use super::*;
 
 /// A resolved directory-hierarchical config from a `dbt_project.yml` resource
-/// tree (`models:` / `seeds:` / `snapshots:`).
+/// tree (`models:` / `seeds:` / `snapshots:` / `sources:`).
 #[derive(Debug, Clone, Default)]
 pub(super) struct TreeConfig {
     pub(super) materialized: Option<String>,
@@ -10,6 +10,14 @@ pub(super) struct TreeConfig {
     /// TOP-LEVEL key (a nested dict is replaced wholesale, not deep-merged —
     /// verified against real dbt).
     pub(super) meta: serde_json::Map<String, serde_json::Value>,
+    /// `+unique_key` — the raw declared value (string or string list; deeper
+    /// wins wholesale, like every non-`meta` config key).
+    pub(super) unique_key: Option<serde_json::Value>,
+    /// `+freshness` on the `sources:` tree — the lowest-precedence freshness
+    /// (schema.yml source- and table-level values sit above it; `+loader`
+    /// and `+loaded_at_field` are deliberately NOT read — real dbt ignores
+    /// them in dbt_project.yml, verified on 1.12.6).
+    pub(super) freshness: Option<RawFreshness>,
 }
 
 /// The config-tree lookup path for a node: the project name, then each
@@ -58,6 +66,23 @@ pub(super) fn resolve_tree_config(
         warnings,
         &format!("dbt_project.yml '+meta' at '{tree_path}'"),
     ));
+    // `+unique_key` keeps its declared shape (string or list) — the same
+    // normalization point `Dag::build` uses for every `unique_key` source.
+    if !tree["+unique_key"].is_null() {
+        out.unique_key = Some(tree["+unique_key"].clone());
+    }
+    // `+freshness` shares schema.yml's shape ({warn_after:…, error_after:…})
+    // — parse it into the wire type so the merge is a plain precedence
+    // chain. A malformed block warns like a malformed `+meta` instead of
+    // silently becoming "no freshness".
+    if !tree["+freshness"].is_null() {
+        match serde_json::from_value::<RawFreshness>(tree["+freshness"].clone()) {
+            Ok(f) => out.freshness = Some(f),
+            Err(e) => warnings.push(format!(
+                "dbt_project.yml '+freshness' at '{tree_path}' is not a freshness block ({e}); ignoring"
+            )),
+        }
+    }
     if let Some((seg, rest)) = segments.split_first() {
         let deeper = resolve_tree_config(
             &tree[seg.as_str()],
@@ -68,6 +93,8 @@ pub(super) fn resolve_tree_config(
         out.materialized = deeper.materialized.or(out.materialized);
         out.enabled = deeper.enabled.or(out.enabled);
         out.meta.extend(deeper.meta); // deeper keys replace same-named ones
+        out.unique_key = deeper.unique_key.or(out.unique_key);
+        out.freshness = deeper.freshness.or(out.freshness);
     }
     out
 }

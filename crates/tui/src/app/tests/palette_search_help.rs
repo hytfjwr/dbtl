@@ -595,7 +595,7 @@ fn help_records_the_opening_mode_for_section_order() {
     a.mode = Mode::Detail(DetailView {
         model_id: "m".into(),
         name: "m".into(),
-        detail: crate::NodeDetail::default(),
+        detail: crate::NodeDetail::default().into(),
         tests: vec![],
         downstream_count: 0,
         upstream_count: 0,
@@ -683,7 +683,7 @@ fn help_close_restores_the_underlying_modal() {
     let detail = Mode::Detail(DetailView {
         model_id: "m".into(),
         name: "m".into(),
-        detail: crate::NodeDetail::default(),
+        detail: crate::NodeDetail::default().into(),
         tests: vec![],
         downstream_count: 0,
         upstream_count: 0,

@@ -292,6 +292,7 @@ mod tests {
                     raw_code: Some("select 1".into()),
                     config: crate::RawConfig {
                         materialized: Some(mat.into()),
+                        ..Default::default()
                     },
                     tags: tags.iter().map(|t| t.to_string()).collect(),
                     depends_on: RawDependsOn {

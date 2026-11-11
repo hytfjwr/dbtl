@@ -211,6 +211,7 @@ pub(super) fn inspector_omits_empty_sections() {
             path: Some("staging/bare.sql".into()),
             config: dbtl::RawConfig {
                 materialized: Some("view".into()),
+                ..Default::default()
             },
             ..Default::default()
         },

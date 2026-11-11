@@ -402,3 +402,30 @@ pub(super) fn de_opt_string_vec<'de, D: serde::Deserializer<'de>>(
     })
     .transpose()
 }
+
+/// The three-state `Option<Option<T>>` recipe: paired with
+/// `#[serde(default)]` it distinguishes ABSENT (`None`) from an explicit
+/// `null` (`Some(None)`) — the difference between "inherits the higher
+/// level's value" and "clears it" that dbt's `freshness:`/`loaded_at_field:`
+/// precedence requires.
+pub(super) fn de_opt_some<'de, D, T>(d: D) -> std::result::Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// The string-scalar flavour of [`de_opt_some`]: absent → `None` (inherit),
+/// explicit `null` → `Some(None)` (clear), a scalar → `Some(Some(s))` with
+/// the same numeric/bool coercion `de_opt_string` applies.
+pub(super) fn de_opt_opt_string<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<Option<String>>, D::Error> {
+    match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Null => Ok(Some(None)),
+        other => scalar_to_string(&other)
+            .map(|s| Some(Some(s)))
+            .ok_or_else(|| serde::de::Error::custom("expected a string scalar")),
+    }
+}

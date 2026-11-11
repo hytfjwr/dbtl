@@ -6,7 +6,10 @@ use super::*;
 pub struct DetailView {
     pub model_id: String,
     pub name: String,
-    pub detail: NodeDetail,
+    /// Boxed so the `Mode::Detail` variant stays small — `NodeDetail` is the
+    /// biggest member by far and the enum shares its footprint across every
+    /// variant.
+    pub detail: Box<NodeDetail>,
     pub tests: Vec<TestInfo>,
     /// The blast-radius counts for THIS node (the focus target, not necessarily
     /// the root), snapshotted from the `Dag` closures at open time so the render

@@ -122,6 +122,12 @@ pub fn run_rules(input: LintInput<'_>) -> Vec<Finding> {
             LintRule::ContractColumnsWithoutType => {
                 governance::contract_columns_without_type(dag, &uids, &in_scope, &mut out)
             }
+            LintRule::IncrementalWithoutUniqueKey => {
+                modeling::incremental_without_unique_key(dag, &uids, &in_scope, &mut out)
+            }
+            LintRule::SourcesWithoutFreshness => {
+                testing::sources_without_freshness(dag, &uids, &in_scope, &mut out)
+            }
         }
     }
     // The envelope fields are filled in ONE place — the severity the config
@@ -131,9 +137,21 @@ pub fn run_rules(input: LintInput<'_>) -> Vec<Finding> {
         f.severity = config
             .severity(f.rule)
             .unwrap_or_else(|| f.rule.info().default_severity);
+        // YAML-declared-attribute findings (see YAML_ATTRIBUTE_RULE_IDS)
+        // point at the declaring .yml when the loaders recorded one —
+        // a missing column description lives in schema.yml, not the
+        // model's .sql. Graph/SQL-level findings keep the original file.
         f.location = dag
             .detail(&f.node_uid)
-            .and_then(|d| d.original_file_path.clone())
+            .and_then(|d| {
+                if crate::lint::YAML_ATTRIBUTE_RULE_IDS.contains(&f.rule.name()) {
+                    d.patch_path
+                        .clone()
+                        .or_else(|| d.original_file_path.clone())
+                } else {
+                    d.original_file_path.clone()
+                }
+            })
             .map(|file| Location { file, line: None });
     }
     suppress(dag, config, &mut out);

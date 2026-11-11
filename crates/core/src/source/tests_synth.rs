@@ -15,11 +15,16 @@ pub(super) struct TestCtx<'a> {
 /// and tests to already-discovered nodes, matched by `<type>.<proj>.<name>`. A
 /// schema entry with no matching node (e.g. a documented but absent model) is
 /// skipped — we never fabricate a node from docs alone.
+///
+/// `yml_path` is the declaring file, project-root-relative — the same
+/// convention the manifest side normalizes `patch_path` to, so a schema
+/// entry makes the node YAML-declared in both modes.
 pub(super) fn apply_meta(
     nodes: &mut HashMap<String, RawNode>,
     ctx: &mut TestCtx<'_>,
     type_prefix: &str,
     entries: &[SchemaModel],
+    yml_path: &str,
     docs: &DocBlocks,
     warnings: &mut Vec<String>,
 ) {
@@ -37,6 +42,9 @@ pub(super) fn apply_meta(
         let Some(node) = nodes.get_mut(&uid) else {
             continue;
         };
+        // A schema entry IS what dbt records as `patch_path` — this file is
+        // where the node's YAML-declared attributes live.
+        node.patch_path = Some(yml_path.to_string());
         if node.description.is_none() {
             node.description = entry.description.clone().map(|d| docs.render(&d, warnings));
         }
@@ -49,6 +57,12 @@ pub(super) fn apply_meta(
         // in-file alias (in-file `config(alias=…)` wins, like materialized).
         if node.alias.is_none() {
             node.alias = entry.config.alias.clone();
+        }
+        // Same chain for `config.unique_key`: schema.yml fills only when no
+        // in-file `config(unique_key=…)` declared it; the declared value
+        // keeps its shape (a bare string or a string list).
+        if node.config.unique_key.is_none() && !entry.config.unique_key.is_null() {
+            node.config.unique_key = Some(entry.config.unique_key.clone());
         }
         if !entry.tags.is_empty() {
             node.tags = entry.tags.clone();
@@ -145,6 +159,43 @@ pub(super) fn source_meta(
         &format!("source '{}' table '{}'", src.name, tbl.name),
     ));
     out
+}
+
+/// The source table's effective `freshness` — each threshold (`warn_after`,
+/// `error_after`) resolves down table > source > `dbt_project.yml`
+/// `+freshness` independently. Verified against real dbt: a table's
+/// `error_after` keeps the inherited `warn_after` (a per-threshold merge,
+/// not a wholesale replace). An explicit `freshness: null` STOPS the
+/// inheritance walk at that level — a table's own declared thresholds above
+/// it still count.
+pub(super) fn effective_freshness(
+    table: &Option<Option<RawFreshness>>,
+    source: &Option<Option<RawFreshness>>,
+    tree: &Option<RawFreshness>,
+) -> Option<RawFreshness> {
+    // Declared levels in precedence order — `Some(None)` is an explicit
+    // `freshness: null` (stops the walk); `None` levels pass through.
+    let chain = [
+        table.as_ref().map(Option::as_ref),
+        source.as_ref().map(Option::as_ref),
+        Some(tree.as_ref()),
+    ];
+    let mut warn_after: Option<RawFreshnessThreshold> = None;
+    let mut error_after: Option<RawFreshnessThreshold> = None;
+    for level in &chain {
+        match level {
+            Some(Some(f)) => {
+                warn_after = warn_after.or_else(|| f.warn_after.clone());
+                error_after = error_after.or_else(|| f.error_after.clone());
+            }
+            Some(None) => break,
+            None => {}
+        }
+    }
+    (warn_after.is_some() || error_after.is_some()).then_some(RawFreshness {
+        warn_after,
+        error_after,
+    })
 }
 
 /// Record each schema-file test as a synthetic `resource_type: "test"` node so
