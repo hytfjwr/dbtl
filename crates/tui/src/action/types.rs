@@ -111,7 +111,7 @@ pub enum Action {
     /// view (root + direction toggles + depth limit as graph operators).
     YankSelector,
     /// Copy the selected node's compiled (Jinja-expanded) SQL — the
-    /// `target/compiled/` / `compiled_code` counterpart of [`YankSql`], which
+    /// `target/compiled/` / `compiled_code` counterpart of [`Action::YankSql`], which
     /// stays raw-only. Bound as `ys` inside the yank-prefix menu.
     YankCompiledSql,
     /// Inside the yank menu (`yl`): copy the selected column's DOWNSTREAM
@@ -185,10 +185,10 @@ pub enum Action {
     /// [`DiffView`]'s [`PrImpact`]. Copies the column-narrowed
     /// [`PrImpact::ci_command_columns`] when the analysis produced one —
     /// the most precise buildable set — falling back to the wide
-    /// [`PrImpact::ci_command`]. `Y` ([`YankPrSelectorWide`]) takes the wide
+    /// [`PrImpact::ci_command`]. `Y` ([`Action::YankPrSelectorWide`]) takes the wide
     /// command unconditionally.
     YankPrSelector,
-    /// The wide counterpart of [`YankPrSelector`]: always copies
+    /// The wide counterpart of [`Action::YankPrSelector`]: always copies
     /// [`PrImpact::ci_command`] (every changed node with `+` fan-out),
     /// ignoring the column narrowing.
     YankPrSelectorWide,

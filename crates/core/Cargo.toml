@@ -2,6 +2,7 @@
 name = "dbtl-core"
 description = "dbtl's dbt domain model — manifest/source parsing, the Dag, diff, and Mermaid export core"
 version.workspace = true
+rust-version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -20,4 +21,4 @@ yaml-rust2.workspace = true
 
 [dev-dependencies]
 # Temp target/compiled trees for the staleness unit tests (crates/core/src/compiled.rs).
-tempfile = "3"
+tempfile.workspace = true

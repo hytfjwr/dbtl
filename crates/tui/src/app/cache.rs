@@ -216,7 +216,7 @@ impl App {
     /// selected / the subgraph is empty.
     ///
     /// Building it runs the exact pipeline the loop used to run inline every
-    /// frame: display subgraph → [`layout_mode`] → [`App::lineage_styles`] →
+    /// frame: display subgraph → [`crate::layout_mode`] → [`App::lineage_styles`] →
     /// [`Layout::apply_node_styles`]. A cache hit skips all of it.
     pub fn styled_lineage_layout(&self) -> Option<Rc<Layout>> {
         let overview = self.ui_state.overview();

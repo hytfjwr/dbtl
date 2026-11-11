@@ -9,7 +9,7 @@
 /// Diff lens needs a `--diff` baseline, the Run* lenses need a loaded
 /// `run_results.json`, and ColumnImpact needs an active column focus to show
 /// anything, so the `apply_action` CycleLens arm SKIPS them when the App lacks
-/// the data — the raw [`cycle_lens`](UiState::cycle_lens) here stays a pure,
+/// the data — the raw [`cycle_lens`](crate::UiState::cycle_lens) here stays a pure,
 /// App-blind step. PrimaryKey is never skipped: its input (`Dag::tests`) is
 /// always loaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -71,7 +71,7 @@ impl LineageLens {
 /// The inspector pane's visibility pref (screen-spec §4): what `I` cycles and
 /// what persists — NOT the effective on-screen state, which the event loop
 /// resolves per frame from this value + the terminal width (the only
-/// size-aware layer) and stores back via [`UiState::set_inspector_shown`].
+/// size-aware layer) and stores back via [`UiState::set_inspector_shown`](crate::UiState::set_inspector_shown).
 ///
 /// Cycle order (`I`): Auto → On → Off → Auto.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

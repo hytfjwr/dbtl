@@ -407,7 +407,7 @@ keys, `WHERE`/`GROUP BY`/`QUALIFY` columns — attached to every output). The
 `stale` for out-of-date compiled SQL, `name_match` when the model fell back
 to the v0 name-matching approximation.
 
-The fallback is **per model**: a model whose SQL is missing or unparseable
+The fallback is **per model**: a model whose SQL is missing or unparsable
 resolves by matching column *names* (the v0 behaviour — `o.id` can bind every
 parent's `id`). `dbtl columns` reports the fallback count on stderr and the
 structure modal tags such models `[name-match]`. `--sql-dialect` overrides

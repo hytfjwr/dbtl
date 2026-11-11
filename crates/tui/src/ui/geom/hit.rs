@@ -154,7 +154,7 @@ pub struct HitGeometry<'a> {
     /// The home body's line plan while the home tab is active —
     /// [`home_lines`] over the SAME `HomeData` + body height the draw used,
     /// so a click lands on the row the screen drew (a `Row(i)` cell reports
-    /// [`HitTarget::HomeRow(i)`]; every other line is inert).
+    /// `HitTarget::HomeRow(i)`; every other line is inert).
     pub home: Option<Vec<HomeLine>>,
 }
 

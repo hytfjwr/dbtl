@@ -53,7 +53,7 @@ impl DocBlocks {
     /// the adjacent whitespace. An unresolved ref (no such block — where dbt
     /// would hard-error — or a foreign package source mode can't see) keeps
     /// the raw `{{ doc(...) }}` text and pushes one dedup'd warning, like the
-    /// loader's other recoverable oddities; an unparseable doc() call warns
+    /// loader's other recoverable oddities; an unparsable doc() call warns
     /// too (dbt parse-errors there as well).
     pub(super) fn render(&self, text: &str, warnings: &mut Vec<String>) -> String {
         let stripped = strip_jinja_comments_text(text);

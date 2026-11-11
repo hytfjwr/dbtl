@@ -197,8 +197,8 @@ pub struct RenderCtx<'a> {
     /// The visible toast stack (Issue 08): up to 3 [`ToastLine`]s, newest
     /// FIRST (drawn top-most at the upper-right, above every pane and modal).
     /// The event loop owns their per-level lifetimes — info ~2.5s, warning
-    /// ~5s — stamping each as it drains [`App::take_notice_leveled`]
-    /// (crate::App::take_notice_leveled); an empty slice (the default) draws
+    /// ~5s — stamping each as it drains [`crate::App::take_notice_leveled`];
+    /// an empty slice (the default) draws
     /// nothing, so headless renders are untouched.
     pub toasts: &'a [ToastLine<'a>],
     /// The command palette's candidate rows (commands, `Recent`/`Commands`
@@ -499,7 +499,7 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
 /// frame is the one centered message `terminal too small: WxH (need 50x12)`.
 /// `q` / `Ctrl-c` stay live (the event loop routes them before this draws);
 /// no other surface may leak through, so the buffer gets the message alone.
-/// The `×` comes from [`chrome`](super::chrome): pure `x` in ASCII mode.
+/// The `×` comes from `chrome` (`super::chrome`): pure `x` in ASCII mode.
 pub fn draw_too_small(frame: &mut Frame, glyphs: crate::GlyphMode, t: &theme::Theme) {
     let area = frame.area();
     // The back buffer still holds the last normal frame — without this pass

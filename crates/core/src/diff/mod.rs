@@ -14,7 +14,7 @@
 //! rename IS to every downstream `ref()`.
 //!
 //! Determinism: `BTreeSet`/`BTreeMap` for the keyed sets, sorted `Vec`s for the
-//! listings, and [`modified_reasons`] emits its findings in one fixed order.
+//! listings, and `modified_reasons` emits its findings in one fixed order.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -217,7 +217,7 @@ impl DagDiff {
 
 /// Compare the `base`line Dag against the `current` one. Nodes are keyed by
 /// `unique_id`; a node present in both is [`DiffStatus::Modified`] when any of
-/// the [`modified_reasons`] fire. Edges are the Dags' pruned 1-hop dependency
+/// the `modified_reasons` fire. Edges are the Dags' pruned 1-hop dependency
 /// edges, compared as sets and reported by display NAME (a removed edge's
 /// endpoints may not exist in the current Dag at all).
 ///

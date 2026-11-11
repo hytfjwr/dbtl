@@ -119,7 +119,7 @@ pub struct RawNode {
     /// The node's `meta` dictionary (owner / domain / arbitrary key-values).
     /// Real manifests mirror the merged result at the node top level (it equals
     /// `config.meta`), so only this field is read. Values are arbitrary JSON —
-    /// kept raw here and stringified for display by [`Dag::build`].
+    /// kept raw here and stringified for display by [`crate::Dag::build`].
     #[serde(default)]
     pub meta: serde_json::Map<String, serde_json::Value>,
     /// The node's warehouse relation name — dbt's effective `alias` (the

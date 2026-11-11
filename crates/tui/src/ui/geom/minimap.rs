@@ -48,7 +48,7 @@ pub fn minimap_rect(
 /// The scroll offsets a minimap cell `(col, row)` asks for — click-to-centre
 /// and drag-scrub share it (§6: `ミニマップ` click moves the viewport, drag
 /// pans). Each minimap cell covers a `sx`×`sy` block of grid cells (the same
-/// division [`draw_minimap`] stamps with — ceil so the whole grid maps inside
+/// division `draw_minimap` stamps with — ceil so the whole grid maps inside
 /// the inset), so the cell maps back to its block's CENTRE in grid space and
 /// the returned offsets put the content window's centre there. Saturating;
 /// the caller's `clamp_lineage` pass bounds the far edge.
@@ -58,7 +58,6 @@ pub fn minimap_rect(
 /// draws its viewport sketch from), so a click on the sketched viewport's own
 /// cell is a near-no-op rather than a jump.
 ///
-/// [`draw_minimap`]: super::lineage
 pub fn minimap_scroll_to(
     mm: Rect,
     col: u16,

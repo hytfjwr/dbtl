@@ -1,0 +1,10 @@
+# cargo-nextest profile used by CI: `cargo nextest run --profile ci`.
+# No retries: a flaky test must stay red, not get masked by a re-run.
+[profile.ci]
+fail-fast = false
+retries = 0
+
+# JUnit report, written to target/nextest/ci/junit.xml. CI uploads it as an
+# artifact when the test step fails.
+[profile.ci.junit]
+path = "junit.xml"

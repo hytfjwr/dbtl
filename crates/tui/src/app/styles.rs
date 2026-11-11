@@ -16,7 +16,7 @@ impl App {
     /// the materialization class (→ colour) always, plus three render-only
     /// overlays that share the foreground/background channels:
     /// - `lens`: the ACTIVE lineage lens's [`LensTint`] for this node (computed by
-    ///   [`lens_tint`](App::lens_tint)); `None` when the lens is `Off`.
+    ///   `lens_tint`); `None` when the lens is `Off`.
     /// - `dimmed`: focus dim — set on every node NOT on the root↔cursor path
     ///   whenever the path is non-empty (i.e. the cursor is off-root). Lens-
     ///   independent; the render layer dims its foreground so the path nodes pop.
@@ -122,8 +122,8 @@ impl App {
 
     /// Per-column layer annotations for the lineage pane's bottom-border band
     /// (the Layer lens's companion): for each layout column whose MODELS
-    /// unanimously share one `first_dir` layer, a [`LayerBand`] with that
-    /// layer's name and [`layer_tint`] — so the band can never disagree with
+    /// unanimously share one `first_dir` layer, a [`crate::ui::LayerBand`] with that
+    /// layer's name and `layer_tint` — so the band can never disagree with
     /// the node tints. A column with mixed layers, or with no models at all
     /// (e.g. a pure-source column), gets no band rather than a lie.
     ///
