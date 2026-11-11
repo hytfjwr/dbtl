@@ -3,7 +3,10 @@
 //! analysis path in a non-TTY test process (same guarantee `docs` has).
 
 mod common;
-use common::{dbtl_cmd, manifest_path as fixture_manifest};
+use common::{
+    dbtl_cmd, manifest_path as fixture_manifest, sample_manifest_path as sample_manifest,
+    SAMPLE_PROJECT,
+};
 use std::path::PathBuf;
 
 fn run(args: &[&str]) -> std::process::Output {
@@ -28,21 +31,10 @@ fn run_env(args: &[&str], envs: &[(&str, &std::path::Path)]) -> std::process::Ou
     cmd.output().expect("failed to run dbtl")
 }
 
-/// The real-dbt-generated manifest the consistency suite pins (rich `meta`).
-fn sample_manifest() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("sample_manifest.json")
-}
-
 /// The source-mode dbt project fixture (`stg_orders -> fct_orders ->
 /// agg_country_orders`, plus the `orders_dashboard` exposure).
 fn sample_project() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("sample_project")
+    PathBuf::from(SAMPLE_PROJECT)
 }
 
 /// A recursive directory copy — `std::fs` has none, and the diff tests need
