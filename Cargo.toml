@@ -20,7 +20,7 @@ path = "src/main.rs"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.5.2"
+version = "0.5.3"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/hytfjwr/dbtl"
