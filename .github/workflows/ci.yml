@@ -224,3 +224,35 @@ jobs:
           name: lcov
           path: lcov.info
           if-no-files-found: error
+
+  tui-e2e:
+    name: TUI E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # The PTY suite is Unix-only; Windows gets no job entry at all.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # nextest does not run #[ignore]d tests, so the PTY suite gets its own
+      # explicit cargo-test invocation here.
+      - name: TUI PTY end-to-end tests
+        run: cargo test --test tui_pty --locked -- --ignored
