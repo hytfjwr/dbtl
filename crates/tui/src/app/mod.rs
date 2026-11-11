@@ -203,9 +203,17 @@ pub struct App {
     /// still orders within each group; every list rebuild reads this.
     pub group_by_meta: Option<String>,
     /// The `meta` key the PR-impact pack collects as "affected owners"
-    /// (`config.yml` `owner_meta_key`, default `owner`). Feeds the `D` modal
+    /// (`.dbtl.yml` `owner_meta_key` > `config.yml`'s > the `owner` default
+    /// — the same precedence the CLI gates resolve). Feeds the `D` modal
     /// snapshot + `e` export through [`crate::diff_report`].
     pub owner_meta_key: String,
+    /// `.dbtl.yml`'s top-level `owner_meta_key` when the project config
+    /// provides one — wins over `config_owner_meta_key`; refreshed from the
+    /// file on every `reload` alongside `lint_config`.
+    project_owner_meta_key: Option<String>,
+    /// `config.yml`'s `owner_meta_key` — the user-level key that applies
+    /// only when the project config doesn't name one.
+    config_owner_meta_key: Option<String>,
     /// `config.yml`'s `lineage_collapse`: the sibling-group size over which a
     /// lineage column contracts the tail into one `+M more` marker node
     /// (`0` = never collapse). Display-only — the rooted subgraph, the
@@ -488,19 +496,23 @@ impl App {
         // it). Unknown top-level keys warn too — the notice is a one-shot
         // toast, like the other load warnings.
         let project_config_path = source.project_config_path();
-        let (lint_config, lint_notice) = match &project_config_path {
+        let (lint_config, project_owner_meta_key, lint_notice) = match &project_config_path {
             Some(path) => match crate::ProjectConfig::load(path) {
-                Ok(pc) if pc.warnings.is_empty() => (pc.lint, None),
-                Ok(pc) => (
-                    pc.lint,
-                    Some(format!("warning: {}", pc.warnings.join("; "))),
-                ),
+                Ok(pc) => {
+                    let notice = if pc.warnings.is_empty() {
+                        None
+                    } else {
+                        Some(format!("warning: {}", pc.warnings.join("; ")))
+                    };
+                    (pc.lint, pc.owner_meta_key, notice)
+                }
                 Err(e) => (
                     crate::LintConfig::default(),
+                    None,
                     Some(format!("warning: ignoring .dbtl.yml: {e}")),
                 ),
             },
-            None => (crate::LintConfig::default(), None),
+            None => (crate::LintConfig::default(), None, None),
         };
         let lint_findings = crate::run_rules(crate::LintInput::new(&dag, &lint_config));
         // The first tab roots on the list head — the same model `selected` 0
@@ -516,7 +528,13 @@ impl App {
             folded_base: None,
             sort,
             group_by_meta: None,
-            owner_meta_key: "owner".to_string(),
+            // `.dbtl.yml`'s key wins here; `set_config_owner_meta_key`
+            // re-resolves once `config.yml` lands right after construction.
+            owner_meta_key: project_owner_meta_key
+                .clone()
+                .unwrap_or_else(|| "owner".to_string()),
+            project_owner_meta_key,
+            config_owner_meta_key: None,
             collapse_threshold: crate::collapse::DEFAULT_COLLAPSE_THRESHOLD,
             bookmarks: BTreeSet::new(),
             ui_state,

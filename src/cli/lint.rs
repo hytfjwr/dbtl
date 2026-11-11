@@ -286,11 +286,12 @@ pub struct LintArgs<'a> {
 /// — never a data load. A source that can't be determined yields the
 /// shipped defaults instead of a data-source error.
 fn query_lint_config(src: &DataSourceArgs, rules: &[String]) -> Result<dbtl::LintConfig, CliError> {
-    let (manifest_arg, project_arg) = match source_path(src.manifest, src.source, src.project) {
-        Some(SourcePath::Manifest(path)) => (Some(path), None),
-        Some(SourcePath::Project(dir)) => (None, Some(dir)),
-        None => (None, None),
-    };
+    let (manifest_arg, project_arg) =
+        match source_path(src.manifest, src.source, src.project, src.diff) {
+            Some(SourcePath::Manifest(path)) => (Some(path), None),
+            Some(SourcePath::Project(dir)) => (None, Some(dir)),
+            None => (None, None),
+        };
     let mut cfg = load_project_config(manifest_arg.as_deref(), project_arg.as_deref())?
         .config
         .lint;
@@ -396,7 +397,7 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
         )?
     };
     let base = match src.diff {
-        Some(d) => Some(load_baseline(d, src.scope)?),
+        Some(d) => Some(load_baseline(d, src.scope, &src.project_dir())?),
         None => None,
     };
     let mut outcome = evaluate_lint(

@@ -71,10 +71,6 @@ impl GateResult {
         }
     }
 
-    pub fn pass(id: &str, title: &str, message: String) -> Self {
-        Self::new(id, title, dbtl::Severity::Error, GateStatus::Pass, message)
-    }
-
     /// A gate that was requested but could not evaluate (e.g. `--no-breaking`
     /// without `--diff`) — reported as `skip`, never counted as a failure.
     pub fn skip(id: &str, title: &str, message: String) -> Self {
@@ -608,7 +604,13 @@ pub(super) mod samples {
     pub(super) fn report() -> Report {
         let mut r = Report::new("proj", "root project only");
         r.gates = vec![
-            GateResult::pass("coverage", "coverage", "5/5 (100%)".to_string()),
+            GateResult::new(
+                "coverage",
+                "coverage",
+                dbtl::Severity::Error,
+                GateStatus::Pass,
+                "5/5 (100%)".to_string(),
+            ),
             gate(
                 "lint:root_models",
                 "lint root_models",

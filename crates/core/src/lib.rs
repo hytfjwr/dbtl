@@ -11,6 +11,7 @@ pub mod cll;
 pub mod compiled;
 pub mod dag;
 pub mod diff;
+pub mod gates;
 pub mod impact;
 pub mod layer;
 pub mod lint;
@@ -39,9 +40,11 @@ pub use diff::{
     compute_diff, compute_diff_with, ColumnChange, ColumnChangeClass, ColumnChangeKind, DagDiff,
     DiffStatus,
 };
+pub use gates::{CheckConfig, CheckGate, GateParamKind, GateParamSpec, GateSetting};
 pub use impact::{
-    column_coverage_counts, coverage_counts, diff_report, exposure_note, layer_violation_edges,
-    pr_impact, pr_impact_markdown, DiffReport, PrImpact, PR_HUB_MIN_DOWNSTREAM,
+    column_coverage_counts, column_doc_coverage_counts, coverage_counts, diff_report,
+    doc_coverage_counts, exposure_note, layer_violation_edges, model_documented, pr_impact,
+    pr_impact_markdown, DiffReport, ImpactOpts, PrImpact, PR_HUB_MIN_DOWNSTREAM,
 };
 pub use layer::{first_dir, layer_rank, LAYER_ORDER};
 pub use lint::{

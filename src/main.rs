@@ -126,6 +126,10 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
         }
         Some(Commands::Check {
             coverage_min,
+            gate,
+            column_coverage_min,
+            doc_coverage_min,
+            max_blast_radius,
             lint,
             no_breaking,
             rules,
@@ -141,6 +145,10 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
                 &src,
                 &CheckArgs {
                     coverage_min: *coverage_min,
+                    gate,
+                    column_coverage_min: *column_coverage_min,
+                    doc_coverage_min: *doc_coverage_min,
+                    max_blast_radius: *max_blast_radius,
                     lint: *lint,
                     no_breaking: *no_breaking,
                     rules,
@@ -222,9 +230,10 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
     // `owner_meta_key`. Applied BEFORE prefs so a saved sort change rebuilds
     // the already-grouped list rather than building twice.
     app.set_group_by_meta(config.group_by_meta.clone());
-    if let Some(key) = &config.owner_meta_key {
-        app.set_owner_meta_key(key.clone());
-    }
+    // `config.yml`'s owner key — `.dbtl.yml`'s `owner_meta_key` (already
+    // loaded into the app) wins when present, the `owner` default applies
+    // when neither names a key.
+    app.set_config_owner_meta_key(config.owner_meta_key.clone());
     // `lineage_collapse`: the sibling-collapse threshold (also config-only —
     // a display policy like the meta keys, not a saved pref).
     if let Some(threshold) = config.lineage_collapse {
@@ -277,7 +286,7 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
     // pre-TTY, like every other load error. The baseline is pruned under the
     // same package scope as the current graph, so both sides agree.
     if let Some(base) = &cli.diff {
-        let (dag, label) = load_baseline(base, cli.package_scope())?;
+        let (dag, label) = load_baseline(base, cli.package_scope(), &src.project_dir())?;
         app.set_diff_base(dag, label);
         app.ui_state.set_lens(LineageLens::Diff);
     }

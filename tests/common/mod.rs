@@ -50,3 +50,162 @@ pub fn fixture_dag() -> dbtl::Dag {
 pub fn dbtl_cmd() -> Command {
     Command::new(env!("CARGO_BIN_EXE_dbtl"))
 }
+
+// ---- temporary git repositories -------------------------------------------
+//
+// The git-baseline tests materialize real revisions, so they need real
+// repositories: `git init`, commit a fixture, mutate, commit again. Every
+// `git` invocation below goes through [`git_in`], which pins identity and
+// isolation env so a developer's `~/.gitconfig` (signing, hooks, autocrlf,
+// even an absent name/email) can never change what the test commits — or
+// block it on a machine with no configured identity.
+
+/// A scratch dir that also owns a git-repo-independent scratch `TMPDIR`
+/// (the baseline's temp tree must land somewhere observable — see the
+/// empty-after check in the git tests).
+pub struct GitRepo {
+    /// The repository root (and `git -C` target).
+    pub root: PathBuf,
+    _tmp: tempfile::TempDir,
+}
+
+impl GitRepo {
+    /// `git init` an empty repository inside a fresh tempdir.
+    pub fn init() -> Self {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root).args(["init", "--quiet"]).run();
+        Self { root, _tmp: tmp }
+    }
+
+    /// Copy `src` (a dir's CONTENTS, or a single file) into `rel` under the
+    /// repo root — the way a fixture lands at a subdirectory path.
+    pub fn copy_in(&self, src: &std::path::Path, rel: &str) {
+        let dst = self.root.join(rel);
+        if src.is_dir() {
+            copy_tree(src, &dst);
+        } else {
+            std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
+            std::fs::copy(src, &dst).unwrap();
+        }
+    }
+
+    /// Write `contents` to `rel` under the repo root (parents created).
+    pub fn write(&self, rel: &str, contents: &str) {
+        let path = self.root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, contents).unwrap();
+    }
+
+    /// `git add -A <paths>` + `git commit`. Returns the new commit sha.
+    pub fn commit(&self, paths: &[&str], message: &str) -> String {
+        let mut add = vec!["add", "-A", "--"];
+        add.extend(paths.iter().copied());
+        git(&self.root).args(add).run();
+        git(&self.root)
+            .args(["commit", "--quiet", "-m", message])
+            .run();
+        git(&self.root)
+            .args(["rev-parse", "HEAD"])
+            .out()
+            .trim()
+            .to_string()
+    }
+
+    /// `git -C <root> <args>` with the isolated environment.
+    pub fn git(&self) -> GitCmd {
+        git(&self.root)
+    }
+}
+
+/// A configured `git` invocation — identity + isolation env applied, so the
+/// user's/system's git configuration can't leak in.
+pub struct GitCmd {
+    cmd: Command,
+}
+
+impl GitCmd {
+    /// Chain args.
+    pub fn args<I, S>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        self.cmd.args(args);
+        self
+    }
+
+    /// Run to completion; the command must succeed.
+    pub fn run(&mut self) {
+        let out = self.cmd.output().expect("run git");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            self.cmd,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Run to completion and return stdout as a String.
+    pub fn out(&mut self) -> String {
+        let out = self.cmd.output().expect("run git");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            self.cmd,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+}
+
+/// `git -C <dir>` with the test-isolated environment: a fixed
+/// identity (the developer machine needn't have one), no signing, no
+/// autocrlf rewriting, and global/system config sealed off entirely.
+pub fn git(dir: &std::path::Path) -> GitCmd {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir);
+    cmd.env("GIT_AUTHOR_NAME", "dbtl tests")
+        .env("GIT_AUTHOR_EMAIL", "dbtl-tests@example.invalid")
+        .env("GIT_COMMITTER_NAME", "dbtl tests")
+        .env("GIT_COMMITTER_EMAIL", "dbtl-tests@example.invalid")
+        .env("GIT_CONFIG_COUNT", "2")
+        .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
+        .env("GIT_CONFIG_VALUE_0", "false")
+        .env("GIT_CONFIG_KEY_1", "core.autocrlf")
+        .env("GIT_CONFIG_VALUE_1", "false")
+        // Seal off ~/.gitconfig and /etc/gitconfig — their presence must
+        // be a no-op on the committed result.
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+    GitCmd { cmd }
+}
+
+/// The same isolation env applied to a `dbtl` invocation — the binary
+/// spawns `git` itself for `--diff git:<rev>`, and that child must see the
+/// sealed config too.
+pub fn git_isolated_env(cmd: &mut Command) {
+    cmd.env("GIT_CONFIG_COUNT", "2")
+        .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
+        .env("GIT_CONFIG_VALUE_0", "false")
+        .env("GIT_CONFIG_KEY_1", "core.autocrlf")
+        .env("GIT_CONFIG_VALUE_1", "false")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+}
+
+/// A recursive directory copy — `std::fs` has none, and the diff/git tests
+/// need an editable twin of a fixture project.
+pub fn copy_tree(src: &std::path::Path, dst: &std::path::Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for e in std::fs::read_dir(src).unwrap() {
+        let e = e.unwrap();
+        let to = dst.join(e.file_name());
+        if e.file_type().unwrap().is_dir() {
+            copy_tree(&e.path(), &to);
+        } else {
+            std::fs::copy(e.path(), &to).unwrap();
+        }
+    }
+}

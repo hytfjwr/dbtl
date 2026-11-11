@@ -1,10 +1,15 @@
 use super::*;
 
-/// The `meta` key the affected-owners set reads, from
-/// `~/.config/dbtl/config.yml`'s `owner_meta_key` (default `owner`) — the
-/// same config the TUI reads, so a `dbtl impact` comment and the `D` modal
-/// never disagree on who to page.
-pub(super) fn owner_meta_key() -> String {
+/// The `meta` key the affected-owners set reads: `.dbtl.yml`'s top-level
+/// `owner_meta_key` when the project config names one, else
+/// `~/.config/dbtl/config.yml`'s, else the `owner` default — ONE resolution
+/// the `check`/`impact` gates and the TUI share, so a CI comment and the
+/// `D` modal never disagree on who to page. `project` is the already-parsed
+/// `ProjectConfig::owner_meta_key`.
+pub(super) fn owner_meta_key(project: Option<&str>) -> String {
+    if let Some(key) = project {
+        return key.to_string();
+    }
     match crate::state::load_config() {
         Ok(c) => c.owner_meta_key.unwrap_or_else(|| "owner".to_string()),
         // Same policy as the TUI's startup: a malformed config warns and

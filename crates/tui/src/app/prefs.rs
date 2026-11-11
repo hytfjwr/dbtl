@@ -201,14 +201,33 @@ impl App {
         }
     }
 
-    /// Set the `meta` key the impact reports read as "affected owners"
-    /// (`config.yml` `owner_meta_key`). It feeds the next `diff_report`
-    /// snapshot AND the inspector's owner line, so the generation bumps
-    /// like every style input — a mid-session call never serves a stale
-    /// cached snapshot.
-    pub fn set_owner_meta_key(&mut self, key: impl Into<String>) {
-        self.owner_meta_key = key.into();
-        self.generation += 1;
+    /// Store `config.yml`'s `owner_meta_key` (the user-level owner key) and
+    /// re-resolve the effective key — `.dbtl.yml`'s `owner_meta_key` wins
+    /// over it, the `owner` default applies when neither names a key (the
+    /// same precedence the CLI's check/impact resolve). It feeds the next
+    /// `diff_report` snapshot AND the inspector's owner line, so a change
+    /// bumps the generation like every style input — a mid-session call
+    /// never serves a stale cached snapshot.
+    pub fn set_config_owner_meta_key(&mut self, key: Option<String>) {
+        self.config_owner_meta_key = key;
+        self.resolve_owner_meta_key();
+    }
+
+    /// Re-derive the effective `owner_meta_key` from the two stored inputs
+    /// (`.dbtl.yml` > `config.yml` > `"owner"`). Called by
+    /// [`set_config_owner_meta_key`](App::set_config_owner_meta_key) and by
+    /// `reload` — a `.dbtl.yml` appearing, disappearing, or changing its
+    /// key mid-session re-resolves the same way.
+    pub(super) fn resolve_owner_meta_key(&mut self) {
+        let resolved = self
+            .project_owner_meta_key
+            .clone()
+            .or_else(|| self.config_owner_meta_key.clone())
+            .unwrap_or_else(|| "owner".to_string());
+        if resolved != self.owner_meta_key {
+            self.owner_meta_key = resolved;
+            self.generation += 1;
+        }
     }
 
     /// Set the sibling-collapse threshold (`config.yml` `lineage_collapse`;

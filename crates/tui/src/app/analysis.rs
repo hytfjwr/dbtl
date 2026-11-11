@@ -25,7 +25,13 @@ impl App {
             diff,
             self.diff_label(),
             self.scope(),
-            &self.owner_meta_key,
+            &crate::ImpactOpts {
+                owner_key: &self.owner_meta_key,
+                // The modal always lists hubs at the shipped threshold —
+                // `check.gates.changed_hubs.min_downstream` belongs to the
+                // CI gate, not the interactive view.
+                hub_min_downstream: crate::PR_HUB_MIN_DOWNSTREAM,
+            },
         );
         Some(DiffView {
             baseline: report.baseline,

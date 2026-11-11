@@ -54,7 +54,22 @@ impl<'a> DataSourceArgs<'a> {
 
     /// Load the graph through the shared [`resolve_source`] rule.
     pub fn resolve(&self) -> Result<ResolvedSource, CliError> {
-        resolve_source(self.manifest, self.source, self.project, self.scope)
+        resolve_source(
+            self.manifest,
+            self.source,
+            self.project,
+            self.scope,
+            self.diff,
+        )
+    }
+
+    /// The directory `git rev-parse --show-prefix` runs in for a `--diff
+    /// git:<rev>` baseline — `--source` when given, else `--project` (the
+    /// current-side project the revision is read back against).
+    pub fn project_dir(&self) -> PathBuf {
+        self.source
+            .as_deref()
+            .map_or_else(|| PathBuf::from(self.project), PathBuf::from)
     }
 
     /// The current-side CLL resolver for a resolved source — `--catalog` and
@@ -87,15 +102,31 @@ pub(super) enum SourcePath {
     Project(PathBuf),
 }
 
+/// Whether `--diff` names a git revision baseline (`git:<rev>`).
+pub(super) fn is_git_diff(diff: Option<&str>) -> bool {
+    diff.is_some_and(|d| d.starts_with("git:"))
+}
+
 /// The source-selection half of [`resolve_source`]: explicit `--manifest` /
 /// `--source` win, else auto-detect under `project` — `target/manifest.json`
 /// (full fidelity) first, then `dbt_project.yml` (source parse). `None` =
 /// no data source under `project`.
+///
+/// `diff` only matters for `git:<rev>`: a git baseline parses the revision's
+/// project from SOURCE, so the current side resolves symmetrically — the
+/// `target/manifest.json` auto-detect is skipped (a manifest-vs-source
+/// comparison would report loader differences as changes). An explicit
+/// `--manifest` still wins — [`resolve_source`] warns that the sides then
+/// load through different loaders (the warning lives there, not here:
+/// this function is also the `.dbtl.yml` probe's pure path oracle, and a
+/// pure decision must not print).
 pub(super) fn source_path(
     manifest: &Option<String>,
     source: &Option<String>,
     project: &str,
+    diff: Option<&str>,
 ) -> Option<SourcePath> {
+    let git_diff = is_git_diff(diff);
     if let Some(path) = manifest {
         return Some(SourcePath::Manifest(PathBuf::from(path)));
     }
@@ -103,9 +134,10 @@ pub(super) fn source_path(
         return Some(SourcePath::Project(PathBuf::from(dir)));
     }
     let project = PathBuf::from(project);
-    let manifest = project.join("target").join("manifest.json");
-    if manifest.is_file() {
-        return Some(SourcePath::Manifest(manifest));
+    if !git_diff && project.join("target").join("manifest.json").is_file() {
+        return Some(SourcePath::Manifest(
+            project.join("target").join("manifest.json"),
+        ));
     }
     if project.join("dbt_project.yml").is_file() {
         return Some(SourcePath::Project(project));
@@ -129,8 +161,30 @@ pub fn resolve_source(
     source: &Option<String>,
     project: &str,
     scope: dbtl::PackageScope,
+    diff: Option<&str>,
 ) -> Result<ResolvedSource, CliError> {
-    let Some(path) = source_path(manifest, source, project) else {
+    // An explicit --manifest overrides the symmetric-source rule — say so:
+    // manifest-vs-source loader differences can read as changes.
+    if manifest.is_some() && is_git_diff(diff) {
+        eprintln!(
+            "warning: --diff git: reads the baseline from project source; \
+             an explicit --manifest current side may report loader \
+             differences as changes"
+        );
+    }
+    let Some(path) = source_path(manifest, source, project, diff) else {
+        // A git baseline compares against project source — a compiled
+        // manifest can sit next to it without being read, so the missing
+        // thing to report is `dbt_project.yml`, not "no data source".
+        if is_git_diff(diff) {
+            return Err(CliError::input(anyhow::anyhow!(
+                "no dbt project under {}: --diff git:<rev> compares the \
+                 revision's project files parsed from source, so the current \
+                 side needs dbt_project.yml too (or pass --source <dir> / \
+                 --manifest <file>)",
+                project
+            )));
+        }
         return Err(CliError::input(anyhow::anyhow!(
             "no data source under {}: neither target/manifest.json nor dbt_project.yml found \
              (pass --manifest <file> or --source <dir>)",
@@ -201,7 +255,13 @@ pub(super) fn apply_package_scope(
 /// recorded on the App so `reload` re-scopes the same way.
 pub fn build_app(cli: &Cli) -> Result<App, CliError> {
     let scope = cli.package_scope();
-    let resolved = resolve_source(&cli.manifest, &cli.source, &cli.project, scope)?;
+    let resolved = resolve_source(
+        &cli.manifest,
+        &cli.source,
+        &cli.project,
+        scope,
+        cli.diff.as_deref(),
+    )?;
     let ResolvedSource {
         dag,
         label,
