@@ -1,0 +1,116 @@
+name: dbt compat
+
+on:
+  # Weekly, Wednesday 03:30 UTC — kept clear of the Monday Dependabot window.
+  schedule:
+    - cron: "30 3 * * 3"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The source loader's contract with real dbt is executable: the committed
+  # sample manifest is produced by `cargo xtask regen-sample-manifest` (real
+  # `dbt compile` over tests/fixtures/sample_project). `fixture` re-runs that
+  # regeneration at the fixture's own dbt-core release — a failure there means
+  # the regeneration procedure itself broke. `latest` re-runs it against the
+  # newest dbt-core release — a failure there means dbt's semantics moved and
+  # the source loader needs to catch up. The regenerated file stays in the
+  # working tree for the test step and is never committed.
+  dbt-compat:
+    name: dbt compat (${{ matrix.dbt }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        dbt: [latest, fixture]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Read before regenerating: the regeneration overwrites this file.
+      - name: Read the committed fixture versions
+        run: |
+          {
+            echo "FIXTURE_DBT_VERSION=$(jq -r .metadata.dbt_version tests/fixtures/sample_manifest.json)"
+            echo "FIXTURE_SCHEMA_VERSION=$(jq -r .metadata.dbt_schema_version tests/fixtures/sample_manifest.json)"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # No uv cache: `latest` must always resolve against PyPI, and a
+      # requirements-file-less key would keep a stale environment warm.
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+          enable-cache: false
+
+      - name: Regenerate the sample manifest
+        id: regen
+        env:
+          DBT_VARIANT: ${{ matrix.dbt }}
+        run: |
+          if [ "$DBT_VARIANT" = fixture ]; then
+            cargo xtask regen-sample-manifest --dbt-version "$FIXTURE_DBT_VERSION"
+          else
+            cargo xtask regen-sample-manifest
+          fi
+
+      - name: Record dbt versions in the summary
+        env:
+          DBT_VARIANT: ${{ matrix.dbt }}
+        run: |
+          gen_dbt=$(jq -r .metadata.dbt_version tests/fixtures/sample_manifest.json)
+          gen_schema=$(jq -r .metadata.dbt_schema_version tests/fixtures/sample_manifest.json)
+          {
+            echo "## dbt compat (${DBT_VARIANT})"
+            echo
+            echo "- generated dbt_version: \`${gen_dbt}\`"
+            echo "- generated dbt_schema_version: \`${gen_schema}\`"
+            if [ "$gen_dbt" = "$FIXTURE_DBT_VERSION" ]; then
+              echo "- dbt_version: unchanged vs the committed fixture (\`${FIXTURE_DBT_VERSION}\`)"
+            else
+              echo "- dbt_version drift: \`${FIXTURE_DBT_VERSION}\` -> \`${gen_dbt}\`"
+            fi
+            if [ "$gen_schema" != "$FIXTURE_SCHEMA_VERSION" ]; then
+              echo "- dbt_schema_version drift: \`${FIXTURE_SCHEMA_VERSION}\` -> \`${gen_schema}\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Consistency and source-loader tests
+        run: cargo test --locked --test consistency --test source_fixture
+
+      - name: Show the regenerated working-tree diff
+        if: always()
+        run: |
+          git status --porcelain
+          git diff --stat
+
+      - name: Upload the generated manifest
+        if: failure() && steps.regen.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sample-manifest-${{ matrix.dbt }}
+          path: tests/fixtures/sample_manifest.json
+          if-no-files-found: ignore
