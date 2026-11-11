@@ -10,6 +10,8 @@
 //! 35..99 x 1..28 and the 114x7 fixture grid centres into a 64x7 content rect
 //! at (35,11) — so grid (gx,gy) lands on screen (35+gx, 11+gy) at scroll 0.
 
+mod common;
+use common::FIXTURE_MANIFEST as FIXTURE;
 use dbtl::action::{Mode, SearchState};
 use dbtl::layout::Layout;
 use dbtl::model_list::{build_model_list, ModelList, SortMode};
@@ -22,7 +24,6 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
 
-const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifest.json");
 const STG: &str = "model.jaffle_finance.stg_finance__budgets";
 const SEED: &str = "seed.jaffle_finance.source_datetime_policy";
 const RPT: &str = "model.jaffle_finance.rpt_delivery_base_metrics";

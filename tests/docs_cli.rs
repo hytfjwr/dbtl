@@ -7,16 +7,9 @@
 //! without ever touching a TTY (the `docs` subcommand returns before any
 //! terminal init, like `--list-themes`).
 
+mod common;
+use common::{dbtl_cmd, manifest_path as fixture_manifest};
 use std::path::PathBuf;
-use std::process::Command;
-
-/// The frozen fixture manifest the rest of the suite pins.
-fn fixture_manifest() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("manifest.json")
-}
 
 /// A unique temp output dir under the OS temp root (PID + a label keep parallel
 /// test runs from colliding). Created fresh by the binary.
@@ -25,7 +18,7 @@ fn temp_out(label: &str) -> PathBuf {
 }
 
 fn run_docs(out: &PathBuf, quiet: bool) -> std::process::Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_dbtl"));
+    let mut cmd = dbtl_cmd();
     cmd.arg("docs")
         .arg("--manifest")
         .arg(fixture_manifest())
@@ -39,7 +32,7 @@ fn run_docs(out: &PathBuf, quiet: bool) -> std::process::Output {
 
 /// Run `docs` with extra flags (`--clean`, `--check`) appended.
 fn run_docs_flags(out: &PathBuf, flags: &[&str]) -> std::process::Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_dbtl"));
+    let mut cmd = dbtl_cmd();
     cmd.arg("docs")
         .arg("--manifest")
         .arg(fixture_manifest())
@@ -130,7 +123,7 @@ fn missing_data_source_fails_with_nonzero_exit_and_stderr() {
     let empty = temp_out("empty_project");
     std::fs::create_dir_all(&empty).expect("create empty project dir");
     let out = temp_out("err_out");
-    let result = Command::new(env!("CARGO_BIN_EXE_dbtl"))
+    let result = dbtl_cmd()
         .arg("docs")
         .arg("--project")
         .arg(&empty)

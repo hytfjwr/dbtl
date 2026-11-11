@@ -10,8 +10,11 @@
 //! top-level maps (`docs`/`groups`/`group_map`/`selectors`/`classifiers`/
 //! `disabled` — ignored by construction).
 
+mod common;
+// The jaffle_finance fixture is an independent Dag to diff the fusion one
+// against, so `check` leaking into a diff listing would be visible.
+use common::{dbtl_cmd, FIXTURE_MANIFEST as JAFFE};
 use std::path::PathBuf;
-use std::process::Command;
 
 use dbtl::{
     build_model_list, compute_diff, generate_docs, load_dag, load_dag_with_warnings, App, Dag,
@@ -22,9 +25,6 @@ const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/fusion_manifest.json"
 );
-/// The jaffle_finance fixture — an independent Dag to diff the fusion one
-/// against, so `check` leaking into a diff listing would be visible.
-const JAFFE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifest.json");
 
 fn fixture_dag() -> Dag {
     load_dag(FIXTURE).expect("fusion fixture manifest must load")
@@ -330,7 +330,7 @@ fn readme_breakdown_enumerates_every_resource_type_and_sums_to_total() {
 fn docs_cli_prints_one_warning_per_unhandled_kind_to_stderr() {
     let out_dir = std::env::temp_dir().join(format!("dbtl_fusion_docs_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&out_dir);
-    let result = Command::new(env!("CARGO_BIN_EXE_dbtl"))
+    let result = dbtl_cmd()
         .arg("docs")
         .arg("--manifest")
         .arg(FIXTURE)
@@ -377,7 +377,7 @@ fn docs_cli_prints_one_warning_per_unhandled_kind_to_stderr() {
 /// same reason).
 #[test]
 fn tui_path_still_prints_startup_warnings_to_stderr() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_dbtl"))
+    let mut child = dbtl_cmd()
         .args(["--manifest", FIXTURE])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

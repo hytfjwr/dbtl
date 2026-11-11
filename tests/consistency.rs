@@ -19,16 +19,12 @@
 //! - Test *names*: dbt mints hashed unique names; tests are compared as
 //!   (kind, column) multisets per node, which is exactly what the UI shows.
 
+mod common;
+use common::{SAMPLE_MANIFEST as MANIFEST, SAMPLE_PROJECT as PROJECT};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use dbtl::{build_model_list, layout, load_dag, load_dag_from_source, Dag, NodeInfo, SortMode};
-
-const MANIFEST: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/sample_manifest.json"
-);
-const PROJECT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample_project");
 
 /// (manifest-mode Dag, source-mode Dag) of the same project.
 fn dags() -> (Dag, Dag) {

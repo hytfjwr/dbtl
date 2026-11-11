@@ -7,12 +7,13 @@
 //! visibility by emphasis regions, not cell counts: require exactly one maximal
 //! run of REVERSED-styled cells in the interior whose spelling equals the name.
 
+mod common;
+use common::{fixture_dag, FIXTURE_MANIFEST as FIXTURE};
 use dbtl::layout::{layout, Layout};
 use dbtl::model_list::{build_model_list, ModelList, SortMode};
 use dbtl::ui::{
     clip_edges, draw, handle_key, pane_interior, pane_layout, PaneConfig, RenderCtx, UiState,
 };
-use dbtl::{load_dag, Dag};
 
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -21,13 +22,8 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::Terminal;
 
-const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifest.json");
 const FCT: &str = "model.jaffle_finance.fct_subscription_process";
 const FCT_NAME: &str = "fct_subscription_process";
-
-fn fixture_dag() -> Dag {
-    load_dag(FIXTURE).expect("fixture manifest must load")
-}
 
 /// Find the selectable model index of `unique_id` in the assembled list.
 fn model_index_of(list: &ModelList, unique_id: &str) -> usize {

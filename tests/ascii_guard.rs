@@ -10,6 +10,8 @@
 //! exhaustive form of the check: no surface can sneak a non-ASCII glyph back
 //! in without failing here.
 
+mod common;
+use common::FIXTURE_MANIFEST as FIXTURE;
 use dbtl::app::{apply_action, App};
 use dbtl::layout::GlyphMode;
 use dbtl::ui::{draw, Focus, RenderCtx, StatusSegments, ToastLine};
@@ -19,7 +21,6 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::Terminal;
 
-const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifest.json");
 const FCT: &str = "model.jaffle_finance.fct_subscription_process";
 
 fn ascii_app() -> App {

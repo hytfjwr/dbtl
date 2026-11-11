@@ -29,8 +29,9 @@
 //! orphan models `dim_customers` + `stg_audit_events` always, plus
 //! `stg_metrics` when the package consumer is out of scope.
 
+mod common;
+use common::dbtl_cmd;
 use std::collections::{BTreeMap, BTreeSet};
-use std::process::Command;
 
 use dbtl::{
     build_model_list, coverage_counts, generate_docs, layer_violation_edges, load_dag,
@@ -92,7 +93,7 @@ fn readme_of(files: &[(String, String)]) -> String {
 }
 
 fn run(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_dbtl"))
+    dbtl_cmd()
         .args(args)
         // stdin must not be a TTY: a bare invocation (no subcommand) reaches
         // the interactive TUI, and an inherited terminal would park the child
@@ -418,7 +419,7 @@ fn project_only_is_a_deprecated_no_op() {
     // child parks on the event loop. The deprecation warning is emitted
     // BEFORE terminal init, so read it off stderr and kill the child if it
     // happens to find a console instead of exiting.
-    let mut child = Command::new(env!("CARGO_BIN_EXE_dbtl"))
+    let mut child = dbtl_cmd()
         .args(["--manifest", MANIFEST, "--project-only"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

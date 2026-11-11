@@ -6,16 +6,12 @@
 //! fct/pos subgraphs contain shared-prefix names (`stg_payment__suppliers` vs
 //! `…supplier_departments`) that would make a textual `contains` false-positive.
 
+mod common;
+use common::fixture_dag;
 use std::collections::HashSet;
 
 use dbtl::layout::{layout, layout_mode, GlyphMode, Layout};
-use dbtl::{load_dag, Dag, Edge, NodeInfo, Subgraph};
-
-const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifest.json");
-
-fn fixture_dag() -> Dag {
-    load_dag(FIXTURE).expect("fixture manifest must load")
-}
+use dbtl::{Dag, Edge, NodeInfo, Subgraph};
 
 // ============================================================================
 // Golden diamond exact-match (visual contract frozen)
