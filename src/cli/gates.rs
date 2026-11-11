@@ -42,14 +42,14 @@ pub fn run_impact(format: ImpactFormat, src: &DataSourceArgs) -> Result<(), CliE
     Ok(())
 }
 
-/// One gate check in the `--format json` report: its name, pass/fail, the same
-/// detail string the line report carries, and — for lint checks — the gating
-/// [`dbtl::Finding`] list automation consumes (new violations only under
-/// `--diff`).
+/// One gate check in the `--format json` report: its name, pass/warn/fail,
+/// the same detail string the line report carries, and — for lint checks —
+/// the gating [`dbtl::Finding`] list automation consumes (new violations
+/// only under `--diff`).
 #[derive(serde::Serialize)]
 pub(super) struct CheckJsonItem {
     check: String,
-    status: &'static str, // "pass" | "fail"
+    status: &'static str, // "pass" | "warn" | "fail"
     message: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     findings: Vec<dbtl::Finding>,
@@ -57,13 +57,87 @@ pub(super) struct CheckJsonItem {
 
 /// The `check --format json` payload: the scope line, the never-gating context
 /// lines (`baseline:`, `affected owners:`), then every check in report order.
-/// `failures` lets a consumer read the verdict without re-counting statuses.
+/// `failures`/`warnings` let a consumer read the verdict without re-counting
+/// statuses (`warnings` = WARN items — reported but never gating).
 #[derive(serde::Serialize)]
 pub(super) struct CheckReportJson {
     scope: String,
     info: Vec<String>,
     checks: Vec<CheckJsonItem>,
     failures: usize,
+    warnings: usize,
+}
+
+/// A tripped gate's report payload — what a FAIL/WARN line and its JSON
+/// mirror print.
+struct GateTrip {
+    /// The `FAIL|WARN <message>` body.
+    message: String,
+    /// The parenthesized line suffix — the findings' severity plus any
+    /// extra counts (`error`, `warn, 2 baselined`).
+    suffix: String,
+    /// The JSON item's `message` (usually a shortened `message`).
+    json_message: String,
+    /// fail counts toward `failures`; warn reports without counting.
+    status: GateStatus,
+    /// The findings the JSON item lists (lint checks only).
+    findings: Vec<dbtl::Finding>,
+}
+
+/// A tripped non-lint gate: fixed error severity, no findings — the same
+/// shape the lint rule trips use, so every gate shares the one `fail_on`
+/// rule (and `--fail-on never` downgrades it to WARN like everything else).
+fn fixed_gate_trip(message: String, fail_on: dbtl::FailOn) -> GateTrip {
+    GateTrip {
+        status: gate_status(dbtl::Severity::Error, fail_on),
+        suffix: "error".to_string(),
+        json_message: message.clone(),
+        message,
+        findings: Vec::new(),
+    }
+}
+
+/// Append one gate result — the `PASS <label>: <pass_msg>` line when clean,
+/// or the `WARN|FAIL <trip.message> (<trip.suffix>)` line when tripped —
+/// plus the JSON mirror, keeping both renderings in lockstep by building
+/// them from one argument set.
+fn push_gate(
+    lines: &mut Vec<String>,
+    failures: &mut Vec<String>,
+    json_checks: &mut Vec<CheckJsonItem>,
+    label: &str,
+    check_name: &str,
+    pass_msg: &str,
+    trip: Option<GateTrip>,
+) {
+    match trip {
+        None => {
+            lines.push(format!("PASS {label}: {pass_msg}"));
+            json_checks.push(CheckJsonItem {
+                check: check_name.to_string(),
+                status: GateStatus::Pass.json(),
+                message: pass_msg.to_string(),
+                findings: Vec::new(),
+            });
+        }
+        Some(trip) => {
+            lines.push(format!(
+                "{} {} ({})",
+                trip.status.word(),
+                trip.message,
+                trip.suffix
+            ));
+            if trip.status == GateStatus::Fail {
+                failures.push(trip.message.clone());
+            }
+            json_checks.push(CheckJsonItem {
+                check: check_name.to_string(),
+                status: trip.status.json(),
+                message: trip.json_message,
+                findings: trip.findings,
+            });
+        }
+    }
 }
 
 /// Run the `check` subcommand: evaluate the CI gates over the resolved source
@@ -72,31 +146,44 @@ pub(super) struct CheckReportJson {
 /// layer violations, changed buildable nodes without tests, and (with
 /// `--no-breaking`) breaking column changes still referenced downstream, all
 /// from the single [`dbtl::pr_impact`] / [`dbtl::compute_diff_with`] analyses.
-/// `--lint` adds one PASS/FAIL line per static-lint rule (the shared
-/// [`dbtl::run_rules`] findings — the SAME vector the TUI lens/worklist and
-/// `dbtl docs` quote); under `--diff` the lint gate narrows to findings whose
-/// [`dbtl::Finding::key`] is absent from the baseline, so pre-existing
-/// violations never fail the gate. Prints one PASS/FAIL line per check to
-/// stdout (or the whole report as one JSON object under `--format json`),
-/// plus informational lines that never gate (`baseline:` and, when the blast
-/// radius has any, `affected owners:`); `--quiet` prints nothing (exit code
-/// only).
+/// `--lint` adds one PASS/WARN/FAIL line per static-lint rule through the
+/// shared [`evaluate_lint`] — the SAME counted-finding set `dbtl lint`
+/// reports (non-baselined, new under `--diff`). Every gate is severity-aware:
+/// the non-lint gates are `error` by definition and lint findings carry their
+/// rule's effective severity, so `--fail-on` (CLI > `.dbtl.yml` > default
+/// `error`) decides whether a tripped gate FAILs or only WARNs. Prints one
+/// line per check to stdout (or the whole report as one JSON object under
+/// `--format json`), plus informational lines that never gate (`baseline:`
+/// and, when the blast radius has any, `affected owners:`); `--quiet` prints
+/// nothing (exit code only).
 #[allow(clippy::too_many_arguments)] // the subcommand's flat flag set
 pub fn run_check(
     src: &DataSourceArgs,
     coverage_min: u8,
     lint: bool,
     rules: &[String],
+    cli_fail_on: Option<dbtl::FailOn>,
     format: ImpactFormat,
     quiet: bool,
     no_breaking: bool,
 ) -> Result<(), CliError> {
     let scope = src.scope;
+    // `--rules` implies linting (a rule list with nothing to run is a no-op
+    // flag, so honour the intent instead). An unknown name is a usage error —
+    // checked before the data load so it can't hide behind a missing-input
+    // error.
+    let lint_active = lint || !rules.is_empty();
+    validate_rule_names(rules)?;
     let resolved = src.resolve()?;
     let dag = &resolved.dag;
-    // `--rules` implies linting (a rule list with nothing to run is a no-op
-    // flag, so honour the intent instead).
-    let lint_active = lint || !rules.is_empty();
+    // `.dbtl.yml` feeds EVERY gate via the top-level `fail_on`, so it's
+    // loaded once up front — a malformed file is a usage error even with
+    // lint off (its threshold can't be trusted either).
+    let (manifest_arg, project_arg) = resolved_config_args(&resolved);
+    let pc = load_project_config(manifest_arg.as_deref(), project_arg.as_deref())?;
+    let fail_on = resolve_fail_on(cli_fail_on, pc.config.fail_on);
+    let baseline_explicit = pc.config.baseline_explicit;
+    let config_found = pc.path.is_some();
 
     let mut lines: Vec<String> = Vec::new();
     let mut failures: Vec<String> = Vec::new();
@@ -119,24 +206,28 @@ pub fn run_check(
     let pct = (tested * 100).checked_div(total).unwrap_or(100);
     if coverage_min == 0 || pct >= usize::from(coverage_min) {
         let msg = format!("{tested}/{total} ({pct}%)");
-        lines.push(format!("PASS coverage: {msg}"));
-        json_checks.push(CheckJsonItem {
-            check: "coverage".to_string(),
-            status: "pass",
-            message: msg,
-            findings: Vec::new(),
-        });
+        push_gate(
+            &mut lines,
+            &mut failures,
+            &mut json_checks,
+            "coverage",
+            "coverage",
+            &msg,
+            None,
+        );
     } else {
-        let msg =
-            format!("coverage {pct}% below --coverage-min {coverage_min}% ({tested}/{total})");
-        lines.push(format!("FAIL {msg}"));
-        failures.push(msg.clone());
-        json_checks.push(CheckJsonItem {
-            check: "coverage".to_string(),
-            status: "fail",
-            message: msg,
-            findings: Vec::new(),
-        });
+        push_gate(
+            &mut lines,
+            &mut failures,
+            &mut json_checks,
+            "coverage",
+            "coverage",
+            "",
+            Some(fixed_gate_trip(
+                format!("coverage {pct}% below --coverage-min {coverage_min}% ({tested}/{total})"),
+                fail_on,
+            )),
+        );
     }
 
     // The baseline loads once and feeds BOTH diff gates (layer violations +
@@ -163,56 +254,64 @@ pub fn run_check(
             json_info.push(info);
         }
         if pr.new_layer_violations.is_empty() {
-            let msg = "none".to_string();
-            lines.push(format!("PASS new layer violations: {msg}"));
-            json_checks.push(CheckJsonItem {
-                check: "new_layer_violations".to_string(),
-                status: "pass",
-                message: msg,
-                findings: Vec::new(),
-            });
-        } else {
-            let msg = format!(
-                "{} new layer violation(s): {}",
-                pr.new_layer_violations.len(),
-                pr.new_layer_violations
-                    .iter()
-                    .map(|(p, c)| format!("{p} -> {c}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+            push_gate(
+                &mut lines,
+                &mut failures,
+                &mut json_checks,
+                "new layer violations",
+                "new_layer_violations",
+                "none",
+                None,
             );
-            lines.push(format!("FAIL {msg}"));
-            failures.push(msg.clone());
-            json_checks.push(CheckJsonItem {
-                check: "new_layer_violations".to_string(),
-                status: "fail",
-                message: msg,
-                findings: Vec::new(),
-            });
+        } else {
+            push_gate(
+                &mut lines,
+                &mut failures,
+                &mut json_checks,
+                "new layer violations",
+                "new_layer_violations",
+                "",
+                Some(fixed_gate_trip(
+                    format!(
+                        "{} new layer violation(s): {}",
+                        pr.new_layer_violations.len(),
+                        pr.new_layer_violations
+                            .iter()
+                            .map(|(p, c)| format!("{p} -> {c}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    fail_on,
+                )),
+            );
         }
         if pr.untested_changes.is_empty() {
-            let msg = "none".to_string();
-            lines.push(format!("PASS untested changes: {msg}"));
-            json_checks.push(CheckJsonItem {
-                check: "untested_changes".to_string(),
-                status: "pass",
-                message: msg,
-                findings: Vec::new(),
-            });
-        } else {
-            let msg = format!(
-                "{} changed node(s) without tests: {}",
-                pr.untested_changes.len(),
-                pr.untested_changes.join(", ")
+            push_gate(
+                &mut lines,
+                &mut failures,
+                &mut json_checks,
+                "untested changes",
+                "untested_changes",
+                "none",
+                None,
             );
-            lines.push(format!("FAIL {msg}"));
-            failures.push(msg.clone());
-            json_checks.push(CheckJsonItem {
-                check: "untested_changes".to_string(),
-                status: "fail",
-                message: msg,
-                findings: Vec::new(),
-            });
+        } else {
+            push_gate(
+                &mut lines,
+                &mut failures,
+                &mut json_checks,
+                "untested changes",
+                "untested_changes",
+                "",
+                Some(fixed_gate_trip(
+                    format!(
+                        "{} changed node(s) without tests: {}",
+                        pr.untested_changes.len(),
+                        pr.untested_changes.join(", ")
+                    ),
+                    fail_on,
+                )),
+            );
         }
         // `--no-breaking`: fail only on BREAKING column changes whose
         // downstream still references the old column (removed/renamed with
@@ -222,14 +321,15 @@ pub fn run_check(
         if no_breaking {
             let breaking = diff.breaking_referenced();
             if breaking.is_empty() {
-                let msg = "none".to_string();
-                lines.push(format!("PASS breaking column changes: {msg}"));
-                json_checks.push(CheckJsonItem {
-                    check: "breaking_columns".to_string(),
-                    status: "pass",
-                    message: msg,
-                    findings: Vec::new(),
-                });
+                push_gate(
+                    &mut lines,
+                    &mut failures,
+                    &mut json_checks,
+                    "breaking column changes",
+                    "breaking_columns",
+                    "none",
+                    None,
+                );
             } else {
                 let names = breaking
                     .iter()
@@ -239,18 +339,21 @@ pub fn run_check(
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
-                let msg = format!(
-                    "{} breaking column change(s) referenced downstream: {names}",
-                    breaking.len()
+                push_gate(
+                    &mut lines,
+                    &mut failures,
+                    &mut json_checks,
+                    "breaking column changes",
+                    "breaking_columns",
+                    "",
+                    Some(fixed_gate_trip(
+                        format!(
+                            "{} breaking column change(s) referenced downstream: {names}",
+                            breaking.len()
+                        ),
+                        fail_on,
+                    )),
                 );
-                lines.push(format!("FAIL {msg}"));
-                failures.push(msg.clone());
-                json_checks.push(CheckJsonItem {
-                    check: "breaking_columns".to_string(),
-                    status: "fail",
-                    message: msg,
-                    findings: Vec::new(),
-                });
             }
         }
     }
@@ -264,96 +367,112 @@ pub fn run_check(
         json_info.push(note);
     }
 
-    // Static lint — the same `run_rules` findings the TUI's Lint lens/stats
-    // worklist and `dbtl docs` quote. The project-local `.dbtl.yml` supplies
+    // Static lint — the shared evaluation `dbtl lint` runs verbatim: the
+    // same `run_rules` findings, the same baseline file, the same `--diff`
+    // new-violation narrowing, so the two commands can never count
+    // differently. The project-local `.dbtl.yml` supplies
     // enables/thresholds/prefixes; a malformed file is FATAL here (a CI gate
     // must never silently lint the wrong rule set — the TUI's warn+fallback
     // policy is deliberately different). `--rules` overrides the file's
     // enables: it selects exactly which rules run, the file still supplies
     // the thresholds/prefixes.
     if lint_active {
-        let cfg = load_lint_config(&resolved, rules)?;
-        let findings = dbtl::run_rules(dbtl::LintInput::new(dag, &cfg));
-        // Under --diff the gate narrows to NEW violations: a finding whose
-        // `key()` already exists in the baseline is pre-existing noise — same
-        // "new only" idea as the layer-violation gate.
-        let base_keys: std::collections::BTreeSet<(dbtl::LintRule, String, Vec<String>)> =
-            match &base_ctx {
-                Some((base, _)) => dbtl::run_rules(dbtl::LintInput::new(base, &cfg))
-                    .iter()
-                    .map(|f| {
-                        let (r, n, rel) = f.key();
-                        (r, n.to_string(), rel.to_vec())
-                    })
-                    .collect(),
-                None => std::collections::BTreeSet::new(),
-            };
-        let gating: Vec<&dbtl::Finding> = findings
-            .iter()
-            .filter(|f| {
-                base_ctx.is_none() || {
-                    let (r, n, rel) = f.key();
-                    !base_keys.contains(&(r, n.to_string(), rel.to_vec()))
-                }
-            })
-            .collect();
+        let mut cfg = pc.config.lint;
+        apply_rules_overlay(&mut cfg, rules)?;
+        let baseline = load_lint_baseline_file(
+            &lint_baseline_path(
+                &cfg.baseline,
+                config_found,
+                &dbtl::project_config_candidates(manifest_arg.as_deref(), project_arg.as_deref()),
+            ),
+            baseline_explicit,
+        )?;
+        let outcome = evaluate_lint(
+            dag,
+            &cfg,
+            base_ctx.as_ref().map(|(b, _)| b),
+            baseline.as_ref(),
+            fail_on,
+        );
         let name = |uid: &str| -> String {
             dag.get(uid)
                 .map(|n| n.name.clone())
                 .unwrap_or_else(|| uid.to_string())
         };
-        for rule in dbtl::LintRule::ALL {
-            if !cfg.enabled(rule) {
-                continue;
-            }
-            let rule_findings: Vec<&dbtl::Finding> =
-                gating.iter().copied().filter(|f| f.rule == rule).collect();
-            let total = findings.iter().filter(|f| f.rule == rule).count();
-            let check_name = format!("lint:{}", rule.name());
-            if rule_findings.is_empty() {
+        for ro in &outcome.rules {
+            let label = format!("lint {}", ro.rule.name());
+            let check_name = format!("lint:{}", ro.rule.name());
+            if ro.status == GateStatus::Pass {
                 // Under --diff a rule whose violations are all pre-existing
                 // still passes — the message says so explicitly.
-                let msg = if base_ctx.is_some() && total > 0 {
-                    format!("no new violations ({total} pre-existing)")
+                let msg = if outcome.has_diff && (ro.pre_existing + ro.baselined) > 0 {
+                    let mut parts = Vec::new();
+                    if ro.pre_existing > 0 {
+                        parts.push(format!("{} pre-existing", ro.pre_existing));
+                    }
+                    if ro.baselined > 0 {
+                        parts.push(format!("{} baselined", ro.baselined));
+                    }
+                    format!("no new violations ({})", parts.join(", "))
+                } else if ro.baselined > 0 {
+                    format!("none ({} baselined)", ro.baselined)
                 } else {
                     "none".to_string()
                 };
-                lines.push(format!("PASS lint {}: {msg}", rule.name()));
-                json_checks.push(CheckJsonItem {
-                    check: check_name,
-                    status: "pass",
-                    message: msg,
-                    findings: Vec::new(),
-                });
+                push_gate(
+                    &mut lines,
+                    &mut failures,
+                    &mut json_checks,
+                    &label,
+                    &check_name,
+                    &msg,
+                    None,
+                );
             } else {
-                let names = rule_findings
+                let names = ro
+                    .counted
                     .iter()
-                    .map(|f| name(&f.node_uid))
+                    .map(|&i| name(&outcome.findings[i].node_uid))
                     .collect::<Vec<_>>()
                     .join(", ");
-                let msg = if base_ctx.is_some() {
+                let msg = if outcome.has_diff {
                     format!(
                         "lint {}: {} new violation(s): {}",
-                        rule.name(),
-                        rule_findings.len(),
+                        ro.rule.name(),
+                        ro.counted.len(),
                         names
                     )
                 } else {
                     format!(
                         "lint {}: {} violation(s): {}",
-                        rule.name(),
-                        rule_findings.len(),
+                        ro.rule.name(),
+                        ro.counted.len(),
                         names
                     )
                 };
-                lines.push(format!("FAIL {msg}"));
-                failures.push(msg);
-                json_checks.push(CheckJsonItem {
-                    check: check_name,
-                    status: "fail",
-                    message: format!("{} violation(s)", rule_findings.len()),
-                    findings: rule_findings.into_iter().cloned().collect(),
-                });
+                let mut suffix = ro.severity.name().to_string();
+                if ro.baselined > 0 {
+                    suffix += &format!(", {} baselined", ro.baselined);
+                }
+                push_gate(
+                    &mut lines,
+                    &mut failures,
+                    &mut json_checks,
+                    &label,
+                    &check_name,
+                    "",
+                    Some(GateTrip {
+                        status: ro.status,
+                        suffix,
+                        json_message: format!("{} violation(s)", ro.counted.len()),
+                        message: msg,
+                        findings: ro
+                            .counted
+                            .iter()
+                            .map(|&i| outcome.findings[i].clone())
+                            .collect(),
+                    }),
+                );
             }
         }
     }
@@ -369,6 +488,7 @@ pub fn run_check(
                 let report = CheckReportJson {
                     scope: scope_desc,
                     info: json_info,
+                    warnings: json_checks.iter().filter(|c| c.status == "warn").count(),
                     checks: json_checks,
                     failures: failures.len(),
                 };
