@@ -33,7 +33,12 @@ fn parse_gate_override(
     let (id, severity) = s
         .split_once('=')
         .ok_or_else(|| format!("expected GATE=SEVERITY, got '{s}'"))?;
-    let gate = dbtl::CheckGate::from_name(id).ok_or_else(|| format!("unknown gate '{id}'"))?;
+    let gate = dbtl::CheckGate::from_name(id).ok_or_else(|| {
+        format!(
+            "unknown gate '{id}' (valid gates: {})",
+            dbtl::CheckGate::valid_ids()
+        )
+    })?;
     let severity = match severity {
         "error" => Some(dbtl::Severity::Error),
         "warn" => Some(dbtl::Severity::Warn),
@@ -259,8 +264,9 @@ pub enum Commands {
         /// Minimum finding severity that fails a check: `error` (default)
         /// fails on errors only, `warn` also fails on warnings, `never`
         /// only reports (a tripped gate prints WARN and never counts).
-        /// Overrides `.dbtl.yml`'s top-level `fail_on`; the non-lint gates
-        /// are error-severity by definition.
+        /// Overrides `.dbtl.yml`'s top-level `fail_on`; each gate's
+        /// severity comes from `--gate`, its `check.gates` entry, or the
+        /// shipped default.
         #[arg(long, value_enum)]
         fail_on: Option<FailOnArg>,
         /// Report format on stdout: `text` (the line report, default),

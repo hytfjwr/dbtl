@@ -61,6 +61,17 @@ impl CheckGate {
         Self::ALL.iter().find(|g| g.id() == name).copied()
     }
 
+    /// Every gate id, comma-joined — the valid-set list the unknown-gate
+    /// errors print (`.dbtl.yml`'s parser and the `--gate` flag parser
+    /// share it, so the two front ends can't list different gates).
+    pub fn valid_ids() -> String {
+        Self::ALL
+            .iter()
+            .map(|g| g.id())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     /// The gate's stable id — the `check.gates` key, the report's machine
     /// name, and the `--gate` left-hand side.
     pub fn id(self) -> &'static str {

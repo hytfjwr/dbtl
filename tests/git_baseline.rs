@@ -177,7 +177,14 @@ fn git_baseline_leaves_no_temp_dir() {
             .env("TEMP", scratch.path())
             .output()
             .expect("run dbtl");
-        let _ = out;
+        // Both the success and the input-error path must run to completion
+        // — the Drop guard's cleanup is what this test measures.
+        assert_eq!(
+            out.status.code(),
+            if rev == "git:HEAD" { Some(0) } else { Some(3) },
+            "{rev} stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let leftovers: Vec<_> = std::fs::read_dir(scratch.path())
             .unwrap()
             .filter_map(|e| e.ok())

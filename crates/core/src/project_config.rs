@@ -506,16 +506,6 @@ fn parse_severity(value: &serde_norway::Value, what: &str) -> Result<SeveritySet
         .map_err(|_| format!("{what} must be one of error|warn|off"))
 }
 
-/// `check.gates` ids, comma-joined for the unknown-gate error (the same list
-/// the `--gate` parser prints).
-fn valid_gate_names() -> String {
-    CheckGate::ALL
-        .iter()
-        .map(|g| g.id())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 /// The declared parameter names for `gate`, comma-joined for the
 /// undeclared-param error (`(none)` when the gate takes no params).
 fn valid_gate_params(gate: CheckGate) -> String {
@@ -540,7 +530,7 @@ fn parse_gate_entry(
     let gate = CheckGate::from_name(name).ok_or_else(|| {
         format!(
             "unknown check gate '{name}' (valid gates: {})",
-            valid_gate_names()
+            CheckGate::valid_ids()
         )
     })?;
     let (severity, params): (Option<SeveritySetting>, Vec<(&str, &serde_norway::Value)>) =
