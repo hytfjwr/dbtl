@@ -1801,8 +1801,17 @@
     "docs": {
       "type": "object",
       "additionalProperties": false,
-      "description": "`docs:` — generated-docs options.",
       "properties": {
+        "catalog": {
+          "type": "boolean",
+          "description": "`docs.catalog` — opt in to the sibling `catalog.json` (same path rule\nas the CLI's auto-detect, but only when the file asks for it).",
+          "default": false
+        },
+        "run_results": {
+          "type": "boolean",
+          "description": "`docs.run_results` — opt in to the sibling `run_results.json`.",
+          "default": false
+        },
         "lineage_depth": {
           "description": "Mermaid ancestry depth per node page: an integer ≥ 1, or `all` for the whole closure (default 2).",
           "anyOf": [
@@ -1821,7 +1830,8 @@
             }
           ]
         }
-      }
+      },
+      "description": "`docs:` — generated-docs options."
     },
     "owner_meta_key": {
       "type": [

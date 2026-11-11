@@ -81,6 +81,8 @@ A gate accepts a bare severity (`error` \| `warn` \| `off`) or an object `{sever
 
 | Key | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
+| `catalog` | integer ≥ 1 or `all` | `2` | `docs.catalog` — opt in to the sibling `catalog.json` (same path rule as the CLI's auto-detect, but only when the file asks for it). |
+| `run_results` | integer ≥ 1 or `all` | `2` | `docs.run_results` — opt in to the sibling `run_results.json`. |
 | `lineage_depth` | integer ≥ 1 or `all` | `2` | Mermaid ancestry depth per node page: an integer ≥ 1, or `all` for the whole closure (default 2). |
 
 ## `config.yml` (`~/.config/dbtl/config.yml`)
