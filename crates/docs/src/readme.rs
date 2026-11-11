@@ -3,18 +3,40 @@ use super::*;
 /// The index `README.md`: project heading + provenance, a resource-type count
 /// breakdown, a full linked node table (in a deterministic logical order), and a
 /// whole-project Mermaid diagram.
+///
+/// `options.nodes` is the generated set (`--select`/`--exclude` resolved by
+/// the caller; `None` = the whole `dag`): the Nodes table and the lineage
+/// diagrams cover only it, while the Summary counts stay project-wide.
+/// `select_label`/`exclude_label` echo the selector strings on the README's
+/// `Selection:`/`Excluding:` lines.
 pub(super) fn readme_markdown(
     ctx: &PageInputs,
     project_name: &str,
     source_label: &str,
     scope: PackageScope,
     lint: Option<&[Finding]>,
+    options: &DocsOptions,
 ) -> String {
     let dag = ctx.dag;
     let files = ctx.files;
+    // The generated set — the Nodes table and lineage describe this graph:
+    // the whole Dag, or `nodes` filtered down to the selection. Everything
+    // upstream (the Summary, lint/coverage stats) keeps the FULL Dag so a
+    // selected run still reports project-wide numbers.
+    let selected = options
+        .nodes
+        .map(|sel| dag.filtered(|n| sel.contains(&n.unique_id)));
+    let listed = selected.as_ref().unwrap_or(dag);
+
     let mut s = String::new();
     s.push_str(&format!("# {project_name}\n\n"));
     s.push_str(&format!("Generated from: `{source_label}`\n"));
+    if let Some(label) = options.select_label {
+        s.push_str(&format!("Selection: `{label}`\n"));
+    }
+    if let Some(label) = options.exclude_label {
+        s.push_str(&format!("Excluding: `{label}`\n"));
+    }
     // Which side artifacts fed this doc set — declared only when one was
     // explicitly enabled (an artifact-free run emits nothing here at all).
     // The names only, never the paths: the file set must read identically
@@ -91,11 +113,12 @@ pub(super) fn readme_markdown(
     // gates on (rendered only when lint ran).
     push_lint_summary(&mut s, dag, files, lint);
 
-    // Node table in logical order (see `readme_order`), each linked to its page.
+    // Node table in logical order (see `readme_order`), each linked to its
+    // page — the GENERATED set only (`listed`): every row's link resolves.
     s.push_str("\n## Nodes\n\n");
     s.push_str("| Name | Type | Materialization | Tests | Doc |\n");
     s.push_str("| --- | --- | --- | --- | --- |\n");
-    for node in readme_order(dag) {
+    for node in readme_order(listed) {
         let uid = node.unique_id.as_str();
         let link = files
             .get(uid)
@@ -122,7 +145,7 @@ pub(super) fn readme_markdown(
     // full subgraph with no marked selection. Links resolve FROM the README (at
     // the repo root) so the href is the page's full relative path (`models/…`).
     s.push_str("\n## Lineage\n\n");
-    push_readme_lineage(&mut s, dag, files);
+    push_readme_lineage(&mut s, listed, files);
 
     s
 }
@@ -145,6 +168,10 @@ pub(super) fn readme_markdown(
 /// (they would reintroduce the hairball); a note says so and points readers at
 /// the per-node pages for the full picture. The note names WHICH trigger —
 /// the node count or the budget — fired.
+/// `dag` is the GENERATED set's graph (the whole project, or the
+/// `--select`/`--exclude` selection filtered down by the caller) — the
+/// whole-graph figure and the layer splits cover exactly what this run
+/// emitted pages for.
 pub(super) fn push_readme_lineage(s: &mut String, dag: &Dag, files: &BTreeMap<String, String>) {
     // The README sits at the output root — `page_link` yields the target's
     // stored relative path verbatim, and every link goes through the one

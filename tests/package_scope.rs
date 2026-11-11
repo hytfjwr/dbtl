@@ -193,13 +193,13 @@ fn scoped_metrics_match_source_mode() {
     // numbers — the "manifest vs source disagree on coverage" bug this fixes.
     let (m, s) = (manifest_root(), source_dag());
     assert_eq!(
-        coverage_counts(&m),
+        coverage_counts(&m, None),
         (1, 5),
         "root scope: 1 tested (fct_orders) of 5 testable models"
     );
     assert_eq!(
-        coverage_counts(&m),
-        coverage_counts(&s),
+        coverage_counts(&m, None),
+        coverage_counts(&s, None),
         "coverage diverges between manifest and source modes"
     );
     assert_eq!(
@@ -265,11 +265,11 @@ fn include_packages_keeps_package_nodes_as_context() {
     // Metrics STILL count only the root project — coverage is identical to
     // the scoped graph and to source mode, package test nodes don't count.
     assert_eq!(
-        coverage_counts(&all),
-        coverage_counts(&root),
+        coverage_counts(&all, None),
+        coverage_counts(&root, None),
         "coverage_counts is root-scoped even on the full graph"
     );
-    assert_eq!(coverage_counts(&all), (1, 5));
+    assert_eq!(coverage_counts(&all, None), (1, 5));
 
     // Orphan models: stg_metrics IS consumed inside the full graph (by the
     // package rollup), so it's not an orphan under the wide scope — but the

@@ -189,6 +189,20 @@ pub enum Commands {
         /// `docs.lineage_depth`; the shipped default is `2`.
         #[arg(long, value_name = "N|all")]
         lineage_depth: Option<String>,
+        /// Generate pages only for nodes matching a dbt selector — the
+        /// grammar of `dbtl ls`/`check --select` (`tag:x`, `path:y`,
+        /// `+name+`, `state:modified`, …), NOT the TUI's `--select <name>`
+        /// model-name flag. `state:` atoms need `--diff`; `--diff` on docs
+        /// exists ONLY for them. Repeatable — specs union. The README notes
+        /// the selector and project-wide summary counts stay unchanged;
+        /// links to omitted pages render as plain names.
+        #[arg(long, value_name = "SELECTOR", conflicts_with_all = ["clean", "check"])]
+        select: Vec<String>,
+        /// Subtract nodes matching a spec from the generated set — applied
+        /// after `--select` (with none, the whole graph minus exclusions
+        /// generates). Same selector grammar; repeatable.
+        #[arg(long, value_name = "SELECTOR", conflicts_with_all = ["clean", "check"])]
+        exclude: Vec<String>,
     },
     /// Print the PR impact pack for a `--diff` baseline comparison to stdout
     /// and exit — Markdown by default (paste into a PR description), `--format
@@ -204,6 +218,13 @@ pub enum Commands {
         /// are created and existing files overwritten.
         #[arg(long, value_name = "FMT:PATH")]
         report: Vec<String>,
+        /// Restrict the report to changed nodes matching a dbt selector —
+        /// the grammar of `dbtl ls` (`tag:x`, `path:y`, `+name+`,
+        /// `state:modified`, …), NOT the TUI's `--select <name>` model-name
+        /// flag. `state:` atoms compare against the `--diff` baseline.
+        /// Repeatable — specs union.
+        #[arg(long, value_name = "SELECTOR")]
+        select: Vec<String>,
     },
     /// Run CI checks over the resolved data source and exit 1 when any fails.
     /// The gate set comes from `.dbtl.yml`'s `check:` section plus the flags:
@@ -301,6 +322,14 @@ pub enum Commands {
         /// `dbtl docs --check` runs — and fail the run when they differ.
         #[arg(long, value_name = "DIR")]
         docs_dir: Option<String>,
+        /// Restrict every gate to nodes matching a dbt selector — coverage
+        /// counts, lint findings, and the `--diff` gates all intersect the
+        /// selection (`docs_drift` never does; it compares whole doc sets).
+        /// The grammar of `dbtl ls` (`tag:x`, `path:y`, `+name+`,
+        /// `state:modified`, …), NOT the TUI's `--select <name>` model-name
+        /// flag; `state:` atoms need `--diff`. Repeatable — specs union.
+        #[arg(long, value_name = "SELECTOR")]
+        select: Vec<String>,
         /// Suppress the per-check report on stdout; only the exit code matters.
         #[arg(long)]
         quiet: bool,
@@ -366,9 +395,44 @@ pub enum Commands {
         #[arg(long, value_name = "ID",
                conflicts_with_all = ["list_rules", "write_baseline", "quiet", "format", "fail_on", "no_baseline", "report", "step_summary", "path_prefix"])]
         explain: Option<String>,
+        /// Restrict findings to nodes matching a dbt selector — the grammar
+        /// of `dbtl ls` (`tag:x`, `path:y`, `+name+`, `state:modified`, …),
+        /// NOT the TUI's `--select <name>` model-name flag; `state:` atoms
+        /// need `--diff`. Repeatable — specs union. Cannot combine with
+        /// `--write-baseline` (a partial finding set must never overwrite
+        /// the frozen file).
+        #[arg(long, value_name = "SELECTOR",
+               conflicts_with_all = ["write_baseline", "list_rules", "explain"])]
+        select: Vec<String>,
         /// Suppress the report on stdout; only the exit code matters.
         #[arg(long)]
         quiet: bool,
+    },
+    /// List the nodes a dbt selector matches, one per line — the
+    /// non-interactive answer to "what does this spec select?" (`dbtl ls
+    /// 'tag:nightly'`, `dbtl ls '2+fct_orders' --exclude path:staging`).
+    /// `state:` selectors need `--diff`; note they are resolved by dbtl's
+    /// own comparison (the SQL, config, column, and macro changes dbtl can
+    /// read) — the set may not match dbt's `state:modified`.
+    Ls {
+        /// The selector spec(s): whitespace-separated terms union,
+        /// comma-separated factors intersect, `+`/numeric hops expand, and
+        /// atoms are `tag:`, `path:`, `config.materialized:`, `exposure:`,
+        /// `state:modified|new` (needs `--diff`), `meta:key[=value]`, bare
+        /// names and globs.
+        #[arg(required = true, value_name = "SELECTOR")]
+        selector: Vec<String>,
+        /// Subtract the nodes a spec matches — applied after every
+        /// inclusion term. Repeatable — each occurrence takes exactly one
+        /// spec so a following positional can never be swallowed.
+        #[arg(long, value_name = "SELECTOR")]
+        exclude: Vec<String>,
+        /// Output shape: `names` (node names, one per line), `uids`
+        /// (unique_ids), `selector` (one space-separated line of buildable
+        /// model names for `dbt build --select`), `json` (one object per
+        /// node).
+        #[arg(long, value_enum, default_value = "names")]
+        output: LsFormat,
     },
     /// Print a column's column-level lineage to stdout and exit — the same
     /// `ColumnReport` the TUI's `yl` yank copies (Markdown by default,
@@ -409,6 +473,25 @@ pub enum Commands {
     /// discovery.
     #[command(hide = true)]
     Man,
+}
+
+/// The `dbtl ls` output shape: plain listings for humans (`names`/`uids`),
+/// a paste-ready `--select` line for dbt (`selector`), and a structured
+/// array for automation (`json`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum LsFormat {
+    /// Node names, one per line — sorted by (name, unique_id) so same-name
+    /// nodes (a model and a source) both appear, deterministically.
+    Names,
+    /// `unique_id`s, one per line, sorted.
+    Uids,
+    /// One space-separated line of deduplicated model/seed/snapshot names —
+    /// paste-ready for `dbt build --select` (non-buildable resources drop).
+    Selector,
+    /// A pretty JSON array — one `{unique_id, name, resource_type,
+    /// materialized, path}` object per node in unique_id order; `[]` when
+    /// empty so `jq` pipelines still parse.
+    Json,
 }
 
 /// The `dbtl impact` / `dbtl columns` output format — Markdown for pasting
@@ -468,6 +551,7 @@ mod flags;
 mod gates;
 mod git_baseline;
 mod lint;
+mod ls;
 mod report;
 mod resolve;
 mod resolvers;
@@ -477,13 +561,14 @@ mod tests;
 pub use baseline::load_baseline;
 pub use columns::run_columns;
 pub use completions::{run_completions, run_man};
-pub use docs::run_docs;
 use docs::*;
+pub use docs::{run_docs, DocsArgs};
 pub use exit::{exit_code, Classify, CliError};
 pub use flags::check_flag_usage;
 pub use gates::{run_check, run_impact, CheckArgs};
 use lint::*;
 pub use lint::{run_lint, LintArgs};
+pub use ls::run_ls;
 use report::*;
 use resolve::*;
 pub use resolve::{build_app, DataSourceArgs, ResolvedSource};

@@ -201,6 +201,72 @@ pub(super) fn validate_rule_names(rules: &[String]) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Strictly validate a `--select`/`--exclude` spec list through the ONE
+/// grammar [`dbtl::validate_selector`] — run BEFORE the data source loads,
+/// so a malformed spec is a usage error that can't hide behind a
+/// missing-input error. `flag` names the argument in the message
+/// (`--select`, `--exclude`, or `ls`'s positional).
+pub(super) fn validate_selector_specs(specs: &[String], flag: &str) -> Result<(), CliError> {
+    for spec in specs {
+        dbtl::validate_selector(spec)
+            .map_err(|e| CliError::usage(anyhow::anyhow!("invalid {flag} '{spec}': {e}")))?;
+    }
+    Ok(())
+}
+
+/// Whether any spec carries a `state:` atom — after [`validate_selector_specs`],
+/// so a malformed spec reports its own error first.
+pub(super) fn specs_use_state(specs: &[String]) -> bool {
+    specs.iter().any(|s| dbtl::selector_uses_state(s))
+}
+
+/// The `state:` precondition every selector-carrying subcommand shares: a
+/// `state:` atom compares against the `--diff` baseline, so one without
+/// the other is a usage error — never a silently-empty selection.
+pub(super) fn require_diff_for_state(specs: &[String], has_diff: bool) -> Result<(), CliError> {
+    if specs_use_state(specs) && !has_diff {
+        return Err(CliError::usage(anyhow::anyhow!(
+            "a 'state:' selector needs --diff to name the baseline it compares against"
+        )));
+    }
+    Ok(())
+}
+
+/// Evaluate the selector list into its `unique_id` set — the union of
+/// each spec's [`dbtl::select`] result (a repeated flag unions exactly
+/// like a whitespace-separated spec). Infallible once
+/// [`validate_selector_specs`] passed; `diff` feeds `state:` atoms.
+pub(super) fn selector_set(
+    dag: &dbtl::Dag,
+    diff: Option<&dbtl::DagDiff>,
+    specs: &[String],
+) -> std::collections::BTreeSet<String> {
+    let mut set = std::collections::BTreeSet::new();
+    for spec in specs {
+        set.extend(dbtl::select(dag, diff, spec));
+    }
+    set
+}
+
+/// The `DagDiff` a `state:` selector compares against — the SAME resolver
+/// pair `impact`/`check` build ([`dbtl::compute_diff_with`]: catalog-backed
+/// current side, catalog-less baseline), so `state:modified` selects
+/// exactly the change set the impact report counts.
+pub(super) fn selector_diff(
+    src: &DataSourceArgs,
+    resolved: &ResolvedSource,
+    base: &dbtl::Dag,
+) -> Result<dbtl::DagDiff, CliError> {
+    let cur_res = src.cll_resolver(resolved)?;
+    let base_res = src.baseline_resolver(&resolved.dag, base);
+    Ok(dbtl::compute_diff_with(
+        base,
+        &resolved.dag,
+        &base_res,
+        &cur_res,
+    ))
+}
+
 /// Overlay `--rules` on a lint config: the flag is the authoritative rule
 /// SELECTOR — exactly the named rules run; a file-`off` named rule lifts to
 /// the registry default severity (a configured non-off severity stands, like
