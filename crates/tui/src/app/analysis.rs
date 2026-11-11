@@ -41,7 +41,7 @@ impl App {
         })
     }
     /// Compute the stats-dashboard payload from the `Dag` at open time, so the
-    /// render layer never needs a `Dag` (mirrors [`DetailView`]). Deterministic:
+    /// render layer never needs a `Dag` (mirrors [`crate::action::DetailView`]). Deterministic:
     /// counts accumulate into `BTreeMap`s and hubs are fully sorted (degree desc,
     /// then `unique_id` asc for a stable tie-break), so the result is bit-stable
     /// across runs despite the `HashMap` node iteration order.
@@ -126,9 +126,9 @@ impl App {
         let mut layer_violations: Vec<(String, String)> = crate::layer_violation_edges(&self.dag)
             .into_iter()
             .map(|(p, c)| {
-                let pn = self.dag.get(&p).map_or(p, |n| n.name.clone());
-                let cn = self.dag.get(&c).map_or(c, |n| n.name.clone());
-                (pn, cn)
+                let parent_name = self.dag.get(&p).map_or(p, |n| n.name.clone());
+                let child_name = self.dag.get(&c).map_or(c, |n| n.name.clone());
+                (parent_name, child_name)
             })
             .collect();
         layer_violations.sort();
@@ -267,7 +267,7 @@ impl App {
     }
 
     /// The "impact ↓D ↑U" status segment for the selected node, using the active
-    /// glyph mode's [`Chrome`](crate::ui::Chrome) down/up badges (Unicode `↓`/`↑`,
+    /// glyph mode's `Chrome` down/up badges (Unicode `↓`/`↑`,
     /// ASCII `v`/`^`) so the arrows are never hardcoded (the ascii-guard contract).
     /// Gains an ` exp:N` suffix when N downstream exposures exist (the "who
     /// cares" half of the impact question); 0 stays silent so the pre-exposure

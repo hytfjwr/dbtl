@@ -458,7 +458,7 @@ impl UiState {
         self.inspector_reveal = index != usize::MAX;
     }
 
-    /// Drain the one-shot reveal intent [`set_inspector_col`] armed — the
+    /// Drain the one-shot reveal intent [`Self::set_inspector_col`] armed — the
     /// event loop's scroll clamp passes the cursored row to
     /// `clamp_inspector_scroll` for THIS frame only, so a pick reveals its
     /// row once and `j`/`k`/wheel scroll freely ever after (the highlight

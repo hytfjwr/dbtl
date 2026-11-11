@@ -156,7 +156,7 @@ impl App {
 
     /// The stored first-visible index for the tab strip — the intent the
     /// wheel/`‹`/`›` write and [`tab_bar_layout`](crate::ui::tab_bar_layout)
-    /// resolves. Synced to the RESOLVED scroll by [`set_tab_scroll`] after
+    /// resolves. Synced to the RESOLVED scroll by [`Self::set_tab_scroll`] after
     /// every draw, so a hit-test always sees what the frame drew.
     pub fn tab_scroll(&self) -> usize {
         self.tab_scroll
@@ -203,7 +203,7 @@ impl App {
     /// The tab-bar labels (`⌂` for the home tab, `{n} {name}` for model
     /// tabs — the number only on positions 1-9 counting MODEL tabs, so the
     /// home tab's slot 0 is unnumbered and `1` lands on `tabs[1]`; the name
-    /// middle-truncated at [`TAB_NAME_MAX`]). Dag-aware (names live on
+    /// middle-truncated at `TAB_NAME_MAX`). Dag-aware (names live on
     /// `dag`), so the render layer stays Dag-free.
     pub fn tab_labels(&self) -> Vec<String> {
         let home_glyph = crate::ui::chrome(self.glyph_mode).home;

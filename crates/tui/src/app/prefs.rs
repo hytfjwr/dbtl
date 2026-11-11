@@ -193,7 +193,7 @@ impl App {
     }
 
     /// The package scope the Dag was loaded under (`--include-packages` ⇒
-    /// [`PackageScope::All`]). [`reload`](App::reload) re-applies it to the
+    /// [`crate::PackageScope::All`]). [`crate::App::reload`] re-applies it to the
     /// re-loaded graph and the status bar prints its `scope:` tag.
     pub fn scope(&self) -> crate::PackageScope {
         self.scope

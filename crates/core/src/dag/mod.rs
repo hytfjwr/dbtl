@@ -87,7 +87,7 @@ impl PackageScope {
     }
 
     /// The compact status-bar token after `scope:` (`"root"` / `"+pkgs"`).
-    /// Pure ASCII, so it is safe under [`crate`](crate)'s ascii-guard contract.
+    /// Pure ASCII, so it is safe under [`crate`]'s ascii-guard contract.
     pub fn tag(&self) -> &'static str {
         match self {
             Self::Root => "root",
@@ -474,7 +474,7 @@ fn is_excluded(resource_type: &str) -> bool {
 /// two load warnings ("known but unsupported" vs "truly unknown").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourceTypeSupport {
-    /// A real dbt type ([`UNSUPPORTED_NODE_RESOURCE_TYPES`]) that lands in
+    /// A real dbt type (`UNSUPPORTED_NODE_RESOURCE_TYPES`) that lands in
     /// `nodes` — warned as `unsupported resource_type`.
     Known,
     /// A `resource_type` outside the dbt schema (a plugin type, a newer

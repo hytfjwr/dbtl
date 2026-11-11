@@ -1,0 +1,45 @@
+name: Scheduled toolchains
+
+on:
+  # Weekly, Monday 00:00 UTC.
+  schedule:
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # New lints land in beta first — catch them here, not when stable rolls
+  # forward and every PR starts failing Lint at once.
+  clippy-beta:
+    name: Clippy (beta)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: beta
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings

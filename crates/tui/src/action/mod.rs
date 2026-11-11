@@ -8,15 +8,15 @@
 //!
 //! Split by concern, all re-exported below so `crate::action::X` paths are
 //! unchanged:
-//! - [`types`]    — `Action`, `Direction`, `SearchTarget`, `SearchState`.
-//! - [`views`]    — the overlay snapshot payloads (`DetailView`, `SqlView`,
+//! - `types`    — `Action`, `Direction`, `SearchTarget`, `SearchState`.
+//! - `views`    — the overlay snapshot payloads (`DetailView`, `SqlView`,
 //!   `StatsView`, `DiffView`, `PaletteState`/`PaletteRow`, `HelpView`,
 //!   `ColumnRow`/`ColumnView`, `NoticeLevel`, `NotificationEntry`,
 //!   `NotificationsView`).
-//! - [`menu`]     — the node context menu model (`MenuMark`/`MenuEntry`/
+//! - `menu`     — the node context menu model (`MenuMark`/`MenuEntry`/
 //!   `MenuAnchor`/`MenuState`/`MenuSlot`, `NODE_MENU_LAYOUT`, slot helpers).
-//! - [`mode`]     — `Mode` and `ModeKind`.
-//! - [`keymap`]   — `Trigger`, `KeyBinding`, the `BINDINGS` table, `Hint*` and
+//! - `mode`     — `Mode` and `ModeKind`.
+//! - `keymap`   — `Trigger`, `KeyBinding`, the `BINDINGS` table, `Hint*` and
 //!   `status_hints`.
 //! - [`dispatch`] — `dispatch`, `esc_action`, `yank_bindings`, `help_lines`,
 //!   `palette_candidates`, `reanchors_lineage`, `palette_binding_named`.

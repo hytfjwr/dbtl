@@ -188,7 +188,7 @@ pub struct LintConfig {
     /// children is flagged. Default 2 (the evaluator's ">1").
     pub source_fanout_threshold: usize,
     /// `naming_conventions`: model TYPE → allowed name prefixes, where the
-    /// type is resolved by [`lint_model_type`] (prefix-first, then
+    /// type is resolved by `lint_model_type` (prefix-first, then
     /// [`first_dir`] folder, else `other`). A model whose resolved type is
     /// listed must start with one of its prefixes; a type absent from the
     /// map (or mapped to `[]`) is unchecked. `other` is a valid key: mapping
@@ -227,7 +227,7 @@ struct DbtlFile {
 }
 
 /// The `lint:` section wire shape. `deny_unknown_fields` makes a typo'd key
-/// a hard error — a silently-ignored `model_fanout_threhsold` would leave a
+/// a hard error — a silently-ignored `model_fanout_threshld` would leave a
 /// CI gate running the wrong rule set.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]

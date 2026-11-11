@@ -2,6 +2,7 @@
 name = "dbtl-tui"
 description = "dbtl's interactive terminal UI — keymap, reducer, and ratatui rendering over dbtl-core"
 version.workspace = true
+rust-version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -18,4 +19,4 @@ unicode-width.workspace = true
 [dev-dependencies]
 serde_json.workspace = true
 # Temp target/compiled trees for the stale-yank test (app/tests.rs).
-tempfile = "3"
+tempfile.workspace = true

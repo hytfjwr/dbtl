@@ -2,7 +2,7 @@
 //! "what does this change break" pack, as pure functions of `&Dag` / `&DagDiff`.
 //!
 //! This module is the SINGLE source of that analysis for every surface: the
-//! `D` modal snapshot ([`DiffView`] in `dbtl-tui` is the same data plus a scroll
+//! `D` modal snapshot (`DiffView` in `dbtl-tui` is the same data plus a scroll
 //! offset), the `D`→`e` Markdown export, the `dbtl impact` stdout report
 //! (Markdown or JSON), and the `dbtl check` CI gate — so the screen, the file,
 //! the comment, and the exit code can never disagree. Deterministic by
@@ -352,9 +352,9 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, owner_key: &str)
     let mut new_layer_violations: Vec<(String, String)> = current_v
         .difference(&base_v)
         .map(|(p, c)| {
-            let pn = dag.get(p).map_or_else(|| p.clone(), |n| n.name.clone());
-            let cn = dag.get(c).map_or_else(|| c.clone(), |n| n.name.clone());
-            (pn, cn)
+            let parent_name = dag.get(p).map_or_else(|| p.clone(), |n| n.name.clone());
+            let child_name = dag.get(c).map_or_else(|| c.clone(), |n| n.name.clone());
+            (parent_name, child_name)
         })
         .collect();
     new_layer_violations.sort();

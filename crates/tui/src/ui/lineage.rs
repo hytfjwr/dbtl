@@ -654,7 +654,7 @@ fn put_title(
 ///   already ends at the root, so printing the root again would duplicate it), but
 ///   the `[{v}]{lens}` suffixes are KEPT — they are the only textual cue for the
 ///   active view + lens. The crumb is then STRICTLY truncated (via
-///   [`fit_breadcrumb`](crate::app::fit_breadcrumb), dropping oldest entries then a
+///   `fit_breadcrumb`, dropping oldest entries then a
 ///   `".."` prefix, finally to empty) so the suffixes ALWAYS survive even when
 ///   ratatui would otherwise clip the title's right side.
 /// - **Overview**: `" {body}{lens} "` — the whole-graph overview title, which

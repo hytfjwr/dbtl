@@ -392,7 +392,7 @@ fn ambiguous_unqualified_keeps_all_candidates() {
 // -- fallback ----------------------------------------------------------------
 
 #[test]
-fn unparseable_sql_falls_back_and_is_counted() {
+fn unparsable_sql_falls_back_and_is_counted() {
     let dag = Dag::build(&manifest(
         vec![
             model("model.t.up", "select 1", &["id"]),
@@ -1117,7 +1117,7 @@ fn synthetic_unnamed_outputs_never_leak() {
 
 #[test]
 fn inner_unknowns_do_not_steal_provable_outer_hits() {
-    // `u`'s column list is unknown (nothing declared, unparseable SQL);
+    // `u`'s column list is unknown (nothing declared, unparsable SQL);
     // `t`'s is known. Bare `z` inside the subquery resolves in the OUTER
     // scope — the inner unknown binding must NOT also claim it.
     let dag = Dag::build(&manifest(

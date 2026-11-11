@@ -5,6 +5,13 @@
 `sample_project` file:
 
 ```sh
+cargo xtask regen-sample-manifest
+```
+
+It performs the same steps as the manual recipe below (run from the
+repository root):
+
+```sh
 mkdir -p /tmp/dbtl-profiles
 printf 'sample:\n  target: dev\n  outputs:\n    dev:\n      type: duckdb\n      path: /tmp/dbtl_sample.duckdb\n' > /tmp/dbtl-profiles/profiles.yml
 cd tests/fixtures/sample_project

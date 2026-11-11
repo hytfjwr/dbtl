@@ -1,0 +1,10 @@
+# Spell-check configuration (crate-ci/typos), run by the Hygiene job.
+[files]
+extend-exclude = [
+  # Frozen and generated fixtures mirror upstream dbt output verbatim.
+  "tests/fixtures/**",
+]
+
+[default.extend-words]
+# Column-level lineage abbreviation — used in module names, tests and docs.
+cll = "cll"

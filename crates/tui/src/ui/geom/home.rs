@@ -15,7 +15,7 @@ pub enum HomeLine {
     SearchBar,
     /// A section's non-selectable content row — §3's middle rows (Health's
     /// coverage gauge, Last run's status counts, Diff's delta). The index
-    /// addresses [`HomeData::info_flat`] — never selectable.
+    /// addresses [`crate::HomeData::info_flat`] — never selectable.
     Info(usize),
     /// A section header (`[Resume]` / `[Attention]` / …).
     SectionHeader(&'static str),

@@ -209,7 +209,7 @@ pub struct StatsView {
     pub zero_downstream_models: usize,
     pub no_description_models: usize,
     /// Root-project models whose column lineage resolved through the Issue 07
-    /// name-match fallback (SQL missing or unparseable) — the aggregate of the
+    /// name-match fallback (SQL missing or unparsable) — the aggregate of the
     /// detail modal's per-model `[name-match]` tag. Computed by resolving every
     /// model once when the dashboard opens; the resolutions stay memoized, so
     /// later column browsing reuses them for free.
@@ -248,7 +248,7 @@ pub struct DiffView {
     /// Dependency edges present only in the baseline, same shape.
     pub edges_removed: Vec<(String, String)>,
     /// The column-level findings (the "Column changes" section — what moved
-    /// and what it breaks downstream), the same [`DiffReport::column_changes`]
+    /// and what it breaks downstream), the same `DiffReport::column_changes`
     /// data the Markdown/JSON surfaces emit.
     pub column_changes: Vec<ColumnChange>,
     /// The reviewer-shaped PR impact analysis over the changed set (blast
@@ -258,7 +258,7 @@ pub struct DiffView {
 }
 
 /// The command-palette state: the live query and the selected candidate index.
-/// The candidate LIST is derived on demand ([`App::palette_rows`], keyed off
+/// The candidate LIST is derived on demand ([`crate::App::palette_rows`], keyed off
 /// [`BINDINGS`] — or the model list when the query is `@`-prefixed, §7), never
 /// stored — so the palette can't drift from the keymap. No scroll field: the
 /// render layer derives the scroll window from `selected`, so there is nothing

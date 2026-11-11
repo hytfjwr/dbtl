@@ -42,7 +42,7 @@ impl App {
     }
 
     /// The menu rows for `uid`, generated from [`NODE_MENU_LAYOUT`]: every
-    /// item slot resolves to the `(mode, action)` [`BINDINGS`] row it names
+    /// item slot resolves to the `(mode, action)` [`crate::action::BINDINGS`] row it names
     /// (the action + key label + triggers all live there), separators are
     /// kept only between surviving groups (no leading/trailing/double rules),
     /// and unavailable items drop out first. An `uid` outside the Dag (a
