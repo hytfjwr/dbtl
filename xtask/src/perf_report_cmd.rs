@@ -53,6 +53,7 @@ pub fn run(args: Args) -> Result<()> {
     match &args.out {
         Some(path) => {
             let mut f = OpenOptions::new()
+                .create(true)
                 .append(true)
                 .open(path)
                 .with_context(|| format!("append to {}", path.display()))?;
