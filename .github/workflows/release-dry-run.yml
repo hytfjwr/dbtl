@@ -29,3 +29,5 @@ jobs:
     with:
       tag: v0.0.0-dryrun
       ref: ${{ github.sha }}
+      # Dry-run artifacts are inspection-only — keep them short-lived.
+      artifact-retention-days: 7

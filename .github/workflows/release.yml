@@ -110,6 +110,7 @@ jobs:
           subject-path: |
             dist/dbtl-*.tar.gz
             dist/dbtl-*.zip
+            dist/dbtl-*.cdx.json
             dist/checksums.txt
 
       # The SBOM attestation binds the CycloneDX document to the archives it
