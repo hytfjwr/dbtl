@@ -44,17 +44,19 @@ pub fn run(args: Args) -> Result<()> {
             Some(version) => format!("dbt-core=={version}"),
             None => "dbt-core".to_string(),
         })
-        .args(["dbt", "parse", "--profiles-dir"])
+        // `dbt compile` (not `dbt parse`): only compile puts `compiled_code`
+        // in the manifest, which the fixture carries and consumers prefer.
+        .args(["dbt", "compile", "--profiles-dir"])
         .arg(tmp.path())
         .args(["--project-dir", "."])
         .current_dir(&project_dir);
-    let status = cmd.status().context("run uvx dbt parse")?;
+    let status = cmd.status().context("run uvx dbt compile")?;
 
     let result = if status.success() {
         write_manifest(&project_dir, &out)
     } else {
         Err(anyhow::anyhow!(
-            "dbt parse failed: uvx exited with {status}"
+            "dbt compile failed: uvx exited with {status}"
         ))
     };
     cleanup(&project_dir);
@@ -96,7 +98,7 @@ fn write_manifest(project_dir: &Path, out: &Path) -> Result<()> {
     Ok(())
 }
 
-/// dbt parse litter — removed on success and failure alike so the fixture
+/// dbt run litter — removed on success and failure alike so the fixture
 /// directory is left exactly as it was found.
 fn cleanup(project_dir: &Path) {
     for name in ["target", "logs", ".user.yml"] {
