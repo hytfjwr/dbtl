@@ -150,7 +150,11 @@ fn check_format_sarif_is_a_valid_210_document() {
     assert_eq!(run["tool"]["driver"]["name"], "dbtl");
     // The driver declares the whole registry — every shipped rule id.
     let rules = run["tool"]["driver"]["rules"].as_array().unwrap();
-    assert_eq!(rules.len(), 12, "one driver rule per registry entry");
+    assert_eq!(
+        rules.len(),
+        dbtl::REGISTRY.len(),
+        "one driver rule per registry entry"
+    );
     assert!(rules.iter().any(|r| r["id"] == "direct_join_to_source"));
     // The result count is exactly the counted-finding set the json report
     // carries — the formats can't disagree.
@@ -192,7 +196,11 @@ fn check_format_junit_is_wellformed_xml() {
     assert!(stdout.ends_with("</testsuite>\n</testsuites>\n"));
     // One testcase per gate: coverage + every enabled lint rule.
     let cases = stdout.matches("<testcase").count();
-    assert_eq!(cases, 13, "coverage + 12 lint rules: {stdout}");
+    assert_eq!(
+        cases,
+        1 + dbtl::REGISTRY.len(),
+        "coverage + all lint rules: {stdout}"
+    );
     // Every FAIL gate is a `<failure>` testcase carrying its findings.
     let fails = stdout.matches("<failure>").count();
     assert!(fails >= 6, "the failing lint gates: {stdout}");
