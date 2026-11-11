@@ -1,5 +1,5 @@
 /// How a node's label cells are classified for render-layer styling. Carried as
-/// a parallel per-cell array on [`CharGrid`] (NOT a glyph change), so it never
+/// a parallel per-cell array on [`crate::CharGrid`] (NOT a glyph change), so it never
 /// affects grid width, `to_text()`, or `emphasis_regions()` — the golden diamond
 /// exact-match stays byte-identical.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

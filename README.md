@@ -7,7 +7,7 @@
   <a href="https://github.com/hytfjwr/dbtl/actions/workflows/security.yml"><img src="https://github.com/hytfjwr/dbtl/actions/workflows/security.yml/badge.svg" alt="Security"></a>
   <a href="https://github.com/hytfjwr/dbtl/releases"><img src="https://img.shields.io/github/v/release/hytfjwr/dbtl" alt="GitHub release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-  <img src="https://img.shields.io/badge/rust-1.92+-orange.svg" alt="Rust 1.92+">
+  <img src="https://img.shields.io/badge/rust-1.88+-orange.svg" alt="Rust 1.88+">
 </p>
 
 <p align="center">
@@ -43,7 +43,7 @@ $ brew install hytfjwr/tap/dbtl
 Homebrew works on macOS and Linux. Other options:
 
 - **Prebuilt binaries.** Download a tarball for your platform from the [releases page](https://github.com/hytfjwr/dbtl/releases). `checksums.txt` is included.
-- **From source** (Rust 1.92+):
+- **From source** (Rust 1.88+):
 
   ```console
   $ git clone https://github.com/hytfjwr/dbtl.git
@@ -407,7 +407,7 @@ keys, `WHERE`/`GROUP BY`/`QUALIFY` columns — attached to every output). The
 `stale` for out-of-date compiled SQL, `name_match` when the model fell back
 to the v0 name-matching approximation.
 
-The fallback is **per model**: a model whose SQL is missing or unparseable
+The fallback is **per model**: a model whose SQL is missing or unparsable
 resolves by matching column *names* (the v0 behaviour — `o.id` can bind every
 parent's `id`). `dbtl columns` reports the fallback count on stderr and the
 structure modal tags such models `[name-match]`. `--sql-dialect` overrides

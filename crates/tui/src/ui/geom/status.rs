@@ -7,7 +7,7 @@ use super::*;
 // screen did not draw (nor draw one it cannot hit).
 // ---------------------------------------------------------------------------
 
-/// Which droppable status chip a [`ChipSpan`] renders — the click-dispatch
+/// Which droppable status chip a [`StatusSpan`] renders — the click-dispatch
 /// key. The declaration order IS the drop order: `Impact` is the headline
 /// (sheds last), `View` sheds first, and the `!N` notification badge sits
 /// right after `Impact`.

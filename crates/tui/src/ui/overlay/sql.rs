@@ -241,7 +241,7 @@ fn sql_display_lines(sv: &SqlView, t: &theme::Theme) -> Vec<Line<'static>> {
 
 /// Clamp the SQL modal's scroll offset to its content/viewport (size-aware),
 /// mirroring [`clamp_detail_scroll`]. Counts the active variant's `.lines()`
-/// directly instead of building [`sql_display_lines`]: the highlighter maps
+/// directly instead of building `sql_display_lines`: the highlighter maps
 /// input lines 1:1 (never splits or injects — asserted by `sql_display_lines_
 /// count_matches_input_lines`), and the clamp runs EVERY FRAME while the
 /// modal is open, so it must not re-run the tokenizer.

@@ -2,11 +2,11 @@
 //! re-exports the public names so the physical split into submodules stays
 //! invisible to callers/tests.
 //!
-//! - [`state`]  — `UiState`, `Focus`, `KeyOutcome`, `reduce_selection`, `handle_key`.
-//! - [`geom`]   — pane rects / interiors / centered-overlay rect.
-//! - [`render`] — `RenderCtx`, `draw`, and the base panes (list, status).
-//! - [`lineage`]— the lineage pane renderer.
-//! - [`overlay`]— modal overlays (`?` help, structure modal; search is inline).
+//! - `state`  — `UiState`, `Focus`, `KeyOutcome`, `reduce_selection`, `handle_key`.
+//! - `geom`   — pane rects / interiors / centered-overlay rect.
+//! - `render` — `RenderCtx`, `draw`, and the base panes (list, status).
+//! - `lineage`— the lineage pane renderer.
+//! - `overlay`— modal overlays (`?` help, structure modal; search is inline).
 //! - [`theme`]  — the colour palette (semantic constants; pub so tests assert
 //!   against roles, not literals).
 

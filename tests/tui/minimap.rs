@@ -429,14 +429,14 @@ pub(super) fn minimap_on_draws_node_and_viewport_glyphs_in_the_inset() {
     let buffer = render_app(&app, 80, 24);
 
     // The inset rect: top-right of the interior, MM_W=16 x MM_H=6.
-    let ix0 = interior.x + interior.width - 16;
-    let ix1 = interior.x + interior.width; // exclusive
-    let iy0 = interior.y;
-    let iy1 = interior.y + 6; // exclusive
+    let x0 = interior.x + interior.width - 16;
+    let x1 = interior.x + interior.width; // exclusive
+    let y0 = interior.y;
+    let y1 = interior.y + 6; // exclusive
     let mut has_node = false;
     let mut has_view = false;
-    for y in iy0..iy1 {
-        for x in ix0..ix1 {
+    for y in y0..y1 {
+        for x in x0..x1 {
             if let Some(c) = buffer.cell((x, y)) {
                 match c.symbol() {
                     "#" => has_node = true,

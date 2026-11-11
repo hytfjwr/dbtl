@@ -19,12 +19,12 @@ impl App {
     /// The lineage subgraph for the current selection under the active
     /// [`LineageView`](super::LineageView) (direction + depth). Empty when
     /// nothing is selected. An owned clone of the memoized
-    /// [`subgraph_rc`](App::subgraph_rc) — internal per-frame readers use the
+    /// `subgraph_rc` — internal per-frame readers use the
     /// `Rc` handle directly and never pay this clone.
     ///
     /// This is the SEMANTIC lineage (every real node): exports, searches, and
     /// the keep-alive priorities all read it. What the pane *draws* is the
-    /// collapsed stage on top — [`collapsed_view`](App::collapsed_view).
+    /// collapsed stage on top — `collapsed_view`.
     pub fn lineage_subgraph(&self) -> Subgraph {
         (*self.subgraph_rc()).clone()
     }
@@ -65,7 +65,7 @@ impl App {
     }
 
     /// Apply a release-confirmed click on the [`HitTarget`] the event loop
-    /// resolved. Returns the accumulated [`Outcome`] —
+    /// resolved (the click table). Returns the accumulated [`crate::Outcome`] —
     /// clickable chrome (status hints/chips, the title's crumb/view/lens
     /// spans) dispatches through `apply_action`, so an action's effects and
     /// quit flag reach the caller exactly like a keypress's would.
@@ -768,7 +768,7 @@ impl App {
     ///
     /// This producer is *lenient*: when even `".. > root"` overflows it returns it
     /// anyway (the title block clips it). The render seam re-truncates STRICTLY via
-    /// [`fit_breadcrumb`] so the trailing `[{v}]{lens}` title suffixes always
+    /// `fit_breadcrumb` so the trailing `[{v}]{lens}` title suffixes always
     /// survive — so the loop should hand the FULL trail (`usize::MAX`) here and let
     /// the draw seam be the single width authority.
     pub fn breadcrumb(&self, max_width: usize) -> Option<String> {

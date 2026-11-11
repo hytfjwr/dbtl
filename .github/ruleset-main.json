@@ -40,7 +40,10 @@
           { "context": "Build & Test (macos-latest)", "integration_id": 15368 },
           { "context": "zizmor", "integration_id": 15368 },
           { "context": "actionlint", "integration_id": 15368 },
-          { "context": "pinact", "integration_id": 15368 }
+          { "context": "pinact", "integration_id": 15368 },
+          { "context": "MSRV", "integration_id": 15368 },
+          { "context": "Hygiene", "integration_id": 15368 },
+          { "context": "cargo-deny", "integration_id": 15368 }
         ]
       }
     }

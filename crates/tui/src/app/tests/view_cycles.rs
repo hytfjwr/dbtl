@@ -225,7 +225,7 @@ fn critical_path_is_a_deterministic_source_rooted_chain() {
 
 #[test]
 fn stats_dashboard_counts_name_match_fallbacks() {
-    // One parseable model and one with unparseable raw_code: the dashboard's
+    // One parseable model and one with unparsable raw_code: the dashboard's
     // aggregate count must line up with the resolver's per-model flag (the
     // detail modal's `[name-match]` tag and `dbtl columns`'s stderr count).
     let dag = pr_dag(

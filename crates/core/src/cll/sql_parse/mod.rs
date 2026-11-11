@@ -92,7 +92,7 @@ use scope::*;
 // ---------------------------------------------------------------------------
 
 /// uid → the node's per-column normalized SELECT expressions (`None` = no
-/// expression-level view: missing or unparseable SQL) — the
+/// expression-level view: missing or unparsable SQL) — the
 /// [`SqlParseResolver::exprs_memo`] shape.
 type ExprMap = BTreeMap<String, Option<Rc<BTreeMap<String, String>>>>;
 
@@ -100,7 +100,7 @@ type ExprMap = BTreeMap<String, Option<Rc<BTreeMap<String, String>>>>;
 /// the documented fallback) with `sqlparser`, resolves column references
 /// against a real FROM/JOIN/CTE scope, and classifies edges passthrough /
 /// rename / transform / filter-or-join. Per-model degradation to
-/// [`NameMatchResolver`] on unparseable or absent SQL.
+/// [`NameMatchResolver`] on unparsable or absent SQL.
 pub struct SqlParseResolver {
     catalog: Option<Rc<Catalog>>,
     dialect: SqlDialect,
@@ -114,7 +114,7 @@ pub struct SqlParseResolver {
     /// uid → the node's *column list* (`Some` = known, `None` = unknown).
     cols_memo: RefCell<BTreeMap<String, Option<Rc<Vec<String>>>>>,
     /// uid → the node's per-column SELECT expressions (`None` = no
-    /// expression-level view: missing or unparseable SQL) — the `--diff`
+    /// expression-level view: missing or unparsable SQL) — the `--diff`
     /// expression-diff input, memoized like the column list.
     exprs_memo: RefCell<ExprMap>,
     /// uids whose resolution went through `NameMatchResolver` — the
@@ -234,7 +234,7 @@ impl SqlParseResolver {
 
     /// The node's outermost-SELECT output expressions, normalized for
     /// cross-manifest comparison (`None` = no expression-level view:
-    /// missing or unparseable SQL — "unknown", never "changed").
+    /// missing or unparsable SQL — "unknown", never "changed").
     fn expr_map(&self, dag: &Dag, uid: &str) -> Option<Rc<BTreeMap<String, String>>> {
         if let Some(v) = self.exprs_memo.borrow().get(uid) {
             return v.clone();
@@ -560,14 +560,14 @@ impl ColumnResolver for SqlParseResolver {
     }
 
     /// Per-column normalized SELECT expressions — `None` (not an empty map)
-    /// when the node's SQL is missing or unparseable, so the diff can tell
+    /// when the node's SQL is missing or unparsable, so the diff can tell
     /// "no expression data" apart from "no named expressions".
     fn column_exprs(&self, dag: &Dag, node: &str) -> Option<BTreeMap<String, String>> {
         self.expr_map(dag, node).map(|rc| (*rc).clone())
     }
 
     /// Dead references the analysis provably recorded — sorted for
-    /// deterministic downstream iteration. `None`/unparseable SQL → empty
+    /// deterministic downstream iteration. `None`/unparsable SQL → empty
     /// (nothing proven), same contract as `resolve`.
     fn unresolved_refs(&self, dag: &Dag, node: &str) -> Vec<(String, String)> {
         self.analyzed(dag, node)

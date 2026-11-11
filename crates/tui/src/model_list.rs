@@ -143,7 +143,7 @@ impl ModelList {
     /// it is the preceding group-header row so the header scrolls into view with
     /// it.
     ///
-    /// This is the scroll-UP anchor (see [`UiState::ensure_visible`]). Scrolling
+    /// This is the scroll-UP anchor (see [`UiState::ensure_visible`](crate::UiState::ensure_visible)). Scrolling
     /// down still anchors on [`row_of_model`] so the model itself is never
     /// clipped. For model 0 this yields row 0, which keeps the documented
     /// "selection at index 0 ⇒ offset 0 (top)" property.

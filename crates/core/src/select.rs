@@ -82,7 +82,7 @@ fn evaluate_factor(dag: &Dag, diff: Option<&DagDiff>, factor: &str) -> BTreeSet<
 fn evaluate_atom(dag: &Dag, diff: Option<&DagDiff>, atom: &str) -> BTreeSet<String> {
     let nodes = || dag.nodes().iter();
     // `config.materialized:x` — the key itself is dotted, so handle it before
-    // the generic `key:value` split (a bare split_once(':') would mis-read it
+    // the generic `key:value` split (a bare split_once(':') would misread it
     // as a name containing a colon).
     if let Some(c) = atom.strip_prefix("config.") {
         return match c.split_once(':') {

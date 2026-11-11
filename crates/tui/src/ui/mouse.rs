@@ -93,7 +93,7 @@ pub enum MouseOutcome {
         /// The clicked cell.
         at: Position,
     },
-    /// A second click on the same cell within [`DOUBLE_CLICK`].
+    /// A second click on the same cell within `DOUBLE_CLICK`.
     DoubleClick {
         /// Which button.
         button: MouseButton,

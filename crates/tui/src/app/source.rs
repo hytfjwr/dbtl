@@ -59,7 +59,7 @@ impl App {
     /// unhandled `resource_type`/`functions` warnings (a synthesized source
     /// manifest never produces the latter — that channel is manifest-only),
     /// plus the package-scope warnings from re-applying `self.scope`
-    /// ([`PackageScope::apply_with_warnings`] — e.g. an ambiguously-rooted or
+    /// ([`crate::PackageScope::apply_with_warnings`] — e.g. an ambiguously-rooted or
     /// emptied graph); an unremarkable reload returns an empty vec.
     pub fn reload(&mut self) -> Result<Vec<String>> {
         // Re-read from the same source; returns before mutating on error.

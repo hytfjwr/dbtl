@@ -276,7 +276,7 @@ pub fn inspector_column_at(
 }
 
 /// Draw the inspector pane into `area` — a bordered box titled with the
-/// node name, its content the scrolled [`inspector_lines`], a scrollbar
+/// node name, its content the scrolled `inspector_lines`, a scrollbar
 /// thumb on overflow. `ctx.state` supplies focus (border/title accent) and
 /// the scroll + column cursor (UiState slots, like every scrollable pane).
 pub fn draw_inspector_pane(frame: &mut Frame, area: Rect, ctx: &RenderCtx, view: &InspectorView) {

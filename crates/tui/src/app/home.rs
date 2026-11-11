@@ -150,7 +150,7 @@ pub struct HomeData {
 pub(crate) type HomeKey = (u64, u64, Option<(String, Option<usize>)>);
 
 impl App {
-    /// The home screen's data product — memoized per [`HomeKey`]; the loop
+    /// The home screen's data product — memoized per `HomeKey`; the loop
     /// clones the `Rc` into `RenderCtx.home` while the home tab is active.
     /// Size-unaware by construction: every section emits its FULL row list
     /// and the renderer caps at the visible budget (`+N more`), same rule as

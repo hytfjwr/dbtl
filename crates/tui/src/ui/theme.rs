@@ -36,7 +36,7 @@
 //! [`SECTION`] = [`CLASS_SNAPSHOT`] in the default) so the coupling is visible
 //! and a retune propagates — or is consciously split.
 //!
-//! Colours only — glyphs stay in [`Chrome`](super::Chrome)/`BoxGlyphs` (the
+//! Colours only — glyphs stay in `Chrome` (`super::Chrome`)/`BoxGlyphs` (the
 //! glyph-mode seam), and style COMPOSITION (precedence, modifiers) stays in
 //! the render fns. ASCII-safety is untouched by definition: a colour never
 //! adds a glyph.
@@ -600,7 +600,7 @@ fn parse_color(spec: &ColorSpec) -> Result<Color, String> {
 
 /// Parse a custom theme from its YAML text: start from the `base` preset
 /// (default: `default`) and overlay each `colors:` entry. Unknown base names,
-/// unknown roles, and unparseable colours are errors (with the valid
+/// unknown roles, and unparsable colours are errors (with the valid
 /// alternatives listed); IO and name resolution stay in `main`.
 pub fn parse_theme(text: &str) -> Result<Theme, String> {
     let file: ThemeFile =
@@ -750,8 +750,8 @@ mod tests {
 
     #[test]
     fn parse_theme_rejects_unknown_roles_bases_and_colours() {
-        let err = parse_theme("colors:\n  acent: \"#112233\"\n").unwrap_err();
-        assert!(err.contains("unknown colour role 'acent'"), "{err}");
+        let err = parse_theme("colors:\n  accnet: \"#112233\"\n").unwrap_err();
+        assert!(err.contains("unknown colour role 'accnet'"), "{err}");
         assert!(err.contains("accent"), "error lists the valid roles: {err}");
 
         let err = parse_theme("base: nope\n").unwrap_err();

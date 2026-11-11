@@ -70,7 +70,7 @@ pub struct KeyBinding {
     pub help: &'static str,
     /// The home screen's Actions row: `true` marks this row eligible for
     /// the home "Actions" line — the row's `key_label()`/`help` render there
-    /// verbatim, and [`App::unavailable_reason`] still filters the unusable
+    /// verbatim, and [`crate::App::unavailable_reason`] still filters the unusable
     /// ones out (a baseline-less `D` never shows).
     pub home: bool,
     /// Status-line hint annotations: offer this row's action

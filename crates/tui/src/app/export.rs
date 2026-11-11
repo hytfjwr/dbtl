@@ -29,7 +29,7 @@ impl App {
 
     /// Render the yank-target lineage subgraph as a Mermaid `graph LR` diagram
     /// (deterministic: the subgraph's nodes/edges are already sorted). Node IDs
-    /// come from a per-export [`mermaid_ids`] map — the sanitized `unique_id`,
+    /// come from a per-export [`crate::mermaid_ids`] map — the sanitized `unique_id`,
     /// with deterministic numeric suffixes when two uids sanitize to the same
     /// text; labels carry the name + materialization. `None` when nothing is
     /// selected / the subgraph is empty.
@@ -87,7 +87,7 @@ impl App {
     /// Policy: the ASCII export is SCREEN-EQUIVALENT — the existing
     /// "the yank IS the pane's diagram" rule — so collapse markers appear in
     /// the text exactly as on screen (expand first, then yank, to capture the
-    /// members). The structured exports ([`lineage_mermaid`]/[`lineage_dot`])
+    /// members). The structured exports ([`Self::lineage_mermaid`]/[`Self::lineage_dot`])
     /// keep the SEMANTIC graph: every real node, no markers.
     ///
     /// When the yank targets the structure modal's node (`pending_node`), the
@@ -277,7 +277,7 @@ impl App {
     /// affected exposures, a suggested `dbt build --select …` command, and the
     /// risk flags.
     ///
-    /// A PURE formatter over the [`DiffView`] snapshot (which already carries the
+    /// A PURE formatter over the [`crate::DiffView`] snapshot (which already carries the
     /// resolved names, joined reasons, and the [`PrImpact`](crate::PrImpact)
     /// analysis) plus the project name for the title — so the exported file is
     /// byte-identical to what the modal renders, and re-exporting the same diff

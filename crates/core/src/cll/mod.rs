@@ -218,7 +218,7 @@ pub trait ColumnResolver {
     /// cross-manifest comparison: `output name -> canonical expression text`
     /// (identifier case folded like [`normalize_column`], formatting and
     /// comments erased by the parse). `None` when the resolver has no
-    /// expression-level view of the node — missing/unparseable SQL, or a
+    /// expression-level view of the node — missing/unparsable SQL, or a
     /// strategy without an AST (the [`NameMatchResolver`] default) — which
     /// callers must treat as "unknown", never "changed". The `--diff` column
     /// analysis uses this for expression-change classification; a

@@ -233,13 +233,13 @@ pub struct Layout {
     /// `(parent, child) -> the connector cells this edge actually drew`
     /// (segments, corners, and its arrowhead). A cell first claimed by an
     /// earlier (sorted-order) edge is attributed to THAT edge only, so a shared
-    /// bus or crossing never double-counts. Lets [`apply_edge_styles`]
-    /// (Layout::apply_edge_styles) re-style a specific edge's run without the
+    /// bus or crossing never double-counts. Lets [`Layout::apply_edge_styles`]
+    /// re-style a specific edge's run without the
     /// renderer re-deriving connector routes.
     pub edge_cells: HashMap<(String, String), Vec<(usize, usize)>>,
     /// The interior cells of column rows (the column-focus view's per-column
-    /// text lines inside node boxes), where [`draw_box`] stamped per-ROW attrs
-    /// (`faint`/`target` from [`ColLine`]). [`apply_node_styles`] skips these
+    /// text lines inside node boxes), where `draw_box` stamped per-ROW attrs
+    /// (`faint`/`target` from [`ColLine`]). [`Layout::apply_node_styles`] skips these
     /// cells so a node's box-level attr never flattens a column row's own
     /// styling. Empty whenever no column rows were drawn (every non-focus
     /// layout — the skip is then a no-op and styling is byte-identical).

@@ -65,7 +65,7 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
                         ms.target.clone(),
                     )),
                     // A separator row (or a stale index) is inert — the menu
-                    // stays open rather than close on a mis-click.
+                    // stays open rather than close on a stray click.
                     _ => None,
                 },
                 _ => None,

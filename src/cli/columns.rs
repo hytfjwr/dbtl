@@ -59,7 +59,7 @@ pub fn run_columns(
     // `target/catalog.json` (when present) is the top column-list tier. The
     // parser-backed resolver resolves per model and falls back to the
     // name-match approximation whenever that model's SQL is missing or
-    // unparseable — the count is reported on stderr below.
+    // unparsable — the count is reported on stderr below.
     let resolver = cll_resolver(&resolved, sql_dialect);
 
     let col = dbtl::ColumnRef::new(&uid, column);
@@ -85,12 +85,12 @@ pub fn run_columns(
         ImpactFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
     }
     // Parser coverage transparency: how many models ended up on the
-    // name-match approximation (missing/unparseable SQL). Status goes to
+    // name-match approximation (missing/unparsable SQL). Status goes to
     // stderr so stdout stays machine-clean for both formats.
     let fallbacks = resolver.fallback_count();
     if fallbacks > 0 {
         eprintln!(
-            "columns: {fallbacks} model{} resolved by name-match fallback (missing/unparseable SQL)",
+            "columns: {fallbacks} model{} resolved by name-match fallback (missing/unparsable SQL)",
             if fallbacks == 1 { "" } else { "s" }
         );
     }

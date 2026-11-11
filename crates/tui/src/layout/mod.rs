@@ -8,15 +8,15 @@
 //!
 //! Split by stage, all re-exported below so `crate::layout::X` (and the
 //! `crate::X` facade re-exports) are unchanged:
-//! - [`glyphs`]   — `GlyphMode` / `Density` and the `BoxGlyphs` repertoires.
-//! - [`attr`]     — the parallel per-cell style data: `MaterializationClass`,
+//! - `glyphs`   — `GlyphMode` / `Density` and the `BoxGlyphs` repertoires.
+//! - `attr`     — the parallel per-cell style data: `MaterializationClass`,
 //!   `LensTint`, `CellAttr`.
-//! - [`grid`]     — the value types: `ColLine`, `NodeRect`, `CharGrid`,
+//! - `grid`     — the value types: `ColLine`, `NodeRect`, `CharGrid`,
 //!   `Layout`.
-//! - [`boxes`]    — node-box metrics and the box/row stamps.
-//! - [`place`]    — the placement pipeline: longest-path columns, the public
+//! - `boxes`    — node-box metrics and the box/row stamps.
+//! - `place`    — the placement pipeline: longest-path columns, the public
 //!   `layout*` entry points, `layout_impl`.
-//! - [`viewport`] — the scroll-window ops: `clamp_offset`, `anchor_offset`,
+//! - `viewport` — the scroll-window ops: `clamp_offset`, `anchor_offset`,
 //!   `blit`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};

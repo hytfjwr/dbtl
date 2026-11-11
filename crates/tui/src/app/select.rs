@@ -206,7 +206,7 @@ impl App {
         Some(self.project_root.join(rel).to_string_lossy().into_owned())
     }
 
-    /// The list-cursor model's SQL file path — [`file_path_for`] on the
+    /// The list-cursor model's SQL file path — [`Self::file_path_for`] on the
     /// list selection (`o` opens the model the row highlight sits on). `None`
     /// if the list is empty.
     pub fn selected_file_path(&self) -> Option<String> {
