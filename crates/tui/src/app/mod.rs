@@ -365,7 +365,7 @@ pub struct App {
     /// `run_results.json` is), so [`reload`](App::reload) re-reads the same
     /// file — a config edit shows up without a restart. `None` when no
     /// `.dbtl.yml` exists (defaults still lint).
-    lint_config_path: Option<PathBuf>,
+    project_config_path: Option<PathBuf>,
     /// The column target `y` stashed while opening the yank menu over the
     /// structure modal — what `yl` copies. Always rewritten on
     /// `Action::YankPrefix` (the menu's entry point) and cleared the moment
@@ -431,13 +431,13 @@ impl DataSource {
         resolve_catalog_path(explicit, manifest, project)
     }
 
-    /// The `.dbtl.yml` lint config for this source (the auto-detect target
-    /// [`crate::lint_config_path`] encodes): the project dir in source mode,
-    /// the project root (parent of `target/`) in manifest mode.
-    fn lint_config_path(&self) -> Option<PathBuf> {
+    /// The `.dbtl.yml` project config for this source (the auto-detect
+    /// target [`crate::project_config_path`] encodes): the project dir in
+    /// source mode, the project root (parent of `target/`) in manifest mode.
+    fn project_config_path(&self) -> Option<PathBuf> {
         match self {
-            DataSource::Manifest(m) => crate::lint_config_path(Some(m), None),
-            DataSource::Project(d) => crate::lint_config_path(None, Some(d)),
+            DataSource::Manifest(m) => crate::project_config_path(Some(m), None),
+            DataSource::Project(d) => crate::project_config_path(None, Some(d)),
         }
     }
 }
@@ -483,11 +483,16 @@ impl App {
         // Same auto-detect for `.dbtl.yml`: the project-local lint config.
         // A malformed file is a warning + shipped defaults (the TUI's policy —
         // `check`/`docs` make the same error fatal; the screen never blocks on
-        // it). The notice is a one-shot toast, like the other load warnings.
-        let lint_config_path = source.lint_config_path();
-        let (lint_config, lint_notice) = match &lint_config_path {
-            Some(path) => match crate::LintConfig::load(path) {
-                Ok(c) => (c, None),
+        // it). Unknown top-level keys warn too — the notice is a one-shot
+        // toast, like the other load warnings.
+        let project_config_path = source.project_config_path();
+        let (lint_config, lint_notice) = match &project_config_path {
+            Some(path) => match crate::ProjectConfig::load(path) {
+                Ok(pc) if pc.warnings.is_empty() => (pc.lint, None),
+                Ok(pc) => (
+                    pc.lint,
+                    Some(format!("warning: {}", pc.warnings.join("; "))),
+                ),
                 Err(e) => (
                     crate::LintConfig::default(),
                     Some(format!("warning: ignoring .dbtl.yml: {e}")),
@@ -495,7 +500,7 @@ impl App {
             },
             None => (crate::LintConfig::default(), None),
         };
-        let lint_findings = crate::run_rules(&dag, &lint_config);
+        let lint_findings = crate::run_rules(crate::LintInput::new(&dag, &lint_config));
         // The first tab roots on the list head — the same model `selected` 0
         // pointed at before tabs existed.
         let first_root = model_list.models.first().map(|n| n.unique_id.clone());
@@ -563,7 +568,7 @@ impl App {
             sql_dialect: None,
             lint_config,
             lint_findings,
-            lint_config_path,
+            project_config_path,
             pending_col: None,
             pending_node: None,
             search_history: Vec::new(),

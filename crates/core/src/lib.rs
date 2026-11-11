@@ -16,6 +16,7 @@ pub mod layer;
 pub mod lint;
 pub mod manifest;
 pub mod mermaid;
+pub mod project_config;
 pub mod run_results;
 pub mod select;
 pub mod source;
@@ -44,8 +45,8 @@ pub use impact::{
 };
 pub use layer::{first_dir, layer_rank, LAYER_ORDER};
 pub use lint::{
-    lint_config_candidates, lint_config_path, run_rules, Finding, LintConfig, LintRule,
-    LINT_CONFIG_NAME,
+    run_rules, Baseline, Category, Finding, LintConfig, LintInput, LintRule, Location, ParamKind,
+    ParamSpec, Requires, RuleInfo, Severity, BASELINE_SCHEMA, DEFAULT_BASELINE_NAME, REGISTRY,
 };
 pub use manifest::{
     load_manifest, RawConfig, RawDependsOn, RawExposure, RawExposureOwner, RawManifest,
@@ -53,6 +54,9 @@ pub use manifest::{
 };
 pub use mermaid::{
     mermaid_ids, mermaid_label, node_kind, subgraph_mermaid, subgraph_mermaid_linked,
+};
+pub use project_config::{
+    project_config_candidates, project_config_path, FailOn, ProjectConfig, PROJECT_CONFIG_NAME,
 };
 pub use run_results::{default_run_results_path, RunResult, RunResults, RunStatus};
 pub use select::select;

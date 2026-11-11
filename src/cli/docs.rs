@@ -29,7 +29,7 @@ pub fn run_docs(
     // auto-detected beside the source, a malformed file fatal (a committed
     // doc set must never describe the wrong rule set).
     let lint_cfg = load_lint_config(&resolved, &[])?;
-    let lint_findings = dbtl::run_rules(&resolved.dag, &lint_cfg);
+    let lint_findings = dbtl::run_rules(dbtl::LintInput::new(&resolved.dag, &lint_cfg));
     let files = dbtl::generate_docs_with_findings(
         &resolved.dag,
         &project_name,

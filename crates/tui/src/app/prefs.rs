@@ -19,7 +19,7 @@ impl App {
     /// are a style input, so the generation bumps like a reload.
     pub fn set_lint_config(&mut self, config: crate::LintConfig) {
         self.lint_config = config;
-        self.lint_findings = crate::run_rules(&self.dag, &self.lint_config);
+        self.lint_findings = crate::run_rules(crate::LintInput::new(&self.dag, &self.lint_config));
         self.generation += 1;
     }
 

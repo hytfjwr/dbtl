@@ -1,16 +1,35 @@
+use std::collections::BTreeSet;
+
 use super::*;
+use crate::select::select;
 
 // ---- the rules -----------------------------------------------------------
 
-/// Evaluate the enabled rules over `dag` and return every [`Finding`]:
-/// pure and deterministic (rules in [`LintRule::ALL`] order, nodes scanned in
-/// sorted `unique_id` order, `related` lists sorted).
+/// The inputs a lint evaluation reads. `dag` and `config` are the only ones
+/// a rule needs today; richer inputs (a SQL resolver, a catalog) join the
+/// struct as fields rather than widening [`run_rules`]' signature.
+#[derive(Debug, Clone, Copy)]
+pub struct LintInput<'a> {
+    pub dag: &'a Dag,
+    pub config: &'a LintConfig,
+}
+
+impl<'a> LintInput<'a> {
+    pub fn new(dag: &'a Dag, config: &'a LintConfig) -> Self {
+        LintInput { dag, config }
+    }
+}
+
+/// Evaluate the enabled rules over the input's dag and return every
+/// [`Finding`]: pure and deterministic (rules in [`LintRule::ALL`] order,
+/// nodes scanned in sorted `unique_id` order, `related` lists sorted).
 ///
 /// Only ROOT-PROJECT nodes can be flagged — under `--include-packages` the
 /// installed-package nodes stay dependency context (a package node's
 /// neighbours still count toward a finding's fanout/join predicates, but the
 /// flagged `node_uid` is always an in-scope node).
-pub fn run_rules(dag: &Dag, config: &LintConfig) -> Vec<Finding> {
+pub fn run_rules(input: LintInput<'_>) -> Vec<Finding> {
+    let LintInput { dag, config } = input;
     // Resolve the owning package ONCE — `is_root_project` re-resolves per call.
     let primary = dag.primary_package();
     let in_scope = |n: &NodeInfo| primary.as_deref().is_none_or(|p| in_package(n, p));
@@ -47,17 +66,82 @@ pub fn run_rules(dag: &Dag, config: &LintConfig) -> Vec<Finding> {
                 for (parent, child) in layer_violation_edges(dag) {
                     let pname = dag.get(&parent).map_or(&*parent, |n| &n.name).to_string();
                     let cname = dag.get(&child).map_or(&*child, |n| &n.name).to_string();
-                    out.push(Finding {
+                    out.push(Finding::new(
                         rule,
-                        node_uid: child,
-                        related: vec![parent],
-                        message: format!("{cname} directly depends on {pname} (a later layer)"),
-                    });
+                        child,
+                        vec![parent],
+                        format!("{cname} directly depends on {pname} (a later layer)"),
+                    ));
                 }
             }
         }
     }
+    // The envelope fields are filled in ONE place — the severity the config
+    // resolved for the rule, and the node's project file. Rule functions
+    // produce bare findings (`Finding::new`) so the policy stays here.
+    for f in &mut out {
+        f.severity = config
+            .severity(f.rule)
+            .unwrap_or_else(|| f.rule.info().default_severity);
+        f.location = dag
+            .detail(&f.node_uid)
+            .and_then(|d| d.original_file_path.clone())
+            .map(|file| Location { file, line: None });
+    }
+    suppress(dag, config, &mut out);
     out
+}
+
+/// Drop findings suppressed by `lint.rules.<id>.exclude` selectors or by
+/// node `meta: {dbtl: {ignore: ...}}`. Both match on the finding's
+/// `node_uid` — the CHILD side for edge rules — and remove findings whole,
+/// never reordering them.
+fn suppress(dag: &Dag, config: &LintConfig, out: &mut Vec<Finding>) {
+    // Each rule's exclude spec evaluates ONCE into a uid set (the strings
+    // are a union — `exclude: [a, b]` drops nodes matching a OR b).
+    let excluded: BTreeMap<LintRule, BTreeSet<String>> = LintRule::ALL
+        .iter()
+        .filter_map(|rule| {
+            let specs = config.excludes(*rule);
+            if specs.is_empty() {
+                None
+            } else {
+                let mut set = BTreeSet::new();
+                for spec in specs {
+                    set.extend(select(dag, None, spec));
+                }
+                Some((*rule, set))
+            }
+        })
+        .collect();
+    out.retain(|f| {
+        !excluded
+            .get(&f.rule)
+            .is_some_and(|s| s.contains(&f.node_uid))
+            && !meta_ignores(dag, &f.node_uid, f.rule)
+    });
+}
+
+/// Does node `node_uid`'s `meta.dbtl.ignore` cover `rule`? The `dbtl` entry
+/// is a JSON object (stringified by the `Dag`'s meta normalization):
+/// `{"ignore": ["rule_id", ...]}` suppresses the listed rules, `{"ignore":
+/// "all"}` suppresses every rule. A malformed value suppresses nothing —
+/// suppression is opt-in, never accidental — and unknown rule ids in the
+/// list are ignored (a stale id is not an error).
+fn meta_ignores(dag: &Dag, node_uid: &str, rule: LintRule) -> bool {
+    let Some(raw) = dag.detail(node_uid).and_then(|d| d.meta.get("dbtl")) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return false;
+    };
+    match v.get("ignore") {
+        Some(serde_json::Value::String(s)) => s == "all",
+        Some(serde_json::Value::Array(ids)) => ids
+            .iter()
+            .any(|id| id.as_str().is_some_and(|s| s == rule.name())),
+        _ => false,
+    }
 }
 
 /// Model parents + source parents of `uid`, split. Neighbours are counted
@@ -99,15 +183,15 @@ pub(super) fn direct_join_to_source(
         let n_models = models.len();
         let mut related = sources;
         related.extend(models);
-        out.push(Finding {
-            rule: LintRule::DirectJoinToSource,
-            node_uid: (*uid).clone(),
+        out.push(Finding::new(
+            LintRule::DirectJoinToSource,
+            (*uid).clone(),
             related,
-            message: format!(
+            format!(
                 "{} directly depends on {n_sources} source(s) and {n_models} model(s)",
                 n.name
             ),
-        });
+        ));
     }
 }
 
@@ -127,12 +211,12 @@ pub(super) fn multiple_sources_joined(
         if sources.len() < 2 {
             continue;
         }
-        out.push(Finding {
-            rule: LintRule::MultipleSourcesJoined,
-            node_uid: (*uid).clone(),
-            related: sources.clone(),
-            message: format!("{} directly depends on {} sources", n.name, sources.len()),
-        });
+        out.push(Finding::new(
+            LintRule::MultipleSourcesJoined,
+            (*uid).clone(),
+            sources.clone(),
+            format!("{} directly depends on {} sources", n.name, sources.len()),
+        ));
     }
 }
 
@@ -145,6 +229,9 @@ pub(super) fn source_fanout(
     config: &LintConfig,
     out: &mut Vec<Finding>,
 ) {
+    let threshold = config
+        .int_param(LintRule::SourceFanout, "threshold")
+        .expect("the registry declares source_fanout.threshold");
     for uid in uids {
         let Some(n) = dag.get(uid) else { continue };
         if n.resource_type != "source" || !in_scope(n) {
@@ -156,16 +243,16 @@ pub(super) fn source_fanout(
             .filter(|c| dag.get(c).is_some_and(|n| n.resource_type == "model"))
             .cloned()
             .collect();
-        if models.len() < config.source_fanout_threshold {
+        if models.len() < threshold {
             continue;
         }
         models.sort();
-        out.push(Finding {
-            rule: LintRule::SourceFanout,
-            node_uid: (*uid).clone(),
-            related: models.clone(),
-            message: format!("source {} directly feeds {} models", n.name, models.len()),
-        });
+        out.push(Finding::new(
+            LintRule::SourceFanout,
+            (*uid).clone(),
+            models.clone(),
+            format!("source {} directly feeds {} models", n.name, models.len()),
+        ));
     }
 }
 
@@ -179,6 +266,9 @@ pub(super) fn model_fanout(
     config: &LintConfig,
     out: &mut Vec<Finding>,
 ) {
+    let threshold = config
+        .int_param(LintRule::ModelFanout, "threshold")
+        .expect("the registry declares model_fanout.threshold");
     for uid in uids {
         let Some(n) = dag.get(uid) else { continue };
         if n.resource_type != "model" || !in_scope(n) {
@@ -193,16 +283,16 @@ pub(super) fn model_fanout(
             })
             .cloned()
             .collect();
-        if leaves.len() < config.model_fanout_threshold {
+        if leaves.len() < threshold {
             continue;
         }
         leaves.sort();
-        out.push(Finding {
-            rule: LintRule::ModelFanout,
-            node_uid: (*uid).clone(),
-            related: leaves.clone(),
-            message: format!("{} directly feeds {} leaf models", n.name, leaves.len()),
-        });
+        out.push(Finding::new(
+            LintRule::ModelFanout,
+            (*uid).clone(),
+            leaves.clone(),
+            format!("{} directly feeds {} leaf models", n.name, leaves.len()),
+        ));
     }
 }
 
@@ -218,12 +308,12 @@ pub(super) fn root_models(
         if n.resource_type != "model" || !in_scope(n) || n.direct_up != 0 {
             continue;
         }
-        out.push(Finding {
-            rule: LintRule::RootModels,
-            node_uid: (*uid).clone(),
-            related: Vec::new(),
-            message: format!("{} has no parents", n.name),
-        });
+        out.push(Finding::new(
+            LintRule::RootModels,
+            (*uid).clone(),
+            Vec::new(),
+            format!("{} has no parents", n.name),
+        ));
     }
 }
 
@@ -297,15 +387,15 @@ pub(super) fn rejoining_upstream(
         related.extend(a_uids.iter().cloned());
         related.sort();
         related.dedup();
-        out.push(Finding {
-            rule: LintRule::RejoiningUpstream,
-            node_uid: (*uid).clone(),
+        out.push(Finding::new(
+            LintRule::RejoiningUpstream,
+            (*uid).clone(),
             related,
-            message: format!(
+            format!(
                 "{} is a redundant hop: {anames} already feed(s) {cname} directly",
                 n.name
             ),
-        });
+        ));
     }
 }
 
@@ -369,16 +459,16 @@ pub(super) fn marts_depend_on_source(
         if sources.is_empty() {
             continue;
         }
-        out.push(Finding {
-            rule: LintRule::MartsDependOnSource,
-            node_uid: (*uid).clone(),
-            related: sources.clone(),
-            message: format!(
+        out.push(Finding::new(
+            LintRule::MartsDependOnSource,
+            (*uid).clone(),
+            sources.clone(),
+            format!(
                 "{layer} model {} directly depends on {} source(s)",
                 n.name,
                 sources.len()
             ),
-        });
+        ));
     }
 }
 
@@ -401,15 +491,15 @@ pub(super) fn missing_primary_key_tests(
         if has_pk_guarantee(dag.tests(uid)) {
             continue;
         }
-        out.push(Finding {
-            rule: LintRule::MissingPrimaryKeyTests,
-            node_uid: (*uid).clone(),
-            related: Vec::new(),
-            message: format!(
+        out.push(Finding::new(
+            LintRule::MissingPrimaryKeyTests,
+            (*uid).clone(),
+            Vec::new(),
+            format!(
                 "{} has no unique+not_null test pair (or unique_combination_of_columns)",
                 n.name
             ),
-        });
+        ));
     }
 }
 
@@ -431,12 +521,12 @@ pub(super) fn public_models_without_contract(
         if d.access.as_deref() != Some("public") || d.contract_enforced {
             continue;
         }
-        out.push(Finding {
-            rule: LintRule::PublicModelsWithoutContract,
-            node_uid: (*uid).clone(),
-            related: Vec::new(),
-            message: format!("{} is access: public without an enforced contract", n.name),
-        });
+        out.push(Finding::new(
+            LintRule::PublicModelsWithoutContract,
+            (*uid).clone(),
+            Vec::new(),
+            format!("{} is access: public without an enforced contract", n.name),
+        ));
     }
 }
 
@@ -460,12 +550,12 @@ pub(super) fn undocumented_models(
         {
             continue;
         }
-        out.push(Finding {
-            rule: LintRule::UndocumentedModels,
-            node_uid: (*uid).clone(),
-            related: Vec::new(),
-            message: format!("{} has no description", n.name),
-        });
+        out.push(Finding::new(
+            LintRule::UndocumentedModels,
+            (*uid).clone(),
+            Vec::new(),
+            format!("{} has no description", n.name),
+        ));
     }
 }
 
@@ -493,15 +583,15 @@ pub(super) fn naming_conventions(
         if prefixes.is_empty() || prefixes.iter().any(|p| n.name.starts_with(p.as_str())) {
             continue;
         }
-        out.push(Finding {
-            rule: LintRule::NamingConventions,
-            node_uid: (*uid).clone(),
-            related: Vec::new(),
-            message: format!(
+        out.push(Finding::new(
+            LintRule::NamingConventions,
+            (*uid).clone(),
+            Vec::new(),
+            format!(
                 "{layer} model {} doesn't match prefix(es): {}",
                 n.name,
                 prefixes.join(", ")
             ),
-        });
+        ));
     }
 }

@@ -9,6 +9,13 @@
 //!          | "state:"x | "meta:"k["="v] | name   // bare name; meta:k = key exists
 //! ```
 //!
+//! A bare NAME atom is an exact match by default; when it contains `*`, `?`
+//! or `[` it becomes a dbt-style glob (`*` any run, `?` one char, `[set]` /
+//! `[!set]` a char class — fnmatch semantics, case-sensitive), so `stg_*`,
+//! `tag:…` and `path:…` compose the same way dbt selectors do. A pattern
+//! without glob characters keeps the exact-match behavior — no pattern
+//! syntax is interpreted otherwise.
+//!
 //! `2+name` = the node plus ≤2 upstream hops; `name+` = node + all downstream;
 //! `+name+` = both directions. `state:modified[+]` selects the [`DagDiff`]
 //! changed set (added ∪ modified) when a diff is loaded — the in-app
@@ -138,11 +145,95 @@ fn evaluate_atom(dag: &Dag, diff: Option<&DagDiff>, atom: &str) -> BTreeSet<Stri
             ("modified", Some(d)) => d.added.iter().chain(d.modified.keys()).cloned().collect(),
             _ => BTreeSet::new(),
         },
-        _ => nodes()
-            .filter(|(_, n)| n.name == atom)
-            .map(|(uid, _)| uid.clone())
-            .collect(),
+        _ => {
+            if atom.contains(['*', '?', '[']) {
+                // Glob atoms match on the NAME only — like dbt's bare-name
+                // glob. (A `key:value` the arms above didn't claim still
+                // lands here; node names can't contain ':', so the literal
+                // `key:` prefix simply never matches — same as today.)
+                // The regex compiles ONCE per atom, not per node.
+                let re = glob_regex(atom);
+                nodes()
+                    .filter(|(_, n)| re.is_match(&n.name))
+                    .map(|(uid, _)| uid.clone())
+                    .collect()
+            } else {
+                nodes()
+                    .filter(|(_, n)| n.name == atom)
+                    .map(|(uid, _)| uid.clone())
+                    .collect()
+            }
+        }
     }
+}
+
+/// Translate a dbt-style glob (Python `fnmatch` semantics: `*` = any run,
+/// `?` = exactly one char, `[set]`/`[!set]` = a char class — a `]` right
+/// after the opening bracket is a literal and ranges like `a-z` work;
+/// case-sensitive) into an anchored regex. The translation is total — a
+/// malformed class degrades to literals rather than erroring, matching
+/// fnmatch's "an unmatched `[` is a literal `[`" rule — and the regex keeps
+/// matching free of the exponential backtracking a naive recursive matcher
+/// risks on adversarial `*a*a*a*`-style patterns.
+fn glob_regex(pattern: &str) -> regex::Regex {
+    // `(?s)` mirrors fnmatch's DOTALL `.*` (node names can't contain `\n`
+    // anyway); `\A…\z` anchors the whole input.
+    let mut out = String::from("\\A(?s)");
+    let mut chars = pattern.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '*' => out.push_str(".*"),
+            '?' => out.push('.'),
+            '[' => {
+                let mut negated = false;
+                if chars.peek() == Some(&'!') {
+                    negated = true;
+                    chars.next();
+                }
+                // Class body up to the first `]` that is not the first body
+                // char (fnmatch: `[]x]` is a class containing `]` and `x`).
+                let mut body = String::new();
+                let mut first = true;
+                let mut closed = false;
+                for c in chars.by_ref() {
+                    if c == ']' && !first {
+                        closed = true;
+                        break;
+                    }
+                    first = false;
+                    body.push(c);
+                }
+                if closed {
+                    out.push('[');
+                    if negated {
+                        out.push('^');
+                    }
+                    for c in body.chars() {
+                        // Inside a class, `[` `\` `]` `^` need escaping for
+                        // the regex crate; `-` keeps its range meaning.
+                        if matches!(c, '[' | '\\' | ']' | '^') {
+                            out.push('\\');
+                        }
+                        out.push(c);
+                    }
+                    out.push(']');
+                } else {
+                    // Unterminated `[` — emit it (and the consumed body) as
+                    // literals, like fnmatch does.
+                    out.push_str("\\[");
+                    if negated {
+                        out.push('!');
+                    }
+                    out.push_str(&regex::escape(&body));
+                }
+            }
+            c => out.push_str(&regex::escape(&c.to_string())),
+        }
+    }
+    out.push_str("\\z");
+    // The translation produces only literals/classes/`.*`/`.`, so it always
+    // compiles; the fallback can never match (it is not a valid string).
+    regex::Regex::new(&out).unwrap_or_else(|_| regex::Regex::new("\\A\\z").unwrap())
 }
 
 /// `unique_id` → neighbour `unique_id`s, from the kept edge list.
@@ -428,5 +519,40 @@ mod tests {
         );
         // Without a diff, state: matches nothing.
         assert!(select(&cur, None, "state:modified").is_empty());
+    }
+
+    #[test]
+    fn bare_name_globs() {
+        let d = dag(); // models: stg, int, fct, other
+                       // `*` — any run (empty included).
+        assert_eq!(names(&select(&d, None, "s*")), vec!["stg"]);
+        assert_eq!(
+            names(&select(&d, None, "*t*")),
+            vec!["fct", "int", "other", "stg"]
+        );
+        assert_eq!(
+            names(&select(&d, None, "*")),
+            vec!["fct", "int", "other", "stg"]
+        );
+        // `?` — exactly one char.
+        assert_eq!(names(&select(&d, None, "f?t")), vec!["fct"]);
+        assert!(select(&d, None, "f?").is_empty());
+        // `[set]`, `[!set]`, ranges — anchored on both ends.
+        assert_eq!(names(&select(&d, None, "[fs]*")), vec!["fct", "stg"]);
+        assert_eq!(names(&select(&d, None, "[!fs]*")), vec!["int", "other"]);
+        assert_eq!(names(&select(&d, None, "[a-i]nt")), vec!["int"]);
+        // An unterminated `[` degrades to a literal — no such name here.
+        assert!(select(&d, None, "stg[").is_empty());
+        // A glob-free name keeps exact-match semantics (prefixes don't match).
+        assert_eq!(names(&select(&d, None, "fct")), vec!["fct"]);
+        assert!(select(&d, None, "fc").is_empty());
+        assert!(select(&d, None, "fctx").is_empty());
+        // Globs compose with intersection and hops like any atom.
+        assert_eq!(names(&select(&d, None, "f*,tag:daily")), vec!["fct"]);
+        assert_eq!(
+            names(&select(&d, None, "*+")),
+            vec!["fct", "int", "other", "stg"],
+            "glob + trailing-hop: every node seeds its downstream expansion"
+        );
     }
 }

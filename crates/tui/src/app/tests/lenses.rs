@@ -426,7 +426,7 @@ fn lint_lens_is_skipped_in_the_cycle_when_no_findings_exist() {
     let mut a = app();
     let mut cfg = crate::LintConfig::default();
     for r in crate::LintRule::ALL {
-        cfg.rules.insert(r.name().to_string(), false);
+        cfg.severities.insert(r, None);
     }
     a.set_lint_config(cfg);
     assert!(a.lint_findings().is_empty(), "all rules off → no findings");
@@ -442,9 +442,9 @@ fn lint_lens_is_skipped_in_the_cycle_when_no_findings_exist() {
     // recomputes — the seam `reload` rides too).
     let mut on = crate::LintConfig::default();
     for r in crate::LintRule::ALL {
-        on.rules.insert(r.name().to_string(), false);
+        on.severities.insert(r, None);
     }
-    on.rules.insert("undocumented_models".to_string(), true);
+    on.severities.remove(&crate::LintRule::UndocumentedModels);
     a.set_lint_config(on);
     assert!(
         a.lint_findings().is_empty(),
