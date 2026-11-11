@@ -88,16 +88,26 @@ pub(super) fn marked_docs_on_disk(out_dir: &std::path::Path) -> Vec<String> {
 
 /// The in-memory file set `dbtl docs` would emit for `resolved`: the
 /// provenance tag, the docs project name, the resolved lineage-diagram
-/// depth (flag > `docs.lineage_depth` > default), and the SAME `run_rules`
+/// depth (flag > `docs.lineage_depth` > default), the opt-in side artifacts
+/// (`--catalog`/`--run-results`, or `.dbtl.yml`'s `docs.catalog` /
+/// `docs.run_results` opting into the default `target/` sibling — the doc
+/// pages NEVER auto-detect them, so a file the run wasn't asked about can't
+/// change the output; an explicit request that isn't readable is an input
+/// error, never a silent skip), the column resolver the `Upstream`/`Used
+/// by` cells resolve through (that opt-in catalog inside it,
+/// `--sql-dialect` pinning the parse dialect), and the SAME `run_rules`
 /// vector `check --lint`, `dbtl lint`, and the TUI read — with the lint
 /// baseline applied through the same path/`baseline_explicit` rules the
 /// lint subcommand uses. `.dbtl.yml` is auto-detected beside the source, a
 /// malformed file fatal: a committed doc set must never describe the wrong
-/// rule set or draw the wrong depth. `check --docs-dir` compares exactly
-/// this set (no flag — config/default depth), so the gate can never
-/// disagree with `docs --check` about what "current docs" means. `src`
-/// supplies the aux lint inputs (`--sql-dialect`/`--catalog`) so the
-/// quoted `run_rules` evaluation is the same one `lint`/`check` run.
+/// rule set, draw the wrong depth, or silently claim an artifact it didn't
+/// load. `check --docs-dir` compares exactly this set (no flag —
+/// config/default depth and the config's own artifact opt-ins), so the
+/// gate can never disagree with `docs --check` about what "current docs"
+/// means. `src` supplies the aux inputs (`--sql-dialect`/`--catalog`/
+/// `--run-results`); unlike `dbtl lint`/`check`, the lint feed and the
+/// rendered pages share the run's ONE opt-in catalog — a sibling nobody
+/// asked for can't leak findings (or types) into the generated set.
 pub(super) fn docs_file_set(
     src: &DataSourceArgs,
     resolved: &ResolvedSource,
@@ -132,14 +142,28 @@ pub(super) fn docs_file_set(
     // named-but-absent file warns; an unreadable/malformed one is an input
     // error (the same policy — a frozen set we can't read must never
     // silently un-freeze every violation in the record).
-    // The same aux inputs `dbtl lint`/`check` resolve — the SQL rules' lazy
-    // resolver plus the catalog — so the docs' Lint sections quote the same
-    // evaluation (a missing catalog skips its rules exactly like the CLI).
-    let (lint_catalog, lint_resolver) = lint_aux(resolved, src.sql_dialect, src.catalog)?;
+    // The opt-in catalog: an explicit flag wins; a `docs.catalog: true`
+    // config key opts into the shared default sibling (`resolved_config_args`
+    // supplies the same (manifest, project) pair `.dbtl.yml` discovery
+    // used). The SAME instance feeds the lint evaluation AND the rendered
+    // pages — never the bare auto-detect `lint`/`check` apply, so a sibling
+    // nobody asked for changes neither output: the generated set stays
+    // byte-identical with or without the file on disk.
+    let catalog: Option<std::rc::Rc<dbtl::Catalog>> = docs_catalog(
+        src,
+        &project_cfg.docs,
+        manifest_arg.as_deref(),
+        project_arg.as_deref(),
+    )?
+    .map(std::rc::Rc::new);
+    // One resolver for both surfaces — the opt-in catalog inside it (or
+    // none), so the warehouse rules `skip` exactly when the pages would
+    // have nothing to render.
+    let resolver = parse_resolver(resolved, catalog.clone(), src.sql_dialect);
     let mut lint_findings = dbtl::run_rules(
         dbtl::LintInput::new(&resolved.dag, &project_cfg.lint)
-            .with_sql(Some(&lint_resolver))
-            .with_catalog(lint_catalog.as_deref()),
+            .with_sql(Some(&resolver))
+            .with_catalog(catalog.as_deref()),
     )
     .findings;
     let candidates =
@@ -151,6 +175,12 @@ pub(super) fn docs_file_set(
     if let Some(b) = &baseline {
         b.apply(&mut lint_findings);
     }
+    let run_results = docs_run_results(
+        src,
+        &project_cfg.docs,
+        manifest_arg.as_deref(),
+        project_arg.as_deref(),
+    )?;
     Ok(dbtl::generate_docs_with_options(
         &resolved.dag,
         &project_name,
@@ -159,8 +189,63 @@ pub(super) fn docs_file_set(
         &dbtl::DocsOptions {
             findings: Some(&lint_findings),
             lineage_depth: depth,
+            resolver: Some(&resolver),
+            catalog: catalog.as_deref(),
+            run_results: run_results.as_ref(),
         },
     ))
+}
+
+/// The `catalog.json` the doc set consults — loaded ONLY when explicitly
+/// requested (`--catalog`, else `.dbtl.yml`'s `docs.catalog` opting into the
+/// default `target/catalog.json` sibling through the shared
+/// [`dbtl::default_catalog_path`] rule). Docs never auto-detects the
+/// sibling: a run that wasn't asked for warehouse data emits none — not in
+/// the pages, and not in the lint evaluation they quote (the bare
+/// auto-detect `dbtl lint`/`check` apply is deliberately different: their
+/// rules `skip` on a missing catalog, but generated docs must be
+/// byte-identical either way). An enabled-but-unreadable/malformed artifact
+/// is an input error — a committed doc set must never silently claim data
+/// it didn't load.
+fn docs_catalog(
+    src: &DataSourceArgs,
+    cfg: &dbtl::DocsConfig,
+    manifest_arg: Option<&std::path::Path>,
+    project_arg: Option<&std::path::Path>,
+) -> Result<Option<dbtl::Catalog>, CliError> {
+    let path = if let Some(explicit) = src.catalog {
+        Some(PathBuf::from(explicit))
+    } else if cfg.catalog {
+        dbtl::default_catalog_path(manifest_arg, project_arg)
+    } else {
+        None
+    };
+    path.map(|p| {
+        dbtl::Catalog::load(&p)
+            .with_context(|| format!("failed to load catalog {}", p.display()))
+            .input()
+    })
+    .transpose()
+}
+
+/// The `run_results.json` the doc set consults — the same explicit-only rule
+/// as [`docs_catalog`] (`--run-results`, else `docs.run_results` opting into
+/// the default `target/run_results.json` sibling). Never auto-detected; an
+/// enabled-but-unreadable/malformed artifact is an input error.
+fn docs_run_results(
+    src: &DataSourceArgs,
+    cfg: &dbtl::DocsConfig,
+    manifest_arg: Option<&std::path::Path>,
+    project_arg: Option<&std::path::Path>,
+) -> Result<Option<dbtl::RunResults>, CliError> {
+    let path = if let Some(explicit) = src.run_results {
+        Some(PathBuf::from(explicit))
+    } else if cfg.run_results {
+        dbtl::default_run_results_path(manifest_arg, project_arg)
+    } else {
+        None
+    };
+    path.map(|p| dbtl::RunResults::load(&p).input()).transpose()
 }
 
 /// The pure comparison half of `check_docs` — the sorted `missing` /

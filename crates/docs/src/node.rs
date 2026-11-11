@@ -1,5 +1,24 @@
 use super::*;
 
+/// The per-run inputs every node page shares — bundled so a new artifact or
+/// resolver knob doesn't grow each `push_*` signature one parameter at a
+/// time. Built once in [`generate_docs_with_options`]; pure values, no IO.
+pub(super) struct PageInputs<'a> {
+    pub dag: &'a Dag,
+    /// uid → generated page path — the single map every link resolves through.
+    pub files: &'a BTreeMap<String, String>,
+    /// The shared one-hop column-edge engine (built once for the whole run).
+    pub cll: &'a ColumnLineage<'a, dyn ColumnResolver + 'a>,
+    /// The resolver behind `cll` — the `column_exprs` "can this node be read
+    /// at column level" predicate reads it directly (the engine deliberately
+    /// has no view of it: name-match resolution still produces edges).
+    pub resolver: &'a dyn ColumnResolver,
+    /// The explicitly-enabled `catalog.json`, when one was loaded.
+    pub catalog: Option<&'a Catalog>,
+    /// The explicitly-enabled `run_results.json`, when one was loaded.
+    pub run_results: Option<&'a RunResults>,
+}
+
 /// The Markdown page for a single node `uid`. `lint` is the node's shared
 /// [`run_rules`](dbtl_core::run_rules) findings (in rule order): `Some`
 /// renders the `Lint violations` section (labeled `None.` when empty), `None`
@@ -17,12 +36,13 @@ use super::*;
 /// - `semantic_model`/`metric`/`saved_query`/other: bullets, Description,
 ///   Upstream, Lineage (upstream).
 pub(super) fn node_markdown(
-    dag: &Dag,
+    ctx: &PageInputs,
     uid: &str,
-    files: &BTreeMap<String, String>,
     lint: Option<&[&Finding]>,
     depth: LineageDepth,
 ) -> String {
+    let dag = ctx.dag;
+    let files = ctx.files;
     let node = match dag.get(uid) {
         Some(n) => n,
         // Should not happen (uid came from the node map), but never panic.
@@ -35,7 +55,7 @@ pub(super) fn node_markdown(
 
     // Heading + the resource-type's metadata bullets.
     s.push_str(&format!("# {}\n\n", node.name));
-    push_heading_bullets(&mut s, dag, uid, node, detail);
+    push_heading_bullets(&mut s, ctx, uid, node, detail);
 
     // Description.
     s.push_str("\n## Description\n\n");
@@ -45,7 +65,7 @@ pub(super) fn node_markdown(
 
     match rt {
         "model" | "snapshot" => {
-            push_columns(&mut s, detail);
+            push_columns(&mut s, ctx, uid, node, detail, page_rel);
             push_tests(&mut s, dag, uid, files, page_rel);
             push_sql(&mut s, dag, uid, node, detail);
             push_lint(&mut s, lint);
@@ -55,7 +75,7 @@ pub(super) fn node_markdown(
             push_meta(&mut s, detail);
         }
         "source" | "seed" => {
-            push_columns(&mut s, detail);
+            push_columns(&mut s, ctx, uid, node, detail, page_rel);
             push_tests(&mut s, dag, uid, files, page_rel);
             push_lint(&mut s, lint);
             push_downstream(&mut s, dag, uid, node, files, page_rel);
@@ -80,10 +100,13 @@ pub(super) fn node_markdown(
 }
 
 /// The heading's metadata bullets — the fields each resource type declares.
-/// Missing values render `none` (the `opt_code` convention).
+/// Missing values render `none` (the `opt_code` convention). The catalog /
+/// run-results bullets ride [`push_artifact_bullets`]: they appear only when
+/// the artifact was explicitly enabled, so a run without them emits the
+/// bullet set it always has (byte-identical).
 fn push_heading_bullets(
     s: &mut String,
-    dag: &Dag,
+    ctx: &PageInputs,
     uid: &str,
     node: &NodeInfo,
     detail: Option<&dbtl_core::NodeDetail>,
@@ -99,6 +122,11 @@ fn push_heading_bullets(
                         .or_else(|| detail.and_then(|d| d.materialized.as_deref()))
                 )
             ));
+            // `unique_key` is already a normalized list on `NodeDetail`
+            // (config() > schema.yml > the project tree — whichever the
+            // loader won); unconfigured reads `none`.
+            let unique_key = detail.map(|d| d.unique_key.as_slice()).unwrap_or(&[]);
+            s.push_str(&format!("- unique_key: {}\n", opt_code_list(unique_key)));
             let access = detail.and_then(|d| d.access.as_deref());
             s.push_str(&format!("- access: {}\n", opt_code(access)));
             let contract = if detail.is_some_and(|d| d.contract_enforced) {
@@ -123,6 +151,7 @@ fn push_heading_bullets(
                 opt_code(detail.and_then(|d| d.latest_version.as_deref()))
             ));
             push_db_schema_tags(s, detail);
+            push_artifact_bullets(s, ctx, uid, true);
         }
         "source" => {
             s.push_str(&format!(
@@ -151,7 +180,19 @@ fn push_heading_bullets(
             .collect::<Vec<_>>()
             .join(".");
             s.push_str(&format!("- relation: {}\n", opt_code(Some(&relation))));
+            // The ingestion metadata dbt records for the table — `loader`
+            // verbatim, `freshness` through the one formatter both the
+            // warn-only and warn+error shapes share.
+            s.push_str(&format!(
+                "- loader: {}\n",
+                opt_code(detail.and_then(|d| d.loader.as_deref()))
+            ));
+            s.push_str(&format!(
+                "- freshness: {}\n",
+                opt_code(freshness_value(detail).as_deref())
+            ));
             push_tags(s, detail);
+            push_artifact_bullets(s, ctx, uid, false);
         }
         "seed" => {
             s.push_str(&format!(
@@ -163,9 +204,10 @@ fn push_heading_bullets(
                 )
             ));
             push_db_schema_tags(s, detail);
+            push_artifact_bullets(s, ctx, uid, true);
         }
         "exposure" => {
-            let ex = dag.exposure(uid);
+            let ex = ctx.dag.exposure(uid);
             s.push_str(&format!(
                 "- type: {}\n",
                 opt_code(ex.and_then(|e| e.exposure_type.as_deref()))
@@ -196,6 +238,116 @@ fn push_heading_bullets(
     ));
 }
 
+/// The source `freshness:` bullet body, `None` when the source has no
+/// effective freshness — the SAME [`NodeDetail::has_freshness`] predicate
+/// the `sources_without_freshness` lint rule gates on, so the page and the
+/// rule can never disagree about "configured". When set, the thresholds
+/// render in dbt's own order (warn before error); a source declaring only
+/// one shows only that one. The single place the display string is built.
+fn freshness_value(detail: Option<&dbtl_core::NodeDetail>) -> Option<String> {
+    let d = detail?;
+    if !d.has_freshness() {
+        return None;
+    }
+    let threshold = |t: &dbtl_core::FreshnessThreshold| match &t.period {
+        Some(p) => format!("{} {p}", t.count),
+        None => t.count.to_string(),
+    };
+    let mut parts = Vec::new();
+    if let Some(t) = &d.freshness_warn_after {
+        parts.push(format!("warn after {}", threshold(t)));
+    }
+    if let Some(t) = &d.freshness_error_after {
+        parts.push(format!("error after {}", threshold(t)));
+    }
+    Some(parts.join(", "))
+}
+
+/// The catalog/run-results bullets — present only when the artifact was
+/// explicitly enabled, so an artifact-free run never grows a bullet. `rows`
+/// / `size` come from the catalog (`none` when the node isn't covered);
+/// `last run` from run_results (`with_last_run` — sources carry no status:
+/// `dbt run` doesn't execute them). All three read `none` for a covered
+/// artifact that simply lacks the value — the `opt_code` convention.
+fn push_artifact_bullets(s: &mut String, ctx: &PageInputs, uid: &str, with_last_run: bool) {
+    if let Some(catalog) = ctx.catalog {
+        let node = catalog.get(uid);
+        s.push_str(&format!(
+            "- rows: {}\n",
+            opt_code(
+                node.and_then(|n| n.row_count())
+                    .map(|r| r.to_string())
+                    .as_deref()
+            )
+        ));
+        s.push_str(&format!(
+            "- size: {}\n",
+            opt_code(
+                node.and_then(|n| n.size_bytes())
+                    .map(format_size)
+                    .as_deref()
+            )
+        ));
+    }
+    if with_last_run {
+        if let Some(rr) = ctx.run_results {
+            s.push_str(&format!(
+                "- last run: {}\n",
+                opt_code(last_run_value(rr, uid).as_deref())
+            ));
+        }
+    }
+}
+
+/// The `last run` bullet body — `status, 1.23s (generated_at)`: the node's
+/// own status string, its `execution_time` at two decimals when the run
+/// recorded one, then the artifact's `generated_at` verbatim (the file's
+/// freshness — never the current time). `None` when the run didn't cover
+/// the node.
+fn last_run_value(rr: &RunResults, uid: &str) -> Option<String> {
+    let r = rr.get(uid)?;
+    let mut s = run_status_name(&r.status).to_string();
+    if let Some(t) = r.execution_time {
+        s.push_str(&format!(", {t:.2}s"));
+    }
+    if let Some(ts) = &rr.generated_at {
+        s.push_str(&format!(" ({ts})"));
+    }
+    Some(s)
+}
+
+/// The `run_results` status string for the `last run` bullet — the artifact
+/// vocabulary (`success`/`error`/`fail`/`warn`/`skipped`) with any
+/// unrecognized status kept verbatim.
+fn run_status_name(status: &dbtl_core::RunStatus) -> &str {
+    match status {
+        dbtl_core::RunStatus::Success => "success",
+        dbtl_core::RunStatus::Error => "error",
+        dbtl_core::RunStatus::Fail => "fail",
+        dbtl_core::RunStatus::Warn => "warn",
+        dbtl_core::RunStatus::Skipped => "skipped",
+        dbtl_core::RunStatus::Other(s) => s.as_str(),
+    }
+}
+
+/// A byte count in 1024-based units (`1.0 KiB`, `1.0 MiB`, …) — the ONE
+/// formatter the `size` bullet uses, so the boundary between `B` and `KiB`
+/// (and every unit above) can't drift between call sites.
+pub(super) fn format_size(bytes: i64) -> String {
+    const UNITS: &[&str] = &["KiB", "MiB", "GiB", "TiB", "PiB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64;
+    for unit in UNITS {
+        value /= 1024.0;
+        if value < 1024.0 || *unit == UNITS[UNITS.len() - 1] {
+            return format!("{value:.1} {unit}");
+        }
+    }
+    unreachable!()
+}
+
 /// The `database`/`schema`/`tags` bullet triplet the buildable kinds share.
 fn push_db_schema_tags(s: &mut String, detail: Option<&dbtl_core::NodeDetail>) {
     s.push_str(&format!(
@@ -212,37 +364,183 @@ fn push_db_schema_tags(s: &mut String, detail: Option<&dbtl_core::NodeDetail>) {
 /// The `tags` bullet: the list inline-code-joined, `none` when empty.
 fn push_tags(s: &mut String, detail: Option<&dbtl_core::NodeDetail>) {
     let tags = detail.map(|d| d.tags.as_slice()).unwrap_or(&[]);
-    s.push_str(&format!(
-        "- tags: {}\n",
-        if tags.is_empty() {
-            "none".to_string()
-        } else {
-            tags.iter()
-                .map(|t| format!("`{t}`"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        }
-    ));
+    s.push_str(&format!("- tags: {}\n", opt_code_list(tags)));
 }
 
-/// The `Columns` section: the declared column table or `No columns.`.
-fn push_columns(s: &mut String, detail: Option<&dbtl_core::NodeDetail>) {
+/// The `Columns` section: the declared column set as a table. `Warehouse
+/// type` appears only when a catalog was explicitly enabled (the warehouse's
+/// own type for the column — blank when the catalog doesn't record it).
+/// `Upstream` (model/snapshot only — sources and seeds are lineage roots)
+/// lists the value-carrying upstream columns, linked to their node pages;
+/// `Used by` counts the downstream columns this one feeds.
+///
+/// The lineage cells follow the resolver's own "can I read this node's
+/// columns" signal ([`node_parseable`]): a model whose SQL is missing or
+/// unparsable shows `-` in both cells rather than claiming a lineage it
+/// couldn't verify; a parseable model with no provenance shows a blank
+/// `Upstream` and `0` Used by. `filter_or_join` edges shape rows, not
+/// values, so [`value_carrying`] keeps them out of both cells.
+fn push_columns(
+    s: &mut String,
+    ctx: &PageInputs,
+    uid: &str,
+    node: &NodeInfo,
+    detail: Option<&dbtl_core::NodeDetail>,
+    page_rel: &str,
+) {
     s.push_str("\n## Columns\n\n");
     let columns = detail.map(|d| d.columns.as_slice()).unwrap_or(&[]);
     if columns.is_empty() {
         s.push_str("No columns.\n");
-    } else {
-        s.push_str("| Name | Type | Description |\n");
-        s.push_str("| --- | --- | --- |\n");
-        for col in columns {
-            s.push_str(&format!(
-                "| {} | {} | {} |\n",
-                md_cell(&col.name),
-                md_cell(col.data_type.as_deref().unwrap_or("")),
-                md_cell(col.description.as_deref().unwrap_or("")),
-            ));
+        return;
+    }
+    // Upstream provenance only exists for the SQL-carrying kinds — source
+    // and seed tables carry `Used by` but no `Upstream` column at all.
+    let has_upstream = matches!(node.resource_type.as_str(), "model" | "snapshot");
+    // `Warehouse type` is a real column only when the artifact was
+    // explicitly enabled — absent keeps the declared-shape table.
+    let has_warehouse = ctx.catalog.is_some();
+    let parseable = node_parseable(ctx, uid);
+    match (has_upstream, has_warehouse) {
+        (true, true) => {
+            s.push_str("| Name | Type | Warehouse type | Upstream | Used by | Description |\n");
+            s.push_str("| --- | --- | --- | --- | --- | --- |\n");
+        }
+        (true, false) => {
+            s.push_str("| Name | Type | Upstream | Used by | Description |\n");
+            s.push_str("| --- | --- | --- | --- | --- |\n");
+        }
+        (false, true) => {
+            s.push_str("| Name | Type | Warehouse type | Used by | Description |\n");
+            s.push_str("| --- | --- | --- | --- | --- |\n");
+        }
+        (false, false) => {
+            s.push_str("| Name | Type | Used by | Description |\n");
+            s.push_str("| --- | --- | --- | --- |\n");
         }
     }
+    for col in columns {
+        let cref = ColumnRef::new(uid, &col.name);
+        let warehouse = if has_warehouse {
+            md_cell(
+                ctx.catalog
+                    .and_then(|c| c.get(uid))
+                    .and_then(|n| n.column_type(&normalize_column(&col.name)))
+                    .unwrap_or(""),
+            )
+        } else {
+            String::new()
+        };
+        // Both cells collapse to `-` when the node's own columns can't be
+        // read — `-` means "unverifiable", not "none" (which is blank/`0`).
+        let (upstream, used_by) = if has_upstream && !parseable {
+            ("-".to_string(), "-".to_string())
+        } else {
+            let used = downstream_column_count(ctx, uid, &cref);
+            let up = if has_upstream {
+                upstream_cell(ctx, &cref, page_rel)
+            } else {
+                String::new()
+            };
+            (up, used.to_string())
+        };
+        let mut row = format!(
+            "| {} | {} |",
+            md_cell(&col.name),
+            md_cell(col.data_type.as_deref().unwrap_or(""))
+        );
+        if has_warehouse {
+            row.push_str(&format!(" {warehouse} |"));
+        }
+        if has_upstream {
+            row.push_str(&format!(" {upstream} |"));
+        }
+        row.push_str(&format!(
+            " {used_by} | {} |\n",
+            md_cell(col.description.as_deref().unwrap_or("")),
+        ));
+        s.push_str(&row);
+    }
+}
+
+/// The one "can we see this node's columns" predicate — the resolver's
+/// expression-level view (`column_exprs` → `Some`). `None` covers every
+/// unreadable case: no SQL, unparsable SQL, a strategy without an AST —
+/// and is deliberately NOT `resolve().is_empty()`: a name-match fallback
+/// still emits edges, but they can't vouch for column provenance.
+fn node_parseable(ctx: &PageInputs, uid: &str) -> bool {
+    ctx.resolver.column_exprs(ctx.dag, uid).is_some()
+}
+
+/// The edge kinds that carry a column's VALUE — `passthrough`, `rename`,
+/// `transform`. `filter_or_join` only shapes which rows exist (the
+/// WHERE/JOIN/GROUP BY tail), so it is excluded from `Upstream` lists and
+/// `Used by` counts alike — the single filter both cells share.
+fn value_carrying(kind: ColumnEdgeKind) -> bool {
+    !matches!(kind, ColumnEdgeKind::FilterOrJoin)
+}
+
+/// The `Upstream` cell for one column: the distinct value-carrying upstream
+/// columns in [`ColumnEdge`] order, first five linked to their node pages
+/// (`[parent.col](rel)` — label from the node's display name like the
+/// dependency lists; plain `parent.col` when the node has no page), then
+/// `+K more`. Empty when nothing feeds the column — blank, not `0`, is the
+/// "no provenance" rendering.
+fn upstream_cell(ctx: &PageInputs, cref: &ColumnRef, page_rel: &str) -> String {
+    const LIMIT: usize = 5;
+    let mut ups: Vec<ColumnRef> = ctx
+        .cll
+        .upstream(cref)
+        .iter()
+        .filter(|e| value_carrying(e.kind))
+        .map(|e| e.from.clone())
+        .collect();
+    ups.sort();
+    ups.dedup();
+    let mut parts: Vec<String> = ups
+        .iter()
+        .take(LIMIT)
+        .map(|from| upstream_label(ctx, from, page_rel))
+        .collect();
+    if ups.len() > LIMIT {
+        parts.push(format!("+{} more", ups.len() - LIMIT));
+    }
+    parts.join(", ")
+}
+
+/// One upstream column entry: `parent.col` linked to the parent's page when
+/// it was generated (`files` holds every dag node's path — a `from` outside
+/// the map stays plain text, the dependency-list convention).
+fn upstream_label(ctx: &PageInputs, from: &ColumnRef, page_rel: &str) -> String {
+    let name = ctx
+        .dag
+        .get(&from.node)
+        .map(|n| n.name.as_str())
+        .unwrap_or(&from.node);
+    let label = format!("{name}.{}", from.column);
+    match ctx.files.get(&from.node) {
+        Some(rel) => format!("[{}]({})", md_label(&label), page_link(page_rel, rel)),
+        None => md_cell(&label),
+    }
+}
+
+/// The `Used by` number for one column: how many distinct downstream
+/// columns feed on it through value-carrying edges — counted only over the
+/// children whose own columns are readable ([`node_parseable`]); a child
+/// that can't be parsed contributes nothing rather than a guessed count.
+fn downstream_column_count(ctx: &PageInputs, uid: &str, cref: &ColumnRef) -> usize {
+    let mut targets = BTreeSet::new();
+    for child in ctx.dag.direct_children(uid) {
+        if !node_parseable(ctx, child) {
+            continue;
+        }
+        for e in ctx.cll.in_edges(child).iter() {
+            if e.from == *cref && value_carrying(e.kind) {
+                targets.insert(e.to.clone());
+            }
+        }
+    }
+    targets.len()
 }
 
 /// The `Tests` section — the `Target` column resolves a `relationships`

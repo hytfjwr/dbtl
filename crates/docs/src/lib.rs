@@ -13,13 +13,14 @@
 //! assigned from a shared collision-avoidance map (the same approach as the
 //! Mermaid node-id map) so two runs over the same `Dag` produce identical bytes.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use dbtl_core::layer::{first_dir, layer_rank};
 use dbtl_core::mermaid::subgraph_mermaid_linked;
 use dbtl_core::{
-    column_coverage_counts, coverage_counts, in_package, CompiledOrigin, Dag, Edge, Finding,
-    LineageDepth, NodeInfo, PackageScope, Subgraph, LAYER_ORDER,
+    column_coverage_counts, coverage_counts, in_package, normalize_column, Catalog, ColumnEdgeKind,
+    ColumnLineage, ColumnRef, ColumnResolver, CompiledOrigin, Dag, Edge, Finding, LineageDepth,
+    NodeInfo, PackageScope, RunResults, SqlDialect, SqlParseResolver, Subgraph, LAYER_ORDER,
 };
 
 /// Where a node page lives under `<out>`, keyed by `resource_type` — the ONE
@@ -73,7 +74,7 @@ pub(crate) fn omitted_diagram_line(nodes: usize, edges: usize) -> String {
 
 /// Generation options — a struct so new knobs (the lineage depth today)
 /// don't grow the function signatures.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct DocsOptions<'a> {
     /// The shared [`dbtl_core::run_rules`] output (`Some`) — the SAME vector
     /// `dbtl check --lint` gates on and the TUI's Lint lens/worklist quote —
@@ -86,6 +87,39 @@ pub struct DocsOptions<'a> {
     /// Per-node lineage-diagram depth (`--lineage-depth` / `.dbtl.yml`'s
     /// `docs.lineage_depth`, resolved by the caller).
     pub lineage_depth: LineageDepth,
+    /// The column resolver every page's `Upstream`/`Used by` cells resolve
+    /// through — built by the CALLER (the CLI pins `--sql-dialect` and hands
+    /// it the explicitly-loaded catalog; the resolver is the only place a
+    /// catalog ever reaches column lineage on this path). `None` builds a
+    /// catalog-less [`SqlParseResolver`] on the manifest's adapter dialect —
+    /// the default tests want. One [`ColumnLineage`] wraps whichever
+    /// resolver wins for the whole run, so a node's in-edges resolve at most
+    /// once per generation.
+    pub resolver: Option<&'a dyn ColumnResolver>,
+    /// The explicitly-loaded `catalog.json` — `Some` adds the `Warehouse
+    /// type` column and the `rows`/`size` heading bullets; `None` (or a
+    /// catalog that doesn't cover a node) renders the declared-shape table
+    /// and `none` bullets. Never auto-detected: only a caller that was
+    /// explicitly asked for the artifact sets this.
+    pub catalog: Option<&'a Catalog>,
+    /// The explicitly-loaded `run_results.json` — `Some` adds the `last run`
+    /// heading bullet (the artifact's own status string, `none` for an
+    /// uncovered node). Never auto-detected, like [`catalog`](Self::catalog).
+    pub run_results: Option<&'a RunResults>,
+}
+
+impl std::fmt::Debug for DocsOptions<'_> {
+    /// `&dyn ColumnResolver` isn't `Debug` — print the shape (which inputs
+    /// are present), not the trait objects.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DocsOptions")
+            .field("findings", &self.findings.map(<[Finding]>::len))
+            .field("lineage_depth", &self.lineage_depth)
+            .field("resolver", &self.resolver.is_some())
+            .field("catalog", &self.catalog.is_some())
+            .field("run_results", &self.run_results.is_some())
+            .finish()
+    }
 }
 
 impl Default for DocsOptions<'_> {
@@ -93,6 +127,9 @@ impl Default for DocsOptions<'_> {
         Self {
             findings: None,
             lineage_depth: LineageDepth::DEFAULT,
+            resolver: None,
+            catalog: None,
+            run_results: None,
         }
     }
 }
@@ -169,6 +206,29 @@ pub fn generate_docs_with_options(
         map
     });
 
+    // The column-lineage engine, built ONCE and shared by every page — a
+    // node's in-edges resolve at most once per doc set regardless of how
+    // many columns/pages ask for them. The resolver is the caller's when
+    // supplied (the CLI's catalog/dialect choices ride inside it), else the
+    // default catalog-less parser on the dag's own adapter dialect.
+    let owned_resolver;
+    let resolver: &dyn ColumnResolver = match options.resolver {
+        Some(r) => r,
+        None => {
+            owned_resolver = SqlParseResolver::new(None, SqlDialect::from_dag(dag));
+            &owned_resolver
+        }
+    };
+    let cll = ColumnLineage::new(dag, resolver);
+    let ctx = PageInputs {
+        dag,
+        files: &files,
+        cll: &cll,
+        resolver,
+        catalog: options.catalog,
+        run_results: options.run_results,
+    };
+
     let mut out: Vec<(String, String)> = Vec::with_capacity(files.len() + 1);
     // Node pages in sorted unique_id order (deterministic write order). Every
     // file — node pages and the index alike — leads with GENERATED_MARKER so
@@ -177,23 +237,10 @@ pub fn generate_docs_with_options(
         let node_findings = by_node
             .as_ref()
             .map(|m| m.get(uid.as_str()).cloned().unwrap_or_default());
-        let body = node_markdown(
-            dag,
-            uid,
-            &files,
-            node_findings.as_deref(),
-            options.lineage_depth,
-        );
+        let body = node_markdown(&ctx, uid, node_findings.as_deref(), options.lineage_depth);
         out.push((rel_path.clone(), format!("{GENERATED_MARKER}\n\n{body}")));
     }
-    let index = readme_markdown(
-        dag,
-        project_name,
-        source_label,
-        &files,
-        scope,
-        options.findings,
-    );
+    let index = readme_markdown(&ctx, project_name, source_label, scope, options.findings);
     out.push((
         "README.md".to_string(),
         format!("{GENERATED_MARKER}\n\n{index}"),

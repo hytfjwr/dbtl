@@ -450,6 +450,272 @@ fn clean_removes_old_flat_layout_pages() {
     let _ = std::fs::remove_dir_all(&out);
 }
 
+// ---- catalog / run_results: explicit opt-in only ---------------------------
+//
+// `docs` never auto-detects the sibling artifacts — a `catalog.json` or
+// `run_results.json` sitting next to the manifest must change nothing unless
+// a flag or `.dbtl.yml` asks for it. The bytes-on-disk checks below lock that
+// in from the real CLI path.
+
+/// A tiny catalog covering one model and one source of the fixture — plus
+/// a `dim_fiscal_years` record deliberately contradicting the manifest's
+/// declared types (`fiscal_year_key` is `bigint` there), so a catalog that
+/// leaked into the lint evaluation would emit `warehouse_type_drift` /
+/// `columns_missing_in_warehouse` findings and change the output bytes.
+const CATALOG_JSON: &str = r#"{
+    "metadata": {"generated_at": "2024-06-01T10:00:00Z"},
+    "nodes": {
+        "model.jaffle_finance.pos_txn": {
+            "columns": {"id": {"type": "INT64"}},
+            "stats": {
+                "row_count": {"value": 1234, "include": true},
+                "size": {"value": 1048576, "include": true}
+            }
+        },
+        "model.jaffle_finance.dim_fiscal_years": {
+            "columns": {"fiscal_year_key": {"type": "TEXT"}},
+            "stats": {}
+        }
+    },
+    "sources": {
+        "source.jaffle_finance.dev_lake_jaffle_finance.budgets": {
+            "columns": {"id": {"type": "INT"}},
+            "stats": {}
+        }
+    }
+}"#;
+
+/// A tiny run_results covering the same model.
+const RUN_RESULTS_JSON: &str = r#"{
+    "metadata": {"generated_at": "2024-05-01T12:34:56.789Z"},
+    "results": [
+        {"unique_id": "model.jaffle_finance.pos_txn", "status": "success", "execution_time": 1.25},
+        {"unique_id": "model.jaffle_finance.daily_delivery_kpis", "status": "error", "execution_time": 30.5}
+    ]
+}"#;
+
+/// Run `docs` inside a manifest-in-temp dir, with extra args appended.
+fn docs_in(dir: &std::path::Path, extra: &[&str]) -> std::process::Output {
+    let mut cmd = dbtl_cmd();
+    cmd.arg("docs")
+        .arg("--manifest")
+        .arg(dir.join("manifest.json"))
+        .arg("--out")
+        .arg(dir.join("out"));
+    for a in extra {
+        cmd.arg(a);
+    }
+    cmd.output().expect("failed to run dbtl docs")
+}
+
+/// Every generated file's bytes, keyed by its path relative to `dir`.
+fn file_tree(dir: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    fn walk(
+        base: &std::path::Path,
+        dir: &std::path::Path,
+        out: &mut std::collections::BTreeMap<String, Vec<u8>>,
+    ) {
+        for e in std::fs::read_dir(dir).expect("read_dir").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(base, &p, out);
+            } else {
+                let rel = p.strip_prefix(base).unwrap().to_string_lossy().into_owned();
+                out.insert(rel, std::fs::read(&p).unwrap());
+            }
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    walk(dir, dir, &mut out);
+    out
+}
+
+#[test]
+fn sibling_artifacts_are_never_auto_detected() {
+    // The whole point of explicit-only loading: a `catalog.json` /
+    // `run_results.json` living next to the manifest changes NOTHING unless
+    // asked for — the byte set equals the artifact-free run exactly. (Same
+    // manifest path for both runs: the README records it verbatim.)
+    let dir = manifest_in_temp("no_art");
+    assert!(docs_in(&dir, &[]).status.success());
+    std::fs::rename(dir.join("out"), dir.join("bare")).unwrap();
+    std::fs::write(dir.join("catalog.json"), CATALOG_JSON).unwrap();
+    std::fs::write(dir.join("run_results.json"), RUN_RESULTS_JSON).unwrap();
+    assert!(docs_in(&dir, &[]).status.success());
+    assert_eq!(
+        file_tree(&dir.join("bare")),
+        file_tree(&dir.join("out")),
+        "sibling artifacts without opt-in must not change a single byte"
+    );
+    let page = std::fs::read_to_string(dir.join("out/models/model.jaffle_finance.pos_txn.md"))
+        .expect("model page");
+    assert!(!page.contains("Warehouse type"), "no catalog column");
+    assert!(
+        !page.contains("- rows:") && !page.contains("- last run:"),
+        "no bullets"
+    );
+    let readme = std::fs::read_to_string(dir.join("out/README.md")).unwrap();
+    assert!(!readme.contains("Includes:"), "no Includes line");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn catalog_and_run_results_flags_enable_their_surfaces() {
+    let dir = manifest_in_temp("flags");
+    let cat = dir.join("cat.json");
+    let rr = dir.join("rr.json");
+    std::fs::write(&cat, CATALOG_JSON).unwrap();
+    std::fs::write(&rr, RUN_RESULTS_JSON).unwrap();
+    let out = docs_in(
+        &dir,
+        &[
+            "--catalog",
+            cat.to_str().unwrap(),
+            "--run-results",
+            rr.to_str().unwrap(),
+        ],
+    );
+    assert!(out.status.success(), "{}", lossy(&out.stderr));
+    let readme = std::fs::read_to_string(dir.join("out/README.md")).unwrap();
+    assert!(
+        readme.contains("Includes: warehouse catalog, last run results"),
+        "{readme}"
+    );
+    let page =
+        std::fs::read_to_string(dir.join("out/models/model.jaffle_finance.pos_txn.md")).unwrap();
+    assert!(
+        page.contains("| Warehouse type |"),
+        "warehouse column: {page}"
+    );
+    assert!(page.contains("| INT64 |"), "the catalog's type: {page}");
+    assert!(page.contains("- rows: `1234`"), "row count: {page}");
+    assert!(page.contains("- size: `1.0 MiB`"), "size: {page}");
+    assert!(
+        page.contains("- last run: `success, 1.25s (2024-05-01T12:34:56.789Z)`"),
+        "last run: {page}"
+    );
+    let src = std::fs::read_to_string(
+        dir.join("out/sources/source.jaffle_finance.dev_lake_jaffle_finance.budgets.md"),
+    )
+    .unwrap();
+    assert!(src.contains("| Warehouse type |"), "source warehouse col");
+    assert!(src.contains("- rows: none"), "uncovered stats → none");
+    assert!(!src.contains("- last run:"), "sources carry no run status");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn missing_or_malformed_explicit_artifacts_are_input_errors() {
+    let dir = manifest_in_temp("bad_art");
+    let broken = dir.join("broken.json");
+    std::fs::write(&broken, "{ not json").unwrap();
+    let missing = dir.join("nope.json");
+    for (flag, path) in [
+        ("--catalog", missing.clone()),
+        ("--catalog", broken.clone()),
+        ("--run-results", missing.clone()),
+        ("--run-results", broken.clone()),
+    ] {
+        let out = docs_in(&dir, &[flag, path.to_str().unwrap()]);
+        assert_eq!(
+            out.status.code(),
+            Some(3),
+            "{flag} {path:?} must be an input error, stdout: {} stderr: {}",
+            lossy(&out.stdout),
+            lossy(&out.stderr)
+        );
+        assert!(lossy(&out.stderr).contains("error:"), "stderr error line");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn dbtl_yml_opts_in_to_the_sibling_artifacts() {
+    let dir = manifest_in_temp("cfg_art");
+    std::fs::write(dir.join("catalog.json"), CATALOG_JSON).unwrap();
+    std::fs::write(dir.join("run_results.json"), RUN_RESULTS_JSON).unwrap();
+    std::fs::write(
+        dir.join(".dbtl.yml"),
+        "docs:\n  catalog: true\n  run_results: true\n",
+    )
+    .unwrap();
+    let out = docs_in(&dir, &[]);
+    assert!(out.status.success(), "{}", lossy(&out.stderr));
+    let page =
+        std::fs::read_to_string(dir.join("out/models/model.jaffle_finance.pos_txn.md")).unwrap();
+    assert!(
+        page.contains("| Warehouse type |"),
+        "config catalog: {page}"
+    );
+    assert!(
+        page.contains("- last run: `success"),
+        "config run_results: {page}"
+    );
+    let readme = std::fs::read_to_string(dir.join("out/README.md")).unwrap();
+    assert!(readme.contains("Includes: warehouse catalog, last run results"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn explicit_flag_beats_the_configured_sibling() {
+    // `docs.catalog: true` would load `<dir>/catalog.json`; an explicit
+    // `--catalog` path must win instead.
+    let dir = manifest_in_temp("cfg_vs_flag");
+    std::fs::write(
+        dir.join("catalog.json"),
+        r#"{"nodes": {"model.jaffle_finance.pos_txn": {"columns": {"id": {"type": "SIBLING"}}}}}"#,
+    )
+    .unwrap();
+    let explicit = dir.join("explicit.json");
+    std::fs::write(
+        &explicit,
+        r#"{"nodes": {"model.jaffle_finance.pos_txn": {"columns": {"id": {"type": "EXPLICIT"}}}}}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join(".dbtl.yml"), "docs:\n  catalog: true\n").unwrap();
+    let out = docs_in(&dir, &["--catalog", explicit.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", lossy(&out.stderr));
+    let page =
+        std::fs::read_to_string(dir.join("out/models/model.jaffle_finance.pos_txn.md")).unwrap();
+    assert!(page.contains("EXPLICIT"), "the flag's file wins: {page}");
+    assert!(
+        !page.contains("SIBLING"),
+        "the configured sibling is not read"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn config_opt_in_to_a_missing_artifact_is_an_input_error() {
+    let dir = manifest_in_temp("cfg_missing");
+    std::fs::write(dir.join(".dbtl.yml"), "docs:\n  catalog: true\n").unwrap();
+    let out = docs_in(&dir, &[]);
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "an enabled-but-absent artifact is an input error: {}",
+        lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn docs_check_is_artifact_blind_without_opt_in() {
+    // `docs --check` regenerates under the same rules: siblings on disk are
+    // ignored, so the check result doesn't depend on their presence.
+    let dir = manifest_in_temp("check_art");
+    assert!(docs_in(&dir, &[]).status.success());
+    std::fs::write(dir.join("catalog.json"), CATALOG_JSON).unwrap();
+    std::fs::write(dir.join("run_results.json"), RUN_RESULTS_JSON).unwrap();
+    let check = docs_in(&dir, &["--check"]);
+    assert!(
+        check.status.success(),
+        "--check passes with siblings present and no opt-in: {}",
+        lossy(&check.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Lossy-decode process output for assertion messages.
 fn lossy(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()

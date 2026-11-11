@@ -508,8 +508,8 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
                 // No --lineage-depth flag on check — the gate resolves
                 // depth from `.dbtl.yml`/defaults exactly like `docs
                 // --check` without the flag. `src` feeds the aux lint
-                // inputs so the quoted run is the same one `lint`/`docs`
-                // evaluate.
+                // inputs AND the explicit-artifact opt-ins `docs --check`
+                // honours, so this gate can never disagree with it.
                 let files = docs_file_set(src, &resolved, scope, None)?;
                 let drift = docs_differences(&dir, &files);
                 if drift.total() == 0 {
