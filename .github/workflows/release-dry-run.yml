@@ -22,6 +22,10 @@ jobs:
   dry-run:
     name: Release dry run
     uses: ./.github/workflows/release-build.yml
+    # Grants the called jobs their requested ceiling — the called workflow's
+    # jobs each request `contents: read` (checkout + artifact upload only).
+    permissions:
+      contents: read
     with:
       tag: v0.0.0-dryrun
       ref: ${{ github.sha }}

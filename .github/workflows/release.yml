@@ -77,6 +77,10 @@ jobs:
   build:
     needs: prepare
     uses: ./.github/workflows/release-build.yml
+    # Grants the called jobs their requested ceiling — the called workflow's
+    # jobs each request `contents: read` (checkout + artifact upload only).
+    permissions:
+      contents: read
     with:
       tag: ${{ needs.prepare.outputs.tag }}
       ref: ${{ needs.prepare.outputs.tag }}
