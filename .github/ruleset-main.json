@@ -43,7 +43,10 @@
           { "context": "pinact", "integration_id": 15368 },
           { "context": "MSRV", "integration_id": 15368 },
           { "context": "Hygiene", "integration_id": 15368 },
-          { "context": "cargo-deny", "integration_id": 15368 }
+          { "context": "cargo-deny", "integration_id": 15368 },
+          { "context": "Action self-test", "integration_id": 15368 },
+          { "context": "Dogfood E2E", "integration_id": 15368 },
+          { "context": "Docs reference", "integration_id": 15368 }
         ]
       }
     }
