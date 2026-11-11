@@ -77,14 +77,14 @@ pub(super) fn resolve_fail_on(
     cli.or(file).unwrap_or(dbtl::FailOn::Error)
 }
 
-/// The verdict for one enabled rule inside a [`LintOutcome`]: its effective
+/// The verdict for one enabled rule inside a [`LintGateOutcome`]: its effective
 /// severity, which findings count, and how they were classified.
 pub(super) struct RuleOutcome {
     /// The rule.
     pub rule: dbtl::LintRule,
     /// Its effective severity — uniform across its findings.
     pub severity: dbtl::Severity,
-    /// Indices into [`LintOutcome::findings`] that count toward the gate:
+    /// Indices into [`LintGateOutcome::findings`] that count toward the gate:
     /// not baselined, and new under `--diff`.
     pub counted: Vec<usize>,
     /// Non-baselined findings suppressed by `--diff`'s baseline dag.
@@ -99,11 +99,15 @@ pub(super) struct RuleOutcome {
 /// finding `run_rules` produced, classified into counted / baselined /
 /// pre-existing, with the `fail_on` verdict precomputed — so both commands
 /// see the same "counted findings" by construction.
-pub(super) struct LintOutcome {
+pub(super) struct LintGateOutcome {
     /// Every finding `run_rules` produced (exclude/meta suppression already
     /// applied), `baselined` marked — in the deterministic run order.
     pub findings: Vec<dbtl::Finding>,
-    /// Per enabled rule, in `LintRule::ALL` order.
+    /// Enabled rules that didn't run for a missing input (SQL resolver /
+    /// catalog), in `LintRule::ALL` order — `check` prints `SKIP` rows and
+    /// `lint` a `skipped:` section; they never count toward the gate.
+    pub skipped: Vec<dbtl::SkippedRule>,
+    /// Per enabled AND RUNNABLE rule, in `LintRule::ALL` order.
     pub rules: Vec<RuleOutcome>,
     /// Counted findings that meet `fail_on` (the gate's numerator — `0`
     /// when nothing fails).
@@ -116,24 +120,51 @@ pub(super) struct LintOutcome {
     pub failed: bool,
 }
 
-/// The shared lint evaluation: [`dbtl::run_rules`] over `dag`, `baseline`
-/// applied to the findings, and — with `base` — the same run over the
-/// baseline dag narrowing gating to NEW findings (a finding whose
-/// [`dbtl::Finding::key`] exists on the baseline side is pre-existing
-/// noise, the same "new only" idea as the layer-violation gate).
+/// The auxiliary inputs a lint run carries — the shared lazy SQL resolver
+/// and the warehouse catalog, plus the BASELINE side's resolver under
+/// `--diff` (the baseline's own warehouse record is never loaded, matching
+/// the diff's resolver policy — catalog rules can't compare and simply
+/// don't feed `pre_existing`).
+pub(super) struct LintAux<'a> {
+    /// The current side's SQL resolver — `Some` feeds `LintInput::sql`.
+    pub sql: Option<&'a dbtl::SqlParseResolver>,
+    /// The current side's catalog — `None` skips the `Requires::Catalog`
+    /// rules (recorded, never a failure).
+    pub catalog: Option<&'a dbtl::Catalog>,
+    /// The baseline side's SQL resolver under `--diff` (`None` skips SQL
+    /// rules there too — their current-side findings then all count as
+    /// new, the safe direction for a gate).
+    pub base_sql: Option<&'a dbtl::SqlParseResolver>,
+}
+
+/// The shared lint evaluation: [`dbtl::run_rules`] over `dag` with the
+/// `aux` inputs, `baseline` applied to the findings, and — with `base` —
+/// the same run over the baseline dag narrowing gating to NEW findings (a
+/// finding whose [`dbtl::Finding::key`] exists on the baseline side is
+/// pre-existing noise, the same "new only" idea as the layer-violation
+/// gate).
 pub(super) fn evaluate_lint(
     dag: &dbtl::Dag,
     cfg: &dbtl::LintConfig,
     base: Option<&dbtl::Dag>,
     baseline: Option<&dbtl::Baseline>,
     fail_on: dbtl::FailOn,
-) -> LintOutcome {
-    let mut findings = dbtl::run_rules(dbtl::LintInput::new(dag, cfg));
+    aux: LintAux<'_>,
+) -> LintGateOutcome {
+    let outcome = dbtl::run_rules(
+        dbtl::LintInput::new(dag, cfg)
+            .with_sql(aux.sql)
+            .with_catalog(aux.catalog),
+    );
+    let mut findings = outcome.findings;
+    let skipped = outcome.skipped;
     if let Some(b) = baseline {
         b.apply(&mut findings);
     }
+    let skipped_rules: BTreeSet<dbtl::LintRule> = skipped.iter().map(|s| s.rule).collect();
     let base_keys: BTreeSet<(dbtl::LintRule, String, Vec<String>)> = match base {
-        Some(base) => dbtl::run_rules(dbtl::LintInput::new(base, cfg))
+        Some(base) => dbtl::run_rules(dbtl::LintInput::new(base, cfg).with_sql(aux.base_sql))
+            .findings
             .iter()
             .map(|f| {
                 let (r, n, rel) = f.key();
@@ -154,6 +185,9 @@ pub(super) fn evaluate_lint(
         let Some(severity) = cfg.severity(rule) else {
             continue;
         };
+        if skipped_rules.contains(&rule) {
+            continue; // a SKIP row, not a rule verdict
+        }
         let mut counted = Vec::new();
         let mut rule_pre_existing = 0;
         let mut rule_baselined = 0;
@@ -186,12 +220,13 @@ pub(super) fn evaluate_lint(
             status,
         });
     }
-    LintOutcome {
+    LintGateOutcome {
         gating,
         has_diff: base.is_some(),
         fail_on,
         failed: gating > 0,
         findings,
+        skipped,
         rules,
     }
 }
@@ -363,12 +398,21 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
     apply_rules_overlay(&mut cfg, args.rules)?;
     let candidates =
         dbtl::project_config_candidates(manifest_arg.as_deref(), project_arg.as_deref());
+    // The auxiliary inputs every evaluation path below shares — the lazy
+    // SQL resolver and (when one resolved) the catalog, so `Requires::Sql`
+    // and `Requires::Catalog` rules evaluate identically here and in `check`.
+    let (catalog, sql_resolver) = lint_aux(&resolved, src.sql_dialect, src.catalog)?;
 
     // `--write-baseline`: freeze every current finding (post-suppression,
     // the existing baseline NOT applied — the file written IS the baseline
     // now) and always exit 0.
     if let Some(path_arg) = args.write_baseline {
-        let findings = dbtl::run_rules(dbtl::LintInput::new(&resolved.dag, &cfg));
+        let findings = dbtl::run_rules(
+            dbtl::LintInput::new(&resolved.dag, &cfg)
+                .with_sql(Some(&sql_resolver))
+                .with_catalog(catalog.as_deref()),
+        )
+        .findings;
         let baseline = dbtl::Baseline::from_findings(&findings);
         let path = match path_arg {
             Some(p) => PathBuf::from(p),
@@ -400,12 +444,20 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
         Some(d) => Some(load_baseline(d, src.scope, &src.project_dir())?),
         None => None,
     };
+    let base_resolver = base
+        .as_ref()
+        .map(|(b, _)| src.baseline_resolver(&resolved.dag, b));
     let mut outcome = evaluate_lint(
         &resolved.dag,
         &cfg,
         base.as_ref().map(|(b, _)| b),
         baseline.as_ref(),
         fail_on,
+        LintAux {
+            sql: Some(&sql_resolver),
+            catalog: catalog.as_deref(),
+            base_sql: base_resolver.as_ref(),
+        },
     );
     // Best-effort yml line numbers — the file-reading pass `run_rules`
     // stays free of. Unreadable files simply keep `line` unset. Filled
@@ -532,6 +584,18 @@ fn explain_rule(id: &str, cfg: &dbtl::LintConfig) -> Result<(), CliError> {
                         p.description
                     );
                 }
+                dbtl::ParamKind::RegexList { default } => {
+                    let current = cfg
+                        .str_list_param(rule, p.name)
+                        .unwrap_or_else(|| default.iter().map(|s| s.to_string()).collect());
+                    println!(
+                        "  {}  regex-list  default [{}], current [{}] — {}",
+                        p.name,
+                        default.join(", "),
+                        current.join(", "),
+                        p.description
+                    );
+                }
             }
         }
     }
@@ -618,6 +682,16 @@ mod tests {
         ))
     }
 
+    /// No auxiliary inputs — graph-only evaluation (the SQL/catalog rules
+    /// would all skip if enabled; the tests scope to graph rules anyway).
+    fn no_aux() -> LintAux<'static> {
+        LintAux {
+            sql: None,
+            catalog: None,
+            base_sql: None,
+        }
+    }
+
     #[test]
     fn fail_on_resolves_cli_over_file_over_default() {
         assert_eq!(resolve_fail_on(None, None), dbtl::FailOn::Error);
@@ -671,7 +745,7 @@ mod tests {
         let dag = two_root_models();
         let cfg = cfg_only(&[dbtl::LintRule::RootModels]);
         // Plain run: both findings count, gate fails under the default.
-        let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Error);
+        let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Error, no_aux());
         assert_eq!(out.rules[0].counted.len(), 2);
         assert_eq!(out.rules[0].baselined, 0);
         assert!(out.failed && out.rules[0].status == GateStatus::Fail);
@@ -683,17 +757,31 @@ mod tests {
                 .cloned()
                 .collect::<Vec<_>>(),
         );
-        let out = evaluate_lint(&dag, &cfg, None, Some(&frozen), dbtl::FailOn::Error);
+        let out = evaluate_lint(
+            &dag,
+            &cfg,
+            None,
+            Some(&frozen),
+            dbtl::FailOn::Error,
+            no_aux(),
+        );
         assert_eq!(out.rules[0].counted.len(), 1);
         assert_eq!(out.rules[0].baselined, 1);
         assert_eq!(out.findings[out.rules[0].counted[0]].node_uid, "model.p.b");
         // Self-diff: every finding is pre-existing — nothing counts.
-        let out = evaluate_lint(&dag, &cfg, Some(&dag), None, dbtl::FailOn::Error);
+        let out = evaluate_lint(&dag, &cfg, Some(&dag), None, dbtl::FailOn::Error, no_aux());
         assert_eq!(out.rules[0].counted.len(), 0);
         assert_eq!(out.rules[0].pre_existing, 2);
         assert!(!out.failed && out.rules[0].status == GateStatus::Pass);
         // Diff + baseline: the frozen one is baselined, the rest pre-existing.
-        let out = evaluate_lint(&dag, &cfg, Some(&dag), Some(&frozen), dbtl::FailOn::Error);
+        let out = evaluate_lint(
+            &dag,
+            &cfg,
+            Some(&dag),
+            Some(&frozen),
+            dbtl::FailOn::Error,
+            no_aux(),
+        );
         assert_eq!(out.rules[0].counted.len(), 0);
         assert_eq!(out.rules[0].pre_existing, 1);
         assert_eq!(out.rules[0].baselined, 1);
@@ -706,15 +794,15 @@ mod tests {
         cfg.severities
             .insert(dbtl::LintRule::RootModels, Some(dbtl::Severity::Warn));
         // Warn findings under the default `error` threshold report but pass.
-        let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Error);
+        let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Error, no_aux());
         assert_eq!(out.rules[0].counted.len(), 2);
         assert!(!out.failed);
         assert_eq!(out.rules[0].status, GateStatus::Warn);
         // `--fail-on warn` fails on them.
-        let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Warn);
+        let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Warn, no_aux());
         assert!(out.failed && out.gating == 2);
         // `never` never fails.
-        let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Never);
+        let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Never, no_aux());
         assert!(!out.failed && out.rules[0].status == GateStatus::Warn);
     }
 }

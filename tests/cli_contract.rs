@@ -494,28 +494,6 @@ fn unsupported_flags_are_rejected_not_ignored() {
             "impact",
         ),
         (
-            vec![
-                "--catalog",
-                "c.json",
-                "docs",
-                "--out",
-                "/tmp/dbtl_flag_docs",
-            ],
-            "--catalog",
-            "docs",
-        ),
-        (
-            vec![
-                "--sql-dialect",
-                "generic",
-                "docs",
-                "--out",
-                "/tmp/dbtl_flag_docs",
-            ],
-            "--sql-dialect",
-            "docs",
-        ),
-        (
             vec!["--diff", m_str, "docs", "--out", "/tmp/dbtl_flag_docs"],
             "--diff",
             "docs",

@@ -24,11 +24,12 @@ pub mod source;
 
 pub use catalog::{
     default_catalog_path, resolve_catalog_path, Catalog, CatalogColumn, CatalogNode, CatalogStat,
+    TypeDrift,
 };
 pub use cll::{
     closure_report, normalize_column, resolution_sql, ClosureDirection, ColumnEdge, ColumnEdgeKind,
     ColumnLineage, ColumnRef, ColumnReport, ColumnResolver, ColumnRow, Confidence,
-    NameMatchResolver, SqlDialect, SqlParseResolver,
+    NameMatchResolver, SqlDialect, SqlFacts, SqlParseResolver,
 };
 pub use compiled::{default_compiled_dir, default_target_dir, CompiledOrigin, CompiledSql};
 pub use dag::{
@@ -49,8 +50,8 @@ pub use impact::{
 pub use layer::{first_dir, layer_rank, LAYER_ORDER};
 pub use lint::{
     fill_finding_lines, run_rules, yaml_name_line, Baseline, Category, Finding, LintConfig,
-    LintInput, LintRule, Location, ParamKind, ParamSpec, Requires, RuleInfo, Severity,
-    BASELINE_SCHEMA, DEFAULT_BASELINE_NAME, REGISTRY, YAML_ATTRIBUTE_RULE_IDS,
+    LintInput, LintOutcome, LintRule, Location, ParamKind, ParamSpec, Requires, RuleInfo, Severity,
+    SkippedRule, BASELINE_SCHEMA, DEFAULT_BASELINE_NAME, REGISTRY, YAML_ATTRIBUTE_RULE_IDS,
 };
 pub use manifest::{
     load_manifest, RawConfig, RawDependsOn, RawExposure, RawExposureOwner, RawFreshness,

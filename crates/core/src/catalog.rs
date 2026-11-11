@@ -77,6 +77,20 @@ pub struct CatalogStat {
     pub value: serde_json::Value,
 }
 
+/// One documented column whose warehouse type disagrees with the declared
+/// `data_type` — or whose declared type is absent while the warehouse knows
+/// one. The TUI's catalog note lists every entry (surfacing the real type);
+/// lint's `warehouse_type_drift` consumes only the `declared: Some` rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeDrift {
+    /// The documented column name, as declared.
+    pub name: String,
+    /// The manifest-declared `data_type` (`None` when schema.yml left it off).
+    pub declared: Option<String>,
+    /// The warehouse's recorded type.
+    pub warehouse: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct RawCatalog {
     #[serde(default)]
@@ -220,6 +234,28 @@ impl CatalogNode {
             actual.difference(&declared).cloned().collect(),
         )
     }
+
+    /// Per-column documented↔warehouse type disagreement, in documented-
+    /// column order: one [`TypeDrift`] per column the catalog knows whose
+    /// recorded type differs from the declared `data_type` (a missing
+    /// declared type still lists — the TUI's note surfaces the real type as
+    /// information). The single comparison both `catalog_note` and lint's
+    /// `warehouse_type_drift` call — byte-for-byte, no type-string
+    /// normalization (normalizing `varchar`/`VARCHAR(255)` would change the
+    /// TUI's output, so it is deliberately out of scope).
+    pub fn type_drift(&self, documented: &[crate::ColumnInfo]) -> Vec<TypeDrift> {
+        documented
+            .iter()
+            .filter_map(|col| {
+                let warehouse = self.column_type(&col.name)?;
+                (col.data_type.as_deref() != Some(warehouse)).then(|| TypeDrift {
+                    name: col.name.clone(),
+                    declared: col.data_type.clone(),
+                    warehouse: warehouse.to_string(),
+                })
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -279,5 +315,39 @@ mod tests {
         let (missing_in_wh, missing_in_docs) = n.drift(&["order_id".into(), "ghost_col".into()]);
         assert_eq!(missing_in_wh, vec!["ghost_col"]);
         assert_eq!(missing_in_docs, vec!["status"]);
+    }
+
+    #[test]
+    fn type_drift_reports_only_known_disagreements_in_declared_order() {
+        let c = sample();
+        let n = c.get("model.p.orders").unwrap();
+        let col = |name: &str, ty: Option<&str>| crate::ColumnInfo {
+            name: name.into(),
+            data_type: ty.map(str::to_string),
+            description: None,
+        };
+        // Declared order is preserved; a column the catalog doesn't know
+        // contributes nothing; a matching declared type contributes nothing;
+        // a missing declared type still lists the warehouse's real type.
+        let drift = n.type_drift(&[
+            col("order_id", Some("bigint")), // byte-for-byte: INT64 != bigint
+            col("status", None),
+            col("ghost_col", Some("INT")),
+        ]);
+        assert_eq!(
+            drift,
+            vec![
+                TypeDrift {
+                    name: "order_id".into(),
+                    declared: Some("bigint".into()),
+                    warehouse: "INT64".into(),
+                },
+                TypeDrift {
+                    name: "status".into(),
+                    declared: None,
+                    warehouse: "STRING".into(),
+                },
+            ]
+        );
     }
 }

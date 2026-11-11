@@ -21,7 +21,7 @@ use std::rc::Rc;
 
 use serde::Serialize;
 
-pub use sql_parse::{SqlDialect, SqlParseResolver};
+pub use sql_parse::{SqlDialect, SqlFacts, SqlParseResolver};
 
 use crate::catalog::Catalog;
 use crate::dag::Dag;

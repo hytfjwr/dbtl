@@ -32,7 +32,7 @@ mod location;
 pub use location::{fill_finding_lines, yaml_name_line, YAML_ATTRIBUTE_RULE_IDS};
 
 mod rules;
-pub use rules::{run_rules, LintInput};
+pub use rules::{run_rules, LintInput, LintOutcome, SkippedRule};
 
 /// A static structure-check rule, identified by its `dbt_project_evaluator`
 /// name. The enum's declaration order IS the evaluation/output order of
@@ -97,6 +97,20 @@ pub enum LintRule {
     IncrementalWithoutUniqueKey,
     /// A source has no effective `warn_after`/`error_after` freshness.
     SourcesWithoutFreshness,
+    /// A model's outermost projection reads `*`/`t.*` (needs parsed SQL).
+    SelectStar,
+    /// A model names a relation literally instead of `ref()`/`source()`.
+    HardCodedReferences,
+    /// A JOIN carries no join condition (`CROSS JOIN` or bare `JOIN`).
+    CartesianJoin,
+    /// A model names a column a trusted upstream provably doesn't emit.
+    UnknownColumnReference,
+    /// A model's raw SQL matches a configured forbidden regex.
+    ForbiddenPatterns,
+    /// Declared column `data_type`s disagree with the catalog's types.
+    WarehouseTypeDrift,
+    /// Declared columns the catalog doesn't know (needs a catalog).
+    ColumnsMissingInWarehouse,
 }
 
 impl LintRule {
@@ -104,7 +118,7 @@ impl LintRule {
     /// order of the enum and of [`REGISTRY`]. The twelve original rules
     /// lead; rules added later append in registry order so the emitted
     /// sequence stays stable.
-    pub const ALL: [LintRule; 27] = [
+    pub const ALL: [LintRule; 34] = [
         Self::DirectJoinToSource,
         Self::MultipleSourcesJoined,
         Self::SourceFanout,
@@ -132,6 +146,13 @@ impl LintRule {
         Self::ContractColumnsWithoutType,
         Self::IncrementalWithoutUniqueKey,
         Self::SourcesWithoutFreshness,
+        Self::SelectStar,
+        Self::HardCodedReferences,
+        Self::CartesianJoin,
+        Self::UnknownColumnReference,
+        Self::ForbiddenPatterns,
+        Self::WarehouseTypeDrift,
+        Self::ColumnsMissingInWarehouse,
     ];
 
     /// This rule's registry row — every rule has exactly one (drift-tested).
@@ -252,7 +273,8 @@ impl Finding {
 /// file schema lives in `crate::project_config` — this is the in-memory
 /// shape [`run_rules`] consumes: per-rule severities (an absent entry =
 /// the registry default, `None` = off), per-rule `exclude:` selectors, the
-/// validated integer parameters, and the naming-prefix map a project merges
+/// validated integer/string-list parameters (regex lists included — the
+/// loader validated them), and the naming-prefix map a project merges
 /// per-layer over the defaults.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LintConfig {
@@ -341,10 +363,11 @@ impl LintConfig {
             .or_else(|| rule.info().int_param(param).map(|(_, default)| default))
     }
 
-    /// The effective value of `rule`'s string-list parameter `param`: the
-    /// configured override, else the registry-declared default. `None` only
-    /// when `rule` declares no string-list parameter of that name — the
-    /// config parser rejects undeclared keys before they can land here.
+    /// The effective value of `rule`'s string-list parameter `param` — a
+    /// configured override else the registry-declared default — covering
+    /// BOTH `StringList` and `RegexList` param kinds (the config parser
+    /// already validated a `RegexList`'s entries compile). `None` only when
+    /// `rule` declares no list parameter of that name.
     pub fn str_list_param(&self, rule: LintRule, param: &str) -> Option<Vec<String>> {
         self.list_params
             .get(&rule)

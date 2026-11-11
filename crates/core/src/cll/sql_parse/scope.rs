@@ -124,6 +124,12 @@ pub(super) struct Analyzed {
     /// Without one, every output is explicitly named and probing an
     /// unproduced declared name can only fabricate edges.
     pub(super) unbounded_wildcard: bool,
+    /// Display text of every JOIN arm carrying no join condition
+    /// (`CROSS JOIN`, or `JOIN`/`INNER`/`LEFT`/… with no ON/USING/NATURAL)
+    /// — the `cartesian_join` lint input, collected by the same parse that
+    /// produced the rest of `self` (the scan is join-blind to rendered
+    /// relation names, so no marked re-parse is needed).
+    pub(super) cartesian: Vec<String>,
     /// `(parent uid, column)` refs that bound a parent with a KNOWN column
     /// list and missed it — the model names a column that doesn't exist.
     /// Recorded, not resolved: the `--diff` dangling-consumer scan reads it

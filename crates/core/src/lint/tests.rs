@@ -1,7 +1,9 @@
 use super::*;
 use crate::manifest::{RawContract, RawManifest, RawNode, RawSource, RawTestMetadata};
 use crate::project_config::{project_config_path, ProjectConfig, PROJECT_CONFIG_NAME};
+use crate::{Catalog, SqlDialect, SqlParseResolver};
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Parse the `lint:` section out of `.dbtl.yml` text (the parse's own tests
 /// live in `project_config` — here it's just a config builder).
@@ -100,7 +102,7 @@ fn flagged(findings: &[Finding], rule: LintRule) -> Vec<&str> {
 }
 
 fn findings_of(m: &RawManifest, config: &LintConfig) -> Vec<Finding> {
-    run_rules(LintInput::new(&Dag::build(m), config))
+    run_rules(LintInput::new(&Dag::build(m), config)).findings
 }
 
 #[test]
@@ -223,10 +225,10 @@ fn model_fanout_flags_leaf_children_at_threshold() {
         ],
     );
     let base = Dag::build(&m);
-    let default = run_rules(LintInput::new(&base, &LintConfig::default()));
+    let default = run_rules(LintInput::new(&base, &LintConfig::default())).findings;
     assert!(flagged(&default, LintRule::ModelFanout).is_empty());
     let cfg = config_from("lint:\n  model_fanout_threshold: 2\n");
-    let tightened = run_rules(LintInput::new(&base, &cfg));
+    let tightened = run_rules(LintInput::new(&base, &cfg)).findings;
     assert_eq!(
         flagged(&tightened, LintRule::ModelFanout),
         vec!["model.p.int_hub"]
@@ -583,8 +585,8 @@ fn findings_are_deterministic_and_rule_ordered() {
         &[("source.p.s.raw", "model.p.stg_a")],
     );
     let dag = Dag::build(&m);
-    let a = run_rules(LintInput::new(&dag, &LintConfig::default()));
-    let b = run_rules(LintInput::new(&dag, &LintConfig::default()));
+    let a = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    let b = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
     assert_eq!(a, b, "findings must be identical across runs");
     let rule_order: Vec<LintRule> = a.iter().map(|f| f.rule).collect();
     // The emitted order must follow LintRule::ALL — the ALL index of
@@ -637,7 +639,7 @@ fn installed_package_nodes_are_not_flagged() {
     let dag = Dag::build(&m);
     assert!(dag.contains("model.pkg.other"), "package node kept in dag");
     assert!(dag.contains("source.pkg.s.t"), "package source kept in dag");
-    let f = run_rules(LintInput::new(&dag, &LintConfig::default()));
+    let f = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
     for rule in LintRule::ALL {
         assert!(
             flagged(&f, rule)
@@ -755,7 +757,7 @@ fn registry_rows_match_all_one_for_one_in_order() {
 
 #[test]
 fn registry_rows_carry_the_fixed_metadata() {
-    // The 25 ids are a fixed contract — config keys, --rules args and the
+    // The 32 ids are a fixed contract — config keys, --rules args and the
     // baseline format all rely on them. The original twelve lead; rules
     // added later append in the registry's order so the emitted sequence
     // stays stable.
@@ -790,6 +792,13 @@ fn registry_rows_carry_the_fixed_metadata() {
             "contract_columns_without_type",
             "incremental_without_unique_key",
             "sources_without_freshness",
+            "select_star",
+            "hard_coded_references",
+            "cartesian_join",
+            "unknown_column_reference",
+            "forbidden_patterns",
+            "warehouse_type_drift",
+            "columns_missing_in_warehouse",
         ]
     );
     // The original twelve gate at error severity (that was the only
@@ -809,6 +818,16 @@ fn registry_rows_carry_the_fixed_metadata() {
         "naming_conventions",
         "layer_violation",
     ];
+    // `requires` is a fixed contract too — only the SQL-scanning and
+    // catalog-reading rules ask for more than the graph.
+    let sql_rules = [
+        "select_star",
+        "hard_coded_references",
+        "cartesian_join",
+        "unknown_column_reference",
+        "forbidden_patterns",
+    ];
+    let catalog_rules = ["warehouse_type_drift", "columns_missing_in_warehouse"];
     for row in REGISTRY {
         let expected = if error_by_default.contains(&row.id) {
             Severity::Error
@@ -816,7 +835,14 @@ fn registry_rows_carry_the_fixed_metadata() {
             Severity::Warn
         };
         assert_eq!(row.default_severity, expected, "{}", row.id);
-        assert_eq!(row.requires, Requires::Graph, "{}", row.id);
+        let expected_req = if sql_rules.contains(&row.id) {
+            Requires::Sql
+        } else if catalog_rules.contains(&row.id) {
+            Requires::Catalog
+        } else {
+            Requires::Graph
+        };
+        assert_eq!(row.requires, expected_req, "{}", row.id);
         assert!(
             !row.summary.is_empty() && !row.summary.contains('\n'),
             "{} summary is one line",
@@ -857,6 +883,23 @@ fn registry_params_are_the_declared_config_keys_with_matching_defaults() {
                         assert!(
                             default.iter().all(|d| allowed.contains(d)),
                             "{}.{}'s default sits outside its allowed set",
+                            row.id,
+                            p.name
+                        );
+                    }
+                }
+                ParamKind::RegexList { default } => {
+                    assert_eq!(
+                        LintConfig::default().str_list_param(row.rule, p.name),
+                        Some(default.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
+                        "{}.{}",
+                        row.id,
+                        p.name
+                    );
+                    for d in default {
+                        assert!(
+                            regex::Regex::new(d).is_ok(),
+                            "{}.{}'s default '{d}' must compile",
                             row.id,
                             p.name
                         );
@@ -1214,7 +1257,7 @@ fn dbtl_meta_stringifies_identically_in_manifest_and_source_modes() {
         r#"{"ignore":["undocumented_models"]}"#
     );
     // …and suppression actually fires under source mode, on both.
-    let f = run_rules(LintInput::new(&sdag, &LintConfig::default()));
+    let f = run_rules(LintInput::new(&sdag, &LintConfig::default())).findings;
     assert!(
         !flagged(&f, LintRule::RootModels).contains(&"model.p.stg_y"),
         "+meta dbtl.ignore suppresses root_models in source mode"
@@ -2297,6 +2340,57 @@ fn keyed_model(
     )
 }
 
+// ---- SQL-backed & catalog-backed rules ------------------------------------
+//
+// The fixtures here are tiny `raw_code`/`compiled_code` RawManifest literals —
+// the `SqlParseResolver` parses them exactly like a real manifest's SQL, and
+// the shared lazy parse is asserted through its memo probes.
+
+/// A model carrying `raw_code` (the SQL the rules read).
+fn model_sql(name: &str, raw: &str) -> (String, RawNode) {
+    (
+        format!("model.p.{name}"),
+        RawNode {
+            name: name.into(),
+            resource_type: "model".into(),
+            path: Some(format!("models/{name}.sql")),
+            raw_code: Some(raw.into()),
+            ..Default::default()
+        },
+    )
+}
+
+/// A model carrying declared `columns:` — `enforced` pins
+/// `contract: {enforced: true}` (the declared list becomes authoritative).
+fn model_sql_cols(
+    name: &str,
+    raw: &str,
+    cols: &[(&str, Option<&str>)],
+    enforced: bool,
+) -> (String, RawNode) {
+    let mut columns = serde_json::Map::new();
+    for (c, ty) in cols {
+        let mut v = serde_json::Map::new();
+        v.insert("name".into(), (*c).into());
+        if let Some(ty) = ty {
+            v.insert("data_type".into(), (*ty).into());
+        }
+        columns.insert((*c).to_string(), serde_json::Value::Object(v));
+    }
+    (
+        format!("model.p.{name}"),
+        RawNode {
+            name: name.into(),
+            resource_type: "model".into(),
+            path: Some(format!("models/{name}.sql")),
+            raw_code: Some(raw.into()),
+            columns,
+            contract: enforced.then_some(RawContract { enforced: true }),
+            ..Default::default()
+        },
+    )
+}
+
 #[test]
 fn incremental_without_unique_key_flags_unkeyed_incrementals() {
     let m = manifest(
@@ -2488,6 +2582,22 @@ fn filed_model(name: &str, ofp: &str, patch: Option<&str>) -> (String, RawNode) 
     )
 }
 
+/// A model with only `compiled_code` (no `raw_code`) — deliberately NOT
+/// judged by `hard_coded_references` (a compiled `ref()` is a written-
+/// looking name).
+fn model_compiled_only(name: &str, compiled: &str) -> (String, RawNode) {
+    (
+        format!("model.p.{name}"),
+        RawNode {
+            name: name.into(),
+            resource_type: "model".into(),
+            path: Some(format!("models/{name}.sql")),
+            compiled_code: Some(compiled.into()),
+            ..Default::default()
+        },
+    )
+}
+
 fn file_of(findings: &[Finding], rule: LintRule, uid: &str) -> Option<String> {
     findings
         .iter()
@@ -2627,7 +2737,7 @@ fn fill_finding_lines_resolves_lines_and_survives_missing_files() {
     src.1.original_file_path = Some("models/schema.yml".into());
     let m = manifest(vec![declared, ghost], vec![src], &[]);
     let dag = Dag::build(&m);
-    let mut f = run_rules(LintInput::new(&dag, &LintConfig::default()));
+    let mut f = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
     fill_finding_lines(&mut f, &dag, dir.path());
     let line_of = |rule, uid| {
         f.iter()
@@ -2655,4 +2765,498 @@ fn fill_finding_lines_resolves_lines_and_survives_missing_files() {
     );
     // A graph finding on a .sql file is never line-filled.
     assert_eq!(line_of(LintRule::RootModels, "model.p.m"), None);
+}
+
+/// A catalog literal the `Rc`-carrying resolver and the lint input share.
+fn catalog_json(json: &str) -> Rc<Catalog> {
+    Rc::new(Catalog::from_json(json).unwrap())
+}
+
+/// The resolver the SQL rules read (catalog-less unless a test pins one).
+fn sql_resolver(catalog: Option<Rc<Catalog>>) -> SqlParseResolver {
+    SqlParseResolver::new(catalog, SqlDialect::Generic)
+}
+
+/// A `LintConfig` with ONLY `rules` enabled — the finding set a test sees
+/// is exactly the rules it names.
+fn cfg_only(rules: &[LintRule]) -> LintConfig {
+    let mut cfg = LintConfig::default();
+    for r in LintRule::ALL {
+        if !rules.contains(&r) {
+            cfg.severities.insert(r, None);
+        }
+    }
+    cfg
+}
+
+/// `run_rules` over `dag` with every input the SQL/catalog rules could
+/// read, returning the full outcome (findings AND the skipped list).
+fn lint_outcome(
+    dag: &Dag,
+    cfg: &LintConfig,
+    sql: Option<&SqlParseResolver>,
+    catalog: Option<&Catalog>,
+) -> LintOutcome {
+    run_rules(LintInput::new(dag, cfg).with_sql(sql).with_catalog(catalog))
+}
+
+#[test]
+fn select_star_flags_output_producing_wildcards_only() {
+    let m = manifest(
+        vec![
+            model_sql("star", "select * from {{ ref('src') }}"),
+            model_sql("qualified_star", "select t.* from tbl t"),
+            model_sql(
+                "cte_star",
+                "with c as (select * from src) select c.a, c.b from c",
+            ),
+            model_sql("final_star", "with final as (select 1) select * from final"),
+            model_sql("union_arm", "select a from x union all select * from y"),
+            model_sql("agg", "select count(*) as n from t"),
+        ],
+        vec![source("src.raw")],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::SelectStar]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::SelectStar),
+        vec![
+            "model.p.final_star",
+            "model.p.qualified_star",
+            "model.p.star",
+            "model.p.union_arm",
+        ],
+        "CTE-internal * and count(*) must not flag; final/UNION/output * must"
+    );
+    assert!(out.skipped.is_empty());
+}
+
+#[test]
+fn select_star_skips_models_without_analyzable_sql() {
+    let m = manifest(
+        vec![
+            model_sql("unparsable", "select from where or"),
+            model_sql("empty", "   "),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::SelectStar]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert!(
+        out.findings.is_empty(),
+        "unparsable/absent SQL is 'not judged', never flagged"
+    );
+}
+
+#[test]
+fn hard_coded_references_flags_only_written_relation_names() {
+    let m = manifest(
+        vec![
+            model_sql("plain", "select * from analytics.orders"),
+            model_sql("via_ref", "select * from {{ ref('orders') }}"),
+            model_sql("via_source", "select * from {{ source('a','b') }}"),
+            model_sql("cte_name", "with cte_x as (select 1) select * from cte_x"),
+            model_sql(
+                "recursive_cte",
+                "with n(i) as (select 1 union all select i + 1 from n) select * from n",
+            ),
+            model_sql("table_fn", "select * from generate_series(3)"),
+            model_sql("nested_written", "select * from (select * from real.rel) d"),
+            model_sql(
+                "join_side",
+                "select * from {{ ref('a') }} t join b.t2 on t.id = b.t2.id",
+            ),
+            model_sql("jinja_position", "select * from {{ target.schema }}.t"),
+            model_sql("unparsable", "select from where or"),
+            model_compiled_only("compiled_only", "select * from prod.orders"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::HardCodedReferences]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::HardCodedReferences),
+        vec![
+            "model.p.join_side",
+            "model.p.nested_written",
+            "model.p.plain"
+        ],
+        "ref()/source()-rendered, CTE, table-function, and Jinja-position names must not flag"
+    );
+    let msg_of = |uid| {
+        out.findings
+            .iter()
+            .find(|f| f.node_uid == uid)
+            .unwrap()
+            .message
+            .clone()
+    };
+    assert!(msg_of("model.p.plain").contains("analytics.orders"));
+    assert!(msg_of("model.p.nested_written").contains("real.rel"));
+    assert!(msg_of("model.p.join_side").contains("b.t2"));
+}
+
+#[test]
+fn cartesian_join_flags_conditionless_joins() {
+    let m = manifest(
+        vec![
+            model_sql("cross", "select * from a.t cross join b.u"),
+            model_sql("bare_join", "select * from a.t join b.u"),
+            model_sql("with_on", "select * from a.t join b.u on a.t.id = b.u.id"),
+            model_sql("with_using", "select * from a.t join b.u using (id)"),
+            model_sql("natural", "select * from a.t natural join b.u"),
+            model_sql(
+                "unnest",
+                "select * from a.t cross join unnest(a.t.arr) as x",
+            ),
+            model_sql(
+                "asof",
+                "select * from a.t asof join b.u match_condition(a.t.ts >= b.u.ts)",
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::CartesianJoin]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::CartesianJoin),
+        vec!["model.p.bare_join", "model.p.cross"],
+        "ON/USING/NATURAL/ASOF MATCH_CONDITION conditions and UNNEST joins must not flag"
+    );
+}
+
+#[test]
+fn unknown_column_reference_trusts_only_catalog_or_contract_parents() {
+    let m = manifest(
+        vec![
+            // Contract-enforced parent: its declared columns are the schema.
+            model_sql_cols(
+                "stg_contract",
+                "select 1",
+                &[("id", None), ("amount", None)],
+                true,
+            ),
+            // Declared-but-unenforced parent: advisory, never evidence.
+            model_sql_cols(
+                "stg_advisory",
+                "select 1",
+                &[("id", None), ("amount", None)],
+                false,
+            ),
+            model_sql("fct_contract", "select id, nope from stg_contract"),
+            model_sql("fct_advisory", "select id, nope from stg_advisory"),
+            model_sql("fct_source", "select id, nope from src_tbl"),
+        ],
+        vec![source("src.src_tbl")],
+        &[
+            ("model.p.stg_contract", "model.p.fct_contract"),
+            ("model.p.stg_advisory", "model.p.fct_advisory"),
+            ("source.p.src.src_tbl", "model.p.fct_source"),
+        ],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::UnknownColumnReference]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::UnknownColumnReference),
+        vec!["model.p.fct_contract"],
+        "a contract-enforced parent's missing column flags; advisory declared and source lists never do"
+    );
+    let f = out
+        .findings
+        .iter()
+        .find(|f| f.node_uid == "model.p.fct_contract")
+        .unwrap();
+    assert_eq!(f.related, vec!["model.p.stg_contract".to_string()]);
+    assert!(f.message.contains("nope"), "the missing column is named");
+
+    // The same child against a CATALOG-backed parent (no contract needed —
+    // the warehouse record is authoritative).
+    let cat = catalog_json(
+        r#"{"nodes": {"model.p.stg_advisory": {"columns": {"id": {"type": "INT"}, "amount": {"type": "INT"}}}}}"#,
+    );
+    let res = sql_resolver(Some(cat));
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::UnknownColumnReference),
+        vec!["model.p.fct_advisory", "model.p.fct_contract"],
+        "the catalog's column list makes the parent trusted — the contract parent still flags"
+    );
+}
+
+#[test]
+fn forbidden_patterns_matches_raw_sql_verbatim() {
+    let m = manifest(
+        vec![
+            model_sql("uses_udf", "select unsafe_udf(x) from t"),
+            model_sql(
+                "commented_udf",
+                "select x from t -- unsafe_udf stays readable in raw",
+            ),
+            model_sql("clean", "select x from t"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    // Empty pattern list: nothing to check — the rule is a no-op.
+    let cfg = cfg_only(&[LintRule::ForbiddenPatterns]);
+    let res = sql_resolver(None);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert!(
+        out.findings.is_empty(),
+        "an empty patterns list flags nothing"
+    );
+
+    let cfg = config_from(
+        "lint:\n  rules:\n    forbidden_patterns:\n      patterns: ['unsafe_udf', 'drop table']\n",
+    );
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::ForbiddenPatterns),
+        vec!["model.p.commented_udf", "model.p.uses_udf"],
+        "raw text is matched verbatim — a comment still counts"
+    );
+    let msg = &out
+        .findings
+        .iter()
+        .find(|f| f.node_uid == "model.p.uses_udf" && f.rule == LintRule::ForbiddenPatterns)
+        .unwrap()
+        .message;
+    assert!(msg.contains("unsafe_udf"), "the hit pattern is named");
+
+    // An invalid regex is a CONFIG error at load — the rule never sees it.
+    let err = ProjectConfig::from_yaml(
+        "lint:\n  rules:\n    forbidden_patterns:\n      patterns: ['([']\n",
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("not a valid regex") && err.contains("'(['"),
+        "the error names the pattern: {err}"
+    );
+}
+
+// ---- catalog-backed rules ---------------------------------------------------
+
+/// A model with declared columns and no SQL — the warehouse rules only
+/// read `detail.columns` + the catalog.
+fn model_cols(name: &str, cols: &[(&str, Option<&str>)]) -> (String, RawNode) {
+    model_sql_cols(name, "", cols, false)
+}
+
+#[test]
+fn warehouse_type_drift_flags_only_declared_type_disagreements() {
+    let m = manifest(
+        vec![
+            model_cols(
+                "mismatch",
+                &[("amount", Some("int")), ("id", Some("STRING"))],
+            ),
+            model_cols("agrees", &[("amount", Some("NUMERIC(10,2)"))]),
+            model_cols("no_declared_type", &[("amount", None)]),
+            model_cols("not_in_catalog", &[("ghost", Some("INT"))]),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let cat = catalog_json(
+        r#"{"nodes": {
+            "model.p.mismatch": {"columns": {"amount": {"type": "NUMERIC(10,2)"}, "id": {"type": "STRING"}}},
+            "model.p.agrees": {"columns": {"amount": {"type": "NUMERIC(10,2)"}}},
+            "model.p.no_declared_type": {"columns": {"amount": {"type": "NUMERIC(10,2)"}}}
+        }}"#,
+    );
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::WarehouseTypeDrift]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), Some(&cat));
+    assert_eq!(
+        flagged(&out.findings, LintRule::WarehouseTypeDrift),
+        vec!["model.p.mismatch"],
+        "matching types, undeclared types, and catalog-missing nodes never flag"
+    );
+    let msg = &out
+        .findings
+        .iter()
+        .find(|f| f.node_uid == "model.p.mismatch")
+        .unwrap()
+        .message;
+    assert!(
+        msg.contains("amount") && msg.contains("int") && msg.contains("NUMERIC(10,2)"),
+        "the message names column + both types: {msg}"
+    );
+    assert!(
+        !msg.contains("id"),
+        "the agreeing column isn't listed: {msg}"
+    );
+}
+
+#[test]
+fn columns_missing_in_warehouse_flags_documented_but_absent_columns() {
+    let m = manifest(
+        vec![
+            model_cols("gap", &[("real", None), ("ghost", None)]),
+            model_cols("whole", &[("real", None)]),
+            model_cols("absent_node", &[("anything", None)]),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let cat = catalog_json(
+        r#"{"nodes": {
+            "model.p.gap": {"columns": {"real": {"type": "INT"}}},
+            "model.p.whole": {"columns": {"real": {"type": "INT"}, "extra": {"type": "INT"}}}
+        }}"#,
+    );
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::ColumnsMissingInWarehouse]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), Some(&cat));
+    assert_eq!(
+        flagged(&out.findings, LintRule::ColumnsMissingInWarehouse),
+        vec!["model.p.gap"],
+        "only declared columns absent from the warehouse flag"
+    );
+    let msg = &out
+        .findings
+        .iter()
+        .find(|f| f.node_uid == "model.p.gap")
+        .unwrap()
+        .message;
+    assert!(msg.contains("ghost") && !msg.contains("real"));
+}
+
+// ---- requirement-aware skipping & laziness ---------------------------------
+
+#[test]
+fn missing_inputs_report_skipped_rules_not_findings() {
+    let m = manifest(vec![model_sql("m", "select 1")], vec![], &[]);
+    let dag = Dag::build(&m);
+    let cfg = LintConfig::default();
+
+    // No aux inputs at all: the five Sql rules + two Catalog rules skip.
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert_eq!(out.skipped.len(), 7);
+    let sql_skips: Vec<_> = out
+        .skipped
+        .iter()
+        .filter(|s| s.missing == Requires::Sql)
+        .map(|s| s.rule)
+        .collect();
+    assert_eq!(
+        sql_skips,
+        vec![
+            LintRule::SelectStar,
+            LintRule::HardCodedReferences,
+            LintRule::CartesianJoin,
+            LintRule::UnknownColumnReference,
+            LintRule::ForbiddenPatterns,
+        ],
+        "skipped entries stay in LintRule::ALL order"
+    );
+    let cat_skips: Vec<_> = out
+        .skipped
+        .iter()
+        .filter(|s| s.missing == Requires::Catalog)
+        .map(|s| s.rule)
+        .collect();
+    assert_eq!(
+        cat_skips,
+        vec![
+            LintRule::WarehouseTypeDrift,
+            LintRule::ColumnsMissingInWarehouse,
+        ]
+    );
+
+    // A resolver alone still leaves the catalog rules skipped.
+    let res = sql_resolver(None);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(out.skipped.len(), 2);
+    assert!(out.skipped.iter().all(|s| s.missing == Requires::Catalog));
+
+    // Disabled rules never skip — off is not "skipped".
+    let mut cfg = LintConfig::default();
+    cfg.severities.insert(LintRule::SelectStar, None);
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert!(
+        !out.skipped.iter().any(|s| s.rule == LintRule::SelectStar),
+        "a disabled rule produces neither findings nor a skip"
+    );
+}
+
+#[test]
+fn disabled_sql_rules_never_parse() {
+    let m = manifest(
+        vec![
+            model_sql("a", "select * from t"),
+            model_sql("b", "select * from u"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    // Every SQL-requiring rule off — the resolver must stay cold.
+    let mut cfg = LintConfig::default();
+    for r in LintRule::ALL {
+        if r.info().requires == Requires::Sql {
+            cfg.severities.insert(r, None);
+        }
+    }
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert!(
+        out.skipped.iter().all(|s| s.missing == Requires::Catalog),
+        "disabled rules never skip — only the still-enabled catalog rules do"
+    );
+    assert_eq!(
+        res.analyzed_count(),
+        0,
+        "no SQL rule enabled → not one parse happened"
+    );
+    assert_eq!(res.hard_coded_count(), 0);
+}
+
+#[test]
+fn enabled_sql_rules_share_one_parse_per_model() {
+    let m = manifest(
+        vec![
+            model_sql("a", "select * from t"),
+            model_sql("b", "select * from u"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[
+        LintRule::SelectStar,
+        LintRule::CartesianJoin,
+        LintRule::UnknownColumnReference,
+        LintRule::HardCodedReferences,
+    ]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        res.analyzed_count(),
+        2,
+        "four SQL rules × two models = one shared analysis each"
+    );
+    assert_eq!(
+        res.hard_coded_count(),
+        2,
+        "the marked re-parse is one per raw-carrying model"
+    );
+    assert_eq!(out.findings.len(), 4); // a + b flag select_star AND hard_coded
 }

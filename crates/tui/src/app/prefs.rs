@@ -22,7 +22,11 @@ impl App {
     /// toggles and `reload` use.
     pub fn set_lint_config(&mut self, config: crate::LintConfig) {
         self.lint_config = config;
-        self.lint_findings = crate::run_rules(crate::LintInput::new(&self.dag, &self.lint_config));
+        self.lint_findings = crate::run_rules(
+            crate::LintInput::new(&self.dag, &self.lint_config)
+                .with_catalog(self.catalog.as_deref()),
+        )
+        .findings;
         self.generation += 1;
         if self.list_filter == ListFilter::Linted {
             self.apply_list_filter();
@@ -80,6 +84,13 @@ impl App {
             self.diff = Some(compute_diff_with(base, &self.dag, &base_res, &self.cll));
             self.diff_cll = Some(base_res);
         }
+        // The catalog is also a lint input (`Requires::Catalog` rules read
+        // it) — recompute so the Lint lens tracks the new file.
+        self.lint_findings = crate::run_rules(
+            crate::LintInput::new(&self.dag, &self.lint_config)
+                .with_catalog(self.catalog.as_deref()),
+        )
+        .findings;
         self.generation += 1;
         Ok(())
     }
@@ -104,13 +115,11 @@ impl App {
             out.push(format!("catalog: {}", stats.join(", ")));
         }
         // Real warehouse type per documented column (the manifest's data_type
-        // is usually None — schema.yml rarely declares it).
-        for col in &detail.columns {
-            if let Some(ty) = node.column_type(&col.name) {
-                if col.data_type.as_deref() != Some(ty) {
-                    out.push(format!("  {}: {}", col.name, ty));
-                }
-            }
+        // is usually None — schema.yml rarely declares it). The comparison is
+        // the shared `type_drift` — the same one lint's warehouse_type_drift
+        // reads — so TUI and lint can never disagree about "differs".
+        for d in node.type_drift(&detail.columns) {
+            out.push(format!("  {}: {}", d.name, d.warehouse));
         }
         let (missing_in_wh, missing_in_docs) = node.drift(
             &detail

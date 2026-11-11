@@ -79,6 +79,7 @@ mod dialect;
 mod expr;
 mod jinja;
 mod query;
+mod scan;
 mod scope;
 #[cfg(test)]
 mod tests;
@@ -86,6 +87,7 @@ mod tests;
 use ast::*;
 pub use dialect::SqlDialect;
 use jinja::*;
+use scan::scan_statements;
 use scope::*;
 // ---------------------------------------------------------------------------
 // The resolver
@@ -95,6 +97,29 @@ use scope::*;
 /// expression-level view: missing or unparsable SQL) — the
 /// [`SqlParseResolver::exprs_memo`] shape.
 type ExprMap = BTreeMap<String, Option<Rc<BTreeMap<String, String>>>>;
+
+/// The SQL-derived facts lint rules read about one node — the
+/// [`SqlParseResolver::sql_facts`] payload, distilled from the shared
+/// `Analyzed` parse so `select_star`/`cartesian_join`/
+/// `unknown_column_reference` all share the one analysis per model.
+/// `hard_coded` is deliberately NOT a field here: it comes from a
+/// `JinjaMark::Marked` re-parse of the raw text only — see
+/// [`SqlParseResolver::hard_coded_relations`].
+#[derive(Debug, Clone)]
+pub struct SqlFacts {
+    /// An output-producing projection (`*`/`t.*`, incl. `|> SELECT *` and
+    /// UNION arms) can't enumerate its columns — `select_star` flags it.
+    pub unbounded_wildcard: bool,
+    /// Display text of every JOIN arm with no join condition
+    /// (`CROSS JOIN`, or a conditional operator with no ON/USING/NATURAL),
+    /// sorted — `cartesian_join`'s input.
+    pub cartesian: Vec<String>,
+    /// `(parent uid, normalized column)` refs the model names but the
+    /// parent provably doesn't emit (a KNOWN column list missed them),
+    /// sorted — `unknown_column_reference` filters these further by
+    /// [`SqlParseResolver::trusted_parent_columns`].
+    pub unresolved: Vec<(String, String)>,
+}
 
 /// The parser-backed resolver: parses each model's SQL (compiled first, raw as
 /// the documented fallback) with `sqlparser`, resolves column references
@@ -117,6 +142,16 @@ pub struct SqlParseResolver {
     /// expression-level view: missing or unparsable SQL) — the `--diff`
     /// expression-diff input, memoized like the column list.
     exprs_memo: RefCell<ExprMap>,
+    /// uid → the lint-facing [`SqlFacts`] bundle (`None` = no analyzable
+    /// SQL) — memoized so every SQL rule shares the one parse.
+    facts_memo: RefCell<BTreeMap<String, Option<Rc<SqlFacts>>>>,
+    /// uid → hand-written relation names from the `Marked`-render re-parse
+    /// (`None` = no `raw_code`, or the marked text didn't parse →
+    /// `hard_coded_references` doesn't judge the node). A SEPARATE memo
+    /// from `analyzed_memo`: the marked text is a different parse, and a
+    /// run enabling only `hard_coded_references` shouldn't pay the
+    /// resolution walk.
+    hard_coded_memo: RefCell<BTreeMap<String, Option<Rc<Vec<String>>>>>,
     /// uids whose resolution went through `NameMatchResolver` — the
     /// `[name-match]` tag / CLI fallback count source.
     fallbacks: RefCell<BTreeSet<String>>,
@@ -137,6 +172,8 @@ impl SqlParseResolver {
             resolved_memo: RefCell::new(BTreeMap::new()),
             cols_memo: RefCell::new(BTreeMap::new()),
             exprs_memo: RefCell::new(BTreeMap::new()),
+            facts_memo: RefCell::new(BTreeMap::new()),
+            hard_coded_memo: RefCell::new(BTreeMap::new()),
             fallbacks: RefCell::new(BTreeSet::new()),
             analyzing: RefCell::new(BTreeSet::new()),
         }
@@ -167,6 +204,100 @@ impl SqlParseResolver {
     /// Is `node`'s resolution the name-match approximation?
     pub fn is_fallback(&self, node: &str) -> bool {
         self.fallbacks.borrow().contains(node)
+    }
+
+    // -- lint facts -----------------------------------------------------------
+    //
+    // The lint SQL rules never touch the parser internals: they read these
+    // memoized accessors instead. `sql_facts` reuses `analyzed` (one parse
+    // per model shared by every SQL rule); `hard_coded_relations` is a
+    // deliberately separate path — `JinjaMark::Marked` re-parses the RAW
+    // text only, so a `{{ ref }}`-generated name is never mistaken for a
+    // written one, and a run enabling only `hard_coded_references` never
+    // pays the resolution walk.
+
+    /// The lint-facing facts about `uid`'s SQL, `None` when the node has no
+    /// analyzable SQL (missing or unparsable — the rule doesn't judge it).
+    /// Memoized; fields come from the shared `analyzed` parse.
+    pub fn sql_facts(&self, dag: &Dag, uid: &str) -> Option<Rc<SqlFacts>> {
+        if let Some(v) = self.facts_memo.borrow().get(uid) {
+            return v.clone();
+        }
+        let out = self.analyzed(dag, uid).map(|an| {
+            Rc::new(SqlFacts {
+                unbounded_wildcard: an.unbounded_wildcard,
+                cartesian: an.cartesian.clone(),
+                unresolved: an.unresolved.iter().cloned().collect(),
+            })
+        });
+        self.facts_memo
+            .borrow_mut()
+            .insert(uid.to_string(), out.clone());
+        out
+    }
+
+    /// The relation names literally written in the node's `raw_code`
+    /// (`FROM analytics.orders`) — Jinja-derived names excluded because the
+    /// `Marked` render tags `ref`/`source`/other `{{ }}` with a `__dbtl_`
+    /// prefix the scan skips; CTE names and table-function calls likewise
+    /// never count. `None` when the node has no `raw_code` (compiled-only
+    /// models are deliberately NOT judged — a compiled `{{ ref('x') }}`
+    /// renders to a written-looking name) or the marked text fails to
+    /// parse. Sorted, dotted (`sch.t`).
+    ///
+    /// Deliberately NOT `resolution_sql`-based: that accessor prefers
+    /// compiled SQL, where a `ref()` is indistinguishable from a
+    /// hand-written name.
+    pub fn hard_coded_relations(&self, dag: &Dag, uid: &str) -> Option<Rc<Vec<String>>> {
+        if let Some(v) = self.hard_coded_memo.borrow().get(uid) {
+            return v.clone();
+        }
+        let out = (|| {
+            let raw = dag.raw_code(uid)?;
+            if raw.trim().is_empty() {
+                return None;
+            }
+            let sql = render_jinja_as(raw, JinjaMark::Marked);
+            let dialect = self.dialect.sqlparser();
+            let stmts = Parser::parse_sql(&*dialect, &sql).ok()?;
+            let scan = scan_statements(&stmts);
+            Some(Rc::new(scan.hard_coded.into_iter().collect::<Vec<_>>()))
+        })();
+        self.hard_coded_memo
+            .borrow_mut()
+            .insert(uid.to_string(), out.clone());
+        out
+    }
+
+    /// Whether `parent`'s column list is a TRUSTED authority for
+    /// `unknown_column_reference`: the catalog knows its columns, or the
+    /// parent enforces a column contract (its declared `columns:` then ARE
+    /// the schema). A declared-only, non-enforced list stays advisory —
+    /// yml can lag reality, so "can't disprove" doesn't flag.
+    pub fn trusted_parent_columns(&self, dag: &Dag, parent: &str) -> bool {
+        if let Some(cat) = &self.catalog {
+            if let Some(n) = cat.get(parent) {
+                if !n.columns.is_empty() {
+                    return true;
+                }
+            }
+        }
+        dag.detail(parent).is_some_and(|d| d.contract_enforced)
+    }
+
+    /// `analyzed_memo` size — the laziness test's probe: with no SQL rule
+    /// enabled, running `run_rules` must leave this at 0 (no parse ever
+    /// happened); with several SQL rules on, one entry per model (one
+    /// shared parse).
+    #[cfg(test)]
+    pub(crate) fn analyzed_count(&self) -> usize {
+        self.analyzed_memo.borrow().len()
+    }
+
+    /// `hard_coded_memo` size — the marked re-parse's laziness probe.
+    #[cfg(test)]
+    pub(crate) fn hard_coded_count(&self) -> usize {
+        self.hard_coded_memo.borrow().len()
     }
 
     // -- column lists -------------------------------------------------------
@@ -339,6 +470,7 @@ impl SqlParseResolver {
                 out: res.out,
                 foj: res.foj,
                 unbounded_wildcard: query_has_output_wildcard(query),
+                cartesian: scan_statements(&stmts).cartesian.into_iter().collect(),
                 unresolved: ctx.unresolved.into_inner(),
             }))
         })();

@@ -507,8 +507,10 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
             Some(dir) => {
                 // No --lineage-depth flag on check — the gate resolves
                 // depth from `.dbtl.yml`/defaults exactly like `docs
-                // --check` without the flag.
-                let files = docs_file_set(&resolved, scope, None)?;
+                // --check` without the flag. `src` feeds the aux lint
+                // inputs so the quoted run is the same one `lint`/`docs`
+                // evaluate.
+                let files = docs_file_set(src, &resolved, scope, None)?;
                 let drift = docs_differences(&dir, &files);
                 if drift.total() == 0 {
                     gates.push(GateResult::new(
@@ -562,12 +564,24 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
             &lint_baseline_path(&cfg.baseline, config_found, &candidates),
             baseline_explicit,
         )?;
+        // The same aux inputs `dbtl lint` builds — the lazy resolver and
+        // the catalog — so the gate and the report can never evaluate
+        // differently.
+        let (lint_catalog, lint_resolver) = lint_aux(&resolved, src.sql_dialect, src.catalog)?;
+        let lint_base_resolver = base_ctx
+            .as_ref()
+            .map(|(b, _)| src.baseline_resolver(dag, b));
         let mut outcome = evaluate_lint(
             dag,
             &cfg,
             base_ctx.as_ref().map(|(b, _)| b),
             baseline.as_ref(),
             fail_on,
+            LintAux {
+                sql: Some(&lint_resolver),
+                catalog: lint_catalog.as_deref(),
+                base_sql: lint_base_resolver.as_ref(),
+            },
         );
         // The same best-effort yml line fill `dbtl lint` reports —
         // filled before `lint_gates` lifts the findings into the Report.

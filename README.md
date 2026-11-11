@@ -362,6 +362,18 @@ error/warning split, and the `⌂` home tab quotes the same split. `dbtl docs`
 puts a Lint summary in the generated README plus a "Lint violations" section
 on each node's page.
 
+Every rule declares what it needs — the graph alone, parsed SQL, or the
+`catalog.json` warehouse record. A rule whose input isn't there is
+**skipped**: `dbtl lint` and `check` both print `SKIP lint <rule>:
+<reason>` gate rows, and the `dbtl.report/v1` JSON carries them as
+`gates[]` entries with `status: "skip"` (counted in `summary.skipped`) —
+informational only, never a failure.
+`dbtl lint`, `check --lint`, and `docs` all parse SQL lazily (a shared
+resolver parses a model only when a SQL rule asks, memoized across rules)
+and auto-detect `catalog.json` next to the data source; the TUI passes the
+catalog but never parses SQL (parsing every model up front would stall
+startup), so its Lint lens stays graph+catalog only.
+
 The initial rule set (all enabled by default):
 
 | Rule | Flags |
@@ -400,6 +412,31 @@ when you set `fail_on: warn` or raise a rule to `severity: error`:
 | `contract_columns_without_type` | an enforced-contract model has a declared column without `data_type` |
 | `incremental_without_unique_key` | an incremental model has no `unique_key` (suppress append-style models with `exclude:`/`meta.dbtl.ignore`) |
 | `sources_without_freshness` | a source has no freshness configured (`warn_after`/`error_after` at source or table level) |
+
+A third set reads the model's SQL (raw text, or the manifest's
+`compiled_code`/`target/compiled/` override — skipped in the TUI):
+
+| Rule | Flags |
+| --- | --- |
+| `select_star` | the final SELECT uses `*`/`t.*` (parse-level — `select *, except(...)` still flags; a `count(*)`-style aggregate does not) |
+| `hard_coded_references` | a relation name is written into the SQL instead of `ref()`/`source()` (CTEs, `unnest`/table functions, and lateral joins don't count) |
+| `cartesian_join` | a `cross join` or `join` with no condition (excluding lateral/`unnest`-style function joins; implicit comma joins are out of scope) |
+| `unknown_column_reference` | the SQL reads a column its parent provably doesn't have — only when the parent's column set is trusted (warehouse catalog or enforced contract) |
+| `forbidden_patterns` | raw SQL matches a regex in `patterns` (empty by default = no-op); invalid patterns are rejected when `.dbtl.yml` is read |
+
+A fourth set compares declared columns against `catalog.json` — the same
+`target/catalog.json` sibling auto-detect/`--catalog` override `columns` and
+`impact` already use (skipped when no catalog resolves, and in the TUI it
+shares the exact drift comparison the `c` columns view shows):
+
+| Rule | Flags |
+| --- | --- |
+| `warehouse_type_drift` | a declared column's `data_type` disagrees with the warehouse's record (byte-for-byte, after the same casing the TUI shows) |
+| `columns_missing_in_warehouse` | a declared column is absent from the warehouse record (a node missing from `catalog.json` entirely is unknown, not flagged) |
+
+`--sql-dialect` selects the parse dialect (the manifest's adapter otherwise);
+`--catalog` overrides the auto-detected `catalog.json`. Both are accepted by
+`lint`, `check`, `impact`, `columns`, and `docs`.
 
 Rule policy lives in the **project-local `.dbtl.yml`** — deliberately *not*
 `~/.config/dbtl/config.yml`, because a CI gate must not depend on the
@@ -463,8 +500,11 @@ prefix-free by default where the evaluator expects `rpt_` (opt in with
 `naming_prefixes.other: [rpt_]`). `model_fanout` defaults to ≥5 aligned with
 dbtl's hub threshold (the evaluator's default is ≥3 — the operator is the
 same, only the default differs) and `source_fanout` to ≥2 (the evaluator's
->1). SQL-content rules the evaluator ships (hard-coded references, etc.) are
-out of scope — they need compiled SQL.
+>1). The evaluator's SQL-content checks live here too (`hard_coded_references`,
+`select_star`, …) — dbtl reads `raw_code`/`compiled_code` straight from the
+manifest instead of querying the warehouse, and `warehouse_type_drift` /
+`columns_missing_in_warehouse` replace the warehouse introspection with
+`catalog.json`.
 
 ### Column lineage (`dbtl columns`)
 

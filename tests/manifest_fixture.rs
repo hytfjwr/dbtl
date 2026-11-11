@@ -194,7 +194,7 @@ fn gating_lint_config() -> LintConfig {
 #[test]
 fn lint_findings_match_frozen_fixture_counts() {
     let dag = fixture_dag();
-    let findings = run_rules(dbtl::LintInput::new(&dag, &gating_lint_config()));
+    let findings = run_rules(dbtl::LintInput::new(&dag, &gating_lint_config())).findings;
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for f in &findings {
         *counts.entry(f.rule.name()).or_default() += 1;
@@ -244,7 +244,24 @@ fn warn_severity_rules_match_frozen_fixture_counts() {
             cfg.severities.insert(rule, None);
         }
     }
-    let findings = run_rules(dbtl::LintInput::new(&dag, &cfg));
+    let outcome = run_rules(dbtl::LintInput::new(&dag, &cfg));
+    // Graph-only input: every enabled SQL/catalog-backed rule reports
+    // skipped — informational only, adding nothing to `findings`.
+    let skipped: Vec<_> = outcome.skipped.iter().map(|s| s.rule.name()).collect();
+    assert_eq!(
+        skipped,
+        [
+            "select_star",
+            "hard_coded_references",
+            "cartesian_join",
+            "unknown_column_reference",
+            "forbidden_patterns",
+            "warehouse_type_drift",
+            "columns_missing_in_warehouse",
+        ],
+        "the enabled aux-backed rules skip in registry order"
+    );
+    let findings = outcome.findings;
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for f in &findings {
         *counts.entry(f.rule.name()).or_default() += 1;

@@ -268,8 +268,9 @@ fn bench_diff(c: &mut Criterion) {
     g.finish();
 }
 
-/// Every registered rule in one `run_rules` pass — the same entry point
-/// `dbtl check --lint` uses.
+/// One `run_rules` pass with a graph-only `LintInput` — the same entry point
+/// `dbtl check --lint` uses. SQL/catalog-backed rules report skips here;
+/// timing a resolver-fed run is out of scope for this bench.
 fn bench_lint(c: &mut Criterion) {
     let dag = Dag::build(&synth_manifest(&rich_params(4000)));
     let mut g = c.benchmark_group("lint");

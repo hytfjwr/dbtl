@@ -884,6 +884,7 @@ fn fixture_findings(dag: &Dag) -> Vec<Finding> {
         dag,
         &dbtl_core::LintConfig::default(),
     ))
+    .findings
 }
 
 #[test]

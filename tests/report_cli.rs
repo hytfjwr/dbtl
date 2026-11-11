@@ -204,7 +204,13 @@ fn check_format_junit_is_wellformed_xml() {
     // Every FAIL gate is a `<failure>` testcase carrying its findings.
     let fails = stdout.matches("<failure>").count();
     assert!(fails >= 6, "the failing lint gates: {stdout}");
-    assert!(!stdout.contains("<skipped"), "nothing was skipped");
+    // The fixture has no catalog sibling — the two catalog-backed rules
+    // report `<skipped/>` testcases, informational only.
+    assert_eq!(
+        stdout.matches("<skipped").count(),
+        2,
+        "the catalog rules skip without a catalog: {stdout}"
+    );
     // The listing inside a failure is the shared `file:line rule message`.
     assert!(
         stdout.contains("models/utilities/pos_prep/pos_cat.sql:1 direct_join_to_source"),

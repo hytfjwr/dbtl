@@ -19,7 +19,7 @@ pub fn run_docs(
 ) -> Result<(), CliError> {
     let scope = src.scope;
     let resolved = src.resolve()?;
-    let files = docs_file_set(&resolved, scope, lineage_depth)?;
+    let files = docs_file_set(src, &resolved, scope, lineage_depth)?;
 
     let out_dir = PathBuf::from(out);
     if check {
@@ -95,8 +95,11 @@ pub(super) fn marked_docs_on_disk(out_dir: &std::path::Path) -> Vec<String> {
 /// malformed file fatal: a committed doc set must never describe the wrong
 /// rule set or draw the wrong depth. `check --docs-dir` compares exactly
 /// this set (no flag — config/default depth), so the gate can never
-/// disagree with `docs --check` about what "current docs" means.
+/// disagree with `docs --check` about what "current docs" means. `src`
+/// supplies the aux lint inputs (`--sql-dialect`/`--catalog`) so the
+/// quoted `run_rules` evaluation is the same one `lint`/`check` run.
 pub(super) fn docs_file_set(
+    src: &DataSourceArgs,
     resolved: &ResolvedSource,
     scope: dbtl::PackageScope,
     lineage_depth: Option<&str>,
@@ -129,7 +132,16 @@ pub(super) fn docs_file_set(
     // named-but-absent file warns; an unreadable/malformed one is an input
     // error (the same policy — a frozen set we can't read must never
     // silently un-freeze every violation in the record).
-    let mut lint_findings = dbtl::run_rules(dbtl::LintInput::new(&resolved.dag, &project_cfg.lint));
+    // The same aux inputs `dbtl lint`/`check` resolve — the SQL rules' lazy
+    // resolver plus the catalog — so the docs' Lint sections quote the same
+    // evaluation (a missing catalog skips its rules exactly like the CLI).
+    let (lint_catalog, lint_resolver) = lint_aux(resolved, src.sql_dialect, src.catalog)?;
+    let mut lint_findings = dbtl::run_rules(
+        dbtl::LintInput::new(&resolved.dag, &project_cfg.lint)
+            .with_sql(Some(&lint_resolver))
+            .with_catalog(lint_catalog.as_deref()),
+    )
+    .findings;
     let candidates =
         dbtl::project_config_candidates(manifest_arg.as_deref(), project_arg.as_deref());
     let baseline = load_lint_baseline_file(

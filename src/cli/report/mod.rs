@@ -485,14 +485,36 @@ pub fn write_report_file(path: &Path, contents: &str) -> Result<(), CliError> {
     Ok(())
 }
 
-/// The per-rule gates a [`LintOutcome`] produces — shared verbatim between
+/// The per-rule gates a [`LintGateOutcome`] produces — shared verbatim between
 /// `dbtl lint` (where they ARE the report) and `dbtl check --lint` (where
 /// they follow the structural gates), so the same run can never emit two
-/// different wordings.
-pub fn lint_gates(dag: &dbtl::Dag, outcome: &LintOutcome) -> Vec<GateResult> {
+/// different wordings. Rules evaluated and rules skipped for a missing
+/// input interleave in `LintRule::ALL` order — a skipped rule is a `SKIP`
+/// gate (`SKIP lint <rule>: <reason>` in text, `status: "skip"` in JSON),
+/// informational only, never counted as a failure.
+pub fn lint_gates(dag: &dbtl::Dag, outcome: &LintGateOutcome) -> Vec<GateResult> {
     let name = |f: &dbtl::Finding| dag.get(&f.node_uid).map_or("", |n| n.name.as_str());
-    let mut gates = Vec::with_capacity(outcome.rules.len());
-    for ro in &outcome.rules {
+    let mut gates = Vec::with_capacity(outcome.rules.len() + outcome.skipped.len());
+    let mut rules = outcome.rules.iter().peekable();
+    let mut skipped = outcome.skipped.iter().peekable();
+    // Merge-join the two `LintRule::ALL`-ordered lists so every emitted
+    // gate keeps the registry's fixed order.
+    loop {
+        let take_skip = match (rules.peek(), skipped.peek()) {
+            (Some(r), Some(s)) => s.rule < r.rule,
+            (None, Some(_)) => true,
+            _ => false,
+        };
+        if take_skip {
+            let s = skipped.next().unwrap();
+            let id = format!("lint:{}", s.rule.name());
+            let title = format!("lint {}", s.rule.name());
+            gates.push(GateResult::skip(&id, &title, s.reason.to_string()));
+            continue;
+        }
+        let Some(ro) = rules.next() else {
+            break;
+        };
         let id = format!("lint:{}", ro.rule.name());
         let title = format!("lint {}", ro.rule.name());
         // Every finding the report keeps for this rule: the counted ones plus
