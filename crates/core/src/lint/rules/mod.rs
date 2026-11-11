@@ -1,5 +1,5 @@
 //! The rule evaluators — one `pub(super)` function per rule, grouped into a
-//! file per category so sibling rule batches extend their own file without
+//! file per category so sibling rule groups extend their own file without
 //! touching this one. `run_rules` below is the ONE evaluation entry point
 //! `dbtl check --lint`, the TUI's Lint lens and `dbtl docs` all share; the
 //! shared predicates (layer resolution, parent classification, the scope

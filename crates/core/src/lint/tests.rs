@@ -1343,8 +1343,8 @@ fn baseline_rejects_bad_schema_and_malformed_json() {
 
 // ---- the graph/metadata rules ---------------------------------------------
 //
-// One positive + one negative case per rule minimum; the table below mirrors
-// the rule table in the feature spec. Helpers shared by these tests:
+// One positive + one negative case per rule minimum. Helpers shared by
+// these tests:
 
 /// A source literal with warehouse coordinates — `identifier` is the
 /// `identifier:` override that surfaces as `relation_name` on the detail.
