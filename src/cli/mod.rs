@@ -167,6 +167,12 @@ pub enum Commands {
         /// Output format: `markdown` (default) or `json`.
         #[arg(long, value_enum, default_value = "markdown")]
         format: ImpactFormat,
+        /// Also write the report to a file: `--report <FMT>:<PATH>`
+        /// (repeatable, `FMT` limited to `markdown` / `json`). Contents
+        /// match the bytes that format prints on stdout; parent directories
+        /// are created and existing files overwritten.
+        #[arg(long, value_name = "FMT:PATH")]
+        report: Vec<String>,
     },
     /// Run CI checks over the resolved data source and exit 1 when any fails:
     /// test coverage below `--coverage-min`, newly introduced layer violations,
@@ -189,9 +195,8 @@ pub enum Commands {
         /// whose baseline consumers did not migrate (detected through
         /// column-level lineage). Needs `--diff`. Partial-breaking changes
         /// (data-type / expression moves) report in the impact pack but
-        /// never trip this gate. Without `--diff` the gate is skipped and a
-        /// note is printed — under `--format json` the note lands in `info`
-        /// (not `checks`, since no check ran).
+        /// never trip this gate. Without `--diff` the gate reports `skip`
+        /// (asked for but not evaluable) — visible, never counted.
         #[arg(long)]
         no_breaking: bool,
         /// Restrict linting to these rules (comma-separated rule names;
@@ -207,10 +212,35 @@ pub enum Commands {
         /// are error-severity by definition.
         #[arg(long, value_enum)]
         fail_on: Option<FailOnArg>,
-        /// Output format: `markdown` (the line report, default) or `json`
-        /// (the structured check payload for automation).
-        #[arg(long, value_enum, default_value = "markdown")]
-        format: ImpactFormat,
+        /// Report format on stdout: `text` (the line report, default),
+        /// `markdown` (a document suited to a PR comment), `json` (the
+        /// `dbtl.report/v1` payload), `github` (Actions workflow
+        /// annotations), `sarif` (code-scanning upload), `junit` (test
+        /// report XML), or `codeclimate` (Code Quality issues).
+        #[arg(long, value_enum, default_value = "text")]
+        format: ReportFormat,
+        /// Also write the report to a file: `--report <FMT>:<PATH>`
+        /// (repeatable; `FMT` is any `--format` value). Contents match the
+        /// bytes that format prints on stdout; parent directories are
+        /// created and existing files overwritten.
+        #[arg(long, value_name = "FMT:PATH")]
+        report: Vec<String>,
+        /// Append the markdown report to the file the GITHUB_STEP_SUMMARY
+        /// environment variable names (a no-op when the variable is unset
+        /// or empty — plain CI runs only).
+        #[arg(long)]
+        step_summary: bool,
+        /// Prefix prepended to the file paths the `github`, `sarif`, and
+        /// `codeclimate` formats emit — for a project living in a
+        /// repository subdirectory. A usage error when none of those
+        /// formats is selected via `--format` or `--report`.
+        #[arg(long, value_name = "PREFIX")]
+        path_prefix: Option<String>,
+        /// Gate on generated-docs freshness: compare this directory against
+        /// what `dbtl docs` would generate right now — the exact comparison
+        /// `dbtl docs --check` runs — and fail the run when they differ.
+        #[arg(long, value_name = "DIR")]
+        docs_dir: Option<String>,
         /// Suppress the per-check report on stdout; only the exit code matters.
         #[arg(long)]
         quiet: bool,
@@ -232,15 +262,36 @@ pub enum Commands {
         /// only reports. Overrides `.dbtl.yml`'s top-level `fail_on`.
         #[arg(long, value_enum)]
         fail_on: Option<FailOnArg>,
-        /// Output format: `text` (default) or `json`.
+        /// Report format on stdout: `text` (the line report, default),
+        /// `markdown` (a document suited to a PR comment), `json` (the
+        /// `dbtl.report/v1` payload), `github` (Actions workflow
+        /// annotations), `sarif` (code-scanning upload), `junit` (test
+        /// report XML), or `codeclimate` (Code Quality issues).
         #[arg(long, value_enum, default_value = "text")]
-        format: LintFormat,
+        format: ReportFormat,
+        /// Also write the report to a file: `--report <FMT>:<PATH>`
+        /// (repeatable; `FMT` is any `--format` value). Contents match the
+        /// bytes that format prints on stdout; parent directories are
+        /// created and existing files overwritten.
+        #[arg(long, value_name = "FMT:PATH")]
+        report: Vec<String>,
+        /// Append the markdown report to the file the GITHUB_STEP_SUMMARY
+        /// environment variable names (a no-op when the variable is unset
+        /// or empty — plain CI runs only).
+        #[arg(long)]
+        step_summary: bool,
+        /// Prefix prepended to the file paths the `github`, `sarif`, and
+        /// `codeclimate` formats emit — for a project living in a
+        /// repository subdirectory. A usage error when none of those
+        /// formats is selected via `--format` or `--report`.
+        #[arg(long, value_name = "PREFIX")]
+        path_prefix: Option<String>,
         /// Freeze every current finding into a lint baseline file and exit
         /// (PATH defaults to `lint.baseline`, else `.dbtl-baseline.json` at
         /// the project root). Writes always exit 0 and cannot combine with
         /// `--diff`.
         #[arg(long, num_args = 0..=1, value_name = "PATH",
-               conflicts_with_all = ["list_rules", "explain", "fail_on", "format", "no_baseline"])]
+               conflicts_with_all = ["list_rules", "explain", "fail_on", "format", "no_baseline", "report", "step_summary", "path_prefix"])]
         write_baseline: Option<Option<String>>,
         /// Do not read the lint baseline file — every finding counts again.
         #[arg(long)]
@@ -248,12 +299,12 @@ pub enum Commands {
         /// List every lint rule — id, category, effective severity, summary —
         /// and exit. Reads `.dbtl.yml` when found; never loads a data source.
         #[arg(long,
-               conflicts_with_all = ["explain", "write_baseline", "quiet", "format", "fail_on", "no_baseline"])]
+               conflicts_with_all = ["explain", "write_baseline", "quiet", "format", "fail_on", "no_baseline", "report", "step_summary", "path_prefix"])]
         list_rules: bool,
         /// Show one rule's full registry entry (rationale, example, params)
         /// and exit — no data load.
         #[arg(long, value_name = "ID",
-               conflicts_with_all = ["list_rules", "write_baseline", "quiet", "format", "fail_on", "no_baseline"])]
+               conflicts_with_all = ["list_rules", "write_baseline", "quiet", "format", "fail_on", "no_baseline", "report", "step_summary", "path_prefix"])]
         explain: Option<String>,
         /// Suppress the report on stdout; only the exit code matters.
         #[arg(long)]
@@ -311,15 +362,6 @@ pub enum ImpactFormat {
     Json,
 }
 
-/// The `dbtl lint` output format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum LintFormat {
-    /// Plain lines (default): one per counted finding, a tally, the verdict.
-    Text,
-    /// The structured payload for automation.
-    Json,
-}
-
 /// The `--fail-on` argument: the minimum finding severity that fails a gate —
 /// maps onto [`dbtl::FailOn`] (kept separate because `dbtl-core` has no clap
 /// dependency).
@@ -365,6 +407,7 @@ mod exit;
 mod flags;
 mod gates;
 mod lint;
+mod report;
 mod resolve;
 mod resolvers;
 #[cfg(test)]
@@ -374,11 +417,13 @@ pub use baseline::load_baseline;
 pub use columns::run_columns;
 pub use completions::{run_completions, run_man};
 pub use docs::run_docs;
+use docs::*;
 pub use exit::{exit_code, Classify, CliError};
 pub use flags::check_flag_usage;
-pub use gates::{run_check, run_impact};
+pub use gates::{run_check, run_impact, CheckArgs};
 use lint::*;
 pub use lint::{run_lint, LintArgs};
+use report::*;
 use resolve::*;
 pub use resolve::{build_app, DataSourceArgs, ResolvedSource};
 use resolvers::*;

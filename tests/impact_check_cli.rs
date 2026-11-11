@@ -468,13 +468,15 @@ fn check_lint_format_json_serializes_the_report() {
     ]);
     assert_eq!(out.status.code(), Some(1), "violations still fail the gate");
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
-    assert!(v.get("scope").is_some() && v.get("checks").is_some());
-    assert_eq!(v["failures"].as_u64().unwrap(), 6, "6 lint rules fail");
-    let checks = v["checks"].as_array().unwrap();
-    let djs = checks
+    assert_eq!(v["schema"], "dbtl.report/v1", "the schema marker");
+    assert!(v.get("scope").is_some() && v.get("gates").is_some());
+    let gates = v["gates"].as_array().unwrap();
+    let failures = gates.iter().filter(|g| g["status"] == "fail").count();
+    assert_eq!(failures, 6, "6 lint rules fail");
+    let djs = gates
         .iter()
-        .find(|c| c["check"] == "lint:direct_join_to_source")
-        .expect("the lint check item");
+        .find(|g| g["id"] == "lint:direct_join_to_source")
+        .expect("the lint gate item");
     assert_eq!(djs["status"], "fail");
     let findings = djs["findings"].as_array().expect("findings serialize");
     assert_eq!(findings.len(), 16, "the same 16 the line report counts");
@@ -753,8 +755,8 @@ fn check_no_breaking_without_diff_notes_the_skip() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("note: --no-breaking needs --diff"),
-        "the skip note, got: {stdout:?}"
+        stdout.contains("SKIP breaking column changes: needs --diff"),
+        "the skipped gate reports, got: {stdout:?}"
     );
 }
 

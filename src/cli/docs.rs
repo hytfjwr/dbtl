@@ -19,58 +19,7 @@ pub fn run_docs(
 ) -> Result<(), CliError> {
     let scope = src.scope;
     let resolved = src.resolve()?;
-    let provenance = if resolved.is_source {
-        format!("project source ({})", resolved.label)
-    } else {
-        format!("manifest ({})", resolved.label)
-    };
-    let project_name = docs_project_name(&resolved.dag, &resolved.label);
-    // `.dbtl.yml` once — it supplies BOTH the lint config and
-    // `docs.lineage_depth`. Malformed is fatal: a committed doc set must
-    // never describe the wrong rule set or draw the wrong depth.
-    let (manifest_arg, project_arg) = resolved_config_args(&resolved);
-    let pc = load_project_config(manifest_arg.as_deref(), project_arg.as_deref())?;
-    let project_cfg = &pc.config;
-    // Precedence: the flag wins, then `docs.lineage_depth`, then the
-    // shipped default (2 hops).
-    let depth = match lineage_depth {
-        Some(text) => dbtl::LineageDepth::parse(text).ok_or_else(|| {
-            CliError::usage(anyhow::anyhow!(
-                "invalid --lineage-depth '{text}' (expected an integer >= 1 or 'all')"
-            ))
-        })?,
-        None => project_cfg
-            .docs
-            .lineage_depth
-            .unwrap_or(dbtl::LineageDepth::DEFAULT),
-    };
-    // The README's Lint section + per-node violation lists quote the SAME
-    // `run_rules` vector `check --lint`, `dbtl lint`, and the TUI read — and
-    // the baseline resolves through the same path/`baseline_explicit` rules
-    // the lint subcommand uses. A missing conventional file freezes nothing;
-    // a named-but-absent file warns; an unreadable/malformed one is an input
-    // error (the same policy — a frozen set we can't read must never
-    // silently un-freeze every violation in the record).
-    let mut lint_findings = dbtl::run_rules(dbtl::LintInput::new(&resolved.dag, &project_cfg.lint));
-    let candidates =
-        dbtl::project_config_candidates(manifest_arg.as_deref(), project_arg.as_deref());
-    let baseline = load_lint_baseline_file(
-        &lint_baseline_path(&project_cfg.lint.baseline, pc.path.is_some(), &candidates),
-        project_cfg.baseline_explicit,
-    )?;
-    if let Some(b) = &baseline {
-        b.apply(&mut lint_findings);
-    }
-    let files = dbtl::generate_docs_with_options(
-        &resolved.dag,
-        &project_name,
-        &provenance,
-        scope,
-        &dbtl::DocsOptions {
-            findings: Some(&lint_findings),
-            lineage_depth: depth,
-        },
-    );
+    let files = docs_file_set(&resolved, scope, lineage_depth)?;
 
     let out_dir = PathBuf::from(out);
     if check {
@@ -137,6 +86,96 @@ pub(super) fn marked_docs_on_disk(out_dir: &std::path::Path) -> Vec<String> {
     found
 }
 
+/// The in-memory file set `dbtl docs` would emit for `resolved`: the
+/// provenance tag, the docs project name, the resolved lineage-diagram
+/// depth (flag > `docs.lineage_depth` > default), and the SAME `run_rules`
+/// vector `check --lint`, `dbtl lint`, and the TUI read — with the lint
+/// baseline applied through the same path/`baseline_explicit` rules the
+/// lint subcommand uses. `.dbtl.yml` is auto-detected beside the source, a
+/// malformed file fatal: a committed doc set must never describe the wrong
+/// rule set or draw the wrong depth. `check --docs-dir` compares exactly
+/// this set (no flag — config/default depth), so the gate can never
+/// disagree with `docs --check` about what "current docs" means.
+pub(super) fn docs_file_set(
+    resolved: &ResolvedSource,
+    scope: dbtl::PackageScope,
+    lineage_depth: Option<&str>,
+) -> Result<Vec<(String, String)>, CliError> {
+    let provenance = if resolved.is_source {
+        format!("project source ({})", resolved.label)
+    } else {
+        format!("manifest ({})", resolved.label)
+    };
+    let project_name = docs_project_name(&resolved.dag, &resolved.label);
+    // `.dbtl.yml` once — it supplies BOTH the lint config and
+    // `docs.lineage_depth`.
+    let (manifest_arg, project_arg) = resolved_config_args(resolved);
+    let pc = load_project_config(manifest_arg.as_deref(), project_arg.as_deref())?;
+    let project_cfg = &pc.config;
+    // Precedence: the flag wins, then `docs.lineage_depth`, then the
+    // shipped default (2 hops).
+    let depth = match lineage_depth {
+        Some(text) => dbtl::LineageDepth::parse(text).ok_or_else(|| {
+            CliError::usage(anyhow::anyhow!(
+                "invalid --lineage-depth '{text}' (expected an integer >= 1 or 'all')"
+            ))
+        })?,
+        None => project_cfg
+            .docs
+            .lineage_depth
+            .unwrap_or(dbtl::LineageDepth::DEFAULT),
+    };
+    // A missing conventional baseline file freezes nothing; a
+    // named-but-absent file warns; an unreadable/malformed one is an input
+    // error (the same policy — a frozen set we can't read must never
+    // silently un-freeze every violation in the record).
+    let mut lint_findings = dbtl::run_rules(dbtl::LintInput::new(&resolved.dag, &project_cfg.lint));
+    let candidates =
+        dbtl::project_config_candidates(manifest_arg.as_deref(), project_arg.as_deref());
+    let baseline = load_lint_baseline_file(
+        &lint_baseline_path(&project_cfg.lint.baseline, pc.path.is_some(), &candidates),
+        project_cfg.baseline_explicit,
+    )?;
+    if let Some(b) = &baseline {
+        b.apply(&mut lint_findings);
+    }
+    Ok(dbtl::generate_docs_with_options(
+        &resolved.dag,
+        &project_name,
+        &provenance,
+        scope,
+        &dbtl::DocsOptions {
+            findings: Some(&lint_findings),
+            lineage_depth: depth,
+        },
+    ))
+}
+
+/// The pure comparison half of `check_docs` — the sorted `missing` /
+/// `changed` / `stale` page lists between the generated set and what's on
+/// disk. `dbtl docs --check` and `check --docs-dir` share it verbatim, so
+/// both report exactly the same divergence.
+pub(super) fn docs_differences(out_dir: &std::path::Path, files: &[(String, String)]) -> DocsDrift {
+    let expected: std::collections::HashSet<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
+    let mut drift = DocsDrift::default();
+    for (rel, want) in files {
+        match std::fs::read_to_string(out_dir.join(rel)) {
+            Err(_) => drift.missing.push(rel.clone()),
+            Ok(have) if have != *want => drift.changed.push(rel.clone()),
+            Ok(_) => {}
+        }
+    }
+    for rel in marked_docs_on_disk(out_dir) {
+        if !expected.contains(rel.as_str()) {
+            drift.stale.push(rel);
+        }
+    }
+    drift.missing.sort();
+    drift.changed.sort();
+    drift.stale.sort();
+    drift
+}
+
 /// `docs --check`: compare the in-memory generated set against what's on disk
 /// without writing anything. Prints one sorted line per difference — a
 /// `missing:` page, a `changed:` page, or a `stale:` marked file — then
@@ -149,35 +188,19 @@ pub(super) fn check_docs(
     files: &[(String, String)],
     quiet: bool,
 ) -> Result<(), CliError> {
-    let expected: std::collections::HashSet<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
-    let mut problems: Vec<String> = Vec::new();
-
-    for (rel, want) in files {
-        match std::fs::read_to_string(out_dir.join(rel)) {
-            Err(_) => problems.push(format!("missing: {rel}")),
-            Ok(have) if have != *want => problems.push(format!("changed: {rel}")),
-            Ok(_) => {}
-        }
-    }
-    for rel in marked_docs_on_disk(out_dir) {
-        if !expected.contains(rel.as_str()) {
-            problems.push(format!("stale: {rel}"));
-        }
-    }
-
-    if problems.is_empty() {
+    let drift = docs_differences(out_dir, files);
+    if drift.total() == 0 {
         if !quiet {
             println!("docs up to date ({} files)", files.len());
         }
         return Ok(());
     }
-    problems.sort();
-    for p in &problems {
+    for p in drift.lines() {
         println!("{p}");
     }
     Err(CliError::gate(anyhow::anyhow!(
         "docs are out of date: {} difference(s)",
-        problems.len()
+        drift.total()
     )))
 }
 

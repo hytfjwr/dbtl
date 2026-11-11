@@ -27,7 +27,8 @@ use clap::{CommandFactory, FromArgMatches};
 
 use cli::{
     build_app, check_flag_usage, exit_code, load_baseline, run_check, run_columns, run_completions,
-    run_docs, run_impact, run_lint, run_man, Cli, CliError, Commands, DataSourceArgs, LintArgs,
+    run_docs, run_impact, run_lint, run_man, CheckArgs, Cli, CliError, Commands, DataSourceArgs,
+    LintArgs,
 };
 use event_loop::{event_loop, find_dbt};
 use terminal::{
@@ -120,8 +121,8 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
         }) => {
             return run_docs(out, &src, lineage_depth.as_deref(), *quiet, *clean, *check);
         }
-        Some(Commands::Impact { format }) => {
-            return run_impact(*format, &src);
+        Some(Commands::Impact { format, report }) => {
+            return run_impact(*format, report, &src);
         }
         Some(Commands::Check {
             coverage_min,
@@ -130,23 +131,36 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
             rules,
             fail_on,
             format,
+            report,
+            step_summary,
+            path_prefix,
+            docs_dir,
             quiet,
         }) => {
             return run_check(
                 &src,
-                *coverage_min,
-                *lint,
-                rules,
-                fail_on.map(Into::into),
-                *format,
-                *quiet,
-                *no_breaking,
+                &CheckArgs {
+                    coverage_min: *coverage_min,
+                    lint: *lint,
+                    no_breaking: *no_breaking,
+                    rules,
+                    fail_on: fail_on.map(Into::into),
+                    format: *format,
+                    quiet: *quiet,
+                    reports: report,
+                    step_summary: *step_summary,
+                    path_prefix: path_prefix.as_deref(),
+                    docs_dir: docs_dir.as_deref(),
+                },
             );
         }
         Some(Commands::Lint {
             rules,
             fail_on,
             format,
+            report,
+            step_summary,
+            path_prefix,
             write_baseline,
             no_baseline,
             list_rules,
@@ -164,6 +178,9 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
                     list_rules: *list_rules,
                     explain: explain.as_deref(),
                     quiet: *quiet,
+                    reports: report,
+                    step_summary: *step_summary,
+                    path_prefix: path_prefix.as_deref(),
                 },
             );
         }

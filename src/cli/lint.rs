@@ -10,13 +10,14 @@ use super::*;
 
 /// A gate's verdict: `fail` trips the exit code, `warn` reports without
 /// counting (findings exist but `fail_on` doesn't reach them), `pass` is
-/// clean. Shared so `check`'s per-check lines and `lint`'s verdict line
-/// always agree.
+/// clean, `skip` means the gate was asked for but could not evaluate. Shared
+/// so `check`'s per-check lines and `lint`'s verdict line always agree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GateStatus {
     Pass,
     Warn,
     Fail,
+    Skip,
 }
 
 impl GateStatus {
@@ -26,15 +27,23 @@ impl GateStatus {
             GateStatus::Pass => "PASS",
             GateStatus::Warn => "WARN",
             GateStatus::Fail => "FAIL",
+            GateStatus::Skip => "SKIP",
         }
     }
-    /// The `--format json` status string.
+    /// The report status string (`gates[].status` in `dbtl.report/v1`).
     pub(super) fn json(self) -> &'static str {
         match self {
             GateStatus::Pass => "pass",
             GateStatus::Warn => "warn",
             GateStatus::Fail => "fail",
+            GateStatus::Skip => "skip",
         }
+    }
+}
+
+impl serde::Serialize for GateStatus {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.json())
     }
 }
 
@@ -96,14 +105,6 @@ pub(super) struct LintOutcome {
     pub findings: Vec<dbtl::Finding>,
     /// Per enabled rule, in `LintRule::ALL` order.
     pub rules: Vec<RuleOutcome>,
-    /// Counted findings by severity.
-    pub errors: usize,
-    /// Counted warn findings.
-    pub warnings: usize,
-    /// Findings frozen by the baseline file.
-    pub baselined: usize,
-    /// Non-baselined findings suppressed by `--diff`'s baseline dag.
-    pub pre_existing: usize,
     /// Counted findings that meet `fail_on` (the gate's numerator — `0`
     /// when nothing fails).
     pub gating: usize,
@@ -113,24 +114,6 @@ pub(super) struct LintOutcome {
     pub fail_on: dbtl::FailOn,
     /// A counted finding at or above `fail_on` exists.
     pub failed: bool,
-}
-
-impl LintOutcome {
-    /// Total counted findings — the gate input.
-    pub(super) fn counted(&self) -> usize {
-        self.errors + self.warnings
-    }
-    /// The report verdict: `fail` when findings meet `fail_on`, `warn` when
-    /// findings exist below it.
-    pub(super) fn status(&self) -> GateStatus {
-        if self.failed {
-            GateStatus::Fail
-        } else if self.counted() > 0 {
-            GateStatus::Warn
-        } else {
-            GateStatus::Pass
-        }
-    }
 }
 
 /// The shared lint evaluation: [`dbtl::run_rules`] over `dag`, `baseline`
@@ -165,10 +148,7 @@ pub(super) fn evaluate_lint(
             base_keys.contains(&(r, n.to_string(), rel.to_vec()))
         }
     };
-    let mut errors = 0;
-    let mut warnings = 0;
     let mut gating = 0;
-    let mut total_pre_existing = 0;
     let mut rules = Vec::new();
     for rule in dbtl::LintRule::ALL {
         let Some(severity) = cfg.severity(rule) else {
@@ -187,16 +167,11 @@ pub(super) fn evaluate_lint(
                 rule_pre_existing += 1;
             } else {
                 counted.push(i);
-                match f.severity {
-                    dbtl::Severity::Error => errors += 1,
-                    dbtl::Severity::Warn => warnings += 1,
-                }
                 if severity_fails(f.severity, fail_on) {
                     gating += 1;
                 }
             }
         }
-        total_pre_existing += rule_pre_existing;
         let status = if counted.is_empty() {
             GateStatus::Pass
         } else {
@@ -212,16 +187,12 @@ pub(super) fn evaluate_lint(
         });
     }
     LintOutcome {
-        baselined: findings.iter().filter(|f| f.baselined).count(),
-        pre_existing: total_pre_existing,
         gating,
         has_diff: base.is_some(),
         fail_on,
         failed: gating > 0,
         findings,
         rules,
-        errors,
-        warnings,
     }
 }
 
@@ -279,8 +250,8 @@ pub struct LintArgs<'a> {
     pub rules: &'a [String],
     /// `--fail-on` — overrides `.dbtl.yml`'s `fail_on`.
     pub fail_on: Option<dbtl::FailOn>,
-    /// `--format`.
-    pub format: LintFormat,
+    /// `--format` — the stdout report format.
+    pub format: ReportFormat,
     /// `--write-baseline` — `Some(None)` = the flag with no PATH argument.
     pub write_baseline: Option<&'a Option<String>>,
     /// `--no-baseline` — never read the baseline file.
@@ -291,6 +262,12 @@ pub struct LintArgs<'a> {
     pub explain: Option<&'a str>,
     /// `--quiet` — suppress stdout; the exit code carries the verdict.
     pub quiet: bool,
+    /// `--report <FMT>:<PATH>` destinations (repeatable).
+    pub reports: &'a [String],
+    /// `--step-summary` — append the markdown report to $GITHUB_STEP_SUMMARY.
+    pub step_summary: bool,
+    /// `--path-prefix` — prepended to file paths in path-carrying formats.
+    pub path_prefix: Option<&'a str>,
 }
 
 /// The lint config the query modes (`--list-rules`, `--explain`) print:
@@ -347,6 +324,16 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
     // An unknown --rules name is a usage error — checked before the data
     // load so it can't hide behind a missing-input error.
     validate_rule_names(args.rules)?;
+    // Same for a malformed --report spec or a --path-prefix with no
+    // path-carrying format selected — all usage errors land before the load.
+    let plan = OutputPlan::build(
+        args.format,
+        args.quiet,
+        args.reports,
+        args.step_summary,
+        args.path_prefix,
+        &ReportFormat::ALL,
+    )?;
     // Freezing findings is a snapshot, not a comparison — a baseline written
     // under --diff would silently encode "new only" semantics it lacks.
     if args.write_baseline.is_some() && src.diff.is_some() {
@@ -408,16 +395,15 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
         baseline.as_ref(),
         fail_on,
     );
-    if !args.quiet {
-        match args.format {
-            LintFormat::Text => print_lint_report(&resolved.dag, &outcome),
-            LintFormat::Json => println!(
-                "{}",
-                serde_json::to_string_pretty(&LintReportJson::from(&outcome))
-                    .map_err(|e| CliError::new(e.into()))?
-            ),
-        }
-    }
+    // One gate per rule — the same `lint:*` gates `check --lint` reports,
+    // rendered by the same formats.
+    let mut report = Report::new(
+        resolved.dag.project_name().unwrap_or("dbt"),
+        src.scope.describe(),
+    );
+    report.gates = lint_gates(&resolved.dag, &outcome);
+    report.summary = Report::summarize(&report.gates);
+    plan.emit(&report, "lint")?;
     if outcome.failed {
         Err(CliError::gate(anyhow::anyhow!(
             "lint: {} finding(s) at or above fail-on '{}'",
@@ -426,102 +412,6 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
         )))
     } else {
         Ok(())
-    }
-}
-
-/// The plain-text `dbtl lint` report: one line per counted finding —
-/// severity, location (`file:line`, defaulting to line 1; the node name
-/// when no file is known), rule id, message — a tally line, then the
-/// verdict. Baselined findings collapse to a count; under `--diff` the
-/// pre-existing count records what the baseline already carried.
-fn print_lint_report(dag: &dbtl::Dag, outcome: &LintOutcome) {
-    for ro in &outcome.rules {
-        for &i in &ro.counted {
-            let f = &outcome.findings[i];
-            let loc = f
-                .location
-                .as_ref()
-                .map(|l| format!("{}:{}", l.file, l.line.unwrap_or(1)))
-                .unwrap_or_else(|| {
-                    dag.get(&f.node_uid)
-                        .map(|n| n.name.clone())
-                        .unwrap_or_else(|| f.node_uid.clone())
-                });
-            println!(
-                "{} {} {} {}",
-                f.severity.name(),
-                loc,
-                f.rule.name(),
-                f.message
-            );
-        }
-    }
-    if outcome.counted() == 0 {
-        let mut parts = Vec::new();
-        if outcome.pre_existing > 0 {
-            parts.push(format!("{} pre-existing", outcome.pre_existing));
-        }
-        if outcome.baselined > 0 {
-            parts.push(format!("{} baselined", outcome.baselined));
-        }
-        let msg = if outcome.has_diff {
-            "lint: no new violations"
-        } else {
-            "lint: no violations"
-        };
-        if parts.is_empty() {
-            println!("{msg}");
-        } else {
-            println!("{msg} ({})", parts.join(", "));
-        }
-    } else {
-        let mut summary = format!(
-            "lint: {} error(s), {} warning(s), {} baselined",
-            outcome.errors, outcome.warnings, outcome.baselined
-        );
-        if outcome.has_diff {
-            summary += &format!(", {} pre-existing", outcome.pre_existing);
-        }
-        println!("{summary}");
-    }
-    println!("{} lint", outcome.status().word());
-}
-
-/// The `dbtl lint --format json` payload: every finding (`baselined`
-/// marked per finding), the severity tally, the effective `fail_on`, and
-/// the verdict bit — provisional until a shared report shape replaces it.
-#[derive(serde::Serialize)]
-struct LintReportJson<'a> {
-    findings: &'a [dbtl::Finding],
-    summary: LintSummaryJson,
-    fail_on: dbtl::FailOn,
-    failed: bool,
-}
-
-#[derive(serde::Serialize)]
-struct LintSummaryJson {
-    errors: usize,
-    warnings: usize,
-    baselined: usize,
-    /// Non-baselined findings suppressed by `--diff`'s baseline — present
-    /// only when a comparison ran.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pre_existing: Option<usize>,
-}
-
-impl<'a> From<&'a LintOutcome> for LintReportJson<'a> {
-    fn from(outcome: &'a LintOutcome) -> Self {
-        LintReportJson {
-            findings: &outcome.findings,
-            summary: LintSummaryJson {
-                errors: outcome.errors,
-                warnings: outcome.warnings,
-                baselined: outcome.baselined,
-                pre_existing: outcome.has_diff.then_some(outcome.pre_existing),
-            },
-            fail_on: outcome.fail_on,
-            failed: outcome.failed,
-        }
     }
 }
 
@@ -762,9 +652,8 @@ mod tests {
         let cfg = cfg_only(&[dbtl::LintRule::RootModels]);
         // Plain run: both findings count, gate fails under the default.
         let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Error);
-        assert_eq!(out.counted(), 2);
-        assert_eq!(out.errors, 2);
-        assert_eq!(out.baselined, 0);
+        assert_eq!(out.rules[0].counted.len(), 2);
+        assert_eq!(out.rules[0].baselined, 0);
         assert!(out.failed && out.rules[0].status == GateStatus::Fail);
         // A baseline freezing `a` leaves only `b` counted.
         let frozen = dbtl::Baseline::from_findings(
@@ -775,19 +664,19 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         let out = evaluate_lint(&dag, &cfg, None, Some(&frozen), dbtl::FailOn::Error);
-        assert_eq!(out.counted(), 1);
-        assert_eq!(out.baselined, 1);
+        assert_eq!(out.rules[0].counted.len(), 1);
+        assert_eq!(out.rules[0].baselined, 1);
         assert_eq!(out.findings[out.rules[0].counted[0]].node_uid, "model.p.b");
         // Self-diff: every finding is pre-existing — nothing counts.
         let out = evaluate_lint(&dag, &cfg, Some(&dag), None, dbtl::FailOn::Error);
-        assert_eq!(out.counted(), 0);
-        assert_eq!(out.pre_existing, 2);
+        assert_eq!(out.rules[0].counted.len(), 0);
+        assert_eq!(out.rules[0].pre_existing, 2);
         assert!(!out.failed && out.rules[0].status == GateStatus::Pass);
         // Diff + baseline: the frozen one is baselined, the rest pre-existing.
         let out = evaluate_lint(&dag, &cfg, Some(&dag), Some(&frozen), dbtl::FailOn::Error);
-        assert_eq!(out.counted(), 0);
-        assert_eq!(out.pre_existing, 1);
-        assert_eq!(out.baselined, 1);
+        assert_eq!(out.rules[0].counted.len(), 0);
+        assert_eq!(out.rules[0].pre_existing, 1);
+        assert_eq!(out.rules[0].baselined, 1);
     }
 
     #[test]
@@ -798,15 +687,14 @@ mod tests {
             .insert(dbtl::LintRule::RootModels, Some(dbtl::Severity::Warn));
         // Warn findings under the default `error` threshold report but pass.
         let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Error);
-        assert_eq!(out.warnings, 2);
+        assert_eq!(out.rules[0].counted.len(), 2);
         assert!(!out.failed);
-        assert_eq!(out.status(), GateStatus::Warn);
         assert_eq!(out.rules[0].status, GateStatus::Warn);
         // `--fail-on warn` fails on them.
         let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Warn);
         assert!(out.failed && out.gating == 2);
         // `never` never fails.
         let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Never);
-        assert!(!out.failed && out.status() == GateStatus::Warn);
+        assert!(!out.failed && out.rules[0].status == GateStatus::Warn);
     }
 }
