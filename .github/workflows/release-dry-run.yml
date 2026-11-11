@@ -21,7 +21,7 @@ concurrency:
 jobs:
   dry-run:
     name: Release dry run
-    uses: ./.github/workflows/release-build.yml
+    uses: hytfjwr/dbtl/.github/workflows/release-build.yml@ci/release-targets
     with:
       tag: v0.0.0-dryrun
       ref: ${{ github.sha }}
