@@ -690,6 +690,62 @@ fn man_emits_roff_and_stays_hidden() {
 }
 
 #[test]
+fn cli_reference_emits_markdown_and_stays_hidden() {
+    let out = run(&["cli-reference"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "cli-reference: {}",
+        stderr(&out)
+    );
+    let doc = stdout(&out);
+    // The generated-file marker the check gate keys on.
+    assert!(
+        doc.starts_with("<!-- GENERATED FILE"),
+        "generated marker: {doc}"
+    );
+    // Byte-identical across runs — the doc is a pure function of the clap
+    // definition (no timestamp, no machine-local path).
+    assert_eq!(doc, stdout(&run(&["cli-reference"])));
+    // A usage block per subcommand, including the hidden ones the
+    // reference documents.
+    for cmd in ["check", "lint", "docs", "columns", "impact", "completions"] {
+        assert!(
+            doc.contains(&format!("Usage: dbtl {cmd}")),
+            "cli-reference covers `{cmd}`"
+        );
+    }
+    // The exit-code table mirrors the binary's contract.
+    assert!(doc.contains("| `101` |"), "exit codes: {doc}");
+    // Hidden: absent from `--help`'s command list.
+    let help = stdout(&run(&["--help"]));
+    assert!(
+        !help
+            .lines()
+            .any(|l| l.trim_start().starts_with("cli-reference")),
+        "--help omits the hidden cli-reference subcommand"
+    );
+}
+
+#[test]
+fn cli_reference_rejects_flags_and_args() {
+    for args in [
+        vec!["--ascii", "cli-reference"],
+        vec!["cli-reference", "--watch"],
+        vec!["cli-reference", "extra"],
+        vec!["--manifest", "x", "cli-reference"],
+    ] {
+        let out = run(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{args:?} is a usage error, stderr: {}",
+            stderr(&out)
+        );
+    }
+}
+
+#[test]
 fn completions_and_man_reject_every_global_flag() {
     let m = fixture_manifest();
     let m_str = m.to_str().unwrap();

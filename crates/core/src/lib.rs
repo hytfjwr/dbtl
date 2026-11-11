@@ -65,6 +65,8 @@ pub use project_config::{
     project_config_candidates, project_config_path, DocsConfig, FailOn, LineageDepth,
     ProjectConfig, PROJECT_CONFIG_NAME,
 };
+#[cfg(feature = "schema")]
+pub use project_config::{project_config_schema, severity_setting_schema};
 pub use run_results::{default_run_results_path, RunResult, RunResults, RunStatus};
 pub use select::select;
 pub use source::{

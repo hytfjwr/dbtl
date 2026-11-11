@@ -47,6 +47,10 @@ serde = { version = "1", features = ["derive"] }
 # preserve_order keeps column definition order from the manifest (its `Map`
 # becomes an `IndexMap`), so the structure view shows columns as authored.
 serde_json = { version = "1", features = ["preserve_order"] }
+# JSON Schema derives for the generated config schemas — only ever enabled
+# through the non-default `schema` feature (`cargo xtask gen-docs`), so the
+# shipped `dbtl` binary never links it.
+schemars = "1"
 # Parses dbt_project.yml + schema.yml for the source loader (no compiled manifest).
 # Maintained fork of the deprecated serde_yaml (API-compatible). NOTE: only
 # dbtl's OWN config/state files (persist/theme) parse through it — dbt's own

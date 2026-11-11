@@ -98,6 +98,7 @@ pub struct PersistedTab {
 /// User defaults from `~/.config/dbtl/config.yml` — every field optional, so a
 /// missing file and an empty file behave identically (all `None`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default)]
 pub struct Config {
     /// Default colour theme: a preset name or a theme under

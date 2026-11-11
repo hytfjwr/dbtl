@@ -8,8 +8,12 @@ license.workspace = true
 publish = false
 
 [dependencies]
-dbtl-core.workspace = true
+# `schema` is a non-default feature — it pulls in schemars for the generated
+# config schemas only; the `dbtl` binary never enables it.
+dbtl-core = { workspace = true, features = ["schema"] }
+dbtl-tui = { workspace = true, features = ["schema"] }
 anyhow.workspace = true
 clap.workspace = true
+schemars.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

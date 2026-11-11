@@ -8,10 +8,17 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+# Derives `schemars::JsonSchema` on `persist::Config` for
+# `cargo xtask gen-docs`; off by default so the `dbtl` binary never links it.
+schema = ["dep:schemars"]
+
 [dependencies]
 dbtl-core.workspace = true
 anyhow.workspace = true
 ratatui.workspace = true
+# Optional: `--features schema` only.
+schemars = { workspace = true, optional = true }
 serde.workspace = true
 serde_norway.workspace = true
 unicode-width.workspace = true
