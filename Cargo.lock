@@ -503,6 +503,7 @@ dependencies = [
  "tempfile",
  "unicode-width",
  "vt100",
+ "xtask",
 ]
 
 [[package]]
@@ -2546,6 +2547,7 @@ version = "0.5.3"
 dependencies = [
  "anyhow",
  "clap",
+ "dbtl-core",
  "serde_json",
  "tempfile",
 ]
