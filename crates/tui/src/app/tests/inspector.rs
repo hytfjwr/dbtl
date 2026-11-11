@@ -123,13 +123,22 @@ fn inspector_view_collects_run_lint_and_diff() {
         .expect("the fixture's default lint config finds violations");
     a.select_by_unique_id(&uid);
     let view = a.inspector_view().expect("inspect a violating node");
-    let want: Vec<String> = a
+    let want: Vec<crate::InspectorLintFinding> = a
         .lint_findings()
         .iter()
         .filter(|f| f.node_uid == uid)
-        .map(|f| format!("{}: {}", f.rule.name(), f.message))
+        .map(|f| crate::InspectorLintFinding {
+            severity: f.severity,
+            rule: f.rule.name().to_string(),
+            summary: f.rule.description().to_string(),
+            message: f.message.clone(),
+        })
         .collect();
     assert_eq!(view.lint, want, "the node's own findings, in finding order");
+    assert!(
+        view.lint.iter().all(|f| !f.summary.is_empty()),
+        "every snapshot carries the registry summary"
+    );
     // A lint-clean node reports an empty list (the pane then draws the
     // "all checks pass" verdict — see the render test).
     let linted: std::collections::HashSet<&str> = a

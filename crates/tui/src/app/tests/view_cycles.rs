@@ -161,6 +161,202 @@ fn untested_filter_narrows_the_list_and_toggles_off() {
 }
 
 #[test]
+fn linted_filter_keeps_finding_models_and_rebuilds_on_config() {
+    let mut a = app();
+    // The expected membership: model-list entries whose uid carries a
+    // finding in the shared run_rules set.
+    let linted: std::collections::HashSet<String> = a
+        .lint_findings()
+        .iter()
+        .map(|f| f.node_uid.clone())
+        .collect();
+    let want: Vec<String> = a
+        .model_list
+        .models
+        .iter()
+        .filter(|m| linted.contains(&m.unique_id))
+        .map(|m| m.unique_id.clone())
+        .collect();
+    assert!(!want.is_empty(), "precondition: fixture has linted models");
+
+    // Selecting a linted model survives the toggle: apply_list_filter
+    // re-resolves the uid inside the filtered list.
+    a.select_by_unique_id(&want[0]);
+    apply_action(&mut a, Action::ToggleLintFilter);
+    assert_eq!(a.list_filter, ListFilter::Linted);
+    assert_eq!(a.list_filter_label(), Some("linted"));
+    let got: Vec<&str> = a
+        .active_list()
+        .models
+        .iter()
+        .map(|m| m.unique_id.as_str())
+        .collect();
+    assert_eq!(
+        got,
+        want.iter().map(String::as_str).collect::<Vec<_>>(),
+        "exactly the finding models, in list order"
+    );
+    assert_eq!(
+        a.selected_unique_id().as_deref(),
+        Some(want[0].as_str()),
+        "selection re-resolved by uid into the linted view"
+    );
+
+    // Disabling every rule empties the finding set → set_lint_config's
+    // apply_list_filter rebuild empties the live view.
+    let mut cfg = crate::LintConfig::default();
+    for r in crate::LintRule::ALL {
+        cfg.severities.insert(r, None);
+    }
+    a.set_lint_config(cfg);
+    assert!(
+        a.active_list().is_empty(),
+        "no findings → empty linted view"
+    );
+    assert_eq!(
+        a.list_empty_reason().as_deref(),
+        Some("no linted models"),
+        "the filter names what it removed"
+    );
+    // Re-enabling restores the same membership.
+    a.set_lint_config(crate::LintConfig::default());
+    assert_eq!(a.active_list().len(), want.len());
+    apply_action(&mut a, Action::ToggleLintFilter);
+    assert_eq!(a.list_filter, ListFilter::All, "second press toggles off");
+}
+
+#[test]
+fn linted_filter_is_exclusive_and_search_narrows_on_top() {
+    let mut a = app();
+    apply_action(&mut a, Action::ToggleLintFilter);
+    assert_eq!(a.list_filter, ListFilter::Linted);
+    // Another persistent filter replaces, never stacks.
+    apply_action(&mut a, Action::ToggleUntestedFilter);
+    assert_eq!(a.list_filter, ListFilter::Untested);
+    apply_action(&mut a, Action::ToggleLintFilter);
+    assert_eq!(a.list_filter, ListFilter::Linted);
+    apply_action(&mut a, Action::ToggleBookmarkFilter);
+    assert_eq!(a.list_filter, ListFilter::Bookmarked);
+    apply_action(&mut a, Action::ToggleLintFilter);
+    assert_eq!(a.list_filter, ListFilter::Linted);
+
+    // A list search narrows FROM the linted view: a query matching a full-
+    // list clean model still only yields finding models.
+    let linted: std::collections::HashSet<String> = a
+        .lint_findings()
+        .iter()
+        .map(|f| f.node_uid.clone())
+        .collect();
+    let name = a.active_list().models[0].name.clone();
+    apply_action(&mut a, Action::SearchOpen);
+    for c in name.chars() {
+        apply_action(&mut a, Action::SearchType(c));
+    }
+    assert!(
+        !a.active_list().is_empty()
+            && a.active_list()
+                .models
+                .iter()
+                .all(|m| linted.contains(m.unique_id.as_str())),
+        "search narrows inside the linted view, not over the full list"
+    );
+    apply_action(&mut a, Action::SearchCancel);
+    assert!(
+        a.active_list()
+            .models
+            .iter()
+            .all(|m| linted.contains(&m.unique_id)),
+        "closing the search restores the linted view"
+    );
+}
+
+#[test]
+fn gap_next_under_the_lint_lens_cycles_finding_models() {
+    // n/N are lens-aware: under Lint they walk the finding models instead of
+    // the coverage gaps, scoped to the active list and wrapping.
+    let mut a = app();
+    a.ui_state.set_lens(LineageLens::Lint);
+    let linted: std::collections::HashSet<String> = a
+        .lint_findings()
+        .iter()
+        .map(|f| f.node_uid.clone())
+        .collect();
+    let targets: Vec<usize> = a
+        .model_list
+        .models
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| linted.contains(m.unique_id.as_str()))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(targets.len() >= 2, "fixture has multiple linted models");
+
+    a.ui_state.set_selected(0);
+    apply_action(&mut a, Action::GapPrev);
+    assert_eq!(
+        a.ui_state.selected(),
+        *targets.last().unwrap(),
+        "N wraps back to the last linted model"
+    );
+    apply_action(&mut a, Action::GapNext);
+    assert_eq!(
+        a.ui_state.selected(),
+        targets[0],
+        "n wraps forward to the first"
+    );
+    apply_action(&mut a, Action::GapNext);
+    let second = a.ui_state.selected();
+    assert!(
+        targets.contains(&second) && second != targets[0],
+        "n cycles onward through the linted models"
+    );
+
+    // Off the Lint lens the keys are the coverage-gap cycle again — the big
+    // fixture has no untested models, so n is a no-op there.
+    a.ui_state.set_lens(LineageLens::Off);
+    a.ui_state.set_selected(0);
+    apply_action(&mut a, Action::GapNext);
+    assert_eq!(
+        a.ui_state.selected(),
+        0,
+        "outside the Lint lens n is the untested cycle"
+    );
+
+    // Scoped to the active list: under the linted filter the cycle only
+    // lands on members of that view (all of which are linted).
+    a.ui_state.set_lens(LineageLens::Lint);
+    apply_action(&mut a, Action::ToggleLintFilter);
+    apply_action(&mut a, Action::GapNext);
+    let uid = a.selected_unique_id().expect("cycle landed somewhere");
+    assert!(
+        linted.contains(uid.as_str()),
+        "the scoped cycle lands inside the filtered view"
+    );
+    apply_action(&mut a, Action::ToggleLintFilter);
+
+    // No findings → a no-op under the lens, and the palette reason names it.
+    let mut cfg = crate::LintConfig::default();
+    for r in crate::LintRule::ALL {
+        cfg.severities.insert(r, None);
+    }
+    a.set_lint_config(cfg);
+    a.ui_state.set_selected(0);
+    apply_action(&mut a, Action::GapNext);
+    assert_eq!(a.ui_state.selected(), 0, "no findings → no-op");
+    assert_eq!(
+        a.unavailable_reason(Action::GapNext).as_deref(),
+        Some("no lint findings in the list"),
+        "the lens-aware reason names the missing set"
+    );
+    a.ui_state.set_lens(LineageLens::Off);
+    assert_eq!(
+        a.unavailable_reason(Action::GapNext).as_deref(),
+        Some("no untested models"),
+        "off the lens the reason names the coverage gaps again"
+    );
+}
+
+#[test]
 fn bookmark_filter_tracks_toggles_and_search_narrows_on_top() {
     let mut a = app();
     let kept = "model.jaffle_finance.stg_payment__shoppers";

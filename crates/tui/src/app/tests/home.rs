@@ -208,6 +208,96 @@ fn home_command_rows_run_and_unavailable_ones_are_filtered() {
 }
 
 #[test]
+fn home_health_splits_lint_by_severity_and_attention_tones_it() {
+    // The fixture carries 27 error + 11 warning findings — the Health gauge
+    // tail quotes both counts, and the Attention worklist renders the
+    // error-severity rows Bad, error-first.
+    let mut a = app();
+    a.enter_home();
+    let d = a.home_data();
+    let tail = d
+        .sections
+        .iter()
+        .find(|s| s.title == "Health")
+        .and_then(|s| s.info.first())
+        .map(|i| match i {
+            HomeInfo::Gauge { tail, .. } => tail.clone(),
+            other => panic!("Health's first info row is the gauge: {other:?}"),
+        })
+        .expect("the Health section always renders its gauge");
+    assert!(
+        tail.contains("lint 27 errors, 11 warnings"),
+        "the tail splits lint by severity: {tail}"
+    );
+    let att = d
+        .sections
+        .iter()
+        .find(|s| s.title == "Attention")
+        .expect("the fixture has attention rows");
+    let lint: Vec<&HomeRow> = att
+        .rows
+        .iter()
+        .filter(|r| r.detail.starts_with("lint "))
+        .collect();
+    assert!(!lint.is_empty(), "lint findings join the worklist");
+    assert!(
+        lint.iter()
+            .all(|r| r.tone == HomeTone::Bad && r.detail.starts_with("lint error: ")),
+        "fixture lint rows are all error-severity → Bad, `lint error: <rule>`: {lint:?}"
+    );
+
+    // A warn-severity finding reads `lint warn:` and tones Warn — a
+    // staging→staging edge pinned to `staging_depends_on_staging` alone.
+    // stg_b carries a test so the untested class can't claim it first (the
+    // `seen` dedupe keeps a model's FIRST/worst row).
+    let dag = pr_dag(
+        vec![
+            ("model.p.stg_a", pr_model("stg_a", "staging", "select 1")),
+            ("model.p.stg_b", pr_model("stg_b", "staging", "select 1")),
+            (
+                "test.p.stg_b_unique",
+                crate::RawNode {
+                    name: "stg_b_unique".into(),
+                    resource_type: "test".into(),
+                    attached_node: Some("model.p.stg_b".to_string()),
+                    test_metadata: Some(crate::RawTestMetadata {
+                        name: Some("unique".into()),
+                        kwargs: None,
+                    }),
+                    ..Default::default()
+                },
+            ),
+        ],
+        &[("model.p.stg_a", "model.p.stg_b")],
+        vec![],
+    );
+    let mut b = App::new(dag, PathBuf::from("/p/manifest.json"));
+    let mut cfg = crate::LintConfig::default();
+    for r in crate::LintRule::ALL {
+        cfg.severities.insert(r, None);
+    }
+    cfg.severities.insert(
+        crate::LintRule::StagingDependsOnStaging,
+        Some(crate::Severity::Warn),
+    );
+    b.set_lint_config(cfg);
+    b.enter_home();
+    let d = b.home_data();
+    let att = d
+        .sections
+        .iter()
+        .find(|s| s.title == "Attention")
+        .expect("warn rows render");
+    let row = att
+        .rows
+        .iter()
+        .find(|r| r.detail.starts_with("lint warn: "))
+        .expect("the warn-severity row");
+    assert_eq!(row.tone, HomeTone::Warn);
+    assert_eq!(row.detail, "lint warn: staging_depends_on_staging");
+}
+
+#[test]
 fn home_search_filters_and_enter_opens_a_tab() {
     let mut a = app();
     a.enter_home();

@@ -308,8 +308,9 @@ fn selection_screen_with_clipped_lineage_is_all_ascii() {
 
 #[test]
 fn persistent_filter_tags_and_coverage_badges_are_all_ascii() {
-    // The `[marked]` / `[untested]` title tag + status segment, the `*` ASCII
-    // bookmark badge, and the Coverage-lens ` t:N` row badge, all at once.
+    // The `[marked]` / `[untested]` / `[linted]` title tag + status segment,
+    // the `*` ASCII bookmark badge, and the Coverage-lens ` t:N` row badge,
+    // all at once.
     let mut app = ascii_app();
     apply_action(&mut app, Action::BookmarkToggle);
     apply_action(&mut app, Action::ToggleBookmarkFilter);
@@ -317,6 +318,108 @@ fn persistent_filter_tags_and_coverage_badges_are_all_ascii() {
     assert_all_ascii(&render(&mut app, 80, 24), "bookmarked filter 80x24");
     apply_action(&mut app, Action::ToggleUntestedFilter);
     assert_all_ascii(&render(&mut app, 80, 24), "untested filter 80x24");
+    apply_action(&mut app, Action::ToggleLintFilter);
+    assert_eq!(app.list_filter_label(), Some("linted"));
+    assert_all_ascii(&render(&mut app, 80, 24), "linted filter 80x24");
+}
+
+#[test]
+fn lint_surfaces_are_all_ascii() {
+    // The lint-lens title suffix (` [lens:lint]`), the linted filter's
+    // empty-state reason, the contextual `n` palette reason, the inspector's
+    // `x`/`!` severity marks + `rule: summary` rows, and the home Health
+    // tail / `lint error:` attention rows — every new surface is plain ASCII.
+    let mut app = ascii_app();
+    app.ui_state.set_lens(dbtl::ui::LineageLens::Lint);
+    assert_all_ascii(&render(&mut app, 80, 24), "lint lens 80x24");
+    assert_all_ascii(&render(&mut app, 200, 60), "lint lens 200x60");
+
+    // Inspector on a violating node: the `x` mark + rule/summary/message
+    // rows (200 cols resolves the inspector under the auto policy).
+    let uid = app
+        .lint_findings()
+        .first()
+        .map(|f| f.node_uid.clone())
+        .expect("fixture lints");
+    app.select_by_unique_id(&uid);
+    assert_all_ascii(&render(&mut app, 200, 60), "inspector lint rows 200x60");
+
+    // A warn-only node renders the `!` mark — staging→staging pinned to
+    // `staging_depends_on_staging` alone.
+    use std::collections::HashMap;
+    let mut nodes = HashMap::new();
+    for (uid, name) in [("model.p.stg_a", "stg_a"), ("model.p.stg_b", "stg_b")] {
+        nodes.insert(
+            uid.to_string(),
+            dbtl::RawNode {
+                name: name.into(),
+                resource_type: "model".into(),
+                path: Some(format!("staging/{name}.sql")),
+                config: dbtl::RawConfig {
+                    materialized: Some("view".into()),
+                },
+                ..Default::default()
+            },
+        );
+    }
+    let parent_map = HashMap::from([(
+        "model.p.stg_b".to_string(),
+        vec!["model.p.stg_a".to_string()],
+    )]);
+    let child_map = HashMap::from([(
+        "model.p.stg_a".to_string(),
+        vec!["model.p.stg_b".to_string()],
+    )]);
+    let dag = dbtl::Dag::build(&dbtl::RawManifest {
+        metadata: Default::default(),
+        nodes,
+        sources: HashMap::new(),
+        exposures: HashMap::new(),
+        semantic_models: HashMap::new(),
+        metrics: HashMap::new(),
+        saved_queries: HashMap::new(),
+        unit_tests: HashMap::new(),
+        functions: HashMap::new(),
+        parent_map,
+        child_map,
+        macros: HashMap::new(),
+    });
+    let mut app = App::new(dag, std::path::PathBuf::from("/p/manifest.json"));
+    app.glyph_mode = GlyphMode::Ascii;
+    let mut cfg = dbtl::LintConfig::default();
+    for r in dbtl::LintRule::ALL {
+        cfg.severities.insert(r, None);
+    }
+    cfg.severities.insert(
+        dbtl::LintRule::StagingDependsOnStaging,
+        Some(dbtl::Severity::Warn),
+    );
+    app.set_lint_config(cfg);
+    app.select_by_unique_id("model.p.stg_b");
+    assert_all_ascii(&render(&mut app, 200, 60), "inspector lint-warn mark");
+
+    // The empty linted list's reason and the `n` reason render ASCII —
+    // disable every rule, keep the Linted filter + Lint lens live.
+    apply_action(&mut app, Action::ToggleLintFilter);
+    let mut cfg = dbtl::LintConfig::default();
+    for r in dbtl::LintRule::ALL {
+        cfg.severities.insert(r, None);
+    }
+    app.set_lint_config(cfg);
+    app.ui_state.set_lens(dbtl::ui::LineageLens::Lint);
+    assert_eq!(
+        app.list_empty_reason().as_deref(),
+        Some("no linted models"),
+        "precondition: the linted view is empty"
+    );
+    assert_all_ascii(&render(&mut app, 100, 30), "empty linted list");
+
+    // Home: the Health tail (`lint E errors, W warnings`) + the
+    // `lint error:`/`lint warn:` attention rows ride the home body.
+    let mut app = ascii_app();
+    apply_action(&mut app, Action::HomeGo);
+    assert!(app.home_active(), "precondition: home tab active");
+    assert_all_ascii(&render(&mut app, 100, 40), "home health + attention");
 }
 
 #[test]

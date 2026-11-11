@@ -102,6 +102,8 @@ fn stats_mode() -> Mode {
         orphan_models: vec![],
         layer_violations: vec![],
         lint_findings: vec![],
+        lint_errors: 0,
+        lint_warnings: 0,
         critical_path: vec![],
         critical_path_runtime: None,
         untested_testable: 0,
@@ -363,6 +365,7 @@ fn is_key_bound(a: &Action) -> bool {
         | Action::LineageRightmost
         | Action::ToggleUntestedFilter
         | Action::ToggleBookmarkFilter
+        | Action::ToggleLintFilter
         | Action::ToggleGroupFold
         | Action::DbtParse
         | Action::ThemeCycle
@@ -519,6 +522,7 @@ fn key_bound_actions_appear_in_bindings() {
         Action::LineageRightmost,
         Action::ToggleUntestedFilter,
         Action::ToggleBookmarkFilter,
+        Action::ToggleLintFilter,
         Action::ToggleGroupFold,
         Action::DbtParse,
         Action::ThemeCycle,

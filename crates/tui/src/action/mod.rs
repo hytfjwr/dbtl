@@ -46,6 +46,7 @@ pub use menu::{MenuAnchor, MenuEntry, MenuMark, MenuSlot, MenuState, NODE_MENU_L
 pub use mode::{Mode, ModeKind};
 pub use types::{Action, Direction, SearchState, SearchTarget};
 pub use views::{
-    ColumnRow, ColumnView, DetailView, DiffView, HelpView, InspectorView, NoticeLevel,
-    NotificationEntry, NotificationsView, PaletteRow, PaletteState, SqlView, StatsView,
+    ColumnRow, ColumnView, DetailView, DiffView, HelpView, InspectorLintFinding, InspectorView,
+    LintWorklist, NoticeLevel, NotificationEntry, NotificationsView, PaletteRow, PaletteState,
+    SqlView, StatsView,
 };

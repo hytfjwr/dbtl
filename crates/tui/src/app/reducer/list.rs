@@ -50,11 +50,11 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
             }
             Outcome::cont()
         }
-        Action::ToggleUntestedFilter | Action::ToggleBookmarkFilter => {
-            let target = if matches!(action, Action::ToggleUntestedFilter) {
-                ListFilter::Untested
-            } else {
-                ListFilter::Bookmarked
+        Action::ToggleUntestedFilter | Action::ToggleBookmarkFilter | Action::ToggleLintFilter => {
+            let target = match action {
+                Action::ToggleUntestedFilter => ListFilter::Untested,
+                Action::ToggleBookmarkFilter => ListFilter::Bookmarked,
+                _ => ListFilter::Linted,
             };
             // Toggling the active filter turns it off; a different one replaces it.
             app.list_filter = if app.list_filter == target {
@@ -94,14 +94,30 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
             }
             Outcome::cont()
         }
+        // `n`/`N` cycles the flagged-model set: the `coverage_gap` members
+        // under every lens — except the Lint lens, where the same keys cycle
+        // the linted models instead (the lens on screen IS the cycle's set,
+        // so the help stays honest). Wraparound and filtered-scope both come
+        // from the shared `cycle_to`.
         Action::GapNext | Action::GapPrev => {
             let forward = matches!(action, Action::GapNext);
-            let target = cycle_to(
-                app.active_list(),
-                app.ui_state.selected(),
-                forward,
-                crate::coverage_gap,
-            );
+            let target = if app.ui_state.lens() == crate::LineageLens::Lint {
+                let linted: std::collections::HashSet<&str> = app
+                    .lint_findings()
+                    .iter()
+                    .map(|f| f.node_uid.as_str())
+                    .collect();
+                cycle_to(app.active_list(), app.ui_state.selected(), forward, |m| {
+                    linted.contains(m.unique_id.as_str())
+                })
+            } else {
+                cycle_to(
+                    app.active_list(),
+                    app.ui_state.selected(),
+                    forward,
+                    crate::coverage_gap,
+                )
+            };
             if let Some(uid) = target
                 .and_then(|i| app.active_list().model_at(i))
                 .map(|m| m.unique_id.clone())

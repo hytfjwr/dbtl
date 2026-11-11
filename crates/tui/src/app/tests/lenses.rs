@@ -392,14 +392,23 @@ fn lint_findings_are_computed_once_from_the_shared_rules() {
 }
 
 #[test]
-fn lint_lens_tints_every_finding_node_and_spares_the_rest() {
-    // The same violation red as the LayerViolation lens: every finding's
-    // node_uid tints, a lint-clean model keeps its class colour.
+fn lint_lens_tints_every_finding_node_by_worst_severity() {
+    // The lens marks a node by its WORST finding severity: an error-finding
+    // node is LintError (danger), a warn-only node is LintWarn (warn), and a
+    // lint-clean model keeps its class colour. The fixture's warn findings
+    // live on `unused_sources` violations, so a warn-only MODEL needs a
+    // config that pins a model rule to warn.
     let mut a = app();
+    let error_uid = a
+        .lint_findings()
+        .iter()
+        .find(|f| f.severity == crate::Severity::Error)
+        .map(|f| f.node_uid.clone())
+        .expect("the fixture has error-severity findings");
     assert_eq!(
-        tint_of(&mut a, LineageLens::Lint, "model.jaffle_finance.pos_cat"),
-        LensTint::Violation,
-        "a finding's node tints"
+        tint_of(&mut a, LineageLens::Lint, &error_uid),
+        LensTint::LintError,
+        "{error_uid} has error findings → LintError"
     );
     let linted: std::collections::HashSet<&str> = a
         .lint_findings()
@@ -418,6 +427,71 @@ fn lint_lens_tints_every_finding_node_and_spares_the_rest() {
         tint_of(&mut a, LineageLens::Lint, &clean),
         LensTint::None,
         "{clean} has no findings → untinted"
+    );
+}
+
+/// A staging→staging→marts chain: `staging_depends_on_staging`
+/// (warn-default) hits the child `stg_b`, while the error-default gate
+/// rules hit every untested/undocumented model — `stg_b` carries BOTH
+/// severities, `stg_a`/`mart_c` error ones only.
+fn lint_warn_dag() -> Dag {
+    pr_dag(
+        vec![
+            ("model.p.stg_a", pr_model("stg_a", "staging", "select 1")),
+            ("model.p.stg_b", pr_model("stg_b", "staging", "select 1")),
+            ("model.p.mart_c", pr_model("mart_c", "marts", "select 1")),
+        ],
+        &[
+            ("model.p.stg_a", "model.p.stg_b"),
+            ("model.p.stg_b", "model.p.mart_c"),
+        ],
+        vec![],
+    )
+}
+
+#[test]
+fn lint_lens_warn_only_nodes_tint_warn_and_error_wins() {
+    // `stg_b` carries a warn finding (`staging_depends_on_staging`) AND error
+    // findings (the gate rules) — the lens marks it LintError: the worst
+    // severity wins.
+    let mut a = App::new(lint_warn_dag(), PathBuf::from("/p/target/manifest.json"));
+    let sevs: Vec<crate::Severity> = a
+        .lint_findings()
+        .iter()
+        .filter(|f| f.node_uid == "model.p.stg_b")
+        .map(|f| f.severity)
+        .collect();
+    assert!(
+        sevs.contains(&crate::Severity::Error) && sevs.contains(&crate::Severity::Warn),
+        "stg_b carries both severities, got {sevs:?}"
+    );
+    assert_eq!(
+        tint_of(&mut a, LineageLens::Lint, "model.p.stg_b"),
+        LensTint::LintError,
+        "error wins over warn on the same node"
+    );
+
+    // Turn every rule off except `staging_depends_on_staging` pinned to
+    // warn: stg_b keeps only its warn finding → LintWarn; the other models
+    // lose all findings → untinted (disabled rules never tint).
+    let mut cfg = crate::LintConfig::default();
+    for r in crate::LintRule::ALL {
+        cfg.severities.insert(r, None);
+    }
+    cfg.severities.insert(
+        crate::LintRule::StagingDependsOnStaging,
+        Some(crate::Severity::Warn),
+    );
+    a.set_lint_config(cfg);
+    assert_eq!(
+        tint_of(&mut a, LineageLens::Lint, "model.p.stg_b"),
+        LensTint::LintWarn,
+        "stg_b's only remaining finding is warn → LintWarn"
+    );
+    assert_eq!(
+        tint_of(&mut a, LineageLens::Lint, "model.p.stg_a"),
+        LensTint::None,
+        "no findings under this config → untinted"
     );
 }
 
@@ -461,20 +535,38 @@ fn stats_view_carries_the_lint_worklist_from_the_shared_findings() {
     let a = app();
     let sv = a.compute_stats_view();
     assert_eq!(sv.lint_findings.len(), 7, "7 rules have findings (frozen)");
-    assert_eq!(sv.lint_findings[0].0, "direct_join_to_source");
+    assert_eq!(sv.lint_findings[0].rule, "direct_join_to_source");
     assert_eq!(
-        sv.lint_findings[0].1.len(),
+        sv.lint_findings[0].names.len(),
         16,
         "the frozen count, sorted names"
     );
-    assert!(sv.lint_findings[0].1.contains(&"pos_cat".to_string()));
-    // Every group is sorted and non-empty by construction.
-    for (rule, names) in &sv.lint_findings {
-        assert!(!names.is_empty(), "{rule} groups only list violations");
-        let mut sorted = names.clone();
+    assert!(sv.lint_findings[0].names.contains(&"pos_cat".to_string()));
+    // Every group is sorted, non-empty, and carries the severity its
+    // findings share (a rule's findings always share its configured
+    // severity, so one field per group is lossless).
+    for wl in &sv.lint_findings {
+        assert!(
+            !wl.names.is_empty(),
+            "{} groups only list violations",
+            wl.rule
+        );
+        let mut sorted = wl.names.clone();
         sorted.sort();
-        assert_eq!(*names, sorted, "{rule} names are sorted");
+        assert_eq!(wl.names, sorted, "{} names are sorted", wl.rule);
+        assert!(
+            a.lint_findings()
+                .iter()
+                .filter(|f| f.rule.name() == wl.rule)
+                .all(|f| f.severity == wl.severity),
+            "{}'s worklist severity matches its findings'",
+            wl.rule
+        );
     }
+    // The severity split — the frozen fixture's 27 gate findings are
+    // error-severity, the 11 `unused_sources` warn-severity (frozen in
+    // tests/manifest_fixture.rs), matching `dbtl check --lint`'s counts.
+    assert_eq!((sv.lint_errors, sv.lint_warnings), (27, 11));
 }
 
 #[test]

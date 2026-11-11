@@ -601,11 +601,14 @@ pub(super) fn stats_view_with(n_orphans: usize, n_viol: usize, n_lint: usize) ->
         lint_findings: if n_lint == 0 {
             vec![]
         } else {
-            vec![(
-                "undocumented_models".to_string(),
-                (0..n_lint).map(|i| format!("nodoc_{i:02}")).collect(),
-            )]
+            vec![dbtl::LintWorklist {
+                rule: "undocumented_models".to_string(),
+                severity: dbtl::Severity::Warn,
+                names: (0..n_lint).map(|i| format!("nodoc_{i:02}")).collect(),
+            }]
         },
+        lint_errors: 0,
+        lint_warnings: n_lint,
         critical_path: vec!["src_a".into(), "stg_a".into(), "mart_a".into()],
         critical_path_runtime: None,
         untested_testable: 1,
@@ -685,8 +688,8 @@ pub(super) fn stats_modal_shows_new_sections_and_more_cap() {
         "violations header with full count"
     );
     assert!(
-        text.contains("Lint findings (13)"),
-        "lint worklist header with the total"
+        text.contains("Lint findings (13: 0 errors, 13 warnings):"),
+        "lint worklist header carries the severity split"
     );
     assert!(
         text.contains("undocumented_models (13):"),

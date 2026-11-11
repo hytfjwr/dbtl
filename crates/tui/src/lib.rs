@@ -22,9 +22,9 @@ pub mod persist;
 pub mod ui;
 
 pub use action::{
-    dispatch, help_lines, Action, DiffView, Direction, HelpLine, HelpView, InspectorView, Mode,
-    ModeKind, NoticeLevel, NotificationEntry, NotificationsView, PaletteRow, SearchTarget, SqlView,
-    StatsView,
+    dispatch, help_lines, Action, DiffView, Direction, HelpLine, HelpView, InspectorLintFinding,
+    InspectorView, LintWorklist, Mode, ModeKind, NoticeLevel, NotificationEntry, NotificationsView,
+    PaletteRow, SearchTarget, SqlView, StatsView,
 };
 pub use app::{
     apply_action, layer_violation_edges, App, AppStats, HomeData, HomeItem, HomeRow, HomeSearch,

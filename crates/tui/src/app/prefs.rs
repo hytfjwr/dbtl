@@ -16,11 +16,17 @@ impl App {
 
     /// Replace the lint configuration and recompute findings (test/CLI seam —
     /// production gets its config from the auto-detected `.dbtl.yml`). Findings
-    /// are a style input, so the generation bumps like a reload.
+    /// are a style input, so the generation bumps like a reload — and under
+    /// the `Linted` list filter the view's membership changes, so it rebuilds
+    /// through the same [`apply_list_filter`](App::apply_list_filter) the
+    /// toggles and `reload` use.
     pub fn set_lint_config(&mut self, config: crate::LintConfig) {
         self.lint_config = config;
         self.lint_findings = crate::run_rules(crate::LintInput::new(&self.dag, &self.lint_config));
         self.generation += 1;
+        if self.list_filter == ListFilter::Linted {
+            self.apply_list_filter();
+        }
     }
 
     /// The loaded `run_results.json` side-map, if any (auto-detected sibling or

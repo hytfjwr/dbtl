@@ -170,7 +170,9 @@ pub fn inspector_lines(
     // ---- Lint --------------------------------------------------------------
     // A lint config is always in effect (defaults lint too), so an empty
     // per-node finding list reads as a real verdict, not "no data" — the
-    // `✓ all checks pass` readout. Findings render `rule: message`, wrapped.
+    // `✓ all checks pass` readout. Each finding renders `mark rule: summary`
+    // (severity mark + colour — the same `x`/`!` run glyphs the Last-run
+    // section uses), head and message both wrapped on the indented lines.
     out.push(Line::from(""));
     out.push(Line::styled("Lint", section));
     if view.lint.is_empty() {
@@ -180,8 +182,19 @@ pub fn inspector_lines(
         ));
     } else {
         for finding in &view.lint {
-            for w in overlay::wrap_prefixed("  ", finding, width) {
-                out.push(Line::styled(w, Style::default().fg(t.warn)));
+            let (mark, style) = match finding.severity {
+                crate::Severity::Error => (chr.run_fail, Style::default().fg(t.danger)),
+                crate::Severity::Warn => (chr.run_warn, Style::default().fg(t.warn)),
+            };
+            for w in overlay::wrap_prefixed(
+                &format!("  {mark} "),
+                &format!("{}: {}", finding.rule, finding.summary),
+                width,
+            ) {
+                out.push(Line::styled(w, style));
+            }
+            for w in overlay::wrap_prefixed("    ", &finding.message, width) {
+                out.push(Line::styled(w, style));
             }
         }
     }

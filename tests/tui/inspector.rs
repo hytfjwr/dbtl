@@ -246,22 +246,60 @@ pub(super) fn inspector_omits_empty_sections() {
 #[test]
 pub(super) fn inspector_lint_section_reports_verdicts() {
     let mut app = dbtl::app::App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
-    // A violating node renders its `rule: message` line.
+    // A violating node renders `mark rule: summary` per finding — the
+    // severity mark (unicode `✗`/`!` here), the registry id, the registry
+    // summary — with the message wrapped below, all severity-coloured.
     let uid = app
         .lint_findings()
         .first()
         .map(|f| f.node_uid.clone())
         .expect("fixture lints under the default rules");
-    let msg = app
+    let f = app
         .lint_findings()
         .iter()
         .find(|f| f.node_uid == uid)
-        .map(|f| f.rule.name().to_string())
-        .unwrap();
+        .expect("a finding for the selected node");
+    let (mark, want_fg) = match f.severity {
+        dbtl::Severity::Error => ("✗", dbtl::ui::theme::DANGER),
+        dbtl::Severity::Warn => ("!", dbtl::ui::theme::WARN),
+    };
+    let head = format!("{mark} {}:", f.rule.name());
+    let summary_words: Vec<String> = f
+        .rule
+        .description()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let msg_words: Vec<String> = f.message.split_whitespace().map(str::to_string).collect();
     app.select_by_unique_id(&uid);
     let buf = render_app_with_inspector(&mut app, 200, 60);
-    let pane = region_text(&buf, inspector_rect(&buf, &app));
-    assert!(pane.contains(&msg), "the rule name renders: {pane}");
+    let ins = inspector_rect(&buf, &app);
+    let pane = region_text(&buf, ins);
+    assert!(
+        pane.contains(&head),
+        "the mark + rule-id head renders: {pane}"
+    );
+    assert!(
+        summary_words.iter().all(|w| pane.contains(w.as_str())),
+        "the registry summary renders (wrapped): {pane}"
+    );
+    assert!(
+        msg_words.iter().all(|w| pane.contains(w.as_str())),
+        "the finding message renders under the head (wrapped): {pane}"
+    );
+    // The lint line's mark cell carries the severity colour.
+    let mut coloured = false;
+    'outer: for y in ins.y..ins.y + ins.height {
+        for x in ins.x..ins.x + ins.width {
+            if let Some(cell) = buf.cell((x, y)) {
+                if cell.symbol() == mark && cell.fg == want_fg {
+                    coloured = true;
+                    break 'outer;
+                }
+            }
+        }
+    }
+    assert!(coloured, "the {mark} mark renders in {want_fg:?}");
 
     // A clean node renders the pass verdict (unicode ✓ here; the ASCII
     // spelling is under ascii_guard).

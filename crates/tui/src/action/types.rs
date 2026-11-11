@@ -160,9 +160,11 @@ pub enum Action {
     /// (most-downstream) column, nearest row.
     LineageLeftmost,
     LineageRightmost,
-    /// Toggle the persistent untested-only / bookmarked-only list filter.
+    /// Toggle the persistent untested-only / bookmarked-only / linted-only
+    /// list filter.
     ToggleUntestedFilter,
     ToggleBookmarkFilter,
+    ToggleLintFilter,
     /// Fold/unfold the list group the cursor sits in (`-`; the group-header
     /// click's keyboard twin).
     ToggleGroupFold,

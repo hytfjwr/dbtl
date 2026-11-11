@@ -140,15 +140,17 @@ impl Default for LineageView {
 }
 
 /// The persistent left-pane filter: show every model, only the untested ones
-/// (the [`coverage_gap`] set — the same predicate as the Coverage lens), or
-/// only the bookmarked ones. Orthogonal to the transient name search, which
-/// narrows on top of it.
+/// (the [`coverage_gap`] set — the same predicate as the Coverage lens), only
+/// the bookmarked ones, or only the linted ones (the shared `run_rules`
+/// output — the same source as the Lint lens and `dbtl check --lint`).
+/// Orthogonal to the transient name search, which narrows on top of it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ListFilter {
     #[default]
     All,
     Untested,
     Bookmarked,
+    Linted,
 }
 
 /// Project-level counts for the title bar.
@@ -171,10 +173,10 @@ pub struct App {
     pub model_list: ModelList,
     /// The filtered view while a list search is active; `None` otherwise.
     pub filter: Option<ModelList>,
-    /// The persistent left-pane filter (`T` untested / `*` bookmarked). Unlike
-    /// the transient search `filter`, it survives mode changes; a list search
-    /// narrows ON TOP of it ([`refilter`](App::refilter) builds from
-    /// `unfolded_base`).
+    /// The persistent left-pane filter (`T` untested / `*` bookmarked /
+    /// `F` linted). Unlike the transient search `filter`, it survives mode
+    /// changes; a list search narrows ON TOP of it
+    /// ([`refilter`](App::refilter) builds from `unfolded_base`).
     pub list_filter: ListFilter,
     /// The `list_filter` view of `model_list` (`None` when `list_filter` is
     /// `All`). Rebuilt ONLY by [`apply_list_filter`](App::apply_list_filter).

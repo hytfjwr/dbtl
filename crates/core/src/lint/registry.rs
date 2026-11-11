@@ -103,7 +103,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "rejoining_upstream",
         category: Category::Modeling,
         default_severity: Severity::Error,
-        summary: "a redundant hop: A→B→C while A→C already exists",
+        summary: "a redundant hop: A->B->C while A->C already exists",
         rationale: "Re-reading an upstream model when a direct edge already \
                     exists means the intermediate node adds nothing — it just \
                     duplicates a dependency. The extra hop slows builds and \

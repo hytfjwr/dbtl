@@ -94,6 +94,10 @@ pub enum LensTint {
     LayerOther,
     /// Layer-violation lens: incident to a marts→staging-style backward edge.
     Violation,
+    /// Lint lens: the node's worst finding severity is `error`.
+    LintError,
+    /// Lint lens: the node's worst finding severity is `warn`.
+    LintWarn,
     /// Diff lens: node added vs the `--diff` baseline.
     DiffAdd,
     /// Diff lens: node modified vs the `--diff` baseline.

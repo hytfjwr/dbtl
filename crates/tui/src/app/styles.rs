@@ -49,17 +49,22 @@ impl App {
             } else {
                 std::collections::HashSet::new()
             };
-        // The Lint lens tints each finding's violating node (the same
-        // `run_rules` output `dbtl check --lint` gates on) — the set is O(1)
-        // per lookup, so it's built once per style pass.
-        let lint_nodes: std::collections::HashSet<String> = if lens == LineageLens::Lint {
-            self.lint_findings()
-                .iter()
-                .map(|f| f.node_uid.clone())
-                .collect()
-        } else {
-            std::collections::HashSet::new()
-        };
+        // The Lint lens tints each finding's violating node by its WORST
+        // severity (the same `run_rules` output `dbtl check --lint` gates on)
+        // — `error` wins over `warn` when a node carries both. The uid→severity
+        // map is O(1) per lookup, so it's built once per style pass.
+        let lint_nodes: std::collections::HashMap<String, crate::Severity> =
+            if lens == LineageLens::Lint {
+                let mut m = std::collections::HashMap::new();
+                for f in self.lint_findings() {
+                    m.entry(f.node_uid.clone())
+                        .and_modify(|s: &mut crate::Severity| *s = (*s).max(f.severity))
+                        .or_insert(f.severity);
+                }
+                m
+            } else {
+                std::collections::HashMap::new()
+            };
         lay.rects
             .keys()
             .map(|uid| {
@@ -182,16 +187,17 @@ impl App {
     /// The [`LensTint`] for one node under the ACTIVE `lens`. The single place each
     /// lens's per-node metric is mapped to a semantic tint (the render layer turns
     /// the tint into a `Color`); `violation_nodes` / `lint_nodes` are the
-    /// precomputed project-wide incident sets (empty unless the lens is
-    /// `LayerViolation` / `Lint`). Returns `LensTint::None` for `Off` and for
-    /// nodes a lens doesn't tint.
+    /// precomputed project-wide lookups (empty unless the lens is
+    /// `LayerViolation` / `Lint` — a uid set for the former, uid -> worst
+    /// finding severity for the latter). Returns `LensTint::None` for `Off`
+    /// and for nodes a lens doesn't tint.
     pub(super) fn lens_tint(
         &self,
         lens: LineageLens,
         uid: &str,
         node: Option<&NodeInfo>,
         violation_nodes: &std::collections::HashSet<String>,
-        lint_nodes: &std::collections::HashSet<String>,
+        lint_nodes: &std::collections::HashMap<String, crate::Severity>,
     ) -> LensTint {
         match lens {
             LineageLens::Off => LensTint::None,
@@ -230,16 +236,14 @@ impl App {
                     LensTint::None
                 }
             }
-            // Lint: tint each finding's violating node — the run_rules output
-            // `dbtl check --lint` gates on, so the screen can never disagree
-            // with the CI gate.
-            LineageLens::Lint => {
-                if lint_nodes.contains(uid) {
-                    LensTint::Violation
-                } else {
-                    LensTint::None
-                }
-            }
+            // Lint: tint each finding's violating node by its worst severity —
+            // the run_rules output `dbtl check --lint` gates on, so the screen
+            // can never disagree with the CI gate.
+            LineageLens::Lint => match lint_nodes.get(uid) {
+                Some(crate::Severity::Error) => LensTint::LintError,
+                Some(crate::Severity::Warn) => LensTint::LintWarn,
+                None => LensTint::None,
+            },
             // Diff: the node's status vs the --diff baseline. Without a
             // baseline the lens tints nothing (and the CycleLens arm skips it).
             LineageLens::Diff => match self.diff().map(|d| d.status(uid)) {
