@@ -33,9 +33,10 @@ pub use cll::{
 };
 pub use compiled::{default_compiled_dir, default_target_dir, CompiledOrigin, CompiledSql};
 pub use dag::{
-    coverage_gap, has_pk_guarantee, in_package, is_exposure, load_dag, load_dag_with_warnings,
-    unhandled_resource_types, ColumnInfo, Dag, Edge, ExposureInfo, FreshnessThreshold, MacroInfo,
-    NodeDetail, NodeInfo, PackageScope, ResourceTypeSupport, Subgraph, TestInfo, UnitTestShape,
+    coverage_gap, description_blank, has_pk_guarantee, in_package, is_exposure, load_dag,
+    load_dag_with_warnings, unhandled_resource_types, ColumnInfo, ConstraintInfo, Dag, Edge,
+    ExposureInfo, FreshnessThreshold, MacroInfo, NodeDetail, NodeInfo, PackageScope,
+    ResourceTypeSupport, Subgraph, TestInfo, UnitTestShape,
 };
 pub use diff::{
     compute_diff, compute_diff_with, ColumnChange, ColumnChangeClass, ColumnChangeKind, DagDiff,
@@ -55,9 +56,9 @@ pub use lint::{
     LINT_RULE_DOCS_BASE, REGISTRY, YAML_ATTRIBUTE_RULE_IDS,
 };
 pub use manifest::{
-    load_manifest, RawConfig, RawDependsOn, RawDoc, RawExposure, RawExposureOwner, RawFreshness,
-    RawFreshnessThreshold, RawManifest, RawMetadata, RawNode, RawSemanticResource, RawSource,
-    RawTestMetadata, RawUnitTest, RawUnitTestIo,
+    load_manifest, RawConfig, RawConstraint, RawContract, RawDependsOn, RawDoc, RawExposure,
+    RawExposureOwner, RawFreshness, RawFreshnessThreshold, RawManifest, RawMetadata, RawNode,
+    RawSemanticResource, RawSource, RawTestMetadata, RawUnitTest, RawUnitTestIo,
 };
 pub use mermaid::{
     mermaid_ids, mermaid_label, node_kind, subgraph_mermaid, subgraph_mermaid_linked,

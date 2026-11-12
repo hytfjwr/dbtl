@@ -1,16 +1,20 @@
 use super::*;
 
 /// Trim a description (strip surrounding whitespace / trailing newlines), turning
-/// an empty one into `None`.
+/// a blank one into `None` — [`description_blank`] is the shared "no real
+/// content" predicate every description judgment uses.
 pub(super) fn clean_desc(desc: &Option<String>) -> Option<String> {
     desc.as_ref()
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+        .filter(|s| !description_blank(s))
 }
 
 /// Build [`ColumnInfo`]s from a manifest `columns` object, preserving definition
 /// order (the `Map` is order-preserving via `serde_json/preserve_order`). The
-/// column name is the entry's `name` field, falling back to the map key.
+/// column name is the entry's `name` field, falling back to the map key. A
+/// whitespace-only `description` counts as missing ([`description_blank`]) but
+/// a real value is kept VERBATIM — trimming it would drop the trailing newline
+/// a `|` block carries and change the TUI/docs output.
 pub(super) fn columns_from(map: &serde_json::Map<String, serde_json::Value>) -> Vec<ColumnInfo> {
     map.iter()
         .map(|(key, v)| ColumnInfo {
@@ -26,8 +30,29 @@ pub(super) fn columns_from(map: &serde_json::Map<String, serde_json::Value>) -> 
             description: v
                 .get("description")
                 .and_then(|x| x.as_str())
-                .filter(|s| !s.is_empty())
+                .filter(|s| !description_blank(s))
                 .map(str::to_string),
+            constraints: v
+                .get("constraints")
+                .and_then(|x| serde_json::from_value::<Vec<RawConstraint>>(x.clone()).ok())
+                .map(|cs| constraints_from(&cs))
+                .unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// Convert wire [`RawConstraint`]s to domain [`ConstraintInfo`]s — drops dbt's
+/// adapter bookkeeping (`warn_unenforced`/`warn_unsupported` aren't modeled)
+/// and normalizes the optional column lists to empty.
+pub(super) fn constraints_from(raw: &[RawConstraint]) -> Vec<ConstraintInfo> {
+    raw.iter()
+        .map(|c| ConstraintInfo {
+            constraint_type: c.constraint_type.clone().unwrap_or_default(),
+            name: c.name.clone(),
+            expression: c.expression.clone(),
+            to: c.to.clone(),
+            to_columns: c.to_columns.clone().unwrap_or_default(),
+            columns: c.columns.clone().unwrap_or_default(),
         })
         .collect()
 }
@@ -122,6 +147,10 @@ pub(super) fn detail_from_node(node: &RawNode) -> NodeDetail {
         access: node.access.clone(),
         group: node.group.clone(),
         contract_enforced: node.contract.as_ref().is_some_and(|c| c.enforced),
+        incremental_strategy: node.config.incremental_strategy.clone(),
+        deprecation_date: node.deprecation_date.clone(),
+        language: node.language.clone(),
+        constraints: constraints_from(&node.constraints),
         version: node.version.clone(),
         latest_version: node.latest_version.clone(),
         meta: meta_strings(&node.meta),
@@ -234,7 +263,19 @@ pub(super) fn register_test(tests: &mut HashMap<String, Vec<TestInfo>>, node: &R
     let info = TestInfo {
         name: node.name.clone(),
         kind,
-        column_name: node.column_name.clone(),
+        // `node.column_name` covers column-level tests; a MODEL-level generic
+        // test (`unique: {column_name: id}`, or the dbt >=1.10 `arguments:`
+        // spelling dbt flattens into kwargs) leaves `node.column_name` null
+        // and carries the column in kwargs instead — read it from there so
+        // `has_pk_guarantee` sees the same column either spelling declared.
+        column_name: node.column_name.clone().or_else(|| {
+            node.test_metadata
+                .as_ref()
+                .and_then(|m| m.kwargs.as_ref())
+                .and_then(|k| k.get("column_name"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        }),
         ref_uid,
         ref_column,
         ..Default::default()

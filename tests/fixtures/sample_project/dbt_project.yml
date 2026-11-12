@@ -29,6 +29,18 @@ models:
       # which sits above the project tree.
       fct_line_items:
         +unique_key: tree_shadowed
+      # Governance tree leaf: `+access`/`+group`/`+incremental_strategy` are
+      # the tree rung of the in-file > schema.yml > tree > default chain —
+      # fct_incr_tree declares none of them elsewhere, so these are what
+      # lands (private access is legal because the group is set).
+      fct_incr_tree:
+        +group: finance
+        +access: private
+        +incremental_strategy: insert_overwrite
+      # fct_incr_schema's schema.yml `config: incremental_strategy: append`
+      # must beat this leaf value.
+      fct_incr_schema:
+        +incremental_strategy: insert_overwrite
     legacy:
       +enabled: false
 seeds:

@@ -18,6 +18,17 @@ pub(super) struct TreeConfig {
     /// and `+loaded_at_field` are deliberately NOT read — real dbt ignores
     /// them in dbt_project.yml, verified on 1.12.6).
     pub(super) freshness: Option<RawFreshness>,
+    /// `+access` / `+group` — the project-tree spellings of the model
+    /// governance configs (dbt records `access` on models only; `group`
+    /// applies to any resource the tree covers).
+    pub(super) access: Option<String>,
+    pub(super) group: Option<String>,
+    /// `+contract` — the tree's contract declaration resolved to the wire
+    /// type (`{enforced: bool}` object, or a bare bool tolerated).
+    pub(super) contract: Option<RawContract>,
+    /// `+incremental_strategy` — `append` / `merge` / `delete+insert` /
+    /// `insert_overwrite` / `microbatch`.
+    pub(super) incremental_strategy: Option<String>,
 }
 
 /// The config-tree lookup path for a node: the project name, then each
@@ -83,6 +94,18 @@ pub(super) fn resolve_tree_config(
             )),
         }
     }
+    if let Some(s) = tree["+access"].as_str() {
+        out.access = Some(s.to_string());
+    }
+    if let Some(s) = tree["+group"].as_str() {
+        out.group = Some(s.to_string());
+    }
+    if let Some(c) = contract_value(&tree["+contract"]) {
+        out.contract = Some(c);
+    }
+    if let Some(s) = tree["+incremental_strategy"].as_str() {
+        out.incremental_strategy = Some(s.to_string());
+    }
     if let Some((seg, rest)) = segments.split_first() {
         let deeper = resolve_tree_config(
             &tree[seg.as_str()],
@@ -95,6 +118,10 @@ pub(super) fn resolve_tree_config(
         out.meta.extend(deeper.meta); // deeper keys replace same-named ones
         out.unique_key = deeper.unique_key.or(out.unique_key);
         out.freshness = deeper.freshness.or(out.freshness);
+        out.access = deeper.access.or(out.access);
+        out.group = deeper.group.or(out.group);
+        out.contract = deeper.contract.or(out.contract);
+        out.incremental_strategy = deeper.incremental_strategy.or(out.incremental_strategy);
     }
     out
 }

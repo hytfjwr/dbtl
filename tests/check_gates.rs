@@ -78,7 +78,7 @@ fn check_gates_config_sets_severity_and_params() {
     );
     let stdout = stdout(&out);
     assert!(
-        stdout.contains("WARN column coverage 26% below the 90% minimum (4/15)"),
+        stdout.contains("WARN column coverage 42% below the 90% minimum (11/26)"),
         "the configured warn row, got: {stdout:?}"
     );
     assert!(
@@ -242,7 +242,7 @@ fn check_named_param_flags_enable_gates_and_override_config() {
     assert_eq!(out.status.code(), Some(1), "the flag param wins");
     let text = stdout(&out);
     assert!(
-        text.contains("FAIL column coverage 26% below the 90% minimum"),
+        text.contains("FAIL column coverage 42% below the 90% minimum"),
         "got: {text:?}"
     );
     // And `--gate` is the last word: `=off` after the flag removes it.
@@ -264,7 +264,7 @@ fn check_named_param_flags_enable_gates_and_override_config() {
 
 #[test]
 fn check_doc_coverage_min_flag_reports_and_gates() {
-    // The sample project documents 6 of its 10 models: a 90% floor fails.
+    // The sample project documents 13 of its 17 models: a 90% floor fails.
     let m = sample_manifest();
     let out = run(&[
         "check",
@@ -276,7 +276,7 @@ fn check_doc_coverage_min_flag_reports_and_gates() {
     assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
     let stdout = stdout(&out);
     assert!(
-        stdout.contains("FAIL doc coverage 60% below the 90% minimum (6/10)"),
+        stdout.contains("FAIL doc coverage 76% below the 90% minimum (13/17)"),
         "got: {stdout:?}"
     );
 }

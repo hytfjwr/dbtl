@@ -1,0 +1,115 @@
+version: 2
+
+# The `groups:` registry — a model's `group:` must name one of these.
+groups:
+  - name: finance
+    owner:
+      name: "Data Platform"
+
+# Governance-field coverage: access / group / contract /
+# incremental_strategy / deprecation_date / constraints arrive through
+# schema.yml's `config:` AND bare top-level spellings, and must interleave
+# with the in-file `config()` and `dbt_project.yml` tree rungs exactly like
+# `materialized` does.
+models:
+  - name: fct_public_api
+    # Loses to the in-file `config(access='public')` — the same
+    # in-file > schema chain `materialized` follows.
+    access: protected
+    description: "Public orders API"
+    # `deprecation_date` is a model PROPERTY (never a config key) — schema
+    # files are its only intake. dbt stamps it as a local-midnight ISO
+    # timestamp on the wire.
+    deprecation_date: 2026-12-31
+    columns:
+      - name: id
+        data_type: integer
+        description: "Order id"
+        tests:
+          - unique
+          - not_null
+      - name: status
+        data_type: varchar
+        description: "Order status"
+      - name: country
+        data_type: varchar
+        description: "Country"
+  - name: fct_contracted
+    # The bare top-level `access:` spelling; `config:` supplies the rest
+    # (`group:` for the membership private access needs, `contract:` for
+    # the enforcement the untyped `status` column trips on).
+    access: private
+    description: "Contract-enforced extract"
+    config:
+      group: finance
+      contract:
+        enforced: true
+    # Model-level `constraints:` — `{type, columns, expression}` — ride the
+    # node; column-level ones live inside the column below.
+    constraints:
+      - type: primary_key
+        columns: [id]
+      - type: check
+        expression: "id > 0"
+    columns:
+      - name: id
+        data_type: integer
+        description: "Contracted id"
+        constraints:
+          - type: not_null
+        tests:
+          - unique
+          - not_null
+      - name: status
+        # Deliberately untyped — a contract without column types is the
+        # contract_columns_without_type finding.
+        description: "Status text"
+  - name: fct_incr_file
+    description: "Incremental, contract and strategy configured in-file"
+    columns:
+      - name: id
+        data_type: integer
+        description: "Id"
+        tests:
+          - unique
+          - not_null
+  - name: fct_incr_tree
+    description: "Incremental whose governance arrives via the project tree"
+    columns:
+      - name: id
+        data_type: integer
+        description: "Id"
+        tests:
+          - unique
+          - not_null
+  - name: fct_incr_schema
+    description: "Schema `config:` strategy must beat the project tree's"
+    config:
+      incremental_strategy: append
+    columns:
+      - name: id
+        data_type: integer
+        description: "Id"
+        tests:
+          - unique
+          - not_null
+  - name: fct_model_tests
+    description: "Model-level test kwargs coverage"
+    # Model-level generics: `column_name:` and the dbt >=1.10 `arguments:`
+    # spellings both resolve to the same column — unique+not_null on id
+    # must satisfy has_pk_guarantee without a column-level test.
+    tests:
+      - unique:
+          column_name: id
+      - not_null:
+          arguments:
+            column_name: id
+    columns:
+      - name: id
+        data_type: integer
+        description: "Id"
+      - name: notes
+        data_type: varchar
+        # Whitespace-only description — counts as undocumented in both
+        # modes (the shared blank predicate).
+        description: "   "

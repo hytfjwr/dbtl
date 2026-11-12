@@ -80,8 +80,11 @@ fn ls_intersection_narrows_within_a_term() {
             "agg_country_orders",
             "cll_demo",
             "cll_syntax",
+            "fct_contracted",
             "fct_customer_history",
+            "fct_model_tests",
             "fct_orders",
+            "fct_public_api",
         ]
     );
 }
@@ -146,7 +149,8 @@ fn ls_method_atoms_match_their_domains() {
     }
 
     // `path:` — a directory fragment matches sources' declaring yml too
-    // (the staging schema.yml declares all four sources).
+    // (the staging schema files declare all six sources; the duplicate
+    // pair shares the `payments` table name three ways).
     let out = ls(&["path:staging"], &[]);
     assert_eq!(
         lines(&out),
@@ -155,6 +159,9 @@ fn ls_method_atoms_match_their_domains() {
             "customers",
             "orders",
             "payments",
+            "payments",
+            "payments",
+            "stg_dup_probe",
             "stg_orders",
             "stg_two_configs",
         ]
@@ -167,10 +174,16 @@ fn ls_globs_match_bare_names() {
     assert_eq!(
         lines(&out),
         [
+            "fct_contracted",
             "fct_customer_history",
             "fct_daily_orders",
+            "fct_incr_file",
+            "fct_incr_schema",
+            "fct_incr_tree",
             "fct_line_items",
+            "fct_model_tests",
             "fct_orders",
+            "fct_public_api",
         ]
     );
 }

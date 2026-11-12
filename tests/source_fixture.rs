@@ -8,7 +8,7 @@ use std::collections::HashSet;
 
 use dbtl::{
     build_model_list, load_dag_from_source, load_dag_from_source_with_warnings,
-    manifest_from_source, SortMode,
+    manifest_from_source, run_rules, LintConfig, LintInput, LintRule, SortMode,
 };
 
 const MISSING: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/does_not_exist");
@@ -204,8 +204,8 @@ fn schema_tests_are_captured_but_never_dag_nodes() {
 #[test]
 fn builds_dag_with_expected_counts_and_lineage() {
     let dag = load_dag_from_source(PROJECT).unwrap();
-    assert_eq!(dag.count_by_resource_type("model"), 10, "model count");
-    assert_eq!(dag.count_by_resource_type("source"), 4, "source count");
+    assert_eq!(dag.count_by_resource_type("model"), 17, "model count");
+    assert_eq!(dag.count_by_resource_type("source"), 6, "source count");
     assert_eq!(dag.count_by_resource_type("seed"), 2, "seed count");
     assert_eq!(dag.count_by_resource_type("snapshot"), 3, "snapshot count");
 
@@ -969,4 +969,226 @@ fn invalid_yaml_emits_warning_but_project_loads() {
         dag.contains("model.coll.parent_a"),
         "the rest of the project still loads"
     );
+}
+
+// ---- governance / config fields --------------------------------------------
+
+/// Every intake rung of the `in-file config() > schema.yml > project tree >
+/// default` chain is exercised by the fixture's governance models — these
+/// are the same values `tests/consistency.rs` proves equal to real dbt.
+#[test]
+fn governance_fields_resolve_through_all_intake_rungs() {
+    let dag = load_dag_from_source(PROJECT).unwrap();
+    let d = |uid: &str| dag.detail(uid).expect(uid).clone();
+
+    // fct_public_api: in-file `config(access='public')` beats the schema
+    // top-level `access: protected`. `deprecation_date` is a model
+    // PROPERTY — schema.yml is its only intake, kept as the declared
+    // string (real dbt stamps it as a local-midnight ISO timestamp).
+    let pub_api = d("model.sample.fct_public_api");
+    assert_eq!(pub_api.access.as_deref(), Some("public"));
+    assert_eq!(pub_api.deprecation_date.as_deref(), Some("2026-12-31"));
+
+    // fct_contracted: schema `config:` spellings — `access: private` needs
+    // the group membership `config: group:` supplies; the enforced
+    // contract plus model- and column-level `constraints:` ride the same
+    // wire shapes the manifest records.
+    let contracted = d("model.sample.fct_contracted");
+    assert_eq!(contracted.access.as_deref(), Some("private"));
+    assert_eq!(contracted.group.as_deref(), Some("finance"));
+    assert!(contracted.contract_enforced);
+    let types: Vec<&str> = contracted
+        .constraints
+        .iter()
+        .map(|c| c.constraint_type.as_str())
+        .collect();
+    assert_eq!(types, ["primary_key", "check"]);
+    assert_eq!(contracted.constraints[0].columns, vec!["id".to_string()]);
+    assert_eq!(
+        contracted.constraints[1].expression.as_deref(),
+        Some("id > 0")
+    );
+    let id_col = contracted
+        .columns
+        .iter()
+        .find(|c| c.name == "id")
+        .expect("id column");
+    assert_eq!(
+        id_col
+            .constraints
+            .iter()
+            .map(|c| c.constraint_type.as_str())
+            .collect::<Vec<_>>(),
+        ["not_null"]
+    );
+
+    // fct_incr_file: the in-file rung — the dict-literal `contract` and
+    // `incremental_strategy` come out of `config(…)` itself.
+    let incr_file = d("model.sample.fct_incr_file");
+    assert!(incr_file.contract_enforced);
+    assert_eq!(
+        incr_file.incremental_strategy.as_deref(),
+        Some("delete+insert")
+    );
+
+    // fct_incr_tree: the project-tree leaf is the ONLY declaration site —
+    // `+access: private` (legal because `+group` lands too), `+group`, and
+    // `+incremental_strategy` all arrive through the lowest rung.
+    let incr_tree = d("model.sample.fct_incr_tree");
+    assert_eq!(incr_tree.access.as_deref(), Some("private"));
+    assert_eq!(incr_tree.group.as_deref(), Some("finance"));
+    assert_eq!(
+        incr_tree.incremental_strategy.as_deref(),
+        Some("insert_overwrite")
+    );
+
+    // fct_incr_schema: `config: incremental_strategy: append` (schema.yml)
+    // beats the leaf's `+incremental_strategy: insert_overwrite`.
+    assert_eq!(
+        d("model.sample.fct_incr_schema")
+            .incremental_strategy
+            .as_deref(),
+        Some("append")
+    );
+
+    // The defaults an undeclared model lands on: `access: protected`
+    // (dbt's model default, NOT null) and `language: "sql"`; `group` and
+    // `contract` simply stay absent.
+    let stg = d("model.sample.stg_orders");
+    assert_eq!(stg.access.as_deref(), Some("protected"));
+    assert_eq!(stg.language.as_deref(), Some("sql"));
+    assert!(stg.group.is_none() && !stg.contract_enforced);
+    // Seeds carry neither access nor language; snapshots record sql.
+    let seed = d("seed.sample.country_codes");
+    assert!(seed.access.is_none() && seed.language.is_none());
+    assert_eq!(
+        d("snapshot.sample.orders_snapshot").language.as_deref(),
+        Some("sql")
+    );
+}
+
+/// The governance lint rules must fire in source mode exactly like they do
+/// on the compiled manifest — the point of loading the fields.
+#[test]
+fn source_mode_governance_lint_rules_detect_violations() {
+    let dag = load_dag_from_source(PROJECT).unwrap();
+    let findings = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    let hits = |rule: LintRule| -> Vec<&str> {
+        findings
+            .iter()
+            .filter(|f| f.rule == rule)
+            .map(|f| f.node_uid.as_str())
+            .collect()
+    };
+    assert_eq!(
+        hits(LintRule::PublicModelsWithoutContract),
+        ["model.sample.fct_public_api"]
+    );
+    // `access != "public"` counts private AND protected — the exposures'
+    // model parents land on protected by dbt's default.
+    let mut exposures = hits(LintRule::ExposuresDependentOnPrivateModels);
+    exposures.sort();
+    assert_eq!(
+        exposures,
+        [
+            "exposure.sample.churn_notebook",
+            "exposure.sample.orders_dashboard"
+        ]
+    );
+    assert_eq!(
+        hits(LintRule::ContractColumnsWithoutType),
+        ["model.sample.fct_contracted"]
+    );
+}
+
+/// A source that omits `schema:` resolves it to the source NAME (dbt's
+/// default) — `ledger.payments` and `shared.payments` are then the same
+/// `shared.payments` relation: the `duplicate_sources` pair.
+#[test]
+fn schema_less_source_defaults_schema_to_source_name() {
+    let dag = load_dag_from_source(PROJECT).unwrap();
+    for uid in [
+        "source.sample.ledger.payments",
+        "source.sample.shared.payments",
+    ] {
+        assert_eq!(
+            dag.detail(uid).and_then(|d| d.schema.clone()).as_deref(),
+            Some("shared"),
+            "{uid} resolves to schema 'shared'"
+        );
+    }
+    let findings = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    let dups: Vec<&str> = findings
+        .iter()
+        .filter(|f| f.rule == LintRule::DuplicateSources)
+        .map(|f| f.node_uid.as_str())
+        .collect();
+    assert_eq!(
+        dups,
+        [
+            "source.sample.ledger.payments",
+            "source.sample.shared.payments"
+        ],
+        "both sides of the schema-defaulted duplicate flag"
+    );
+}
+
+/// Model-level generic tests carry their column in `test_metadata.kwargs` —
+/// the legacy `column_name:` and dbt >=1.10's `arguments:` spellings alike —
+/// normalized into `TestInfo.column_name` so `has_pk_guarantee` sees the
+/// unique+not_null pair (fct_model_tests is NOT a missing-pk finding).
+#[test]
+fn model_level_test_column_name_comes_from_kwargs() {
+    let dag = load_dag_from_source(PROJECT).unwrap();
+    let kinds: Vec<(&str, Option<&str>)> = dag
+        .tests("model.sample.fct_model_tests")
+        .iter()
+        .map(|t| (t.kind.as_str(), t.column_name.as_deref()))
+        .collect();
+    assert!(kinds.contains(&("unique", Some("id"))), "{kinds:?}");
+    assert!(kinds.contains(&("not_null", Some("id"))), "{kinds:?}");
+}
+
+/// `has_pk_guarantee` must see the kwargs-carried column in source mode:
+/// fct_model_tests declares unique+not_null on `id` through model-level
+/// `column_name:`/`arguments:` spellings — it must NOT surface in
+/// `missing_primary_key_tests` (the false positive the kwargs read exists
+/// to prevent).
+#[test]
+fn model_level_test_kwargs_satisfy_missing_pk_in_source_mode() {
+    let dag = load_dag_from_source(PROJECT).unwrap();
+    let findings = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    let pks: Vec<&str> = findings
+        .iter()
+        .filter(|f| f.rule == LintRule::MissingPrimaryKeyTests)
+        .map(|f| f.node_uid.as_str())
+        .collect();
+    assert!(
+        !pks.contains(&"model.sample.fct_model_tests"),
+        "fct_model_tests carries unique+not_null on id via kwargs: {pks:?}"
+    );
+}
+
+/// A whitespace-only column `description:` counts as missing (the shared
+/// blank predicate) — `undocumented_columns` names the column in source
+/// mode, identical to the verbatim-whitespace manifest wire.
+#[test]
+fn whitespace_only_column_description_is_undocumented() {
+    let dag = load_dag_from_source(PROJECT).unwrap();
+    let notes = dag
+        .detail("model.sample.fct_model_tests")
+        .expect("detail")
+        .columns
+        .iter()
+        .find(|c| c.name == "notes")
+        .expect("notes column");
+    assert!(notes.description.is_none());
+    let findings = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    let f = findings
+        .iter()
+        .find(|f| {
+            f.rule == LintRule::UndocumentedColumns && f.node_uid == "model.sample.fct_model_tests"
+        })
+        .expect("undocumented_columns fires on fct_model_tests");
+    assert!(f.message.contains("notes"), "{:?}", f.message);
 }

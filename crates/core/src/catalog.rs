@@ -325,6 +325,7 @@ mod tests {
             name: name.into(),
             data_type: ty.map(str::to_string),
             description: None,
+            constraints: vec![],
         };
         // Declared order is preserved; a column the catalog doesn't know
         // contributes nothing; a matching declared type contributes nothing;

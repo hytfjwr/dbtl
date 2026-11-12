@@ -27,6 +27,15 @@ pub(super) fn columns_json(
                 serde_json::Value::String(docs.render(d, warnings)),
             );
         }
+        // Column-level `constraints:` ride INSIDE the column object — the
+        // same wire position the real manifest records (no `columns` key
+        // there; the constraint covers the column itself).
+        if !c.constraints.is_empty() {
+            obj.insert(
+                "constraints".to_string(),
+                serde_json::to_value(&c.constraints).expect("RawConstraint serializes"),
+            );
+        }
         map.insert(c.name.clone(), serde_json::Value::Object(obj));
     }
     map
