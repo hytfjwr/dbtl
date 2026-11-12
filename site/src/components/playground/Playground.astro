@@ -52,7 +52,7 @@ const linted = lintHtml(lint, outcome.hit, outcome, spec);
     <span class="lab">selector</span>
     <label class="prompt" for="pg-sel">
       <span class="pre" aria-hidden="true">
-        $ dbtl ls '
+        {"$ dbtl ls '"}
       </span>
       <input
         id="pg-sel"
@@ -67,7 +67,7 @@ const linted = lintHtml(lint, outcome.hit, outcome, spec);
         aria-describedby="pg-err"
       />
       <span class="pre" aria-hidden="true">
-        '
+        {"'"}
       </span>
     </label>
   </div>
@@ -88,7 +88,7 @@ const linted = lintHtml(lint, outcome.hit, outcome, spec);
 
 <div class="pg-tabs" role="tablist" aria-label="Output" data-pagefind-ignore>
   <button role="tab" type="button" id="pt-lin" aria-controls="pp-lin" aria-selected="true">
-    Lineage
+    {"Lineage"}
     <span class="cnt" id="pc-lin">
       {outcome.hit.size}
     </span>
@@ -101,7 +101,7 @@ const linted = lintHtml(lint, outcome.hit, outcome, spec);
     aria-selected="false"
     tabindex="-1"
   >
-    Lint findings
+    {"Lint findings"}
     <span class="cnt" id="pc-lint">
       {linted.count}
     </span>
