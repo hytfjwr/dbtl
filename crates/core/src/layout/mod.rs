@@ -38,6 +38,6 @@ use glyphs::*;
 pub use attr::{CellAttr, LensTint, MaterializationClass};
 pub use glyphs::{Density, GlyphMode};
 pub use grid::{CharGrid, ColLine, Layout, NodeRect};
-pub(crate) use place::longest_path_columns;
+pub use place::longest_path_columns;
 pub use place::{layout, layout_columns, layout_density, layout_mode};
 pub use viewport::{anchor_offset, blit, clamp_offset};
