@@ -564,6 +564,103 @@ fn env_theme_does_not_count_as_an_explicit_flag() {
     );
 }
 
+// ---- theme resolution: unknown names ------------------------------------
+
+/// An explicitly named theme (`--theme`, and `DBTL_THEME` through the same
+/// flag slot) that resolves to nothing is the caller's mistake: exit 2 and
+/// the error lists the valid names. The error is raised BEFORE the terminal
+/// is touched, so a plain spawn exits on every platform.
+#[test]
+fn unknown_theme_flag_exits_two_and_lists_presets() {
+    let m = fixture_manifest();
+    let out = run(&[
+        "--manifest",
+        m.to_str().unwrap(),
+        "--theme",
+        "no-such-theme",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an unknown --theme name is a usage error, stderr: {}",
+        stderr(&out)
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("unknown theme 'no-such-theme'"),
+        "stderr names the bad value, got: {err}"
+    );
+    for preset in ["default", "dark", "dusk", "light", "warm"] {
+        assert!(
+            err.contains(preset),
+            "stderr lists the preset '{preset}', got: {err}"
+        );
+    }
+
+    // DBTL_THEME binds the same flag — the env spelling errors identically.
+    let out = dbtl_cmd()
+        .args(["--manifest", m.to_str().unwrap()])
+        .env("DBTL_THEME", "no-such-theme")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("failed to run dbtl");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("unknown theme 'no-such-theme'"));
+}
+
+/// A saved or configured theme name is best-effort state, never a startup
+/// error: it warns and falls back to `default`. Here a fictional
+/// `theme: no-such-theme` in config.yml warns on stderr and the app proceeds
+/// (reaching the TTY probe on a console-less host, parking on one that has a
+/// console — hence the spawn-poll-kill pattern).
+#[test]
+fn unknown_config_theme_warns_and_falls_back() {
+    let m = fixture_manifest();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let xdg_config = dir.path().join("config");
+    let xdg_state = dir.path().join("state");
+    std::fs::create_dir_all(xdg_config.join("dbtl")).expect("config dir");
+    std::fs::write(
+        xdg_config.join("dbtl").join("config.yml"),
+        "theme: no-such-theme\n",
+    )
+    .expect("write config.yml");
+    std::fs::create_dir_all(&xdg_state).expect("state dir");
+
+    let mut child = dbtl_cmd()
+        .args(["--manifest", m.to_str().unwrap()])
+        .env("XDG_CONFIG_HOME", &xdg_config)
+        .env("XDG_STATE_HOME", &xdg_state)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn dbtl");
+    let stderr_pipe = child.stderr.take().expect("stderr piped");
+    let reader = std::thread::spawn(move || {
+        let mut buf = String::new();
+        use std::io::Read;
+        let _ = std::io::BufReader::new(stderr_pipe).read_to_string(&mut buf);
+        buf
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if child.try_wait().expect("poll child").is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if child.try_wait().expect("poll child").is_none() {
+        child.kill().expect("kill parked TUI child");
+    }
+    let _ = child.wait();
+    let err = reader.join().expect("stderr reader");
+    assert!(
+        err.contains("warning:") && err.contains("unknown theme 'no-such-theme'"),
+        "a stale config name warns and falls back, got stderr: {err}"
+    );
+}
+
 // ---- --catalog: explicit override over the auto-detected sibling ---------
 
 /// Write `catalog.json` under `dir` declaring `cols` for `uid`; returns the path.
