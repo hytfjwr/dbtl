@@ -282,6 +282,7 @@ fn lint_rules_markdown() -> String {
         if !i.example.is_empty() {
             out.push_str(&format!("**Example:** {}\n\n", cell(i.example)));
         }
+        out.push_str(&format!("**Fix:** {}\n\n", cell(i.help)));
         if i.params.is_empty() {
             out.push_str("**Parameters:** none.\n");
         } else {
@@ -1019,6 +1020,12 @@ mod tests {
             assert!(doc.contains(&format!("## `{}`", info.id)));
             assert!(doc.contains(info.summary));
             assert!(doc.contains(info.category.name()));
+            assert!(
+                doc.contains(&format!("**Fix:** {}", info.help)),
+                "{}'s fix guidance: {}",
+                info.id,
+                info.help
+            );
             for p in info.params {
                 assert!(doc.contains(&format!("`{}`", p.name)));
             }

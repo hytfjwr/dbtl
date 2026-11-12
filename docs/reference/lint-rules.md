@@ -51,6 +51,8 @@ A model directly depends on both a source and a model.
 
 **Example:** order_summary joins stg_orders (model) with raw.payments (source). Fix: model payments through staging and ref the staging model instead.
 
+**Fix:** model the source through a staging model and ref the staging model instead
+
 **Parameters:** none.
 
 ## `multiple_sources_joined`
@@ -63,6 +65,8 @@ A model directly depends on 2+ sources.
 
 **Example:** fct_orders selects from raw.shopify.orders and raw.stripe.charges. Fix: stage each source as stg_shopify / stg_stripe and join those models.
 
+**Fix:** give each source its own staging model and join those instead
+
 **Parameters:** none.
 
 ## `source_fanout`
@@ -74,6 +78,8 @@ A source directly feeds too many models.
 **Why:** When one raw source feeds many downstream models, every one of them re-derives the same cleanup and they drift apart. A single staging model owns the source contract; consumers ref that.
 
 **Example:** raw.crm.contacts is read by stg_contacts, fct_leads and rpt_pipeline. Fix: only stg_contacts reads the source; the marts ref stg_contacts.
+
+**Fix:** let one staging model read the source and ref that model from the others
 
 **Parameters:**
 
@@ -91,6 +97,8 @@ A model directly feeds too many leaf models.
 
 **Example:** int_customers feeds fct_orders, fct_returns, rpt_cohorts, rpt_ltv and dim_customers. Fix: introduce narrower intermediates per domain instead of one grab-bag hub.
 
+**Fix:** split the hub into narrower intermediate models per domain and ref those
+
 **Parameters:**
 
 | Name | Type | Default | Description |
@@ -107,6 +115,8 @@ A model has no parents.
 
 **Example:** dim_regions is a plain `select ...` with no ref/source calls. Fix: make it a seed, or declare it as a source if an external system owns it.
 
+**Fix:** select from a source() or ref() so the model has lineage
+
 **Parameters:** none.
 
 ## `rejoining_upstream`
@@ -118,6 +128,8 @@ A redundant hop: A->B->C while A->C already exists.
 **Why:** Re-reading an upstream model when a direct edge already exists means the intermediate node adds nothing — it just duplicates a dependency. The extra hop slows builds and muddies the graph's intent.
 
 **Example:** fct_orders refs int_pricing, and int_pricing's only other parent stg_orders is also refed directly by fct_orders. Fix: drop the redundant stg_orders ref or move the shared logic into int_pricing.
+
+**Fix:** drop the redundant direct ref, or move the shared logic into the intermediate model
 
 **Parameters:** none.
 
@@ -131,6 +143,8 @@ A marts/intermediate model directly depends on a source.
 
 **Example:** fct_orders reads raw.shopify.orders. Fix: create stg_shopify__orders and ref that from the mart.
 
+**Fix:** stage the source and ref the staging model from the mart
+
 **Parameters:** none.
 
 ## `missing_primary_key_tests`
@@ -142,6 +156,8 @@ A model lacks a primary-key test (unique+not_null on one column, or unique_combi
 **Why:** Joins and fanout checks assume every model has a stable grain. Without a uniqueness test, a duplicated key turns a downstream join into a silent row explosion that no lint rule can see.
 
 **Example:** stg_orders has no test on order_id. Fix: add unique and not_null tests on order_id (or a unique_combination_of_columns test for a composite grain).
+
+**Fix:** add unique and not_null tests to one key column, or a unique_combination_of_columns test
 
 **Parameters:**
 
@@ -159,6 +175,8 @@ Access: public without contract: enforced.
 
 **Example:** rpt_monthly_revenue sets access: public but no contract. Fix: add contract: { enforced: true } so schema drift fails the build instead of downstream BI.
 
+**Fix:** set contract: { enforced: true } on the model
+
 **Parameters:** none.
 
 ## `undocumented_models`
@@ -170,6 +188,8 @@ A model has no description.
 **Why:** A model with no description forces every reader to reverse-engineer intent from SQL. Descriptions are the cheapest documentation that exists — the generated docs site and the TUI inspector are only as useful as this one string.
 
 **Example:** stg_customers has no description. Fix: add a `description:` in its schema.yml entry (or a docs block) saying what one row represents.
+
+**Fix:** add a description to the model's schema.yml entry
 
 **Parameters:** none.
 
@@ -183,6 +203,8 @@ A model's name misses its layer's prefix.
 
 **Example:** models/marts/orders.sql is named `orders` but marts expects a fct_/dim_/rpt_ prefix. Fix: rename to fct_orders (or widen `lint.naming_prefixes.marts` in .dbtl.yml).
 
+**Fix:** rename the model with one of its layer's prefixes, or widen lint.naming_prefixes
+
 **Parameters:** none.
 
 ## `layer_violation`
@@ -194,6 +216,8 @@ A backward edge between logical layers.
 **Why:** Layers exist so data flows one way: staging cleans, intermediate composes, marts serve. An edge that jumps backward makes the layer boundaries meaningless and turns refactors into guesswork.
 
 **Example:** stg_orders refs fct_payments (staging reading a mart). Fix: move the shared logic upstream — staging should never need a marts model.
+
+**Fix:** move the shared logic upstream so the edge points toward marts
 
 **Parameters:** none.
 
@@ -207,6 +231,8 @@ A source is declared but never referenced.
 
 **Example:** raw.legacy_exports is declared but no model or exposure reads it. Fix: delete the declaration, or build the staging model that was meant to consume it.
 
+**Fix:** delete the declaration, or ref the source from a model
+
 **Parameters:** none.
 
 ## `duplicate_sources`
@@ -218,6 +244,8 @@ Two or more sources point at the same warehouse relation.
 **Why:** Declaring the same relation under two source names splits its tests, docs and freshness into competing records, and a model can silently read the 'wrong' one. One relation should have exactly one declaration every model shares.
 
 **Example:** raw.app.users and mirror.app_users both resolve to app.public.users. Fix: keep one declaration and update every source() call to it.
+
+**Fix:** keep one declaration and point every source() call at it
 
 **Parameters:** none.
 
@@ -231,6 +259,8 @@ A staging model directly depends on another staging model.
 
 **Example:** stg_order_items refs stg_orders to compute line totals. Fix: move the join or aggregation into an int_ model so staging stays a pure source-mapping layer.
 
+**Fix:** move the join or aggregation into an intermediate model so staging reads sources only
+
 **Parameters:** none.
 
 ## `too_many_joins`
@@ -242,6 +272,8 @@ A model directly depends on too many data resources.
 **Why:** A model that reads many parents at once is a join hub: the SQL is doing the work of several intermediate models, and every upstream change can break it. Splitting the inputs into intermediate steps keeps each model's contract testable.
 
 **Example:** fct_checkout reads 9 models and sources. Fix: pre-join the related inputs in int_ models and ref those instead.
+
+**Fix:** pre-join related inputs in intermediate models and ref those instead
 
 **Parameters:**
 
@@ -259,6 +291,8 @@ A chain of consecutive view/ephemeral models is too long.
 
 **Example:** rpt_daily runs five views deep from stg_events. Fix: materialize the heavy middle step (table or incremental) so the chain has a checkpoint.
 
+**Fix:** materialize a middle step of the chain as a table or incremental model
+
 **Parameters:**
 
 | Name | Type | Default | Description |
@@ -275,6 +309,8 @@ An exposure directly depends on a source or a view/ephemeral model.
 
 **Example:** the churn dashboard reads int_features (a view) and raw.events. Fix: point the exposure at the mart that already materializes those inputs.
 
+**Fix:** point the exposure at the durable mart that materializes the inputs
+
 **Parameters:** none.
 
 ## `exposures_dependent_on_private_models`
@@ -286,6 +322,8 @@ An exposure depends on a private/protected model.
 **Why:** Private and protected access levels mark a model as internal — ref-able only inside its group or project. Declaring an external consumer on an internal model advertises a dependency that violates the access contract's intent.
 
 **Example:** the finance dashboard depends on dim_salaries (access: private). Fix: publish a public mart for the dashboard, or narrow the exposure's depends_on.
+
+**Fix:** publish a public mart for the exposure, or narrow the exposure's depends_on
 
 **Parameters:** none.
 
@@ -299,6 +337,8 @@ A source has no description.
 
 **Example:** raw.billing.events has no description. Fix: add a description in its schema.yml entry saying what the upstream system emits.
 
+**Fix:** add a description to the source's schema.yml entry
+
 **Parameters:** none.
 
 ## `undocumented_columns`
@@ -310,6 +350,8 @@ A model has declared columns without descriptions.
 **Why:** Declaring a column without describing it documents the schema's shape but not its meaning — the generated docs show a table of names with no semantics. Column descriptions are cheap and pay off every time the docs are read.
 
 **Example:** fct_orders declares order_total without a description. Fix: describe each column in schema.yml (units, semantics, edge cases).
+
+**Fix:** describe each column in schema.yml
 
 **Parameters:** none.
 
@@ -323,6 +365,8 @@ A public model lacks a model or column description.
 
 **Example:** rpt_revenue is access: public but has no description and two undocumented columns. Fix: document the model and every public column.
 
+**Fix:** document the model and every public column
+
 **Parameters:** none.
 
 ## `model_directories`
@@ -335,6 +379,8 @@ A model's name prefix and directory point at different layers.
 
 **Example:** models/staging/fct_orders.sql. Fix: move the file to models/marts/, or rename it stg_* if it truly belongs to staging.
 
+**Fix:** move the file under the directory matching its name prefix, or rename it
+
 **Parameters:** none.
 
 ## `required_meta_keys`
@@ -346,6 +392,8 @@ A model is missing a required meta key.
 **Why:** Projects that rely on meta for ownership, cost centers or data-domain tagging only get value when every model carries the keys. A missing key means the model escapes the reports and groupings built on that tag.
 
 **Example:** with keys: [owner] configured, dim_products lacks meta.owner. Fix: add owner: data-team to the model's meta.
+
+**Fix:** add the required keys to the model's meta
 
 **Parameters:**
 
@@ -363,6 +411,8 @@ A contract-enforced model has declared columns without data_type.
 
 **Example:** dim_customers enforces a contract but column segment has no data_type. Fix: declare data_type for every contract column.
 
+**Fix:** declare data_type for every contract column
+
 **Parameters:** none.
 
 ## `incremental_without_unique_key`
@@ -374,6 +424,8 @@ An incremental model has no unique_key.
 **Why:** An incremental run merges new rows into the existing table; without a unique_key dbt cannot match incoming rows to existing ones, so every run risks silently duplicating data. Append-style strategies deliberately carry no key — this rule does not read incremental_strategy, so suppress those models with `exclude:` or meta.dbtl.ignore when the missing key is intended.
 
 **Example:** fct_events materializes incrementally but declares no unique_key. Fix: set unique_key: event_id in its config (or a list for a composite grain).
+
+**Fix:** set unique_key in the model's config, or exclude the model when the strategy needs no key
 
 **Parameters:** none.
 
@@ -387,6 +439,8 @@ A source has no freshness configured.
 
 **Example:** source raw declares tables but no freshness block. Fix: add freshness: {warn_after: {count: 12, period: hour}} at the source level — it cascades to every table.
 
+**Fix:** add a freshness block with warn_after or error_after thresholds to the source
+
 **Parameters:** none.
 
 ## `select_star`
@@ -398,6 +452,8 @@ A model's final SELECT reads * or t.*.
 **Why:** A wildcard projection inherits whatever the upstream happens to emit today — new columns ride through unannounced, a removed column surfaces as a downstream error far from the cause, and the model's contract is invisible to readers and docs.
 
 **Example:** fct_orders ends with `select * from joined`. Fix: spell out the columns the model actually produces so its output contract is explicit.
+
+**Fix:** list the columns the model produces
 
 **Parameters:** none.
 
@@ -411,6 +467,8 @@ A model names a relation literally instead of ref()/source().
 
 **Example:** stg_events selects from prod.raw_events instead of source('prod', 'raw_events'). Fix: declare the relation with ref()/source() so it joins the lineage and gets environment-aware naming.
 
+**Fix:** declare the relation with ref() or source() so it joins the lineage
+
 **Parameters:** none.
 
 ## `cartesian_join`
@@ -422,6 +480,8 @@ A JOIN carries no join condition.
 **Why:** A conditionless join multiplies every row of one side by every row of the other — usually a missing ON clause, and always a row explosion nobody asked for. `cross join` is the same shape spelled intentionally and is just as dangerous in a model.
 
 **Example:** fct_events writes `join dim_users` with no ON. Fix: add the join predicate (`on e.user_id = u.id`) — or use `cross join` only when the product is truly intended.
+
+**Fix:** add an ON or USING join condition
 
 **Parameters:** none.
 
@@ -435,6 +495,8 @@ A model names a column a trusted upstream doesn't emit.
 
 **Example:** fct_orders selects p.status but parent stg_payments (enforced contract) declares only order_id/amount. Fix: correct the column name, or extend the parent's declared columns.
 
+**Fix:** correct the column name, or add it to the upstream's declared columns
+
 **Parameters:** none.
 
 ## `forbidden_patterns`
@@ -446,6 +508,8 @@ A model's raw SQL matches a configured forbidden pattern.
 **Why:** Some constructs are banned by project policy — unsafe functions, non-deterministic calls, debug leftovers. A regex list keeps that policy in `.dbtl.yml` where review can see it, instead of a tribal knowledge check.
 
 **Example:** with patterns: ["\\bUNSAFE_UDF\\b"], stg_events calls UNSAFE_UDF(). Fix: remove the call, or narrow the pattern in .dbtl.yml when the match is legitimate.
+
+**Fix:** remove the matched construct, or narrow the configured patterns
 
 **Parameters:**
 
@@ -463,6 +527,8 @@ A declared column's data_type disagrees with the warehouse.
 
 **Example:** stg_orders declares amount as int but the catalog records NUMERIC(10,2). Fix: correct the declared data_type (or the model's cast) so docs match the warehouse.
 
+**Fix:** correct the declared data_type or the model's cast so it matches the warehouse
+
 **Parameters:** none.
 
 ## `columns_missing_in_warehouse`
@@ -474,5 +540,7 @@ A declared column doesn't exist in the warehouse.
 **Why:** Documenting a column the warehouse doesn't have means the model's docs promise a field its build never produced — the declaration is a typo'd name, a dropped select, or a stale schema.yml.
 
 **Example:** fct_orders declares ship_method but the catalog lists no such column. Fix: rename the declaration to the real column, or add it back to the model's output.
+
+**Fix:** rename the declared column to the real one, or restore it to the model's output
 
 **Parameters:** none.

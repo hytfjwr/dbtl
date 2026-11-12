@@ -19,12 +19,25 @@ pub fn render(report: &Report, ctx: &RenderCtx<'_>) -> String {
                 dbtl::Severity::Warn => ("warning", 1u8),
             };
             let props = match &f.location {
-                Some(loc) => format!(
-                    "file={},line={},title={}",
-                    escape_prop(&prefixed(&loc.file, ctx)),
-                    loc.line.unwrap_or(1),
-                    escape_prop(f.rule.name()),
-                ),
+                Some(loc) => {
+                    // Every position property emits only when known — a
+                    // file-scoped finding is a file-level annotation, never
+                    // a guessed `line=1`.
+                    let mut props = format!("file={}", escape_prop(&prefixed(&loc.file, ctx)));
+                    if let Some(line) = loc.line {
+                        props.push_str(&format!(",line={line}"));
+                    }
+                    if let Some(end_line) = loc.end_line {
+                        props.push_str(&format!(",endLine={end_line}"));
+                    }
+                    if let Some(col) = loc.column {
+                        props.push_str(&format!(",col={col}"));
+                    }
+                    if let Some(end_col) = loc.end_column {
+                        props.push_str(&format!(",endColumn={end_col}"));
+                    }
+                    format!("{props},title={}", escape_prop(f.rule.name()))
+                }
                 None => format!("title={}", escape_prop(f.rule.name())),
             };
             items.push((
@@ -128,7 +141,8 @@ mod tests {
             .unwrap();
         assert!(err < warn, "errors print before warnings: {out}");
         assert!(
-            lines.contains(&"::error file=models/a.sql,line=7,title=root_models::a has no parents")
+            lines.contains(&"::error file=models/a.sql,line=7,endLine=7,col=3,endColumn=5,title=root_models::a has no parents"),
+            "the full position properties: {out}"
         );
         // The file-less finding keeps the rule title without a location.
         assert!(lines.contains(&"::warning title=undocumented_models::d has no description"));
@@ -136,6 +150,36 @@ mod tests {
         assert!(!out.contains("breaking_columns"));
         assert!(!out.contains("c has no parents"));
         assert!(lines.last().unwrap().starts_with("::notice title=dbtl::"));
+    }
+
+    /// A file-scoped finding (`file` only, no line) is a file-level
+    /// annotation — `file=` and `title=` with no position properties at
+    /// all, never a guessed `line=1`.
+    #[test]
+    fn unpositioned_finding_is_a_file_level_annotation() {
+        let mut r = Report::new("proj", "root project only");
+        r.gates = vec![gate(
+            "lint:root_models",
+            "lint root_models",
+            dbtl::Severity::Error,
+            GateStatus::Fail,
+            "lint root_models: 1 violation(s): a",
+            vec![unpositioned(
+                dbtl::LintRule::RootModels,
+                "model.proj.a",
+                "a has no parents",
+                dbtl::Severity::Error,
+                "models/a.sql",
+                false,
+            )],
+        )];
+        r.summary = Report::summarize(&r.gates);
+        let out = render(&r, &ctx(None));
+        assert!(
+            out.contains("::error file=models/a.sql,title=root_models::a has no parents"),
+            "file + title only: {out}"
+        );
+        assert!(!out.contains("line="), "no line guess: {out}");
     }
 
     /// A tripped gate with no counted findings (coverage, docs drift, …)

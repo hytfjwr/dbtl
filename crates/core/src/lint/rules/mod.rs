@@ -263,30 +263,54 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
     // resolved for the rule, and the node's project file. Rule functions
     // produce bare findings (`Finding::new`) so the policy stays here.
     for f in &mut out {
-        f.severity = config
-            .severity(f.rule)
-            .unwrap_or_else(|| f.rule.info().default_severity);
-        // YAML-declared-attribute findings (see YAML_ATTRIBUTE_RULE_IDS)
-        // point at the declaring .yml when the loaders recorded one —
-        // a missing column description lives in schema.yml, not the
-        // model's .sql. Graph/SQL-level findings keep the original file.
-        f.location = dag
-            .detail(&f.node_uid)
-            .and_then(|d| {
-                if crate::lint::YAML_ATTRIBUTE_RULE_IDS.contains(&f.rule.name()) {
-                    d.patch_path
-                        .clone()
-                        .or_else(|| d.original_file_path.clone())
-                } else {
-                    d.original_file_path.clone()
-                }
-            })
-            .map(|file| Location { file, line: None });
+        envelope(dag, config, f);
     }
     suppress(dag, config, &mut out);
     LintOutcome {
         findings: out,
         skipped,
+    }
+}
+
+/// The one place the envelope fields fill: `severity` (the config's
+/// resolved value) and `location.file` (the node's project file).
+/// YAML-declared-attribute findings (see [`YAML_ATTRIBUTE_RULE_IDS`])
+/// point at the declaring `.yml` when the loaders recorded one — a
+/// missing column description lives in `schema.yml`, not the model's
+/// `.sql`. Graph/SQL-level findings keep the original file.
+///
+/// A position a rule attached (`with_span`) survives ONLY while its
+/// `file` agrees with the one the envelope resolves — when it disagrees
+/// (the rule pointed at a `.sql` offset but the finding's file became a
+/// `.yml`, or vice versa) the position and its labels are dropped: a
+/// position naming a different file than `location.file` would lie.
+/// `help` is never positional, so it survives either way.
+pub(super) fn envelope(dag: &Dag, config: &LintConfig, f: &mut Finding) {
+    f.severity = config
+        .severity(f.rule)
+        .unwrap_or_else(|| f.rule.info().default_severity);
+    let file = dag.detail(&f.node_uid).and_then(|d| {
+        if crate::lint::YAML_ATTRIBUTE_RULE_IDS.contains(&f.rule.name()) {
+            d.patch_path
+                .clone()
+                .or_else(|| d.original_file_path.clone())
+        } else {
+            d.original_file_path.clone()
+        }
+    });
+    match (f.location.take(), file) {
+        (Some(loc), Some(file)) => {
+            f.location = Some(if loc.file == file {
+                loc
+            } else {
+                f.label = None;
+                f.labels.clear();
+                Location::new(file)
+            });
+        }
+        // The rule named a file the dag doesn't know — keep its claim.
+        (loc @ Some(_), None) => f.location = loc,
+        (None, file) => f.location = file.map(Location::new),
     }
 }
 

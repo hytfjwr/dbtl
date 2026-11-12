@@ -73,7 +73,7 @@ mod tests {
         assert!(lines.contains(&"SKIP breaking column changes: needs --diff"));
         assert!(lines.contains(&"FAIL lint root_models: 2 violation(s): a, b (error, 1 baselined)"));
         // Counted findings nest under the gate; the baselined one never prints.
-        assert!(lines.contains(&"  models/a.sql:7 root_models a has no parents"));
+        assert!(lines.contains(&"  models/a.sql:7:3 root_models a has no parents"));
         assert!(!out.contains("c has no parents"), "baselined only counts");
         assert!(lines.contains(&"WARN lint undocumented_models: 1 violation(s): d (warn)"));
         // A file-less finding anchors on the node uid.

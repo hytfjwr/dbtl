@@ -292,11 +292,11 @@ pub fn render_report(format: ReportFormat, report: &Report, ctx: &RenderCtx<'_>)
     }
 }
 
-/// A `file:line` anchor for a finding: the project-relative path plus the
-/// recorded line (1 when none — GitHub/annotation consumers need a number),
-/// with `--path-prefix` applied when the format carries paths. Findings
-/// without a file location fall back to the node's `unique_id` — a stable
-/// identifier, never blank.
+/// A `file[:line[:column]]` anchor for a finding: the project-relative path
+/// plus the recorded position — unknown portions drop off rather than
+/// printing a guessed `:1`, with `--path-prefix` applied when the format
+/// carries paths. Findings without a file location fall back to the node's
+/// `unique_id` — a stable identifier, never blank.
 pub fn finding_anchor(f: &dbtl::Finding, path_prefix: Option<&str>) -> String {
     match &f.location {
         Some(loc) => {
@@ -304,7 +304,11 @@ pub fn finding_anchor(f: &dbtl::Finding, path_prefix: Option<&str>) -> String {
                 Some(prefix) => format!("{prefix}/{}", loc.file),
                 None => loc.file.clone(),
             };
-            format!("{}:{}", file, loc.line.unwrap_or(1))
+            match (loc.line, loc.column) {
+                (Some(line), Some(column)) => format!("{file}:{line}:{column}"),
+                (Some(line), None) => format!("{file}:{line}"),
+                _ => file,
+            }
         }
         None => f.node_uid.clone(),
     }
@@ -583,8 +587,9 @@ pub(super) mod samples {
 
     use super::*;
 
-    /// A counted or baselined lint finding: `file`/`line` become the
-    /// `location` (None → a file-less, manifest-mode finding).
+    /// A counted or baselined lint finding: `file` becomes the `location`
+    /// (None → a file-less, manifest-mode finding) carrying the pinned
+    /// `(7,3)`–`(7,5)` span the yml-resolved findings report.
     pub(super) fn finding(
         rule: dbtl::LintRule,
         node: &str,
@@ -602,7 +607,37 @@ pub(super) mod samples {
             location: file.map(|f| dbtl::Location {
                 file: f.to_string(),
                 line: Some(7),
+                column: Some(3),
+                end_line: Some(7),
+                end_column: Some(5),
             }),
+            label: None,
+            labels: Vec::new(),
+            help: None,
+            baselined,
+        }
+    }
+
+    /// A finding that names a file but no position — the `.sql`-filed
+    /// findings today's graph rules produce.
+    pub(super) fn unpositioned(
+        rule: dbtl::LintRule,
+        node: &str,
+        message: &str,
+        severity: dbtl::Severity,
+        file: &str,
+        baselined: bool,
+    ) -> dbtl::Finding {
+        dbtl::Finding {
+            rule,
+            node_uid: node.to_string(),
+            related: Vec::new(),
+            message: message.to_string(),
+            severity,
+            location: Some(dbtl::Location::new(file)),
+            label: None,
+            labels: Vec::new(),
+            help: None,
             baselined,
         }
     }
@@ -805,8 +840,9 @@ mod tests {
         assert_eq!(r.summary.skipped, 1, "one skipped gate");
     }
 
-    /// The finding helpers: `file:line` anchors, uid fallback, and the key
-    /// format the fingerprints hash.
+    /// The finding helpers: `file:line:column` anchors, unknown portions
+    /// dropped (never a guessed `:1`), uid fallback, and the key format the
+    /// fingerprints hash.
     #[test]
     fn finding_helpers_anchor_and_key() {
         let f = finding(
@@ -817,8 +853,8 @@ mod tests {
             Some("models/n.sql"),
             false,
         );
-        assert_eq!(finding_anchor(&f, None), "models/n.sql:7");
-        assert_eq!(finding_anchor(&f, Some("sub")), "sub/models/n.sql:7");
+        assert_eq!(finding_anchor(&f, None), "models/n.sql:7:3");
+        assert_eq!(finding_anchor(&f, Some("sub")), "sub/models/n.sql:7:3");
         assert_eq!(finding_key(&f), "root_models/model.p.n/");
 
         let no_loc = finding(
@@ -834,6 +870,20 @@ mod tests {
             "model.p.n",
             "a file-less finding anchors on the node uid"
         );
-        assert_eq!(finding_line(&f), "models/n.sql:7 root_models m");
+        assert_eq!(finding_line(&f), "models/n.sql:7:3 root_models m");
+
+        // A file-scoped finding (the `.sql` kind today's graph rules
+        // produce) anchors on the file alone — no `:1` is invented, and no
+        // position portions appear in json's `location` either.
+        let unpositioned = unpositioned(
+            dbtl::LintRule::RootModels,
+            "model.p.n",
+            "m",
+            dbtl::Severity::Error,
+            "models/n.sql",
+            false,
+        );
+        assert_eq!(finding_anchor(&unpositioned, None), "models/n.sql");
+        assert_eq!(finding_line(&unpositioned), "models/n.sql root_models m");
     }
 }

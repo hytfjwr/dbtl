@@ -74,9 +74,10 @@ fn check_format_markdown_is_real_markdown() {
         stdout.contains("## lint direct_join_to_source"),
         "a per-gate section: {stdout}"
     );
-    // Findings list under the gate section as file:line anchors.
+    // Findings list under the gate section as file anchors — a `.sql`
+    // finding names its file only, no line is guessed.
     assert!(
-        stdout.contains("- models/utilities/pos_prep/pos_cat.sql:1 direct_join_to_source"),
+        stdout.contains("- models/utilities/pos_prep/pos_cat.sql direct_join_to_source"),
         "a finding row: {stdout}"
     );
 }
@@ -121,11 +122,12 @@ fn check_format_github_emits_workflow_commands() {
     let out = check_on(&m, &["--lint", "--format", "github"]);
     assert_eq!(out.status.code(), Some(1));
     let stdout = out_text(&out);
-    // A file-bound annotation carries file/line/title; every fixture finding
-    // is error-severity by default.
+    // A file-bound annotation carries file/title — `line` rides along only
+    // when the finding's position is actually known, never a guessed 1.
     assert!(
-        stdout
-            .contains("::error file=models/utilities/pos_prep/pos_cat.sql,line=1,title=direct_join_to_source::"),
+        stdout.contains(
+            "::error file=models/utilities/pos_prep/pos_cat.sql,title=direct_join_to_source::"
+        ),
         "the annotation shape: {stdout}"
     );
     // The summary lands as a trailing notice.
@@ -211,9 +213,10 @@ fn check_format_junit_is_wellformed_xml() {
         2,
         "the catalog rules skip without a catalog: {stdout}"
     );
-    // The listing inside a failure is the shared `file:line rule message`.
+    // The listing inside a failure is the shared `file[:line[:col]] rule
+    // message` anchor — `.sql` findings stop at the file.
     assert!(
-        stdout.contains("models/utilities/pos_prep/pos_cat.sql:1 direct_join_to_source"),
+        stdout.contains("models/utilities/pos_prep/pos_cat.sql direct_join_to_source"),
         "finding bodies: {stdout}"
     );
 }

@@ -390,8 +390,8 @@ pub enum Commands {
         #[arg(long,
                conflicts_with_all = ["explain", "write_baseline", "quiet", "format", "fail_on", "no_baseline", "report", "step_summary", "path_prefix"])]
         list_rules: bool,
-        /// Show one rule's full registry entry (rationale, example, params)
-        /// and exit — no data load.
+        /// Show one rule's full registry entry (rationale, example, params,
+        /// fix guidance, docs link) and exit — no data load.
         #[arg(long, value_name = "ID",
                conflicts_with_all = ["list_rules", "write_baseline", "quiet", "format", "fail_on", "no_baseline", "report", "step_summary", "path_prefix"])]
         explain: Option<String>,

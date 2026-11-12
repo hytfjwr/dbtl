@@ -937,10 +937,7 @@ fn findings_carry_severity_location_and_baselined() {
     assert_eq!(g.severity, Severity::Error);
     assert_eq!(
         g.location,
-        Some(Location {
-            file: "models/staging/stg_root.sql".into(),
-            line: None
-        }),
+        Some(Location::new("models/staging/stg_root.sql")),
         "location is the node's original_file_path"
     );
     assert!(!g.baselined);
@@ -998,13 +995,105 @@ fn finding_json_carries_the_envelope() {
         "location is omitted from JSON when absent"
     );
     let mut f2 = f.clone();
-    f2.location = Some(Location {
-        file: "models/x.sql".into(),
-        line: None,
-    });
+    f2.location = Some(Location::new("models/x.sql"));
     let v2 = serde_json::to_value(&f2).unwrap();
     assert_eq!(v2["location"]["file"], "models/x.sql");
     assert!(v2["location"].get("line").is_none());
+}
+
+#[test]
+fn finding_json_carries_position_labels_help_and_docs() {
+    // A fully positioned finding: the location's span fields, the primary
+    // label, secondary labels, the EFFECTIVE help (the rule's own here)
+    // and the per-rule docs anchor all serialize.
+    let f = Finding::new(
+        LintRule::SelectStar,
+        "model.p.x",
+        vec![],
+        "x's final SELECT uses select * / t.*",
+    )
+    .with_span("models/x.sql", 3, 8, 3, 17)
+    .with_label("select *")
+    .with_labels(vec![
+        Label {
+            line: 9,
+            column: None,
+            end_line: None,
+            end_column: None,
+            message: "another * here".into(),
+        },
+        Label {
+            line: 5,
+            column: Some(12),
+            end_line: Some(5),
+            end_column: Some(15),
+            message: "t.* here".into(),
+        },
+    ])
+    .with_help("project the columns explicitly");
+    let v = serde_json::to_value(&f).unwrap();
+    assert_eq!(
+        v["location"],
+        serde_json::json!({
+            "file": "models/x.sql",
+            "line": 3,
+            "column": 8,
+            "end_line": 3,
+            "end_column": 17,
+        }),
+        "the full span serializes"
+    );
+    assert_eq!(v["label"], "select *");
+    // with_labels sorted the secondary positions by (line, column).
+    assert_eq!(
+        v["labels"],
+        serde_json::json!([
+            {"line": 5, "column": 12, "end_line": 5, "end_column": 15, "message": "t.* here"},
+            {"line": 9, "message": "another * here"},
+        ])
+    );
+    assert_eq!(v["help"], "project the columns explicitly");
+    assert_eq!(
+        v["docs_url"],
+        "https://hytfjwr.github.io/dbtl/reference/lint-rules/#select_star"
+    );
+    // Existing fields keep their slots; absent metadata stays absent.
+    let bare = serde_json::to_value(Finding::new(LintRule::RootModels, "m", vec![], "x")).unwrap();
+    assert!(bare.get("label").is_none() && bare.get("labels").is_none());
+    assert_eq!(
+        bare["help"],
+        LintRule::RootModels.info().help,
+        "no finding help → the registry default serializes"
+    );
+}
+
+#[test]
+fn effective_help_prefers_the_finding_then_the_registry() {
+    let bare = Finding::new(LintRule::RootModels, "m", vec![], "x");
+    assert_eq!(bare.effective_help(), LintRule::RootModels.info().help);
+    let f = bare.with_help("do this instead");
+    assert_eq!(f.effective_help(), "do this instead");
+}
+
+#[test]
+fn every_rule_docs_url_anchors_at_its_own_id() {
+    // The reference doc's headings are `## `<id>`` — github-slugger (what
+    // the site builds anchors with) strips the backticks and keeps
+    // word characters, so a snake_case id slugs to itself. Any id that
+    // wouldn't (uppercase, spaces, punctuation) breaks the #<id> links.
+    for rule in LintRule::ALL {
+        let id = rule.name();
+        assert!(
+            id.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+            "{id} must slug to itself for the docs anchor"
+        );
+        assert_eq!(
+            rule.docs_url(),
+            format!("{}#{id}", LINT_RULE_DOCS_BASE),
+            "{id}'s anchor is the id itself"
+        );
+    }
 }
 
 // ---- per-rule excludes -------------------------------------------------------
@@ -2657,7 +2746,195 @@ fn location_file_follows_the_rule_kind() {
     );
 }
 
-// ---- yaml_name_line -----------------------------------------------------------------
+#[test]
+fn envelope_preserves_a_rule_supplied_position() {
+    // A rule that pinned the SAME file the envelope resolves keeps its
+    // whole position — span, primary label, secondary labels and help.
+    let m = manifest(
+        vec![filed_model(
+            "declared",
+            "models/marts/declared.sql",
+            Some("models/marts/schema.yml"),
+        )],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let cfg = LintConfig::default();
+    let mut f = Finding::new(
+        LintRule::UndocumentedModels,
+        "model.p.declared",
+        vec![],
+        "declared has no description",
+    )
+    .with_span("models/marts/schema.yml", 4, 11, 4, 19)
+    .with_label("declared")
+    .with_labels(vec![Label {
+        line: 9,
+        column: Some(15),
+        end_line: Some(9),
+        end_column: Some(17),
+        message: "this column too".into(),
+    }])
+    .with_help("write the description under this entry");
+    super::rules::envelope(&dag, &cfg, &mut f);
+    assert_eq!(
+        f.location,
+        Some(Location {
+            file: "models/marts/schema.yml".into(),
+            line: Some(4),
+            column: Some(11),
+            end_line: Some(4),
+            end_column: Some(19),
+        }),
+        "a position inside the resolved file survives the envelope"
+    );
+    assert_eq!(f.label.as_deref(), Some("declared"));
+    assert_eq!(f.labels.len(), 1);
+    assert_eq!(
+        f.help.as_deref(),
+        Some("write the description under this entry")
+    );
+}
+
+#[test]
+fn envelope_drops_a_position_named_for_the_wrong_file() {
+    // The yml-attribute rules re-target `location.file` at patch_path —
+    // a span a rule recorded inside the model's .sql would point at text
+    // that doesn't exist in the .yml, so the position AND its labels are
+    // dropped (the file-only location replaces them). `help` isn't
+    // positional and survives.
+    let m = manifest(
+        vec![filed_model(
+            "declared",
+            "models/marts/declared.sql",
+            Some("models/marts/schema.yml"),
+        )],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let cfg = LintConfig::default();
+    let mut f = Finding::new(
+        LintRule::UndocumentedModels,
+        "model.p.declared",
+        vec![],
+        "declared has no description",
+    )
+    .with_span("models/marts/declared.sql", 12, 1, 12, 20)
+    .with_label("the sql")
+    .with_labels(vec![Label {
+        line: 3,
+        column: None,
+        end_line: None,
+        end_column: None,
+        message: "sql position".into(),
+    }])
+    .with_help("still valid advice");
+    super::rules::envelope(&dag, &cfg, &mut f);
+    assert_eq!(
+        f.location,
+        Some(Location::new("models/marts/schema.yml")),
+        "the envelope's file wins; the mismatched span is discarded"
+    );
+    assert_eq!(f.label, None, "the primary label pointed at the .sql");
+    assert!(f.labels.is_empty(), "secondary positions too");
+    assert_eq!(f.help.as_deref(), Some("still valid advice"));
+}
+
+#[test]
+fn envelope_keeps_a_position_it_cannot_check() {
+    // A finding on a node the dag doesn't know (no detail → no resolved
+    // file) keeps the rule's location claim as-is — there is nothing to
+    // check it against.
+    let m = manifest(vec![model("a", "staging/a.sql")], vec![], &[]);
+    let dag = Dag::build(&m);
+    let cfg = LintConfig::default();
+    let mut f = Finding::new(LintRule::RootModels, "model.p.gone", vec![], "x").with_span(
+        "models/gone.sql",
+        1,
+        1,
+        1,
+        5,
+    );
+    super::rules::envelope(&dag, &cfg, &mut f);
+    assert_eq!(
+        f.location,
+        Some(Location {
+            file: "models/gone.sql".into(),
+            line: Some(1),
+            column: Some(1),
+            end_line: Some(1),
+            end_column: Some(5),
+        })
+    );
+}
+
+// ---- byte_span_position --------------------------------------------------------------
+
+#[test]
+fn byte_span_position_maps_ascii_offsets() {
+    // "one\ntwo\nthree" — the span of "two" is bytes 4..7.
+    assert_eq!(
+        byte_span_position("one\ntwo\nthree", 4, 7),
+        Some((2, 1, 2, 4)),
+        "a mid-line word: (line, col) to the exclusive end on the same line"
+    );
+    // A whole first line INCLUDING its newline ends at the next line's 1.
+    assert_eq!(
+        byte_span_position("one\ntwo\nthree", 0, 4),
+        Some((1, 1, 2, 1))
+    );
+    // An empty span reports start == end.
+    assert_eq!(byte_span_position("abc", 1, 1), Some((1, 2, 1, 2)));
+}
+
+#[test]
+fn byte_span_position_counts_chars_not_bytes() {
+    // `é` is two bytes but one column — offsets and columns agree in
+    // chars, never bytes.
+    let text = "aé\nz";
+    let é = text.char_indices().nth(1).unwrap().0;
+    let z = text.char_indices().nth(3).unwrap().0;
+    assert_eq!(byte_span_position(text, é, é + 2), Some((1, 2, 1, 3)));
+    assert_eq!(byte_span_position(text, z, z + 1), Some((2, 1, 2, 2)));
+    // A tab is one column too — not a tab-stop expansion.
+    assert_eq!(byte_span_position("a\tb", 1, 3), Some((1, 2, 1, 4)));
+}
+
+#[test]
+fn byte_span_position_treats_crlf_as_one_newline() {
+    // The position after "\r\n" is the next line's column 1; a span
+    // ending at the `\r` reports the line's end, not the next line.
+    let text = "ab\r\ncd";
+    assert_eq!(byte_span_position(text, 4, 6), Some((2, 1, 2, 3)));
+    assert_eq!(byte_span_position(text, 0, 2), Some((1, 1, 1, 3)));
+}
+
+#[test]
+fn byte_span_position_handles_the_final_line_either_way() {
+    // With or without a trailing newline the last line's offsets resolve.
+    assert_eq!(byte_span_position("a\nb", 2, 3), Some((2, 1, 2, 2)));
+    assert_eq!(byte_span_position("a\nb\n", 2, 3), Some((2, 1, 2, 2)));
+    // An offset AT the end of the text is legal — the position after the
+    // last character.
+    assert_eq!(byte_span_position("a\nb", 3, 3), Some((2, 2, 2, 2)));
+    assert_eq!(byte_span_position("a\nb\n", 4, 4), Some((3, 1, 3, 1)));
+}
+
+#[test]
+fn byte_span_position_rejects_what_it_cannot_pin() {
+    // end < start, end past the text, and offsets that cut a char in
+    // half all return None — no guessed positions.
+    assert_eq!(byte_span_position("abc", 2, 1), None);
+    assert_eq!(byte_span_position("abc", 0, 4), None);
+    let text = "aé";
+    let inside_é = 2; // `é` spans bytes 1..3
+    assert_eq!(byte_span_position(text, inside_é, 3), None);
+    assert_eq!(byte_span_position(text, 0, inside_é), None);
+}
+
+// ---- yaml_name_line / yaml_name_span --------------------------------------------------
 
 fn names(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| s.to_string()).collect()
@@ -2708,6 +2985,40 @@ fn yaml_name_line_handles_quotes_and_comments() {
     // A `- name:` with no value can't match.
     let yml = "models:\n  - name:\n    description: x\n  - name: real\n";
     assert_eq!(yaml_name_line(yml, &names(&["real"])), Some(4));
+}
+
+#[test]
+fn yaml_name_span_points_at_the_value_not_the_key() {
+    // `      - name: orders` — the value starts at column 15 (6 spaces +
+    // `- name: `) and `orders` is 6 chars wide, so the exclusive end is 21.
+    let yml = "version: 2\n\nsources:\n  - name: raw\n    tables:\n      - name: orders\n";
+    assert_eq!(
+        yaml_name_span(yml, &names(&["raw", "orders"])),
+        Some((6, 15, 21)),
+        "(line, column, exclusive end_column) of the name value"
+    );
+    assert_eq!(yaml_name_span(yml, &names(&["raw"])), Some((4, 11, 14)));
+}
+
+#[test]
+fn yaml_name_span_points_inside_the_quotes() {
+    // Quoted names underline the NAME, not the quotes: `  - name: "raw"`
+    // has `raw` at columns 12..15.
+    let yml = "sources:\n  - name: \"raw\"\n    tables:\n      - name: 'orders'\n";
+    assert_eq!(yaml_name_span(yml, &names(&["raw"])), Some((2, 12, 15)));
+    assert_eq!(
+        yaml_name_span(yml, &names(&["raw", "orders"])),
+        Some((4, 16, 22)),
+        "single-quoted names resolve the same way"
+    );
+}
+
+#[test]
+fn yaml_name_span_returns_none_where_the_line_would() {
+    // No chain match → no span either (columns are never guessed).
+    let yml = "models:\n  - name: a\n";
+    assert_eq!(yaml_name_span(yml, &names(&["ghost"])), None);
+    assert_eq!(yaml_name_span(yml, &[]), None);
 }
 
 // ---- fill_finding_lines --------------------------------------------------------------
@@ -2766,6 +3077,116 @@ fn fill_finding_lines_resolves_lines_and_survives_missing_files() {
     );
     // A graph finding on a .sql file is never line-filled.
     assert_eq!(line_of(LintRule::RootModels, "model.p.m"), None);
+}
+
+#[test]
+fn fill_finding_lines_fills_the_value_span_and_a_label() {
+    // The same fixture, now asserting the full span: `- name:` VALUE
+    // columns, the exclusive end on the same line, and the `declared
+    // here` primary label — for a source, a model-level rule, and a
+    // column-scoped one.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    //      1 version: 2          7 (blank)
+    //      2                     8 models:
+    //      3 sources:            9   - name: m
+    //      4   - name: s        10     columns:
+    //      5     tables:        11       - name: id
+    //      6       - name: bare 12       - name: amt
+    std::fs::write(
+        dir.path().join("models/schema.yml"),
+        "version: 2\n\nsources:\n  - name: s\n    tables:\n      - name: bare\n\nmodels:\n  - name: m\n    columns:\n      - name: id\n      - name: amt\n",
+    )
+    .unwrap();
+    let cols = |name: &str| (name.to_string(), serde_json::json!({"name": name}));
+    let mut declared = filed_model("m", "models/m.sql", Some("models/schema.yml"));
+    declared.1.description = Some("documented".into());
+    declared.1.columns = serde_json::Map::from_iter([cols("id"), cols("amt")]);
+    let mut src = source("s.bare");
+    src.1.original_file_path = Some("models/schema.yml".into());
+    let m = manifest(vec![declared], vec![src], &[]);
+    let dag = Dag::build(&m);
+    let mut f = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    fill_finding_lines(&mut f, &dag, dir.path());
+    let loc = |rule, uid| {
+        f.iter()
+            .find(|x| x.rule == rule && x.node_uid == uid)
+            .and_then(|x| x.location.clone())
+            .unwrap_or_else(|| panic!("{rule:?} on {uid} has a location"))
+    };
+    // `- name: id` at line 11: the value `id` spans columns 15..17.
+    assert_eq!(
+        loc(LintRule::UndocumentedColumns, "model.p.m"),
+        Location {
+            file: "models/schema.yml".into(),
+            line: Some(11),
+            column: Some(15),
+            end_line: Some(11),
+            end_column: Some(17),
+        },
+        "a column finding spans the column's `- name:` value"
+    );
+    // `      - name: bare` at line 6: `bare` spans columns 15..19.
+    for rule in [LintRule::UnusedSources, LintRule::SourcesWithoutFreshness] {
+        assert_eq!(
+            loc(rule, "source.p.s.bare"),
+            Location {
+                file: "models/schema.yml".into(),
+                line: Some(6),
+                column: Some(15),
+                end_line: Some(6),
+                end_column: Some(19),
+            },
+            "{rule:?} spans the table's `- name:` value"
+        );
+    }
+    // `  - name: m` at line 9: `m` spans columns 11..12 — the model
+    // finding points at the model's own entry (its PK test would
+    // live under it).
+    assert_eq!(
+        loc(LintRule::MissingPrimaryKeyTests, "model.p.m"),
+        Location {
+            file: "models/schema.yml".into(),
+            line: Some(9),
+            column: Some(11),
+            end_line: Some(9),
+            end_column: Some(12),
+        }
+    );
+    // Every resolved finding carries the primary label.
+    for x in &f {
+        if x.location.as_ref().is_some_and(|l| l.line.is_some()) {
+            assert_eq!(x.label.as_deref(), Some("declared here"), "{x:?}");
+        }
+    }
+}
+
+#[test]
+fn fill_finding_lines_spans_quoted_names() {
+    // A quoted `- name:` underlines inside the quotes.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    std::fs::write(
+        dir.path().join("models/schema.yml"),
+        "sources:\n  - name: \"s\"\n    tables:\n      - name: 'bare'\n",
+    )
+    .unwrap();
+    let mut src = source("s.bare");
+    src.1.original_file_path = Some("models/schema.yml".into());
+    let m = manifest(vec![], vec![src], &[]);
+    let dag = Dag::build(&m);
+    let mut f = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    fill_finding_lines(&mut f, &dag, dir.path());
+    let loc = f
+        .iter()
+        .find(|x| x.rule == LintRule::UnusedSources)
+        .and_then(|x| x.location.clone())
+        .unwrap();
+    // `      - name: 'bare'` — the value inside the quotes: 16..20.
+    assert_eq!(
+        (loc.line, loc.column, loc.end_line, loc.end_column),
+        (Some(4), Some(16), Some(4), Some(20))
+    );
 }
 
 /// A catalog literal the `Rc`-carrying resolver and the lint input share.

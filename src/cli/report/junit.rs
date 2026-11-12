@@ -121,7 +121,7 @@ mod tests {
         assert!(out.contains("classname=\"check\""));
         assert!(out.contains("name=\"lint:root_models\""));
         assert!(out.contains("<failure>"));
-        assert!(out.contains("models/a.sql:7 root_models a has no parents"));
+        assert!(out.contains("models/a.sql:7:3 root_models a has no parents"));
         assert!(!out.contains("c has no parents"), "baselined never lists");
         assert!(out.contains("<skipped message=\"needs --diff\"/>"));
         assert!(out.contains("<system-out>"));
