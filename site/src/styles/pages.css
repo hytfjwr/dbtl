@@ -105,6 +105,18 @@ code.nw{white-space:nowrap}
 .jump a:hover{color:var(--text);border-color:var(--line-strong)}
 .jump a.active{background:var(--band);border-color:var(--band);color:var(--band-ink)}
 
+/* collapsible "On this page" shown where the side list is hidden (see responsive.css) */
+.toc-drop{display:none;margin:0 0 var(--sp-4);font:var(--fs-1)/1.5 var(--font-mono)}
+.toc-drop summary{display:flex;align-items:center;gap:8px;padding:8px 0;color:var(--accent-text);font-weight:500;cursor:pointer;list-style:none}
+.toc-drop summary::-webkit-details-marker{display:none}
+.toc-drop summary::before{content:"+";width:1em;text-align:center;color:var(--text-faint)}
+.toc-drop[open] summary::before{content:"-"}
+.toc-drop summary::after{content:"";flex:1;border-top:1px solid var(--line)}
+.toc-drop ul{list-style:none;margin:0;padding:0 0 8px}
+.toc-drop a{display:block;padding:4px 8px 4px 10px;color:var(--text-muted);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.toc-drop a:hover{color:var(--text)}
+.toc-drop li[data-depth="3"] a{padding-left:22px}
+
 /* --- playground --- */
 .pg{padding-top:var(--sp-6)}
 .pg h1{font-size:var(--fs-6);font-weight:600}

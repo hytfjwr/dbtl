@@ -3,8 +3,10 @@
 //! A `manifest.json` ([`manifest`] + [`load_dag`]) or a dbt project tree
 //! ([`source`], which synthesizes a [`RawManifest`]) becomes a pruned [`Dag`]
 //! ([`dag`]). [`diff`] compares two `Dag`s, [`layer`] is the shared
-//! staging/intermediate/marts/utilities taxonomy, and [`mermaid`] is the pure
-//! `Subgraph`→Mermaid text core shared by the TUI yank and `dbtl-docs`.
+//! staging/intermediate/marts/utilities taxonomy, [`mod@layout`] places a
+//! lineage [`Subgraph`] onto a character grid (pure — it only produces
+//! text cells), and [`mermaid`] is the pure `Subgraph`→Mermaid text core
+//! shared by the TUI yank and `dbtl-docs`.
 
 pub mod catalog;
 pub mod cll;
@@ -14,6 +16,7 @@ pub mod diff;
 pub mod gates;
 pub mod impact;
 pub mod layer;
+pub mod layout;
 pub mod lint;
 pub mod manifest;
 pub mod mermaid;
@@ -33,10 +36,10 @@ pub use cll::{
 };
 pub use compiled::{default_compiled_dir, default_target_dir, CompiledOrigin, CompiledSql};
 pub use dag::{
-    coverage_gap, description_blank, has_pk_guarantee, in_package, is_exposure, load_dag,
-    load_dag_with_warnings, unhandled_resource_types, ColumnInfo, ConstraintInfo, Dag, Edge,
-    ExposureInfo, FreshnessThreshold, MacroInfo, NodeDetail, NodeInfo, PackageScope,
-    PrunedAdjacent, ResourceTypeSupport, Subgraph, TestInfo, UnitTestShape,
+    coverage_gap, dag_from_manifest_json, description_blank, has_pk_guarantee, in_package,
+    is_exposure, load_dag, load_dag_with_warnings, unhandled_resource_types, ColumnInfo,
+    ConstraintInfo, Dag, Edge, ExposureInfo, FreshnessThreshold, MacroInfo, NodeDetail, NodeInfo,
+    PackageScope, PrunedAdjacent, ResourceTypeSupport, Subgraph, TestInfo, UnitTestShape,
 };
 pub use diff::{
     compute_diff, compute_diff_with, ColumnChange, ColumnChangeClass, ColumnChangeKind, DagDiff,
@@ -49,6 +52,11 @@ pub use impact::{
     pr_impact_markdown, DiffReport, ImpactOpts, PrImpact, PR_HUB_MIN_DOWNSTREAM,
 };
 pub use layer::{first_dir, layer_rank, LAYER_ORDER, VIOLATION_LAYERS};
+pub use layout::{
+    anchor_offset, blit, clamp_offset, layout, layout_columns, layout_density, layout_mode,
+    CellAttr, CharGrid, ColLine, Density, GlyphMode, Layout, LensTint, MaterializationClass,
+    NodeRect,
+};
 pub use lint::{
     byte_span_position, display_name, display_names, fill_finding_lines, fill_finding_lines_with,
     name_list, removed_rule, removed_rule_error, run_rules, yaml_name_line, yaml_name_span,
@@ -57,9 +65,9 @@ pub use lint::{
     DEFAULT_BASELINE_NAME, LINT_RULE_DOCS_BASE, REGISTRY, REMOVED_RULES, YAML_ATTRIBUTE_RULE_IDS,
 };
 pub use manifest::{
-    load_manifest, RawConfig, RawConstraint, RawContract, RawDependsOn, RawDoc, RawExposure,
-    RawExposureOwner, RawFreshness, RawFreshnessThreshold, RawManifest, RawMetadata, RawNode,
-    RawSemanticResource, RawSource, RawTestMetadata, RawUnitTest, RawUnitTestIo,
+    load_manifest, parse_manifest, RawConfig, RawConstraint, RawContract, RawDependsOn, RawDoc,
+    RawExposure, RawExposureOwner, RawFreshness, RawFreshnessThreshold, RawManifest, RawMetadata,
+    RawNode, RawSemanticResource, RawSource, RawTestMetadata, RawUnitTest, RawUnitTestIo,
 };
 pub use mermaid::{
     mermaid_ids, mermaid_label, node_kind, subgraph_mermaid, subgraph_mermaid_linked,

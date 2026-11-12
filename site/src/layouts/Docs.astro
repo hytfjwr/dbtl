@@ -23,6 +23,7 @@ const generated = page.kind === "reference";
 const CHIP_LIMIT = 8;
 const sections = headings.filter((h) => h.depth === 2);
 const chips = generated && sections.length > 0 && sections.length <= CHIP_LIMIT;
+const items = tocItems(headings);
 ---
 
 <Base title={`${page.title} - dbtl docs`} description={page.description} section="docs">
@@ -59,6 +60,20 @@ const chips = generated && sections.length > 0 && sections.length <= CHIP_LIMIT;
           )
         }
         {
+          !chips && items.length > 0 && (
+            <details class="toc-drop" data-pagefind-ignore>
+              <summary>On this page</summary>
+              <ul>
+                {items.map((i) => (
+                  <li data-depth={i.depth}>
+                    <a href={`#${i.slug}`}>{i.text}</a>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )
+        }
+        {
           generated && (
             <aside class="pane adm note" data-pagefind-ignore>
               <p class="pane-title">note</p>
@@ -85,7 +100,7 @@ const chips = generated && sections.length > 0 && sections.length <= CHIP_LIMIT;
       </article>
     </div>
 
-    {!chips && <Toc items={tocItems(headings)} />}
+    {!chips && <Toc items={items} />}
   </div>
   <script>
     import "../scripts/toc.ts";

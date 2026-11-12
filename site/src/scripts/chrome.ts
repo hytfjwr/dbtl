@@ -17,13 +17,21 @@ const closeButton = $<HTMLButtonElement>("#close-drawer");
 
 const drawerOpen = () => side?.classList.contains("open") === true;
 
+// Everything outside the drawer that should be unreachable while it is open.
+// The drawer itself sits inside <main>, and the scrim has to stay live so a
+// tap on it still closes, so neither can be marked inert.
+const inertTargets = $$(".skip, .top, .docbar, .doc-main, .toc, .site-foot, .statusline");
+
 function setDrawer(open: boolean): void {
   if (!side || !scrim || !openButton || open === drawerOpen()) return;
   side.classList.toggle("open", open);
   scrim.hidden = !open;
   openButton.setAttribute("aria-expanded", String(open));
+  document.body.classList.toggle("drawer-open", open);
+  for (const el of inertTargets) el.toggleAttribute("inert", open);
+  // Inert comes off above before focus moves back out of the drawer.
   if (open) closeButton?.focus();
-  else if (side.contains(document.activeElement)) openButton.focus();
+  else openButton.focus();
 }
 
 if (side && scrim && openButton && closeButton) {
@@ -47,8 +55,10 @@ if (side && scrim && openButton && closeButton) {
     }
   });
   // Back on a wide screen the sidebar is a column again: drop the drawer state.
-  window.matchMedia("(min-width: 901px)").addEventListener("change", (e) => {
-    if (e.matches) setDrawer(false);
+  // Mirrors the CSS breakpoint exactly (max-width:900px) so fractional widths
+  // from zoom or DPI can't leave the drawer state stuck on.
+  window.matchMedia("(max-width: 900px)").addEventListener("change", (e) => {
+    if (!e.matches) setDrawer(false);
   });
 }
 

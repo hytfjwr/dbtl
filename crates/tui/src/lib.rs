@@ -16,7 +16,6 @@ pub mod app;
 // interaction goes through `App`.
 mod collapse;
 pub mod effect;
-pub mod layout;
 pub mod model_list;
 pub mod persist;
 pub mod ui;
@@ -31,11 +30,6 @@ pub use app::{
     HomeSection, HomeTone, ListFilter, Outcome,
 };
 pub use effect::Effect;
-pub use layout::{
-    anchor_offset, blit, clamp_offset, layout, layout_columns, layout_density, layout_mode,
-    CellAttr, CharGrid, ColLine, Density, GlyphMode, Layout, LensTint, MaterializationClass,
-    NodeRect,
-};
 pub use model_list::{
     build_filtered_model_list, build_model_list, build_model_list_grouped, match_indices,
     name_matches_query, DisplayRow, ModelGroup, ModelList, SortMode, LAYER_ORDER,

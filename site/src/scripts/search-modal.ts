@@ -10,6 +10,7 @@ const input = document.querySelector<HTMLInputElement>("#s-input");
 const list = document.querySelector<HTMLUListElement>("#s-list");
 const bar = document.querySelector<HTMLElement>("#s-bar");
 const count = document.querySelector<HTMLElement>("#s-count");
+const closeButton = dialog?.querySelector<HTMLButtonElement>(".s-close");
 
 const base = import.meta.env.BASE_URL.replace(/\/?$/, "/");
 
@@ -59,6 +60,7 @@ if (dialog && input && list && bar && count) {
     hits = [];
     list.innerHTML = `<li class="s-empty" role="presentation">${html}</li>`;
     input.removeAttribute("aria-activedescendant");
+    input.setAttribute("aria-expanded", "false");
     slideTo(bar, null);
   };
 
@@ -95,6 +97,7 @@ if (dialog && input && list && bar && count) {
     });
     list.innerHTML = html;
     list.parentElement!.scrollTop = 0;
+    input.setAttribute("aria-expanded", "true");
     select(0, false);
   };
 
@@ -155,8 +158,9 @@ if (dialog && input && list && bar && count) {
       event.preventDefault();
       go(active);
     } else if (event.key === "Tab") {
-      // One focusable control: keep focus in the field.
+      // Two focusable controls: cycle between them so focus never leaves the dialog.
       event.preventDefault();
+      closeButton?.focus();
     }
   });
   list.addEventListener("mousemove", (event) => {
@@ -167,12 +171,20 @@ if (dialog && input && list && bar && count) {
     const option = (event.target as Element).closest<HTMLElement>("[role=option]");
     if (option) go(Number(option.dataset.i));
   });
+  closeButton?.addEventListener("click", () => dialog.close());
+  closeButton?.addEventListener("keydown", (event) => {
+    if (event.key === "Tab") {
+      event.preventDefault();
+      input.focus();
+    }
+  });
   // A click on the backdrop lands on the dialog element itself.
   dialog.addEventListener("click", (event) => {
     if (event.target === dialog) dialog.close();
   });
   // Esc and every other way of closing end up here: hand focus back to where it was.
   dialog.addEventListener("close", () => {
+    input.setAttribute("aria-expanded", "false");
     if (opener instanceof HTMLElement) opener.focus();
     opener = null;
   });

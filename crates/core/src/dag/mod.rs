@@ -705,8 +705,9 @@ pub fn load_dag<P: AsRef<Path>>(path: P) -> Result<Dag> {
     load_dag_with_warnings(path).map(|(dag, _)| dag)
 }
 
-/// Like [`load_dag`], but also returns load-time warnings: one line per
-/// unhandled `resource_type` found in `manifest.nodes` (see
+/// The load-time warnings a parsed manifest produces — the single source
+/// both DAG loaders share so file and in-memory input can never disagree:
+/// one line per unhandled `resource_type` found in `manifest.nodes` (see
 /// [`unhandled_resource_types`] — `unsupported` for a real dbt type dbtl
 /// does not classify, `unknown` for a type outside the schema), plus one
 /// line for a non-empty `functions` map (UDFs are never graph nodes). All
@@ -714,10 +715,8 @@ pub fn load_dag<P: AsRef<Path>>(path: P) -> Result<Dag> {
 /// is a viewer, so silently dropping a resource it does not understand
 /// would hide real topology, while silently keeping it would draw an
 /// unexplained plain box.
-pub fn load_dag_with_warnings<P: AsRef<Path>>(path: P) -> Result<(Dag, Vec<String>)> {
-    let path = path.as_ref();
-    let manifest = load_manifest(path)?;
-    let mut warnings: Vec<String> = unhandled_resource_types(&manifest)
+fn manifest_warnings(manifest: &RawManifest) -> Vec<String> {
+    let mut warnings: Vec<String> = unhandled_resource_types(manifest)
         .into_iter()
         .map(|(kind, n, support)| {
             let class = match support {
@@ -741,6 +740,29 @@ pub fn load_dag_with_warnings<P: AsRef<Path>>(path: P) -> Result<(Dag, Vec<Strin
             }
         ));
     }
+    warnings
+}
+
+/// Build a `Dag` from a manifest's JSON text — the in-memory counterpart of
+/// [`load_dag_with_warnings`]: the same parse wording (via
+/// [`crate::parse_manifest`], minus the path context only a file can supply)
+/// and the same warning lines (via `manifest_warnings`). Unlike the file
+/// loader it never touches the filesystem, so there is no `target/compiled/`
+/// sibling to ingest — callers carrying a manifest on disk use
+/// `load_dag_with_warnings` instead.
+pub fn dag_from_manifest_json(contents: &str) -> Result<(Dag, Vec<String>)> {
+    let manifest = crate::manifest::parse_manifest(contents)?;
+    let warnings = manifest_warnings(&manifest);
+    Ok((Dag::build(&manifest), warnings))
+}
+
+/// Like [`load_dag`], but also returns load-time warnings — the lines
+/// `manifest_warnings` produces (unhandled `resource_type`s and a
+/// non-empty `functions` map, all kept as generic graph nodes).
+pub fn load_dag_with_warnings<P: AsRef<Path>>(path: P) -> Result<(Dag, Vec<String>)> {
+    let path = path.as_ref();
+    let manifest = load_manifest(path)?;
+    let warnings = manifest_warnings(&manifest);
     let mut dag = Dag::build(&manifest);
     if let Some(compiled_dir) = crate::compiled::default_compiled_dir(Some(path), None) {
         // The staleness root is the project root = the manifest dir's parent
