@@ -5,6 +5,7 @@
   .docs{grid-template-columns:248px minmax(0,1fr)}
   .docs[data-page="reference"]{grid-template-columns:248px minmax(0,1fr)}
   .toc{display:none}
+  .toc-drop{display:block}
   .tui-body{grid-template-columns:190px minmax(0,1fr)}
   .tui-insp{display:none}
 }
@@ -15,8 +16,12 @@
   .docs,.docs[data-page="reference"]{display:block;padding:0 var(--sp-4)}
   .docbar{display:flex;align-items:center;gap:var(--sp-3);position:sticky;top:var(--top-h);z-index:20;margin:0 calc(-1*var(--sp-4));padding:8px var(--sp-4);background:var(--bg);border-bottom:1px solid var(--line);font:var(--fs-1) var(--font-mono);color:var(--text-muted)}
   .docbar button{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);padding:4px 10px;font:500 var(--fs-1) var(--font-mono)}
-  .sidebar{position:fixed;top:0;left:0;bottom:0;z-index:40;width:min(304px,86vw);height:auto;padding:var(--sp-4);background:var(--bg);border-right:1px solid var(--line-strong);transform:translateX(-102%);visibility:hidden;transition:transform var(--dur-2) var(--ease-out),visibility 0s var(--dur-2)}
+  .sidebar{position:fixed;top:0;left:0;bottom:0;z-index:40;width:min(304px,86vw);height:auto;height:100dvh;align-self:stretch;overscroll-behavior:contain;padding:var(--sp-4);padding-bottom:calc(var(--sp-4) + env(safe-area-inset-bottom));background:var(--bg);border-right:1px solid var(--line-strong);transform:translateX(-102%);visibility:hidden;transition:transform var(--dur-2) var(--ease-out),visibility 0s var(--dur-2)}
   .sidebar.open{transform:none;visibility:visible;transition:transform var(--dur-2) var(--ease-out)}
+  body.drawer-open{overflow:hidden}
+  code.nw{white-space:normal;overflow-wrap:anywhere}
+  .prompt{min-width:0}
+  .prompt input{font-size:16px}
   .sidebar li a[aria-current="page"]{view-transition-name:none}
   .sidebar-close{display:block;margin-left:auto}
   .article :is(h2,h3,h4) .anchor{position:static;margin:0 8px 0 0;opacity:1}
@@ -29,6 +34,7 @@
   .top{flex-wrap:wrap;height:var(--top-h);padding:0 var(--sp-4);gap:0 var(--sp-3);align-content:flex-start}
   .brand{height:48px}
   .tools{height:48px}
+  .search-btn kbd{display:none}
   .tabs{order:3;width:calc(100% + 2*var(--sp-4));margin:0 calc(-1*var(--sp-4));height:40px;border-top:1px solid var(--line)}
   .tabs a{flex:1;justify-content:center;border-left:0;border-right:1px solid var(--line)}
   .tabs a:last-child{border-right:0}
@@ -72,4 +78,9 @@
   .tbl.wide td[data-empty]{display:none}
   .tbl.wide td.desc{display:block;min-width:0;margin:0}
   .tbl.wide td.desc::before{content:none}
+}
+
+/* touch screens have no hover, so heading anchors stay visible at any width */
+@media (hover:none){
+  .article :is(h2,h3,h4) .anchor{position:static;margin:0 8px 0 0;opacity:1}
 }

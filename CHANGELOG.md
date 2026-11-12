@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The docs site on phones and narrow windows: the menu drawer scrolls to
+  the last link instead of stopping at the first screenful, and the page
+  behind it no longer scrolls or stays reachable to assistive technology
+  while it is open. Inline code wraps on small screens, the playground's
+  selector field fits and no longer triggers focus zoom on iOS, heading
+  anchors show on touch screens, the search dialog has a close button,
+  and below 1180px a collapsible "On this page" list replaces the hidden
+  outline.
+
 ## [0.6.2] - 2026-11-13
 
 ### Breaking changes
