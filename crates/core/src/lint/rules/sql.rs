@@ -5,7 +5,11 @@
 //! Every rule reads the SHARED [`SqlParseResolver`] from [`LintInput`]:
 //! `sql_facts`/`hard_coded_relations` are memoized per uid, so several
 //! SQL rules on one model still parse it once. A model with no analyzable
-//! SQL (`None`) is never judged — "can't disprove" doesn't flag.
+//! SQL (`None`) is never judged — "can't disprove" doesn't flag; a model
+//! whose SQL EXISTS but wouldn't parse lands on `unparsed` instead, so
+//! the summary can say the rules skipped it rather than silently passing
+//! it. Python models (`language == "python"`) are excluded entirely —
+//! their `raw_code` is Python, not SQL.
 
 use std::ops::Range;
 
@@ -16,6 +20,16 @@ use crate::SqlParseResolver;
 /// the model's `raw_code` and the note the position carries (the primary
 /// position's `label`, a secondary `labels` entry).
 type SpanNote = (Range<usize>, String);
+
+/// `uid` asked for parse facts and got `None` though the model HAS SQL
+/// text (raw or compiled — [`crate::resolution_sql`]'s either-source
+/// read): it belongs on the outcome's `unparsed` set, so the summary can
+/// report "skipped by SQL rules" instead of silently passing it.
+fn record_unparsed(dag: &Dag, uid: &str, unparsed: &mut BTreeSet<String>) {
+    if crate::resolution_sql(dag, uid).is_some() {
+        unparsed.insert(uid.to_string());
+    }
+}
 
 /// The `(file, raw SQL)` a SQL finding's positions anchor into — the
 /// `.sql` path plus the raw text byte ranges index into. `None` when
@@ -67,14 +81,16 @@ pub(super) fn select_star(
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     sql: &SqlParseResolver,
+    unparsed: &mut BTreeSet<String>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
         let Some(n) = dag.get(uid) else { continue };
-        if n.resource_type != "model" || !in_scope(n) {
+        if !is_sql_model(dag, n) || !in_scope(n) {
             continue;
         }
         let Some(facts) = sql.sql_facts(dag, uid) else {
+            record_unparsed(dag, uid, unparsed);
             continue;
         };
         if !facts.unbounded_wildcard {
@@ -113,23 +129,57 @@ pub(super) fn select_star(
 /// (`from analytics.orders`) instead of `ref()`/`source()`. Only
 /// `raw_code` is judged — a compiled-only model's rendered names can't be
 /// told apart from written ones — and anything the marked render can't
-/// parse is not judged.
+/// parse is not judged (it counts on `unparsed` instead, when raw SQL
+/// exists). `information_schema` reads never reach the scan; the `ignore`
+/// parameter's globs drop additional named relations — a pattern matches
+/// when it covers the recorded name OR any trailing suffix of it, so
+/// `orders` ignores `analytics.orders` too.
 pub(super) fn hard_coded_references(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
+    config: &LintConfig,
     sql: &SqlParseResolver,
+    unparsed: &mut BTreeSet<String>,
     out: &mut Vec<Finding>,
 ) {
+    let ignore: Vec<regex::Regex> = config
+        .str_list_param(LintRule::HardCodedReferences, "ignore")
+        .expect("the registry declares hard_coded_references.ignore")
+        .iter()
+        .map(|p| crate::select::glob_regex(p))
+        .collect();
+    let ignored = |name: &str| {
+        ignore.iter().any(|re| {
+            // Try the full dotted name, then each shorter suffix, so a
+            // pattern can match `db.sch.t`, `sch.t`, or `t` alike.
+            let mut rest = name;
+            loop {
+                if re.is_match(rest) {
+                    return true;
+                }
+                match rest.split_once('.') {
+                    Some((_, tail)) => rest = tail,
+                    None => return false,
+                }
+            }
+        })
+    };
     for uid in uids {
         let Some(n) = dag.get(uid) else { continue };
-        if n.resource_type != "model" || !in_scope(n) {
+        if !is_sql_model(dag, n) || !in_scope(n) {
             continue;
         }
         let Some(scan) = sql.hard_coded_relations(dag, uid) else {
+            // `hard_coded_relations` judges `raw_code` only — a compiled-
+            // only model isn't unparsed, it's deliberately unjudged.
+            if dag.raw_code(uid).is_some_and(|r| !r.trim().is_empty()) {
+                unparsed.insert((*uid).clone());
+            }
             continue;
         };
-        if !scan.names.is_empty() {
+        let names: Vec<&String> = scan.names.iter().filter(|n| !ignored(n)).collect();
+        if !names.is_empty() {
             let mut f = Finding::new(
                 LintRule::HardCodedReferences,
                 (*uid).clone(),
@@ -137,14 +187,19 @@ pub(super) fn hard_coded_references(
                 format!(
                     "{} reads {} without ref()/source(): {}",
                     n.name,
-                    pluralize(scan.names.len(), "relation"),
-                    scan.names.join(", ")
+                    pluralize(names.len(), "relation"),
+                    names
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
             );
             if let Some((file, raw)) = sql_anchor(dag, uid) {
                 let mut spans: Vec<SpanNote> = scan
                     .spans
                     .iter()
+                    .filter(|(name, _)| !ignored(name))
                     .map(|(_, r)| (r.clone(), "not a ref() or source()".to_string()))
                     .collect();
                 f = with_positions(f, &file, raw, &mut spans);
@@ -155,22 +210,26 @@ pub(super) fn hard_coded_references(
 }
 
 /// `cartesian_join`: a JOIN arm carries no condition — `CROSS JOIN` by
-/// definition, or a conditional operator (`JOIN`/`INNER`/`LEFT`/…) with no
-/// ON/USING/NATURAL. Lateral applies, ASOF matches and UNNEST don't count
-/// (a condition or a per-row explode, not a product).
+/// definition, a conditional operator (`JOIN`/`INNER`/`LEFT`/…) with no
+/// ON/USING/NATURAL, an `ON` that can never reject a row (`ON TRUE`,
+/// `ON 1 = 1`), or a comma-separated `FROM a, b` with no `WHERE`. Lateral
+/// applies, ASOF matches and UNNEST don't count (a condition or a per-row
+/// explode, not a product).
 pub(super) fn cartesian_join(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     sql: &SqlParseResolver,
+    unparsed: &mut BTreeSet<String>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
         let Some(n) = dag.get(uid) else { continue };
-        if n.resource_type != "model" || !in_scope(n) {
+        if !is_sql_model(dag, n) || !in_scope(n) {
             continue;
         }
         let Some(facts) = sql.sql_facts(dag, uid) else {
+            record_unparsed(dag, uid, unparsed);
             continue;
         };
         if facts.cartesian.is_empty() {
@@ -216,14 +275,16 @@ pub(super) fn unknown_column_reference(
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     sql: &SqlParseResolver,
+    unparsed: &mut BTreeSet<String>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
         let Some(n) = dag.get(uid) else { continue };
-        if n.resource_type != "model" || !in_scope(n) {
+        if !is_sql_model(dag, n) || !in_scope(n) {
             continue;
         }
         let Some(facts) = sql.sql_facts(dag, uid) else {
+            record_unparsed(dag, uid, unparsed);
             continue;
         };
         let mut missed: Vec<&(String, String)> = facts
@@ -282,7 +343,8 @@ pub(super) fn unknown_column_reference(
 /// matching is policy on what was WRITTEN) hits a configured regex. An
 /// empty pattern list is a no-op; invalid patterns can't reach here — the
 /// config parser rejects them at load (a programmatically-built config is
-/// guarded by skipping uncompilable entries rather than panicking).
+/// guarded by skipping uncompilable entries rather than panicking). A
+/// raw-text rule by design, so it never feeds `unparsed`.
 pub(super) fn forbidden_patterns(
     dag: &Dag,
     uids: &[&String],
@@ -302,7 +364,7 @@ pub(super) fn forbidden_patterns(
     }
     for uid in uids {
         let Some(n) = dag.get(uid) else { continue };
-        if n.resource_type != "model" || !in_scope(n) {
+        if !is_sql_model(dag, n) || !in_scope(n) {
             continue;
         }
         let Some(raw) = dag.raw_code(uid) else {

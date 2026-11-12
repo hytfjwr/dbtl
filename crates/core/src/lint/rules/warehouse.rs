@@ -4,18 +4,21 @@
 //! record at all — an absent catalog entry is "unknown", never "wrong".
 
 use super::*;
-use crate::Catalog;
+use crate::{Catalog, SqlDialect};
 
 /// `warehouse_type_drift`: a documented column's declared `data_type`
 /// differs from the catalog's recorded type — the SAME comparison the
-/// TUI's `drift:`-adjacent type lines run ([`CatalogNode::type_drift`],
-/// byte-for-byte, no type-string normalization). A column with no declared
+/// TUI's `drift:`-adjacent type lines run ([`CatalogNode::type_drift`]
+/// with [`crate::types_equivalent`]: names lowercase, args compare only
+/// when both sides carry them, alias tables by `dialect` so a BigQuery
+/// `INT64` vs a declared `bigint` isn't drift). A column with no declared
 /// type can't disagree; a node with no catalog record isn't judged.
 pub(super) fn warehouse_type_drift(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     catalog: &Catalog,
+    dialect: SqlDialect,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -30,7 +33,7 @@ pub(super) fn warehouse_type_drift(
             continue;
         };
         let drifted: Vec<String> = node
-            .type_drift(&detail.columns)
+            .type_drift(&detail.columns, dialect)
             .into_iter()
             .filter_map(|d| {
                 d.declared.map(|decl| {

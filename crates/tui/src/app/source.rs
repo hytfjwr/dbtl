@@ -173,7 +173,8 @@ impl App {
         self.resolve_owner_meta_key();
         self.lint_findings = crate::run_rules(
             crate::LintInput::new(&self.dag, &self.lint_config)
-                .with_catalog(self.catalog.as_deref()),
+                .with_catalog(self.catalog.as_deref())
+                .with_dialect(self.sql_dialect),
         )
         .findings;
         self.filter = None;

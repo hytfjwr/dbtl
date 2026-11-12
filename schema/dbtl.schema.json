@@ -392,6 +392,11 @@
                         "model"
                       ],
                       "description": "resource kinds the primary-key test applies to"
+                    },
+                    "accept_primary_key_constraint": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "count declared primary_key constraints as a uniqueness guarantee"
                     }
                   }
                 }
@@ -466,6 +471,21 @@
                         "type": "string"
                       },
                       "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    },
+                    "resource_types": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "model",
+                          "snapshot",
+                          "seed"
+                        ]
+                      },
+                      "default": [
+                        "model"
+                      ],
+                      "description": "resource kinds that require a description"
                     }
                   }
                 }
@@ -885,6 +905,22 @@
                         "type": "string"
                       },
                       "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    },
+                    "resource_types": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "model",
+                          "snapshot",
+                          "seed",
+                          "source"
+                        ]
+                      },
+                      "default": [
+                        "model"
+                      ],
+                      "description": "resource kinds whose declared columns require descriptions"
                     }
                   }
                 }
@@ -1189,6 +1225,14 @@
                         "type": "string"
                       },
                       "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    },
+                    "ignore": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "default": [],
+                      "description": "glob patterns for relation names to skip"
                     }
                   }
                 }

@@ -315,6 +315,9 @@ impl Dag {
                 .clone()
                 .filter(|s| !s.trim().is_empty()),
             overview: None,
+            // A freshly-built graph has no prune history — only
+            // `PackageScope::apply_with_warnings` writes this map.
+            pruned_adjacent: HashMap::new(),
         };
         // The overview needs the resolved root package, which is a property of
         // the built graph — a second pass over the manifest's `docs` map.

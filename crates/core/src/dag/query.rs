@@ -120,6 +120,16 @@ impl Dag {
         self.children.get(unique_id).map_or(&[], Vec::as_slice)
     }
 
+    /// The adjacency a `PackageScope::Root` prune severed for `unique_id`
+    /// (installed-package parents/children it used to touch), or `None`
+    /// when the scope never pruned one of its neighbours. The
+    /// connectedness rules (`root_models`, `unused_sources`) add these
+    /// counts back to `direct_*` so a package-trimmed node isn't reported
+    /// as isolated.
+    pub fn pruned_adjacent(&self, unique_id: &str) -> Option<&PrunedAdjacent> {
+        self.pruned_adjacent.get(unique_id)
+    }
+
     /// Test-only seam: inject a compiled-SQL entry directly. A `stale` flag
     /// cannot be expressed in a manifest literal, and forging
     /// `target/compiled/` mtimes inside a unit test needs `filetime`-grade APIs
@@ -311,6 +321,15 @@ impl Dag {
             macros: self.macros.clone(),
             node_macros: self
                 .node_macros
+                .iter()
+                .filter(|(k, _)| nodes.contains_key(*k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            // The severed-adjacency record is carried over, never
+            // recomputed — it describes the package boundary's prune, not
+            // this (presentation) cut.
+            pruned_adjacent: self
+                .pruned_adjacent
                 .iter()
                 .filter(|(k, _)| nodes.contains_key(*k))
                 .map(|(k, v)| (k.clone(), v.clone()))

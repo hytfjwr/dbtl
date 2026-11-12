@@ -12,7 +12,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use serde::Serialize;
 
-use crate::layer::{first_dir, layer_rank};
+use crate::layer::{first_dir, layer_rank, VIOLATION_LAYERS};
 use crate::{
     coverage_gap, in_package, is_exposure, ColumnChange, ColumnChangeClass, ColumnChangeKind,
     ColumnInfo, Dag, DagDiff, ExposureInfo, NodeDetail, NodeInfo, PackageScope,
@@ -434,20 +434,22 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, opts: &ImpactOpt
 }
 
 /// All kept 1-hop `(parent, child)` edges where BOTH endpoints are `model`
-/// nodes and the parent's layer ranks LATER than the child's
-/// (e.g. a `staging` model fed by a `marts` model — upstream data flows the
-/// wrong way down the layer taxonomy). Sorted via `Dag::edges()`. The single
-/// violation predicate: the `LayerViolation` lens, the stats worklist, the PR
-/// impact pack's "new violations" risk, and `dbtl check` all read it.
+/// nodes in a [`VIOLATION_LAYERS`] directory (staging / intermediate /
+/// marts — `utilities` and unmapped dirs carry no data-flow direction, so
+/// their edges never count) and the parent's layer ranks LATER than the
+/// child's (e.g. a `staging` model fed by a `marts` model — upstream data
+/// flows the wrong way down the layer taxonomy). Sorted via `Dag::edges()`.
+/// The single violation predicate: the `LayerViolation` lens, the stats
+/// worklist, the PR impact pack's "new violations" risk, and `dbtl check`
+/// all read it.
 ///
 /// Layer-violation edges are scoped to the root project the same way the
 /// other metrics are — but on BOTH endpoints, not just the child: a package
-/// node's layer rank is read off the PACKAGE's own `path` taxonomy (an
-/// `audit/`-rooted package dir ranks "unknown", i.e. last), which is not the
-/// root project's layer order. A package→root edge ranking "backwards" would
-/// flag every package consumer as a violation — pure noise, so an edge with
-/// either endpoint installed is dependency context, never your project's
-/// health.
+/// node's layer dir is read off the PACKAGE's own `path` taxonomy, which is
+/// not the root project's layer order. A package→root edge ranking
+/// "backwards" would flag every package consumer as a violation — pure
+/// noise, so an edge with either endpoint installed is dependency context,
+/// never your project's health.
 pub fn layer_violation_edges(dag: &Dag) -> Vec<(String, String)> {
     // Resolve the owning package ONCE — the per-edge scope test shares it
     // (`is_root_project` would re-resolve per edge).
@@ -465,9 +467,12 @@ pub fn layer_violation_edges(dag: &Dag) -> Vec<(String, String)> {
             if !in_scope(p) || !in_scope(c) {
                 return false;
             }
-            let pr = layer_rank(first_dir(p).unwrap_or(""));
-            let cr = layer_rank(first_dir(c).unwrap_or(""));
-            pr > cr
+            let (Some(pd), Some(cd)) = (first_dir(p), first_dir(c)) else {
+                return false;
+            };
+            VIOLATION_LAYERS.contains(&pd)
+                && VIOLATION_LAYERS.contains(&cd)
+                && layer_rank(pd) > layer_rank(cd)
         })
         .collect()
 }

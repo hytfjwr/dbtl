@@ -146,17 +146,28 @@ pub static REGISTRY: &[RuleInfo] = &[
         rationale: "Joins and fanout checks assume every model has a stable \
                     grain. Without a uniqueness test, a duplicated key turns a \
                     downstream join into a silent row explosion that no lint \
-                    rule can see.",
+                    rule can see. A declared primary_key constraint is NOT \
+                    counted by default: most warehouses never enforce it, so \
+                    the constraint alone can't stand in for a test — set \
+                    accept_primary_key_constraint: true only where the \
+                    warehouse does enforce it.",
         example: "stg_orders has no test on order_id. Fix: add unique and \
                   not_null tests on order_id (or a \
                   unique_combination_of_columns test for a composite grain).",
         help: "add unique and not_null tests to one key column, or a unique_combination_of_columns test",
-        params: &[ParamSpec::string_list(
-            "resource_types",
-            &["model"],
-            Some(&["model", "snapshot", "seed"]),
-            "resource kinds the primary-key test applies to",
-        )],
+        params: &[
+            ParamSpec::string_list(
+                "resource_types",
+                &["model"],
+                Some(&["model", "snapshot", "seed"]),
+                "resource kinds the primary-key test applies to",
+            ),
+            ParamSpec::bool(
+                "accept_primary_key_constraint",
+                false,
+                "count declared primary_key constraints as a uniqueness guarantee",
+            ),
+        ],
         requires: Requires::Graph,
     },
     RuleInfo {
@@ -191,7 +202,12 @@ pub static REGISTRY: &[RuleInfo] = &[
                   in its schema.yml entry (or a docs block) saying what one \
                   row represents.",
         help: "add a description to the model's schema.yml entry",
-        params: &[],
+        params: &[ParamSpec::string_list(
+            "resource_types",
+            &["model"],
+            Some(&["model", "snapshot", "seed"]),
+            "resource kinds that require a description",
+        )],
         requires: Requires::Graph,
     },
     RuleInfo {
@@ -392,7 +408,12 @@ pub static REGISTRY: &[RuleInfo] = &[
                   describe each column in schema.yml (units, semantics, edge \
                   cases).",
         help: "describe each column in schema.yml",
-        params: &[],
+        params: &[ParamSpec::string_list(
+            "resource_types",
+            &["model"],
+            Some(&["model", "snapshot", "seed", "source"]),
+            "resource kinds whose declared columns require descriptions",
+        )],
         requires: Requires::Graph,
     },
     RuleInfo {
@@ -475,11 +496,9 @@ pub static REGISTRY: &[RuleInfo] = &[
         rationale: "An incremental run merges new rows into the existing \
                     table; without a unique_key dbt cannot match incoming \
                     rows to existing ones, so every run risks silently \
-                    duplicating data. Append-style strategies deliberately \
-                    carry no key — this rule does not read \
-                    incremental_strategy, so suppress those models with \
-                    `exclude:` or meta.dbtl.ignore when the missing key is \
-                    intended.",
+                    duplicating data. Strategies that never merge on a key — \
+                    append, insert_overwrite, microbatch — carry no key by \
+                    design and are skipped.",
         example: "fct_events materializes incrementally but declares no \
                   unique_key. Fix: set unique_key: event_id in its config \
                   (or a list for a composite grain).",
@@ -539,7 +558,12 @@ pub static REGISTRY: &[RuleInfo] = &[
                   with ref()/source() so it joins the lineage and gets \
                   environment-aware naming.",
         help: "declare the relation with ref() or source() so it joins the lineage",
-        params: &[],
+        params: &[ParamSpec::string_list(
+            "ignore",
+            &[],
+            None,
+            "glob patterns for relation names to skip",
+        )],
         requires: Requires::Sql,
     },
     RuleInfo {
@@ -765,6 +789,16 @@ impl ParamSpec {
             description,
         }
     }
+
+    /// A boolean parameter with a default used when the config doesn't
+    /// set it.
+    pub const fn bool(name: &'static str, default: bool, description: &'static str) -> Self {
+        ParamSpec {
+            name,
+            kind: ParamKind::Bool { default },
+            description,
+        }
+    }
 }
 
 /// The value space of a [`ParamSpec`].
@@ -783,6 +817,9 @@ pub enum ParamKind {
     /// item compiles at load; items land in `LintConfig::list_params` like
     /// a `StringList`.
     RegexList { default: &'static [&'static str] },
+    /// A `true`/`false` switch with a default used when the config
+    /// doesn't set it; values land in `LintConfig::bool_params`.
+    Bool { default: bool },
 }
 
 /// One registry row — everything there is to say about a rule except its
@@ -846,6 +883,16 @@ impl RuleInfo {
                 Some((default, allowed))
             }
             ParamKind::RegexList { default } if p.name == name => Some((default, None)),
+            _ => None,
+        })
+    }
+
+    /// The declared boolean parameter `name`'s default, if any —
+    /// [`LintConfig::bool_param`](crate::LintConfig::bool_param) falls back
+    /// to it, so the registry is the single place both read.
+    pub fn bool_param(&self, name: &str) -> Option<bool> {
+        self.params.iter().find_map(|p| match p.kind {
+            ParamKind::Bool { default } if p.name == name => Some(default),
             _ => None,
         })
     }

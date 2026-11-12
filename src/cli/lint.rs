@@ -107,6 +107,10 @@ pub(super) struct LintGateOutcome {
     /// catalog), in `LintRule::ALL` order — `check` prints `SKIP` rows and
     /// `lint` a `skipped:` section; they never count toward the gate.
     pub skipped: Vec<dbtl::SkippedRule>,
+    /// SQL models `run_rules` couldn't parse (the `unparsed` tally both
+    /// reports print — a model that never reached a SQL rule, not a
+    /// finding).
+    pub unparsed: std::collections::BTreeSet<String>,
     /// Per enabled AND RUNNABLE rule, in `LintRule::ALL` order.
     pub rules: Vec<RuleOutcome>,
     /// Counted findings that meet `fail_on` (the gate's numerator — `0`
@@ -161,8 +165,11 @@ pub(super) fn evaluate_lint(
     );
     let mut findings = outcome.findings;
     let skipped = outcome.skipped;
+    let mut unparsed = outcome.unparsed;
     if let Some(sel) = selection {
         findings.retain(|f| sel.contains(&f.node_uid));
+        // The tally counts models the report's selection could have shown.
+        unparsed.retain(|u| sel.contains(u));
     }
     if let Some(b) = baseline {
         b.apply(&mut findings);
@@ -233,6 +240,7 @@ pub(super) fn evaluate_lint(
         failed: gating > 0,
         findings,
         skipped,
+        unparsed,
         rules,
     }
 }
@@ -518,7 +526,7 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
         pre_existing: outcome.rules.iter().map(|r| r.pre_existing).sum(),
         has_diff: outcome.has_diff,
         skipped: outcome.skipped.clone(),
-        unparsed_models: 0,
+        unparsed_models: outcome.unparsed.len(),
     });
     plan.emit(
         &report,
@@ -644,6 +652,13 @@ fn explain_rule(id: &str, cfg: &dbtl::LintConfig) -> Result<(), CliError> {
                         default.join(", "),
                         current.join(", "),
                         p.description
+                    );
+                }
+                dbtl::ParamKind::Bool { default } => {
+                    let current = cfg.bool_param(rule, p.name).unwrap_or(default);
+                    out += &format!(
+                        "  {}  boolean  default {}, current {} — {}\n",
+                        p.name, default, current, p.description
                     );
                 }
             }

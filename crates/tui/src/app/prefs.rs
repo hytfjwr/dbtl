@@ -24,7 +24,8 @@ impl App {
         self.lint_config = config;
         self.lint_findings = crate::run_rules(
             crate::LintInput::new(&self.dag, &self.lint_config)
-                .with_catalog(self.catalog.as_deref()),
+                .with_catalog(self.catalog.as_deref())
+                .with_dialect(self.sql_dialect),
         )
         .findings;
         self.generation += 1;
@@ -88,7 +89,8 @@ impl App {
         // it) — recompute so the Lint lens tracks the new file.
         self.lint_findings = crate::run_rules(
             crate::LintInput::new(&self.dag, &self.lint_config)
-                .with_catalog(self.catalog.as_deref()),
+                .with_catalog(self.catalog.as_deref())
+                .with_dialect(self.sql_dialect),
         )
         .findings;
         self.generation += 1;
@@ -117,8 +119,12 @@ impl App {
         // Real warehouse type per documented column (the manifest's data_type
         // is usually None — schema.yml rarely declares it). The comparison is
         // the shared `type_drift` — the same one lint's warehouse_type_drift
-        // reads — so TUI and lint can never disagree about "differs".
-        for d in node.type_drift(&detail.columns) {
+        // reads, under the App's same resolved dialect — so TUI and lint can
+        // never disagree about "differs".
+        let dialect = self
+            .sql_dialect
+            .unwrap_or_else(|| SqlDialect::from_dag(&self.dag));
+        for d in node.type_drift(&detail.columns, dialect) {
             out.push(format!("  {}: {}", d.name, d.warehouse));
         }
         let (missing_in_wh, missing_in_docs) = node.drift(
@@ -274,10 +280,12 @@ impl App {
 
     /// Pin the column-lineage SQL dialect (`--sql-dialect`); rebuilds the
     /// resolver on the spot — and the baseline side's, then the diff, since
-    /// the pinned dialect applies to both parse surfaces. `reload` re-derives
-    /// the auto dialect when none was pinned. Bumps the cache generation:
-    /// resolved columns and the recomputed diff are style inputs (column
-    /// trace, Diff lens), so layouts built under the old dialect must miss.
+    /// the pinned dialect applies to both parse surfaces — and the lint
+    /// findings (`warehouse_type_drift` reads the same adapter context).
+    /// `reload` re-derives the auto dialect when none was pinned. Bumps the
+    /// cache generation: resolved columns and the recomputed diff are style
+    /// inputs (column trace, Diff lens), so layouts built under the old
+    /// dialect must miss.
     pub fn set_sql_dialect(&mut self, dialect: SqlDialect) {
         self.sql_dialect = Some(dialect);
         self.cll = SqlParseResolver::new(self.catalog.clone(), dialect);
@@ -286,6 +294,12 @@ impl App {
             self.diff = Some(compute_diff_with(base, &self.dag, &base_res, &self.cll));
             self.diff_cll = Some(base_res);
         }
+        self.lint_findings = crate::run_rules(
+            crate::LintInput::new(&self.dag, &self.lint_config)
+                .with_catalog(self.catalog.as_deref())
+                .with_dialect(self.sql_dialect),
+        )
+        .findings;
         self.generation += 1;
     }
 

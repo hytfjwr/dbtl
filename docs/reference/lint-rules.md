@@ -153,7 +153,7 @@ Category: `testing` · Default severity: `error` · Inputs: graph
 
 A model lacks a primary-key test (unique+not_null on one column, or unique_combination_of_columns).
 
-**Why:** Joins and fanout checks assume every model has a stable grain. Without a uniqueness test, a duplicated key turns a downstream join into a silent row explosion that no lint rule can see.
+**Why:** Joins and fanout checks assume every model has a stable grain. Without a uniqueness test, a duplicated key turns a downstream join into a silent row explosion that no lint rule can see. A declared primary_key constraint is NOT counted by default: most warehouses never enforce it, so the constraint alone can't stand in for a test — set accept_primary_key_constraint: true only where the warehouse does enforce it.
 
 **Example:** stg_orders has no test on order_id. Fix: add unique and not_null tests on order_id (or a unique_combination_of_columns test for a composite grain).
 
@@ -164,6 +164,7 @@ A model lacks a primary-key test (unique+not_null on one column, or unique_combi
 | Name | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
 | `resource_types` | list of strings (one of `model` `snapshot` `seed`) | `[model]` | resource kinds the primary-key test applies to |
+| `accept_primary_key_constraint` | boolean | `false` | count declared primary_key constraints as a uniqueness guarantee |
 
 ## `public_models_without_contract`
 
@@ -191,7 +192,11 @@ A model has no description.
 
 **Fix:** add a description to the model's schema.yml entry
 
-**Parameters:** none.
+**Parameters:**
+
+| Name | Type | Default | Description |
+| ---- | ---- | ------- | ----------- |
+| `resource_types` | list of strings (one of `model` `snapshot` `seed`) | `[model]` | resource kinds that require a description |
 
 ## `naming_conventions`
 
@@ -353,7 +358,11 @@ A model has declared columns without descriptions.
 
 **Fix:** describe each column in schema.yml
 
-**Parameters:** none.
+**Parameters:**
+
+| Name | Type | Default | Description |
+| ---- | ---- | ------- | ----------- |
+| `resource_types` | list of strings (one of `model` `snapshot` `seed` `source`) | `[model]` | resource kinds whose declared columns require descriptions |
 
 ## `undocumented_public_models`
 
@@ -421,7 +430,7 @@ Category: `modeling` · Default severity: `warn` · Inputs: graph
 
 An incremental model has no unique_key.
 
-**Why:** An incremental run merges new rows into the existing table; without a unique_key dbt cannot match incoming rows to existing ones, so every run risks silently duplicating data. Append-style strategies deliberately carry no key — this rule does not read incremental_strategy, so suppress those models with `exclude:` or meta.dbtl.ignore when the missing key is intended.
+**Why:** An incremental run merges new rows into the existing table; without a unique_key dbt cannot match incoming rows to existing ones, so every run risks silently duplicating data. Strategies that never merge on a key — append, insert_overwrite, microbatch — carry no key by design and are skipped.
 
 **Example:** fct_events materializes incrementally but declares no unique_key. Fix: set unique_key: event_id in its config (or a list for a composite grain).
 
@@ -469,7 +478,11 @@ A model names a relation literally instead of ref()/source().
 
 **Fix:** declare the relation with ref() or source() so it joins the lineage
 
-**Parameters:** none.
+**Parameters:**
+
+| Name | Type | Default | Description |
+| ---- | ---- | ------- | ----------- |
+| `ignore` | list of strings | `[]` | glob patterns for relation names to skip |
 
 ## `cartesian_join`
 
