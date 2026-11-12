@@ -891,5 +891,6 @@ use yaml::*;
 
 // The span-carrying call extractors lint uses for finding positions — same
 // machinery as the loaders' own pass, not a second implementation.
-pub(crate) use collect::mask_jinja_comments;
-pub(crate) use patterns::{call_sites_masked, kwarg, lit_value, CallKind, CallSite};
+pub use collect::mask_jinja_comments;
+pub use patterns::{call_sites_masked, CallKind, CallSite};
+pub(crate) use patterns::{kwarg, lit_value};

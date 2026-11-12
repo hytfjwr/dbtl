@@ -157,7 +157,7 @@ pub(super) fn collect_files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
 /// indexes the original text too (call-site positions).
 ///
 /// A text without `{#` needs no copy — the borrowed input returns as-is.
-pub(crate) fn mask_jinja_comments(text: &str) -> Cow<'_, str> {
+pub fn mask_jinja_comments(text: &str) -> Cow<'_, str> {
     if !text.contains("{#") {
         return Cow::Borrowed(text);
     }
