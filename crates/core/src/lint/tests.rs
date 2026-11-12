@@ -5310,6 +5310,10 @@ fn trailing_semicolon_flags_the_effective_tail_only() {
             // A `;` before a `{{ }}` that renders text is mid-file, not a
             // tail.
             model_sql("mid_file", "select 1; {{ more_sql() }}"),
+            // A literal or a `{{ ref() }}` (renders `"x"`) after the `;`
+            // is real content too — the `;` splits two statements.
+            model_sql("literal_after", "select 1; 'x'"),
+            model_sql("ref_after", "select 1;{{ ref('x') }}"),
             model_sql("stray_endif", "select 1 {% endif %}"),
         ],
         vec![],

@@ -483,26 +483,27 @@ pub(super) fn jinja_call_args(e: &str, fname: &str) -> Option<Vec<String>> {
 }
 
 /// The raw byte range of a model file's trailing `;` — `None` when the
-/// SQL doesn't effectively end with one. "Effectively" = after the Jinja
-/// render (`{% %}`/`{# #}` emit nothing, `{{ config(...) }}` renders
-/// empty, every other `{{ }}` emits text), and after trailing whitespace
-/// and `--`/`/* */` comments. The `;` is mapped back through the render's
-/// source map to its raw byte range — the lint rule's position.
-///
-/// The rule asks "does the model file END with `;`": dbt wraps a model's
-/// SELECT in `create … as (…)` and a statement terminator inside the
-/// wrapper is broken syntax at build time. A `;` inside a string literal
-/// or quoted identifier isn't the tail (the scanner skips literals the
-/// same way [`render_jinja_mapped`] does); a `;` mid-file (`select 1; {{
-/// more }}`) isn't either — only the LAST meaningful byte counts.
+/// SQL doesn't effectively end with one. "Effectively" is what the Jinja
+/// render's tail would say — `{% %}`/`{# #}` emit nothing, `{{ config(…)
+/// }}` renders blank, every other `{{ }}` emits text — but a substituted
+/// mark never EMITS a `;`, so the effective tail is a copied byte: the
+/// raw text answers the question with no render at all. The scan walks
+/// the same regions [`render_jinja_mapped`] does — literals, comments,
+/// dollar-quoted strings, and Jinja markers — so a `;` inside one never
+/// counts, a literal AFTER the `;` still counts as content (`select 1;
+/// 'x'` is mid-file, not a tail), and only the LAST meaningful byte can
+/// qualify.
 pub(crate) fn trailing_semicolon(sql: &str) -> Option<Range<usize>> {
-    let rendered = render_jinja_mapped(sql, JinjaMark::Plain);
-    let b = rendered.text.as_bytes();
-    // The offset of the last byte that isn't whitespace, a comment, or
-    // inside a literal — the file's effective tail. Since only `;` can
-    // qualify as a tail, `last` never needs to point INTO a skipped
-    // region: skipping a literal leaves it at whatever preceded.
-    let mut last: Option<usize> = None;
+    let b = sql.as_bytes();
+    // `(position, byte)` of the last meaningful byte — a Jinja mark
+    // contributes a synthetic byte (no raw byte stands for it, and marks
+    // never end in `;`, so it can't be the tail). `{%` emits `,` on a
+    // branch split unless a literal comma already separates the items —
+    // the same adjacency rule the render applies, tracked as the byte.
+    let mut last: Option<(usize, u8)> = None;
+    // Set by an unterminated Jinja marker — the render copies the rest
+    // verbatim, so a later `{{` in the remainder is text, not a marker.
+    let mut verbatim = false;
     let mut i = 0;
     while i < b.len() {
         match b[i] {
@@ -531,25 +532,95 @@ pub(crate) fn trailing_semicolon(sql: &str) -> Option<Range<usize>> {
                     }
                     i += 1;
                 }
+                last = Some((i - 1, b[i - 1]));
             }
             b'$' => match dollar_quote_open(b, i) {
                 Some(dlen) => {
                     let from = i + dlen;
-                    i = dollar_quote_close(b, from, &b[i..i + dlen]).map_or(b.len(), |c| c + dlen);
+                    let end =
+                        dollar_quote_close(b, from, &b[i..i + dlen]).map_or(b.len(), |c| c + dlen);
+                    last = Some((end - 1, b[end - 1]));
+                    i = end;
                 }
                 None => {
-                    last = Some(i);
+                    last = Some((i, b[i]));
                     i += 1;
                 }
             },
+            b'{' if !verbatim
+                && matches!(b.get(i + 1), Some(&b'{') | Some(&b'%') | Some(&b'#')) =>
+            {
+                let kind = b[i + 1];
+                let close: &[u8] = match kind {
+                    b'{' => b"}}",
+                    b'%' => b"%}",
+                    _ => b"#}",
+                };
+                let tracked = kind == b'{';
+                let mut depth = 0usize;
+                let mut end = None;
+                let mut j = i + 2;
+                while j + 1 < b.len() {
+                    if b[j] == close[0] && b[j + 1] == close[1] && (!tracked || depth == 0) {
+                        end = Some(j);
+                        break;
+                    }
+                    match b[j] {
+                        b'(' | b'[' | b'{' if tracked => depth += 1,
+                        b')' | b']' | b'}' if tracked => depth = depth.saturating_sub(1),
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                match end {
+                    Some(e) => {
+                        match kind {
+                            // `{{ config(…) }}` emits whitespace; every
+                            // other `{{ }}` emits text — meaningful, but
+                            // never a `;`, so any non-`;` byte stands in.
+                            b'{' => {
+                                if !render_jinja_expr(&sql[i + 2..e], JinjaMark::Plain)
+                                    .trim()
+                                    .is_empty()
+                                {
+                                    last = Some((i, b'"'));
+                                }
+                            }
+                            // `{% … %}` emits `,` on a branch split
+                            // (`{% else %}`) unless a literal comma
+                            // already separates the items — meaningful
+                            // either way only when it emits `,`.
+                            b'%' if jinja_branch_split(&sql[i + 2..e])
+                                && last.map(|(_, c)| c) != Some(b',')
+                                && b[e + 2..].iter().find(|c| !c.is_ascii_whitespace())
+                                    != Some(&b',') =>
+                            {
+                                last = Some((i, b','));
+                            }
+                            // `{# … #}` emits nothing.
+                            _ => {}
+                        }
+                        i = e + 2;
+                    }
+                    // An unterminated marker: the render copies the rest
+                    // verbatim — a later `{{` stays text, so tag
+                    // detection switches off while literal/comment
+                    // handling continues as for any rendered bytes.
+                    None => {
+                        verbatim = true;
+                        last = Some((i, b[i]));
+                        i += 1;
+                    }
+                }
+            }
             c => {
                 if !c.is_ascii_whitespace() {
-                    last = Some(i);
+                    last = Some((i, c));
                 }
                 i += 1;
             }
         }
     }
-    let start = last.filter(|&s| b[s] == b';')?;
-    rendered.source_range(start..start + 1)
+    let (start, _) = last.filter(|(_, c)| *c == b';')?;
+    Some(start..start + 1)
 }
