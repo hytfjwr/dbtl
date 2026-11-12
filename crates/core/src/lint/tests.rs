@@ -2843,6 +2843,54 @@ fn envelope_drops_a_position_named_for_the_wrong_file() {
 }
 
 #[test]
+fn envelope_clears_labels_on_a_locationless_finding() {
+    // A rule that produced labels but no location can't have meant the
+    // file the envelope resolves: the position that location gains later
+    // (a `.yml` span from `fill_finding_lines`) is not the one the labels
+    // were written for. Same reasoning as the mismatched-file arm — the
+    // file fills, the labels drop, `help` survives.
+    let m = manifest(
+        vec![filed_model(
+            "declared",
+            "models/marts/declared.sql",
+            Some("models/marts/schema.yml"),
+        )],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let cfg = LintConfig::default();
+    let mut f = Finding::new(
+        LintRule::UndocumentedModels,
+        "model.p.declared",
+        vec![],
+        "declared has no description",
+    )
+    .with_label("in the sql")
+    .with_labels(vec![Label {
+        line: 3,
+        column: None,
+        end_line: None,
+        end_column: None,
+        message: "sql position".into(),
+    }])
+    .with_help("still valid advice");
+    super::rules::envelope(&dag, &cfg, &mut f);
+    assert_eq!(
+        f.location,
+        Some(Location::new("models/marts/schema.yml")),
+        "the file still fills"
+    );
+    assert_eq!(f.label, None, "the label annotated a position we lack");
+    assert!(f.labels.is_empty(), "secondary positions too");
+    assert_eq!(
+        f.help.as_deref(),
+        Some("still valid advice"),
+        "help isn't positional — it survives"
+    );
+}
+
+#[test]
 fn envelope_keeps_a_position_it_cannot_check() {
     // A finding on a node the dag doesn't know (no detail → no resolved
     // file) keeps the rule's location claim as-is — there is nothing to
@@ -3186,6 +3234,103 @@ fn fill_finding_lines_spans_quoted_names() {
     assert_eq!(
         (loc.line, loc.column, loc.end_line, loc.end_column),
         (Some(4), Some(16), Some(4), Some(20))
+    );
+}
+
+#[test]
+fn fill_finding_lines_respects_what_a_rule_pinned() {
+    // A position a rule pinned is its claim — the fill only completes the
+    // missing parts, never overwrites. Using one finding's `.yml` location
+    // (the `missing_primary_key_tests` one on model m, whose chain is the
+    // `- name: m` entry at line 4) cloned into every pin shape:
+    //
+    //    3 models:               — not a `- name:` line
+    //    4   - name: m          — `m` at columns 11..12
+    //    6       - name: id     — `id` at columns 15..17
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    std::fs::write(
+        dir.path().join("models/schema.yml"),
+        "version: 2\n\nmodels:\n  - name: m\n    columns:\n      - name: id\n      - name: amt\n",
+    )
+    .unwrap();
+    let cols = |name: &str| (name.to_string(), serde_json::json!({"name": name}));
+    let mut declared = filed_model("m", "models/m.sql", Some("models/schema.yml"));
+    declared.1.description = Some("documented".into());
+    declared.1.columns = serde_json::Map::from_iter([cols("id"), cols("amt")]);
+    let m = manifest(vec![declared], vec![], &[]);
+    let dag = Dag::build(&m);
+    let mut f = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    fill_finding_lines(&mut f, &dag, dir.path());
+    let base = f
+        .iter()
+        .find(|x| x.rule == LintRule::MissingPrimaryKeyTests && x.node_uid == "model.p.m")
+        .expect("the model finding")
+        .clone();
+    // Sanity: the unfilled baseline resolved to the `- name: m` span.
+    assert_eq!(base.label.as_deref(), Some("declared here"));
+
+    let pinned =
+        |line: Option<u32>, column: Option<u32>, end_line: Option<u32>, end_column: Option<u32>| {
+            let mut c = base.clone();
+            c.label = None;
+            let loc = c.location.as_mut().unwrap();
+            loc.line = line;
+            loc.column = column;
+            loc.end_line = end_line;
+            loc.end_column = end_column;
+            c
+        };
+    let mut cases = vec![
+        // Line pinned on a `- name:` entry — the columns lift from THAT
+        // line's own value, not the chain's.
+        pinned(Some(6), None, None, None),
+        // Line pinned on a non-`-name:` line — nothing to lift; the
+        // line stays alone (no columns guessed).
+        pinned(Some(3), None, None, None),
+        // Column pinned only — the line resolves via the chain; the
+        // pinned column keeps its claim and no end_column is invented
+        // for a start the span doesn't own.
+        pinned(None, Some(7), None, None),
+        // Line AND column pinned — the start is claimed whole; the
+        // finding is left untouched.
+        pinned(Some(4), Some(3), Some(4), Some(4)),
+        // A pinned end_line the chain disagrees with caps the span —
+        // end_column can't be supplied for it.
+        pinned(None, None, Some(20), None),
+    ];
+    fill_finding_lines(&mut cases, &dag, dir.path());
+    let pos = |c: &Finding| {
+        let l = c.location.as_ref().unwrap();
+        (l.line, l.column, l.end_line, l.end_column)
+    };
+    assert_eq!(
+        pos(&cases[0]),
+        (Some(6), Some(15), Some(6), Some(17)),
+        "line 6 is `- name: id` — its own value supplies the columns"
+    );
+    assert_eq!(cases[0].label.as_deref(), Some("declared here"));
+    assert_eq!(
+        pos(&cases[1]),
+        (Some(3), None, None, None),
+        "`models:` holds no `- name:` value — the line stays column-less"
+    );
+    assert_eq!(cases[1].label, None, "no resolved span, no label");
+    assert_eq!(
+        pos(&cases[2]),
+        (Some(4), Some(7), Some(4), None),
+        "the chain's line fills; the pinned column survives; end_column stays unknown"
+    );
+    assert_eq!(
+        pos(&cases[3]),
+        (Some(4), Some(3), Some(4), Some(4)),
+        "a fully-pinned start is never touched"
+    );
+    assert_eq!(cases[3].label, None, "untouched means the label too");
+    assert_eq!(
+        pos(&cases[4]),
+        (Some(4), Some(11), Some(20), None),
+        "a foreign end_line isn't given the span's end_column"
     );
 }
 

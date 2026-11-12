@@ -46,16 +46,20 @@ pub fn render(report: &Report, ctx: &RenderCtx<'_>) -> String {
                 };
                 // Code scanning needs a `startLine`, so the file-scoped
                 // findings report 1 here — the one format allowed to
-                // guess. Columns and ends emit only when known.
+                // guess. Columns and ends emit only when known AND inside
+                // the `line` gate: a column without its line would point
+                // at nothing.
                 let mut region = json!({ "startLine": loc.line.unwrap_or(1) });
-                if let Some(column) = loc.column {
-                    region["startColumn"] = json!(column);
-                }
-                if let Some(end_line) = loc.end_line {
-                    region["endLine"] = json!(end_line);
-                }
-                if let Some(end_column) = loc.end_column {
-                    region["endColumn"] = json!(end_column);
+                if loc.line.is_some() {
+                    if let Some(column) = loc.column {
+                        region["startColumn"] = json!(column);
+                    }
+                    if let Some(end_line) = loc.end_line {
+                        region["endLine"] = json!(end_line);
+                    }
+                    if let Some(end_column) = loc.end_column {
+                        region["endColumn"] = json!(end_column);
+                    }
                 }
                 result["locations"] = json!([{
                     "physicalLocation": {
@@ -72,6 +76,9 @@ pub fn render(report: &Report, ctx: &RenderCtx<'_>) -> String {
         "version": "2.1.0",
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
         "runs": [{
+            // Our columns count `char`s, which SARIF consumers read as
+            // Unicode code points.
+            "columnKind": "unicodeCodePoints",
             "tool": {
                 "driver": {
                     "name": "dbtl",
@@ -109,6 +116,10 @@ mod tests {
         let out = render(&report(), &ctx(Some("sub")));
         let doc: serde_json::Value = serde_json::from_str(&out).expect("sarif parses");
         assert_eq!(doc["version"], "2.1.0");
+        assert_eq!(
+            doc["runs"][0]["columnKind"], "unicodeCodePoints",
+            "columns count `char`s — declared to consumers"
+        );
         let driver = &doc["runs"][0]["tool"]["driver"];
         let rule_ids: std::collections::BTreeSet<String> = driver["rules"]
             .as_array()

@@ -4,9 +4,9 @@
 //! properties `.yml`. The rules that report "declared here" attributes
 //! (descriptions, tests, freshness, contract columns) point at
 //! `patch_path`, so after [`run_rules`] fills `location.file` the CLI
-//! asks this module to fill `location.line`/`column`/`end_column`
-//! best-effort (missing files simply stay line-less — `fill_finding_lines`
-//! returns nothing on error).
+//! asks this module to fill `location.line`/`column`/`end_line`/
+//! `end_column` best-effort (missing files simply stay line-less —
+//! `fill_finding_lines` returns nothing on error).
 //!
 //! The OTHER direction — byte offsets inside a text (the raw SQL a rule
 //! reads via [`Dag::raw_code`]) to line/column positions — is
@@ -265,11 +265,21 @@ fn offending_column(dag: &Dag, f: &Finding) -> Option<String> {
     }
 }
 
-/// Fill `location.line`/`column`/`end_column` for findings whose file is a
-/// properties `.yml`: the `- name:` VALUE's range inside it (the name the
-/// fix edits), annotated `declared here` — best-effort: a missing file,
-/// a non-yml file, or an unmatched chain leaves the position alone, and a
-/// line a rule already pinned is never overwritten.
+/// Fill `location.line`/`column`/`end_line`/`end_column` for findings
+/// whose file is a properties `.yml`: the `- name:` VALUE's range inside
+/// it (the name the fix edits), annotated `declared here` — best-effort:
+/// a missing file, a non-yml file, or an unmatched chain leaves the
+/// position alone.
+///
+/// What a rule pinned is respected; only the missing parts fill. A
+/// pinned `line` keeps its claim and lifts the columns from THAT line's
+/// own `- name:` value — the chain's span belongs to a different line and
+/// can't be transplanted onto the pin (and a pinned line that isn't a
+/// `- name:` entry stays column-less). An unpinned `line` resolves the
+/// whole span via the chain; a pinned `column` then keeps its claim and
+/// `end_column` fills only when the start column is the span's own —
+/// otherwise it would cap a span it doesn't belong to. A fully-pinned
+/// start (line AND column) is left untouched.
 ///
 /// The dag carries no yml line info, so this does the file IO the pure
 /// [`run_rules`] must not: `lint`/`check` call it once with the project
@@ -280,26 +290,44 @@ fn offending_column(dag: &Dag, f: &Finding) -> Option<String> {
 pub fn fill_finding_lines(findings: &mut [Finding], dag: &Dag, project_root: &Path) {
     let mut texts: HashMap<String, Option<String>> = HashMap::new();
     for f in findings.iter_mut() {
-        let Some(file) = f.location.as_ref().map(|l| l.file.clone()) else {
+        let Some(loc) = f.location.as_ref() else {
             continue;
         };
-        if !is_yml(&file) || f.location.as_ref().is_some_and(|l| l.line.is_some()) {
+        let file = loc.file.clone();
+        if !is_yml(&file) || (loc.line.is_some() && loc.column.is_some()) {
             continue;
         }
-        let Some(names) = name_chain(dag, f) else {
-            continue;
+        // The chain resolves only an unpinned line — a pinned one takes
+        // its columns from its own `- name:` value instead.
+        let names = if loc.line.is_none() {
+            name_chain(dag, f)
+        } else {
+            None
         };
         let text = texts
             .entry(file.clone())
             .or_insert_with(|| fs::read_to_string(project_root.join(&file)).ok());
-        if let (Some(text), Some(loc)) = (text.as_deref(), &mut f.location) {
-            if let Some((line, column, end_column)) = yaml_name_span(text, &names) {
-                loc.line = Some(line);
-                loc.column = Some(column);
-                loc.end_line = Some(line);
+        let Some(text) = text.as_deref() else {
+            continue;
+        };
+        let loc = f.location.as_mut().expect("checked above");
+        let span = match loc.line {
+            Some(line) => text
+                .lines()
+                .nth(line as usize - 1)
+                .and_then(name_value_columns)
+                .map(|(column, end_column)| (line, column, end_column)),
+            None => names.and_then(|names| yaml_name_span(text, &names)),
+        };
+        if let Some((line, column, end_column)) = span {
+            loc.line.get_or_insert(line);
+            loc.column.get_or_insert(column);
+            loc.end_line.get_or_insert(line);
+            if loc.end_column.is_none() && loc.column == Some(column) && loc.end_line == Some(line)
+            {
                 loc.end_column = Some(end_column);
-                f.label.get_or_insert_with(|| "declared here".to_string());
             }
+            f.label.get_or_insert_with(|| "declared here".to_string());
         }
     }
 }

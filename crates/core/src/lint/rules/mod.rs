@@ -285,6 +285,11 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
 /// `.yml`, or vice versa) the position and its labels are dropped: a
 /// position naming a different file than `location.file` would lie.
 /// `help` is never positional, so it survives either way.
+///
+/// The same reasoning clears `label`/`labels` when the finding has NO
+/// location and the envelope fills a bare `file`: labels annotate a
+/// position, and the position this location gains later (a `.yml` span
+/// from `fill_finding_lines`) is not the one they were written for.
 pub(super) fn envelope(dag: &Dag, config: &LintConfig, f: &mut Finding) {
     f.severity = config
         .severity(f.rule)
@@ -310,7 +315,11 @@ pub(super) fn envelope(dag: &Dag, config: &LintConfig, f: &mut Finding) {
         }
         // The rule named a file the dag doesn't know — keep its claim.
         (loc @ Some(_), None) => f.location = loc,
-        (None, file) => f.location = file.map(Location::new),
+        (None, file) => {
+            f.label = None;
+            f.labels.clear();
+            f.location = file.map(Location::new);
+        }
     }
 }
 

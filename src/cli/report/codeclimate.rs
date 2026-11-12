@@ -27,27 +27,31 @@ pub fn render(report: &Report, ctx: &RenderCtx<'_>) -> String {
             // `location.path` must be a real repository path — a finding
             // without a file location omits the block rather than filing the
             // issue against a `unique_id` that resolves to no file. When the
-            // column is known the issue spans a `positions` range (begin AND
-            // end, ends defaulting to the start for a point); otherwise the
-            // line-only `lines` form carries whatever line is known — with
-            // `begin` format-required, 1 is the file-level stand-in.
+            // (line, column) pair is known the issue spans a `positions`
+            // range (begin AND end, ends defaulting to the start for a
+            // point); otherwise the line-only `lines` form carries whatever
+            // line is known — with `begin` format-required, 1 is the
+            // file-level stand-in.
             if let Some(loc) = &f.location {
                 let path = match ctx.path_prefix {
                     Some(prefix) => format!("{prefix}/{}", loc.file),
                     None => loc.file.clone(),
                 };
-                issue["location"] = match loc.column {
-                    Some(column) => json!({
+                // `positions` needs the (line, column) pair — a column
+                // without its line points at nothing, so anything missing
+                // a line falls back to the line-only `lines` form.
+                issue["location"] = match (loc.line, loc.column) {
+                    (Some(line), Some(column)) => json!({
                         "path": path,
                         "positions": {
-                            "begin": { "line": loc.line.unwrap_or(1), "column": column },
+                            "begin": { "line": line, "column": column },
                             "end": {
-                                "line": loc.end_line.or(loc.line).unwrap_or(1),
+                                "line": loc.end_line.unwrap_or(line),
                                 "column": loc.end_column.unwrap_or(column),
                             },
                         },
                     }),
-                    None => json!({
+                    _ => json!({
                         "path": path,
                         "lines": { "begin": loc.line.unwrap_or(1) },
                     }),

@@ -22,19 +22,21 @@ pub fn render(report: &Report, ctx: &RenderCtx<'_>) -> String {
                 Some(loc) => {
                     // Every position property emits only when known — a
                     // file-scoped finding is a file-level annotation, never
-                    // a guessed `line=1`.
+                    // a guessed `line=1`. Columns and ends live inside the
+                    // `line` gate: a column without its line is meaningless
+                    // and must never be emitted alone.
                     let mut props = format!("file={}", escape_prop(&prefixed(&loc.file, ctx)));
                     if let Some(line) = loc.line {
                         props.push_str(&format!(",line={line}"));
-                    }
-                    if let Some(end_line) = loc.end_line {
-                        props.push_str(&format!(",endLine={end_line}"));
-                    }
-                    if let Some(col) = loc.column {
-                        props.push_str(&format!(",col={col}"));
-                    }
-                    if let Some(end_col) = loc.end_column {
-                        props.push_str(&format!(",endColumn={end_col}"));
+                        if let Some(end_line) = loc.end_line {
+                            props.push_str(&format!(",endLine={end_line}"));
+                        }
+                        if let Some(col) = loc.column {
+                            props.push_str(&format!(",col={col}"));
+                        }
+                        if let Some(end_col) = loc.end_column {
+                            props.push_str(&format!(",endColumn={end_col}"));
+                        }
                     }
                     format!("{props},title={}", escape_prop(f.rule.name()))
                 }
