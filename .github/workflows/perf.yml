@@ -310,6 +310,69 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  # Mirrors the rendered report into one sticky pull request comment
+  # (`<!-- dbtl:perf-report -->`, updated on every push) so reviewers see
+  # the tables without opening the run. Same-repo pull requests only —
+  # forked ones get a read-only token and keep the step summary. The
+  # measuring job builds and runs pull request code, so the write
+  # permission lives here instead of there; like the measurement steps,
+  # every failure degrades to a warning and never turns the job red.
+  perf-comment:
+    name: Perf (comment)
+    needs: perf-report
+    if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # A failed `Perf (report)` can leave no artifact behind, so the
+      # download is allowed to fail — the step below treats a missing
+      # report as an unmeasurable run.
+      - name: Download the report artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: perf-report-${{ github.event.pull_request.number }}
+          path: ${{ runner.temp }}/perf-report
+
+      - name: Post or update the sticky comment
+        env:
+          DBTL_PR_NUMBER: ${{ github.event.pull_request.number }}
+          DBTL_COMMENT_MARKER: "<!-- dbtl:perf-report -->"
+          ARTIFACT_DIR: ${{ runner.temp }}/perf-report
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          body="$RUNNER_TEMP/perf-comment-body.md"
+          update_only=false
+          # `-s` also rejects an empty file — an empty report is as
+          # unmeasurable as a missing one.
+          if [ -s "$ARTIFACT_DIR/report.md" ]; then
+            {
+              printf '%s\n\n' "$DBTL_COMMENT_MARKER"
+              cat "$ARTIFACT_DIR/report.md"
+              printf '\n_Measured by the [Perf (report)](%s) run._\n' "$RUN_URL"
+            } >"$body"
+          else
+            # No report on this run: never create a comment, but rewrite an
+            # existing one so it cannot keep showing stale numbers.
+            {
+              printf '%s\n\n' "$DBTL_COMMENT_MARKER"
+              echo '**Perf report unavailable** — this run did not produce measurements.'
+              printf '\n_See the [Perf (report)](%s) run._\n' "$RUN_URL"
+            } >"$body"
+            update_only=true
+          fi
+          DBTL_REPORT="$body" DBTL_COMMENT_UPDATE_ONLY="$update_only" \
+            bash "$GITHUB_WORKSPACE/action/comment.sh"
+
   # Compiles the binaries `Perf (report)` needs for its base side — the
   # release `dbtl` and the Criterion harness — and stores them under the
   # key the report job derives from its merge base. A restore hit means the

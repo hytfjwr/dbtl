@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Post the markdown check report on the pull request as a sticky comment:
-# the first existing comment starting with `<!-- dbtl:report -->` is
-# updated, a new one is posted otherwise. Every API failure degrades to a
-# `::warning::` — a read-only token (forked pull requests) or a missing
-# report must never flip the check's verdict.
+# Post a markdown report on the pull request as a sticky comment: the
+# first existing comment starting with the marker is updated, a new one
+# is posted otherwise. The marker defaults to `<!-- dbtl:report -->` and
+# `DBTL_COMMENT_MARKER` overrides it; `DBTL_COMMENT_UPDATE_ONLY=true`
+# suppresses the create so only an already-existing comment is ever
+# edited. Every API failure degrades to a `::warning::` — a read-only
+# token (forked pull requests) or a missing report must never flip the
+# check's verdict.
 set -euo pipefail
 
-marker='<!-- dbtl:report -->'
+marker="${DBTL_COMMENT_MARKER:-"<!-- dbtl:report -->"}"
 report="${DBTL_REPORT:-}"
 
 if [ -z "$report" ] || [ ! -f "$report" ]; then
@@ -59,7 +62,14 @@ if [ -n "$existing" ]; then
 		echo "Updated the dbtl report comment ${existing}"
 		exit 0
 	fi
+	if [ "${DBTL_COMMENT_UPDATE_ONLY:-}" = "true" ]; then
+		echo "::warning::could not update comment ${existing}" >&2
+		exit 0
+	fi
 	echo "::warning::could not update comment ${existing} — posting a new one" >&2
+elif [ "${DBTL_COMMENT_UPDATE_ONLY:-}" = "true" ]; then
+	echo "no existing ${marker} comment — update-only mode, nothing posted"
+	exit 0
 fi
 
 if gh api -X POST "repos/${repo}/issues/${pr}/comments" -F "body=@${body}" >/dev/null; then
