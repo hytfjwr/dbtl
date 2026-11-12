@@ -53,7 +53,7 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
             // Resolve the items-row index to the BINDINGS row it points at —
             // the action, key and help text all live there, so the menu
             // literally cannot drift from the keymap. The menu is one-shot
-            // like the which-key: restore the stacked origin mode, retarget
+            // like the yank menu: restore the stacked origin mode, retarget
             // the selection at the menu's node (its execution contract:
             // items act on the node they were opened for, never on wherever
             // the selection happened to be), then apply the action itself.
@@ -112,7 +112,7 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
             Outcome::cont()
         }
         Action::YankInvoke(i) => {
-            // Run the which-key row's own action through the same dispatch the
+            // Run the yank menu row's own action through the same dispatch the
             // key would take — the row IS its binding.
             if let Some(action) = crate::action::yank_bindings().nth(i).map(|b| b.action) {
                 return Arm::Early(apply_action(app, action));

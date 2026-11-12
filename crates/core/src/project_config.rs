@@ -320,7 +320,7 @@ impl ProjectConfig {
             lint.baseline = baseline;
         }
         // `check:` — gate severities/parameters resolved over the registry
-        // defaults (the `check` gate table is the same one the evaluator
+        // defaults (the `check` gate table is the same one `run_rules`
         // reads, so an id can't parse that doesn't exist).
         let mut check = CheckConfig {
             lint: file.check.lint,

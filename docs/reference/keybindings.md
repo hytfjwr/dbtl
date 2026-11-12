@@ -22,7 +22,7 @@ The main three-pane screen.
 | `/` | search (list filter / lineage jump) |
 | `?` | toggle this help |
 | `o` | open SQL in $EDITOR |
-| `y` | yank prefix menu |
+| `y` | yank menu |
 | `Y` | copy model name |
 | `m` | copy lineage as Mermaid |
 | `x` | copy lineage as Graphviz DOT |
@@ -98,7 +98,7 @@ The main three-pane screen.
 
 ## Yank
 
-The `y` yank-prefix which-key menu.
+The `y` yank menu.
 
 | Keys | Action |
 | ---- | ------ |
@@ -157,7 +157,7 @@ The `Enter` node-detail overlay.
 | `K` | column lineage modal (this column) |
 | `h/H` | previous column / test |
 | `l/L` | next column / test |
-| `y` | yank prefix menu |
+| `y` | yank menu |
 | `a` | node actions menu |
 | `j/Down` | scroll down |
 | `k/Up` | scroll up |

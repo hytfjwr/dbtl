@@ -1,4 +1,4 @@
-//! The rule evaluators — one `pub(super)` function per rule, grouped into a
+//! The rule implementations — one `pub(super)` function per rule, grouped into a
 //! file per category so sibling rule groups extend their own file without
 //! touching this one. `run_rules` below is the ONE evaluation entry point
 //! `dbtl check --lint`, the TUI's Lint lens and `dbtl docs` all share; the
@@ -133,8 +133,8 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
         }
         // Requirement-aware dispatch: a rule only runs when its declared
         // input is present — a missing one records a skip (and the rule's
-        // evaluator never runs, so the resolver's memo stays empty when no
-        // SQL rule can evaluate).
+        // implementation never runs, so the resolver's memo stays empty when
+        // no SQL rule can evaluate).
         let missing = match rule.info().requires {
             Requires::Sql if sql.is_none() => Some(Requires::Sql),
             Requires::Catalog if catalog.is_none() => Some(Requires::Catalog),
@@ -361,8 +361,8 @@ pub(super) fn model_and_source_parents(dag: &Dag, uid: &str) -> (Vec<String>, Ve
 }
 
 /// The resource types that count as "used" for [`rejoining_upstream`]'s
-/// child test and as endpoints of the rejoin — the evaluator's
-/// `single_use_resources` notion: data-carrying nodes only. Endpoint
+/// child test and as endpoints of the rejoin — "single use" counts
+/// data-carrying nodes only. Endpoint
 /// resources (exposures, metrics, semantic models, saved queries) ride the
 /// same `direct_children`/`direct_parents` lists but are NOT a "use" — a
 /// model consumed only by an exposure is still single-use.
@@ -397,7 +397,7 @@ pub(super) fn lint_model_type_by_prefix<'a>(
 /// The DIRECTORY stage of [`lint_model_type`]: the model's [`first_dir`]
 /// folder when it is itself a configured layer — `None` when the node has no
 /// path or its first dir isn't a named layer (an unmapped dir is not a type —
-/// the evaluator maps it to 'other', not to an implicit layer).
+/// it falls through to 'other', not to an implicit layer).
 pub(super) fn lint_model_type_by_dir<'a>(n: &NodeInfo, config: &'a LintConfig) -> Option<&'a str> {
     let dir = first_dir(n)?;
     config
@@ -406,21 +406,21 @@ pub(super) fn lint_model_type_by_dir<'a>(n: &NodeInfo, config: &'a LintConfig) -
         .map(|(layer, _)| layer.as_str())
 }
 
-/// Resolve a model's lint layer the way dbt_project_evaluator resolves
-/// `model_type` — the two stages above in order, then `"other"`:
+/// Resolve a model's lint layer — the two stages above in order, then
+/// `"other"`:
 ///
 /// 1. [`lint_model_type_by_prefix`] — a [`naming_prefixes`](LintConfig::naming_prefixes)
 ///    layer whose configured prefix the model name starts with;
 /// 2. [`lint_model_type_by_dir`] — the [`first_dir`] folder, when it is
 ///    itself a configured layer;
-/// 3. `"other"`, the evaluator's catch-all.
+/// 3. `"other"`, the catch-all for unclassified models.
 ///
 /// Returning the CONFIG KEY (not the dir) keeps the result comparable across
 /// consumers: `marts_depend_on_source` matches it against `marts` /
 /// `intermediate`, and `naming_conventions` looks the expected prefixes back
 /// up in the same map. The `"other"` type only carries prefixes when the
-/// config defines an `other:` layer (evaluator-parity `rpt_` enforcement is
-/// opt-in — see the README's Differences section).
+/// config defines an `other:` layer (enforcing prefixes on unclassified
+/// models is opt-in).
 pub(super) fn lint_model_type<'a>(n: &NodeInfo, config: &'a LintConfig) -> &'a str {
     lint_model_type_by_prefix(n, config)
         .or_else(|| lint_model_type_by_dir(n, config))

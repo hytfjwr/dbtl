@@ -41,11 +41,11 @@ pub fn modal_rect(area: Rect) -> Rect {
     }
 }
 
-/// The `y` which-key menu's frame rect: content-sized (the longest
-/// `y<key>  help` row + padding), horizontally centred, hugging the bottom
-/// edge (which-key convention). Shared by `draw_yank_menu` and the mouse
-/// hit-test so a row click lands on the drawn row. `None` on terminals too
-/// small to host the box (the draw skips it there too).
+/// The `y` menu's frame rect: content-sized (the longest `y<key>  help`
+/// row + padding), horizontally centred, anchored to the bottom edge so it
+/// stays clear of the content it acts on. Shared by `draw_yank_menu` and the
+/// mouse hit-test so a row click lands on the drawn row. `None` on terminals
+/// too small to host the box (the draw skips it there too).
 pub fn yank_menu_rect(area: Rect) -> Option<Rect> {
     let rows = crate::action::yank_bindings().count();
     // Row shape: `"  y<key>"` (6 cells) + `" help"` — measured without
@@ -181,7 +181,7 @@ pub fn menu_rect(
 }
 
 /// The outer rect of the covering overlay `mode` draws, if any: the modal
-/// box for the scrollable modals, the palette's own box, the `y` which-key
+/// box for the scrollable modals, the palette's own box, the `y` yank
 /// menu, the node context menu (anchored via the drawn lineage layout).
 /// `None` for non-covering modes (Selection / Search) — their panes stay
 /// live underneath. The SINGLE overlay-rect authority: the dimming pass
@@ -222,7 +222,7 @@ pub fn underlay_mode(mode: &crate::action::Mode) -> Option<&crate::action::Mode>
         Mode::Yank { back, .. } => back.as_deref(),
         Mode::Menu(ms) => ms.back.as_deref(),
         // `?` is a layer too — over a modal it preserves it underneath,
-        // same as the which-key / node menu.
+        // same as the yank / node menu.
         Mode::Help(h) => Some(h.back.as_ref()),
         _ => None,
     }

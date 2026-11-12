@@ -42,7 +42,7 @@ Top-level flags that configure the interactive app. An explicit occurrence next 
 
 ### `dbtl docs`
 
-Generate static Markdown docs (tbls-style) for the project and exit, without launching the TUI. Writes one Markdown page per node plus an index README.md under <DIR>. The data source is resolved the same way the TUI resolves it (--manifest / --source / --project / auto-detect)
+Generate static Markdown docs for the project and exit, without launching the TUI. Writes one Markdown page per node plus an index README.md under <DIR>. The data source is resolved the same way the TUI resolves it (--manifest / --source / --project / auto-detect)
 
 ```text
 Usage: dbtl docs [OPTIONS] --out <OUT>
@@ -93,7 +93,7 @@ Usage: dbtl check [OPTIONS]
 | `--column-coverage-min` | `<PCT>` | — | — | Fail when declared columns covered by a schema test fall below this percent. Overrides `.dbtl.yml`'s `check.gates.column_coverage.min`; when that gate is `off`, setting this enables it at error severity |
 | `--doc-coverage-min` | `<PCT>` | — | — | Fail when models carrying a description fall below this percent. Overrides `.dbtl.yml`'s `check.gates.doc_coverage.min`; when that gate is `off`, setting this enables it at error severity |
 | `--max-blast-radius` | `<N>` | — | — | Fail when the changed set's blast radius exceeds this many affected models. Overrides `.dbtl.yml`'s `check.gates.blast_radius.max`; when that gate is `off`, setting this enables it at error severity. Needs `--diff` |
-| `--lint` | — | — | `false` | Run the static structure-lint rules (the `dbt_project_evaluator`- style checks — no warehouse or `dbt compile` needed). Rule enable/disable, thresholds, and naming prefixes come from the project-local `.dbtl.yml`. With --diff, only violations that did not exist in the baseline gate |
+| `--lint` | — | — | `false` | Run the static structure-lint rules (best-practice checks over the project graph — no warehouse or `dbt compile` needed). Rule enable/disable, thresholds, and naming prefixes come from the project-local `.dbtl.yml`. With --diff, only violations that did not exist in the baseline gate |
 | `--no-breaking` | — | — | `false` | Fail when the diff carries BREAKING column changes that downstream columns still reference — removed or renamed columns whose baseline consumers did not migrate (detected through column-level lineage). Needs `--diff`. Partial-breaking changes (data-type / expression moves) report in the impact pack but never trip this gate. Without `--diff` the gate reports `skip` (asked for but not evaluable) — visible, never counted |
 | `--rules` | `<RULES>` (repeatable) | — | — | Restrict linting to these rules (comma-separated rule names; implies --lint). Overrides `.dbtl.yml`'s per-rule enables — the flag is the authoritative rule selector; the file still supplies thresholds and naming prefixes |
 | `--fail-on` | `error` \| `warn` \| `never` | — | — | Minimum finding severity that fails a check: `error` (default) fails on errors only, `warn` also fails on warnings, `never` only reports (a tripped gate prints WARN and never counts). Overrides `.dbtl.yml`'s top-level `fail_on`; each gate's severity comes from `--gate`, its `check.gates` entry, or the shipped default |

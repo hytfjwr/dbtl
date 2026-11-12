@@ -177,7 +177,7 @@ Click to select and move the cursor, double-click to commit (re-root, expand, st
 <td valign="top">
 
 ### Gates, lint, and a GitHub Action
-`dbtl check` gates coverage, layer violations, untested and breaking changes, docs drift, and more against a `--diff` baseline — `git:<rev>` included — and `dbtl lint` runs a `dbt_project_evaluator`-style rule set statically. Wire it up with the composite Action (`uses: hytfjwr/dbtl`) or a pre-commit hook, and read the verdict as text, Markdown, JSON, GitHub annotations, SARIF, JUnit, or CodeClimate.
+`dbtl check` gates coverage, layer violations, untested and breaking changes, docs drift, and more against a `--diff` baseline — `git:<rev>` included — and `dbtl lint` runs a static best-practice rule set over the project graph. Wire it up with the composite Action (`uses: hytfjwr/dbtl`) or a pre-commit hook, and read the verdict as text, Markdown, JSON, GitHub annotations, SARIF, JUnit, or CodeClimate.
 
 </td>
 </tr>
@@ -371,7 +371,7 @@ set may not match dbt's `state:modified`. An empty match prints nothing
 
 ### Static project lint (`dbtl lint`, `.dbtl.yml`)
 
-The `dbt_project_evaluator`-style best-practice checks — the ones that package normally materializes in your warehouse — evaluated **statically** against the same `Dag` everything else reads. No warehouse connection, no `dbt run`, and in source mode not even `dbt parse`/`dbt compile`: a CI run is seconds, and the results are deterministic.
+A set of best-practice checks over the project graph — the kind usually materialized as tables in your warehouse — evaluated **statically** against the same `Dag` everything else reads. No warehouse connection, no `dbt run`, and in source mode not even `dbt parse`/`dbt compile`: a CI run is seconds, and the results are deterministic.
 
 One `run_rules` findings vector feeds every surface, so the numbers can never drift apart: `dbtl check --lint` gates on it, `dbtl lint` reports it, `dbtl docs` puts a summary in the README plus a "Lint violations" section per page, and the TUI reads it through the **Lint** `t`-lens, `F` filter, `n`/`N` cycling, inspector findings, the `S` worklist, and the `⌂` home split.
 
@@ -396,7 +396,7 @@ check:
     coverage: {severity: error, min: 80}
 ```
 
-The full reference — rule-by-rule tables, `.dbtl.yml` keys and lookup order, baselines (`.dbtl-baseline.json`), `--select` scoping, evaluator parity notes — is in [docs/lint.md](docs/lint.md).
+The full reference — rule-by-rule tables, `.dbtl.yml` keys and lookup order, baselines (`.dbtl-baseline.json`), `--select` scoping — is in [docs/lint.md](docs/lint.md).
 
 ### Column lineage (`dbtl columns`)
 
@@ -494,7 +494,7 @@ Press `?` inside the app for the full list. The most useful ones:
 | `Y` `C` | Copy model name / raw SQL |
 | `i` / `e` | Copy a Markdown impact report / write the diagram to a file |
 | `!` | Copy the view as a runnable `dbt build --select` command |
-| `y` + key | Yank prefix menu — `yy` unique_id, `yY` name, `ym` Mermaid, `yx` DOT, `yc` ASCII, `yC` raw SQL, `ys` compiled SQL, `yi` impact, `y!` selector, `yl` column lineage of the structure modal's selected column (the single keys above still work) |
+| `y` + key | Yank menu — `yy` unique_id, `yY` name, `ym` Mermaid, `yx` DOT, `yc` ASCII, `yC` raw SQL, `ys` compiled SQL, `yi` impact, `y!` selector, `yl` column lineage of the structure modal's selected column (the single keys above still work) |
 | `P` | Run `dbt parse` and switch to the compiled manifest |
 | `D` | PR impact report vs the `--diff` baseline (then `e` exports it as Markdown, `y` copies the suggested `dbt build` command) |
 | `Ctrl-p` `Cmd-p` | Command palette (`@name` searches models instead) |
@@ -503,7 +503,7 @@ Press `?` inside the app for the full list. The most useful ones:
 | `?` | Toggle the full help overlay |
 | `q` | Quit (`Ctrl-c` from anywhere) |
 
-Inside a scrollable modal, `j`/`k` scroll, `d`/`u`/`Ctrl-d`/`Ctrl-u`/`PgDn`/`PgUp` page, `g`/`G` jump to the top / bottom, and `Esc`/`Enter`/`q` (`?` too, for the help overlay) closes. In the structure view, each column row carries its test-kind badges (`NN` not_null, `U` unique, `R` relationships, `AV` accepted_values, `AR` accepted_range, `*` other) next to its `↑`/`↓` one-hop column-edge count, and `h`/`l` move a cursor across the rows — the target of `y l` — and `Enter`/`c` commits the cursored column to the **column trace view**: the lineage filters to the column's related models, each box lists its related columns (`>` marks the traced one, the other marks name the edge kind), a `column:model.col ↑u ↓d` status chip (one-hop counts, like the modal) replaces the `[view]` label, and the title gains ` [col:name]`. While tracing, `h`/`l` step the traced column upstream/downstream, `K` opens the column modal, `t` reaches the column-impact lens (gold = the downstream closure), the rooted view filters `u`/`d`/`[`/`]`/`0` are gated (they would only apply after the trace), and `Esc` exits the trace. `Tab` moves that cursor between the column rows and the tests list — the tests side lands only on `relationships` rows, whose resolved `to:` target shows as `-> model.column`, and `Enter` there re-roots the lineage to the target. Pressing `y` over the structure view aims every `y<key>` yank at *the modal's node*, not the list selection — `y l` yanks the column under its cursor (or, mid-trace with no modal open, the traced column). The `y` which-key and the `a` menu stack *over* the modal: closing either one (`Esc`/`q`, or after the action runs) lands back on the modal, not the panes. In a `/` search, `Up`/`Down` move between matches.
+Inside a scrollable modal, `j`/`k` scroll, `d`/`u`/`Ctrl-d`/`Ctrl-u`/`PgDn`/`PgUp` page, `g`/`G` jump to the top / bottom, and `Esc`/`Enter`/`q` (`?` too, for the help overlay) closes. In the structure view, each column row carries its test-kind badges (`NN` not_null, `U` unique, `R` relationships, `AV` accepted_values, `AR` accepted_range, `*` other) next to its `↑`/`↓` one-hop column-edge count, and `h`/`l` move a cursor across the rows — the target of `y l` — and `Enter`/`c` commits the cursored column to the **column trace view**: the lineage filters to the column's related models, each box lists its related columns (`>` marks the traced one, the other marks name the edge kind), a `column:model.col ↑u ↓d` status chip (one-hop counts, like the modal) replaces the `[view]` label, and the title gains ` [col:name]`. While tracing, `h`/`l` step the traced column upstream/downstream, `K` opens the column modal, `t` reaches the column-impact lens (gold = the downstream closure), the rooted view filters `u`/`d`/`[`/`]`/`0` are gated (they would only apply after the trace), and `Esc` exits the trace. `Tab` moves that cursor between the column rows and the tests list — the tests side lands only on `relationships` rows, whose resolved `to:` target shows as `-> model.column`, and `Enter` there re-roots the lineage to the target. Pressing `y` over the structure view aims every `y<key>` yank at *the modal's node*, not the list selection — `y l` yanks the column under its cursor (or, mid-trace with no modal open, the traced column). The `y` yank menu and the `a` menu stack *over* the modal: closing either one (`Esc`/`q`, or after the action runs) lands back on the modal, not the panes. In a `/` search, `Up`/`Down` move between matches.
 
 The mouse follows the same rules everywhere — a click confirms on release, and a second click on the same cell within ~400ms is a double-click:
 

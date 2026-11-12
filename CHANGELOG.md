@@ -69,6 +69,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `checksums.txt`, build-provenance attestations, and CycloneDX SBOMs.
 - Generated reference documentation under `docs/reference/` (CLI,
   configuration, keybindings, lint rules) and JSON schemas under `schema/`.
+- Releases now attach `demo.gif` — the recorded TUI demo, rendered at the
+  release tag by the release pipeline (not covered by `checksums.txt` or
+  attestations).
 
 ## [0.5.3] - 2026-11-11
 
@@ -144,7 +147,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Semantic-layer resources (semantic models, metrics, saved queries), dbt
   unit tests, and governance fields (access, group, contract, version).
 - Two-node path anchoring (`p`), full-text search, and a `y`-prefixed
-  which-key yank menu.
+  yank menu.
 - Per-project UI state persistence and `config.yml` defaults.
 - `dbtl docs --clean` and `--check` for generated-docs housekeeping.
 - Shared-macro change detection in manifest-vs-manifest diffs.

@@ -62,7 +62,7 @@ pub(super) fn multiple_sources_joined(
 }
 
 /// `source_fanout`: a source directly feeds >= `source_fanout_threshold`
-/// models (default 2 — the evaluator's ">1").
+/// models (default 2 — more than one direct consumer).
 pub(super) fn source_fanout(
     dag: &Dag,
     uids: &[&String],
@@ -160,9 +160,9 @@ pub(super) fn root_models(
 
 /// `rejoining_upstream`: node B whose ONLY data-node child is C, while some
 /// data-node parent A of B also feeds C directly (A→B→C plus A→C — B is a
-/// redundant hop). Matches the evaluator's `single_use_resources`: the child
-/// count ignores endpoint resources, and A/C aren't model-only (a source→B→C
-/// + source→C or a snapshot relay rejoin counts too).
+/// redundant hop). "Single use" counts data-carrying children only: the
+/// child count ignores endpoint resources, and A/C aren't model-only (a
+/// source→B→C + source→C or a snapshot relay rejoin counts too).
 ///
 /// One finding per B — `related` is the sorted set `{C} ∪ {A₁, A₂, …}` and
 /// `message` names the offenders, so a B bypassed by several parents shows
@@ -232,7 +232,7 @@ pub(super) fn rejoining_upstream(
 
 /// `marts_depend_on_source`: a marts/intermediate model directly depends on a
 /// source (raw-source reads belong in staging). Layer resolution is
-/// [`lint_model_type`] (prefix-first like the evaluator — `staging/fct_x` is
+/// [`lint_model_type`] (prefix first, then folder — `staging/fct_x` is
 /// a marts model, `reports/x` is 'other'). Any marts-layer model with a
 /// source parent fires — unlike `direct_join_to_source`, no model parent is
 /// required.
@@ -388,7 +388,7 @@ pub(super) fn duplicate_sources(
 
 /// `staging_depends_on_staging`: a staging-layer model directly depends on
 /// another staging-layer model. Layer resolution is [`lint_model_type`]
-/// (prefix-first like the evaluator — the same resolution every layer-aware
+/// (prefix first — the same resolution every layer-aware
 /// rule shares).
 pub(super) fn staging_depends_on_staging(
     dag: &Dag,

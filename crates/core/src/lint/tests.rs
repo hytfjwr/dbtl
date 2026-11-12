@@ -287,7 +287,7 @@ fn rejoining_upstream_flags_the_redundant_hop() {
 
 #[test]
 fn rejoining_upstream_counts_only_data_node_children_and_endpoints() {
-    // evaluator's single_use_resources semantics:
+    // the single-use semantics:
     //  - source→B→C + source→C: B flags (A need not be a model).
     //  - an exposure child of B does NOT break "single use" (endpoints
     //    don't count as a use).
@@ -334,8 +334,8 @@ fn rejoining_upstream_counts_only_data_node_children_and_endpoints() {
 
 #[test]
 fn rejoining_upstream_flags_a_snapshot_relay() {
-    // A→B→C + A→C where the redundant hop B is a snapshot (evaluator
-    // resource kinds aren't model-only).
+    // A→B→C + A→C where the redundant hop B is a snapshot (the
+    // single-use check isn't model-only).
     let mut m = manifest(
         vec![
             model("stg_a", "staging/stg_a.sql"),
@@ -387,7 +387,7 @@ fn marts_depend_on_source_scopes_to_marts_and_intermediate() {
 
 #[test]
 fn marts_depend_on_source_resolves_the_layer_prefix_first() {
-    // evaluator model_type semantics: staging/fct_x IS a marts model
+    // layer resolution is prefix-first: staging/fct_x IS a marts model
     // (prefix beats folder) — under-flag fix; reports/x is 'other'.
     let m = manifest(
         vec![
@@ -488,13 +488,13 @@ fn undocumented_models_flags_missing_and_blank_descriptions() {
 
 #[test]
 fn naming_conventions_resolves_the_type_prefix_first() {
-    // evaluator's coalesce(model_type_prefix, model_type_folder, 'other'):
+    // type resolution coalesces (prefix match, folder layer, 'other'):
     //  - staging/fct_x → marts type, fct_ is appropriate → NOT flagged
-    //    (over-flag fix; the folder mismatch is a different evaluator rule
-    //    — model_directories — which dbtl doesn't have).
+    //    (over-flag fix; the prefix-vs-folder mismatch is a different
+    //    rule's concern — `model_directories`).
     //  - marts/plain → folder type, no prefix → flagged.
-    //  - reports/x → 'other', which is prefix-free by default (deliberate
-    //    divergence: the evaluator expects rpt_ out of the box).
+    //  - reports/x → 'other', which is prefix-free by default: unclassified
+    //    models only get prefixes when the config defines an `other:` layer.
     let m = manifest(
         vec![
             model("fct_x", "staging/fct_x.sql"),
@@ -516,7 +516,7 @@ fn naming_conventions_resolves_the_type_prefix_first() {
 #[test]
 fn naming_conventions_other_layer_is_opt_in_via_config() {
     // Under-flag fix, opt-in: mapping `other:` makes unclassified models
-    // need a prefix — evaluator-parity `rpt_` enforcement.
+    // need a prefix — `rpt_` enforcement for the `other` layer.
     let m = manifest(
         vec![
             model("rpt_ok", "reports/rpt_ok.sql"),

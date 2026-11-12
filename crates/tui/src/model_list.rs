@@ -326,7 +326,7 @@ fn assemble_model_list(by_layer: Vec<(String, Vec<NodeInfo>)>) -> ModelList {
     }
 }
 
-/// Case-insensitive subsequence match (fzf-style): every char of `query` appears
+/// Case-insensitive subsequence match: every char of `query` appears
 /// in `name` in order. An empty query matches everything. Whitespace in the
 /// query is ignored. Names are ASCII in practice, so ASCII lowercasing suffices.
 /// Shared by the list filter and the lineage node-jump search.

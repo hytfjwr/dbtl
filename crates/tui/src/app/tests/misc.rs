@@ -24,10 +24,7 @@ fn yank_and_bookmark_record_oneshot_notices() {
 fn yank_prefix_opens_menu_and_second_key_executes_then_closes() {
     let mut a = app();
     apply_action(&mut a, Action::YankPrefix);
-    assert!(
-        matches!(a.mode, Mode::Yank { .. }),
-        "y opens the which-key menu"
-    );
+    assert!(matches!(a.mode, Mode::Yank { .. }), "y opens the yank menu");
     // The second key dispatches the yank AND closes the menu (one-shot).
     let out = apply_action(&mut a, Action::YankMermaid);
     assert!(matches!(out.effects.as_slice(), [Effect::Yank(_)]));

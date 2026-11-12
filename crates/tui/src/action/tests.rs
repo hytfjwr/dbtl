@@ -928,7 +928,7 @@ fn esc_action_mirrors_each_modes_esc_binding() {
     assert_eq!(
         esc_action(&yank_mode()),
         Some(Action::DetailClose),
-        "the which-key menu's Esc cancels it"
+        "the yank menu's Esc cancels it"
     );
     assert_eq!(
         esc_action(&menu_mode_with(vec![])),

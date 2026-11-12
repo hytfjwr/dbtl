@@ -1,5 +1,5 @@
-//! Static project-structure lint: the `dbt_project_evaluator`-style
-//! best-practice checks, evaluated deterministically against the pruned
+//! Static project-structure lint: best-practice checks over the project
+//! graph, evaluated deterministically against the pruned
 //! [`Dag`] — no warehouse execution and no `dbt compile` needed (a manifest
 //! and a source-mode synthesized manifest produce the same `Dag`, so both
 //! modes lint identically).
@@ -34,7 +34,7 @@ pub use location::{fill_finding_lines, yaml_name_line, YAML_ATTRIBUTE_RULE_IDS};
 mod rules;
 pub use rules::{run_rules, LintInput, LintOutcome, SkippedRule};
 
-/// A static structure-check rule, identified by its `dbt_project_evaluator`
+/// A static structure-check rule, identified by its stable snake_case
 /// name. The enum's declaration order IS the evaluation/output order of
 /// [`run_rules`] (drift-tested against [`REGISTRY`]) — fixed, so finding
 /// lists are deterministic.
@@ -297,8 +297,8 @@ pub struct LintConfig {
     /// [`first_dir`] folder, else `other`). A model whose resolved type is
     /// listed must start with one of its prefixes; a type absent from the
     /// map (or mapped to `[]`) is unchecked. `other` is a valid key: mapping
-    /// it to e.g. `["rpt_"]` opts into the evaluator's default behaviour of
-    /// flagging unclassified models without that prefix.
+    /// it to e.g. `["rpt_"]` opts into flagging unclassified models without
+    /// that prefix.
     pub naming_prefixes: BTreeMap<String, Vec<String>>,
     /// `lint.baseline` — the frozen-violations file path, resolved against
     /// the `.dbtl.yml` directory at load (the default
@@ -308,7 +308,7 @@ pub struct LintConfig {
 
 impl Default for LintConfig {
     /// The shipped defaults: every rule at its registry severity, no
-    /// excludes, evaluator-matched naming prefixes, and the default
+    /// excludes, the conventional layer naming prefixes, and the default
     /// baseline path.
     fn default() -> Self {
         LintConfig {

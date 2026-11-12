@@ -4,7 +4,7 @@ use super::*;
 //
 // `a` (or a right-click — `App::click_target` covers that path above) opens the
 // BINDINGS-derived context menu for the node under the cursor / modal; the menu
-// and the `y` which-key stack over a modal and restore it on close.
+// and the `y` yank menu stack over a modal and restore it on close.
 
 #[test]
 fn menu_open_from_selection_targets_the_focus_node() {
@@ -238,7 +238,7 @@ fn menu_enter_label_is_context_sensitive() {
 
 #[test]
 fn detail_yank_esc_returns_to_the_modal() {
-    // Structure -> y -> Esc: the which-key's close restores the modal it
+    // Structure -> y -> Esc: the yank menu's close restores the modal it
     // stacked over (the `back` slot), not the bare panes.
     let mut a = sample_app();
     open_detail(&mut a, "model.sample.stg_orders");
@@ -250,7 +250,7 @@ fn detail_yank_esc_returns_to_the_modal() {
         ),
         m => panic!("expected Mode::Yank, got {m:?}"),
     }
-    apply_action(&mut a, Action::DetailClose); // Esc on the which-key
+    apply_action(&mut a, Action::DetailClose); // Esc on the yank menu
     match &a.mode {
         Mode::Detail(dv) => assert_eq!(dv.model_id, "model.sample.stg_orders"),
         m => panic!("expected the Detail modal back, got {m:?}"),
@@ -261,10 +261,10 @@ fn detail_yank_esc_returns_to_the_modal() {
 }
 
 #[test]
-fn menu_opened_over_the_whichkey_keeps_the_outer_destination() {
-    // `a` while `y` is up over a modal: the menu takes the which-key's back
+fn menu_opened_over_the_yank_menu_keeps_the_outer_destination() {
+    // `a` while `y` is up over a modal: the menu takes the yank menu's back
     // (the modal), so Esc on the menu still lands on the modal — the
-    // intermediate which-key does not become a mode of its own.
+    // intermediate yank menu does not become a mode of its own.
     let mut a = sample_app();
     open_detail(&mut a, "model.sample.stg_orders");
     apply_action(&mut a, Action::YankPrefix);
@@ -272,13 +272,13 @@ fn menu_opened_over_the_whichkey_keeps_the_outer_destination() {
     match &a.mode {
         Mode::Menu(ms) => assert!(
             matches!(ms.back.as_deref(), Some(Mode::Detail(_))),
-            "the menu inherits the which-key's outer destination"
+            "the menu inherits the yank menu's outer destination"
         ),
         m => panic!("expected Mode::Menu, got {m:?}"),
     }
     apply_action(&mut a, Action::DetailClose);
     assert!(
         matches!(a.mode, Mode::Detail(_)),
-        "Esc returns to the modal, skipping the dead which-key"
+        "Esc returns to the modal, skipping the dead yank menu"
     );
 }

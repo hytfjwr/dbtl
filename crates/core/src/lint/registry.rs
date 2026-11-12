@@ -719,8 +719,8 @@ impl ParamSpec {
     }
 
     /// A regular-expression-list parameter — every item must compile; the
-    /// config parser rejects invalid patterns at load (a rule evaluator
-    /// never sees a broken pattern).
+    /// config parser rejects invalid patterns at load (a rule
+    /// implementation never sees a broken pattern).
     pub const fn regex_list(
         name: &'static str,
         default: &'static [&'static str],
@@ -753,7 +753,7 @@ pub enum ParamKind {
 }
 
 /// One registry row — everything there is to say about a rule except its
-/// evaluator function.
+/// implementation function.
 #[derive(Debug, Clone, Copy)]
 pub struct RuleInfo {
     /// The enum variant this row describes (back-link for `LintRule::info`).
