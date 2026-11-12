@@ -3,7 +3,9 @@ name: Demo
 # Renders demo/demo.tape into demo/demo.gif with vhs. Runs on pull requests
 # that touch the tape or the TUI (the GIF lands in the run's `demo-gif`
 # artifact, so reviewers can see the screen changes), manually, and as a
-# reusable workflow other pipelines can call for the same render.
+# reusable workflow other pipelines can call for the same render. When a
+# `release-tag` input is set, a second job attaches the GIF to that tag's
+# published release — how each release gets its `demo.gif` asset.
 on:
   pull_request:
     paths:
@@ -12,10 +14,25 @@ on:
       - "src/main.rs"
       - ".github/workflows/demo.yml"
   workflow_dispatch:
+    inputs:
+      release-tag:
+        description: >-
+          Published release tag (vX.Y.Z) to attach the rendered GIF to. The
+          GIF is rendered from the ref you run the workflow on, so this can
+          add or refresh demo.gif on a release that is already out. Leave
+          empty to only produce the `demo-gif` run artifact.
+        required: false
+        type: string
   workflow_call:
     inputs:
       ref:
         description: "Git ref to check out and render (default: the caller's ref)"
+        required: false
+        type: string
+      release-tag:
+        description: >-
+          Published release tag (vX.Y.Z) to attach the rendered GIF to.
+          Leave empty to only produce the `demo-gif` run artifact.
         required: false
         type: string
 
@@ -81,3 +98,44 @@ jobs:
             echo "- artifact: \`demo-gif\` (the Artifacts section of this run, kept 14 days)"
             echo "- size: ${BYTES} bytes"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Runs only when the caller (or a manual run) names a published release —
+  # skipped on pull requests and on tag-less calls, so a dry run exercises
+  # the render without ever touching a release.
+  attach:
+    name: Attach demo GIF
+    needs: demo
+    if: ${{ inputs.release-tag != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # gh release upload onto an existing release.
+      contents: write
+    steps:
+      - name: Download the rendered GIF
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: demo-gif
+          path: dist
+
+      # Uploads to a release that already exists — never creates one. A bad
+      # tag shape or a missing release fails before anything is written.
+      - name: Verify the tag and its release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release-tag }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::release-tag '$TAG' is not a vX.Y.Z release tag."
+            exit 1
+          fi
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::No release found for $TAG. The demo GIF only attaches to a release that already exists."
+            exit 1
+          fi
+
+      - name: Upload demo.gif to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release-tag }}
+        run: gh release upload "$TAG" dist/demo.gif --clobber --repo "$GITHUB_REPOSITORY"

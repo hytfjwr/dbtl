@@ -33,6 +33,16 @@ provenance and the SBOM (`gh attestation verify` works against every
 asset), then the GitHub release is created with generated notes and all
 assets attached.
 
+Once the release exists, the pipeline calls the **Demo** workflow
+(`.github/workflows/demo.yml`) to render `demo/demo.tape` into `demo.gif`
+at the tag and attach it to the release. The GIF is a convenience asset:
+it is not covered by `checksums.txt` or the attestations, and a failure to
+render or attach it never blocks the release or the tap update. To attach
+or refresh it by hand — for a release that went out without one, or after
+a failed attach — run the **Demo** workflow manually with `release-tag`
+set to the release tag; it renders the GIF at the ref you run it on and
+uploads it over any existing `demo.gif`.
+
 ## The tag-push and resume paths
 
 - Pushing a `v*` tag directly also runs the pipeline — an escape hatch that
@@ -45,8 +55,9 @@ assets attached.
 
 **Release dry run** (`.github/workflows/release-dry-run.yml`) calls the same
 reusable build under a dummy tag on PRs touching the release workflows or
-`Cargo.toml`/`Cargo.lock` — it builds and packages every target but never
-tags, publishes, attests, or touches the tap.
+`Cargo.toml`/`Cargo.lock`, and renders the demo GIF through the same
+workflow call a real release makes — it builds, packages, and renders but
+never tags, publishes, attests, attaches, or touches the tap.
 
 ## Secrets
 
@@ -74,7 +85,7 @@ read/write on `hytfjwr/homebrew-tap`:
 - [ ] Run the bump workflow, review the release PR (version and lockfile
       only), merge it.
 - [ ] Confirm the `vX.Y.Z` release published all archives, `checksums.txt`,
-      the SBOM, and attestations; spot-check
+      the SBOM, `demo.gif`, and attestations; spot-check
       `gh attestation verify dbtl-vX.Y.Z-*.tar.gz --repo hytfjwr/dbtl`.
 - [ ] Confirm the Homebrew formula updated (or the notice explaining why
       not).

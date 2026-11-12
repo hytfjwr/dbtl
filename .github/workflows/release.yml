@@ -237,3 +237,21 @@ jobs:
             args+=(-f sha="$(cat old_sha)")
           fi
           GH_TOKEN="$TAP_TOKEN" gh api -X PUT "repos/${TAP_REPO}/contents/Formula/dbtl.rb" "${args[@]}"
+
+  # Renders the demo tape at the release tag and attaches demo.gif to the
+  # release — a convenience asset, not a shipped artifact: nothing depends
+  # on this job (homebrew fans out from `release`, not from here), the GIF
+  # is not part of checksums.txt or the attestations, and a render or
+  # attach failure leaves the release and the tap update untouched. To
+  # re-attach by hand, run the Demo workflow with a release-tag.
+  demo:
+    name: Demo GIF
+    needs: [prepare, release]
+    uses: ./.github/workflows/demo.yml
+    permissions:
+      # Ceiling for the called jobs — the render only reads, the attach
+      # writes the release.
+      contents: write
+    with:
+      ref: ${{ needs.prepare.outputs.tag }}
+      release-tag: ${{ needs.prepare.outputs.tag }}
