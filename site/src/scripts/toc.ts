@@ -5,7 +5,9 @@ import { slideTo } from "./motion.ts";
 
 const root = document.documentElement;
 const links = new Map<string, HTMLAnchorElement>();
-for (const a of document.querySelectorAll<HTMLAnchorElement>(".toc a[href^='#'], .jump a[href^='#']")) {
+for (const a of document.querySelectorAll<HTMLAnchorElement>(
+  ".toc a[href^='#'], .jump a[href^='#']",
+)) {
   links.set(decodeURIComponent(a.hash.slice(1)), a);
 }
 

@@ -31,7 +31,9 @@ for (const { name, file } of SAMPLES) {
     maxBuffer: 64 * 1024 * 1024,
   });
   if (run.error || (run.status !== 0 && run.status !== 1)) {
-    console.error(`lint-data: dbtl lint failed on ${file}: exit ${run.status} ${run.error ?? run.stderr}`);
+    console.error(
+      `lint-data: dbtl lint failed on ${file}: exit ${run.status} ${run.error ?? run.stderr}`,
+    );
     process.exit(1);
   }
   const report = JSON.parse(run.stdout);
@@ -58,5 +60,7 @@ for (const { name, file } of SAMPLES) {
   };
   const out = path.join(siteRoot, "src", "data", `lint-${name}.json`);
   fs.writeFileSync(out, `${JSON.stringify(data, null, 2)}\n`);
-  console.log(`lint-data: ${name}: ${findings.length} findings, ${data.rules} rules -> ${path.relative(repoRoot, out)}`);
+  console.log(
+    `lint-data: ${name}: ${findings.length} findings, ${data.rules} rules -> ${path.relative(repoRoot, out)}`,
+  );
 }

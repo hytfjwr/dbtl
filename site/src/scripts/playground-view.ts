@@ -62,7 +62,11 @@ export function drawn(p: Project, hit: Set<string>): Graph<ProjectNode> {
 
 export function lineageStyle(hit: Set<string>, was: Set<string> | null): (L: Layout) => Style {
   return () => ({
-    node: (id) => ({ hit: hit.has(id), dim: !hit.has(id), fresh: !!was && hit.has(id) && !was.has(id) }),
+    node: (id) => ({
+      hit: hit.has(id),
+      dim: !hit.has(id),
+      fresh: !!was && hit.has(id) && !was.has(id),
+    }),
     edge: (keys) =>
       keys.some((k) => {
         const [a, b] = k.split(">");
@@ -85,7 +89,9 @@ export function lineageNote(p: Project, o: Outcome, spec: string): string | null
 
 const byName = (p: Project, ids: Iterable<string>): ProjectNode[] => {
   const ix = index(p);
-  return [...ids].map((id) => ix.by.get(id)!).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return [...ids]
+    .map((id) => ix.by.get(id)!)
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 };
 
 export function matchedTitle(p: Project, o: Outcome): string {

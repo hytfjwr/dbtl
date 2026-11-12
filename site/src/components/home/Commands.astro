@@ -2,12 +2,42 @@
 import { docsHref } from "./links.ts";
 
 const commands = [
-  { cmd: "dbtl ls", arg: "<SELECTOR>", text: "List the nodes a dbt selector picks.", slug: "cli/ls" },
-  { cmd: "dbtl columns", arg: "<node>.<col>", text: "Column-level lineage for one column.", slug: "cli/columns" },
-  { cmd: "dbtl docs", arg: "--out <DIR>", text: "Write a Markdown page per node. Output is byte-deterministic.", slug: "cli/docs" },
-  { cmd: "dbtl lint", arg: "", text: "Static best-practice rules over the project graph.", slug: "cli/lint" },
-  { cmd: "dbtl check", arg: "", text: "One PASS / WARN / FAIL / SKIP line per gate. Exit 1 on failure.", slug: "cli/check-and-impact" },
-  { cmd: "dbtl impact", arg: "--diff <BASELINE>", text: "The PR impact pack as Markdown or JSON.", slug: "cli/check-and-impact" },
+  {
+    cmd: "dbtl ls",
+    arg: "<SELECTOR>",
+    text: "List the nodes a dbt selector picks.",
+    slug: "cli/ls",
+  },
+  {
+    cmd: "dbtl columns",
+    arg: "<node>.<col>",
+    text: "Column-level lineage for one column.",
+    slug: "cli/columns",
+  },
+  {
+    cmd: "dbtl docs",
+    arg: "--out <DIR>",
+    text: "Write a Markdown page per node. Output is byte-deterministic.",
+    slug: "cli/docs",
+  },
+  {
+    cmd: "dbtl lint",
+    arg: "",
+    text: "Static best-practice rules over the project graph.",
+    slug: "cli/lint",
+  },
+  {
+    cmd: "dbtl check",
+    arg: "",
+    text: "One PASS / WARN / FAIL / SKIP line per gate. Exit 1 on failure.",
+    slug: "cli/check-and-impact",
+  },
+  {
+    cmd: "dbtl impact",
+    arg: "--diff <BASELINE>",
+    text: "The PR impact pack as Markdown or JSON.",
+    slug: "cli/check-and-impact",
+  },
 ];
 ---
 
@@ -15,17 +45,15 @@ const commands = [
   <h2>Commands that run without a terminal UI</h2>
   <div class="pane cmds">
     <p class="pane-title">dbtl &lt;command&gt;</p>
-    {
-      commands.map((c) => (
-        <a href={docsHref(c.slug)}>
-          <span class="c">
-            {c.cmd}
-            {c.arg && <i> {c.arg}</i>}
-          </span>
-          <span class="d">{c.text}</span>
-          <span class="go">read ▸</span>
-        </a>
-      ))
-    }
+    {commands.map((c) => (
+      <a href={docsHref(c.slug)}>
+        <span class="c">
+          {c.cmd}
+          {c.arg && <i> {c.arg}</i>}
+        </span>
+        <span class="d">{c.text}</span>
+        <span class="go">read ▸</span>
+      </a>
+    ))}
   </div>
 </div>

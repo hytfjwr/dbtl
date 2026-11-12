@@ -8,15 +8,26 @@ const { tabs } = Astro.props;
 
 // The route under the site base, written like a shell path: `~/cli/selectors`.
 const base = url().replace(/\/$/, "");
-const path = Astro.url.pathname.startsWith(base) ? Astro.url.pathname.slice(base.length) : Astro.url.pathname;
+const path = Astro.url.pathname.startsWith(base)
+  ? Astro.url.pathname.slice(base.length)
+  : Astro.url.pathname;
 const where = `~${path.replace(/\/$/, "") || "/"}`;
 ---
 
 <div class="statusline">
   <div class="hints" aria-label="Keyboard shortcuts">
-    <button type="button" data-search-open data-key="/"><kbd>/</kbd>search</button>
-    <button type="button" data-act="theme" data-key="t"><kbd>t</kbd>theme</button>
-    {tabs.map((t) => <a href={t.href} data-key={String(t.n)}><kbd>{t.n}</kbd>{t.id}</a>)}
+    <button type="button" data-search-open data-key="/">
+      <kbd>/</kbd>search
+    </button>
+    <button type="button" data-act="theme" data-key="t">
+      <kbd>t</kbd>theme
+    </button>
+    {tabs.map((t) => (
+      <a href={t.href} data-key={String(t.n)}>
+        <kbd>{t.n}</kbd>
+        {t.id}
+      </a>
+    ))}
   </div>
   <div class="chips">
     <span id="chip-path">{where}</span>

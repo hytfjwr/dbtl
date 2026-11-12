@@ -23,9 +23,7 @@ export function remarkComments() {
 export function remarkReferencePage(options: { referenceRoot: string }) {
   return (tree: Root, file: VFile) => {
     if (!file.path || !file.path.startsWith(options.referenceRoot)) return;
-    const index = tree.children.findIndex(
-      (node) => node.type === "heading" && node.depth === 1,
-    );
+    const index = tree.children.findIndex((node) => node.type === "heading" && node.depth === 1);
     if (index !== -1) tree.children.splice(index, 1);
   };
 }

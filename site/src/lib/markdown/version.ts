@@ -29,7 +29,8 @@ export function remarkVersion() {
     visit(tree, (node) => {
       if (node.type === "text" || node.type === "inlineCode" || node.type === "code") {
         node.value = replace(node.value);
-        if (ANY.test(node.value)) file.fail(`Unknown version token: ${ANY.exec(node.value)![0]}`, node);
+        if (ANY.test(node.value))
+          file.fail(`Unknown version token: ${ANY.exec(node.value)![0]}`, node);
       } else if (node.type === "link" || node.type === "image") {
         node.url = replace(node.url);
         if (ANY.test(node.url)) file.fail(`Unknown version token: ${ANY.exec(node.url)![0]}`, node);

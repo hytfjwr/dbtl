@@ -6,7 +6,8 @@ const nav = await loadNav();
 
 /** A link to a page by slug. A slug that has no page fails the build. */
 function page(label: string, slug: string) {
-  if (!nav.pages.some((p) => p.slug === slug)) throw new Error(`Footer links to "${slug}", which is not a page`);
+  if (!nav.pages.some((p) => p.slug === slug))
+    throw new Error(`Footer links to "${slug}", which is not a page`);
   return { label, href: url(`${slug}/`) };
 }
 
@@ -40,18 +41,22 @@ const columns = [
 
 <footer class="site-foot">
   <div class="wrap cols">
-    <div><h3>dbtl</h3>A terminal UI for dbt model lineage.<br />MIT license.</div>
-    {
-      columns.map((c) => (
-        <div>
-          <h3>{c.title}</h3>
-          <ul>
-            {c.links.map((l) => (
-              <li><a href={l.href}>{l.label}</a></li>
-            ))}
-          </ul>
-        </div>
-      ))
-    }
+    <div>
+      <h3>dbtl</h3>A terminal UI for dbt model lineage.
+      <br />
+      MIT license.
+    </div>
+    {columns.map((c) => (
+      <div>
+        <h3>{c.title}</h3>
+        <ul>
+          {c.links.map((l) => (
+            <li>
+              <a href={l.href}>{l.label}</a>
+            </li>
+          ))}
+        </ul>
+      </div>
+    ))}
   </div>
 </footer>

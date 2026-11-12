@@ -7,19 +7,33 @@ import { url } from "../lib/site.ts";
   <div class="wrap nf vt-page">
     <p class="nf-code">exit 3</p>
     <h1>No page at this path.</h1>
-    <p class="lead">Nothing matches <code id="nf-path">this address</code>. The page may have moved, or the link has a typo.</p>
+    <p class="lead">
+      Nothing matches <code id="nf-path">this address</code>. The page may have moved, or the link
+      has a typo.
+    </p>
     <figure class="pane code term">
       <figcaption class="pane-title">terminal</figcaption>
       <pre><span class="p">$</span> dbtl ls <span class="s" id="nf-cmd">'path:missing'</span>
 <span class="fail">error:</span> <span class="o">no page matches this path · exit 3</span></pre>
       <div class="scroll">
-        <div class="lin-host" id="nf-lin" role="img" aria-label="A lineage with one edge that leads to a missing node."></div>
+        <div
+          class="lin-host"
+          id="nf-lin"
+          role="img"
+          aria-label="A lineage with one edge that leads to a missing node."
+        ></div>
       </div>
     </figure>
     <div class="cta">
-      <a class="btn primary" href={url()}>Go home</a>
-      <a class="btn" href={url("docs/")}>Open the docs</a>
-      <button class="btn" type="button" data-search-open>Search <kbd>/</kbd></button>
+      <a class="btn primary" href={url()}>
+        Go home
+      </a>
+      <a class="btn" href={url("docs/")}>
+        Open the docs
+      </a>
+      <button class="btn" type="button" data-search-open>
+        Search <kbd>/</kbd>
+      </button>
     </div>
   </div>
 </Base>
@@ -29,7 +43,9 @@ import { url } from "../lib/site.ts";
   import { reveal } from "../scripts/motion.ts";
 
   const base = import.meta.env.BASE_URL.replace(/\/?$/, "/");
-  const raw = location.pathname.startsWith(base) ? location.pathname.slice(base.length) : location.pathname.replace(/^\//, "");
+  const raw = location.pathname.startsWith(base)
+    ? location.pathname.slice(base.length)
+    : location.pathname.replace(/^\//, "");
   // A stray % is not valid percent-encoding; show the path as typed.
   const rest = (() => {
     try {

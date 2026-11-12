@@ -1,7 +1,11 @@
 [
   {
     "group": "Getting started",
-    "items": ["getting-started/overview", "getting-started/installation", "getting-started/quick-start"]
+    "items": [
+      "getting-started/overview",
+      "getting-started/installation",
+      "getting-started/quick-start"
+    ]
   },
   {
     "group": "Using the TUI",

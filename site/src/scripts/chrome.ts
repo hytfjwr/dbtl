@@ -70,10 +70,12 @@ if (wrappers.length > 0) {
     if (!scroller) return;
     const scrolls = scroller.scrollWidth > scroller.clientWidth + 1;
     wrap.dataset.scrolls = scrolls ? "1" : "0";
-    wrap.dataset.more = scrolls && scroller.scrollLeft + scroller.clientWidth < scroller.scrollWidth - 2 ? "1" : "0";
+    wrap.dataset.more =
+      scrolls && scroller.scrollLeft + scroller.clientWidth < scroller.scrollWidth - 2 ? "1" : "0";
   };
   const run = () => wrappers.forEach(check);
-  for (const wrap of wrappers) $(".tbl", wrap)?.addEventListener("scroll", () => check(wrap), { passive: true });
+  for (const wrap of wrappers)
+    $(".tbl", wrap)?.addEventListener("scroll", () => check(wrap), { passive: true });
   window.addEventListener("resize", run);
   run();
   void document.fonts?.ready.then(run);
@@ -118,7 +120,8 @@ document.addEventListener("keydown", (event) => {
     setDrawer(false);
     return;
   }
-  if (event.defaultPrevented || isSearchOpen() || event.metaKey || event.ctrlKey || event.altKey) return;
+  if (event.defaultPrevented || isSearchOpen() || event.metaKey || event.ctrlKey || event.altKey)
+    return;
   const el = event.target as HTMLElement | null;
   if (el && (["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName) || el.isContentEditable)) return;
   const hint = $$("[data-key]", $(".hints") ?? document).find((h) => h.dataset.key === event.key);

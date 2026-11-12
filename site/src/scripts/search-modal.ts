@@ -14,13 +14,22 @@ const closeButton = dialog?.querySelector<HTMLButtonElement>(".s-close");
 
 const base = import.meta.env.BASE_URL.replace(/\/?$/, "/");
 
-const ENTITIES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+const ENTITIES: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
 const escapeHtml = (text: string): string => text.replace(/[&<>"']/g, (c) => ENTITIES[c]!);
 
 /** Escape `text` and wrap the query terms in <mark>. Matching runs on the raw text, so an entity is never split. */
 function highlight(text: string, terms: string[]): string {
   if (terms.length === 0) return escapeHtml(text);
-  const pattern = new RegExp(`(${terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "gi");
+  const pattern = new RegExp(
+    `(${terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`,
+    "gi",
+  );
   return text
     .split(pattern)
     .map((part, i) => (i % 2 === 1 ? `<mark>${escapeHtml(part)}</mark>` : escapeHtml(part)))

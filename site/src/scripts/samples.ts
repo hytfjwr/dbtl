@@ -99,13 +99,17 @@ export function toProject(raw: RawSample): Project {
     desc: n.description,
     cols: n.columns,
   }));
-  const edges: [string, string][] = raw.nodes.flatMap((n) => n.parents.map((p): [string, string] => [p, n.uid]));
+  const edges: [string, string][] = raw.nodes.flatMap((n) =>
+    n.parents.map((p): [string, string] => [p, n.uid]),
+  );
   return { name: raw.name, nodes, edges };
 }
 
 /** Test coverage as dbtl's status line counts it: models, seeds and snapshots with at least one test. */
 export function coverage(p: Project): number {
-  const built = p.nodes.filter((n) => n.type === "model" || n.type === "seed" || n.type === "snapshot");
+  const built = p.nodes.filter(
+    (n) => n.type === "model" || n.type === "seed" || n.type === "snapshot",
+  );
   if (built.length === 0) return 0;
   return Math.round((100 * built.filter((n) => n.tests > 0).length) / built.length);
 }

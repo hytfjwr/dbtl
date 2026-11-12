@@ -18,6 +18,8 @@ const target = url(`${first.slug}/`);
     <link rel="canonical" href={new URL(target, Astro.site).href} />
   </head>
   <body>
-    <p>Redirecting to <a href={target}>{first.title}</a>.</p>
+    <p>
+      Redirecting to <a href={target}>{first.title}</a>.
+    </p>
   </body>
 </html>

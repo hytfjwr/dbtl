@@ -138,7 +138,11 @@ export const HOME = {
   root: "fct_subscription_process",
   /** Hops kept on each side of the root, and kept when re-rooting. */
   depth: 1,
-  trail: ["int_subscriptions__combined", "fct_delivery_monthly_snapshot", "subscription_churn_notebook"],
+  trail: [
+    "int_subscriptions__combined",
+    "fct_delivery_monthly_snapshot",
+    "subscription_churn_notebook",
+  ],
 };
 
 /** Resolve the home config to node ids. Throws when the data no longer has these names. */

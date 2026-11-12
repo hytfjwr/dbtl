@@ -28,9 +28,7 @@ function elements(node: Element, tagName: string): Element[] {
 function languageOf(pre: Element): string {
   const tagged = pre.properties?.dataLanguage;
   if (typeof tagged === "string" && tagged !== "plaintext") return tagged;
-  const code = pre.children.find(
-    (c): c is Element => c.type === "element" && c.tagName === "code",
-  );
+  const code = pre.children.find((c): c is Element => c.type === "element" && c.tagName === "code");
   const match = code ? LANG.exec(classes(code).join(" ")) : null;
   return match?.[1] ?? "text";
 }
@@ -163,9 +161,7 @@ export function rehypeBlocks() {
         const head = elements(node, "thead")[0];
         const columns = head ? elements(elements(head, "tr")[0] ?? head, "th").length : 0;
         (parent.children as ElementContent[])[index] =
-          columns >= WIDE_COLUMNS
-            ? wideTable(node, heading)
-            : region(heading, ["tbl"], node);
+          columns >= WIDE_COLUMNS ? wideTable(node, heading) : region(heading, ["tbl"], node);
         return SKIP;
       }
     });
