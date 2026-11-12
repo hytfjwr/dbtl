@@ -99,3 +99,50 @@ pub(super) fn columns_missing_in_warehouse(
         }
     }
 }
+
+/// `undeclared_warehouse_columns`: a column the catalog reports that the
+/// node doesn't declare — [`CatalogNode::drift`]'s "in warehouse but not
+/// in docs" side (case-insensitive, the catalog's own spelling). A node
+/// with NO declared columns isn't judged: it makes no column-level claim
+/// the catalog can contradict (and `columns:` absent vs empty can't be
+/// told apart). A node with no catalog record is "unknown", never
+/// "wrong", like both sibling rules.
+pub(super) fn undeclared_warehouse_columns(
+    dag: &Dag,
+    uids: &[&String],
+    in_scope: &dyn Fn(&NodeInfo) -> bool,
+    catalog: &Catalog,
+    out: &mut Vec<Finding>,
+) {
+    for uid in uids {
+        let Some(n) = dag.get(uid) else { continue };
+        if !matches!(n.resource_type.as_str(), "model" | "seed" | "snapshot") || !in_scope(n) {
+            continue;
+        }
+        let Some(node) = catalog.get(uid) else {
+            continue;
+        };
+        let Some(detail) = dag.detail(uid) else {
+            continue;
+        };
+        if detail.columns.is_empty() {
+            continue;
+        }
+        let documented: Vec<String> = detail.columns.iter().map(|c| c.name.clone()).collect();
+        let (_, undeclared) = node.drift(&documented);
+        if !undeclared.is_empty() {
+            out.push(Finding::new(
+                LintRule::UndeclaredWarehouseColumns,
+                (*uid).clone(),
+                vec![],
+                format!(
+                    "{} has {} undeclared warehouse {}: {}",
+                    n.name,
+                    undeclared.len(),
+                    pluralize(undeclared.len(), "column"),
+                    undeclared.join(", ")
+                ),
+            ));
+        }
+    }
+}

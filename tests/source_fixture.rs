@@ -1352,3 +1352,100 @@ fn every_position_underlines_a_real_call() {
     let again = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
     assert_eq!(findings, again);
 }
+
+// ---- semantic_models: the source-mode consumption channel --------------------
+
+/// A minimal project on disk: `dbt_project.yml` + `models/` + the files
+/// `files` names (`(path, contents)` pairs). Returns the tempdir (kept
+/// alive by the caller).
+fn tiny_project(files: &[(&str, &str)]) -> tempfile::TempDir {
+    use std::fs;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    fs::write(
+        root.join("dbt_project.yml"),
+        "name: d\nversion: \"1.0.0\"\nconfig-version: 2\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("models")).unwrap();
+    for (path, contents) in files {
+        fs::write(root.join(path), contents).unwrap();
+    }
+    tmp
+}
+
+#[test]
+fn semantic_models_entries_mark_the_consumed_models_dependents() {
+    // `semantic_models:` is the one semantic-layer resource source mode
+    // reads — not as nodes (a real manifest would carry them) but as the
+    // `semantic_dependents` mark on each consumed model, so `unused_models`
+    // answers "the semantic layer reads this" like manifest mode does.
+    // Disabled entries (either spelling) and unresolved refs mark nothing.
+    let tmp = tiny_project(&[
+        ("models/stg_a.sql", "select 1 as id\n"),
+        ("models/stg_b.sql", "select 1 as id\n"),
+        ("models/stg_c.sql", "select 1 as id\n"),
+        ("models/stg_d.sql", "select 1 as id\n"),
+        (
+            "models/schema.yml",
+            "version: 2\n\
+             models:\n  - name: stg_a\n  - name: stg_b\n  - name: stg_c\n  - name: stg_d\n\
+             semantic_models:\n  - name: sm_a\n    model: \"ref('stg_a')\"\n  - name: sm_off\n    model: \"ref('stg_b')\"\n    enabled: false\n  - name: sm_cfg_off\n    model: \"ref('stg_c')\"\n    config:\n      enabled: false\n  - name: sm_ghost\n    model: \"ref('nope')\"\n",
+        ),
+    ]);
+    let (dag, _warnings) = load_dag_from_source_with_warnings(tmp.path()).expect("project loads");
+    assert_eq!(
+        dag.detail("model.d.stg_a").unwrap().semantic_dependents,
+        vec!["sm_a".to_string()],
+        "the entry's name lands on the consumed model"
+    );
+    for uid in ["model.d.stg_b", "model.d.stg_c", "model.d.stg_d"] {
+        assert!(
+            dag.detail(uid).unwrap().semantic_dependents.is_empty(),
+            "disabled/absent consumers mark nothing: {uid}"
+        );
+    }
+    // …and the lint answer: the consumed model is used, the rest flag.
+    let findings = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    let flagged: Vec<&str> = findings
+        .iter()
+        .filter(|f| f.rule == LintRule::UnusedModels)
+        .map(|f| f.node_uid.as_str())
+        .collect();
+    assert_eq!(
+        flagged,
+        vec!["model.d.stg_b", "model.d.stg_c", "model.d.stg_d"],
+        "a semantic_models consumer is a use in source mode too"
+    );
+}
+
+#[test]
+fn references_deprecated_model_evaluates_in_source_mode() {
+    // `deprecation_date` rides the schema.yml entry (the Issue-15 intake) —
+    // a dependent's finding lands with the same shape manifest mode gives,
+    // position included (the ref() in the dependent's own .sql).
+    let tmp = tiny_project(&[
+        ("models/dim_old.sql", "select 1 as id\n"),
+        ("models/fct_a.sql", "select * from {{ ref('dim_old') }}\n"),
+        (
+            "models/schema.yml",
+            "version: 2\n\
+             models:\n  - name: dim_old\n    deprecation_date: \"2026-12-01\"\n  - name: fct_a\n",
+        ),
+    ]);
+    let dag = load_dag_from_source(tmp.path()).expect("project loads");
+    let findings = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    let hits: Vec<_> = findings
+        .iter()
+        .filter(|f| f.rule == LintRule::ReferencesDeprecatedModel)
+        .collect();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].node_uid, "model.d.fct_a");
+    assert_eq!(
+        hits[0].message,
+        "fct_a depends on dim_old (deprecated on 2026-12-01)"
+    );
+    let loc = hits[0].location.as_ref().expect("a located finding");
+    assert_eq!(loc.file, "models/fct_a.sql");
+    assert_eq!(loc.line, Some(1));
+}

@@ -210,11 +210,11 @@ fn check_format_junit_is_wellformed_xml() {
     // only missing_primary_key_tests still gates by default on the fixture.
     let fails = stdout.matches("<failure>").count();
     assert_eq!(fails, 1, "the failing lint gates: {stdout}");
-    // The fixture has no catalog sibling — the two catalog-backed rules
+    // The fixture has no catalog sibling — the three catalog-backed rules
     // report `<skipped/>` testcases, informational only.
     assert_eq!(
         stdout.matches("<skipped").count(),
-        2,
+        3,
         "the catalog rules skip without a catalog: {stdout}"
     );
     // The listing inside a failure is the shared `file[:line[:col]] rule

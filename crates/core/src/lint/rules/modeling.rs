@@ -744,3 +744,50 @@ pub(super) fn incremental_without_unique_key(
         out.push(f);
     }
 }
+
+/// `unused_models`: a model in a configured layer (default staging +
+/// intermediate — marts are the DAG's endpoints by design) that NOTHING
+/// reads. A child of any kind counts as a use (`direct_down` covers node
+/// and endpoint resources alike — an exposure or a semantic-layer node
+/// reading it keeps it alive), and so does a `semantic_models:` consumer
+/// the [`NodeDetail::semantic_dependents`] channel records (source mode
+/// synthesizes no semantic-layer nodes, so the channel is how both modes
+/// answer "the semantic layer reads this" identically). And a child the
+/// `PackageScope::Root` prune severed counts too (the
+/// [`PrunedAdjacent`](crate::PrunedAdjacent) record — the model IS used,
+/// just outside the kept project).
+pub(super) fn unused_models(
+    dag: &Dag,
+    uids: &[&String],
+    in_scope: &dyn Fn(&NodeInfo) -> bool,
+    config: &LintConfig,
+    out: &mut Vec<Finding>,
+) {
+    let layers = config
+        .str_list_param(LintRule::UnusedModels, "layers")
+        .expect("the registry declares unused_models.layers");
+    for uid in uids {
+        let Some(n) = dag.get(uid) else { continue };
+        if n.resource_type != "model" || !in_scope(n) {
+            continue;
+        }
+        let layer = lint_model_type(n, config);
+        if !layers.iter().any(|l| l.as_str() == layer) {
+            continue;
+        }
+        if n.direct_down != 0
+            || dag.pruned_adjacent(uid).is_some_and(|a| a.children > 0)
+            || dag
+                .detail(uid)
+                .is_some_and(|d| !d.semantic_dependents.is_empty())
+        {
+            continue;
+        }
+        out.push(Finding::new(
+            LintRule::UnusedModels,
+            (*uid).clone(),
+            Vec::new(),
+            format!("{layer} model {} has no downstream", n.name),
+        ));
+    }
+}

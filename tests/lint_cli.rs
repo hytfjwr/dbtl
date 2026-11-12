@@ -1012,17 +1012,17 @@ fn catalog_rules_skip_without_a_catalog_and_report_with_one() {
     let tmp = tempfile::tempdir().unwrap();
     let m = manifest_in(tmp.path());
 
-    // No catalog.json beside the manifest → the two catalog-backed rules
+    // No catalog.json beside the manifest → the three catalog-backed rules
     // report as SKIP gates instead of running — never a failure.
     let out = lint_on(&m, &["--fail-on", "never"]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
     let text = out_text(&out);
     assert!(
-        text.contains("2 skipped (need --catalog)"),
+        text.contains("3 skipped (need --catalog)"),
         "the skipped-rule tally lands on the summary line: {text}"
     );
 
-    // A sibling catalog.json is auto-detected → both rules evaluate.
+    // A sibling catalog.json is auto-detected → all three rules evaluate.
     catalog_in(tmp.path(), &m);
     let out = lint_on(&m, &["--fail-on", "never"]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
@@ -1092,7 +1092,7 @@ fn check_reports_skipped_lint_rules_as_skip_rows() {
         "lint JSON carries the skip gate: {json}"
     );
     assert!(
-        json["summary"]["skipped"].as_u64().unwrap() >= 2,
+        json["summary"]["skipped"].as_u64().unwrap() >= 3,
         "the summary counts skipped gates: {json}"
     );
 }

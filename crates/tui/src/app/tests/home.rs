@@ -209,7 +209,7 @@ fn home_command_rows_run_and_unavailable_ones_are_filtered() {
 
 #[test]
 fn home_health_splits_lint_by_severity_and_attention_tones_it() {
-    // The fixture carries 2 error + 80 warning findings — the Health gauge
+    // The fixture carries 2 error + 81 warning findings — the Health gauge
     // tail quotes both counts, and the Attention worklist renders the
     // error-severity rows Bad first, the warn rows Warn after.
     let mut a = app();
@@ -226,7 +226,7 @@ fn home_health_splits_lint_by_severity_and_attention_tones_it() {
         })
         .expect("the Health section always renders its gauge");
     assert!(
-        tail.contains("lint 2 errors, 80 warnings"),
+        tail.contains("lint 2 errors, 81 warnings"),
         "the tail splits lint by severity: {tail}"
     );
     let att = d

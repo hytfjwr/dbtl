@@ -938,7 +938,7 @@ fn readme_lint_summary_counts_match_the_shared_findings() {
         );
     }
     assert!(
-        readme.contains("82 finding(s) across 9 rule(s)."),
+        readme.contains("83 finding(s) across 10 rule(s)."),
         "the frozen total, got README:\n{readme}"
     );
     // Every violating node is listed under its rule with a working link.

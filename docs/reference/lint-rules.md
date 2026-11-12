@@ -2,7 +2,7 @@
 
 # Lint rules
 
-33 rules, evaluated by `dbtl lint`, `dbtl check --lint`, the docs generator, and the TUI's Lint lens — one registry table also backs `--list-rules`, `--explain`, SARIF metadata, and `.dbtl.yml` validation, so all of them describe the same rule set.
+36 rules, evaluated by `dbtl lint`, `dbtl check --lint`, the docs generator, and the TUI's Lint lens — one registry table also backs `--list-rules`, `--explain`, SARIF metadata, and `.dbtl.yml` validation, so all of them describe the same rule set.
 
 | Rule | Category | Default severity | Inputs | Summary |
 | ---- | -------- | ---------------- | ------ | ------- |
@@ -39,6 +39,9 @@
 | [`forbidden_patterns`](#forbidden_patterns) | sql | warn | graph + parsed SQL | a model's raw SQL matches a configured forbidden pattern |
 | [`warehouse_type_drift`](#warehouse_type_drift) | warehouse | warn | graph + catalog | a declared column's data_type disagrees with the warehouse |
 | [`columns_missing_in_warehouse`](#columns_missing_in_warehouse) | warehouse | warn | graph + catalog | a declared column doesn't exist in the warehouse |
+| [`unused_models`](#unused_models) | modeling | warn | graph | a model in a checked layer has no downstream |
+| [`references_deprecated_model`](#references_deprecated_model) | governance | warn | graph | a node directly depends on a model with a deprecation_date |
+| [`undeclared_warehouse_columns`](#undeclared_warehouse_columns) | warehouse | warn | graph + catalog | a warehouse column the node doesn't declare |
 
 ## `direct_join_to_source`
 
@@ -540,5 +543,51 @@ A declared column doesn't exist in the warehouse.
 **Example:** fct_orders declares ship_method but the catalog lists no such column. Fix: rename the declaration to the real column, or add it back to the model's output.
 
 **Fix:** rename the declared column to the real one, or restore it to the model's output
+
+**Parameters:** none.
+
+## `unused_models`
+
+Category: `modeling` · Default severity: `warn` · Inputs: graph
+
+A model in a checked layer has no downstream.
+
+**Why:** A model nothing reads is dead weight: it still builds on every run, still sits in the lineage, and its name keeps promising a purpose it no longer serves. An unused intermediate is a refactor leftover; an unused staging model keeps a source contract alive that the project silently abandoned. Either wire it into a consumer or delete it so the DAG shows what actually runs.
+
+**Example:** int_pricing_v2 was left behind when fct_orders moved to int_pricing. Fix: delete the model — or ref it from the consumer it was built for.
+
+**Fix:** delete the model, or ref it from the consumer it was built for
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+| ---- | ---- | ------- | ----------- |
+| `layers` | list of strings (one of `staging` `intermediate` `marts` `other`) | `[staging, intermediate]` | model layers the unused check applies to |
+
+## `references_deprecated_model`
+
+Category: `governance` · Default severity: `warn` · Inputs: graph
+
+A node directly depends on a model with a deprecation_date.
+
+**Why:** A deprecation_date is the upstream's promise that the model is going away. Every dependent that hasn't migrated breaks when the cutoff passes — and the warning is easy to miss until the build stops. Repointing early keeps the cutover on the consumer's schedule, not the deprecated model's.
+
+**Example:** fct_orders refs dim_customers.v1, which carries deprecation_date 2026-12-01. Fix: repoint the ref to dim_customers.v2 before the cutoff.
+
+**Fix:** repoint the ref to the deprecated model's successor
+
+**Parameters:** none.
+
+## `undeclared_warehouse_columns`
+
+Category: `warehouse` · Default severity: `warn` · Inputs: graph + catalog
+
+A warehouse column the node doesn't declare.
+
+**Why:** The catalog reports columns schema.yml never mentions — the declared schema is incomplete. Undeclared columns hide from column tests, docs coverage, and every check that trusts the declared shape, so they drift unnoticed until a reader trips over them.
+
+**Example:** fct_orders declares order_id and total, but the warehouse also carries currency. Fix: declare the missing columns in the model's schema.yml entry.
+
+**Fix:** declare the warehouse's extra columns in the node's schema.yml entry
 
 **Parameters:** none.

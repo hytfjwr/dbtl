@@ -43,6 +43,8 @@ pub const YAML_ATTRIBUTE_RULE_IDS: &[&str] = &[
     "required_meta_keys",
     "warehouse_type_drift",
     "columns_missing_in_warehouse",
+    "unused_models",
+    "undeclared_warehouse_columns",
 ];
 
 /// The 1-based `(line, column)` span of `text[start..end]` — `start`'s

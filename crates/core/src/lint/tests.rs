@@ -850,7 +850,7 @@ fn registry_rows_match_all_one_for_one_in_order() {
 
 #[test]
 fn registry_rows_carry_the_fixed_metadata() {
-    // The 33 ids are a fixed contract — config keys, --rules args and the
+    // The 36 ids are a fixed contract — config keys, --rules args and the
     // baseline format all rely on them. The original structure rules lead;
     // rules added later append in the registry's order so the emitted
     // sequence stays stable.
@@ -891,6 +891,9 @@ fn registry_rows_carry_the_fixed_metadata() {
             "forbidden_patterns",
             "warehouse_type_drift",
             "columns_missing_in_warehouse",
+            "unused_models",
+            "references_deprecated_model",
+            "undeclared_warehouse_columns",
         ]
     );
     // Only rules that represent a broken guarantee or a build failure
@@ -910,7 +913,11 @@ fn registry_rows_carry_the_fixed_metadata() {
         "unknown_column_reference",
         "forbidden_patterns",
     ];
-    let catalog_rules = ["warehouse_type_drift", "columns_missing_in_warehouse"];
+    let catalog_rules = [
+        "warehouse_type_drift",
+        "columns_missing_in_warehouse",
+        "undeclared_warehouse_columns",
+    ];
     for row in REGISTRY {
         let expected = if error_by_default.contains(&row.id) {
             Severity::Error
@@ -1700,6 +1707,134 @@ fn unused_sources_flags_sources_nothing_reads() {
     );
 }
 
+// ---- unused_models -----------------------------------------------------------
+
+/// A `semantic_models` record — extend `RawManifest::semantic_models` with
+/// it; `depends_on` names the model uid it consumes (the wire shape).
+fn semantic_model(name: &str, on: &str) -> (String, crate::manifest::RawSemanticResource) {
+    (
+        format!("semantic_model.p.{name}"),
+        crate::manifest::RawSemanticResource {
+            name: name.into(),
+            depends_on: crate::manifest::RawDependsOn {
+                nodes: vec![on.into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+}
+
+#[test]
+fn unused_models_flags_layered_models_nothing_reads() {
+    // Every kind of downstream counts as a use: a model child, an
+    // exposure, a `semantic_models` consumer. marts and unlayered models
+    // aren't checked by default (marts are the DAG's endpoints by
+    // design), and non-model resources never apply.
+    let mut m = manifest(
+        vec![
+            model("stg_dead", "staging/stg_dead.sql"),
+            model("int_dead", "intermediate/int_dead.sql"),
+            model("fct_dead", "marts/fct_dead.sql"),
+            model("other_dead", "ops/other_dead.sql"),
+            model("stg_live", "staging/stg_live.sql"),
+            model("stg_exposed", "staging/stg_exposed.sql"),
+            model("stg_semantic", "staging/stg_semantic.sql"),
+            model("fct_a", "marts/fct_a.sql"),
+            (
+                "seed.p.raw_seed".to_string(),
+                RawNode {
+                    name: "raw_seed".into(),
+                    resource_type: "seed".into(),
+                    path: Some("seeds/raw_seed.csv".into()),
+                    ..Default::default()
+                },
+            ),
+        ],
+        vec![],
+        &[
+            ("model.p.stg_live", "model.p.fct_a"),
+            ("model.p.stg_exposed", "exposure.p.exp"),
+        ],
+    );
+    m.exposures.extend([exposure("exp")]);
+    m.semantic_models
+        .extend([semantic_model("sm_orders", "model.p.stg_semantic")]);
+    let dag = Dag::build(&m);
+    // The semantic-model consumer records BOTH the edge and the detail
+    // mark — the mark is the channel source mode fills without the node.
+    assert_eq!(
+        dag.detail("model.p.stg_semantic")
+            .unwrap()
+            .semantic_dependents,
+        vec!["sm_orders".to_string()]
+    );
+    let cfg = cfg_only(&[LintRule::UnusedModels]);
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::UnusedModels),
+        vec!["model.p.int_dead", "model.p.stg_dead"],
+        "every downstream kind is a use; marts/other layers aren't checked"
+    );
+    assert_eq!(
+        finding_on(&out.findings, LintRule::UnusedModels, "model.p.stg_dead").message,
+        "staging model stg_dead has no downstream"
+    );
+}
+
+#[test]
+fn unused_models_layers_param_retargets_the_check() {
+    // `layers: [marts]` drops the default staging/intermediate check and
+    // sweeps marts instead — fct_dead flags, stg_dead stops.
+    let m = manifest(
+        vec![
+            model("stg_dead", "staging/stg_dead.sql"),
+            model("fct_dead", "marts/fct_dead.sql"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let mut cfg = config_from("lint:\n  rules:\n    unused_models:\n      layers: [marts]\n");
+    for r in LintRule::ALL {
+        if r != LintRule::UnusedModels {
+            cfg.severities.insert(r, None);
+        }
+    }
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::UnusedModels),
+        vec!["model.p.fct_dead"]
+    );
+}
+
+#[test]
+fn unused_models_counts_a_package_only_child_as_a_use() {
+    // `stg_pkg_read`'s only consumer is an installed-package model: after
+    // the Root prune it reads childless, but the PrunedAdjacent record
+    // says otherwise — it is used, just not visibly. `stg_dead` isn't.
+    let mut pkg = model("pkg_model", "dep/pkg_model.sql");
+    pkg.0 = "model.dep.pkg_model".into();
+    let mut m = manifest(
+        vec![
+            pkg,
+            model("stg_pkg_read", "staging/stg_pkg_read.sql"),
+            model("stg_dead", "staging/stg_dead.sql"),
+        ],
+        vec![],
+        &[("model.p.stg_pkg_read", "model.dep.pkg_model")],
+    );
+    multi_package(&mut m);
+    let (dag, _) = crate::PackageScope::Root.apply_with_warnings(Dag::build(&m));
+    let cfg = cfg_only(&[LintRule::UnusedModels]);
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::UnusedModels),
+        vec!["model.p.stg_dead"],
+        "a pruned package consumer is a use — just not a visible one"
+    );
+}
+
 // ---- duplicate_sources -------------------------------------------------------
 
 #[test]
@@ -2201,6 +2336,228 @@ fn exposures_dependent_on_private_models_flags_non_public_parents() {
             "model.p.dim_prot".to_string()
         ],
         "private+protected flag; public and access-less don't"
+    );
+}
+
+// ---- references_deprecated_model ----------------------------------------------
+
+/// A model carrying `deprecation_date` (`None` = no date on the wire).
+fn deprecated(name: &str, path: &str, date: Option<&str>) -> (String, RawNode) {
+    let mut m = model(name, path);
+    m.1.deprecation_date = date.map(Into::into);
+    m
+}
+
+#[test]
+fn references_deprecated_model_flags_every_dependent_kind() {
+    // Model, snapshot, exposure and semantic_model dependents of dim_old
+    // all flag; dim_old itself doesn't (the finding names the edge, not
+    // the sunset), and dependents of the undated dim_ok or the
+    // blank-dated dim_blank don't (no date declared = nothing to judge).
+    let mut m = manifest(
+        vec![
+            deprecated("dim_old", "marts/dim_old.sql", Some("2026-12-01")),
+            deprecated("dim_blank", "marts/dim_blank.sql", Some("  ")),
+            model("dim_ok", "marts/dim_ok.sql"),
+            model("fct_a", "marts/fct_a.sql"),
+            model("fct_ok", "marts/fct_ok.sql"),
+            model("fct_blank", "marts/fct_blank.sql"),
+            (
+                "snapshot.p.snap".to_string(),
+                RawNode {
+                    name: "snap".into(),
+                    resource_type: "snapshot".into(),
+                    path: Some("snapshots/snap.sql".into()),
+                    ..Default::default()
+                },
+            ),
+        ],
+        vec![],
+        &[
+            ("model.p.dim_old", "model.p.fct_a"),
+            ("model.p.dim_old", "snapshot.p.snap"),
+            ("model.p.dim_old", "exposure.p.exp"),
+            ("model.p.dim_old", "semantic_model.p.sm"),
+            ("model.p.dim_ok", "model.p.fct_ok"),
+            ("model.p.dim_blank", "model.p.fct_blank"),
+        ],
+    );
+    m.exposures.extend([exposure("exp")]);
+    m.semantic_models
+        .extend([semantic_model("sm", "model.p.dim_old")]);
+    let cfg = cfg_only(&[LintRule::ReferencesDeprecatedModel]);
+    let out = lint_outcome(&Dag::build(&m), &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::ReferencesDeprecatedModel),
+        vec![
+            "exposure.p.exp",
+            "model.p.fct_a",
+            "semantic_model.p.sm",
+            "snapshot.p.snap"
+        ],
+        "every dependent kind flags; the deprecated model and un-deprecated edges never do"
+    );
+    let f = finding_on(
+        &out.findings,
+        LintRule::ReferencesDeprecatedModel,
+        "model.p.fct_a",
+    );
+    assert_eq!(
+        f.message, "fct_a depends on dim_old (deprecated on 2026-12-01)",
+        "the message names the dependent's own name, the parent's display name and the date"
+    );
+    assert_eq!(f.related, vec!["model.p.dim_old".to_string()]);
+}
+
+#[test]
+fn references_deprecated_model_names_each_deprecated_parent() {
+    // Two deprecated parents → one finding, both named with their dates
+    // in sorted uid order.
+    let m = manifest(
+        vec![
+            deprecated("dim_a", "marts/dim_a.sql", Some("2026-01-01")),
+            deprecated("dim_b", "marts/dim_b.sql", Some("2026-12-01")),
+            model("dim_ok", "marts/dim_ok.sql"),
+            model("fct_a", "marts/fct_a.sql"),
+        ],
+        vec![],
+        &[
+            ("model.p.dim_b", "model.p.fct_a"),
+            ("model.p.dim_a", "model.p.fct_a"),
+            ("model.p.dim_ok", "model.p.fct_a"),
+        ],
+    );
+    let cfg = cfg_only(&[LintRule::ReferencesDeprecatedModel]);
+    let out = lint_outcome(&Dag::build(&m), &cfg, None, None);
+    let f = finding_on(
+        &out.findings,
+        LintRule::ReferencesDeprecatedModel,
+        "model.p.fct_a",
+    );
+    assert_eq!(
+        f.message,
+        "fct_a depends on dim_a (deprecated on 2026-01-01), dim_b (deprecated on 2026-12-01)"
+    );
+    assert_eq!(
+        f.related,
+        vec!["model.p.dim_a".to_string(), "model.p.dim_b".to_string()]
+    );
+}
+
+#[test]
+fn references_deprecated_model_respects_ref_versions() {
+    // A versioned ref lands on the deprecated version; a bare ref lands
+    // on the latest (v2) — same name, different node, different answer.
+    let mut v1 = deprecated("dim_cust", "marts/dim_cust.sql", Some("2026-12-01"));
+    v1.0 = "model.p.dim_cust.v1".into();
+    v1.1.version = Some("v1".into());
+    v1.1.latest_version = Some("v2".into());
+    let mut v2 = model("dim_cust", "marts/dim_cust.sql");
+    v2.0 = "model.p.dim_cust.v2".into();
+    v2.1.version = Some("v2".into());
+    v2.1.latest_version = Some("v2".into());
+    let m = manifest(
+        vec![
+            v1,
+            v2,
+            model_sql_pos("fct_old", "select * from {{ ref('dim_cust', v='v1') }}"),
+            model_sql_pos("fct_new", "select * from {{ ref('dim_cust') }}"),
+        ],
+        vec![],
+        &[
+            ("model.p.dim_cust.v1", "model.p.fct_old"),
+            ("model.p.dim_cust.v2", "model.p.fct_new"),
+        ],
+    );
+    let cfg = cfg_only(&[LintRule::ReferencesDeprecatedModel]);
+    let out = lint_outcome(&Dag::build(&m), &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::ReferencesDeprecatedModel),
+        vec!["model.p.fct_old"],
+        "only the version-pinned dependent reads the deprecated node"
+    );
+    let f = finding_on(
+        &out.findings,
+        LintRule::ReferencesDeprecatedModel,
+        "model.p.fct_old",
+    );
+    assert_eq!(
+        f.message,
+        "fct_old depends on dim_cust.v1 (deprecated on 2026-12-01)"
+    );
+}
+
+#[test]
+fn references_deprecated_model_positions_land_on_each_dep_call() {
+    // Two calls to the same deprecated parent: the first is the
+    // location, the rest labels — the position is the `ref()` that must
+    // be repointed.
+    let raw = "select *\nfrom {{ ref('dim_old') }} d\njoin {{ ref('dim_old') }} d2 on d.id = d2.id";
+    let m = manifest(
+        vec![
+            deprecated("dim_old", "marts/dim_old.sql", Some("2026-12-01")),
+            model_sql_pos("fct_a", raw),
+        ],
+        vec![],
+        &[("model.p.dim_old", "model.p.fct_a")],
+    );
+    let cfg = cfg_only(&[LintRule::ReferencesDeprecatedModel]);
+    let out = lint_outcome(&Dag::build(&m), &cfg, None, None);
+    let f = finding_on(
+        &out.findings,
+        LintRule::ReferencesDeprecatedModel,
+        "model.p.fct_a",
+    );
+    let (line, column, end_line, end_column) = needle_pos(raw, "ref('dim_old')", 0);
+    assert_eq!(
+        pos_of(f),
+        (
+            "models/fct_a.sql".to_string(),
+            line,
+            column,
+            end_line,
+            end_column
+        )
+    );
+    assert_eq!(f.label.as_deref(), Some("dim_old is deprecated"));
+    assert_eq!(f.labels.len(), 1, "the second call is a label");
+    assert_eq!(f.labels[0].message, "dim_old is deprecated");
+    let (l2, _, _, _) = needle_pos(raw, "ref('dim_old')", 1);
+    assert_eq!(f.labels[0].line, l2);
+}
+
+#[test]
+fn references_deprecated_model_scopes_the_dependent_not_the_parent() {
+    // Under --include-packages the deprecated parent is dependency
+    // context wherever it lives: the ROOT model refing the package's
+    // deprecated model flags, the PACKAGE model refing the root's
+    // deprecated model doesn't (only root-project nodes are flagged).
+    let mut dep = deprecated("dep_old", "dep/dep_old.sql", Some("2026-12-01"));
+    dep.0 = "model.dep.dep_old".into();
+    let mut pkg_user = model("pkg_user", "dep/pkg_user.sql");
+    pkg_user.0 = "model.dep.pkg_user".into();
+    let mut m = manifest(
+        vec![
+            dep,
+            pkg_user,
+            deprecated("dim_old", "marts/dim_old.sql", Some("2026-12-01")),
+            model("fct_a", "marts/fct_a.sql"),
+        ],
+        vec![],
+        &[
+            ("model.dep.dep_old", "model.p.fct_a"),
+            ("model.p.dim_old", "model.dep.pkg_user"),
+        ],
+    );
+    multi_package(&mut m);
+    // `Dag::build` keeps every package — the include-packages graph; the
+    // in_scope check alone decides who can be flagged.
+    let cfg = cfg_only(&[LintRule::ReferencesDeprecatedModel]);
+    let out = lint_outcome(&Dag::build(&m), &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::ReferencesDeprecatedModel),
+        vec!["model.p.fct_a"],
+        "the package parent is context for the root finding; the package dependent is out of scope"
     );
 }
 
@@ -5012,6 +5369,94 @@ fn columns_missing_in_warehouse_flags_documented_but_absent_columns() {
     assert!(msg.contains("ghost") && !msg.contains("real"));
 }
 
+#[test]
+fn undeclared_warehouse_columns_flags_columns_the_docs_never_declared() {
+    // `gap` declares two of the warehouse's three columns — the
+    // undeclared one names itself in the catalog's own spelling. `whole`
+    // declares everything (a `missing_in_warehouse` gap is the sibling
+    // rule's job, not this one). `absent_node` declares but the catalog
+    // doesn't know it — "unknown", not "wrong". `silent` declares NO
+    // columns at all: a node making no column-level claim isn't
+    // contradicted by the catalog (docs coverage is another rule's job).
+    let m = manifest(
+        vec![
+            model_cols("gap", &[("id", None), ("total", None)]),
+            model_cols("whole", &[("id", None)]),
+            model_cols("absent_node", &[("x", None)]),
+            model_cols("silent", &[]),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let cat = catalog_json(
+        r#"{"nodes": {
+            "model.p.gap": {"columns": {"id": {"type": "INT"}, "total": {"type": "NUMERIC"}, "currency": {"type": "STRING"}}},
+            "model.p.whole": {"columns": {"id": {"type": "INT"}, "undocumented_extra": {"type": "INT"}}},
+            "model.p.silent": {"columns": {"a": {"type": "INT"}, "b": {"type": "INT"}}}
+        }}"#,
+    );
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::UndeclaredWarehouseColumns]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), Some(&cat));
+    assert_eq!(
+        flagged(&out.findings, LintRule::UndeclaredWarehouseColumns),
+        vec!["model.p.gap", "model.p.whole"],
+        "extras the docs never declared flag; catalog-less and declaration-less nodes don't"
+    );
+    assert_eq!(
+        finding_on(
+            &out.findings,
+            LintRule::UndeclaredWarehouseColumns,
+            "model.p.gap"
+        )
+        .message,
+        "gap has 1 undeclared warehouse column: currency"
+    );
+}
+
+#[test]
+fn undeclared_warehouse_columns_judges_seeds_and_snapshots_case_insensitively() {
+    // model|seed|snapshot all carry declared columns; the compare is
+    // case-insensitive (`ID` declared vs `id` recorded isn't a gap).
+    let seed = (
+        "seed.p.raw_seed".to_string(),
+        RawNode {
+            name: "raw_seed".into(),
+            resource_type: "seed".into(),
+            path: Some("seeds/raw_seed.csv".into()),
+            columns: columns(&[("ID", None, None)]),
+            ..Default::default()
+        },
+    );
+    let snap = (
+        "snapshot.p.snap".to_string(),
+        RawNode {
+            name: "snap".into(),
+            resource_type: "snapshot".into(),
+            path: Some("snapshots/snap.sql".into()),
+            columns: columns(&[("id", None, None)]),
+            ..Default::default()
+        },
+    );
+    let m = manifest(vec![seed, snap], vec![], &[]);
+    let dag = Dag::build(&m);
+    let cat = catalog_json(
+        r#"{"nodes": {
+            "seed.p.raw_seed": {"columns": {"id": {"type": "INT"}}},
+            "snapshot.p.snap": {"columns": {"id": {"type": "INT"}, "extra": {"type": "INT"}}}
+        }}"#,
+    );
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::UndeclaredWarehouseColumns]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), Some(&cat));
+    assert_eq!(
+        flagged(&out.findings, LintRule::UndeclaredWarehouseColumns),
+        vec!["snapshot.p.snap"],
+        "seeds compare too — case-insensitively"
+    );
+}
+
 // ---- requirement-aware skipping & laziness ---------------------------------
 
 #[test]
@@ -5020,9 +5465,9 @@ fn missing_inputs_report_skipped_rules_not_findings() {
     let dag = Dag::build(&m);
     let cfg = LintConfig::default();
 
-    // No aux inputs at all: the five Sql rules + two Catalog rules skip.
+    // No aux inputs at all: the five Sql rules + three Catalog rules skip.
     let out = lint_outcome(&dag, &cfg, None, None);
-    assert_eq!(out.skipped.len(), 7);
+    assert_eq!(out.skipped.len(), 8);
     let sql_skips: Vec<_> = out
         .skipped
         .iter()
@@ -5051,13 +5496,14 @@ fn missing_inputs_report_skipped_rules_not_findings() {
         vec![
             LintRule::WarehouseTypeDrift,
             LintRule::ColumnsMissingInWarehouse,
+            LintRule::UndeclaredWarehouseColumns,
         ]
     );
 
     // A resolver alone still leaves the catalog rules skipped.
     let res = sql_resolver(None);
     let out = lint_outcome(&dag, &cfg, Some(&res), None);
-    assert_eq!(out.skipped.len(), 2);
+    assert_eq!(out.skipped.len(), 3);
     assert!(out.skipped.iter().all(|s| s.missing == Requires::Catalog));
 
     // Disabled rules never skip — off is not "skipped".
