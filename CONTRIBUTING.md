@@ -51,6 +51,11 @@ Useful `xtask` tasks:
   the CLI/config definitions. These files are generated; edit the
   generators, not the output. `gen-docs --check` runs in CI and fails on
   drift.
+- `cargo xtask changelog-release --version X.Y.Z --date YYYY-MM-DD` — move
+  the `Unreleased` entries into a dated `X.Y.Z` section and repoint the
+  footer compare links (`--file` rewrites a copy; `--allow-empty` cuts a
+  `- No notable changes.` section). The release workflow runs this on the
+  release PR, so there is no need to run it by hand.
 
 ## Pull requests
 

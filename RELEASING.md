@@ -4,8 +4,9 @@ Releases are almost fully automated. The two-click flow is:
 
 1. Run the **Open release PR** workflow (`.github/workflows/bump.yml`) —
    Actions → "Open release PR" → pick `patch`/`minor`/`major`, or type an
-   explicit version. It bumps `Cargo.toml` + `Cargo.lock` on a
-   `release/vX.Y.Z` branch and opens a PR.
+   explicit version. It bumps `Cargo.toml` + `Cargo.lock` and cuts the
+   `CHANGELOG.md` release section on a `release/vX.Y.Z` branch and opens a
+   PR.
 2. Merge that PR. The merge triggers **Release**
    (`.github/workflows/release.yml`), which tags `vX.Y.Z` at the merge
    commit, builds every target, publishes the GitHub release, and updates
@@ -82,16 +83,16 @@ read/write on `hytfjwr/homebrew-tap`:
 
 ## Pre-release checklist
 
-- [ ] `CHANGELOG.md` has an entry for the release — rename `Unreleased` to
-      the new version with the date (keep an empty `Unreleased` on top),
-      and update the link definitions at the footer: repoint
-      `[Unreleased]` to `compare/vX.Y.Z...HEAD` and add a
-      `[X.Y.Z]: .../compare/v<prev>...vX.Y.Z` line. The bump workflow only
-      touches `Cargo.toml`/`Cargo.lock`, so this step stays manual — put it
-      in the release PR or land it just before bumping.
+- [ ] `CHANGELOG.md` has entries under `## [Unreleased]` — the bump
+      workflow cuts the release section itself (`cargo xtask
+      changelog-release`, which moves `Unreleased` into a dated version
+      section and repoints the footer compare links) and fails before
+      pushing anything when `Unreleased` is empty. Set the `allow_empty`
+      input only for a release with no user-facing changes — it cuts a
+      `- No notable changes.` section.
 - [ ] CI is green on `main`, including `Docs reference` and `Dogfood`.
-- [ ] Run the bump workflow, review the release PR (version and lockfile
-      only), merge it.
+- [ ] Run the bump workflow, review the release PR (version, lockfile, and
+      the cut changelog section), merge it.
 - [ ] Confirm the `vX.Y.Z` release published all archives, `checksums.txt`,
       the SBOM, `demo.gif`, and attestations; spot-check
       `gh attestation verify dbtl-vX.Y.Z-*.tar.gz --repo hytfjwr/dbtl`.
