@@ -100,6 +100,30 @@ struct Sites<'a> {
     lines: std::cell::OnceCell<Vec<u32>>,
 }
 
+/// The hasher the memo uses — every graph rule calls [`CallSiteResolver::for_node`]
+/// per candidate node, so the per-lookup hash is on the hot path; a
+/// multiply-xor fold over 8-byte chunks hashes a uid in a handful of
+/// instructions where SipHash's rounds cost more than the lookup itself.
+/// (uid strings come from the trusted manifest — no HashDoS exposure.)
+#[derive(Default)]
+struct UidHasher(u64);
+
+impl std::hash::Hasher for UidHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        const K: u64 = 0x517c_c1b7_2722_0a95;
+        for chunk in bytes.chunks(8) {
+            let mut buf = [0u8; 8];
+            buf[..chunk.len()].copy_from_slice(chunk);
+            self.0 = (self.0.rotate_left(5) ^ u64::from_le_bytes(buf)).wrapping_mul(K);
+        }
+    }
+}
+
+type UidMap<V> = HashMap<String, V, std::hash::BuildHasherDefault<UidHasher>>;
+
 /// The per-`run_rules` call-site cache every graph rule shares —
 /// [`SqlParseResolver`](crate::SqlParseResolver)'s memo shape. Without it
 /// each rule re-parses the same `raw_code`: the extraction (mask + regex
@@ -107,14 +131,14 @@ struct Sites<'a> {
 /// with no positionable calls caches `None` the same way.
 pub(crate) struct CallSiteResolver<'a> {
     dag: &'a Dag,
-    memo: RefCell<HashMap<String, Option<Rc<Sites<'a>>>>>,
+    memo: RefCell<UidMap<Option<Rc<Sites<'a>>>>>,
 }
 
 impl<'a> CallSiteResolver<'a> {
     pub(crate) fn new(dag: &'a Dag) -> Self {
         Self {
             dag,
-            memo: RefCell::new(HashMap::new()),
+            memo: RefCell::new(UidMap::default()),
         }
     }
 
