@@ -102,7 +102,7 @@ unicode-width.workspace = true
 # not just regex).
 serde_norway.workspace = true
 # Criterion harness for benches/pipeline.rs (synthetic-manifest pipeline cost).
-criterion = "0.5"
+criterion = "0.8"
 
 [[bench]]
 name = "pipeline"
