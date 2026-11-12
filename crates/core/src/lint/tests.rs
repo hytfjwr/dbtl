@@ -5074,13 +5074,13 @@ fn unparsed_counts_models_whose_sql_wont_parse_once() {
     assert_eq!(
         out.unparsed.iter().collect::<Vec<_>>(),
         vec!["model.p.unparsable"],
-        "each unparseable model lands once, however many rules asked"
+        "each unparsable model lands once, however many rules asked"
     );
 }
 
 #[test]
 fn forbidden_patterns_never_adds_to_unparsed() {
-    // A raw-text rule: even against unparseable SQL it judges the text it
+    // A raw-text rule: even against unparsable SQL it judges the text it
     // can see — it asks for no parse, so it records no unparsed entry.
     let m = manifest(
         vec![model_sql("bad", "select from where or -- unsafe_udf")],
