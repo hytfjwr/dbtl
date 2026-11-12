@@ -187,13 +187,22 @@ fn is_item(line: &str) -> bool {
     line.trim_start().starts_with("- ")
 }
 
-/// A numeric `X.Y.Z` as a comparable tuple plus the original string.
+/// A numeric `X.Y.Z` as a comparable tuple plus the original string. Each
+/// component must be ASCII digits only — checked before parsing because
+/// `u64::parse` would otherwise accept a leading `+`.
 fn parse_version(s: &str) -> Option<(&str, (u64, u64, u64))> {
+    let digits = |p: Option<&str>| -> Option<u64> {
+        let p = p?;
+        if p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        p.parse().ok()
+    };
     let mut parts = s.split('.');
     let v = (
-        parts.next()?.parse().ok()?,
-        parts.next()?.parse().ok()?,
-        parts.next()?.parse().ok()?,
+        digits(parts.next())?,
+        digits(parts.next())?,
+        digits(parts.next())?,
     );
     if parts.next().is_some() {
         return None;
@@ -354,6 +363,17 @@ mod tests {
         }
         for d in ["", "2026-1-1", "2026-13-01", "2026-11-32", "Nov 12"] {
             assert!(release_section(BASE, "0.6.0", d, false).is_err(), "{d}");
+        }
+    }
+
+    #[test]
+    fn signed_components_are_errors() {
+        // `u64::parse` accepts a leading `+`; version components must not.
+        for v in ["+0.6.0", "0.+6.0", "0.6.+3"] {
+            assert!(
+                release_section(BASE, v, "2026-11-12", false).is_err(),
+                "{v}"
+            );
         }
     }
 
