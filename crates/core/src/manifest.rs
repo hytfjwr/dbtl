@@ -486,6 +486,11 @@ pub struct RawManifest {
     pub child_map: HashMap<String, Vec<String>>,
 }
 
+/// The JSON-parse failure wording both manifest loaders share: the file
+/// loader appends the path it read, the in-memory loader stops at the bare
+/// phrase (no file exists to name).
+const PARSE_MANIFEST_ERR: &str = "failed to parse manifest JSON";
+
 /// Read and parse a manifest from disk.
 ///
 /// Returns `Err` (never panics) when the file is missing or the contents are
@@ -496,6 +501,16 @@ pub fn load_manifest<P: AsRef<Path>>(path: P) -> Result<RawManifest> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read manifest file: {}", path.display()))?;
     let manifest: RawManifest = serde_json::from_str(&contents)
-        .with_context(|| format!("failed to parse manifest JSON: {}", path.display()))?;
+        .with_context(|| format!("{PARSE_MANIFEST_ERR}: {}", path.display()))?;
     Ok(manifest)
+}
+
+/// Parse a manifest from its JSON text — the in-memory counterpart of
+/// [`load_manifest`], which reads the same text from a file first and then
+/// appends that path to the shared parse wording as context.
+///
+/// Returns `Err` (never panics) when the text is not valid JSON / does not
+/// match the expected manifest shape.
+pub fn parse_manifest(contents: &str) -> Result<RawManifest> {
+    serde_json::from_str(contents).context(PARSE_MANIFEST_ERR)
 }

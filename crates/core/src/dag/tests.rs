@@ -1313,3 +1313,50 @@ fn filtered_preserves_the_overview() {
         "even an empty prune keeps it"
     );
 }
+
+#[test]
+fn dag_from_manifest_json_matches_the_file_loader() {
+    // tests/fixtures/manifest.json sits in a plain directory (no target/
+    // parent, no compiled/ sibling), so the file loader's extra ingest step
+    // is a no-op and the in-memory entry must agree on graph AND warnings.
+    let path = Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/manifest.json"
+    ));
+    let text = std::fs::read_to_string(path).unwrap();
+    let (from_file, file_warnings) = load_dag_with_warnings(path).unwrap();
+    let (from_text, text_warnings) = dag_from_manifest_json(&text).unwrap();
+    assert_eq!(file_warnings, text_warnings);
+    assert_eq!(from_file.nodes(), from_text.nodes());
+    assert_eq!(from_file.edges(), from_text.edges());
+    assert_eq!(from_file.project_name(), from_text.project_name());
+    assert_eq!(from_file.adapter_type(), from_text.adapter_type());
+    assert_eq!(from_file.overview(), from_text.overview());
+    for uid in from_file.nodes().keys() {
+        assert_eq!(from_file.detail(uid), from_text.detail(uid), "detail {uid}");
+        assert_eq!(from_file.tests(uid), from_text.tests(uid), "tests {uid}");
+        assert_eq!(
+            from_file.raw_code(uid),
+            from_text.raw_code(uid),
+            "raw_code {uid}"
+        );
+        assert_eq!(
+            from_file.compiled(uid),
+            from_text.compiled(uid),
+            "compiled {uid}"
+        );
+        assert_eq!(
+            from_file.exposure(uid),
+            from_text.exposure(uid),
+            "exposure {uid}"
+        );
+    }
+}
+
+#[test]
+fn dag_from_manifest_json_parse_error_uses_the_shared_wording() {
+    // Same phrase as the file loader, minus the path context only a file
+    // can supply.
+    let err = dag_from_manifest_json("{ not json").unwrap_err();
+    assert_eq!(err.to_string(), "failed to parse manifest JSON");
+}

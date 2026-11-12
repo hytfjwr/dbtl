@@ -25,9 +25,10 @@ $ cargo run --release -- --source tests/fixtures/sample_project
 
 A Cargo workspace: the `dbtl` binary and root library plus member crates
 `dbtl-core` (the dbt domain — manifest/source loaders, `Dag`, diff,
-selectors, column lineage), `dbtl-tui` (the interactive app), `dbtl-docs`
-(the `dbtl docs` generator), and `xtask` (dev automation). The root
-`src/lib.rs` is a thin facade re-exporting the member crates.
+selectors, column lineage, lineage layout), `dbtl-tui` (the interactive
+app), `dbtl-docs` (the `dbtl docs` generator), and `xtask` (dev
+automation). The root `src/lib.rs` is a thin facade re-exporting the
+member crates.
 
 ## Everyday commands
 

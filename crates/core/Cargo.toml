@@ -1,6 +1,6 @@
 [package]
 name = "dbtl-core"
-description = "dbtl's dbt domain model — manifest/source parsing, the Dag, diff, and Mermaid export core"
+description = "dbtl's dbt domain model — manifest/source parsing, the Dag, diff, lineage layout, and Mermaid export core"
 version.workspace = true
 rust-version.workspace = true
 edition.workspace = true

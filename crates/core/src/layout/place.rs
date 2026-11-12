@@ -7,9 +7,9 @@ use super::*;
 /// `nodes` passes; we cap at `nodes+1` for safety). Returns every node's column
 /// (nodes with no in-subgraph parent get 0).
 ///
-/// `pub(crate)` for the sibling-collapse stage (`crate::collapse`), which
+/// `pub` for the sibling-collapse stage (`dbtl_tui::collapse`), which
 /// groups same-parent siblings by the column this assigns.
-pub(crate) fn longest_path_columns(sg: &Subgraph) -> HashMap<String, usize> {
+pub fn longest_path_columns(sg: &Subgraph) -> HashMap<String, usize> {
     let mut col: HashMap<String, usize> = sg
         .nodes
         .iter()
