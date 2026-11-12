@@ -297,8 +297,8 @@ impl CatalogNode {
 /// - a parenthesized args tail (`varchar(255)`, `number(38,0)`) compares
 ///   ONLY when both sides carry one — a bare `varchar` declaration never
 ///   promised a width,
-/// - base names equal by table lookup: [`COMMON_TYPE_FAMILIES`] plus the
-///   `dialect`'s adapter table ([`dialect_type_families`]) — a name pair
+/// - base names equal by table lookup: `COMMON_TYPE_FAMILIES` plus the
+///   `dialect`'s adapter table (`dialect_type_families`) — a name pair
 ///   in no shared family is NOT equal (distinct types are the drift the
 ///   rule reports).
 pub fn types_equivalent(declared: &str, warehouse: &str, dialect: SqlDialect) -> bool {
