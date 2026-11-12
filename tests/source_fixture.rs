@@ -1149,6 +1149,26 @@ fn model_level_test_column_name_comes_from_kwargs() {
     assert!(kinds.contains(&("not_null", Some("id"))), "{kinds:?}");
 }
 
+/// `has_pk_guarantee` must see the kwargs-carried column in source mode:
+/// fct_model_tests declares unique+not_null on `id` through model-level
+/// `column_name:`/`arguments:` spellings — it must NOT surface in
+/// `missing_primary_key_tests` (the false positive the kwargs read exists
+/// to prevent).
+#[test]
+fn model_level_test_kwargs_satisfy_missing_pk_in_source_mode() {
+    let dag = load_dag_from_source(PROJECT).unwrap();
+    let findings = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    let pks: Vec<&str> = findings
+        .iter()
+        .filter(|f| f.rule == LintRule::MissingPrimaryKeyTests)
+        .map(|f| f.node_uid.as_str())
+        .collect();
+    assert!(
+        !pks.contains(&"model.sample.fct_model_tests"),
+        "fct_model_tests carries unique+not_null on id via kwargs: {pks:?}"
+    );
+}
+
 /// A whitespace-only column `description:` counts as missing (the shared
 /// blank predicate) — `undocumented_columns` names the column in source
 /// mode, identical to the verbatim-whitespace manifest wire.
