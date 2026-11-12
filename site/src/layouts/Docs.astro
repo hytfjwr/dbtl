@@ -1,0 +1,50 @@
+---
+import type { MarkdownHeading } from "astro";
+import PrevNext from "../components/PrevNext.astro";
+import Sidebar from "../components/Sidebar.astro";
+import Toc from "../components/Toc.astro";
+import { neighbours, type Nav, type NavPage } from "../lib/nav.ts";
+import { editUrl, VERSION } from "../lib/site.ts";
+import { tocItems } from "../lib/toc.ts";
+import Base from "./Base.astro";
+
+interface Props {
+  page: NavPage;
+  nav: Nav;
+  headings: MarkdownHeading[];
+}
+const { page, nav, headings } = Astro.props;
+const { prev, next } = neighbours(nav, page.slug);
+const generated = page.kind === "reference";
+---
+
+<Base title={`${page.title} - dbtl docs`} description={page.description} section="docs">
+  <div class="docs">
+    <Sidebar nav={nav} current={page.slug} />
+    <article class="article" data-pagefind-body data-pagefind-meta={`section:${page.group}`}>
+      <div class="crumb" data-pagefind-ignore>
+        <span>{page.group}</span>
+        <span aria-hidden="true">/</span>
+        <span>{page.title}</span>
+        <span class="badge">v{VERSION}</span>
+      </div>
+      <h1>{page.title}</h1>
+      {!generated && <p class="lead">{page.description}</p>}
+      <slot />
+      <PrevNext prev={prev} next={next} />
+      <div class="meta" data-pagefind-ignore>
+        {
+          generated ? (
+            <span>
+              Generated from the source by <code>cargo xtask gen-docs</code>.
+            </span>
+          ) : (
+            <a href={editUrl(page.id)}>Edit this page</a>
+          )
+        }
+        <span>Applies to v{VERSION}</span>
+      </div>
+    </article>
+    <Toc items={tocItems(headings)} />
+  </div>
+</Base>

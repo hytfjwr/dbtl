@@ -1,0 +1,27 @@
+---
+import type { TocItem } from "../lib/toc.ts";
+
+interface Props {
+  items: TocItem[];
+}
+const { items } = Astro.props;
+---
+
+{
+  items.length > 0 && (
+    <aside class="toc" aria-label="On this page">
+      <p>On this page</p>
+      <ul>
+        {items.map((i) => (
+          <li data-depth={i.depth}>
+            <a href={`#${i.slug}`}>{i.text}</a>
+          </li>
+        ))}
+      </ul>
+    </aside>
+  )
+}
+
+<script>
+  import "../scripts/toc.ts";
+</script>

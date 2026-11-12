@@ -1,0 +1,65 @@
+---
+import "../styles/global.css";
+import SearchModal from "../components/SearchModal.astro";
+import ThemeSwitch from "../components/ThemeSwitch.astro";
+import { REPO_URL, url } from "../lib/site.ts";
+
+interface Props {
+  title: string;
+  description: string;
+  /** Which header tab is current. */
+  section?: "home" | "docs" | "playground";
+}
+const { title, description, section } = Astro.props;
+
+const canonical = new URL(Astro.url.pathname, Astro.site).href;
+const tabs = [
+  { id: "home", href: url() },
+  { id: "docs", href: url("docs/") },
+  { id: "playground", href: url("playground/") },
+];
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <script is:inline>
+      (function () {
+        try {
+          var t = localStorage.getItem("dbtl-theme");
+          if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="top">
+      <a class="brand" href={url()} aria-label="dbtl home">dbtl</a>
+      <nav class="tabs" aria-label="Sections">
+        {tabs.map((t) => <a href={t.href} aria-current={t.id === section ? "page" : undefined}>{t.id}</a>)}
+      </nav>
+      <div class="tools">
+        <button class="search-btn" type="button" data-search-open aria-label="Search docs" aria-keyshortcuts="Control+K Meta+K /">
+          <span class="lbl">Search docs</span><kbd data-search-kbd>Ctrl K</kbd>
+        </button>
+        <ThemeSwitch />
+        <a class="icon-btn" href={REPO_URL} aria-label="dbtl on GitHub">GH</a>
+      </div>
+    </header>
+    <main id="main">
+      <slot />
+    </main>
+    <footer class="footer">dbtl</footer>
+    <SearchModal />
+    <script>
+      import "../scripts/copy.ts";
+    </script>
+  </body>
+</html>

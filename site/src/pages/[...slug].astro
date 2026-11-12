@@ -1,0 +1,21 @@
+---
+import { render } from "astro:content";
+import Docs from "../layouts/Docs.astro";
+import { loadNav, type NavPage } from "../lib/nav.ts";
+
+export async function getStaticPaths() {
+  const nav = await loadNav();
+  return nav.pages.map((page) => ({ params: { slug: page.slug }, props: { page } }));
+}
+
+interface Props {
+  page: NavPage;
+}
+const { page } = Astro.props;
+const nav = await loadNav();
+const { Content, headings } = await render(page.entry);
+---
+
+<Docs page={page} nav={nav} headings={headings}>
+  <Content />
+</Docs>

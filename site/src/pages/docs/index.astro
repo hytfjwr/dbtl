@@ -1,0 +1,23 @@
+---
+import { loadNav } from "../../lib/nav.ts";
+import { url } from "../../lib/site.ts";
+
+const nav = await loadNav();
+const first = nav.pages[0];
+if (!first) throw new Error("nav.json has no pages");
+const target = url(`${first.slug}/`);
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Redirecting to the documentation</title>
+    <meta name="robots" content="noindex" />
+    <meta http-equiv="refresh" content={`0; url=${target}`} />
+    <link rel="canonical" href={new URL(target, Astro.site).href} />
+  </head>
+  <body>
+    <p>Redirecting to <a href={target}>{first.title}</a>.</p>
+  </body>
+</html>

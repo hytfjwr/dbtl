@@ -1,0 +1,30 @@
+---
+import type { Nav } from "../lib/nav.ts";
+import { VERSION, url } from "../lib/site.ts";
+
+interface Props {
+  nav: Nav;
+  current: string;
+}
+const { nav, current } = Astro.props;
+---
+
+<nav class="sidebar" aria-label="Documentation">
+  <p class="ver"><span>dbtl docs</span> <span class="badge">v{VERSION}</span></p>
+  {
+    nav.groups.map((g) => (
+      <>
+        <h3>{g.group}</h3>
+        <ul>
+          {g.pages.map((p) => (
+            <li>
+              <a href={url(`${p.slug}/`)} aria-current={p.slug === current ? "page" : undefined}>
+                {p.title}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </>
+    ))
+  }
+</nav>

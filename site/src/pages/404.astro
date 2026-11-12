@@ -1,0 +1,11 @@
+---
+import Base from "../layouts/Base.astro";
+import { url } from "../lib/site.ts";
+---
+
+<Base title="Page not found - dbtl" description="This page does not exist.">
+  <div class="wrap page">
+    <h1>Page not found</h1>
+    <p>There is no page at this address. Start from the <a href={url("docs/")}>documentation</a>.</p>
+  </div>
+</Base>

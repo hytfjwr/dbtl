@@ -1,0 +1,28 @@
+<dialog class="search" id="search" aria-label="Search docs">
+  <div class="s-in">
+    <span aria-hidden="true">&gt;</span>
+    <input
+      id="s-input"
+      type="text"
+      role="combobox"
+      aria-expanded="true"
+      aria-controls="s-list"
+      aria-autocomplete="list"
+      aria-label="Search docs"
+      placeholder="Search pages, commands, keys"
+      spellcheck="false"
+      autocomplete="off"
+    />
+  </div>
+  <p class="s-note" id="s-note" hidden></p>
+  <ul class="s-list" id="s-list" role="listbox" aria-label="Results"></ul>
+  <div class="s-foot">
+    <span><kbd>&uarr;</kbd><kbd>&darr;</kbd> move</span>
+    <span><kbd>Enter</kbd> open</span>
+    <span><kbd>Esc</kbd> close</span>
+  </div>
+</dialog>
+
+<script>
+  import "../scripts/search-modal.ts";
+</script>

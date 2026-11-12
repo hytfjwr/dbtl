@@ -42,3 +42,25 @@ updates:
       github-actions:
         patterns:
           - "*"
+
+  # Docs site dependencies (site/package.json / site/package-lock.json)
+  - package-ecosystem: "npm"
+    directory: "/site"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
+    # The site pins only versions that were public for at least 14 days, so
+    # updates wait the same time before they are proposed.
+    cooldown:
+      default-days: 14
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
