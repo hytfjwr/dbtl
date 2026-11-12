@@ -13,7 +13,7 @@ dbtl lint --rules root_models,model_fanout  # a named subset
 dbtl lint --fail-on warn                    # fail on warnings too
 ```
 
-Text output is one annotated block per finding: an `error[rule]`/`warning[rule]` header, a `--> file[:line[:column]]` position, the source excerpt with the span underlined when it resolves, and `= help:`/`= docs:` footers. Findings in a properties `.yml` (descriptions, tests, freshness, contract columns) point at the `- name:` entry's line and column; a `.sql` finding names its file only. A closing tally reads `Found N errors and M warnings in K files` — with `K baselined`/`K pre-existing, not counted` in parentheses when a baseline or `--diff` suppresses findings — plus `N rules reported findings; M skipped (need --catalog)`.
+Text output is one annotated block per finding: an `error[rule]`/`warning[rule]` header, a `--> file[:line[:column]]` position, the source excerpt with the span underlined when it resolves, and `= help:`/`= docs:` footers. Findings in a properties `.yml` (descriptions, tests, freshness, contract columns) point at the `- name:` entry's line and column; a `.sql` finding points at the offending syntax (the wildcard, relation name, joined table, column reference, or regex match) when the rule can pin it exactly. A closing tally reads `Found N errors and M warnings in K files` — with `K baselined`/`K pre-existing, not counted` in parentheses when a baseline or `--diff` suppresses findings — plus `N rules reported findings; M skipped (need --catalog)`.
 
 ```text
 error[public_models_without_contract]: fct_public_api is access: public without an enforced contract
@@ -25,14 +25,14 @@ error[public_models_without_contract]: fct_public_api is access: public without 
    = help: set contract: { enforced: true } on the model
    = docs: https://hytfjwr.github.io/dbtl/reference/lint-rules/#public_models_without_contract
 
-warning[contract_columns_without_type]: contract-enforced fct_contracted has declared column(s) without data_type: status
-  --> models/marts/governance.yml:63:15
-   |
-63 |       - name: status
-   |               ^^^^^^ declared here
-   |
-   = help: declare data_type for every contract column
-   = docs: https://hytfjwr.github.io/dbtl/reference/lint-rules/#contract_columns_without_type
+warning[select_star]: fct_daily_orders's final SELECT uses select * / t.*
+ --> models/marts/fct_daily_orders.sql:4:8
+  |
+4 | select * from {{ ref('stg_orders') }}
+  |        ^ wildcard
+  |
+  = help: list the columns the model produces
+  = docs: https://hytfjwr.github.io/dbtl/reference/lint-rules/#select_star
 
 …
 
@@ -43,9 +43,9 @@ Found 26 errors and 20 warnings in 21 files
 `--format concise` prints the same findings as `file[:line[:column]]: severity[rule] message` one-liners for editors and grep.
 
 ```text
+models/marts/cll_syntax.sql:24:5: warning[select_star] cll_syntax's final SELECT uses select * / t.*
+models/marts/fct_daily_orders.sql:4:8: warning[select_star] fct_daily_orders's final SELECT uses select * / t.*
 models/marts/governance.yml:15:11: error[public_models_without_contract] fct_public_api is access: public without an enforced contract
-models/marts/governance.yml:63:15: warning[contract_columns_without_type] contract-enforced fct_contracted has declared column(s) without data_type: status
-models/marts/governance.yml:111:15: warning[undocumented_columns] fct_model_tests has declared column(s) without descriptions: notes
 models/marts/schema.yml:4:11: error[missing_primary_key_tests] fct_orders has no unique+not_null test pair (or unique_combination_of_columns)
 …
 ```

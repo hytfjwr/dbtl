@@ -156,34 +156,46 @@ pub(super) fn expr_ident_names(e: &Expr) -> BTreeSet<String> {
 /// `*`/`t.*` over a binding whose column list is unknown leaves carried
 /// columns invisible to `Analyzed::out` — the only case the declared-column
 /// probe can legitimately fill (without a wildcard every output is named,
-/// so an unproduced declared name was never selected).
-pub(super) fn query_has_output_wildcard(q: &Query) -> bool {
-    set_expr_has_wildcard(&q.body)
-        || q.pipe_operators.iter().any(|po| {
-            use sqlparser::ast::PipeOperator as P;
-            match po {
-                P::Select { exprs } | P::Extend { exprs } => {
-                    exprs.iter().any(select_item_is_wildcard)
-                }
-                P::Union { queries, .. } => queries.iter().any(query_has_output_wildcard),
-                _ => false,
+/// so an unproduced declared name was never selected). `is_empty()` on
+/// the result IS that verdict; the items' spans are what `select_star`
+/// points findings at.
+pub(super) fn query_wildcard_items(q: &Query) -> Vec<&SelectItem> {
+    let mut out = Vec::new();
+    collect_wildcard_items(&q.body, &mut out);
+    for po in &q.pipe_operators {
+        use sqlparser::ast::PipeOperator as P;
+        match po {
+            P::Select { exprs } | P::Extend { exprs } => {
+                out.extend(exprs.iter().filter(|i| select_item_is_wildcard(i)));
             }
-        })
+            P::Union { queries, .. } => {
+                for q in queries {
+                    out.extend(query_wildcard_items(q));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
-pub(super) fn set_expr_has_wildcard(e: &SetExpr) -> bool {
+fn collect_wildcard_items<'a>(e: &'a SetExpr, out: &mut Vec<&'a SelectItem>) {
     match e {
-        SetExpr::Select(sel) => sel.projection.iter().any(select_item_is_wildcard),
+        SetExpr::Select(sel) => {
+            out.extend(sel.projection.iter().filter(|i| select_item_is_wildcard(i)))
+        }
         SetExpr::SetOperation {
             left, right, op, ..
         } => {
             // Only UNION arms merge outputs; an EXCEPT/INTERSECT right arm
             // shapes rows, never output names.
-            set_expr_has_wildcard(left)
-                || (*op == SetOperator::Union && set_expr_has_wildcard(right))
+            collect_wildcard_items(left, out);
+            if *op == SetOperator::Union {
+                collect_wildcard_items(right, out);
+            }
         }
-        SetExpr::Query(q) => query_has_output_wildcard(q),
-        _ => false,
+        SetExpr::Query(q) => out.extend(query_wildcard_items(q)),
+        _ => {}
     }
 }
 
