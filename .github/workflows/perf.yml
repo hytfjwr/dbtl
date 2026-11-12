@@ -36,10 +36,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Build-affecting paths: the trigger list minus this workflow file. The
-  # prebuilt-binaries key derives from the last commit that touched them,
-  # so commits that cannot change the binaries keep the same key. Both key
-  # derivations below read this one list — keep them identical.
+  # Build-affecting paths: the trigger list minus this workflow file —
+  # keep it in sync with the paths above. The prebuilt-binaries key
+  # derives from the last commit that touched them, so commits that
+  # cannot change the binaries keep the same key.
   PERF_INPUT_PATHS: crates src benches Cargo.toml Cargo.lock xtask
 
 jobs:
