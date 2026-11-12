@@ -400,9 +400,11 @@ pub(crate) fn write_stdout(body: &str, choice: anstream::ColorChoice) -> Result<
 
 /// A `file[:line[:column]]` anchor for a finding: the project-relative path
 /// plus the recorded position — unknown portions drop off rather than
-/// printing a guessed `:1`, with `--path-prefix` applied when the format
-/// carries paths. Findings without a file location fall back to the node's
-/// `unique_id` — a stable identifier, never blank.
+/// printing a guessed `:1`, with `--path-prefix` applied when the caller
+/// passes one (only the github/sarif/codeclimate formats do — `text` and
+/// `concise` keep the project-relative path). Findings without a file
+/// location fall back to the node's `unique_id` — a stable identifier,
+/// never blank.
 pub fn finding_anchor(f: &dbtl::Finding, path_prefix: Option<&str>) -> String {
     match &f.location {
         Some(loc) => {
