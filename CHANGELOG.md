@@ -43,6 +43,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   each tripped rule only, and `dbtl lint` reports skipped rules on the
   summary line instead of `SKIP lint <rule>:` rows. Scripts parsing the
   old layout should switch to `--format concise` or a machine format.
+- **The lint rule `undocumented_public_models` was removed.** It flagged
+  the same missing model and column descriptions `undocumented_models` and
+  `undocumented_columns` already report, so every public model's gap was
+  listed twice. The id stays reserved: naming it in `.dbtl.yml`, `--rules`,
+  or `--explain` is a usage error that points at the two replacements, and
+  baseline entries for it are ignored with a single stderr warning
+  (`warning: baseline: ignoring N entries for removed rule
+  undocumented_public_models`). Point any configured entry at
+  `undocumented_models`/`undocumented_columns` instead — and regenerate the
+  baseline (`dbtl lint --write-baseline`) to drop its stale rows.
+- **The default lint severities were re-tiered.** Only rules that flag a
+  broken guarantee or a build-time failure default to `error` now:
+  `missing_primary_key_tests`, `public_models_without_contract`, and
+  `unknown_column_reference` (raised from `warn` — a column the upstream
+  model doesn't emit fails in the warehouse at run time). Every other rule
+  ships at `warn` so it reports without gating: the ten former `error`
+  rules `direct_join_to_source`, `multiple_sources_joined`, `source_fanout`,
+  `model_fanout`, `root_models`, `rejoining_upstream`,
+  `marts_depend_on_source`, `undocumented_models`, `naming_conventions`,
+  and `layer_violation` now warn by default. The findings themselves are
+  unchanged — the same projects report the same rows, fewer of them gate.
+  Opt any rule back into `error` explicitly where it should keep failing
+  builds:
+
+  ```yaml
+  # .dbtl.yml
+  lint:
+    rules:
+      root_models: {severity: error}
+      naming_conventions: {severity: error}
+  ```
 
 ### Added
 

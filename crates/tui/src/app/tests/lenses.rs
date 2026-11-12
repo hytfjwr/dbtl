@@ -377,13 +377,13 @@ fn violation_lens_tints_both_incident_nodes_and_spares_the_rest() {
 
 #[test]
 fn lint_findings_are_computed_once_from_the_shared_rules() {
-    // The fixture has 82 findings under the shipped defaults — the 27
-    // error-severity gate findings plus the warn-severity set: 11
-    // `unused_sources`, 6 `incremental_without_unique_key`, 38
-    // `sources_without_freshness` (frozen counts in
-    // tests/manifest_fixture.rs) — the App computes them once at
-    // construction and every surface (lens, stats worklist) reads that one
-    // vector.
+    // The fixture has 82 findings under the shipped defaults — the 2
+    // error-severity gate findings plus the warn-severity set (the
+    // structure rules' 25 + 11 `unused_sources` + 6
+    // `incremental_without_unique_key` + 38 `sources_without_freshness`,
+    // frozen counts in tests/manifest_fixture.rs) — the App computes them
+    // once at construction and every surface (lens, stats worklist) reads
+    // that one vector.
     let a = app();
     assert_eq!(a.lint_findings().len(), 82, "the frozen fixture count");
     assert!(
@@ -566,12 +566,13 @@ fn stats_view_carries_the_lint_worklist_from_the_shared_findings() {
             wl.rule
         );
     }
-    // The severity split — the frozen fixture's 27 gate findings are
-    // error-severity, the warn side 55 (11 `unused_sources` + 6
+    // The severity split — the frozen fixture's 2 gate findings are
+    // error-severity (missing_primary_key_tests), the warn side 80 (the
+    // structure rules' 25 + 11 `unused_sources` + 6
     // `incremental_without_unique_key` + 38 `sources_without_freshness`,
     // frozen in tests/manifest_fixture.rs), matching `dbtl check --lint`'s
     // counts.
-    assert_eq!((sv.lint_errors, sv.lint_warnings), (27, 55));
+    assert_eq!((sv.lint_errors, sv.lint_warnings), (2, 80));
 }
 
 #[test]

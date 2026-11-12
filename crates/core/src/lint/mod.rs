@@ -26,7 +26,10 @@ mod baseline;
 pub use baseline::{Baseline, BASELINE_SCHEMA, DEFAULT_BASELINE_NAME};
 
 mod registry;
-pub use registry::{Category, ParamKind, ParamSpec, Requires, RuleInfo, Severity, REGISTRY};
+pub use registry::{
+    removed_rule, removed_rule_error, Category, ParamKind, ParamSpec, RemovedRule, Requires,
+    RuleInfo, Severity, REGISTRY, REMOVED_RULES,
+};
 
 mod call_sites;
 pub use call_sites::{display_name, display_names, name_list};
@@ -89,8 +92,6 @@ pub enum LintRule {
     UndocumentedSources,
     /// A model has declared columns without descriptions.
     UndocumentedColumns,
-    /// A public model lacks a model or column description.
-    UndocumentedPublicModels,
     /// A model's name prefix and directory resolve to different layers.
     ModelDirectories,
     /// A model is missing a configured `meta` key.
@@ -119,10 +120,10 @@ pub enum LintRule {
 
 impl LintRule {
     /// Every rule, in the fixed evaluation/output order — the declaration
-    /// order of the enum and of [`REGISTRY`]. The twelve original rules
+    /// order of the enum and of [`REGISTRY`]. The original structure rules
     /// lead; rules added later append in registry order so the emitted
     /// sequence stays stable.
-    pub const ALL: [LintRule; 34] = [
+    pub const ALL: [LintRule; 33] = [
         Self::DirectJoinToSource,
         Self::MultipleSourcesJoined,
         Self::SourceFanout,
@@ -144,7 +145,6 @@ impl LintRule {
         Self::ExposuresDependentOnPrivateModels,
         Self::UndocumentedSources,
         Self::UndocumentedColumns,
-        Self::UndocumentedPublicModels,
         Self::ModelDirectories,
         Self::RequiredMetaKeys,
         Self::ContractColumnsWithoutType,

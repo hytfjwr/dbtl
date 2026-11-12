@@ -312,8 +312,9 @@ fn check_uses_owner_meta_key_and_warns_on_malformed_config() {
 #[test]
 fn check_lint_reports_one_gate_per_rule() {
     // The frozen fixture carries known violations (frozen counts live in
-    // tests/manifest_fixture.rs): --lint FAILs the gate and prints one line
-    // per rule, PASS or FAIL.
+    // tests/manifest_fixture.rs): --lint FAILs the gate on the one
+    // error-default rule tripping and prints one line per rule —
+    // PASS, WARN or FAIL.
     let m = fixture_manifest();
     let out = run(&["check", "--manifest", m.to_str().unwrap(), "--lint"]);
     assert_eq!(
@@ -342,8 +343,12 @@ fn check_lint_reports_one_gate_per_rule() {
         );
     }
     assert!(
-        stdout.contains("FAIL lint direct_join_to_source: 16 findings"),
-        "the frozen count, got: {stdout:?}"
+        stdout.contains("WARN lint direct_join_to_source: 16 findings"),
+        "the frozen count at warn, got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("FAIL lint missing_primary_key_tests: 2 findings"),
+        "the error-default rule still gates, got: {stdout:?}"
     );
     // …while clean rules (undocumented_models, naming_conventions, …)
     // collapse into the single folded PASS row.
@@ -429,11 +434,13 @@ fn check_lint_diff_gates_on_new_violations_only() {
         "pre-existing count is reported, got: {stdout:?}"
     );
 
-    // A modified manifest: blank pos_txn's description → ONE new
-    // undocumented_models finding vs the baseline → the gate fails on it.
+    // A modified manifest: mark pos_txn `access: public` → ONE new
+    // public_models_without_contract finding vs the baseline → the gate
+    // fails on it (the rule is error-default; a warn-default rule's new
+    // finding would report but not gate).
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&m).unwrap()).unwrap();
-    manifest["nodes"]["model.jaffle_finance.pos_txn"]["description"] = serde_json::json!("");
+    manifest["nodes"]["model.jaffle_finance.pos_txn"]["access"] = serde_json::json!("public");
     let tmp = tempfile::tempdir().unwrap();
     let changed = tmp.path().join("manifest.json");
     std::fs::write(&changed, serde_json::to_vec(&manifest).unwrap()).unwrap();
@@ -453,11 +460,11 @@ fn check_lint_diff_gates_on_new_violations_only() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("FAIL lint undocumented_models: 1 new finding"),
+        stdout.contains("FAIL lint public_models_without_contract: 1 new finding"),
         "only the new finding gates, got: {stdout:?}"
     );
     assert!(
-        stdout.contains("error[undocumented_models]:") && stdout.contains("pos_txn"),
+        stdout.contains("error[public_models_without_contract]:") && stdout.contains("pos_txn"),
         "the new finding's block names the node, got: {stdout:?}"
     );
     // The pre-existing violations still don't gate — every other lint
@@ -486,12 +493,12 @@ fn check_lint_format_json_serializes_the_report() {
     assert!(v.get("scope").is_some() && v.get("gates").is_some());
     let gates = v["gates"].as_array().unwrap();
     let failures = gates.iter().filter(|g| g["status"] == "fail").count();
-    assert_eq!(failures, 6, "6 lint rules fail");
+    assert_eq!(failures, 1, "only missing_primary_key_tests still gates");
     let djs = gates
         .iter()
         .find(|g| g["id"] == "lint:direct_join_to_source")
         .expect("the lint gate item");
-    assert_eq!(djs["status"], "fail");
+    assert_eq!(djs["status"], "warn");
     let findings = djs["findings"].as_array().expect("findings serialize");
     assert_eq!(findings.len(), 16, "the same 16 the line report counts");
     assert_eq!(findings[0]["rule"], "direct_join_to_source");

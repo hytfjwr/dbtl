@@ -15,7 +15,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         rule: LintRule::DirectJoinToSource,
         id: "direct_join_to_source",
         category: Category::Modeling,
-        default_severity: Severity::Error,
+        default_severity: Severity::Warn,
         summary: "a model directly depends on both a source and a model",
         rationale: "Mixing a raw source with modeled data in one query hides \
                     where the model's real inputs come from. A layer that reads \
@@ -33,7 +33,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         rule: LintRule::MultipleSourcesJoined,
         id: "multiple_sources_joined",
         category: Category::Modeling,
-        default_severity: Severity::Error,
+        default_severity: Severity::Warn,
         summary: "a model directly depends on 2+ sources",
         rationale: "Joining several raw sources in one model buries the \
                     integration logic where nobody can test or reuse it. Each \
@@ -50,7 +50,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         rule: LintRule::SourceFanout,
         id: "source_fanout",
         category: Category::Modeling,
-        default_severity: Severity::Error,
+        default_severity: Severity::Warn,
         summary: "a source directly feeds too many models",
         rationale: "When one raw source feeds many downstream models, every \
                     one of them re-derives the same cleanup and they drift \
@@ -67,7 +67,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         rule: LintRule::ModelFanout,
         id: "model_fanout",
         category: Category::Modeling,
-        default_severity: Severity::Error,
+        default_severity: Severity::Warn,
         summary: "a model directly feeds too many leaf models",
         rationale: "A hub model that feeds many leaf models concentrates risk: \
                     one bad change fans out to every downstream report, and the \
@@ -90,7 +90,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         rule: LintRule::RootModels,
         id: "root_models",
         category: Category::Modeling,
-        default_severity: Severity::Error,
+        default_severity: Severity::Warn,
         summary: "a model has no parents",
         rationale: "A model that refs nothing upstream is either a hand-maintained \
                     table — data nobody can trace or rebuild — or a forgotten \
@@ -107,7 +107,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         rule: LintRule::RejoiningUpstream,
         id: "rejoining_upstream",
         category: Category::Modeling,
-        default_severity: Severity::Error,
+        default_severity: Severity::Warn,
         summary: "a redundant hop: A->B->C while A->C already exists",
         rationale: "Re-reading an upstream model when a direct edge already \
                     exists means the intermediate node adds nothing — it just \
@@ -125,7 +125,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         rule: LintRule::MartsDependOnSource,
         id: "marts_depend_on_source",
         category: Category::Modeling,
-        default_severity: Severity::Error,
+        default_severity: Severity::Warn,
         summary: "a marts/intermediate model directly depends on a source",
         rationale: "Marts and intermediate models are supposed to consume \
                     staged data. Reading a raw source directly bypasses the \
@@ -191,7 +191,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         rule: LintRule::UndocumentedModels,
         id: "undocumented_models",
         category: Category::Documentation,
-        default_severity: Severity::Error,
+        default_severity: Severity::Warn,
         summary: "a model has no description",
         rationale: "A model with no description forces every reader to \
                     reverse-engineer intent from SQL. Descriptions are the \
@@ -214,7 +214,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         rule: LintRule::NamingConventions,
         id: "naming_conventions",
         category: Category::Structure,
-        default_severity: Severity::Error,
+        default_severity: Severity::Warn,
         summary: "a model's name misses its layer's prefix",
         rationale: "Layer prefixes let a reader know a model's role before \
                     opening it — and let rules like marts_depend_on_source \
@@ -231,7 +231,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         rule: LintRule::LayerViolation,
         id: "layer_violation",
         category: Category::Modeling,
-        default_severity: Severity::Error,
+        default_severity: Severity::Warn,
         summary: "a backward edge between logical layers",
         rationale: "Layers exist so data flows one way: staging cleans, \
                     intermediate composes, marts serve. An edge that jumps \
@@ -417,23 +417,6 @@ pub static REGISTRY: &[RuleInfo] = &[
         requires: Requires::Graph,
     },
     RuleInfo {
-        rule: LintRule::UndocumentedPublicModels,
-        id: "undocumented_public_models",
-        category: Category::Governance,
-        default_severity: Severity::Warn,
-        summary: "a public model lacks a model or column description",
-        rationale: "access: public marks a model as the project's supported \
-                    interface — the surface downstream teams build on. An \
-                    undocumented public model advertises a contract nobody can \
-                    read: consumers can't tell what a row means without asking.",
-        example: "rpt_revenue is access: public but has no description and two \
-                  undocumented columns. Fix: document the model and every \
-                  public column.",
-        help: "document the model and every public column",
-        params: &[],
-        requires: Requires::Graph,
-    },
-    RuleInfo {
         rule: LintRule::ModelDirectories,
         id: "model_directories",
         category: Category::Structure,
@@ -588,7 +571,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         rule: LintRule::UnknownColumnReference,
         id: "unknown_column_reference",
         category: Category::Sql,
-        default_severity: Severity::Warn,
+        default_severity: Severity::Error,
         summary: "a model names a column a trusted upstream doesn't emit",
         rationale: "A column that doesn't exist in the parent is either a \
                     typo that fails at run time or a leftover name from a \
@@ -658,6 +641,44 @@ pub static REGISTRY: &[RuleInfo] = &[
         requires: Requires::Catalog,
     },
 ];
+
+/// A rule the registry once carried and has since dropped. The id stays
+/// reserved so every surface that names rules — `.dbtl.yml`, `--rules`,
+/// `--explain`, a baseline file — can explain the removal and its
+/// replacements instead of reporting a bare unknown id.
+#[derive(Debug, Clone, Copy)]
+pub struct RemovedRule {
+    /// The dropped rule id.
+    pub id: &'static str,
+    /// The live rules covering the same ground — named in the removal
+    /// guidance the entry points print.
+    pub replacements: &'static [&'static str],
+}
+
+/// Rules removed from [`REGISTRY`] — the ONE table every removed-id path
+/// reads, so `.dbtl.yml`, `--rules`, `--explain` and the baseline warning
+/// can never describe the removal differently.
+pub static REMOVED_RULES: &[RemovedRule] = &[RemovedRule {
+    id: "undocumented_public_models",
+    replacements: &["undocumented_models", "undocumented_columns"],
+}];
+
+/// The [`REMOVED_RULES`] row for `id`, when `id` names a dropped rule.
+pub fn removed_rule(id: &str) -> Option<&'static RemovedRule> {
+    REMOVED_RULES.iter().find(|r| r.id == id)
+}
+
+/// The removal sentence the named-rule entry points share for a dropped
+/// id — states the removal and the replacement rules; callers embed it in
+/// their own usage-error context. `None` when `id` is not a removed rule.
+pub fn removed_rule_error(id: &str) -> Option<String> {
+    removed_rule(id).map(|r| {
+        format!(
+            "lint rule '{id}' was removed; use {} instead",
+            r.replacements.join(", ")
+        )
+    })
+}
 
 /// A rule family — used for grouping in `--list-rules`-style output and for
 /// deciding what data a rule may rely on. All eight values have rules today.
@@ -832,10 +853,10 @@ pub struct RuleInfo {
     /// `--rules`' argument and the baseline's `rule` field all in one.
     pub id: &'static str,
     pub category: Category,
-    /// Applied when the config doesn't set `severity` for this rule. Rules
-    /// that predate severities are `Error` (that was the only behavior);
-    /// rules added later ship `Warn` so they don't silently gate a project
-    /// that never opted in.
+    /// Applied when the config doesn't set `severity` for this rule. Only
+    /// rules that represent a broken guarantee or a build failure default
+    /// to `Error`; every other rule ships `Warn` so it reports without
+    /// silently gating a project that never opted in.
     pub default_severity: Severity,
     /// A single line — what the rule flags (the old `description()` text).
     pub summary: &'static str,

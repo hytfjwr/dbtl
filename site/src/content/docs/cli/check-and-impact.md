@@ -31,17 +31,18 @@ dbtl impact --diff git:main --select 'tag:marts+'               # only matching 
 ```text
 scope: root project only
 PASS coverage: 10/22 (45%)
-FAIL lint multiple_sources_joined: 1 finding
-FAIL lint root_models: 7 findings
-FAIL lint marts_depend_on_source: 1 finding
+WARN lint multiple_sources_joined: 1 finding
+WARN lint root_models: 7 findings
+WARN lint marts_depend_on_source: 1 finding
 FAIL lint missing_primary_key_tests: 9 findings
+FAIL lint public_models_without_contract: 1 finding
 …
 WARN lint select_star: 6 findings
 SKIP lint warehouse_type_drift: requires graph + catalog input
 SKIP lint columns_missing_in_warehouse: requires graph + catalog input
-PASS lint: 16 rules clean
+PASS lint: 15 rules clean
 
-Found 26 errors and 20 warnings in 21 files
+Found 10 errors and 36 warnings in 21 files
 16 rules reported findings; 2 skipped (need --catalog)
 ```
 

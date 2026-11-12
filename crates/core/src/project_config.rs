@@ -180,10 +180,12 @@ impl ProjectConfig {
         let mut lint = LintConfig::default();
         for (name, spec) in file.lint.rules {
             let rule = LintRule::from_name(&name).ok_or_else(|| {
-                format!(
-                    "unknown lint rule '{name}' (valid rules: {})",
-                    valid_rule_names()
-                )
+                crate::lint::removed_rule_error(&name).unwrap_or_else(|| {
+                    format!(
+                        "unknown lint rule '{name}' (valid rules: {})",
+                        valid_rule_names()
+                    )
+                })
             })?;
             match spec {
                 // `true` = enabled at the registry default — the same as an
@@ -804,7 +806,7 @@ mod tests {
         assert_eq!(pc.lint.severity(LintRule::UndocumentedModels), None);
         assert_eq!(
             pc.lint.severity(LintRule::RootModels),
-            Some(Severity::Error),
+            Some(Severity::Warn),
             "`true` = the registry default severity"
         );
         assert_eq!(
@@ -827,7 +829,7 @@ mod tests {
         let pc = parse("lint:\n  rules:\n    model_fanout: {}\n").unwrap();
         assert_eq!(
             pc.lint.severity(LintRule::ModelFanout),
-            Some(Severity::Error)
+            Some(Severity::Warn)
         );
         assert_eq!(
             pc.lint.int_param(LintRule::ModelFanout, "threshold"),

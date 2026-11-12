@@ -1,178 +1,178 @@
 {
  "project": "jaffle_finance",
- "rules": 32,
+ "rules": 31,
  "findings": [
   {
    "rule": "direct_join_to_source",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.pos_cat",
    "message": "pos_cat reads source lake_jaffle_payment.pos_cat and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_cat.sql"
   },
   {
    "rule": "direct_join_to_source",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.pos_crt",
    "message": "pos_crt reads source lake_jaffle_payment.pos_crt and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_crt.sql"
   },
   {
    "rule": "direct_join_to_source",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.pos_inv",
    "message": "pos_inv reads source lake_jaffle_payment.pos_inv and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_inv.sql"
   },
   {
    "rule": "direct_join_to_source",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.pos_jrn",
    "message": "pos_jrn reads source lake_jaffle_payment.pos_jrn and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_jrn.sql"
   },
   {
    "rule": "direct_join_to_source",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.pos_kpi",
    "message": "pos_kpi reads source lake_jaffle_payment.pos_kpi and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_kpi.sql"
   },
   {
    "rule": "direct_join_to_source",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.pos_mfg",
    "message": "pos_mfg reads source lake_jaffle_payment.pos_mfg and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_mfg.sql"
   },
   {
    "rule": "direct_join_to_source",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.pos_ord",
    "message": "pos_ord reads source lake_jaffle_payment.pos_ord and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_ord.sql"
   },
   {
    "rule": "direct_join_to_source",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.pos_pay",
    "message": "pos_pay reads source lake_jaffle_payment.pos_pay and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_pay.sql"
   },
   {
    "rule": "direct_join_to_source",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.pos_rcv",
    "message": "pos_rcv reads source lake_jaffle_payment.pos_rcv and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_rcv.sql"
   },
   {
    "rule": "direct_join_to_source",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.pos_shp",
    "message": "pos_shp reads source lake_jaffle_payment.pos_shp and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_shp.sql"
   },
   {
    "rule": "direct_join_to_source",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.pos_sku",
    "message": "pos_sku reads source lake_jaffle_payment.pos_sku and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_sku.sql"
   },
   {
    "rule": "direct_join_to_source",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.pos_stk",
    "message": "pos_stk reads source lake_jaffle_payment.pos_stk and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_stk.sql"
   },
   {
    "rule": "direct_join_to_source",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.pos_sup",
    "message": "pos_sup reads source lake_jaffle_payment.pos_sup and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_sup.sql"
   },
   {
    "rule": "direct_join_to_source",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.pos_tax",
    "message": "pos_tax reads source lake_jaffle_payment.pos_tax and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_tax.sql"
   },
   {
    "rule": "direct_join_to_source",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.pos_tkt",
    "message": "pos_tkt reads source lake_jaffle_payment.pos_tkt and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_tkt.sql"
   },
   {
    "rule": "direct_join_to_source",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.pos_txn",
    "message": "pos_txn reads source lake_jaffle_payment.pos_txn and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_txn.sql"
   },
   {
    "rule": "multiple_sources_joined",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.pos_files__assignment",
    "message": "pos_files__assignment reads sources lake_jaffle_payment.pos_cat, lake_jaffle_payment.pos_pay, lake_jaffle_payment.pos_rcv, lake_jaffle_payment.pos_shp",
    "file": "models/utilities/pos_prep/base/pos_files__assignment.sql"
   },
   {
    "rule": "source_fanout",
-   "severity": "error",
+   "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_cat",
    "message": "source lake_jaffle_payment.pos_cat directly feeds 2 models: pos_cat, pos_files__assignment",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "source_fanout",
-   "severity": "error",
+   "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_pay",
    "message": "source lake_jaffle_payment.pos_pay directly feeds 2 models: pos_files__assignment, pos_pay",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "source_fanout",
-   "severity": "error",
+   "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_rcv",
    "message": "source lake_jaffle_payment.pos_rcv directly feeds 2 models: pos_files__assignment, pos_rcv",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "source_fanout",
-   "severity": "error",
+   "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_shp",
    "message": "source lake_jaffle_payment.pos_shp directly feeds 2 models: pos_files__assignment, pos_shp",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "model_fanout",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.pos_files__assignment",
    "message": "pos_files__assignment directly feeds 16 leaf models: pos_cat, pos_crt, pos_inv, pos_jrn, pos_kpi and 11 more",
    "file": "models/utilities/pos_prep/base/pos_files__assignment.sql"
   },
   {
    "rule": "rejoining_upstream",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.fct_delivery_monthly_snapshot",
    "message": "fct_delivery_monthly_snapshot is a redundant hop: dim_delivery_lanes, dim_fiscal_years already feed rpt_delivery_base_metrics directly",
    "file": "models/marts/dimensional/jaffle/delivery_monthly_snapshot/fct_delivery_monthly_snapshot.sql"
   },
   {
    "rule": "rejoining_upstream",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.fct_delivery_shopper_monthly_visits",
    "message": "fct_delivery_shopper_monthly_visits is a redundant hop: dim_fiscal_years already feeds rpt_delivery_shopper_monthly_visits directly",
    "file": "models/marts/dimensional/jaffle/delivery_shopper_monthly_visits/fct_delivery_shopper_monthly_visits.sql"
   },
   {
    "rule": "rejoining_upstream",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.jaffle_finance.fct_subscription_process",
    "message": "fct_subscription_process is a redundant hop: dim_delivery_lanes, dim_fiscal_years already feed fct_delivery_monthly_snapshot directly",
    "file": "models/marts/dimensional/jaffle/subscription_process/fct_subscription_process.sql"

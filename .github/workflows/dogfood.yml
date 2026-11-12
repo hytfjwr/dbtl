@@ -148,10 +148,11 @@ jobs:
       - name: Put dbtl on PATH
         run: echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
 
-      # The committed jaffle_finance fixture trips error-severity lint
-      # rules, so `check --lint` is a gate failure (exit 1) — the pinned
-      # expectation, verified against the release binary. Every report
-      # format is exercised on the same run and kept for inspection.
+      # The committed jaffle_finance fixture trips the error-severity lint
+      # rules that still gate by default (missing_primary_key_tests), so
+      # `check --lint` is a gate failure (exit 1) — the pinned expectation,
+      # verified against the release binary. Every report format is
+      # exercised on the same run and kept for inspection.
       - name: Run the full check report
         run: |
           set -euo pipefail
@@ -204,8 +205,10 @@ jobs:
           expect 2 dbtl check --manifest tests/fixtures/manifest.json --lint --rules not_a_rule --quiet
           expect 3 dbtl check --manifest tests/fixtures/does_not_exist.json --lint --quiet
 
-      # The twelve original error-severity rules must all appear in the
-      # listing — their ids are a compatibility contract.
+      # The original rule ids must all appear in the listing — the ids are
+      # a compatibility contract (their severities were re-tiered; the ids
+      # did not change) — while the removed undocumented_public_models id
+      # must never be listed.
       - name: Verify lint --list-rules
         run: |
           set -euo pipefail
@@ -221,7 +224,11 @@ jobs:
               exit 1
             }
           done
-          echo "lint --list-rules: exit 0, all twelve error-severity ids listed"
+          if grep -qw "undocumented_public_models" "$RUNNER_TEMP/dogfood/rules.txt"; then
+            echo "::error::'lint --list-rules' still lists removed rule 'undocumented_public_models'"
+            exit 1
+          fi
+          echo "lint --list-rules: exit 0, the original ids listed, the removed id absent"
 
       - name: Exercise docs generation and --check
         run: |

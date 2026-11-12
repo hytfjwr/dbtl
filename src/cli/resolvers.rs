@@ -193,17 +193,21 @@ pub(super) fn load_project_config(
 
 /// Every `--rules` name must be a registry rule — checked before the data
 /// source loads so an unknown name is a usage error, never masked behind a
-/// missing-input error.
+/// missing-input error. A REMOVED rule id is still a usage error, but the
+/// message names the replacement coverage instead of the valid set.
 pub(super) fn validate_rule_names(rules: &[String]) -> Result<(), CliError> {
     for name in rules {
         if dbtl::LintRule::from_name(name).is_none() {
             return Err(CliError::usage(anyhow::anyhow!(
-                "unknown lint rule '{name}' (valid rules: {})",
-                dbtl::LintRule::ALL
-                    .iter()
-                    .map(|r| r.name())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                "{}",
+                dbtl::removed_rule_error(name).unwrap_or_else(|| format!(
+                    "unknown lint rule '{name}' (valid rules: {})",
+                    dbtl::LintRule::ALL
+                        .iter()
+                        .map(|r| r.name())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
             )));
         }
     }
@@ -363,7 +367,7 @@ mod tests {
         assert!(cfg.enabled(dbtl::LintRule::RootModels));
         assert_eq!(
             cfg.severity(dbtl::LintRule::RootModels),
-            Some(dbtl::Severity::Error),
+            Some(dbtl::Severity::Warn),
             "a named-but-off rule runs at the registry default severity"
         );
         assert_eq!(

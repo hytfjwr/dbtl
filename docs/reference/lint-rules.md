@@ -2,22 +2,22 @@
 
 # Lint rules
 
-34 rules, evaluated by `dbtl lint`, `dbtl check --lint`, the docs generator, and the TUI's Lint lens — one registry table also backs `--list-rules`, `--explain`, SARIF metadata, and `.dbtl.yml` validation, so all of them describe the same rule set.
+33 rules, evaluated by `dbtl lint`, `dbtl check --lint`, the docs generator, and the TUI's Lint lens — one registry table also backs `--list-rules`, `--explain`, SARIF metadata, and `.dbtl.yml` validation, so all of them describe the same rule set.
 
 | Rule | Category | Default severity | Inputs | Summary |
 | ---- | -------- | ---------------- | ------ | ------- |
-| [`direct_join_to_source`](#direct_join_to_source) | modeling | error | graph | a model directly depends on both a source and a model |
-| [`multiple_sources_joined`](#multiple_sources_joined) | modeling | error | graph | a model directly depends on 2+ sources |
-| [`source_fanout`](#source_fanout) | modeling | error | graph | a source directly feeds too many models |
-| [`model_fanout`](#model_fanout) | modeling | error | graph | a model directly feeds too many leaf models |
-| [`root_models`](#root_models) | modeling | error | graph | a model has no parents |
-| [`rejoining_upstream`](#rejoining_upstream) | modeling | error | graph | a redundant hop: A->B->C while A->C already exists |
-| [`marts_depend_on_source`](#marts_depend_on_source) | modeling | error | graph | a marts/intermediate model directly depends on a source |
+| [`direct_join_to_source`](#direct_join_to_source) | modeling | warn | graph | a model directly depends on both a source and a model |
+| [`multiple_sources_joined`](#multiple_sources_joined) | modeling | warn | graph | a model directly depends on 2+ sources |
+| [`source_fanout`](#source_fanout) | modeling | warn | graph | a source directly feeds too many models |
+| [`model_fanout`](#model_fanout) | modeling | warn | graph | a model directly feeds too many leaf models |
+| [`root_models`](#root_models) | modeling | warn | graph | a model has no parents |
+| [`rejoining_upstream`](#rejoining_upstream) | modeling | warn | graph | a redundant hop: A->B->C while A->C already exists |
+| [`marts_depend_on_source`](#marts_depend_on_source) | modeling | warn | graph | a marts/intermediate model directly depends on a source |
 | [`missing_primary_key_tests`](#missing_primary_key_tests) | testing | error | graph | a model lacks a primary-key test (unique+not_null on one column, or unique_combination_of_columns) |
 | [`public_models_without_contract`](#public_models_without_contract) | governance | error | graph | access: public without contract: enforced |
-| [`undocumented_models`](#undocumented_models) | documentation | error | graph | a model has no description |
-| [`naming_conventions`](#naming_conventions) | structure | error | graph | a model's name misses its layer's prefix |
-| [`layer_violation`](#layer_violation) | modeling | error | graph | a backward edge between logical layers |
+| [`undocumented_models`](#undocumented_models) | documentation | warn | graph | a model has no description |
+| [`naming_conventions`](#naming_conventions) | structure | warn | graph | a model's name misses its layer's prefix |
+| [`layer_violation`](#layer_violation) | modeling | warn | graph | a backward edge between logical layers |
 | [`unused_sources`](#unused_sources) | modeling | warn | graph | a source is declared but never referenced |
 | [`duplicate_sources`](#duplicate_sources) | modeling | warn | graph | two or more sources point at the same warehouse relation |
 | [`staging_depends_on_staging`](#staging_depends_on_staging) | modeling | warn | graph | a staging model directly depends on another staging model |
@@ -27,7 +27,6 @@
 | [`exposures_dependent_on_private_models`](#exposures_dependent_on_private_models) | governance | warn | graph | an exposure depends on a private/protected model |
 | [`undocumented_sources`](#undocumented_sources) | documentation | warn | graph | a source has no description |
 | [`undocumented_columns`](#undocumented_columns) | documentation | warn | graph | a model has declared columns without descriptions |
-| [`undocumented_public_models`](#undocumented_public_models) | governance | warn | graph | a public model lacks a model or column description |
 | [`model_directories`](#model_directories) | structure | warn | graph | a model's name prefix and directory point at different layers |
 | [`required_meta_keys`](#required_meta_keys) | governance | warn | graph | a model is missing a required meta key |
 | [`contract_columns_without_type`](#contract_columns_without_type) | governance | warn | graph | a contract-enforced model has declared columns without data_type |
@@ -36,14 +35,14 @@
 | [`select_star`](#select_star) | sql | warn | graph + parsed SQL | a model's final SELECT reads * or t.* |
 | [`hard_coded_references`](#hard_coded_references) | sql | warn | graph + parsed SQL | a model names a relation literally instead of ref()/source() |
 | [`cartesian_join`](#cartesian_join) | sql | warn | graph + parsed SQL | a JOIN carries no join condition |
-| [`unknown_column_reference`](#unknown_column_reference) | sql | warn | graph + parsed SQL | a model names a column a trusted upstream doesn't emit |
+| [`unknown_column_reference`](#unknown_column_reference) | sql | error | graph + parsed SQL | a model names a column a trusted upstream doesn't emit |
 | [`forbidden_patterns`](#forbidden_patterns) | sql | warn | graph + parsed SQL | a model's raw SQL matches a configured forbidden pattern |
 | [`warehouse_type_drift`](#warehouse_type_drift) | warehouse | warn | graph + catalog | a declared column's data_type disagrees with the warehouse |
 | [`columns_missing_in_warehouse`](#columns_missing_in_warehouse) | warehouse | warn | graph + catalog | a declared column doesn't exist in the warehouse |
 
 ## `direct_join_to_source`
 
-Category: `modeling` · Default severity: `error` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph
 
 A model directly depends on both a source and a model.
 
@@ -57,7 +56,7 @@ A model directly depends on both a source and a model.
 
 ## `multiple_sources_joined`
 
-Category: `modeling` · Default severity: `error` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph
 
 A model directly depends on 2+ sources.
 
@@ -71,7 +70,7 @@ A model directly depends on 2+ sources.
 
 ## `source_fanout`
 
-Category: `modeling` · Default severity: `error` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph
 
 A source directly feeds too many models.
 
@@ -89,7 +88,7 @@ A source directly feeds too many models.
 
 ## `model_fanout`
 
-Category: `modeling` · Default severity: `error` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph
 
 A model directly feeds too many leaf models.
 
@@ -107,7 +106,7 @@ A model directly feeds too many leaf models.
 
 ## `root_models`
 
-Category: `modeling` · Default severity: `error` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph
 
 A model has no parents.
 
@@ -121,7 +120,7 @@ A model has no parents.
 
 ## `rejoining_upstream`
 
-Category: `modeling` · Default severity: `error` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph
 
 A redundant hop: A->B->C while A->C already exists.
 
@@ -135,7 +134,7 @@ A redundant hop: A->B->C while A->C already exists.
 
 ## `marts_depend_on_source`
 
-Category: `modeling` · Default severity: `error` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph
 
 A marts/intermediate model directly depends on a source.
 
@@ -182,7 +181,7 @@ Access: public without contract: enforced.
 
 ## `undocumented_models`
 
-Category: `documentation` · Default severity: `error` · Inputs: graph
+Category: `documentation` · Default severity: `warn` · Inputs: graph
 
 A model has no description.
 
@@ -200,7 +199,7 @@ A model has no description.
 
 ## `naming_conventions`
 
-Category: `structure` · Default severity: `error` · Inputs: graph
+Category: `structure` · Default severity: `warn` · Inputs: graph
 
 A model's name misses its layer's prefix.
 
@@ -214,7 +213,7 @@ A model's name misses its layer's prefix.
 
 ## `layer_violation`
 
-Category: `modeling` · Default severity: `error` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph
 
 A backward edge between logical layers.
 
@@ -364,20 +363,6 @@ A model has declared columns without descriptions.
 | ---- | ---- | ------- | ----------- |
 | `resource_types` | list of strings (one of `model` `snapshot` `seed` `source`) | `[model]` | resource kinds whose declared columns require descriptions |
 
-## `undocumented_public_models`
-
-Category: `governance` · Default severity: `warn` · Inputs: graph
-
-A public model lacks a model or column description.
-
-**Why:** access: public marks a model as the project's supported interface — the surface downstream teams build on. An undocumented public model advertises a contract nobody can read: consumers can't tell what a row means without asking.
-
-**Example:** rpt_revenue is access: public but has no description and two undocumented columns. Fix: document the model and every public column.
-
-**Fix:** document the model and every public column
-
-**Parameters:** none.
-
 ## `model_directories`
 
 Category: `structure` · Default severity: `warn` · Inputs: graph
@@ -500,7 +485,7 @@ A JOIN carries no join condition.
 
 ## `unknown_column_reference`
 
-Category: `sql` · Default severity: `warn` · Inputs: graph + parsed SQL
+Category: `sql` · Default severity: `error` · Inputs: graph + parsed SQL
 
 A model names a column a trusted upstream doesn't emit.
 

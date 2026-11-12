@@ -36,7 +36,7 @@ warning[select_star]: fct_daily_orders's final SELECT uses select * / t.*
 
 …
 
-Found 26 errors and 20 warnings in 21 files
+Found 10 errors and 36 warnings in 21 files
 16 rules reported findings; 2 skipped (need --catalog)
 ```
 
@@ -66,8 +66,9 @@ One findings list feeds every surface, so the numbers cannot drift apart:
 The rules span:
 
 - graph structure (`model_fanout`, `root_models`, `layer_violation`, and more)
-- governance (`missing_primary_key_tests`, `naming_conventions`, and more)
-- a warn-severity tier (`unused_sources`, `incremental_without_unique_key`, and more)
+- governance (`missing_primary_key_tests`, `naming_conventions`, `public_models_without_contract`, and more)
+- documentation and metadata (`undocumented_models`, `undocumented_columns`, `required_meta_keys`, and more)
+- source and performance checks (`unused_sources`, `incremental_without_unique_key`, and more)
 - SQL-content checks (`select_star`, `hard_coded_references`, `cartesian_join`, and more)
 - warehouse drift checks against `catalog.json` (`warehouse_type_drift`, `columns_missing_in_warehouse`)
 
@@ -84,7 +85,7 @@ dbtl lint --explain model_fanout  # rationale, example, fix guidance, params, do
 
 ## Severities and fail_on
 
-Every finding carries the severity its rule resolves to. The original twelve structure rules are `error`. The later graph, metadata, SQL, and catalog rules ship at `warn`. The `fail_on` threshold decides what fails the run:
+Every finding carries the severity its rule resolves to. Only the rules that flag a broken guarantee or a build-time failure ship at `error` — `missing_primary_key_tests`, `public_models_without_contract`, and `unknown_column_reference`. Every other rule ships at `warn` so it reports without gating; opt a rule into `error` with `severity: error` in `.dbtl.yml` when it should fail your builds. The `fail_on` threshold decides what fails the run:
 
 | `fail_on` | Result |
 | --------- | ------ |

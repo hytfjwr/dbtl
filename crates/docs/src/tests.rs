@@ -964,7 +964,7 @@ fn node_pages_list_their_lint_violations_from_the_same_findings() {
     );
     let pos_cat = file(&out, "models/model.jaffle_finance.pos_cat.md");
     assert!(
-        pos_cat.contains("## Lint violations\n\n- `direct_join_to_source` (error): pos_cat"),
+        pos_cat.contains("## Lint violations\n\n- `direct_join_to_source` (warn): pos_cat"),
         "the finding renders with its severity on the violating node's page"
     );
     // A node with zero findings still gets a labeled section. The candidate
