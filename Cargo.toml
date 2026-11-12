@@ -29,7 +29,7 @@ strip = true
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.5.3"
+version = "0.6.0"
 rust-version = "1.88"
 edition = "2021"
 license = "MIT"
