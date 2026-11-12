@@ -123,7 +123,7 @@ pub(super) fn gates_section(report: &Report, ctx: &RenderCtx<'_>) -> String {
 
 /// The lint summary: counted findings split by severity with the file
 /// tally, baselined and `--diff`-suppressed tallies in parentheses, then
-/// the reported/skipped rule line — and the unparseable-SQL line when its
+/// the reported/skipped rule line — and the unparsable-SQL line when its
 /// tally lands (the slot is in place; nothing fills it yet).
 pub(super) fn summary_lines(report: &Report, lint: &LintTally, styled: bool) -> String {
     let (mut errors, mut warnings, mut baselined, mut reported_rules) =
@@ -199,7 +199,7 @@ pub(super) fn summary_lines(report: &Report, lint: &LintTally, styled: bool) -> 
     let mut lines = vec![first, second];
     if lint.unparsed_models > 0 {
         lines.push(format!(
-            "{} skipped SQL rules (unparseable SQL)",
+            "{} skipped SQL rules (unparsable SQL)",
             counted(lint.unparsed_models, "model", "models"),
         ));
     }

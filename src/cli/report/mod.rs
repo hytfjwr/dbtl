@@ -138,7 +138,7 @@ pub struct ReportSummary {
 /// The lint-run tallies the `text`/`concise` summary lines need that the
 /// gate list alone can't express: findings `--diff` suppressed before
 /// counting, whether the `new` wording applies, the enabled-but-unrunnable
-/// rules, and a slot for the unparseable-SQL tally. Carried on
+/// rules, and a slot for the unparsable-SQL tally. Carried on
 /// [`Report::lint`] — never serialized; the json report's `summary` block
 /// keeps its own shape.
 #[derive(Debug, Clone, Default)]
