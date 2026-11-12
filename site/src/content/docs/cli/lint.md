@@ -13,7 +13,7 @@ dbtl lint --rules root_models,model_fanout  # a named subset
 dbtl lint --fail-on warn                    # fail on warnings too
 ```
 
-Text output is one annotated block per finding: an `error[rule]`/`warning[rule]` header, a `--> file[:line[:column]]` position, the source excerpt with the span underlined when it resolves, and `= help:`/`= docs:` footers. Findings in a properties `.yml` (descriptions, tests, freshness, contract columns) point at the `- name:` entry's line and column; a `.sql` finding points at the offending syntax (the wildcard, relation name, joined table, column reference, or regex match) when the rule can pin it exactly. A closing tally reads `Found N errors and M warnings in K files` — with `K baselined`/`K pre-existing, not counted` in parentheses when a baseline or `--diff` suppresses findings — plus `N rules reported findings; M skipped (need --catalog)` and, when models carried SQL the parser could not read, `N models skipped SQL rules (unparsable SQL)`.
+Text output is one annotated block per finding: an `error[rule]`/`warning[rule]` header, a `--> file[:line[:column]]` position, the source excerpt with the span underlined when it resolves, and `= help:`/`= docs:` footers. Findings in a properties `.yml` (descriptions, tests, freshness, contract columns) point at the `- name:` entry's line and column; a `.sql` finding points at the offending syntax (the wildcard, relation name, joined table, column reference, regex match, trailing semicolon, duplicated output column, unread CTE, or unbounded `ORDER BY`) when the rule can pin it exactly. A closing tally reads `Found N errors and M warnings in K files` — with `K baselined`/`K pre-existing, not counted` in parentheses when a baseline or `--diff` suppresses findings — plus `N rules reported findings; M skipped (need --catalog)` and, when models carried SQL the parser could not read, `N models skipped SQL rules (unparsable SQL)`.
 
 ```text
 error[public_models_without_contract]: fct_public_api is access: public without an enforced contract
@@ -69,7 +69,7 @@ The rules span:
 - governance (`missing_primary_key_tests`, `naming_conventions`, `public_models_without_contract`, `references_deprecated_model`, and more)
 - documentation and metadata (`undocumented_models`, `undocumented_columns`, `required_meta_keys`, and more)
 - source and performance checks (`unused_sources`, `unused_models`, `incremental_without_unique_key`, and more)
-- SQL-content checks (`select_star`, `hard_coded_references`, `cartesian_join`, and more)
+- SQL-content checks (`select_star`, `hard_coded_references`, `cartesian_join`, `trailing_semicolon`, `duplicate_output_columns`, `unused_cte`, `order_by_without_limit`, and more)
 - warehouse drift checks against `catalog.json` (`warehouse_type_drift`, `columns_missing_in_warehouse`, `undeclared_warehouse_columns`)
 
 The [lint rules reference](../reference/lint-rules.md) lists every rule with its category, default severity, inputs, rationale, fix guidance, and parameters.
@@ -85,7 +85,7 @@ dbtl lint --explain model_fanout  # rationale, example, fix guidance, params, do
 
 ## Severities and fail_on
 
-Every finding carries the severity its rule resolves to. Only the rules that flag a broken guarantee or a build-time failure ship at `error` — `missing_primary_key_tests`, `public_models_without_contract`, and `unknown_column_reference`. Every other rule ships at `warn` so it reports without gating; opt a rule into `error` with `severity: error` in `.dbtl.yml` when it should fail your builds. The `fail_on` threshold decides what fails the run:
+Every finding carries the severity its rule resolves to. Only the rules that flag a broken guarantee or a build-time failure ship at `error` — `missing_primary_key_tests`, `public_models_without_contract`, `unknown_column_reference`, `trailing_semicolon` (a tail `;` splits dbt's `create … as (…)` wrapper), and `duplicate_output_columns` (the warehouse can't tell two same-named columns apart). Every other rule ships at `warn` so it reports without gating; opt a rule into `error` with `severity: error` in `.dbtl.yml` when it should fail your builds. The `fail_on` threshold decides what fails the run:
 
 | `fail_on` | Result |
 | --------- | ------ |

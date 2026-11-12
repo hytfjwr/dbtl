@@ -144,6 +144,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reads `semantic_models:` entries — including `enabled: false` under
   either spelling — so a model consumed only by the semantic layer
   answers "used" exactly like manifest mode.
+- Four lint rules (36 → 40). `trailing_semicolon` (error, graph-only —
+  it reads `raw_code`, so it runs even where no SQL parser is available)
+  flags a model whose SQL ends with a `;` after trailing whitespace,
+  comments, and non-outputting Jinja tags are discounted, and points at
+  the semicolon itself; `duplicate_output_columns` (error) flags a final
+  SELECT emitting one output name twice — unquoted names compare
+  case-insensitively, quoted names case-sensitively, and an expandable
+  wildcard's carried columns count — pointing the primary position at
+  the repeated name's second occurrence; `unused_cte` (warn) flags a
+  WITH clause nothing reads, from the body, a sibling CTE, or a nested
+  query — a recursive CTE's self-reference never counts; and
+  `order_by_without_limit` (warn) flags a final `ORDER BY` with no
+  `LIMIT`/`FETCH`/`TOP` (an `OFFSET` alone is not a bound), pointing at
+  the sort expressions. Python models are out of scope, and any position
+  the raw source can't confirm is left file-scoped rather than guessed.
 
 ### Changed
 

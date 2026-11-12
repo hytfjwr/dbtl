@@ -125,6 +125,15 @@ pub enum LintRule {
     /// Warehouse columns the catalog reports but the node doesn't declare
     /// (needs a catalog) — docs/schema.yml coverage, not a type question.
     UndeclaredWarehouseColumns,
+    /// A model's SQL file effectively ends with `;` — the terminator
+    /// breaks the `create … as (…)` dbt wraps the model in.
+    TrailingSemicolon,
+    /// A model's output-defining SELECT emits the same column name twice.
+    DuplicateOutputColumns,
+    /// A `WITH` CTE nothing in the model reads.
+    UnusedCte,
+    /// A model's final query has `ORDER BY` with no LIMIT/FETCH/TOP.
+    OrderByWithoutLimit,
 }
 
 impl LintRule {
@@ -132,7 +141,7 @@ impl LintRule {
     /// order of the enum and of [`REGISTRY`]. The original structure rules
     /// lead; rules added later append in registry order so the emitted
     /// sequence stays stable.
-    pub const ALL: [LintRule; 36] = [
+    pub const ALL: [LintRule; 40] = [
         Self::DirectJoinToSource,
         Self::MultipleSourcesJoined,
         Self::SourceFanout,
@@ -169,6 +178,10 @@ impl LintRule {
         Self::UnusedModels,
         Self::ReferencesDeprecatedModel,
         Self::UndeclaredWarehouseColumns,
+        Self::TrailingSemicolon,
+        Self::DuplicateOutputColumns,
+        Self::UnusedCte,
+        Self::OrderByWithoutLimit,
     ];
 
     /// This rule's registry row — every rule has exactly one (drift-tested).

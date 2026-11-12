@@ -18,6 +18,7 @@ use sqlparser::dialect::Dialect;
 use sqlparser::parser::Parser;
 
 use super::ast::query_wildcard_items;
+use super::facts::{outer_order_by_span, output_name_occurrences};
 use super::jinja::{render_jinja_mapped, JinjaMark};
 use super::scan::{scan_statements, scan_statements_positions};
 
@@ -36,6 +37,18 @@ pub struct SqlPositions {
     /// `(normalized last part, range)` of every column reference — the
     /// pool `unknown_column_reference` matches names against.
     pub columns: Vec<(String, Range<usize>)>,
+    /// `(normalized name, occurrence ranges)` per named output in the
+    /// raw render's output-defining SELECT — `duplicate_output_columns`
+    /// pairs a judged name only when the raw parse counted it exactly
+    /// once or the same number of times (the shared name/count key).
+    pub output_names: Vec<(String, Vec<Range<usize>>)>,
+    /// `(normalized name, alias-name range)` per `WITH` CTE the raw
+    /// render declares but never reads — `unused_cte`'s declarations.
+    pub unused_ctes: Vec<(String, Range<usize>)>,
+    /// The outermost `ORDER BY`'s expression range when the raw render's
+    /// final query also sorts unbounded — `order_by_without_limit` (the
+    /// `ORDER BY` keyword itself isn't in the span).
+    pub order_by: Option<Range<usize>>,
 }
 
 /// The `Marked`-render scan `hard_coded_references` reads: the
@@ -64,6 +77,24 @@ pub(super) fn plain_positions(raw: &str, dialect: &dyn Dialect) -> Option<SqlPos
             }
         }
     }
+    // The judged-query extractors re-run on the raw render's first Query
+    // — the same statement `compute_analyzed` picks for its facts — so a
+    // span can't be invented for a name the raw text never duplicated.
+    if let Some(q) = stmts.iter().find_map(|s| match s {
+        Statement::Query(q) => Some(&**q),
+        _ => None,
+    }) {
+        for (name, spans) in output_name_occurrences(q) {
+            let ranges: Vec<Range<usize>> = spans
+                .iter()
+                .filter_map(|s| rendered.span_source(*s))
+                .collect();
+            if ranges.len() == spans.len() {
+                out.output_names.push((name, ranges));
+            }
+        }
+        out.order_by = outer_order_by_span(q).and_then(|s| rendered.span_source(s));
+    }
     let scan = scan_statements_positions(&stmts);
     for span in &scan.cartesian_spans {
         if let Some(r) = rendered.span_source(*span) {
@@ -73,6 +104,13 @@ pub(super) fn plain_positions(raw: &str, dialect: &dyn Dialect) -> Option<SqlPos
     for (name, span) in &scan.column_refs {
         if let Some(r) = rendered.span_source(*span) {
             out.columns.push((name.clone(), r));
+        }
+    }
+    for (i, (name, span)) in scan.cte_defs.iter().enumerate() {
+        if !scan.cte_uses.contains(&i) {
+            if let Some(r) = rendered.span_source(*span) {
+                out.unused_ctes.push((name.clone(), r));
+            }
         }
     }
     Some(out)

@@ -144,6 +144,19 @@ pub(super) struct Analyzed {
     /// (a still-named dead column means the query can't run); everywhere
     /// else an unresolved ref contributes no edge, same as before.
     pub(super) unresolved: ColSources,
+    /// `(normalized name, occurrence count)` of every output column name
+    /// the output-defining SELECT emits more than once — the
+    /// `duplicate_output_columns` lint input, from the same judged query
+    /// (`res.out` counts — wildcard-expanded where bindings resolve).
+    pub(super) duplicate_outputs: Vec<(String, usize)>,
+    /// Normalized names of `WITH` CTEs nothing reads — the `unused_cte`
+    /// lint input, the complement of the relation scan's `cte_uses`
+    /// (traversal order; nested queries' CTEs included).
+    pub(super) unused_ctes: Vec<String>,
+    /// The final query's `ORDER BY` lacks a `LIMIT`/`FETCH`/`TOP` bound —
+    /// the `order_by_without_limit` lint input
+    /// (`facts::outer_order_by_span`).
+    pub(super) unlimited_order_by: bool,
 }
 
 /// Per-query context: the `Dag`, the model's direct-parent matcher table,

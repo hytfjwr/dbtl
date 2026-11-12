@@ -242,8 +242,9 @@ fn warn_severity_rules_match_frozen_fixture_counts() {
     let outcome = run_rules(dbtl::LintInput::new(&dag, &cfg));
     // Graph-only input: every enabled SQL/catalog-backed rule reports
     // skipped — informational only, adding nothing to `findings`.
-    // (unknown_column_reference is error-default, so it's switched off
-    // above and never reaches the skip list.)
+    // (unknown_column_reference, trailing_semicolon and
+    // duplicate_output_columns are error-default, so they're switched
+    // off above and never reach the skip list.)
     let skipped: Vec<_> = outcome.skipped.iter().map(|s| s.rule.name()).collect();
     assert_eq!(
         skipped,
@@ -255,6 +256,8 @@ fn warn_severity_rules_match_frozen_fixture_counts() {
             "warehouse_type_drift",
             "columns_missing_in_warehouse",
             "undeclared_warehouse_columns",
+            "unused_cte",
+            "order_by_without_limit",
         ],
         "the enabled aux-backed rules skip in registry order"
     );
