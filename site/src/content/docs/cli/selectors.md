@@ -44,13 +44,13 @@ fct_*                            # a glob
 | ------- | -------------- |
 | TUI list search | Press `/` and start the query with `!`, for example `!tag:nightly`, `!+fct_orders`, `!meta:owner=alice`, or `!state:modified+` when a `--diff` baseline is loaded. |
 | TUI full-text search | Start the query with `?` to search descriptions, column names, and raw SQL instead. |
-| `dbtl --select <spec>` | Start the TUI with a model selected. Accepts the same selectors except `state:`, and picks the first matching model. |
+| `dbtl --select <spec>` | Start the TUI with a model selected. Accepts the same selectors except `state:`; the spec's first match opens in a tab, and it must be a model. |
 | `dbtl ls <SELECTOR>...` | List the matching nodes. See [dbtl ls](ls.md). |
 | `--select` on `check`, `lint`, `impact`, `docs` | Scope the command to the matching nodes. Repeatable. Specs union. |
 | `--exclude` on `ls` and `docs` | Subtract matches after the union. Repeatable. |
 | `.dbtl.yml` `exclude:` | Drop lint findings on matching nodes. See [Project config](../configuration/project-config.md). |
 
-The `--select` flag on subcommands and the `--select` flag on the TUI take different input. On `check`, `lint`, `impact`, and `docs` it is a full selector spec and can be repeated. On the bare `dbtl` command it is a model name or spec that picks one model to open. `state:` is unavailable there because the selection resolves before `--diff` loads.
+The `--select` flag on subcommands and the `--select` flag on the TUI take different input. On `check`, `lint`, `impact`, and `docs` it is a full selector spec and can be repeated. On the bare `dbtl` command it is a model name or a spec whose first match — which must be a model — opens in a model tab. `state:` is unavailable there because the selection resolves before `--diff` loads.
 
 ## Exclude
 
