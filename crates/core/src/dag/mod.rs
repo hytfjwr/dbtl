@@ -13,8 +13,8 @@ use anyhow::Result;
 
 use crate::compiled::{CompiledOrigin, CompiledSql};
 use crate::manifest::{
-    load_manifest, RawDoc, RawExposure, RawFreshnessThreshold, RawMacro, RawManifest, RawNode,
-    RawSource,
+    load_manifest, RawConstraint, RawDoc, RawExposure, RawFreshnessThreshold, RawMacro,
+    RawManifest, RawNode, RawSource,
 };
 
 /// A merged, prefix-resolved entry in the unified node map.
@@ -49,6 +49,16 @@ pub struct NodeInfo {
 /// source of truth for the coverage lens, the list tint, and the coverage %.
 pub fn coverage_gap(n: &NodeInfo) -> bool {
     matches!(n.resource_type.as_str(), "model" | "snapshot" | "seed") && n.test_count == 0
+}
+
+/// Whether a description string carries no real content — the whitespace-only
+/// case (`" "`, `"\n  "`) that every "is it documented?" judgment must treat
+/// as missing (absence itself is `Option`'s job). The single shared predicate
+/// behind `clean_desc` (model descriptions), the column-description filter in
+/// `columns_from` (both load modes), and the doc-coverage gate's
+/// `column_documented`.
+pub fn description_blank(s: &str) -> bool {
+    s.trim().is_empty()
 }
 
 /// Whether a node is a declared downstream consumer (an exposure). Pure over
@@ -184,6 +194,31 @@ pub struct ColumnInfo {
     pub name: String,
     pub data_type: Option<String>,
     pub description: Option<String>,
+    /// The column-level `constraints:` (a column's constraint covers itself —
+    /// `columns` stays empty on the domain side; the wire omits the key).
+    pub constraints: Vec<ConstraintInfo>,
+}
+
+/// A `constraints:` entry, carried verbatim minus dbt's adapter bookkeeping
+/// (`warn_unenforced`/`warn_unsupported`). Model-level constraints hang off
+/// [`NodeDetail::constraints`]; column-level off [`ColumnInfo::constraints`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConstraintInfo {
+    /// `primary_key` / `not_null` / `foreign_key` / `unique` / `check` /
+    /// `custom` — empty when dbt recorded no `type` (it always does).
+    pub constraint_type: String,
+    /// The constraint's `name:` override (mostly used by `check`).
+    pub name: Option<String>,
+    /// The `check` (or `expression`-carrying) constraint's SQL text.
+    pub expression: Option<String>,
+    /// A `foreign_key` constraint's target (`ref('x')`/`source('a','b')`
+    /// expression or a bare model name).
+    pub to: Option<String>,
+    /// The referenced columns for `foreign_key`.
+    pub to_columns: Vec<String>,
+    /// The model columns a model-level constraint covers (always empty for
+    /// column-level constraints).
+    pub columns: Vec<String>,
 }
 
 /// A test attached to a node, captured *pre-prune* (tests are excluded from the
@@ -310,6 +345,23 @@ pub struct NodeDetail {
     pub group: Option<String>,
     /// `contract.enforced` — declared columns are the enforced schema.
     pub contract_enforced: bool,
+    // --- model configuration (the rest of the governance-adjacent fields) ---
+    /// `config.incremental_strategy` — `append` / `merge` / `delete+insert` /
+    /// `insert_overwrite` / `microbatch`; `None` when undeclared (dbt falls
+    /// back to the adapter default).
+    pub incremental_strategy: Option<String>,
+    /// `deprecation_date` — when the model stops being supported, kept as the
+    /// recorded string (manifest mode carries dbt's ISO timestamp, source
+    /// mode the declared date text — the consistency suite compares the
+    /// date portion).
+    pub deprecation_date: Option<String>,
+    /// The node's `language` — `"sql"` for everything source mode collects
+    /// (it only scans .sql), `"python"` for python models in a manifest.
+    /// `None` on seeds / non-buildable nodes.
+    pub language: Option<String>,
+    /// The model-level `constraints:` list (column-level constraints live on
+    /// [`ColumnInfo::constraints`]).
+    pub constraints: Vec<ConstraintInfo>,
     /// This node's version name, when the model is versioned.
     pub version: Option<String>,
     /// The newest version's name, when the model is versioned.

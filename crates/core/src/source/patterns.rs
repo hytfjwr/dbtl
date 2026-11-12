@@ -198,6 +198,31 @@ pub(super) fn config_alias(sql: &str) -> Option<String> {
         .next_back()
 }
 
+/// The string literal bound to `config(<name>='…')` across the file's
+/// config() calls — the LAST resolvable literal wins (the same ordered
+/// application `materialized`/`alias` follow). Shared by the string-valued
+/// governance/config kwargs (`access`, `group`, `incremental_strategy`).
+pub(super) fn config_string(sql: &str, name: &str) -> Option<String> {
+    config_kwarg_exprs(sql, name)
+        .into_iter()
+        .filter_map(|expr| match lit_value(expr) {
+            Some(serde_json::Value::String(s)) => Some(s),
+            _ => None,
+        })
+        .next_back()
+}
+
+/// The `contract` declaration from the file's `config(contract=…)` calls —
+/// a dict literal (`{'enforced': True}`) or a bare bool shorthand, LAST
+/// resolvable wins. An unresolvable expression can't override an earlier
+/// literal (same stance `config_meta`/`config_unique_key` take).
+pub(super) fn config_contract(sql: &str) -> Option<RawContract> {
+    config_kwarg_exprs(sql, "contract")
+        .into_iter()
+        .filter_map(|expr| contract_value(&lit_value(expr)?))
+        .next_back()
+}
+
 /// The argument text of EVERY `config(…)` call in `sql`, in order — each
 /// string is the text between that call's parens, found by a balanced-
 /// paren/quote scan so nested `(`/`)` inside dicts or macro calls can't end

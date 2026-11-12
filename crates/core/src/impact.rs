@@ -573,13 +573,14 @@ pub fn model_documented(detail: &NodeDetail) -> bool {
 
 /// Whether a declared column counts as documented — a description that is
 /// present AND non-blank: a whitespace-only `description: " "` counts as
-/// missing. Deliberately tighter than the `undocumented_columns` lint rule's
-/// `is_none()` (the lint flags only absent descriptions; the gate measures
-/// real documentation, and a filler string isn't it).
+/// missing. The loaders already normalize a blank column description to
+/// `None` via the shared [`crate::dag::description_blank`] predicate, so the
+/// `undocumented_columns` lint rule's `is_none()` lands on the same set —
+/// this predicate stays for the hand-built-manifest edge a loader never saw.
 fn column_documented(col: &ColumnInfo) -> bool {
     col.description
         .as_deref()
-        .is_some_and(|d| !d.trim().is_empty())
+        .is_some_and(|d| !crate::dag::description_blank(d))
 }
 
 /// The `(documented, total)` description-coverage pair over the documentable

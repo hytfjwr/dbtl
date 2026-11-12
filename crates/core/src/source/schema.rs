@@ -105,6 +105,22 @@ pub(super) struct SchemaModel {
     /// for a `{% snapshot %}`-block snapshot (its relation is implicit).
     #[serde(default, deserialize_with = "de_opt_string")]
     pub(super) relation: Option<String>,
+    /// Top-level `access:` / `group:` — dbt accepts these as bare model
+    /// properties AND under `config:` (declaring both is a dbt parse error;
+    /// `config:` wins here, the same convention `meta:` follows).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) access: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) group: Option<String>,
+    /// `deprecation_date:` — a model property (never a `config:` key).
+    /// dbt validates it's a date; kept as the declared string.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) deprecation_date: Option<String>,
+    /// The model-level `constraints:` list — the manifest wire shape
+    /// (`{type, columns, …}`); column-level constraints live on
+    /// [`SchemaColumn::constraints`]. A property, not a `config:` key.
+    #[serde(default)]
+    pub(super) constraints: Vec<RawConstraint>,
     /// Top-level `meta:` dict — dbt treats it as equivalent to
     /// `config.meta` (both together are a dbt parse error; here it merges
     /// with `config.meta` winning per key). Kept as raw `Value` so a
@@ -130,6 +146,21 @@ pub(super) struct SchemaConfig {
     /// both to `Vec<String>`.
     #[serde(default)]
     pub(super) unique_key: serde_json::Value,
+    /// `config: access:` / `config: group:` — the schema.yml spelling of the
+    /// model governance configs (`+access`/`+group` and in-file
+    /// `config(access=…)` are the other two intake paths).
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) access: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) group: Option<String>,
+    /// `config: contract:` — dbt's canonical `{enforced: bool}` object (kept
+    /// raw; a bare bool is tolerated as `enforced: <bool>` downstream).
+    #[serde(default)]
+    pub(super) contract: serde_json::Value,
+    /// `config: incremental_strategy:` — `append` / `merge` /
+    /// `delete+insert` / `insert_overwrite` / `microbatch`.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) incremental_strategy: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -140,6 +171,10 @@ pub(super) struct SchemaColumn {
     pub(super) data_type: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub(super) description: Option<String>,
+    /// The column-level `constraints:` list — dbt records it inside the
+    /// column object (no `columns` key — the constraint covers the column).
+    #[serde(default)]
+    pub(super) constraints: Vec<RawConstraint>,
     #[serde(default)]
     pub(super) tests: Vec<serde_json::Value>,
     #[serde(default)]

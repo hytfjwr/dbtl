@@ -20,6 +20,12 @@
 //!   comments exist, so a ref in a `--`/`/* */` comment IS a real dependency.
 //! - Materialization precedence is in-file `config()` > schema.yml `config:` >
 //!   `dbt_project.yml` tree (deepest path wins) > dbt's default `view`.
+//! - The governance configs follow the same chain: `access` (models only,
+//!   dbt's undeclared default is `protected`), `group`, `contract`, and
+//!   `incremental_strategy` resolve in-file `config()` > schema.yml
+//!   (top-level or `config:`) > `+`-prefixed tree keys. `deprecation_date`
+//!   and `constraints` are model properties — schema.yml is their only
+//!   intake. `language` is `"sql"` for `.sql`-defined models and snapshots.
 //! - Property yml files are read ONLY from the configured model/seed/snapshot
 //!   paths — never `target/`, `dbt_packages/`, or stray yml elsewhere.
 //! - `config(enabled=false)` (in-file) / `+enabled: false` (project tree) /
@@ -48,8 +54,9 @@ use yaml_rust2::parser::{Event, MarkedEventReceiver, Tag};
 use yaml_rust2::scanner::{Marker, TScalarStyle};
 
 use crate::{
-    Dag, RawConfig, RawDependsOn, RawDoc, RawExposure, RawExposureOwner, RawFreshness,
-    RawFreshnessThreshold, RawManifest, RawMetadata, RawNode, RawSource, RawTestMetadata,
+    Dag, RawConfig, RawConstraint, RawContract, RawDependsOn, RawDoc, RawExposure,
+    RawExposureOwner, RawFreshness, RawFreshnessThreshold, RawManifest, RawMetadata, RawNode,
+    RawSource, RawTestMetadata,
 };
 
 /// Parse a dbt project directory and build its [`Dag`] from source.
@@ -149,6 +156,10 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
     // (in-file config() > schema.yml config: > tree), the whole declared
     // value (dbt accepts a string or a string list).
     let mut tree_uk: HashMap<String, serde_json::Value> = HashMap::new();
+    // uid -> the whole resolved tree config, for the governance keys
+    // (`+access`/`+group`/`+contract`/`+incremental_strategy`) — the same
+    // lowest-precedence slot `tree_mat`/`tree_uk` occupy.
+    let mut tree_gov: HashMap<String, TreeConfig> = HashMap::new();
 
     // --- docs blocks (.md) ---
     // dbt renders `{{ doc('x') }}` in descriptions from `{% docs x %}…{% enddocs %}`
@@ -228,6 +239,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
         if let Some(uk) = &tree.unique_key {
             tree_uk.insert(uid.clone(), uk.clone());
         }
+        tree_gov.insert(uid.clone(), tree.clone());
         nodes.insert(
             uid.clone(),
             RawNode {
@@ -241,7 +253,17 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                     // precedence level — the same chain `materialized`
                     // follows (schema.yml and the tree fill below it).
                     unique_key: config_unique_key(&stripped),
+                    // Same chain for `config(incremental_strategy=…)`.
+                    incremental_strategy: config_string(&stripped, "incremental_strategy"),
                 },
+                // The in-file `config(…)` spellings of the model governance
+                // fields — each the highest level of the same precedence
+                // chain (`access`/`contract` are model-only; `group` is not).
+                access: config_string(&stripped, "access"),
+                group: config_string(&stripped, "group"),
+                contract: config_contract(&stripped),
+                // dbt records `language: "sql"` on every .sql-defined model.
+                language: Some("sql".to_string()),
                 // In-file `config(meta={…})` is the HIGHEST precedence level;
                 // schema.yml and the project tree merge under it per key.
                 meta: config_meta(&stripped).unwrap_or_default(),
@@ -284,6 +306,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
         if let Some(uk) = &tree.unique_key {
             tree_uk.insert(uid.clone(), uk.clone());
         }
+        tree_gov.insert(uid.clone(), tree.clone());
         nodes.insert(
             uid.clone(),
             RawNode {
@@ -343,6 +366,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             if let Some(uk) = &tree.unique_key {
                 tree_uk.insert(uid.clone(), uk.clone());
             }
+            tree_gov.insert(uid.clone(), tree.clone());
             nodes.insert(
                 uid.clone(),
                 RawNode {
@@ -356,7 +380,13 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                         // block carries `unique_key` — extracted file-wide
                         // like the other pattern extractors.
                         unique_key: config_unique_key(&stripped),
+                        ..Default::default()
                     },
+                    // Snapshots can sit in a dbt `group`; `access`/`contract`
+                    // stay None — dbt records them on models only.
+                    group: config_string(&stripped, "group"),
+                    // dbt records `language: "sql"` on .sql-defined snapshots.
+                    language: Some("sql".to_string()),
                     // The `{{ config(…) }}` inside a `{% snapshot %}` block is
                     // extracted file-wide like the other pattern extractors
                     // (multi-block files share the config — rare).
@@ -469,6 +499,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             if let Some(uk) = &tree.unique_key {
                 tree_uk.insert(uid.clone(), uk.clone());
             }
+            tree_gov.insert(uid.clone(), tree.clone());
             // dbt records a YAML-defined snapshot's `path` as a virtual
             // `<name>.sql` (there is no real .sql file; dbt ≤1.11 prefixed the
             // declaring yml, 1.12 records the bare name — the loader tracks the
@@ -485,6 +516,8 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                         materialized: Some("snapshot".to_string()),
                         ..Default::default()
                     },
+                    // dbt records `language: "sql"` on YAML snapshots too.
+                    language: Some("sql".to_string()),
                     raw_code: Some(sql.clone()),
                     ..Default::default()
                 },
@@ -572,7 +605,12 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                             .clone()
                             .map(|d| docs.render(&d, &mut warnings)),
                         columns: columns_json(&tbl.columns, &docs, &mut warnings),
-                        schema: src.schema.clone(),
+                        // A source with no `schema:` resolves to the SOURCE
+                        // NAME — dbt's default (verified on 1.12.6), not null:
+                        // two tables under schema-less sources of the same
+                        // name are the same relation, which `duplicate_sources`
+                        // can only see once the default is recorded.
+                        schema: src.schema.clone().or_else(|| Some(src.name.clone())),
                         database: src.database.clone(),
                         // schema.yml's `identifier:` — the source table's real
                         // warehouse name when it differs from `name`.
@@ -739,6 +777,30 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
         // bare string or a string list; `Dag::build` normalizes either).
         if node.config.unique_key.is_none() {
             node.config.unique_key = tree_uk.get(uid).cloned();
+        }
+        // The governance keys — the tree is again the lowest rung, filling
+        // only what in-file `config()` and schema.yml left unset.
+        // `group` is resource-agnostic; `access`/`contract`/
+        // `incremental_strategy` are model-only in dbt. An undeclared
+        // model's `access` lands on dbt's `protected` default (verified:
+        // every undeclared model records it on the wire); the other fields
+        // simply stay absent.
+        let gov = tree_gov.get(uid);
+        if node.group.is_none() {
+            node.group = gov.and_then(|g| g.group.clone());
+        }
+        if node.resource_type == "model" {
+            if node.access.is_none() {
+                node.access = gov
+                    .and_then(|g| g.access.clone())
+                    .or_else(|| Some("protected".to_string()));
+            }
+            if node.contract.is_none() {
+                node.contract = gov.and_then(|g| g.contract.clone());
+            }
+            if node.config.incremental_strategy.is_none() {
+                node.config.incremental_strategy = gov.and_then(|g| g.incremental_strategy.clone());
+            }
         }
     }
 

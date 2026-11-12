@@ -1,0 +1,32 @@
+version: 2
+
+# `shared` omits `schema:` — dbt defaults it to the source NAME, so
+# `shared.payments` resolves to the very relation `ledger.payments`
+# declares (schema: shared): the `duplicate_sources` pair.
+sources:
+  - name: ledger
+    database: analytics
+    schema: shared
+    freshness:
+      warn_after: {count: 24, period: hour}
+    tables:
+      - name: payments
+        description: "Ledger payments feed"
+  - name: shared
+    database: analytics
+    freshness:
+      warn_after: {count: 24, period: hour}
+    tables:
+      - name: payments
+        description: "Shared payments feed — the same relation as ledger.payments"
+
+models:
+  - name: stg_dup_probe
+    description: "Reads both duplicate source relations"
+    columns:
+      - name: id
+        data_type: integer
+        description: "Payment id"
+        tests:
+          - unique
+          - not_null
