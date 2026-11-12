@@ -348,7 +348,9 @@ jobs:
         run: |
           body="$RUNNER_TEMP/perf-comment-body.md"
           update_only=false
-          if [ -f "$ARTIFACT_DIR/report.md" ]; then
+          # `-s` also rejects an empty file — an empty report is as
+          # unmeasurable as a missing one.
+          if [ -s "$ARTIFACT_DIR/report.md" ]; then
             {
               printf '%s\n\n' "$DBTL_COMMENT_MARKER"
               cat "$ARTIFACT_DIR/report.md"
