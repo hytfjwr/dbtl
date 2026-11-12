@@ -30,7 +30,7 @@ Top-level flags that configure the interactive app. An explicit occurrence next 
 | `-v` | — | — | — | Print version information and exit (lowercase alias of `-V`/`--version`) |
 | `--ascii` | — | — | `false` | Force pure-ASCII glyphs (boxes/borders/markers). Default: probe the terminal |
 | `--unicode` | — | — | `false` | Force Unicode box-drawing glyphs, skipping the terminal probe |
-| `--select` | `<SELECT>` | — | — | Start the TUI on a model's tab: a model name (e.g. `stg_orders`), or a dbt selector spec — the spec's first match opens in a tab, and it must be a model. `state:` atoms can't match: the `--diff` baseline loads after this flag resolves |
+| `--select` | `<SELECT>` | — | — | Start the TUI on a model's tab: a model name (e.g. `stg_orders`), or a dbt selector spec — its first match opens in a tab, and it must be a model. `state:` atoms can't match: the `--diff` baseline loads after this flag resolves |
 | `--watch` | — | — | `false` | Auto-reload when the data source changes on disk (the manifest file, or any .sql/.yml/.csv under the project dir in source mode) |
 | `--theme` | `<THEME>` | `DBTL_THEME` | — | Color theme: a preset name (see --list-themes), a theme under ~/.config/dbtl/themes/<name>.yml, or a path to a theme YAML file |
 | `--list-themes` | — | — | `false` | List the available color themes (presets + user theme files) and exit |
