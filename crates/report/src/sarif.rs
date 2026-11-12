@@ -10,7 +10,7 @@ use super::*;
 use serde_json::json;
 
 pub fn render(report: &Report, ctx: &RenderCtx<'_>) -> String {
-    let rules: Vec<serde_json::Value> = dbtl::REGISTRY
+    let rules: Vec<serde_json::Value> = dbtl_core::REGISTRY
         .iter()
         .map(|info| {
             json!({
@@ -97,17 +97,17 @@ pub fn render(report: &Report, ctx: &RenderCtx<'_>) -> String {
 }
 
 /// SARIF `level` vocabulary — `dbtl`'s `warn` maps to `warning`.
-fn sarif_level(severity: dbtl::Severity) -> &'static str {
+fn sarif_level(severity: dbtl_core::Severity) -> &'static str {
     match severity {
-        dbtl::Severity::Error => "error",
-        dbtl::Severity::Warn => "warning",
+        dbtl_core::Severity::Error => "error",
+        dbtl_core::Severity::Warn => "warning",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::report::samples::*;
+    use crate::samples::*;
 
     /// The document shape: SARIF 2.1.0, the driver's rule table is exactly
     /// the registry, and only counted node-bound findings land in `results`.
@@ -127,8 +127,10 @@ mod tests {
             .iter()
             .map(|r| r["id"].as_str().unwrap().to_string())
             .collect();
-        let registry_ids: std::collections::BTreeSet<String> =
-            dbtl::REGISTRY.iter().map(|i| i.id.to_string()).collect();
+        let registry_ids: std::collections::BTreeSet<String> = dbtl_core::REGISTRY
+            .iter()
+            .map(|i| i.id.to_string())
+            .collect();
         assert_eq!(rule_ids, registry_ids, "driver declares the whole registry");
 
         let results = doc["runs"][0]["results"].as_array().unwrap();
@@ -172,11 +174,11 @@ mod tests {
         let rules = doc["runs"][0]["tool"]["driver"]["rules"]
             .as_array()
             .unwrap();
-        for (r, info) in rules.iter().zip(dbtl::REGISTRY.iter()) {
+        for (r, info) in rules.iter().zip(dbtl_core::REGISTRY.iter()) {
             assert_eq!(r["help"]["text"], info.help, "{} help.text", info.id);
             assert_eq!(
                 r["helpUri"],
-                format!("{}#{}", dbtl::LINT_RULE_DOCS_BASE, info.id),
+                format!("{}#{}", dbtl_core::LINT_RULE_DOCS_BASE, info.id),
                 "{} helpUri",
                 info.id
             );
@@ -192,14 +194,14 @@ mod tests {
         r.gates = vec![gate(
             "lint:root_models",
             "lint root_models",
-            dbtl::Severity::Error,
+            dbtl_core::Severity::Error,
             GateStatus::Fail,
             "lint root_models: 1 violation(s): a",
             vec![unpositioned(
-                dbtl::LintRule::RootModels,
+                dbtl_core::LintRule::RootModels,
                 "model.proj.a",
                 "a has no parents",
-                dbtl::Severity::Error,
+                dbtl_core::Severity::Error,
                 "models/a.sql",
                 false,
             )],

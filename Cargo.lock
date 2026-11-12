@@ -528,9 +528,7 @@ dependencies = [
 name = "dbtl"
 version = "0.6.2"
 dependencies = [
- "annotate-snippets",
  "anstream",
- "anstyle",
  "anyhow",
  "clap",
  "clap_complete",
@@ -538,10 +536,10 @@ dependencies = [
  "criterion",
  "dbtl-core",
  "dbtl-docs",
+ "dbtl-report",
  "dbtl-tui",
  "portable-pty",
  "ratatui",
- "serde",
  "serde_json",
  "serde_norway",
  "tempfile",
@@ -571,6 +569,17 @@ version = "0.6.2"
 dependencies = [
  "dbtl-core",
  "dbtl-tui",
+ "serde_json",
+]
+
+[[package]]
+name = "dbtl-report"
+version = "0.6.2"
+dependencies = [
+ "annotate-snippets",
+ "anstyle",
+ "dbtl-core",
+ "serde",
  "serde_json",
 ]
 

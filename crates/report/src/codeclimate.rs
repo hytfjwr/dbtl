@@ -19,8 +19,8 @@ pub fn render(report: &Report, ctx: &RenderCtx<'_>) -> String {
                 "description": f.message,
                 "categories": [category(f.rule.info().category)],
                 "severity": match f.severity {
-                    dbtl::Severity::Error => "major",
-                    dbtl::Severity::Warn => "minor",
+                    dbtl_core::Severity::Error => "major",
+                    dbtl_core::Severity::Warn => "minor",
                 },
                 "fingerprint": format!("{:016x}", fnv1a_64(finding_key(f).as_bytes())),
             });
@@ -66,19 +66,19 @@ pub fn render(report: &Report, ctx: &RenderCtx<'_>) -> String {
     )
 }
 
-/// Map a lint [`dbtl::Category`] onto the Code Climate remediation-category
+/// Map a lint [`dbtl_core::Category`] onto the Code Climate remediation-category
 /// vocabulary (`Bug Risk`, `Clarity`, `Compatibility`, `Complexity`,
 /// `Duplication`, `Performance`, `Security`, `Style`) — the fixed taxonomy
 /// GitLab groups findings by.
-fn category(c: dbtl::Category) -> &'static str {
+fn category(c: dbtl_core::Category) -> &'static str {
     match c {
-        dbtl::Category::Modeling => "Complexity",
-        dbtl::Category::Testing => "Bug Risk",
-        dbtl::Category::Documentation => "Clarity",
-        dbtl::Category::Structure => "Style",
-        dbtl::Category::Performance => "Performance",
-        dbtl::Category::Governance | dbtl::Category::Warehouse => "Compatibility",
-        dbtl::Category::Sql => "Bug Risk",
+        dbtl_core::Category::Modeling => "Complexity",
+        dbtl_core::Category::Testing => "Bug Risk",
+        dbtl_core::Category::Documentation => "Clarity",
+        dbtl_core::Category::Structure => "Style",
+        dbtl_core::Category::Performance => "Performance",
+        dbtl_core::Category::Governance | dbtl_core::Category::Warehouse => "Compatibility",
+        dbtl_core::Category::Sql => "Bug Risk",
     }
 }
 
@@ -96,7 +96,7 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::report::samples::*;
+    use crate::samples::*;
 
     /// The published FNV-1a-64 reference vectors pin the implementation —
     /// a fingerprint that drifted would silently re-file every issue.
@@ -116,23 +116,23 @@ mod tests {
         r.gates = vec![gate(
             "lint:root_models",
             "lint root_models",
-            dbtl::Severity::Error,
+            dbtl_core::Severity::Error,
             GateStatus::Fail,
             "lint root_models: 2 violation(s): a, b",
             vec![
                 finding(
-                    dbtl::LintRule::RootModels,
+                    dbtl_core::LintRule::RootModels,
                     "model.proj.a",
                     "a has no parents",
-                    dbtl::Severity::Error,
+                    dbtl_core::Severity::Error,
                     Some("models/a.sql"),
                     false,
                 ),
                 unpositioned(
-                    dbtl::LintRule::RootModels,
+                    dbtl_core::LintRule::RootModels,
                     "model.proj.b",
                     "b has no parents",
-                    dbtl::Severity::Error,
+                    dbtl_core::Severity::Error,
                     "models/b.sql",
                     false,
                 ),

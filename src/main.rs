@@ -172,7 +172,7 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
                     no_breaking: *no_breaking,
                     rules,
                     fail_on: fail_on.map(Into::into),
-                    format: *format,
+                    format: (*format).into(),
                     color: *color,
                     quiet: *quiet,
                     reports: report,
@@ -203,7 +203,7 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
                 &LintArgs {
                     rules,
                     fail_on: fail_on.map(Into::into),
-                    format: *format,
+                    format: (*format).into(),
                     color: *color,
                     write_baseline: write_baseline.as_ref(),
                     no_baseline: *no_baseline,

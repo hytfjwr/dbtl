@@ -303,7 +303,7 @@ pub enum Commands {
         /// annotations), `sarif` (code-scanning upload), `junit` (test
         /// report XML), or `codeclimate` (Code Quality issues).
         #[arg(long, value_enum, default_value = "text")]
-        format: ReportFormat,
+        format: ReportFormatArg,
         /// When the stdout `text`/`concise` report uses ANSI color: `auto`
         /// (default) colors only when the terminal and environment allow,
         /// `always` colors even when stdout is piped, `never` disables it.
@@ -371,7 +371,7 @@ pub enum Commands {
         /// annotations), `sarif` (code-scanning upload), `junit` (test
         /// report XML), or `codeclimate` (Code Quality issues).
         #[arg(long, value_enum, default_value = "text")]
-        format: ReportFormat,
+        format: ReportFormatArg,
         /// When the stdout `text`/`concise` report uses ANSI color: `auto`
         /// (default) colors only when the terminal and environment allow,
         /// `always` colors even when stdout is piped, `never` disables it.
@@ -530,6 +530,38 @@ pub enum ImpactFormat {
     Markdown,
     /// The payload as pretty JSON, for automation.
     Json,
+}
+
+/// The `check`/`lint` `--format` argument — a clap-facing mirror of
+/// [`dbtl_report::ReportFormat`] (kept separate because `ValueEnum` can't be
+/// derived on another crate's type). Variants map 1:1, so `--format` and
+/// `--report <FMT>:<path>` accept the same names the renderers dispatch on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ReportFormatArg {
+    Text,
+    Concise,
+    Markdown,
+    Json,
+    Github,
+    Sarif,
+    Junit,
+    Codeclimate,
+}
+
+impl From<ReportFormatArg> for dbtl_report::ReportFormat {
+    fn from(v: ReportFormatArg) -> Self {
+        use dbtl_report::ReportFormat as F;
+        match v {
+            ReportFormatArg::Text => F::Text,
+            ReportFormatArg::Concise => F::Concise,
+            ReportFormatArg::Markdown => F::Markdown,
+            ReportFormatArg::Json => F::Json,
+            ReportFormatArg::Github => F::Github,
+            ReportFormatArg::Sarif => F::Sarif,
+            ReportFormatArg::Junit => F::Junit,
+            ReportFormatArg::Codeclimate => F::Codeclimate,
+        }
+    }
 }
 
 /// The `--fail-on` argument: the minimum finding severity that fails a gate —

@@ -4508,6 +4508,39 @@ fn fill_finding_lines_respects_what_a_rule_pinned() {
     );
 }
 
+#[test]
+fn fill_finding_lines_with_matches_the_disk_wrapper() {
+    // The text-resolving variant and the disk-reading `fill_finding_lines`
+    // must fill identical positions — a caller that holds the sources in
+    // memory gets the same locations a disk run produces. Same fixture as
+    // the disk-path tests, both fills over the same finding set.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    let schema = "version: 2\n\nsources:\n  - name: s\n    tables:\n      - name: bare\n\nmodels:\n  - name: m\n    columns:\n      - name: id\n      - name: amt\n";
+    std::fs::write(dir.path().join("models/schema.yml"), schema).unwrap();
+    let cols = |name: &str| (name.to_string(), serde_json::json!({"name": name}));
+    let mut m_cols = serde_json::Map::new();
+    m_cols.extend([cols("id"), cols("amt")]);
+    let mut declared = filed_model("m", "models/m.sql", Some("models/schema.yml"));
+    declared.1.description = Some("documented".into());
+    declared.1.columns = m_cols;
+    let mut src = source("s.bare");
+    src.1.original_file_path = Some("models/schema.yml".into());
+    let m = manifest(vec![declared], vec![src], &[]);
+    let dag = Dag::build(&m);
+    let findings = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    let mut on_disk = findings.clone();
+    fill_finding_lines(&mut on_disk, &dag, dir.path());
+    let mut from_text = findings;
+    fill_finding_lines_with(&mut from_text, &dag, &|file| {
+        (file == "models/schema.yml").then(|| schema.to_string())
+    });
+    assert_eq!(
+        on_disk, from_text,
+        "the text-resolving fill lands the same locations the disk fill does"
+    );
+}
+
 /// A catalog literal the `Rc`-carrying resolver and the lint input share.
 fn catalog_json(json: &str) -> Rc<Catalog> {
     Rc::new(Catalog::from_json(json).unwrap())
