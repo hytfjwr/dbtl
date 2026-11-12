@@ -91,6 +91,13 @@ real-PTY TUI suite on Unix (`TUI E2E`).
   files must be byte-identical across runs. Tests that produce output files
   write to temporary directories.
 
+## Updating the demo
+
+The recorded demo is scripted in `demo/demo.tape` (a VHS tape). Changing the
+tape on a pull request renders `demo.gif` as a run artifact, so you can review
+the new recording before merging. Each release attaches the rendered GIF to
+the release as `demo.gif`, which is what the README displays.
+
 ## Reporting bugs
 
 Open an issue with the bug-report template — it asks for the `dbtl`
