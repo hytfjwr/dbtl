@@ -30,7 +30,7 @@ Top-level flags that configure the interactive app. An explicit occurrence next 
 | `-v` | — | — | — | Print version information and exit (lowercase alias of `-V`/`--version`) |
 | `--ascii` | — | — | `false` | Force pure-ASCII glyphs (boxes/borders/markers). Default: probe the terminal |
 | `--unicode` | — | — | `false` | Force Unicode box-drawing glyphs, skipping the terminal probe |
-| `--select` | `<SELECT>` | — | — | Start with this model selected (by name, e.g. `stg_orders`) |
+| `--select` | `<SELECT>` | — | — | Start the TUI on a model's tab: a model name (e.g. `stg_orders`), or a dbt selector spec — the spec's first match opens in a tab, and it must be a model. `state:` atoms can't match: the `--diff` baseline loads after this flag resolves |
 | `--watch` | — | — | `false` | Auto-reload when the data source changes on disk (the manifest file, or any .sql/.yml/.csv under the project dir in source mode) |
 | `--theme` | `<THEME>` | `DBTL_THEME` | — | Color theme: a preset name (see --list-themes), a theme under ~/.config/dbtl/themes/<name>.yml, or a path to a theme YAML file |
 | `--list-themes` | — | — | `false` | List the available color themes (presets + user theme files) and exit |
@@ -55,7 +55,7 @@ Usage: dbtl docs [OPTIONS] --out <OUT>
 | `--clean` | — | — | `false` | After writing, delete stale generated pages: marked dbtl files under <DIR> that this run did not regenerate (e.g. pages of deleted or renamed models). Only files carrying the generated marker are removed — hand-written pages sharing the dir are never touched |
 | `--check` | — | — | `false` | Write nothing: compare the generated set against <DIR> on disk and exit 1 if anything differs — a missing page, a changed page, or a stale marked file. Prints one line per difference for the CI log |
 | `--lineage-depth` | `<N\|all>` | — | — | Per-node lineage-diagram depth: a hop count (`2`, `1`, …) or `all` for the node's whole closure. Overrides `.dbtl.yml`'s `docs.lineage_depth`; the shipped default is `2` |
-| `--select` | `<SELECTOR>` (repeatable) | — | — | Generate pages only for nodes matching a dbt selector — the grammar of `dbtl ls`/`check --select` (`tag:x`, `path:y`, `+name+`, `state:modified`, …), NOT the TUI's `--select <name>` model-name flag. `state:` atoms need `--diff`; `--diff` on docs exists ONLY for them. Repeatable — specs union. The README notes the selector and project-wide summary counts stay unchanged; links to omitted pages render as plain names |
+| `--select` | `<SELECTOR>` (repeatable) | — | — | Generate pages only for nodes matching a dbt selector — the grammar of `dbtl ls`/`check --select` (`tag:x`, `path:y`, `+name+`, `state:modified`, …), NOT the TUI's `--select`, which opens one model's tab. `state:` atoms need `--diff`; `--diff` on docs exists ONLY for them. Repeatable — specs union. The README notes the selector and project-wide summary counts stay unchanged; links to omitted pages render as plain names |
 | `--exclude` | `<SELECTOR>` (repeatable) | — | — | Subtract nodes matching a spec from the generated set — applied after `--select` (with none, the whole graph minus exclusions generates). Same selector grammar; repeatable |
 | `-h` `--help` | — | — | — | Print help |
 
@@ -73,7 +73,7 @@ Usage: dbtl impact [OPTIONS]
 | ---- | ----- | --- | ------- | ----------- |
 | `--format` | `markdown` \| `json` | — | `markdown` | Output format: `markdown` (default) or `json` |
 | `--report` | `<FMT:PATH>` (repeatable) | — | — | Also write the report to a file: `--report <FMT>:<PATH>` (repeatable, `FMT` limited to `markdown` / `json`). Contents match the bytes that format prints on stdout; parent directories are created and existing files overwritten |
-| `--select` | `<SELECTOR>` (repeatable) | — | — | Restrict the report to changed nodes matching a dbt selector — the grammar of `dbtl ls` (`tag:x`, `path:y`, `+name+`, `state:modified`, …), NOT the TUI's `--select <name>` model-name flag. `state:` atoms compare against the `--diff` baseline. Repeatable — specs union |
+| `--select` | `<SELECTOR>` (repeatable) | — | — | Restrict the report to changed nodes matching a dbt selector — the grammar of `dbtl ls` (`tag:x`, `path:y`, `+name+`, `state:modified`, …), NOT the TUI's `--select`, which opens one model's tab. `state:` atoms compare against the `--diff` baseline. Repeatable — specs union |
 | `-h` `--help` | — | — | — | Print help (see a summary with '-h') |
 
 Accepts global flags: `--manifest`, `--source`, `--project`, `--include-packages`, `--diff`, `--catalog`, `--sql-dialect`.
@@ -102,7 +102,7 @@ Usage: dbtl check [OPTIONS]
 | `--step-summary` | — | — | `false` | Append the markdown report to the file the GITHUB_STEP_SUMMARY environment variable names (a no-op when the variable is unset or empty — plain CI runs only) |
 | `--path-prefix` | `<PREFIX>` | — | — | Prefix prepended to the file paths the `github`, `sarif`, and `codeclimate` formats emit — for a project living in a repository subdirectory. A usage error when none of those formats is selected via `--format` or `--report` |
 | `--docs-dir` | `<DIR>` | — | — | Gate on generated-docs freshness: compare this directory against what `dbtl docs` would generate right now — the exact comparison `dbtl docs --check` runs — and fail the run when they differ |
-| `--select` | `<SELECTOR>` (repeatable) | — | — | Restrict every gate to nodes matching a dbt selector — coverage counts, lint findings, and the `--diff` gates all intersect the selection (`docs_drift` never does; it compares whole doc sets). The grammar of `dbtl ls` (`tag:x`, `path:y`, `+name+`, `state:modified`, …), NOT the TUI's `--select <name>` model-name flag; `state:` atoms need `--diff`. Repeatable — specs union |
+| `--select` | `<SELECTOR>` (repeatable) | — | — | Restrict every gate to nodes matching a dbt selector — coverage counts, lint findings, and the `--diff` gates all intersect the selection (`docs_drift` never does; it compares whole doc sets). The grammar of `dbtl ls` (`tag:x`, `path:y`, `+name+`, `state:modified`, …), NOT the TUI's `--select`, which opens one model's tab; `state:` atoms need `--diff`. Repeatable — specs union |
 | `--quiet` | — | — | `false` | Suppress the per-check report on stdout; only the exit code matters |
 | `-h` `--help` | — | — | — | Print help (see a summary with '-h') |
 
@@ -128,7 +128,7 @@ Usage: dbtl lint [OPTIONS]
 | `--no-baseline` | — | — | `false` | Do not read the lint baseline file — every finding counts again |
 | `--list-rules` | — | — | `false` | List every lint rule — id, category, effective severity, summary — and exit. Reads `.dbtl.yml` when found; never loads a data source |
 | `--explain` | `<ID>` | — | — | Show one rule's full registry entry (rationale, example, params) and exit — no data load |
-| `--select` | `<SELECTOR>` (repeatable) | — | — | Restrict findings to nodes matching a dbt selector — the grammar of `dbtl ls` (`tag:x`, `path:y`, `+name+`, `state:modified`, …), NOT the TUI's `--select <name>` model-name flag; `state:` atoms need `--diff`. Repeatable — specs union. Cannot combine with `--write-baseline` (a partial finding set must never overwrite the frozen file) |
+| `--select` | `<SELECTOR>` (repeatable) | — | — | Restrict findings to nodes matching a dbt selector — the grammar of `dbtl ls` (`tag:x`, `path:y`, `+name+`, `state:modified`, …), NOT the TUI's `--select`, which opens one model's tab. `state:` atoms need `--diff`. Repeatable — specs union. Cannot combine with `--write-baseline` (a partial finding set must never overwrite the frozen file) |
 | `--quiet` | — | — | `false` | Suppress the report on stdout; only the exit code matters |
 | `-h` `--help` | — | — | — | Print help (see a summary with '-h') |
 

@@ -77,6 +77,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   release tag by the release pipeline (not covered by `checksums.txt` or
   attestations).
 
+### Fixed
+
+- The `--select` help text now describes what the flag accepts: a model
+  name or a selector spec — the spec's first match opens in a tab and
+  must be a model — and notes that `state:` atoms cannot match (the flag
+  resolves before `--diff` loads).
+
 ## [0.5.3] - 2026-11-11
 
 ### Added
