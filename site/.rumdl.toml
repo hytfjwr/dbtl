@@ -1,0 +1,18 @@
+# Docs pages only. The reference docs are generated and other Markdown in the
+# repository is read by tests, so neither is linted or formatted here.
+[global]
+include = ["src/content/docs/**/*.md"]
+
+# Prose lines are long on purpose; wrapping them would churn the pages.
+[MD013]
+enabled = false
+
+# Trailing punctuation in a heading is part of its text: removing it would
+# change the rendered heading and the anchor other pages link to.
+[MD026]
+enabled = false
+
+# Links into the generated reference pages (../reference/*.md) resolve to files
+# produced at build time, not to anything under src/content/docs/.
+[MD057]
+enabled = false

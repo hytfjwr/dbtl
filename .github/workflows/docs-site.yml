@@ -82,9 +82,21 @@ jobs:
         working-directory: site
         run: pnpm install --frozen-lockfile
 
+      - name: Format check
+        working-directory: site
+        run: pnpm run format:check
+
+      - name: Lint
+        working-directory: site
+        run: pnpm run lint
+
       - name: Build (includes the search index and the link check)
         working-directory: site
         run: pnpm run build
+
+      - name: Type check
+        working-directory: site
+        run: pnpm run check
 
       - name: Upload site
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'

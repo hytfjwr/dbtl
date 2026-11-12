@@ -57,6 +57,6 @@ for (const { name, file } of SAMPLES) {
     findings,
   };
   const out = path.join(siteRoot, "src", "data", `lint-${name}.json`);
-  fs.writeFileSync(out, `${JSON.stringify(data, null, 1)}\n`);
+  fs.writeFileSync(out, `${JSON.stringify(data, null, 2)}\n`);
   console.log(`lint-data: ${name}: ${findings.length} findings, ${data.rules} rules -> ${path.relative(repoRoot, out)}`);
 }

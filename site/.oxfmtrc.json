@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 100,
+  "astro": true,
+  "ignorePatterns": [
+    ".astro/**",
+    "dist/**",
+    "node_modules/**",
+    "pnpm-lock.yaml",
+    "src/content/docs/**/*.md",
+    "src/data/graph.json",
+    "src/data/version.json"
+  ]
+}

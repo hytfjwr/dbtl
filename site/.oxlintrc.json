@@ -1,0 +1,20 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "error"
+  },
+  "env": {
+    "browser": true,
+    "es2024": true
+  },
+  "overrides": [
+    {
+      "files": ["astro.config.mjs", "scripts/**/*.mjs"],
+      "env": {
+        "node": true,
+        "browser": false
+      }
+    }
+  ],
+  "ignorePatterns": [".astro/**", "dist/**", "node_modules/**", "src/data/**"]
+}
