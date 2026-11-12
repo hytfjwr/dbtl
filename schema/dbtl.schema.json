@@ -926,43 +926,6 @@
                 }
               ]
             },
-            "undocumented_public_models": {
-              "description": "a public model lacks a model or column description",
-              "anyOf": [
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "severity": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "enum": [
-                            "error",
-                            "warn",
-                            "off"
-                          ],
-                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "exclude": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
-                    }
-                  }
-                }
-              ]
-            },
             "model_directories": {
               "description": "a model's name prefix and directory point at different layers",
               "anyOf": [

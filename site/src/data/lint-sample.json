@@ -1,66 +1,66 @@
 {
  "project": "sample",
- "rules": 32,
+ "rules": 31,
  "findings": [
   {
    "rule": "multiple_sources_joined",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.sample.stg_dup_probe",
    "message": "stg_dup_probe reads sources ledger.payments, shared.payments",
    "file": "models/staging/stg_dup_probe.sql"
   },
   {
    "rule": "root_models",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.sample.fct_contracted",
    "message": "fct_contracted has no parents",
    "file": "models/marts/fct_contracted.sql"
   },
   {
    "rule": "root_models",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.sample.fct_incr_file",
    "message": "fct_incr_file has no parents",
    "file": "models/marts/fct_incr_file.sql"
   },
   {
    "rule": "root_models",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.sample.fct_incr_schema",
    "message": "fct_incr_schema has no parents",
    "file": "models/marts/fct_incr_schema.sql"
   },
   {
    "rule": "root_models",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.sample.fct_incr_tree",
    "message": "fct_incr_tree has no parents",
    "file": "models/marts/fct_incr_tree.sql"
   },
   {
    "rule": "root_models",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.sample.fct_model_tests",
    "message": "fct_model_tests has no parents",
    "file": "models/marts/fct_model_tests.sql"
   },
   {
    "rule": "root_models",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.sample.fct_public_api",
    "message": "fct_public_api has no parents",
    "file": "models/marts/fct_public_api.sql"
   },
   {
    "rule": "root_models",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.sample.stg_two_configs",
    "message": "stg_two_configs has no parents",
    "file": "models/staging/stg_two_configs.sql"
   },
   {
    "rule": "marts_depend_on_source",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.sample.dim_customers",
    "message": "marts model dim_customers reads source raw.customers",
    "file": "models/marts/dim_customers.sql"
@@ -137,49 +137,49 @@
   },
   {
    "rule": "undocumented_models",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.sample.agg_country_orders",
    "message": "agg_country_orders has no description",
    "file": "models/marts/agg_country_orders.sql"
   },
   {
    "rule": "undocumented_models",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.sample.cll_demo",
    "message": "cll_demo has no description",
    "file": "models/marts/cll_demo.sql"
   },
   {
    "rule": "undocumented_models",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.sample.fct_customer_history",
    "message": "fct_customer_history has no description",
    "file": "models/marts/fct_customer_history.sql"
   },
   {
    "rule": "undocumented_models",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.sample.stg_two_configs",
    "message": "stg_two_configs has no description",
    "file": "models/staging/stg_two_configs.sql"
   },
   {
    "rule": "naming_conventions",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.sample.agg_country_orders",
    "message": "marts model agg_country_orders doesn't match prefixes: fct_, dim_, rpt_",
    "file": "models/marts/agg_country_orders.sql"
   },
   {
    "rule": "naming_conventions",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.sample.cll_demo",
    "message": "marts model cll_demo doesn't match prefixes: fct_, dim_, rpt_",
    "file": "models/marts/cll_demo.sql"
   },
   {
    "rule": "naming_conventions",
-   "severity": "error",
+   "severity": "warn",
    "uid": "model.sample.cll_syntax",
    "message": "marts model cll_syntax doesn't match prefixes: fct_, dim_, rpt_",
    "file": "models/marts/cll_syntax.sql"

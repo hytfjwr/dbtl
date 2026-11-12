@@ -268,15 +268,22 @@ pub(super) fn lint_baseline_path(
 /// Read the lint baseline file: absent → `None` (an explicitly configured
 /// path warns and proceeds without; the conventional default stays silent);
 /// unreadable or malformed → an input error — a frozen set we can't read
-/// must never silently un-freeze every violation.
+/// must never silently un-freeze every violation. Entries naming a REMOVED
+/// rule never make it into the parsed set — one stderr warning per removed
+/// id reports how many rows were ignored.
 pub(super) fn load_lint_baseline_file(
     path: &std::path::Path,
     explicit: bool,
 ) -> Result<Option<dbtl::Baseline>, CliError> {
     match std::fs::read_to_string(path) {
-        Ok(text) => dbtl::Baseline::from_json(&text)
-            .map(Some)
-            .map_err(|e| CliError::input(anyhow::anyhow!("{}: {e}", path.display()))),
+        Ok(text) => {
+            let baseline = dbtl::Baseline::from_json(&text)
+                .map_err(|e| CliError::input(anyhow::anyhow!("{}: {e}", path.display())))?;
+            for (id, count) in &baseline.removed_rule_entries {
+                eprintln!("warning: baseline: ignoring {count} entries for removed rule {id}");
+            }
+            Ok(Some(baseline))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if explicit {
                 eprintln!(
@@ -590,16 +597,19 @@ fn print_rules_table(cfg: &dbtl::LintConfig) -> Result<(), CliError> {
 /// `--explain <ID>` — the full registry entry plus the effective severity
 /// and parameter values under the resolved config, the fix guidance, and
 /// the rule's reference link. An unknown id is a usage error listing the
-/// valid set.
+/// valid set; a removed id is a usage error naming the replacement rules.
 fn explain_rule(id: &str, cfg: &dbtl::LintConfig) -> Result<(), CliError> {
     let Some(rule) = dbtl::LintRule::from_name(id) else {
         return Err(CliError::usage(anyhow::anyhow!(
-            "unknown lint rule '{id}' (valid rules: {})",
-            dbtl::LintRule::ALL
-                .iter()
-                .map(|r| r.name())
-                .collect::<Vec<_>>()
-                .join(", ")
+            "{}",
+            dbtl::removed_rule_error(id).unwrap_or_else(|| format!(
+                "unknown lint rule '{id}' (valid rules: {})",
+                dbtl::LintRule::ALL
+                    .iter()
+                    .map(|r| r.name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
         )));
     };
     let info = rule.info();
@@ -810,7 +820,7 @@ mod tests {
     #[test]
     fn evaluate_partitions_findings_into_counted_baselined_pre_existing() {
         let dag = two_root_models();
-        let cfg = cfg_only(&[dbtl::LintRule::RootModels]);
+        let cfg = cfg_only(&[dbtl::LintRule::MissingPrimaryKeyTests]);
         // Plain run: both findings count, gate fails under the default.
         let out = evaluate_lint(&dag, &cfg, None, None, dbtl::FailOn::Error, no_aux(), None);
         assert_eq!(out.rules[0].counted.len(), 2);

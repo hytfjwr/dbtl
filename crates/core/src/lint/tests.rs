@@ -850,10 +850,10 @@ fn registry_rows_match_all_one_for_one_in_order() {
 
 #[test]
 fn registry_rows_carry_the_fixed_metadata() {
-    // The 32 ids are a fixed contract — config keys, --rules args and the
-    // baseline format all rely on them. The original twelve lead; rules
-    // added later append in the registry's order so the emitted sequence
-    // stays stable.
+    // The 33 ids are a fixed contract — config keys, --rules args and the
+    // baseline format all rely on them. The original structure rules lead;
+    // rules added later append in the registry's order so the emitted
+    // sequence stays stable.
     let ids: Vec<&str> = REGISTRY.iter().map(|r| r.id).collect();
     assert_eq!(
         ids,
@@ -879,7 +879,6 @@ fn registry_rows_carry_the_fixed_metadata() {
             "exposures_dependent_on_private_models",
             "undocumented_sources",
             "undocumented_columns",
-            "undocumented_public_models",
             "model_directories",
             "required_meta_keys",
             "contract_columns_without_type",
@@ -894,22 +893,13 @@ fn registry_rows_carry_the_fixed_metadata() {
             "columns_missing_in_warehouse",
         ]
     );
-    // The original twelve gate at error severity (that was the only
-    // behaviour); rules added later default to warn so they never silently
-    // gate a project that didn't opt in.
+    // Only rules that represent a broken guarantee or a build failure
+    // default to error — everything else reports at warn so it never
+    // silently gates a project that didn't opt in.
     let error_by_default = [
-        "direct_join_to_source",
-        "multiple_sources_joined",
-        "source_fanout",
-        "model_fanout",
-        "root_models",
-        "rejoining_upstream",
-        "marts_depend_on_source",
         "missing_primary_key_tests",
         "public_models_without_contract",
-        "undocumented_models",
-        "naming_conventions",
-        "layer_violation",
+        "unknown_column_reference",
     ];
     // `requires` is a fixed contract too — only the SQL-scanning and
     // catalog-reading rules ask for more than the graph.
@@ -1035,7 +1025,7 @@ fn findings_carry_severity_location_and_baselined() {
         .iter()
         .find(|f| f.node_uid == "model.p.stg_root" && f.rule == LintRule::RootModels)
         .unwrap();
-    assert_eq!(g.severity, Severity::Error);
+    assert_eq!(g.severity, Severity::Warn);
     assert_eq!(
         g.location,
         Some(Location::new("models/staging/stg_root.sql")),
@@ -1082,13 +1072,13 @@ fn severity_off_disables_the_rule() {
 #[test]
 fn finding_json_carries_the_envelope() {
     let f = Finding::new(
-        LintRule::RootModels,
+        LintRule::MissingPrimaryKeyTests,
         "model.p.x",
         vec![],
-        "x has no parents",
+        "x has no primary key test",
     );
     let v = serde_json::to_value(&f).unwrap();
-    assert_eq!(v["rule"], "root_models");
+    assert_eq!(v["rule"], "missing_primary_key_tests");
     assert_eq!(v["severity"], "error");
     assert_eq!(v["baselined"], false);
     assert!(
@@ -2259,40 +2249,42 @@ fn undocumented_columns_names_the_bare_columns() {
     );
 }
 
-// ---- undocumented_public_models ---------------------------------------------------
+// ---- removed rules ---------------------------------------------------------
 
 #[test]
-fn undocumented_public_models_requires_the_model_and_its_columns_documented() {
-    // rpt_no_desc: public, no model description, columns documented → flag.
-    // rpt_bare_col: public, described, one column bare → flag.
-    // rpt_clean: public, described, no declared columns → clean.
-    // rpt_full: public, described, documented column → clean.
-    // rpt_priv: undocumented but NOT public → out of scope.
-    let mut no_desc = model("rpt_no_desc", "marts/rpt_no_desc.sql");
-    no_desc.1.access = Some("public".into());
-    no_desc.1.columns = columns(&[("id", Some("the key"), None)]);
-    let mut bare_col = model("rpt_bare_col", "marts/rpt_bare_col.sql");
-    bare_col.1.access = Some("public".into());
-    bare_col.1.description = Some("described".into());
-    bare_col.1.columns = columns(&[("id", Some("the key"), None), ("amt", None, None)]);
-    let mut clean = model("rpt_clean", "marts/rpt_clean.sql");
-    clean.1.access = Some("public".into());
-    clean.1.description = Some("described".into());
-    let mut full = model("rpt_full", "marts/rpt_full.sql");
-    full.1.access = Some("public".into());
-    full.1.description = Some("described".into());
-    full.1.columns = columns(&[("id", Some("the key"), None)]);
-    let mut priv_m = model("rpt_priv", "marts/rpt_priv.sql");
-    priv_m.1.access = Some("private".into());
-    let m = manifest(vec![no_desc, bare_col, clean, full, priv_m], vec![], &[]);
-    let f = findings_of(&m, &LintConfig::default());
-    let mut got = flagged(&f, LintRule::UndocumentedPublicModels);
-    got.sort_unstable();
-    assert_eq!(
-        got,
-        vec!["model.p.rpt_bare_col", "model.p.rpt_no_desc"],
-        "missing model OR column descriptions flag; non-public and columnless don't"
-    );
+fn removed_rule_ids_are_reserved_and_never_resolve() {
+    // A dropped id stays out of the registry and `from_name`, but is still
+    // recognised by `removed_rule` so entry points can explain the removal.
+    for removed in REMOVED_RULES {
+        assert!(
+            LintRule::from_name(removed.id).is_none(),
+            "{} must not resolve to a live rule",
+            removed.id
+        );
+        assert!(
+            REGISTRY.iter().all(|row| row.id != removed.id),
+            "{} must not be a registry row",
+            removed.id
+        );
+        assert!(
+            !removed.replacements.is_empty(),
+            "{} needs replacement guidance",
+            removed.id
+        );
+        for replacement in removed.replacements {
+            assert!(
+                LintRule::from_name(replacement).is_some(),
+                "{}'s replacement {replacement} must be a live rule",
+                removed.id
+            );
+        }
+        let msg = removed_rule_error(removed.id).expect("a removed id errors");
+        assert!(
+            msg.contains(removed.id) && removed.replacements.iter().all(|r| msg.contains(r)),
+            "the guidance names the id and every replacement: {msg}"
+        );
+    }
+    assert!(removed_rule_error("not_a_rule").is_none());
 }
 
 // ---- model_directories --------------------------------------------------------------

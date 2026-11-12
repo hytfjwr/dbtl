@@ -252,9 +252,6 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
             LintRule::UndocumentedColumns => {
                 documentation::undocumented_columns(dag, &uids, &in_scope, config, &mut out)
             }
-            LintRule::UndocumentedPublicModels => {
-                governance::undocumented_public_models(dag, &uids, &in_scope, &mut out)
-            }
             LintRule::ModelDirectories => {
                 structure::model_directories(dag, &uids, &in_scope, config, &mut out)
             }

@@ -566,12 +566,13 @@ fn stats_view_carries_the_lint_worklist_from_the_shared_findings() {
             wl.rule
         );
     }
-    // The severity split — the frozen fixture's 27 gate findings are
-    // error-severity, the warn side 55 (11 `unused_sources` + 6
+    // The severity split — the frozen fixture's 2 gate findings are
+    // error-severity (missing_primary_key_tests), the warn side 80 (the
+    // structure rules' 25 + 11 `unused_sources` + 6
     // `incremental_without_unique_key` + 38 `sources_without_freshness`,
     // frozen in tests/manifest_fixture.rs), matching `dbtl check --lint`'s
     // counts.
-    assert_eq!((sv.lint_errors, sv.lint_warnings), (27, 55));
+    assert_eq!((sv.lint_errors, sv.lint_warnings), (2, 80));
 }
 
 #[test]

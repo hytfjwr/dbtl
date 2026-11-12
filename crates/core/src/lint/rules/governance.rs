@@ -77,58 +77,6 @@ pub(super) fn exposures_dependent_on_private_models(
     }
 }
 
-/// `undocumented_public_models`: an `access: public` model missing its own
-/// description or any declared column's — the public interface should be
-/// readable end to end. A public model with no declared columns is checked
-/// for the model description only.
-pub(super) fn undocumented_public_models(
-    dag: &Dag,
-    uids: &[&String],
-    in_scope: &dyn Fn(&NodeInfo) -> bool,
-    out: &mut Vec<Finding>,
-) {
-    for uid in uids {
-        let Some(n) = dag.get(uid) else { continue };
-        if n.resource_type != "model" || !in_scope(n) {
-            continue;
-        }
-        let Some(d) = dag.detail(uid) else { continue };
-        if d.access.as_deref() != Some("public") {
-            continue;
-        }
-        let mut missing: Vec<String> = Vec::new();
-        if d.description.is_none() {
-            missing.push("model description".to_string());
-        }
-        let columns: Vec<&str> = d
-            .columns
-            .iter()
-            .filter(|c| c.description.is_none())
-            .map(|c| c.name.as_str())
-            .collect();
-        if !columns.is_empty() {
-            missing.push(format!(
-                "{} ({})",
-                pluralize(columns.len(), "column description"),
-                columns.join(", ")
-            ));
-        }
-        if missing.is_empty() {
-            continue;
-        }
-        out.push(Finding::new(
-            LintRule::UndocumentedPublicModels,
-            (*uid).clone(),
-            Vec::new(),
-            format!(
-                "public model {} is missing {}",
-                n.name,
-                missing.join(" and ")
-            ),
-        ));
-    }
-}
-
 /// `required_meta_keys`: a model missing any configured `meta` key — the
 /// `keys` parameter, empty by default (an empty list makes the rule a
 /// no-op). Values aren't inspected: a key is present even when its value is

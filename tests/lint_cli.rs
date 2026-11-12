@@ -241,6 +241,75 @@ fn unknown_rule_and_explain_errors_list_the_valid_ids() {
 }
 
 #[test]
+fn removed_rule_ids_error_with_the_replacement_guidance() {
+    let m = fixture_manifest();
+    // A REMOVED rule id is still a usage error everywhere rules are named —
+    // but the message names the replacement coverage, not the valid set.
+    for args in [
+        vec![
+            "lint",
+            "--manifest",
+            m.to_str().unwrap(),
+            "--rules",
+            "undocumented_public_models",
+        ],
+        vec!["lint", "--explain", "undocumented_public_models"],
+        vec![
+            "check",
+            "--manifest",
+            m.to_str().unwrap(),
+            "--rules",
+            "undocumented_public_models",
+        ],
+    ] {
+        let out = run(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{args:?} is a usage error, stderr: {}",
+            stderr(&out)
+        );
+        let err = stderr(&out);
+        assert!(
+            err.contains("undocumented_public_models")
+                && err.contains("removed")
+                && err.contains("undocumented_models")
+                && err.contains("undocumented_columns"),
+            "the guidance names the id and its replacements: {err}"
+        );
+        assert!(
+            !err.contains("unknown lint rule"),
+            "a removed id isn't reported as unknown: {err}"
+        );
+    }
+}
+
+#[test]
+fn removed_rule_in_config_is_a_usage_error_with_guidance() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    std::fs::write(
+        tmp.path().join(".dbtl.yml"),
+        "lint:\n  rules:\n    undocumented_public_models: false\n",
+    )
+    .unwrap();
+    let out = lint_on(&m, &[]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "the removed id in .dbtl.yml is usage, stderr: {}",
+        stderr(&out)
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("undocumented_public_models")
+            && err.contains("removed")
+            && err.contains("undocumented_models"),
+        "the config error names the replacements: {err}"
+    );
+}
+
+#[test]
 fn unknown_rules_fail_before_the_data_load() {
     // `--rules` validation precedes source resolution — a bad name must be
     // a usage error (2), not masked by the missing manifest's input error.
@@ -417,6 +486,42 @@ fn missing_explicit_baseline_warns_but_still_runs() {
     );
 }
 
+#[test]
+fn baseline_entries_for_a_removed_rule_are_ignored_with_one_warning() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    // Freeze every current finding, then append two rows for a REMOVED
+    // rule — they must never match, never error the file, and surface as
+    // exactly one stderr warning carrying the ignored count.
+    let out = lint_on(&m, &["--write-baseline"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let baseline = tmp.path().join(".dbtl-baseline.json");
+    let mut file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&baseline).unwrap()).unwrap();
+    let rows = file["findings"].as_array_mut().unwrap();
+    for uid in ["model.p.a", "model.p.b"] {
+        rows.push(serde_json::json!({
+            "rule": "undocumented_public_models",
+            "node": uid,
+            "related": [],
+        }));
+    }
+    std::fs::write(&baseline, serde_json::to_vec(&file).unwrap()).unwrap();
+    let out = lint_on(&m, &[]);
+    let err = stderr(&out);
+    assert_eq!(
+        err.matches("ignoring 2 entries for removed rule undocumented_public_models")
+            .count(),
+        1,
+        "one warning with the ignored count: {err}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the live entries still freeze everything: {err}"
+    );
+}
+
 // ---- --diff: only new violations count --------------------------------------
 
 #[test]
@@ -590,8 +695,8 @@ fn list_rules_prints_one_row_per_registry_rule() {
             "category column: {row}"
         );
         assert!(
-            row.contains("error") || row.contains("warn") || row.contains("off"),
-            "severity column: {row}"
+            row.contains(rule.info().default_severity.name()),
+            "severity column shows the registry default: {row}"
         );
         assert!(row.contains(rule.info().summary), "summary column: {row}");
     }
@@ -734,7 +839,7 @@ fn text_output_is_deterministic_across_runs() {
     // over a position line + fix footer.
     let stdout = out_text(&a);
     assert!(
-        stdout.contains("error[direct_join_to_source]:"),
+        stdout.contains("error[missing_primary_key_tests]:"),
         "finding blocks: {stdout}"
     );
 }
@@ -1229,10 +1334,12 @@ fn lint_select_restricts_findings_to_the_selection() {
         &m,
         &["--rules", "naming_conventions", "--select", "cll_demo"],
     );
-    assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
+    // naming_conventions reports at warn — the finding prints but can't
+    // fail the run under the default fail_on=error.
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
     let stdout = out_text(&out);
     assert!(
-        stdout.contains("error[naming_conventions]:") && stdout.contains("cll_demo"),
+        stdout.contains("warning[naming_conventions]:") && stdout.contains("cll_demo"),
         "only the selected node's finding, got: {stdout}"
     );
     assert!(!stdout.contains("agg_country_orders"), "{stdout}");

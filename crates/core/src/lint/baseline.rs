@@ -5,11 +5,11 @@
 //! and applying are free functions with no file IO, and the `baseline:` path
 //! resolution lives in the project-config loader / CLI wiring.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::Finding;
+use super::{removed_rule, Finding};
 
 /// The `schema` stamp every baseline file carries. `from_json` rejects any
 /// other value: a misread baseline would match nothing, which never lets a
@@ -23,12 +23,19 @@ pub const BASELINE_SCHEMA: &str = "dbtl.lint-baseline/v1";
 pub const DEFAULT_BASELINE_NAME: &str = ".dbtl-baseline.json";
 
 /// A parsed lint baseline: the identity keys of the findings it freezes.
-/// Stored as a sorted set so the serialized form is deduplicated and
-/// byte-stable regardless of write order.
+/// `entries` is a sorted set so the serialized form is deduplicated and
+/// byte-stable regardless of write order. Rows naming a rule the registry
+/// has dropped never land in `entries` — they are counted into
+/// `removed_rule_entries` at parse so the caller can warn once per id
+/// while the stale rows silently match nothing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Baseline {
     /// `(rule, node, related)` — the exact triple `Finding::key()` returns.
     entries: BTreeSet<BaselineEntry>,
+    /// Removed rule id → how many entries the parsed file carried for it.
+    /// Kept separate from `entries` so a removed rule can neither freeze
+    /// a current finding nor count toward the frozen-set total.
+    pub removed_rule_entries: BTreeMap<&'static str, usize>,
 }
 
 /// One baseline row. `related` is the sorted parent/child endpoint list for
@@ -47,11 +54,16 @@ impl Baseline {
                     (rule.name().to_string(), node.to_string(), related.to_vec())
                 })
                 .collect(),
+            removed_rule_entries: BTreeMap::new(),
         }
     }
 
     /// Parse baseline text. Errors on malformed JSON and on a `schema`
-    /// mismatch (the expected value is quoted in the error).
+    /// mismatch (the expected value is quoted in the error). Entries for a
+    /// REMOVED rule are not kept — they are counted in
+    /// `removed_rule_entries` so the caller can warn once per id; unknown
+    /// but never-registered rule names still parse (they just never match,
+    /// the same as a stale-but-live entry).
     pub fn from_json(text: &str) -> Result<Self, String> {
         let file: BaselineFile =
             serde_json::from_str(text).map_err(|e| format!("invalid lint baseline: {e}"))?;
@@ -61,20 +73,27 @@ impl Baseline {
                 file.schema, BASELINE_SCHEMA
             ));
         }
+        let mut removed_rule_entries: BTreeMap<&'static str, usize> = BTreeMap::new();
+        let entries = file
+            .findings
+            .into_iter()
+            .filter_map(|f| {
+                if let Some(removed) = removed_rule(&f.rule) {
+                    *removed_rule_entries.entry(removed.id).or_default() += 1;
+                    return None;
+                }
+                // A hand-written file may carry `related` unsorted or
+                // duplicated — normalize it to `Finding::key()`'s
+                // canonical order so an edge entry still matches.
+                let mut related = f.related;
+                related.sort();
+                related.dedup();
+                Some((f.rule, f.node, related))
+            })
+            .collect();
         Ok(Baseline {
-            entries: file
-                .findings
-                .into_iter()
-                .map(|f| {
-                    // A hand-written file may carry `related` unsorted or
-                    // duplicated — normalize it to `Finding::key()`'s
-                    // canonical order so an edge entry still matches.
-                    let mut related = f.related;
-                    related.sort();
-                    related.dedup();
-                    (f.rule, f.node, related)
-                })
-                .collect(),
+            entries,
+            removed_rule_entries,
         })
     }
 
@@ -112,8 +131,8 @@ impl Baseline {
     }
 
     /// Flag every finding whose `key()` appears in the baseline `baselined`.
-    /// A stale entry (a rule the codebase no longer has) simply never
-    /// matches — entries for removed rules are kept verbatim, not errors.
+    /// A stale entry for a live rule simply never matches; entries for
+    /// REMOVED rules never reach `entries` at all (see [`Baseline::from_json`]).
     pub fn apply(&self, findings: &mut [Finding]) {
         for f in findings.iter_mut() {
             let (rule, node, related) = f.key();

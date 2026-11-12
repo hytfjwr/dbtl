@@ -129,7 +129,7 @@ fn check_format_github_emits_workflow_commands() {
     // source() call's real span).
     assert!(
         stdout.contains(
-            "::error file=models/utilities/pos_prep/pos_cat.sql,line=4,endLine=4,col=18,endColumn=58,title=direct_join_to_source::"
+            "::warning file=models/utilities/pos_prep/pos_cat.sql,line=4,endLine=4,col=18,endColumn=58,title=direct_join_to_source::"
         ),
         "the annotation shape: {stdout}"
     );
@@ -206,9 +206,10 @@ fn check_format_junit_is_wellformed_xml() {
         1 + dbtl::REGISTRY.len(),
         "coverage + all lint rules: {stdout}"
     );
-    // Every FAIL gate is a `<failure>` testcase carrying its findings.
+    // Every FAIL gate is a `<failure>` testcase carrying its findings —
+    // only missing_primary_key_tests still gates by default on the fixture.
     let fails = stdout.matches("<failure>").count();
-    assert!(fails >= 6, "the failing lint gates: {stdout}");
+    assert_eq!(fails, 1, "the failing lint gates: {stdout}");
     // The fixture has no catalog sibling — the two catalog-backed rules
     // report `<skipped/>` testcases, informational only.
     assert_eq!(
@@ -235,7 +236,13 @@ fn check_format_codeclimate_is_an_issue_array() {
     assert_eq!(first["type"], "issue");
     assert!(first["check_name"].is_string());
     assert!(first["location"]["path"].is_string());
-    assert_eq!(first["severity"], "major");
+    assert_eq!(first["severity"], "minor");
+    // An error-severity finding maps to "major".
+    let gating = issues
+        .iter()
+        .find(|i| i["check_name"] == "missing_primary_key_tests")
+        .expect("the fixture's one error-default rule fires");
+    assert_eq!(gating["severity"], "major");
     let fp = first["fingerprint"].as_str().unwrap();
     assert_eq!(fp.len(), 16, "a 16-hex fingerprint: {fp}");
     assert!(fp.chars().all(|c| c.is_ascii_hexdigit()));

@@ -37,7 +37,6 @@ use super::{Finding, LintRule};
 pub const YAML_ATTRIBUTE_RULE_IDS: &[&str] = &[
     "undocumented_models",
     "undocumented_columns",
-    "undocumented_public_models",
     "missing_primary_key_tests",
     "public_models_without_contract",
     "contract_columns_without_type",
@@ -242,9 +241,8 @@ fn name_chain(dag: &Dag, f: &Finding) -> Option<Vec<String>> {
 
 /// The FIRST column a finding's message lists, for the rules that flag
 /// columns — re-derived from the detail the rule predicates on rather than
-/// parsed out of the message. `None` for every other rule and for
-/// `undocumented_public_models` when the MODEL's own description is the
-/// missing attribute (the finding lands on the model's `- name:` line).
+/// parsed out of the message. `None` for every other rule (their findings
+/// land on the model's `- name:` line).
 fn offending_column(dag: &Dag, f: &Finding) -> Option<String> {
     let d = dag.detail(&f.node_uid)?;
     match f.rule {
@@ -253,16 +251,6 @@ fn offending_column(dag: &Dag, f: &Finding) -> Option<String> {
             .iter()
             .find(|c| c.description.is_none())
             .map(|c| c.name.clone()),
-        LintRule::UndocumentedPublicModels => {
-            if d.description.is_none() {
-                None
-            } else {
-                d.columns
-                    .iter()
-                    .find(|c| c.description.is_none())
-                    .map(|c| c.name.clone())
-            }
-        }
         LintRule::ContractColumnsWithoutType => d
             .columns
             .iter()

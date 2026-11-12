@@ -209,9 +209,9 @@ fn home_command_rows_run_and_unavailable_ones_are_filtered() {
 
 #[test]
 fn home_health_splits_lint_by_severity_and_attention_tones_it() {
-    // The fixture carries 27 error + 55 warning findings — the Health gauge
+    // The fixture carries 2 error + 80 warning findings — the Health gauge
     // tail quotes both counts, and the Attention worklist renders the
-    // error-severity rows Bad, error-first.
+    // error-severity rows Bad first, the warn rows Warn after.
     let mut a = app();
     a.enter_home();
     let d = a.home_data();
@@ -226,7 +226,7 @@ fn home_health_splits_lint_by_severity_and_attention_tones_it() {
         })
         .expect("the Health section always renders its gauge");
     assert!(
-        tail.contains("lint 27 errors, 55 warnings"),
+        tail.contains("lint 2 errors, 80 warnings"),
         "the tail splits lint by severity: {tail}"
     );
     let att = d
@@ -240,11 +240,30 @@ fn home_health_splits_lint_by_severity_and_attention_tones_it() {
         .filter(|r| r.detail.starts_with("lint "))
         .collect();
     assert!(!lint.is_empty(), "lint findings join the worklist");
+    // Error rows tone Bad and lead the warn rows — the fixture's error
+    // findings are the missing_primary_key_tests pair.
+    let first_warn = lint
+        .iter()
+        .position(|r| r.detail.starts_with("lint warn: "));
     assert!(
         lint.iter()
+            .take(first_warn.unwrap_or(lint.len()))
             .all(|r| r.tone == HomeTone::Bad && r.detail.starts_with("lint error: ")),
-        "fixture lint rows are all error-severity → Bad, `lint error: <rule>`: {lint:?}"
+        "error rows lead and tone Bad: {lint:?}"
     );
+    assert!(
+        lint.iter()
+            .any(|r| r.detail == "lint error: missing_primary_key_tests"),
+        "the gating rule's row is present: {lint:?}"
+    );
+    if let Some(i) = first_warn {
+        assert!(
+            lint[i..]
+                .iter()
+                .all(|r| r.tone == HomeTone::Warn && r.detail.starts_with("lint warn: ")),
+            "warn rows follow and tone Warn: {lint:?}"
+        );
+    }
 
     // A warn-severity finding reads `lint warn:` and tones Warn — a
     // staging→staging edge pinned to `staging_depends_on_staging` alone.

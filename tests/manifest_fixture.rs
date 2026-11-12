@@ -172,14 +172,16 @@ fn closure_deep_multihop_fct_subscription_process() {
 // directly by the hop's own parents (their other "children" are exposures /
 // non-model consumers that don't count as a use — rejoining_upstream).
 // The two `int_*__combined` models carry no
-// unique+not_null pair. Everything else scores 0: all models are documented,
-// none declare access/contract, every model has a parent, no marts or
+// unique+not_null pair — the fixture's only ERROR-default findings
+// (missing_primary_key_tests); the structure rules above all report at
+// warn now. Everything else scores 0: all models are documented, none
+// declare access/contract, every model has a parent, no marts or
 // intermediate model reads a source, no backward edge exists, and
 // `utilities/` has no default naming prefix.
 
 /// A `LintConfig` running ONLY the rules that gate out of the box — the
-/// ones declared at error severity. Rules added later default to warn and
-/// are switched off here so the frozen gate counts can't churn when the
+/// ones declared at error severity. Every other rule defaults to warn and
+/// is switched off here so the frozen gate counts can't churn when the
 /// rule set grows; their own fixture counts are pinned separately.
 fn gating_lint_config() -> LintConfig {
     let mut cfg = LintConfig::default();
@@ -199,27 +201,18 @@ fn lint_findings_match_frozen_fixture_counts() {
     for f in &findings {
         *counts.entry(f.rule.name()).or_default() += 1;
     }
-    let expected: BTreeMap<&str, usize> = BTreeMap::from([
-        ("direct_join_to_source", 16),
-        ("multiple_sources_joined", 1),
-        ("source_fanout", 4),
-        ("model_fanout", 1),
-        ("rejoining_upstream", 3),
-        ("missing_primary_key_tests", 2),
-    ]);
+    let expected: BTreeMap<&str, usize> = BTreeMap::from([("missing_primary_key_tests", 2)]);
     assert_eq!(
         counts, expected,
         "per-rule finding counts drifted from the frozen fixture values"
     );
-    assert_eq!(findings.len(), 27, "total findings");
-    // Zero-count rules still produce no findings at all.
+    assert_eq!(findings.len(), 2, "total findings");
+    // The other error-default rules score zero here (unknown_column_reference
+    // would skip — this input is graph-only — and no fixture model declares
+    // a contract).
     for rule in [
-        LintRule::RootModels,
-        LintRule::MartsDependOnSource,
         LintRule::PublicModelsWithoutContract,
-        LintRule::UndocumentedModels,
-        LintRule::NamingConventions,
-        LintRule::LayerViolation,
+        LintRule::UnknownColumnReference,
     ] {
         assert!(
             findings.iter().all(|f| f.rule != rule),
@@ -233,10 +226,10 @@ fn lint_findings_match_frozen_fixture_counts() {
 fn warn_severity_rules_match_frozen_fixture_counts() {
     // The warn-by-default rules' counts on the same fixture, pinned
     // separately from the gate set (which is switched off here). Verified
-    // by hand: 11 of the fixture's sources feed nothing at all — not even
-    // an exposure; 6 incremental models declare no unique_key; and none of
-    // its 38 sources carries a freshness block — nothing else on this graph
-    // matches a warn rule.
+    // by hand: the five structure rules named above plus 11 sources feeding
+    // nothing at all — not even an exposure; 6 incremental models declare no
+    // unique_key; and none of its 38 sources carries a freshness block —
+    // nothing else on this graph matches a warn rule.
     let dag = fixture_dag();
     let mut cfg = LintConfig::default();
     for rule in LintRule::ALL {
@@ -247,6 +240,8 @@ fn warn_severity_rules_match_frozen_fixture_counts() {
     let outcome = run_rules(dbtl::LintInput::new(&dag, &cfg));
     // Graph-only input: every enabled SQL/catalog-backed rule reports
     // skipped — informational only, adding nothing to `findings`.
+    // (unknown_column_reference is error-default, so it's switched off
+    // above and never reaches the skip list.)
     let skipped: Vec<_> = outcome.skipped.iter().map(|s| s.rule.name()).collect();
     assert_eq!(
         skipped,
@@ -254,7 +249,6 @@ fn warn_severity_rules_match_frozen_fixture_counts() {
             "select_star",
             "hard_coded_references",
             "cartesian_join",
-            "unknown_column_reference",
             "forbidden_patterns",
             "warehouse_type_drift",
             "columns_missing_in_warehouse",
@@ -267,6 +261,11 @@ fn warn_severity_rules_match_frozen_fixture_counts() {
         *counts.entry(f.rule.name()).or_default() += 1;
     }
     let expected: BTreeMap<&str, usize> = BTreeMap::from([
+        ("direct_join_to_source", 16),
+        ("multiple_sources_joined", 1),
+        ("source_fanout", 4),
+        ("model_fanout", 1),
+        ("rejoining_upstream", 3),
         ("incremental_without_unique_key", 6),
         ("sources_without_freshness", 38),
         ("unused_sources", 11),
