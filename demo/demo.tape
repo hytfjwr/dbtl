@@ -2,7 +2,7 @@
 #
 # demo/demo.gif is gitignored — CI builds it: the Demo workflow renders this
 # tape and uploads the GIF as the `demo-gif` run artifact on pull requests,
-# and attaches it to each release as `demo.gif`.
+# and a follow-up workflow attaches it to each release as `demo.gif`.
 #
 # Manual render, from the repository root after `cargo build --release`:
 #
