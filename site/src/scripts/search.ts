@@ -19,7 +19,7 @@ export interface SearchHit {
 /** The index is missing (`astro dev`, or a build that has not run pagefind yet). */
 export class SearchUnavailable extends Error {
   constructor(cause?: unknown) {
-    super("Search index not found. Run `npm run build && npm run preview` to search.");
+    super("Search index not found. Run `pnpm run build && pnpm run preview` to search.");
     this.name = "SearchUnavailable";
     this.cause = cause;
   }

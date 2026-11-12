@@ -20,8 +20,8 @@ import {
 import { toProject, type LintData, type Project, type RawSample } from "./samples.ts";
 
 const SAMPLES: Record<string, { project: Project; lint: LintData }> = {
-  sample: { project: toProject(sample as RawSample), lint: lintSample as LintData },
-  jaffle_finance: { project: toProject(jaffle_finance as RawSample), lint: lintJaffle as LintData },
+  sample: { project: toProject(sample as unknown as RawSample), lint: lintSample as LintData },
+  jaffle_finance: { project: toProject(jaffle_finance as unknown as RawSample), lint: lintJaffle as LintData },
 };
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel);

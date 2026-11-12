@@ -211,8 +211,9 @@ export function evaluate(g: Graph<SelectorNode>, spec: string): Set<string> {
   for (const term of spec.trim().split(/\s+/)) {
     let acc: Set<string> | null = null;
     for (const factor of term.split(",")) {
-      const set = factorSet(g, factor);
-      acc = acc === null ? set : new Set([...acc].filter((x) => set.has(x)));
+      const set: Set<string> = factorSet(g, factor);
+      const prev = acc as Set<string> | null;
+      acc = prev === null ? set : new Set([...prev].filter((x) => set.has(x)));
     }
     for (const x of acc ?? []) result.add(x);
   }

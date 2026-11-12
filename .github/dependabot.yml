@@ -43,7 +43,7 @@ updates:
         patterns:
           - "*"
 
-  # Docs site dependencies (site/package.json / site/package-lock.json)
+  # Docs site dependencies (site/package.json / site/pnpm-lock.yaml)
   - package-ecosystem: "npm"
     directory: "/site"
     schedule:
