@@ -16,9 +16,8 @@
 //! supported by modern terminals (truecolor is not), and — unlike the 16 named
 //! ANSI colours — NOT remapped by the user's terminal scheme, so the curated
 //! palette renders as designed. It assumes a dark background (soft pastel
-//! foregrounds over dark surface bands), tuned in the spirit of modern dark
-//! themes (Tokyo Night / Catppuccin). The other presets reproduce upstream
-//! schemes (ayu, gruvbox) and use truecolor `Color::Rgb` for fidelity — a
+//! foregrounds over dark surface bands). The other presets are original
+//! truecolor palettes (`Color::Rgb`) built on the same two-family design — a
 //! terminal without truecolor support approximates them; such users should
 //! keep the default or write an Indexed custom theme.
 //!
@@ -317,220 +316,224 @@ impl Default for Theme {
 // ---- presets -----------------------------------------------------------------
 //
 // Each preset is a complete Theme, curated against the same contract as the
-// default ([`lint`] must return no warnings — asserted by the tests). The hex
-// values come from the upstream schemes; role mapping (which hue plays which
-// role) is ours, holding the pastel-class / vivid-lens split per palette.
+// default ([`lint`] must return no warnings — asserted by the tests). All
+// four share one role→hue mapping (a role keeps its hue family in every
+// palette) and one lightness/saturation split: the materialization classes
+// are the muted family and the lens tints the vivid family, so an active
+// lens always reads as the saturation turning up. A preset is then just a
+// set of anchors — its assumed terminal background, the neutral text ramp,
+// and each family's lightness and saturation.
 
 /// Truecolor from a `0xRRGGBB` literal (preset definitions only).
 const fn rgb(hex: u32) -> Color {
     Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
 
-/// ayu dark (<https://github.com/ayu-theme/ayu-colors>): for a near-black
-/// `#0a0e14` terminal background. Identity hue: the gold accent.
-const AYU_DARK: Theme = Theme {
-    accent: rgb(0xE6B450),
-    border_idle: rgb(0x3D424D),
-    text_bright: rgb(0xE6E1CF),
-    text_dim: rgb(0xB3B1AD),
-    text_faint: rgb(0x626A73),
-    lineage_dim: rgb(0x8A9199),
-    surface: rgb(0x131721),
-    surface_hi: rgb(0x273747),
-    sb_thumb: rgb(0x565B66),
-    ok: rgb(0xC2D94C),
-    warn: rgb(0xFFB454),
-    danger: rgb(0xFF3333),
-    orphan: rgb(0xD96C75),
-    gold: rgb(0xFFEE99),
-    class_table: rgb(0xC2D94C),
-    class_view: rgb(0x39BAE6),
-    class_incremental: rgb(0xD2A6FF),
-    class_ephemeral: rgb(0x95E6CB),
-    class_source: rgb(0x59C2FF),
-    class_seed: rgb(0xE6B673),
-    class_snapshot: rgb(0xFF8F40),
-    class_exposure: rgb(0xF07178), // ayu dark "markup" pink
-    class_other: rgb(0x565B66),
-    layer_staging: rgb(0x5CCFE6),
-    layer_intermediate: rgb(0xFFCC66),
-    layer_marts: rgb(0xBAE67E),
-    layer_utilities: rgb(0xDFBFFF),
-    layer_other: rgb(0xACB6BF),
-    heat_low: rgb(0x91B362),
-    heat_mid: rgb(0xE6B450),
-    heat_high: rgb(0xFF3333),
-    diff_add: rgb(0x7FD962),
-    diff_mod: rgb(0x73B8FF),
-    chip_view: rgb(0xD2A6FF),
-    section: rgb(0xFF8F40),
-    sql_keyword: rgb(0xFF8F40),
-    sql_string: rgb(0xC2D94C),
-    sql_comment: rgb(0x626A73),
-    sql_jinja: rgb(0xFFB454),
-    bar_resource: rgb(0x39BAE6),
-    bar_materialization: rgb(0xD2A6FF),
-    bar_degree: rgb(0xFFB454),
-    bar_transitive: rgb(0xC2D94C),
+/// `dark`: for a near-black neutral-cool terminal background (`#10151b`).
+/// Azure accent; muted pastel classes around lightness ~70%, vivid lens
+/// tints around ~59% at near-full saturation.
+const DARK: Theme = Theme {
+    accent: rgb(0x579BE8),
+    border_idle: rgb(0x3D4854),
+    text_bright: rgb(0xEAEDF0),
+    text_dim: rgb(0xA6B2BF),
+    text_faint: rgb(0x66788D),
+    lineage_dim: rgb(0x8494A6),
+    surface: rgb(0x20262C),
+    surface_hi: rgb(0x313A44),
+    sb_thumb: rgb(0x526172),
+    ok: rgb(0x8FD69B),
+    warn: rgb(0xF7B634),
+    danger: rgb(0xF74434),
+    orphan: rgb(0xC38D84),
+    gold: rgb(0xF7D145),
+    class_table: rgb(0x8FD69B),
+    class_view: rgb(0x8FCCD6),
+    class_incremental: rgb(0xB58FD6),
+    class_ephemeral: rgb(0x8FD6BC),
+    class_source: rgb(0x8FB5D6),
+    class_seed: rgb(0xCAB8A6),
+    class_snapshot: rgb(0xD6A98F),
+    class_exposure: rgb(0xD68FA9),
+    class_other: rgb(0x7D91A8),
+    layer_staging: rgb(0x34D0F7),
+    layer_intermediate: rgb(0xF6BE25),
+    layer_marts: rgb(0x34F75B),
+    layer_utilities: rgb(0x974AF0),
+    layer_other: rgb(0xA6B2BF),
+    heat_low: rgb(0x34F75B),
+    heat_mid: rgb(0xF7C934),
+    heat_high: rgb(0xF74434),
+    diff_add: rgb(0x34F795),
+    diff_mod: rgb(0x34A9F7),
+    chip_view: rgb(0xB58FD6),
+    section: rgb(0xD6A98F),
+    sql_keyword: rgb(0xAE8FD6),
+    sql_string: rgb(0x92D68F),
+    sql_comment: rgb(0x66788D),
+    sql_jinja: rgb(0xD6A98F),
+    bar_resource: rgb(0x8FCCD6),
+    bar_materialization: rgb(0xB58FD6),
+    bar_degree: rgb(0xF7B634),
+    bar_transitive: rgb(0x8FD69B),
 };
 
-/// ayu mirage: the softened mid-dark variant, for a `#1f2430` background.
-const AYU_MIRAGE: Theme = Theme {
-    accent: rgb(0xFFCC66),
-    border_idle: rgb(0x3E4859),
-    text_bright: rgb(0xD9D7CE),
-    text_dim: rgb(0x99A3B5),
-    text_faint: rgb(0x5C6773),
-    lineage_dim: rgb(0x8590A3),
-    surface: rgb(0x171B24),
-    surface_hi: rgb(0x34455A),
-    sb_thumb: rgb(0x707A8C),
-    ok: rgb(0xBAE67E),
-    warn: rgb(0xFFA759),
-    danger: rgb(0xFF6666),
-    orphan: rgb(0xF28779),
-    gold: rgb(0xFFD173),
-    class_table: rgb(0xBAE67E),
-    class_view: rgb(0x5CCFE6),
-    class_incremental: rgb(0xD4BFFF),
-    class_ephemeral: rgb(0x95E6CB),
-    class_source: rgb(0x73D0FF),
-    class_seed: rgb(0xFFDFB3),
-    class_snapshot: rgb(0xF29E74),
-    // mirage "markup" pink — deliberately shares `orphan`'s value (a list-pane
-    // tint; the two never compete on one surface, like SECTION=CLASS_SNAPSHOT).
-    class_exposure: rgb(0xF28779),
-    class_other: rgb(0x707A8C),
-    layer_staging: rgb(0x36A3D9),
-    layer_intermediate: rgb(0xE6B450),
-    layer_marts: rgb(0x87D96C),
-    layer_utilities: rgb(0xDFBFFF),
-    layer_other: rgb(0xB8CFE6),
-    heat_low: rgb(0x87D96C),
-    heat_mid: rgb(0xFFCC66),
-    heat_high: rgb(0xFF6666),
-    diff_add: rgb(0x87D96C),
-    diff_mod: rgb(0x80BFFF),
-    chip_view: rgb(0xD4BFFF),
-    section: rgb(0xF29E74),
-    sql_keyword: rgb(0xFFA759),
-    sql_string: rgb(0xBAE67E),
-    sql_comment: rgb(0x5C6773),
-    sql_jinja: rgb(0xFFD173),
-    bar_resource: rgb(0x5CCFE6),
-    bar_materialization: rgb(0xD4BFFF),
-    bar_degree: rgb(0xFFA759),
-    bar_transitive: rgb(0xBAE67E),
+/// `dusk`: for a lighter, bluer mid-dark background (`#1f2637`) than `dark`.
+/// Periwinkle accent; the same two families a step lighter (classes ~71%,
+/// tints ~62%).
+const DUSK: Theme = Theme {
+    accent: rgb(0x818CE9),
+    border_idle: rgb(0x404B68),
+    text_bright: rgb(0xECEEF3),
+    text_dim: rgb(0xB3BBD0),
+    text_faint: rgb(0x7482AA),
+    lineage_dim: rgb(0x8A96B7),
+    surface: rgb(0x2D3449),
+    surface_hi: rgb(0x3C4662),
+    sb_thumb: rgb(0x536188),
+    ok: rgb(0x95D69F),
+    warn: rgb(0xF5BB47),
+    danger: rgb(0xF55547),
+    orphan: rgb(0xC6958D),
+    gold: rgb(0xF5D047),
+    class_table: rgb(0x95D69F),
+    class_view: rgb(0x95CDD6),
+    class_incremental: rgb(0xB795D6),
+    class_ephemeral: rgb(0x95D6BE),
+    class_source: rgb(0x95B7D6),
+    class_seed: rgb(0xCBBAA9),
+    class_snapshot: rgb(0xD6AC95),
+    class_exposure: rgb(0xD695AC),
+    class_other: rgb(0x909DC1),
+    layer_staging: rgb(0x47D2F5),
+    layer_intermediate: rgb(0xF5C238),
+    layer_marts: rgb(0x47F56A),
+    layer_utilities: rgb(0xA15CF0),
+    layer_other: rgb(0xB3BBD0),
+    heat_low: rgb(0x47F56A),
+    heat_mid: rgb(0xF5CD47),
+    heat_high: rgb(0xF55547),
+    diff_add: rgb(0x47F59E),
+    diff_mod: rgb(0x47B0F5),
+    chip_view: rgb(0xB795D6),
+    section: rgb(0xD6AC95),
+    sql_keyword: rgb(0xB195D6),
+    sql_string: rgb(0x97D695),
+    sql_comment: rgb(0x7482AA),
+    sql_jinja: rgb(0xD6AC95),
+    bar_resource: rgb(0x95CDD6),
+    bar_materialization: rgb(0xB795D6),
+    bar_degree: rgb(0xF5BB47),
+    bar_transitive: rgb(0x95D69F),
 };
 
-/// ayu light: for a LIGHT (`#fcfcfc`) terminal background — the one preset
-/// whose neutral ramp inverts (bright = darkest). Pick it only on a light
-/// terminal; the TUI paints no global background of its own.
-const AYU_LIGHT: Theme = Theme {
-    accent: rgb(0xFF9940),
-    border_idle: rgb(0xC9CDD1),
-    text_bright: rgb(0x24292F),
-    text_dim: rgb(0x5C6166),
-    text_faint: rgb(0xA8ADB2),
-    lineage_dim: rgb(0x8A9199),
-    surface: rgb(0xF0F1F2),
-    surface_hi: rgb(0xDCE3EA),
-    sb_thumb: rgb(0xB5B9BD),
-    ok: rgb(0x86B300),
-    warn: rgb(0xF2AE49),
-    danger: rgb(0xE65050),
-    orphan: rgb(0xF07171),
-    gold: rgb(0xB38B00),
-    class_table: rgb(0x86B300),
-    class_view: rgb(0x55B4D4),
-    class_incremental: rgb(0xA37ACC),
-    class_ephemeral: rgb(0x4CBF99),
-    class_source: rgb(0x399EE6),
-    class_seed: rgb(0xA8854B),
-    class_snapshot: rgb(0xFA8D3E),
-    // ayu light "markup" pink — shares `orphan`'s value (see ayu-mirage note).
-    class_exposure: rgb(0xF07171),
-    class_other: rgb(0x787B80),
-    layer_staging: rgb(0x008FB8),
-    layer_intermediate: rgb(0xCC8800),
-    layer_marts: rgb(0x5F8700),
-    layer_utilities: rgb(0x7340BF),
-    layer_other: rgb(0x8C9196),
-    heat_low: rgb(0x5F8700),
-    heat_mid: rgb(0xCC8800),
-    heat_high: rgb(0xE65050),
-    diff_add: rgb(0x6CBF43),
-    diff_mod: rgb(0x478ACC),
-    chip_view: rgb(0xA37ACC),
-    section: rgb(0xFA8D3E),
-    sql_keyword: rgb(0xFA8D3E),
-    sql_string: rgb(0x86B300),
-    sql_comment: rgb(0x787B80),
-    sql_jinja: rgb(0xF2AE49),
-    bar_resource: rgb(0x55B4D4),
-    bar_materialization: rgb(0xA37ACC),
-    bar_degree: rgb(0xF2AE49),
-    bar_transitive: rgb(0x86B300),
+/// `light`: for a LIGHT (`#f3f4f7`) terminal background — the one preset
+/// whose neutral ramp inverts (bright = darkest) and whose families deepen
+/// instead of pastel-izing: classes are mid-tone, tints darker and more
+/// saturated so they still read as the saturation turning up. Pick it only
+/// on a light terminal; the TUI paints no global background of its own.
+const LIGHT: Theme = Theme {
+    accent: rgb(0x1453B8),
+    border_idle: rgb(0xB9C0CA),
+    text_bright: rgb(0x1E2127),
+    text_dim: rgb(0x485260),
+    text_faint: rgb(0x6E7C91),
+    lineage_dim: rgb(0x5B6779),
+    surface: rgb(0xE5E8EB),
+    surface_hi: rgb(0xD5D9DF),
+    sb_thumb: rgb(0x929CAB),
+    ok: rgb(0x239536),
+    warn: rgb(0xA06D08),
+    danger: rgb(0xC62510),
+    orphan: rgb(0x9B483B),
+    gold: rgb(0xA48104),
+    class_table: rgb(0x239536),
+    class_view: rgb(0x278C9B),
+    class_incremental: rgb(0x7F37BE),
+    class_ephemeral: rgb(0x298E69),
+    class_source: rgb(0x2F75B1),
+    class_seed: rgb(0x916B46),
+    class_snapshot: rgb(0xA65B30),
+    class_exposure: rgb(0xA6305B),
+    class_other: rgb(0x62748D),
+    layer_staging: rgb(0x0A84A3),
+    layer_intermediate: rgb(0x99730A),
+    layer_marts: rgb(0x0B8E25),
+    layer_utilities: rgb(0x6F12D9),
+    layer_other: rgb(0x485260),
+    heat_low: rgb(0x0B8E25),
+    heat_mid: rgb(0x967508),
+    heat_high: rgb(0xC62510),
+    diff_add: rgb(0x0C9752),
+    diff_mod: rgb(0x107DC6),
+    chip_view: rgb(0x7F37BE),
+    section: rgb(0xA65B30),
+    sql_keyword: rgb(0x6D35B6),
+    sql_string: rgb(0x268B23),
+    sql_comment: rgb(0x6E7C91),
+    sql_jinja: rgb(0xA65B30),
+    bar_resource: rgb(0x278C9B),
+    bar_materialization: rgb(0x7F37BE),
+    bar_degree: rgb(0xA06D08),
+    bar_transitive: rgb(0x239536),
 };
 
-/// gruvbox dark (<https://github.com/morhetz/gruvbox>): for a `#282828`
-/// background; warm retro hues, bright variants as classes, faded as lenses.
-const GRUVBOX_DARK: Theme = Theme {
-    accent: rgb(0x83A598),
-    border_idle: rgb(0x504945),
-    text_bright: rgb(0xEBDBB2),
-    text_dim: rgb(0xBDAE93),
-    text_faint: rgb(0x7C6F64),
-    lineage_dim: rgb(0x928374),
-    surface: rgb(0x32302F),
-    surface_hi: rgb(0x504945),
-    sb_thumb: rgb(0x665C54),
-    ok: rgb(0xB8BB26),
-    warn: rgb(0xFABD2F),
-    danger: rgb(0xFB4934),
-    orphan: rgb(0xCC241D),
-    gold: rgb(0xD79921),
-    class_table: rgb(0xB8BB26),
-    class_view: rgb(0x8EC07C),
-    class_incremental: rgb(0xD3869B),
-    class_ephemeral: rgb(0xB16286),
-    class_source: rgb(0x83A598),
-    class_seed: rgb(0xD5C4A1),
-    class_snapshot: rgb(0xFE8019),
-    // gruvbox neutral red — shares `orphan`'s value (a list-pane tint; the two
-    // never compete on one surface). Bright purple D3869B is already
-    // `class_incremental`, so the warm-red family marks the consumer endpoint.
-    class_exposure: rgb(0xCC241D),
-    class_other: rgb(0xA89984),
-    layer_staging: rgb(0x458588),
-    layer_intermediate: rgb(0xD79921),
-    layer_marts: rgb(0x98971A),
-    layer_utilities: rgb(0x8F3F71),
-    layer_other: rgb(0xBDAE93),
-    heat_low: rgb(0x98971A),
-    heat_mid: rgb(0xD79921),
-    heat_high: rgb(0xFB4934),
-    diff_add: rgb(0x98971A),
-    diff_mod: rgb(0xD79921),
-    chip_view: rgb(0xD3869B),
-    section: rgb(0xFE8019),
-    sql_keyword: rgb(0xD3869B),
-    sql_string: rgb(0xB8BB26),
-    sql_comment: rgb(0x7C6F64),
-    sql_jinja: rgb(0xFE8019),
-    bar_resource: rgb(0x8EC07C),
-    bar_materialization: rgb(0xD3869B),
-    bar_degree: rgb(0xFABD2F),
-    bar_transitive: rgb(0xB8BB26),
+/// `warm`: for a warm umber terminal background (`#221a15`). Terracotta
+/// accent; the neutral ramp leans warm and the palette keeps the same
+/// muted-class / vivid-tint split as `dark`.
+const WARM: Theme = Theme {
+    accent: rgb(0xEA8755),
+    border_idle: rgb(0x57483D),
+    text_bright: rgb(0xEEEAE7),
+    text_dim: rgb(0xC0B1A5),
+    text_faint: rgb(0x8F7663),
+    lineage_dim: rgb(0xA79181),
+    surface: rgb(0x342B24),
+    surface_hi: rgb(0x4C3F35),
+    sb_thumb: rgb(0x756152),
+    ok: rgb(0x8CD999),
+    warn: rgb(0xFAB731),
+    danger: rgb(0xFA4131),
+    orphan: rgb(0xC68B82),
+    gold: rgb(0xFAD242),
+    class_table: rgb(0x8CD999),
+    class_view: rgb(0x8CCFD9),
+    class_incremental: rgb(0xB58CD9),
+    class_ephemeral: rgb(0x8CD9BD),
+    class_source: rgb(0x8CB5D9),
+    class_seed: rgb(0xCBB8A4),
+    class_snapshot: rgb(0xD9A88C),
+    class_exposure: rgb(0xD98CA8),
+    class_other: rgb(0xAA8F7B),
+    layer_staging: rgb(0x31D1FA),
+    layer_intermediate: rgb(0xF9C022),
+    layer_marts: rgb(0x31FA59),
+    layer_utilities: rgb(0x9747F3),
+    layer_other: rgb(0xC0B1A5),
+    heat_low: rgb(0x31FA59),
+    heat_mid: rgb(0xFACB31),
+    heat_high: rgb(0xFA4131),
+    diff_add: rgb(0x31FA95),
+    diff_mod: rgb(0x31A9FA),
+    chip_view: rgb(0xB58CD9),
+    section: rgb(0xD9A88C),
+    sql_keyword: rgb(0xAD8CD9),
+    sql_string: rgb(0x8FD98C),
+    sql_comment: rgb(0x8F7663),
+    sql_jinja: rgb(0xD9A88C),
+    bar_resource: rgb(0x8CCFD9),
+    bar_materialization: rgb(0xB58CD9),
+    bar_degree: rgb(0xFAB731),
+    bar_transitive: rgb(0x8CD999),
 };
 
 /// The built-in presets, in cycle/UI order: `(name, theme)`.
 const PRESETS: &[(&str, Theme)] = &[
     ("default", DEFAULT),
-    ("ayu-dark", AYU_DARK),
-    ("ayu-mirage", AYU_MIRAGE),
-    ("ayu-light", AYU_LIGHT),
-    ("gruvbox-dark", GRUVBOX_DARK),
+    ("dark", DARK),
+    ("dusk", DUSK),
+    ("light", LIGHT),
+    ("warm", WARM),
 ];
 
 /// The built-in preset table, in cycle/UI order — the API for callers that
@@ -741,21 +744,21 @@ mod tests {
 
     #[test]
     fn preset_lookup_is_by_exact_name() {
-        assert!(preset("ayu-dark").is_some());
-        assert!(preset("ayu").is_none());
-        assert!(preset("AYU-DARK").is_none());
+        assert!(preset("dark").is_some());
+        assert!(preset("dar").is_none());
+        assert!(preset("DARK").is_none());
         assert_eq!(preset("default"), Some(DEFAULT));
         assert_eq!(preset_names()[0], "default", "default cycles first");
     }
 
     #[test]
     fn parse_theme_overlays_roles_on_the_base() {
-        let theme = parse_theme("base: ayu-dark\ncolors:\n  accent: \"#112233\"\n  ok: 114\n")
+        let theme = parse_theme("base: dark\ncolors:\n  accent: \"#112233\"\n  ok: 114\n")
             .expect("valid theme");
         assert_eq!(theme.accent, Color::Rgb(0x11, 0x22, 0x33));
         assert_eq!(theme.ok, Color::Indexed(114));
         // Untouched roles come from the base preset, not the default.
-        assert_eq!(theme.danger, AYU_DARK.danger);
+        assert_eq!(theme.danger, DARK.danger);
     }
 
     #[test]
@@ -775,7 +778,7 @@ mod tests {
 
         let err = parse_theme("base: nope\n").unwrap_err();
         assert!(err.contains("unknown base theme 'nope'"), "{err}");
-        assert!(err.contains("ayu-dark"), "error lists the presets: {err}");
+        assert!(err.contains("dark"), "error lists the presets: {err}");
 
         let err = parse_theme("colors:\n  accent: \"#12345\"\n").unwrap_err();
         assert!(err.contains("colors.accent"), "{err}");

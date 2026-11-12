@@ -24,6 +24,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   …) and carries new sections (SQL, column lineage cells, lint violations,
   owner/tag/group index pages). A committed docs tree must be regenerated
   once — `dbtl docs --out <DIR> --clean` removes the stale pages safely.
+- **The truecolor theme presets were replaced by original palettes** named
+  `dark`, `dusk`, `light`, and `warm`; the old preset names are gone. An
+  unknown name passed with `--theme`/`DBTL_THEME` exits `2` and lists the
+  valid presets; a saved or configured name that no longer exists falls back
+  to `default` with a warning. Pick a new preset with `dbtl --list-themes`,
+  and update any `theme:` name or custom theme's `base:` that pointed at an
+  old preset.
 
 ### Added
 
@@ -201,8 +208,8 @@ Maintenance release — dependency updates only.
 
 ### Added
 
-- Color themes: ayu/gruvbox presets, custom YAML themes, `--theme` and the
-  `Ctrl-t` picker.
+- Color themes: truecolor presets alongside the default palette, custom
+  YAML themes, `--theme` and the `Ctrl-t` picker.
 
 ### Fixed
 

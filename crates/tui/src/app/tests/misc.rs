@@ -86,16 +86,16 @@ fn theme_cycle_wraps_the_loaded_list_and_notices_the_landing_name() {
 
     // set_themes (the --theme seam): the list is replaced, the index selects,
     // an out-of-range index clamps, and an empty list is ignored.
-    let ayu = crate::ui::theme::preset("ayu-dark").expect("preset");
+    let dusk = crate::ui::theme::preset("dusk").expect("preset");
     a.set_themes(
         vec![
             ("default".into(), crate::ui::theme::DEFAULT),
-            ("mine".into(), ayu),
+            ("mine".into(), dusk),
         ],
         1,
     );
     assert_eq!(a.theme_name(), "mine");
-    assert_eq!(a.active_theme(), &ayu);
+    assert_eq!(a.active_theme(), &dusk);
     a.set_themes(Vec::new(), 99);
     assert_eq!(a.theme_name(), "mine", "empty list ignored, index clamped");
 }
