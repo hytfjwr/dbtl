@@ -10,6 +10,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/release*.yml"
+      - ".github/workflows/demo.yml"
       - "Cargo.toml"
       - "Cargo.lock"
   workflow_dispatch:
