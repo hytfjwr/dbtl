@@ -36,9 +36,8 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          # PRs only read the cache main wrote; saving per-PR would grow the
-          # cache without helping it hit.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Own key (clippy artifacts differ from normal builds); saved on pushes to main only.
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -70,7 +69,9 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Shared per-OS debug/test build; saved on pushes to main only — PR runs and other test jobs restore it.
+          shared-key: test
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
@@ -129,7 +130,8 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Own key — the MSRV toolchain's artifacts are incompatible with stable's; saved on pushes to main only.
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Check (minimum supported toolchain)
         run: cargo check --workspace --all-targets --locked
@@ -157,7 +159,8 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Own key — rustdoc output differs from normal builds; saved on pushes to main only.
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-machete
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
@@ -192,7 +195,9 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Restores the shared debug/test build — it already covers xtask and its dependencies; never saves.
+          shared-key: test
+          save-if: false
 
       - name: Generated reference docs are fresh
         run: cargo xtask gen-docs --check --locked
@@ -218,7 +223,8 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # llvm-cov's instrumented artifacts help no other job; this report-only job restores a matching entry but never saves.
+          save-if: false
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
@@ -275,7 +281,9 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Restores the shared per-OS debug/test build covering this suite's targets and dependencies; never saves.
+          shared-key: test
+          save-if: false
 
       # nextest does not run #[ignore]d tests, so the PTY suite gets its own
       # explicit cargo-test invocation here.
