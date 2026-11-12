@@ -56,7 +56,9 @@ const metaStrings = (meta) =>
   );
 
 function buildGraph(file) {
-  const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, "tests", "fixtures", file), "utf8"));
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, "tests", "fixtures", file), "utf8"),
+  );
   const nodes = manifest.nodes ?? {};
 
   // Tests are counted against the node they are declared on, never emitted.
@@ -77,7 +79,11 @@ function buildGraph(file) {
   }
   const flagsFor = (uid, column) => {
     const set = columnFlags.get(`${uid}\u0000${column}`);
-    return set ? Object.values(TEST_FLAGS).filter((f) => set.has(f)).join(" ") : "";
+    return set
+      ? Object.values(TEST_FLAGS)
+          .filter((f) => set.has(f))
+          .join(" ")
+      : "";
   };
 
   const kept = [];
@@ -121,9 +127,13 @@ function buildGraph(file) {
 }
 
 fs.mkdirSync(outDir, { recursive: true });
-const graph = Object.fromEntries(SAMPLES.map(({ name, file }) => [name, { name, nodes: buildGraph(file) }]));
+const graph = Object.fromEntries(
+  SAMPLES.map(({ name, file }) => [name, { name, nodes: buildGraph(file) }]),
+);
 const version = readVersion();
 fs.writeFileSync(path.join(outDir, "graph.json"), `${JSON.stringify(graph)}\n`);
 fs.writeFileSync(path.join(outDir, "version.json"), `${JSON.stringify({ version })}\n`);
-const counts = Object.values(graph).map((g) => `${g.name} ${g.nodes.length}`).join(", ");
+const counts = Object.values(graph)
+  .map((g) => `${g.name} ${g.nodes.length}`)
+  .join(", ");
 console.log(`prebuild: ${counts} nodes, version ${version}`);

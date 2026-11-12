@@ -4,52 +4,186 @@
 /* 6.1 page and theme transitions. Every page is a real document, so page changes use a
    cross-document transition; only the named .vt-page content, the tab marker and the
    sidebar marker move. Theme changes use a same-document transition. */
-@media (prefers-reduced-motion:no-preference){
-  @view-transition{navigation:auto}
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition {
+    navigation: auto;
+  }
 }
-::view-transition-group(*){animation-duration:var(--dur-2);animation-timing-function:var(--ease-out)}
-::view-transition-old(root),::view-transition-new(root){animation:none}
-::view-transition-old(page){animation:vt-out var(--dur-1) linear both}
-::view-transition-new(page){animation:vt-in var(--dur-2) var(--ease-out) both}
-@keyframes vt-out{to{opacity:0}}
-@keyframes vt-in{from{opacity:0;transform:translateY(6px)}}
-:root[data-vt="theme"] *{view-transition-name:none!important}
-:root[data-vt="theme"]::view-transition-new(root){animation:vt-wipe var(--dur-3) steps(14,end) both}
-@keyframes vt-wipe{from{clip-path:inset(0 0 100% 0)}to{clip-path:inset(0 0 0 0)}}
+::view-transition-group(*) {
+  animation-duration: var(--dur-2);
+  animation-timing-function: var(--ease-out);
+}
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+}
+::view-transition-old(page) {
+  animation: vt-out var(--dur-1) linear both;
+}
+::view-transition-new(page) {
+  animation: vt-in var(--dur-2) var(--ease-out) both;
+}
+@keyframes vt-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes vt-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+:root[data-vt="theme"] * {
+  view-transition-name: none !important;
+}
+:root[data-vt="theme"]::view-transition-new(root) {
+  animation: vt-wipe var(--dur-3) steps(14, end) both;
+}
+@keyframes vt-wipe {
+  from {
+    clip-path: inset(0 0 100% 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
 
 /* 6.2 home boot: panes draw left to right, then script reveals the lineage by column */
-.tui.booting .pane{animation:pane-draw var(--dur-3) steps(12,end) backwards}
-.tui.booting .tui-lin{animation-delay:var(--dur-1)}
-.tui.booting .tui-insp{animation-delay:var(--dur-2)}
-.tui.booting .tui-status{animation:fade-in var(--dur-2) linear var(--dur-3) backwards}
-@keyframes pane-draw{from{clip-path:inset(-1em 100% -2px -2px)}to{clip-path:inset(-1em -2px -2px -2px)}}
-@keyframes fade-in{from{opacity:0}}
-.caret{animation:blink calc(var(--blink)*2) steps(1,end) 6}
-@keyframes blink{50%{opacity:0}}
+.tui.booting .pane {
+  animation: pane-draw var(--dur-3) steps(12, end) backwards;
+}
+.tui.booting .tui-lin {
+  animation-delay: var(--dur-1);
+}
+.tui.booting .tui-insp {
+  animation-delay: var(--dur-2);
+}
+.tui.booting .tui-status {
+  animation: fade-in var(--dur-2) linear var(--dur-3) backwards;
+}
+@keyframes pane-draw {
+  from {
+    clip-path: inset(-1em 100% -2px -2px);
+  }
+  to {
+    clip-path: inset(-1em -2px -2px -2px);
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+.caret {
+  animation: blink calc(var(--blink)*2) steps(1, end) 6;
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
 
 /* 6.3 lineage: path trace, cursor ink, match flash */
-.lin .on.fresh{animation:path-in var(--dur-2) steps(2,end) backwards;animation-delay:calc(var(--i,0)*var(--cell)*.6)}
-@keyframes path-in{from{color:var(--dim)}}
-.lin .nm.cur{animation:ink-in var(--dur-2) steps(1,end) backwards}
-@keyframes ink-in{from{color:var(--text)}}
-.lin .nm.hit.fresh{animation:hit-in var(--dur-3) steps(3,end) backwards;animation-delay:calc(var(--i,0)*var(--cell)*.25)}
-@keyframes hit-in{from{background:transparent;color:var(--text)}}
-.pg-match li.fresh{animation:row-in var(--dur-3) var(--ease-out) backwards}
-@keyframes row-in{from{background:var(--band);color:var(--band-ink)}}
+.lin .on.fresh {
+  animation: path-in var(--dur-2) steps(2, end) backwards;
+  animation-delay: calc(var(--i, 0)*var(--cell)*0.6);
+}
+@keyframes path-in {
+  from {
+    color: var(--dim);
+  }
+}
+.lin .nm.cur {
+  animation: ink-in var(--dur-2) steps(1, end) backwards;
+}
+@keyframes ink-in {
+  from {
+    color: var(--text);
+  }
+}
+.lin .nm.hit.fresh {
+  animation: hit-in var(--dur-3) steps(3, end) backwards;
+  animation-delay: calc(var(--i, 0)*var(--cell)*0.25);
+}
+@keyframes hit-in {
+  from {
+    background: transparent;
+    color: var(--text);
+  }
+}
+.pg-match li.fresh {
+  animation: row-in var(--dur-3) var(--ease-out) backwards;
+}
+@keyframes row-in {
+  from {
+    background: var(--band);
+    color: var(--band-ink);
+  }
+}
 
 /* 6.4 feedback: copy flash, search palette, drawer */
-.flash{animation:flash calc(var(--dur-3)*2) var(--ease-out)}
-@keyframes flash{from{border-color:var(--band);box-shadow:0 0 0 1px var(--band)}}
-dialog.search{opacity:0;transform:translateY(-8px);transition:opacity var(--dur-2) var(--ease-out),transform var(--dur-2) var(--ease-out),overlay var(--dur-2) allow-discrete,display var(--dur-2) allow-discrete}
-dialog.search[open]{opacity:1;transform:none}
-@starting-style{dialog.search[open]{opacity:0;transform:translateY(-8px)}}
-dialog.search::backdrop{opacity:0;transition:opacity var(--dur-2) linear,overlay var(--dur-2) allow-discrete,display var(--dur-2) allow-discrete}
-dialog.search[open]::backdrop{opacity:1}
-@starting-style{dialog.search[open]::backdrop{opacity:0}}
-.scrim{animation:fade-in var(--dur-2) linear}
+.flash {
+  animation: flash calc(var(--dur-3)*2) var(--ease-out);
+}
+@keyframes flash {
+  from {
+    border-color: var(--band);
+    box-shadow: 0 0 0 1px var(--band);
+  }
+}
+dialog.search {
+  opacity: 0;
+  transform: translateY(-8px);
+  transition:
+    opacity var(--dur-2) var(--ease-out),
+    transform var(--dur-2) var(--ease-out),
+    overlay var(--dur-2) allow-discrete,
+    display var(--dur-2) allow-discrete;
+}
+dialog.search[open] {
+  opacity: 1;
+  transform: none;
+}
+@starting-style {
+  dialog.search[open] {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+dialog.search::backdrop {
+  opacity: 0;
+  transition:
+    opacity var(--dur-2) linear,
+    overlay var(--dur-2) allow-discrete,
+    display var(--dur-2) allow-discrete;
+}
+dialog.search[open]::backdrop {
+  opacity: 1;
+}
+@starting-style {
+  dialog.search[open]::backdrop {
+    opacity: 0;
+  }
+}
+.scrim {
+  animation: fade-in var(--dur-2) linear;
+}
 
-@media (prefers-reduced-motion:reduce){
-  html{scroll-behavior:auto}
-  *,*::before,*::after{transition-duration:0s!important;animation-duration:0s!important;animation-delay:0s!important}
-  ::view-transition-group(*),::view-transition-old(*),::view-transition-new(*){animation:none!important}
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0s !important;
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+  }
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
 }

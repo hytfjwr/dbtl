@@ -45,18 +45,16 @@ const features = [
 <div class="sec">
   <h2>What the terminal UI does</h2>
   <div class="feats">
-    {
-      features.map((f) => (
-        <article class="pane feat">
-          <h3 class="pane-title">
-            <a href={docsHref(f.slug)}>
-              <b>{f.title}</b>
-            </a>
-          </h3>
-          <p set:html={f.text} />
-          <div class="eg" set:html={f.eg} />
-        </article>
-      ))
-    }
+    {features.map((f) => (
+      <article class="pane feat">
+        <h3 class="pane-title">
+          <a href={docsHref(f.slug)}>
+            <b>{f.title}</b>
+          </a>
+        </h3>
+        <p set:html={f.text} />
+        <div class="eg" set:html={f.eg} />
+      </article>
+    ))}
   </div>
 </div>

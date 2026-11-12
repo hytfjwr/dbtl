@@ -19,7 +19,11 @@ export interface LineageView {
   pre: HTMLElement;
   layout: Layout;
   /** Redraw. The cursor band slides to its new node. Returns the reveal duration in ms. */
-  render: (graph: Graph<LineageNode>, styleFor: (L: Layout) => Style, opts?: RenderOptions) => number;
+  render: (
+    graph: Graph<LineageNode>,
+    styleFor: (L: Layout) => Style,
+    opts?: RenderOptions,
+  ) => number;
 }
 
 /** Mount a renderer in a host element. A stage the server already drew there is reused. */

@@ -39,9 +39,12 @@ export function playWhenVisible(o: BootOptions): void {
     setTimeout(() => panel.classList.remove("booting"), ms("--dur-3") * 3);
     const total = o.start(ms("--dur-3"));
     o.trail.forEach((id, i) =>
-      setTimeout(() => {
-        if (!o.touched()) o.visit(id);
-      }, total + 120 + i * 300),
+      setTimeout(
+        () => {
+          if (!o.touched()) o.visit(id);
+        },
+        total + 120 + i * 300,
+      ),
     );
   };
   if (reduced()) return;

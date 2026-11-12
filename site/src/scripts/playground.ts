@@ -21,7 +21,10 @@ import { toProject, type LintData, type Project, type RawSample } from "./sample
 
 const SAMPLES: Record<string, { project: Project; lint: LintData }> = {
   sample: { project: toProject(sample as unknown as RawSample), lint: lintSample as LintData },
-  jaffle_finance: { project: toProject(jaffle_finance as unknown as RawSample), lint: lintJaffle as LintData },
+  jaffle_finance: {
+    project: toProject(jaffle_finance as unknown as RawSample),
+    lint: lintJaffle as LintData,
+  },
 };
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel);
@@ -36,7 +39,9 @@ if (input && host && switcher && chips && tabs) {
   let name = PROJECTS[0]!;
   let spec = input.value;
   let previous: Set<string> | null = run(SAMPLES[name]!.project, spec).hit;
-  const note = host.querySelector<HTMLElement>(".pg-note") ?? Object.assign(document.createElement("p"), { className: "pg-note" });
+  const note =
+    host.querySelector<HTMLElement>(".pg-note") ??
+    Object.assign(document.createElement("p"), { className: "pg-note" });
   const view = mount(host);
 
   function render(reveal: { speed?: number } | null = null): void {
@@ -68,7 +73,9 @@ if (input && host && switcher && chips && tabs) {
 
     input!.style.width = `${Math.max(1, spec.length)}ch`;
     $("#pg-cmd")!.textContent = command(spec);
-    chips!.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.textContent === spec.trim())));
+    chips!
+      .querySelectorAll("button")
+      .forEach((b) => b.setAttribute("aria-pressed", String(b.textContent === spec.trim())));
   }
 
   function load(next: string): void {
@@ -76,8 +83,12 @@ if (input && host && switcher && chips && tabs) {
     spec = EXAMPLES[name]![0]!;
     previous = null;
     // Keep the project buttons (the pressed one may have focus); only the pressed state moves.
-    switcher!.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.p === name)));
-    chips!.innerHTML = EXAMPLES[name]!.map((e) => `<button type="button">${esc(e)}</button>`).join("");
+    switcher!
+      .querySelectorAll("button")
+      .forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.p === name)));
+    chips!.innerHTML = EXAMPLES[name]!.map((e) => `<button type="button">${esc(e)}</button>`).join(
+      "",
+    );
     input!.value = spec;
     render({ speed: 0.35 });
   }
@@ -114,7 +125,15 @@ if (input && host && switcher && chips && tabs) {
     tab.addEventListener("keydown", (ev) => {
       const n = buttons.length;
       const to =
-        ev.key === "ArrowRight" ? (i + 1) % n : ev.key === "ArrowLeft" ? (i - 1 + n) % n : ev.key === "Home" ? 0 : ev.key === "End" ? n - 1 : -1;
+        ev.key === "ArrowRight"
+          ? (i + 1) % n
+          : ev.key === "ArrowLeft"
+            ? (i - 1 + n) % n
+            : ev.key === "Home"
+              ? 0
+              : ev.key === "End"
+                ? n - 1
+                : -1;
       if (to < 0) return;
       ev.preventDefault();
       pick(buttons[to]!, true);

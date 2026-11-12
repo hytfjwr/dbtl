@@ -69,7 +69,8 @@ const G = { h: "─", v: "│", tl: "╭", tr: "╮", bl: "╰", br: "╯", arro
 
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const testsLabel = (n: LineageNode) => (n.tests > 0 ? `tests:${n.tests}` : "");
-const boxWidth = (n: LineageNode) => Math.max(n.name.length + 2, n.tag.length + 1, testsLabel(n).length + 1) + 2;
+const boxWidth = (n: LineageNode) =>
+  Math.max(n.name.length + 2, n.tag.length + 1, testsLabel(n).length + 1) + 2;
 
 export function layout(graph: Graph<LineageNode>): Layout {
   const nodes = graph.nodes.slice().sort((a, b) => cmp(a.id, b.id));
@@ -114,7 +115,9 @@ export function layout(graph: Graph<LineageNode>): Layout {
       y += BOX_H + ROW_GAP;
     }
   });
-  const cells: (Cell | null)[][] = Array.from({ length: H }, () => new Array<Cell | null>(W).fill(null));
+  const cells: (Cell | null)[][] = Array.from({ length: H }, () =>
+    Array.from({ length: W }, () => null),
+  );
 
   // pass 1: connector runs and corners
   for (const [pid, cid] of edges) {
@@ -172,7 +175,8 @@ export function layout(graph: Graph<LineageNode>): Layout {
     put(r.x, r.y + 1, G.v, "b");
     put(r.x + r.w - 1, r.y + 1, G.v, "b");
     for (let i = 0; i < inner; i++) put(r.x + 1 + i, r.y + 1, " ", "p");
-    for (let i = 0; i < n.name.length; i++) if (1 + i < inner) put(r.x + 2 + i, r.y + 1, n.name[i], "n");
+    for (let i = 0; i < n.name.length; i++)
+      if (1 + i < inner) put(r.x + 2 + i, r.y + 1, n.name[i], "n");
     put(r.x, r.y + 2, G.bl, "b");
     put(r.x + r.w - 1, r.y + 2, G.br, "b");
     for (let i = 0; i < inner; i++) put(r.x + 1 + i, r.y + 2, G.h, "b");
@@ -236,7 +240,8 @@ export function paint(L: Layout, style: Style): string {
         if (a !== key) {
           flush();
           key = a;
-          attrs = a + (a.includes("fresh") ? ` style="--i:${Math.round(Math.abs(x - ox) / 2)}"` : "");
+          attrs =
+            a + (a.includes("fresh") ? ` style="--i:${Math.round(Math.abs(x - ox) / 2)}"` : "");
         }
         buf += c ? esc(c.ch) : " ";
       });

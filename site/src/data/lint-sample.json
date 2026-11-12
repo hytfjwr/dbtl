@@ -1,342 +1,342 @@
 {
- "project": "sample",
- "rules": 37,
- "findings": [
-  {
-   "rule": "multiple_sources_joined",
-   "severity": "warn",
-   "uid": "model.sample.stg_dup_probe",
-   "message": "stg_dup_probe reads sources ledger.payments, shared.payments",
-   "file": "models/staging/stg_dup_probe.sql"
-  },
-  {
-   "rule": "root_models",
-   "severity": "warn",
-   "uid": "model.sample.fct_contracted",
-   "message": "fct_contracted has no parents",
-   "file": "models/marts/fct_contracted.sql"
-  },
-  {
-   "rule": "root_models",
-   "severity": "warn",
-   "uid": "model.sample.fct_incr_file",
-   "message": "fct_incr_file has no parents",
-   "file": "models/marts/fct_incr_file.sql"
-  },
-  {
-   "rule": "root_models",
-   "severity": "warn",
-   "uid": "model.sample.fct_incr_schema",
-   "message": "fct_incr_schema has no parents",
-   "file": "models/marts/fct_incr_schema.sql"
-  },
-  {
-   "rule": "root_models",
-   "severity": "warn",
-   "uid": "model.sample.fct_incr_tree",
-   "message": "fct_incr_tree has no parents",
-   "file": "models/marts/fct_incr_tree.sql"
-  },
-  {
-   "rule": "root_models",
-   "severity": "warn",
-   "uid": "model.sample.fct_model_tests",
-   "message": "fct_model_tests has no parents",
-   "file": "models/marts/fct_model_tests.sql"
-  },
-  {
-   "rule": "root_models",
-   "severity": "warn",
-   "uid": "model.sample.fct_public_api",
-   "message": "fct_public_api has no parents",
-   "file": "models/marts/fct_public_api.sql"
-  },
-  {
-   "rule": "root_models",
-   "severity": "warn",
-   "uid": "model.sample.stg_two_configs",
-   "message": "stg_two_configs has no parents",
-   "file": "models/staging/stg_two_configs.sql"
-  },
-  {
-   "rule": "marts_depend_on_source",
-   "severity": "warn",
-   "uid": "model.sample.dim_customers",
-   "message": "marts model dim_customers reads source raw.customers",
-   "file": "models/marts/dim_customers.sql"
-  },
-  {
-   "rule": "missing_primary_key_tests",
-   "severity": "error",
-   "uid": "model.sample.agg_country_orders",
-   "message": "agg_country_orders has no unique+not_null test pair (or unique_combination_of_columns)",
-   "file": "models/marts/agg_country_orders.sql"
-  },
-  {
-   "rule": "missing_primary_key_tests",
-   "severity": "error",
-   "uid": "model.sample.cll_demo",
-   "message": "cll_demo has no unique+not_null test pair (or unique_combination_of_columns)",
-   "file": "models/marts/cll_demo.sql"
-  },
-  {
-   "rule": "missing_primary_key_tests",
-   "severity": "error",
-   "uid": "model.sample.cll_syntax",
-   "message": "cll_syntax has no unique+not_null test pair (or unique_combination_of_columns)",
-   "file": "models/marts/schema.yml"
-  },
-  {
-   "rule": "missing_primary_key_tests",
-   "severity": "error",
-   "uid": "model.sample.dim_customers",
-   "message": "dim_customers has no unique+not_null test pair (or unique_combination_of_columns)",
-   "file": "models/marts/schema.yml"
-  },
-  {
-   "rule": "missing_primary_key_tests",
-   "severity": "error",
-   "uid": "model.sample.fct_customer_history",
-   "message": "fct_customer_history has no unique+not_null test pair (or unique_combination_of_columns)",
-   "file": "models/marts/fct_customer_history.sql"
-  },
-  {
-   "rule": "missing_primary_key_tests",
-   "severity": "error",
-   "uid": "model.sample.fct_daily_orders",
-   "message": "fct_daily_orders has no unique+not_null test pair (or unique_combination_of_columns)",
-   "file": "models/marts/schema.yml"
-  },
-  {
-   "rule": "missing_primary_key_tests",
-   "severity": "error",
-   "uid": "model.sample.fct_line_items",
-   "message": "fct_line_items has no unique+not_null test pair (or unique_combination_of_columns)",
-   "file": "models/marts/schema.yml"
-  },
-  {
-   "rule": "missing_primary_key_tests",
-   "severity": "error",
-   "uid": "model.sample.fct_orders",
-   "message": "fct_orders has no unique+not_null test pair (or unique_combination_of_columns)",
-   "file": "models/marts/schema.yml"
-  },
-  {
-   "rule": "missing_primary_key_tests",
-   "severity": "error",
-   "uid": "model.sample.stg_two_configs",
-   "message": "stg_two_configs has no unique+not_null test pair (or unique_combination_of_columns)",
-   "file": "models/staging/stg_two_configs.sql"
-  },
-  {
-   "rule": "public_models_without_contract",
-   "severity": "error",
-   "uid": "model.sample.fct_public_api",
-   "message": "fct_public_api is access: public without an enforced contract",
-   "file": "models/marts/governance.yml"
-  },
-  {
-   "rule": "undocumented_models",
-   "severity": "warn",
-   "uid": "model.sample.agg_country_orders",
-   "message": "agg_country_orders has no description",
-   "file": "models/marts/agg_country_orders.sql"
-  },
-  {
-   "rule": "undocumented_models",
-   "severity": "warn",
-   "uid": "model.sample.cll_demo",
-   "message": "cll_demo has no description",
-   "file": "models/marts/cll_demo.sql"
-  },
-  {
-   "rule": "undocumented_models",
-   "severity": "warn",
-   "uid": "model.sample.fct_customer_history",
-   "message": "fct_customer_history has no description",
-   "file": "models/marts/fct_customer_history.sql"
-  },
-  {
-   "rule": "undocumented_models",
-   "severity": "warn",
-   "uid": "model.sample.stg_two_configs",
-   "message": "stg_two_configs has no description",
-   "file": "models/staging/stg_two_configs.sql"
-  },
-  {
-   "rule": "naming_conventions",
-   "severity": "warn",
-   "uid": "model.sample.agg_country_orders",
-   "message": "marts model agg_country_orders doesn't match prefixes: fct_, dim_, rpt_",
-   "file": "models/marts/agg_country_orders.sql"
-  },
-  {
-   "rule": "naming_conventions",
-   "severity": "warn",
-   "uid": "model.sample.cll_demo",
-   "message": "marts model cll_demo doesn't match prefixes: fct_, dim_, rpt_",
-   "file": "models/marts/cll_demo.sql"
-  },
-  {
-   "rule": "naming_conventions",
-   "severity": "warn",
-   "uid": "model.sample.cll_syntax",
-   "message": "marts model cll_syntax doesn't match prefixes: fct_, dim_, rpt_",
-   "file": "models/marts/cll_syntax.sql"
-  },
-  {
-   "rule": "unused_sources",
-   "severity": "warn",
-   "uid": "source.sample.archive.audit_log",
-   "message": "source archive.audit_log is not referenced by any node",
-   "file": "models/staging/schema.yml"
-  },
-  {
-   "rule": "unused_sources",
-   "severity": "warn",
-   "uid": "source.sample.raw.payments",
-   "message": "source raw.payments is not referenced by any node",
-   "file": "models/staging/schema.yml"
-  },
-  {
-   "rule": "duplicate_sources",
-   "severity": "warn",
-   "uid": "source.sample.ledger.payments",
-   "message": "source ledger.payments points at the same relation as shared.payments",
-   "file": "models/staging/dup_sources.yml"
-  },
-  {
-   "rule": "duplicate_sources",
-   "severity": "warn",
-   "uid": "source.sample.shared.payments",
-   "message": "source shared.payments points at the same relation as ledger.payments",
-   "file": "models/staging/dup_sources.yml"
-  },
-  {
-   "rule": "exposure_parents_materializations",
-   "severity": "warn",
-   "uid": "exposure.sample.churn_notebook",
-   "message": "exposure churn_notebook directly depends on source or view/ephemeral parent: raw.customers",
-   "file": "models/marts/schema.yml"
-  },
-  {
-   "rule": "exposures_dependent_on_private_models",
-   "severity": "warn",
-   "uid": "exposure.sample.churn_notebook",
-   "message": "exposure churn_notebook directly depends on non-public model: dim_customers",
-   "file": "models/marts/schema.yml"
-  },
-  {
-   "rule": "exposures_dependent_on_private_models",
-   "severity": "warn",
-   "uid": "exposure.sample.orders_dashboard",
-   "message": "exposure orders_dashboard directly depends on non-public models: agg_country_orders, fct_orders",
-   "file": "models/marts/schema.yml"
-  },
-  {
-   "rule": "undocumented_columns",
-   "severity": "warn",
-   "uid": "model.sample.cll_syntax",
-   "message": "cll_syntax has declared columns without descriptions: order_id, status, status_upper, country, jp_id, rn, order_id_next",
-   "file": "models/marts/schema.yml"
-  },
-  {
-   "rule": "undocumented_columns",
-   "severity": "warn",
-   "uid": "model.sample.fct_model_tests",
-   "message": "fct_model_tests has declared column without descriptions: notes",
-   "file": "models/marts/governance.yml"
-  },
-  {
-   "rule": "undocumented_columns",
-   "severity": "warn",
-   "uid": "model.sample.fct_orders",
-   "message": "fct_orders has declared columns without descriptions: id, status, country_code, country",
-   "file": "models/marts/schema.yml"
-  },
-  {
-   "rule": "undocumented_columns",
-   "severity": "warn",
-   "uid": "model.sample.stg_orders",
-   "message": "stg_orders has declared columns without descriptions: status, country_code, disabled_flag",
-   "file": "models/staging/schema.yml"
-  },
-  {
-   "rule": "contract_columns_without_type",
-   "severity": "warn",
-   "uid": "model.sample.fct_contracted",
-   "message": "contract-enforced fct_contracted has declared column without data_type: status",
-   "file": "models/marts/governance.yml"
-  },
-  {
-   "rule": "incremental_without_unique_key",
-   "severity": "warn",
-   "uid": "model.sample.fct_daily_orders",
-   "message": "incremental model fct_daily_orders has no unique_key",
-   "file": "models/marts/fct_daily_orders.sql"
-  },
-  {
-   "rule": "sources_without_freshness",
-   "severity": "warn",
-   "uid": "source.sample.raw.customers",
-   "message": "source raw.customers has no freshness configured",
-   "file": "models/staging/schema.yml"
-  },
-  {
-   "rule": "select_star",
-   "severity": "warn",
-   "uid": "model.sample.cll_syntax",
-   "message": "cll_syntax's final SELECT uses select * / t.*",
-   "file": "models/marts/cll_syntax.sql"
-  },
-  {
-   "rule": "select_star",
-   "severity": "warn",
-   "uid": "model.sample.fct_customer_history",
-   "message": "fct_customer_history's final SELECT uses select * / t.*",
-   "file": "models/marts/fct_customer_history.sql"
-  },
-  {
-   "rule": "select_star",
-   "severity": "warn",
-   "uid": "model.sample.fct_daily_orders",
-   "message": "fct_daily_orders's final SELECT uses select * / t.*",
-   "file": "models/marts/fct_daily_orders.sql"
-  },
-  {
-   "rule": "select_star",
-   "severity": "warn",
-   "uid": "model.sample.fct_line_items",
-   "message": "fct_line_items's final SELECT uses select * / t.*",
-   "file": "models/marts/fct_line_items.sql"
-  },
-  {
-   "rule": "select_star",
-   "severity": "warn",
-   "uid": "model.sample.fct_orders",
-   "message": "fct_orders's final SELECT uses select * / t.*",
-   "file": "models/marts/fct_orders.sql"
-  },
-  {
-   "rule": "select_star",
-   "severity": "warn",
-   "uid": "model.sample.stg_orders",
-   "message": "stg_orders's final SELECT uses select * / t.*",
-   "file": "models/staging/stg_orders.sql"
-  },
-  {
-   "rule": "unused_models",
-   "severity": "warn",
-   "uid": "model.sample.stg_dup_probe",
-   "message": "staging model stg_dup_probe has no downstream",
-   "file": "models/staging/dup_sources.yml"
-  },
-  {
-   "rule": "unused_models",
-   "severity": "warn",
-   "uid": "model.sample.stg_two_configs",
-   "message": "staging model stg_two_configs has no downstream",
-   "file": "models/staging/stg_two_configs.sql"
-  }
- ]
+  "project": "sample",
+  "rules": 37,
+  "findings": [
+    {
+      "rule": "multiple_sources_joined",
+      "severity": "warn",
+      "uid": "model.sample.stg_dup_probe",
+      "message": "stg_dup_probe reads sources ledger.payments, shared.payments",
+      "file": "models/staging/stg_dup_probe.sql"
+    },
+    {
+      "rule": "root_models",
+      "severity": "warn",
+      "uid": "model.sample.fct_contracted",
+      "message": "fct_contracted has no parents",
+      "file": "models/marts/fct_contracted.sql"
+    },
+    {
+      "rule": "root_models",
+      "severity": "warn",
+      "uid": "model.sample.fct_incr_file",
+      "message": "fct_incr_file has no parents",
+      "file": "models/marts/fct_incr_file.sql"
+    },
+    {
+      "rule": "root_models",
+      "severity": "warn",
+      "uid": "model.sample.fct_incr_schema",
+      "message": "fct_incr_schema has no parents",
+      "file": "models/marts/fct_incr_schema.sql"
+    },
+    {
+      "rule": "root_models",
+      "severity": "warn",
+      "uid": "model.sample.fct_incr_tree",
+      "message": "fct_incr_tree has no parents",
+      "file": "models/marts/fct_incr_tree.sql"
+    },
+    {
+      "rule": "root_models",
+      "severity": "warn",
+      "uid": "model.sample.fct_model_tests",
+      "message": "fct_model_tests has no parents",
+      "file": "models/marts/fct_model_tests.sql"
+    },
+    {
+      "rule": "root_models",
+      "severity": "warn",
+      "uid": "model.sample.fct_public_api",
+      "message": "fct_public_api has no parents",
+      "file": "models/marts/fct_public_api.sql"
+    },
+    {
+      "rule": "root_models",
+      "severity": "warn",
+      "uid": "model.sample.stg_two_configs",
+      "message": "stg_two_configs has no parents",
+      "file": "models/staging/stg_two_configs.sql"
+    },
+    {
+      "rule": "marts_depend_on_source",
+      "severity": "warn",
+      "uid": "model.sample.dim_customers",
+      "message": "marts model dim_customers reads source raw.customers",
+      "file": "models/marts/dim_customers.sql"
+    },
+    {
+      "rule": "missing_primary_key_tests",
+      "severity": "error",
+      "uid": "model.sample.agg_country_orders",
+      "message": "agg_country_orders has no unique+not_null test pair (or unique_combination_of_columns)",
+      "file": "models/marts/agg_country_orders.sql"
+    },
+    {
+      "rule": "missing_primary_key_tests",
+      "severity": "error",
+      "uid": "model.sample.cll_demo",
+      "message": "cll_demo has no unique+not_null test pair (or unique_combination_of_columns)",
+      "file": "models/marts/cll_demo.sql"
+    },
+    {
+      "rule": "missing_primary_key_tests",
+      "severity": "error",
+      "uid": "model.sample.cll_syntax",
+      "message": "cll_syntax has no unique+not_null test pair (or unique_combination_of_columns)",
+      "file": "models/marts/schema.yml"
+    },
+    {
+      "rule": "missing_primary_key_tests",
+      "severity": "error",
+      "uid": "model.sample.dim_customers",
+      "message": "dim_customers has no unique+not_null test pair (or unique_combination_of_columns)",
+      "file": "models/marts/schema.yml"
+    },
+    {
+      "rule": "missing_primary_key_tests",
+      "severity": "error",
+      "uid": "model.sample.fct_customer_history",
+      "message": "fct_customer_history has no unique+not_null test pair (or unique_combination_of_columns)",
+      "file": "models/marts/fct_customer_history.sql"
+    },
+    {
+      "rule": "missing_primary_key_tests",
+      "severity": "error",
+      "uid": "model.sample.fct_daily_orders",
+      "message": "fct_daily_orders has no unique+not_null test pair (or unique_combination_of_columns)",
+      "file": "models/marts/schema.yml"
+    },
+    {
+      "rule": "missing_primary_key_tests",
+      "severity": "error",
+      "uid": "model.sample.fct_line_items",
+      "message": "fct_line_items has no unique+not_null test pair (or unique_combination_of_columns)",
+      "file": "models/marts/schema.yml"
+    },
+    {
+      "rule": "missing_primary_key_tests",
+      "severity": "error",
+      "uid": "model.sample.fct_orders",
+      "message": "fct_orders has no unique+not_null test pair (or unique_combination_of_columns)",
+      "file": "models/marts/schema.yml"
+    },
+    {
+      "rule": "missing_primary_key_tests",
+      "severity": "error",
+      "uid": "model.sample.stg_two_configs",
+      "message": "stg_two_configs has no unique+not_null test pair (or unique_combination_of_columns)",
+      "file": "models/staging/stg_two_configs.sql"
+    },
+    {
+      "rule": "public_models_without_contract",
+      "severity": "error",
+      "uid": "model.sample.fct_public_api",
+      "message": "fct_public_api is access: public without an enforced contract",
+      "file": "models/marts/governance.yml"
+    },
+    {
+      "rule": "undocumented_models",
+      "severity": "warn",
+      "uid": "model.sample.agg_country_orders",
+      "message": "agg_country_orders has no description",
+      "file": "models/marts/agg_country_orders.sql"
+    },
+    {
+      "rule": "undocumented_models",
+      "severity": "warn",
+      "uid": "model.sample.cll_demo",
+      "message": "cll_demo has no description",
+      "file": "models/marts/cll_demo.sql"
+    },
+    {
+      "rule": "undocumented_models",
+      "severity": "warn",
+      "uid": "model.sample.fct_customer_history",
+      "message": "fct_customer_history has no description",
+      "file": "models/marts/fct_customer_history.sql"
+    },
+    {
+      "rule": "undocumented_models",
+      "severity": "warn",
+      "uid": "model.sample.stg_two_configs",
+      "message": "stg_two_configs has no description",
+      "file": "models/staging/stg_two_configs.sql"
+    },
+    {
+      "rule": "naming_conventions",
+      "severity": "warn",
+      "uid": "model.sample.agg_country_orders",
+      "message": "marts model agg_country_orders doesn't match prefixes: fct_, dim_, rpt_",
+      "file": "models/marts/agg_country_orders.sql"
+    },
+    {
+      "rule": "naming_conventions",
+      "severity": "warn",
+      "uid": "model.sample.cll_demo",
+      "message": "marts model cll_demo doesn't match prefixes: fct_, dim_, rpt_",
+      "file": "models/marts/cll_demo.sql"
+    },
+    {
+      "rule": "naming_conventions",
+      "severity": "warn",
+      "uid": "model.sample.cll_syntax",
+      "message": "marts model cll_syntax doesn't match prefixes: fct_, dim_, rpt_",
+      "file": "models/marts/cll_syntax.sql"
+    },
+    {
+      "rule": "unused_sources",
+      "severity": "warn",
+      "uid": "source.sample.archive.audit_log",
+      "message": "source archive.audit_log is not referenced by any node",
+      "file": "models/staging/schema.yml"
+    },
+    {
+      "rule": "unused_sources",
+      "severity": "warn",
+      "uid": "source.sample.raw.payments",
+      "message": "source raw.payments is not referenced by any node",
+      "file": "models/staging/schema.yml"
+    },
+    {
+      "rule": "duplicate_sources",
+      "severity": "warn",
+      "uid": "source.sample.ledger.payments",
+      "message": "source ledger.payments points at the same relation as shared.payments",
+      "file": "models/staging/dup_sources.yml"
+    },
+    {
+      "rule": "duplicate_sources",
+      "severity": "warn",
+      "uid": "source.sample.shared.payments",
+      "message": "source shared.payments points at the same relation as ledger.payments",
+      "file": "models/staging/dup_sources.yml"
+    },
+    {
+      "rule": "exposure_parents_materializations",
+      "severity": "warn",
+      "uid": "exposure.sample.churn_notebook",
+      "message": "exposure churn_notebook directly depends on source or view/ephemeral parent: raw.customers",
+      "file": "models/marts/schema.yml"
+    },
+    {
+      "rule": "exposures_dependent_on_private_models",
+      "severity": "warn",
+      "uid": "exposure.sample.churn_notebook",
+      "message": "exposure churn_notebook directly depends on non-public model: dim_customers",
+      "file": "models/marts/schema.yml"
+    },
+    {
+      "rule": "exposures_dependent_on_private_models",
+      "severity": "warn",
+      "uid": "exposure.sample.orders_dashboard",
+      "message": "exposure orders_dashboard directly depends on non-public models: agg_country_orders, fct_orders",
+      "file": "models/marts/schema.yml"
+    },
+    {
+      "rule": "undocumented_columns",
+      "severity": "warn",
+      "uid": "model.sample.cll_syntax",
+      "message": "cll_syntax has declared columns without descriptions: order_id, status, status_upper, country, jp_id, rn, order_id_next",
+      "file": "models/marts/schema.yml"
+    },
+    {
+      "rule": "undocumented_columns",
+      "severity": "warn",
+      "uid": "model.sample.fct_model_tests",
+      "message": "fct_model_tests has declared column without descriptions: notes",
+      "file": "models/marts/governance.yml"
+    },
+    {
+      "rule": "undocumented_columns",
+      "severity": "warn",
+      "uid": "model.sample.fct_orders",
+      "message": "fct_orders has declared columns without descriptions: id, status, country_code, country",
+      "file": "models/marts/schema.yml"
+    },
+    {
+      "rule": "undocumented_columns",
+      "severity": "warn",
+      "uid": "model.sample.stg_orders",
+      "message": "stg_orders has declared columns without descriptions: status, country_code, disabled_flag",
+      "file": "models/staging/schema.yml"
+    },
+    {
+      "rule": "contract_columns_without_type",
+      "severity": "warn",
+      "uid": "model.sample.fct_contracted",
+      "message": "contract-enforced fct_contracted has declared column without data_type: status",
+      "file": "models/marts/governance.yml"
+    },
+    {
+      "rule": "incremental_without_unique_key",
+      "severity": "warn",
+      "uid": "model.sample.fct_daily_orders",
+      "message": "incremental model fct_daily_orders has no unique_key",
+      "file": "models/marts/fct_daily_orders.sql"
+    },
+    {
+      "rule": "sources_without_freshness",
+      "severity": "warn",
+      "uid": "source.sample.raw.customers",
+      "message": "source raw.customers has no freshness configured",
+      "file": "models/staging/schema.yml"
+    },
+    {
+      "rule": "select_star",
+      "severity": "warn",
+      "uid": "model.sample.cll_syntax",
+      "message": "cll_syntax's final SELECT uses select * / t.*",
+      "file": "models/marts/cll_syntax.sql"
+    },
+    {
+      "rule": "select_star",
+      "severity": "warn",
+      "uid": "model.sample.fct_customer_history",
+      "message": "fct_customer_history's final SELECT uses select * / t.*",
+      "file": "models/marts/fct_customer_history.sql"
+    },
+    {
+      "rule": "select_star",
+      "severity": "warn",
+      "uid": "model.sample.fct_daily_orders",
+      "message": "fct_daily_orders's final SELECT uses select * / t.*",
+      "file": "models/marts/fct_daily_orders.sql"
+    },
+    {
+      "rule": "select_star",
+      "severity": "warn",
+      "uid": "model.sample.fct_line_items",
+      "message": "fct_line_items's final SELECT uses select * / t.*",
+      "file": "models/marts/fct_line_items.sql"
+    },
+    {
+      "rule": "select_star",
+      "severity": "warn",
+      "uid": "model.sample.fct_orders",
+      "message": "fct_orders's final SELECT uses select * / t.*",
+      "file": "models/marts/fct_orders.sql"
+    },
+    {
+      "rule": "select_star",
+      "severity": "warn",
+      "uid": "model.sample.stg_orders",
+      "message": "stg_orders's final SELECT uses select * / t.*",
+      "file": "models/staging/stg_orders.sql"
+    },
+    {
+      "rule": "unused_models",
+      "severity": "warn",
+      "uid": "model.sample.stg_dup_probe",
+      "message": "staging model stg_dup_probe has no downstream",
+      "file": "models/staging/dup_sources.yml"
+    },
+    {
+      "rule": "unused_models",
+      "severity": "warn",
+      "uid": "model.sample.stg_two_configs",
+      "message": "staging model stg_two_configs has no downstream",
+      "file": "models/staging/stg_two_configs.sql"
+    }
+  ]
 }

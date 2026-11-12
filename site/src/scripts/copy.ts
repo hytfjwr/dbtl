@@ -10,7 +10,10 @@ function fallbackCopy(text: string): void {
     area.style.opacity = "0";
     document.body.appendChild(area);
     area.select();
-    document.execCommand("copy");
+    // The Clipboard API is unavailable in insecure contexts (local preview over
+    // plain HTTP); this legacy call is the only fallback. The structural type
+    // sidesteps the deprecated lib.dom signature.
+    (document as { execCommand(commandId: string): boolean }).execCommand("copy");
     area.remove();
   } catch {
     // nothing else to try
@@ -36,7 +39,9 @@ function sourceOf(button: HTMLElement): string {
   const inline = button.getAttribute("data-copy");
   if (inline !== null) return inline;
   const selector = button.getAttribute("data-copy-from");
-  const el = selector ? document.querySelector(selector) : button.parentElement?.querySelector("pre");
+  const el = selector
+    ? document.querySelector(selector)
+    : button.parentElement?.querySelector("pre");
   if (!el) return "";
   return el.tagName === "PRE" ? textOf(el) : (el.textContent ?? "");
 }

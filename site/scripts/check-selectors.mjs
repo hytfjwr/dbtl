@@ -23,7 +23,9 @@ if (!dbtl) {
 }
 
 // Regenerate the graph data so the check never reads a stale file.
-const prebuild = spawnSync(process.execPath, [path.join(siteRoot, "scripts", "prebuild.mjs")], { encoding: "utf8" });
+const prebuild = spawnSync(process.execPath, [path.join(siteRoot, "scripts", "prebuild.mjs")], {
+  encoding: "utf8",
+});
 if (prebuild.status !== 0) {
   console.error(prebuild.stderr || prebuild.stdout);
   process.exit(2);
@@ -172,10 +174,14 @@ for (const [name, fixture] of [
   let rejected = 0;
   for (const spec of specs) {
     checks++;
-    const run = spawnSync(dbtl, ["ls", "--output", "uids", "--manifest", manifest, spec], { encoding: "utf8" });
+    const run = spawnSync(dbtl, ["ls", "--output", "uids", "--manifest", manifest, spec], {
+      encoding: "utf8",
+    });
     if (run.error || (run.status !== 0 && run.status !== 2)) {
       failures++;
-      console.error(`FAIL [${name}] ${spec}\n  dbtl ls failed: exit ${run.status} ${run.error ?? run.stderr}`);
+      console.error(
+        `FAIL [${name}] ${spec}\n  dbtl ls failed: exit ${run.status} ${run.error ?? run.stderr}`,
+      );
       continue;
     }
     const expected = run.status === 2 ? null : new Set(run.stdout.split("\n").filter(Boolean));
@@ -203,8 +209,10 @@ for (const [name, fixture] of [
     if (missing.length || extra.length) {
       failures++;
       console.error(`FAIL [${name}] ${spec}`);
-      if (missing.length) console.error(`  engine is missing ${missing.length}: ${missing.slice(0, 5).join(", ")}`);
-      if (extra.length) console.error(`  engine has ${extra.length} extra: ${extra.slice(0, 5).join(", ")}`);
+      if (missing.length)
+        console.error(`  engine is missing ${missing.length}: ${missing.slice(0, 5).join(", ")}`);
+      if (extra.length)
+        console.error(`  engine has ${extra.length} extra: ${extra.slice(0, 5).join(", ")}`);
       continue;
     }
     if (expected.size > 0) nonEmpty++;

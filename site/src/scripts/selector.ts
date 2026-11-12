@@ -90,7 +90,9 @@ function validateAtom(atom: string): void {
     const key = at < 0 ? null : c.slice(0, at);
     const value = at < 0 ? "" : c.slice(at + 1);
     if (key !== "materialized") {
-      throw new SelectorError(`unknown config selector 'config.${c}' (supported: config.materialized:<value>)`);
+      throw new SelectorError(
+        `unknown config selector 'config.${c}' (supported: config.materialized:<value>)`,
+      );
     }
     if (value === "") throw new SelectorError("config.materialized: needs a non-empty value");
     return;
@@ -123,19 +125,24 @@ function validateAtom(atom: string): void {
 }
 
 function validateFactor(factor: string): void {
-  if (factor === "") throw new SelectorError("an empty selector term (a ',' needs a selector on both sides)");
+  if (factor === "")
+    throw new SelectorError("an empty selector term (a ',' needs a selector on both sides)");
   const at = factor.indexOf("+");
   if (at >= 0) {
     const lead = factor.slice(0, at);
     const rest = factor.slice(at + 1);
     if (lead !== "" && !isDigits(lead) && rest !== "") {
-      throw new SelectorError(`invalid hop '${lead}+' in '${factor}' — hop counts must be a number`);
+      throw new SelectorError(
+        `invalid hop '${lead}+' in '${factor}' — hop counts must be a number`,
+      );
     }
   }
   const atom = factorAtom(factor);
   if (atom === "") throw new SelectorError(`'${factor}' — a '+' hop needs a selector to expand`);
   if (atom.includes("+")) {
-    throw new SelectorError(`invalid factor '${factor}' — only one leading and one trailing '+' hop are allowed`);
+    throw new SelectorError(
+      `invalid factor '${factor}' — only one leading and one trailing '+' hop are allowed`,
+    );
   }
   validateAtom(atom);
 }
@@ -143,7 +150,8 @@ function validateFactor(factor: string): void {
 /** Throws a SelectorError for anything `dbtl ls` would reject. */
 export function validate(spec: string): void {
   if (spec.trim() === "") throw new SelectorError("empty selector");
-  for (const term of spec.trim().split(/\s+/)) for (const factor of term.split(",")) validateFactor(factor);
+  for (const term of spec.trim().split(/\s+/))
+    for (const factor of term.split(",")) validateFactor(factor);
 }
 
 function atomSet(g: Graph<SelectorNode>, atom: string): Set<string> {

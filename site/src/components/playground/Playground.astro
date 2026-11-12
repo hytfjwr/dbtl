@@ -26,7 +26,7 @@ const lintByProject: Record<string, LintData> = {
 };
 
 const name = PROJECTS[0]!;
-const project = toProject((graph as Record<string, RawSample>)[name]!);
+const project = toProject((graph as unknown as Record<string, RawSample>)[name]!);
 const lint = lintByProject[name]!;
 const spec = EXAMPLES[name]![0]!;
 const outcome = run(project, spec);
@@ -41,13 +41,19 @@ const linted = lintHtml(lint, outcome.hit, outcome, spec);
   <div class="pg-row">
     <span class="lab">project</span>
     <div class="seg" id="pg-proj" role="group" aria-label="Sample project">
-      {PROJECTS.map((k) => <button type="button" data-p={k} aria-pressed={String(k === name)}>{k}</button>)}
+      {PROJECTS.map((k) => (
+        <button type="button" data-p={k} aria-pressed={k === name}>
+          {k}
+        </button>
+      ))}
     </div>
   </div>
   <div class="pg-row">
     <span class="lab">selector</span>
     <label class="prompt" for="pg-sel">
-      <span class="pre" aria-hidden="true">$ dbtl ls '</span>
+      <span class="pre" aria-hidden="true">
+        {"$ dbtl ls '"}
+      </span>
       <input
         id="pg-sel"
         type="text"
@@ -60,21 +66,46 @@ const linted = lintHtml(lint, outcome.hit, outcome, spec);
         aria-label="dbt selector"
         aria-describedby="pg-err"
       />
-      <span class="pre" aria-hidden="true">'</span>
+      <span class="pre" aria-hidden="true">
+        {"'"}
+      </span>
     </label>
   </div>
   <div class="pg-row">
     <span class="lab">try</span>
     <div class="seg" id="pg-eg">
-      {EXAMPLES[name]!.map((e) => <button type="button" aria-pressed={String(e === spec)}>{e}</button>)}
+      {EXAMPLES[name]!.map((e) => (
+        <button type="button" aria-pressed={e === spec}>
+          {e}
+        </button>
+      ))}
     </div>
   </div>
-  <p class="pg-err" id="pg-err" role="status">{outcome.error}</p>
+  <p class="pg-err" id="pg-err" role="status">
+    {outcome.error}
+  </p>
 </div>
 
 <div class="pg-tabs" role="tablist" aria-label="Output" data-pagefind-ignore>
-  <button role="tab" type="button" id="pt-lin" aria-controls="pp-lin" aria-selected="true">Lineage<span class="cnt" id="pc-lin">{outcome.hit.size}</span></button>
-  <button role="tab" type="button" id="pt-lint" aria-controls="pp-lint" aria-selected="false" tabindex="-1">Lint findings<span class="cnt" id="pc-lint">{linted.count}</span></button>
+  <button role="tab" type="button" id="pt-lin" aria-controls="pp-lin" aria-selected="true">
+    {"Lineage"}
+    <span class="cnt" id="pc-lin">
+      {outcome.hit.size}
+    </span>
+  </button>
+  <button
+    role="tab"
+    type="button"
+    id="pt-lint"
+    aria-controls="pp-lint"
+    aria-selected="false"
+    tabindex="-1"
+  >
+    {"Lint findings"}
+    <span class="cnt" id="pc-lint">
+      {linted.count}
+    </span>
+  </button>
 </div>
 
 <div role="tabpanel" id="pp-lin" aria-labelledby="pt-lin" data-pagefind-ignore>
@@ -95,11 +126,18 @@ const linted = lintHtml(lint, outcome.hit, outcome, spec);
   </div>
 </div>
 <div role="tabpanel" id="pp-lint" aria-labelledby="pt-lint" hidden data-pagefind-ignore>
-  <div class="pane pg-lint"><p class="pane-title">dbtl lint</p><div id="pg-lint" set:html={linted.html} /></div>
+  <div class="pane pg-lint">
+    <p class="pane-title">dbtl lint</p>
+    <div id="pg-lint" set:html={linted.html} />
+  </div>
 </div>
 
 <div class="pg-cmd" data-pagefind-ignore>
-  <span>run it locally</span><code id="pg-cmd">{command(spec)}</code><button class="copy" type="button" data-copy-from="#pg-cmd">copy</button>
+  <span>run it locally</span>
+  <code id="pg-cmd">{command(spec)}</code>
+  <button class="copy" type="button" data-copy-from="#pg-cmd">
+    copy
+  </button>
 </div>
 
 <script>

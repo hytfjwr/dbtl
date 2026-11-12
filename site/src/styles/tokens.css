@@ -4,70 +4,167 @@
 /* Text-art face: a glyph subset of the upstream font (printable ASCII, Box Drawing,
    the four arrowheads and the arrows), so every cell of a diagram has the same 0.6em
    advance. Anything outside the range falls through to the next family. */
-@font-face{
-  font-family:"Geist Mono";font-style:normal;font-weight:400 600;font-display:swap;
-  src:url("../assets/fonts/geist-mono-art.woff2") format("woff2");
-  unicode-range:U+0020-007E,U+2190-2193,U+2500-257F,U+25B2,U+25B6,U+25BC,U+25C0;
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url("../assets/fonts/geist-mono-art.woff2") format("woff2");
+  unicode-range: U+0020-007E, U+2190-2193, U+2500-257F, U+25B2, U+25B6, U+25BC, U+25C0;
 }
 
-:root{
-  --font-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
-  --font-sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
-  --font-art:"Geist Mono","IBM Plex Mono",ui-monospace,Menlo,monospace;
-  --fs-1:12px;--fs-2:13px;--fs-3:14px;--fs-4:16px;--fs-5:20px;--fs-6:28px;--fs-7:44px;
-  --sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:24px;--sp-6:32px;--sp-7:48px;--sp-8:72px;
-  --radius:6px;--top-h:52px;--status-h:32px;--page-w:1320px;
-  --art-size:12.5px;--art-lh:1.3;
+:root {
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-art: "Geist Mono", "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  --fs-1: 12px;
+  --fs-2: 13px;
+  --fs-3: 14px;
+  --fs-4: 16px;
+  --fs-5: 20px;
+  --fs-6: 28px;
+  --fs-7: 44px;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 72px;
+  --radius: 6px;
+  --top-h: 52px;
+  --status-h: 32px;
+  --page-w: 1320px;
+  --art-size: 12.5px;
+  --art-lh: 1.3;
 
-  --dur-1:90ms;--dur-2:160ms;--dur-3:280ms;--cell:26ms;--blink:530ms;
-  --ease-out:cubic-bezier(.2,.8,.2,1);--ease-inout:cubic-bezier(.6,0,.2,1);
+  --dur-1: 90ms;
+  --dur-2: 160ms;
+  --dur-3: 280ms;
+  --cell: 26ms;
+  --blink: 530ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-inout: cubic-bezier(0.6, 0, 0.2, 1);
 
-  --bg:#edeef0;--surface:#f6f7f8;--surface-hi:#ffffff;--sunken:#e2e4e9;
-  --line:#c3c8d2;--line-strong:#8f96a6;
-  --text:#1f2330;--text-muted:#525a6c;--text-faint:#636b7e;
-  --band:#ffc857;--band-ink:#1f2330;--accent-text:#8a5a00;--focus:#1f2330;
-  --c-view:#2a5cc0;--c-table:#1c7340;--c-incremental:#6a3dbd;--c-ephemeral:#525a6c;--c-source:#525a6c;--c-seed:#8a5514;--c-snapshot:#0c6f70;--c-exposure:#a82c5c;
-  --ok:#1c7340;--warn:#8a5a00;--danger:#b3261e;--info:#2a5cc0;
-  --dim:#7d8596;--backdrop:rgba(31,35,48,.38);--shadow:0 18px 50px rgba(31,35,48,.18);
+  --bg: #edeef0;
+  --surface: #f6f7f8;
+  --surface-hi: #ffffff;
+  --sunken: #e2e4e9;
+  --line: #c3c8d2;
+  --line-strong: #8f96a6;
+  --text: #1f2330;
+  --text-muted: #525a6c;
+  --text-faint: #636b7e;
+  --band: #ffc857;
+  --band-ink: #1f2330;
+  --accent-text: #8a5a00;
+  --focus: #1f2330;
+  --c-view: #2a5cc0;
+  --c-table: #1c7340;
+  --c-incremental: #6a3dbd;
+  --c-ephemeral: #525a6c;
+  --c-source: #525a6c;
+  --c-seed: #8a5514;
+  --c-snapshot: #0c6f70;
+  --c-exposure: #a82c5c;
+  --ok: #1c7340;
+  --warn: #8a5a00;
+  --danger: #b3261e;
+  --info: #2a5cc0;
+  --dim: #7d8596;
+  --backdrop: rgba(31, 35, 48, 0.38);
+  --shadow: 0 18px 50px rgba(31, 35, 48, 0.18);
 }
-@media (prefers-color-scheme:dark){
-  :root:not([data-theme="light"]){
-    --bg:#12151d;--surface:#181c27;--surface-hi:#212636;--sunken:#0d1017;
-    --line:#2e3547;--line-strong:#4a5269;
-    --text:#dfe3ec;--text-muted:#9aa2b6;--text-faint:#808aa0;
-    --band:#ffc857;--band-ink:#161a23;--accent-text:#ffc857;--focus:#ffc857;
-    --c-view:#8db4ff;--c-table:#86d39c;--c-incremental:#c4a3ff;--c-ephemeral:#9aa2b6;--c-source:#9aa2b6;--c-seed:#e6b580;--c-snapshot:#78d0d0;--c-exposure:#f59ab4;
-    --ok:#86d39c;--warn:#ffc857;--danger:#ff8a80;--info:#8db4ff;
-    --dim:#6b748b;--backdrop:rgba(5,7,11,.62);--shadow:0 18px 60px rgba(0,0,0,.55);
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12151d;
+    --surface: #181c27;
+    --surface-hi: #212636;
+    --sunken: #0d1017;
+    --line: #2e3547;
+    --line-strong: #4a5269;
+    --text: #dfe3ec;
+    --text-muted: #9aa2b6;
+    --text-faint: #808aa0;
+    --band: #ffc857;
+    --band-ink: #161a23;
+    --accent-text: #ffc857;
+    --focus: #ffc857;
+    --c-view: #8db4ff;
+    --c-table: #86d39c;
+    --c-incremental: #c4a3ff;
+    --c-ephemeral: #9aa2b6;
+    --c-source: #9aa2b6;
+    --c-seed: #e6b580;
+    --c-snapshot: #78d0d0;
+    --c-exposure: #f59ab4;
+    --ok: #86d39c;
+    --warn: #ffc857;
+    --danger: #ff8a80;
+    --info: #8db4ff;
+    --dim: #6b748b;
+    --backdrop: rgba(5, 7, 11, 0.62);
+    --shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
   }
 }
-:root[data-theme="dark"]{
-  --bg:#12151d;--surface:#181c27;--surface-hi:#212636;--sunken:#0d1017;
-  --line:#2e3547;--line-strong:#4a5269;
-  --text:#dfe3ec;--text-muted:#9aa2b6;--text-faint:#808aa0;
-  --band:#ffc857;--band-ink:#161a23;--accent-text:#ffc857;--focus:#ffc857;
-  --c-view:#8db4ff;--c-table:#86d39c;--c-incremental:#c4a3ff;--c-ephemeral:#9aa2b6;--c-source:#9aa2b6;--c-seed:#e6b580;--c-snapshot:#78d0d0;--c-exposure:#f59ab4;
-  --ok:#86d39c;--warn:#ffc857;--danger:#ff8a80;--info:#8db4ff;
-  --dim:#6b748b;--backdrop:rgba(5,7,11,.62);--shadow:0 18px 60px rgba(0,0,0,.55);
+:root[data-theme="dark"] {
+  --bg: #12151d;
+  --surface: #181c27;
+  --surface-hi: #212636;
+  --sunken: #0d1017;
+  --line: #2e3547;
+  --line-strong: #4a5269;
+  --text: #dfe3ec;
+  --text-muted: #9aa2b6;
+  --text-faint: #808aa0;
+  --band: #ffc857;
+  --band-ink: #161a23;
+  --accent-text: #ffc857;
+  --focus: #ffc857;
+  --c-view: #8db4ff;
+  --c-table: #86d39c;
+  --c-incremental: #c4a3ff;
+  --c-ephemeral: #9aa2b6;
+  --c-source: #9aa2b6;
+  --c-seed: #e6b580;
+  --c-snapshot: #78d0d0;
+  --c-exposure: #f59ab4;
+  --ok: #86d39c;
+  --warn: #ffc857;
+  --danger: #ff8a80;
+  --info: #8db4ff;
+  --dim: #6b748b;
+  --backdrop: rgba(5, 7, 11, 0.62);
+  --shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
 }
-:root[data-theme="light"]{color-scheme:light}
-:root[data-theme="dark"]{color-scheme:dark}
-@media (prefers-reduced-motion:reduce){
-  :root{--dur-1:0ms;--dur-2:0ms;--dur-3:0ms;--cell:0ms}
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-1: 0ms;
+    --dur-2: 0ms;
+    --dur-3: 0ms;
+    --cell: 0ms;
+  }
 }
 
 /* Code highlighting. Shiki's css-variables theme writes colours as var(--astro-code-*);
    they point at the design tokens above, so light, dark and system follow data-theme. */
-:root{
-  --astro-code-foreground:var(--text);
-  --astro-code-background:transparent;
-  --astro-code-token-comment:var(--text-faint);
-  --astro-code-token-keyword:var(--c-view);
-  --astro-code-token-string:var(--accent-text);
-  --astro-code-token-string-expression:var(--accent-text);
-  --astro-code-token-constant:var(--c-incremental);
-  --astro-code-token-function:var(--text);
-  --astro-code-token-parameter:var(--text);
-  --astro-code-token-punctuation:var(--text-muted);
-  --astro-code-token-link:var(--c-snapshot);
+:root {
+  --astro-code-foreground: var(--text);
+  --astro-code-background: transparent;
+  --astro-code-token-comment: var(--text-faint);
+  --astro-code-token-keyword: var(--c-view);
+  --astro-code-token-string: var(--accent-text);
+  --astro-code-token-string-expression: var(--accent-text);
+  --astro-code-token-constant: var(--c-incremental);
+  --astro-code-token-function: var(--text);
+  --astro-code-token-parameter: var(--text);
+  --astro-code-token-punctuation: var(--text-muted);
+  --astro-code-token-link: var(--c-snapshot);
 }
