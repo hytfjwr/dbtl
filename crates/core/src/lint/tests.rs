@@ -2018,8 +2018,8 @@ fn exposure_parents_materializations_flags_source_and_view_parents() {
 #[test]
 fn exposures_dependent_on_private_models_flags_non_public_parents() {
     // private + protected parents flag; public doesn't; a model with NO
-    // access value is "unknown" (source mode doesn't read it) — never
-    // judged.
+    // access value (a manifest whose wire omits it — source mode fills
+    // dbt's `protected` default) is "unknown" — never judged.
     let mut priv_m = model("dim_priv", "marts/dim_priv.sql");
     priv_m.1.access = Some("private".into());
     let mut prot_m = model("dim_prot", "marts/dim_prot.sql");
@@ -2424,6 +2424,7 @@ fn keyed_model(
             config: crate::manifest::RawConfig {
                 materialized: Some(materialized.into()),
                 unique_key,
+                ..Default::default()
             },
             ..Default::default()
         },

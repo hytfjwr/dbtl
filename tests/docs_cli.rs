@@ -788,7 +788,7 @@ fn select_generates_only_the_selected_pages() {
     assert!(readme.contains("| fct_orders |"), "{readme}");
     assert!(!readme.contains("| stg_orders |"), "{readme}");
     // …while the Summary counts stay project-wide.
-    assert!(readme.contains("total nodes: 21"), "{readme}");
+    assert!(readme.contains("total nodes: 30"), "{readme}");
     let _ = std::fs::remove_dir_all(&out);
 }
 

@@ -18,6 +18,9 @@
 //!   information, surfaced in the structure modal).
 //! - Test *names*: dbt mints hashed unique names; tests are compared as
 //!   (kind, column) multisets per node, which is exactly what the UI shows.
+//! - `deprecation_date`: dbt stamps the declared date as a local-midnight
+//!   ISO timestamp (`2026-12-31T00:00:00+09:00`); source mode keeps the
+//!   declaration string — the manifest value must start with it.
 
 mod common;
 use common::{SAMPLE_MANIFEST as MANIFEST, SAMPLE_PROJECT as PROJECT};
@@ -131,6 +134,34 @@ fn details_are_identical_modulo_profile_data() {
         // tree < schema.yml < in-file config; source → table cascade) must
         // equal real dbt's for every node type.
         assert_eq!(md.meta, sd.meta, "{uid} meta");
+        // The governance/config surface: model-only `access`
+        // (dbt defaults an undeclared model to `protected`), `group`,
+        // `contract.enforced`, `incremental_strategy`, `language`, and the
+        // model-level `constraints` — resolved through schema.yml
+        // `config:`/properties, in-file `config()`, and the `+`-tree in the
+        // same precedence order `materialized` follows.
+        assert_eq!(md.access, sd.access, "{uid} access");
+        assert_eq!(md.group, sd.group, "{uid} group");
+        assert_eq!(
+            md.contract_enforced, sd.contract_enforced,
+            "{uid} contract_enforced"
+        );
+        assert_eq!(
+            md.incremental_strategy, sd.incremental_strategy,
+            "{uid} incremental_strategy"
+        );
+        assert_eq!(md.language, sd.language, "{uid} language");
+        assert_eq!(md.constraints, sd.constraints, "{uid} constraints");
+        // `deprecation_date` is a property, not a config: the manifest
+        // carries the stamped ISO timestamp; source mode the declared
+        // date — the former must start with the latter.
+        match (&md.deprecation_date, &sd.deprecation_date) {
+            (Some(mv), Some(sv)) => assert!(
+                mv.starts_with(sv.as_str()),
+                "{uid} deprecation_date: manifest {mv} vs source {sv}"
+            ),
+            (mv, sv) => assert_eq!(mv, sv, "{uid} deprecation_date"),
+        }
     }
 }
 

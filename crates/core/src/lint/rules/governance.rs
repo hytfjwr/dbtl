@@ -31,9 +31,9 @@ pub(super) fn public_models_without_contract(
 
 /// `exposures_dependent_on_private_models`: an exposure whose direct model
 /// parents declare `access: private`/`protected`. `access: None` means
-/// "unknown" — source mode doesn't read access, and manifest mode always
-/// carries it — so `None` is never judged (treating it as non-public would
-/// flag every exposure parent under source mode).
+/// "unknown" — reachable only on a manifest whose wire genuinely omits
+/// `access` (source mode fills dbt's `protected` model default) — so
+/// `None` is never judged.
 pub(super) fn exposures_dependent_on_private_models(
     dag: &Dag,
     uids: &[&String],

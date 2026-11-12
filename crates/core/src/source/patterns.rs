@@ -198,6 +198,44 @@ pub(super) fn config_alias(sql: &str) -> Option<String> {
         .next_back()
 }
 
+/// The governance/config kwargs of the file's `config(…)` calls — `access`,
+/// `group`, `contract`, `incremental_strategy` — resolved in ONE pass so the
+/// extraction cost stays flat as the kwarg set grows (each
+/// [`config_kwarg_exprs`] reader re-scans the whole file). Per kwarg the
+/// semantics are unchanged: calls apply in order, the LAST resolvable
+/// literal wins, and an unresolvable expression can't override an earlier
+/// literal (the same stance `config_meta`/`config_unique_key` take).
+/// `contract` accepts the `{'enforced': bool}` dict or a bare bool.
+#[derive(Debug, Default)]
+pub(super) struct FileConfig {
+    pub(super) access: Option<String>,
+    pub(super) group: Option<String>,
+    pub(super) contract: Option<RawContract>,
+    pub(super) incremental_strategy: Option<String>,
+}
+
+pub(super) fn config_governance(sql: &str) -> FileConfig {
+    let mut out = FileConfig::default();
+    for args in config_call_args_list(sql) {
+        for (name, slot) in [
+            ("access", &mut out.access),
+            ("group", &mut out.group),
+            ("incremental_strategy", &mut out.incremental_strategy),
+        ] {
+            if let Some(serde_json::Value::String(s)) = kwarg(args, name).and_then(lit_value) {
+                *slot = Some(s);
+            }
+        }
+        if let Some(c) = kwarg(args, "contract")
+            .and_then(lit_value)
+            .and_then(|v| contract_value(&v))
+        {
+            out.contract = Some(c);
+        }
+    }
+    out
+}
+
 /// The argument text of EVERY `config(…)` call in `sql`, in order — each
 /// string is the text between that call's parens, found by a balanced-
 /// paren/quote scan so nested `(`/`)` inside dicts or macro calls can't end

@@ -22,6 +22,11 @@ pub struct RawConfig {
     /// both spellings to `Vec<String>` (empty = unconfigured).
     #[serde(default)]
     pub unique_key: Option<serde_json::Value>,
+    /// `config.incremental_strategy` — `append` / `merge` / `delete+insert` /
+    /// `insert_overwrite` / `microbatch`. `None` when undeclared (dbt picks
+    /// the adapter default at run time and records `null` on the wire).
+    #[serde(default)]
+    pub incremental_strategy: Option<String>,
 }
 
 /// `depends_on` sub-object of a node (the node refs it points at). `macros`
@@ -122,6 +127,23 @@ pub struct RawNode {
     /// enforced warehouse contract.
     #[serde(default)]
     pub contract: Option<RawContract>,
+    /// The model's `language` — `"sql"` for every node dbt builds from .sql
+    /// (models AND snapshots); python models record `"python"`. `null` on
+    /// seeds and non-buildable nodes.
+    #[serde(default)]
+    pub language: Option<String>,
+    /// `deprecation_date` — when the model stops being supported. dbt writes
+    /// a timezone-bearing ISO timestamp (`2026-12-01T00:00:00+09:00`) parsed
+    /// from the date the schema file declared; kept as the raw string — this
+    /// tool surfaces it, never interprets it.
+    #[serde(default)]
+    pub deprecation_date: Option<String>,
+    /// The model-level `constraints:` list — `{type, name, expression,
+    /// warn_unenforced, warn_unsupported, to, to_columns, columns}`. Empty on
+    /// real manifests when undeclared (dbt writes `[]`, not `null`); column-
+    /// level constraints live inside `columns` entries instead.
+    #[serde(default)]
+    pub constraints: Vec<RawConstraint>,
     /// The version this node IS (for `versions:`-ed models) — `v1`, `2`, …
     /// (the wire type is a JSON string).
     #[serde(default)]
@@ -150,6 +172,36 @@ pub struct RawNode {
 pub struct RawContract {
     #[serde(default)]
     pub enforced: bool,
+}
+
+/// One `constraints:` entry (model- or column-level — the same wire shape;
+/// `columns` exists only on the model level, `to`/`to_columns` only on
+/// `foreign_key`). dbt fills `warn_unenforced`/`warn_unsupported` per
+/// adapter; they ride along for completeness but the domain keeps only the
+/// declarative fields.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct RawConstraint {
+    /// `primary_key` / `not_null` / `foreign_key` / `unique` / `check` /
+    /// `custom`. `type` is a Rust keyword, hence the rename.
+    #[serde(rename = "type", default)]
+    pub constraint_type: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub expression: Option<String>,
+    /// A `foreign_key` constraint's target: the referenced model's `name` or
+    /// a `ref('x')`/`source('a','b')` expression.
+    #[serde(default)]
+    pub to: Option<String>,
+    /// The referenced columns for `foreign_key`. `Option` (not a defaulted
+    /// vec): dbt writes `null` on kinds that don't carry the key.
+    #[serde(default)]
+    pub to_columns: Option<Vec<String>>,
+    /// The model columns the constraint covers (model-level only — a
+    /// column-level entry's constraint applies to its own column, so dbt
+    /// writes `null` there).
+    #[serde(default)]
+    pub columns: Option<Vec<String>>,
 }
 
 /// A single source in the parsed manifest (`sources` entry).

@@ -64,6 +64,37 @@ pub(super) fn apply_meta(
         if node.config.unique_key.is_none() && !entry.config.unique_key.is_null() {
             node.config.unique_key = Some(entry.config.unique_key.clone());
         }
+        // The governance surface. `group` is the one resource-agnostic field
+        // (dbt groups admit models, seeds, snapshots); the rest are
+        // MODEL-only in dbt — recording them on a seed/snapshot would
+        // diverge from the real manifest. Each fill respects the same
+        // "in-file config() > schema.yml > tree > default" chain
+        // materialized follows: only an unset slot is filled.
+        // `config:` wins over the bare top-level spelling (declaring both
+        // is a dbt parse error — merge degraded like `meta:`'s).
+        if node.group.is_none() {
+            node.group = entry.config.group.clone().or_else(|| entry.group.clone());
+        }
+        if type_prefix == "model" {
+            if node.access.is_none() {
+                node.access = entry.config.access.clone().or_else(|| entry.access.clone());
+            }
+            if node.contract.is_none() {
+                node.contract = contract_value(&entry.config.contract);
+            }
+            if node.config.incremental_strategy.is_none() {
+                node.config.incremental_strategy = entry.config.incremental_strategy.clone();
+            }
+            // `deprecation_date` and `constraints` are PROPERTIES (no
+            // `config:`/`config()`/tree intake) — schema.yml is their only
+            // source-mode origin.
+            if node.deprecation_date.is_none() {
+                node.deprecation_date = entry.deprecation_date.clone();
+            }
+            if node.constraints.is_empty() {
+                node.constraints = entry.constraints.clone();
+            }
+        }
         if !entry.tags.is_empty() {
             node.tags = entry.tags.clone();
         }
@@ -107,6 +138,23 @@ pub(super) fn apply_meta(
                 &col.data_tests,
             );
         }
+    }
+}
+
+/// A `contract` declaration → the wire type `RawNode.contract` carries.
+/// dbt's canonical shape is the `{enforced: bool}` object (`contract:
+/// {enforced: true}` in YAML, `config(contract={'enforced': True})` in
+/// Jinja); a bare bool is tolerated as `enforced: <bool>`. Anything else —
+/// Null, an unresolvable expression, a malformed map — yields no contract
+/// rather than fabricating one (the same "never guess" stance the other
+/// config readers take).
+pub(super) fn contract_value(v: &serde_json::Value) -> Option<RawContract> {
+    match v {
+        serde_json::Value::Bool(b) => Some(RawContract { enforced: *b }),
+        serde_json::Value::Object(m) => Some(RawContract {
+            enforced: m.get("enforced").and_then(|e| e.as_bool()).unwrap_or(false),
+        }),
+        _ => None,
     }
 }
 
@@ -230,7 +278,7 @@ pub(super) fn synth_tests(
         };
         // The config map under `{kind: {...}}` — a `relationships` test's
         // `to:`/`field:` live there; a bare-string test has none.
-        let kwargs: serde_json::Map<String, serde_json::Value> = match test {
+        let mut kwargs: serde_json::Map<String, serde_json::Value> = match test {
             serde_json::Value::Object(m) => m
                 .get(&kind)
                 .and_then(|v| v.as_object())
@@ -238,6 +286,17 @@ pub(super) fn synth_tests(
                 .unwrap_or_default(),
             _ => Default::default(),
         };
+        // dbt >=1.10's `arguments:` key is the canonical test-args home —
+        // the manifest records it FLATTENED into kwargs (verified on
+        // 1.12.6: `arguments: {column_name: id}` lands as
+        // `kwargs.column_name`, identical to the legacy top-level
+        // spelling). Mirror that here so `register_test`'s kwargs read —
+        // and the consistency suite's multiset — sees the same shape.
+        if let Some(serde_json::Value::Object(args)) = kwargs.remove("arguments") {
+            for (k, v) in args {
+                kwargs.insert(k, v);
+            }
+        }
         // `to:` is a Jinja-string reference — resolve through the same
         // extractors the .sql scan uses. Unresolved refs (and non-ref values
         // like `var('x')`) drop out, exactly like a model's.
