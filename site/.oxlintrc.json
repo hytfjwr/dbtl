@@ -9,7 +9,7 @@
   },
   "overrides": [
     {
-      "files": ["astro.config.mjs", "scripts/**/*.mjs"],
+      "files": ["astro.config.mjs", "playwright.config.ts", "scripts/**/*.mjs", "tests/**/*.ts"],
       "env": {
         "node": true,
         "browser": false

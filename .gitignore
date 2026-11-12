@@ -19,5 +19,6 @@ PROGRESS.md
 site/node_modules/
 site/dist/
 site/.astro/
+site/test-results/
 site/src/data/graph.json
 site/src/data/version.json
