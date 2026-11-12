@@ -75,9 +75,8 @@ if (input && host && switcher && chips && tabs) {
     name = next;
     spec = EXAMPLES[name]![0]!;
     previous = null;
-    switcher!.innerHTML = PROJECTS.map(
-      (k) => `<button type="button" data-p="${esc(k)}" aria-pressed="${k === name}">${esc(k)}</button>`,
-    ).join("");
+    // Keep the project buttons (the pressed one may have focus); only the pressed state moves.
+    switcher!.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.p === name)));
     chips!.innerHTML = EXAMPLES[name]!.map((e) => `<button type="button">${esc(e)}</button>`).join("");
     input!.value = spec;
     render({ speed: 0.35 });

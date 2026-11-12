@@ -29,7 +29,15 @@ import { url } from "../lib/site.ts";
   import { reveal } from "../scripts/motion.ts";
 
   const base = import.meta.env.BASE_URL.replace(/\/?$/, "/");
-  const rest = decodeURIComponent(location.pathname.startsWith(base) ? location.pathname.slice(base.length) : location.pathname.replace(/^\//, ""));
+  const raw = location.pathname.startsWith(base) ? location.pathname.slice(base.length) : location.pathname.replace(/^\//, "");
+  // A stray % is not valid percent-encoding; show the path as typed.
+  const rest = (() => {
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  })();
   const shown = `~/${rest}`;
   const text = (id: string, value: string) => {
     const el = document.getElementById(id);

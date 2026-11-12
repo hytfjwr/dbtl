@@ -1,6 +1,6 @@
 import { getCollection, type CollectionEntry } from "astro:content";
 import navJson from "../nav.json";
-import { referenceDescription, referenceTitle } from "./reference.ts";
+import { referenceDescriptionFor, referenceTitle } from "./reference.ts";
 
 export type PageKind = "docs" | "reference";
 
@@ -62,7 +62,7 @@ async function build(): Promise<Nav> {
     available.set(slug, {
       slug,
       title: referenceTitle(body),
-      description: referenceDescription(body),
+      description: referenceDescriptionFor(entry.id, body),
       kind: "reference",
       id: entry.id,
       entry,

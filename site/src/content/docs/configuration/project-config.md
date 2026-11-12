@@ -51,7 +51,7 @@ lint:
       threshold: 5                # declared params only; unknown keys error
       exclude:                    # dbt selector specs: skip findings on matches
         - "stg_legacy_*"
-        - "path:models/legacy"
+        - "path:legacy"
         - "tag:wip"
   model_fanout_threshold: 5       # compat flat keys; an error if combined
   source_fanout_threshold: 2      #   with the nested param form

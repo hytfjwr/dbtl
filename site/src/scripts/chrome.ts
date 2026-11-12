@@ -69,6 +69,28 @@ if (wrappers.length > 0) {
   void document.fonts?.ready.then(run);
 }
 
+/* ---- stacked wide tables do not scroll, so they are not a tab stop or a region ---- */
+const stackable = $$(".tbl.wide");
+if (stackable.length > 0) {
+  const label = new Map(stackable.map((el) => [el, el.getAttribute("aria-label") ?? ""]));
+  const stacked = window.matchMedia("(max-width: 680px)");
+  const apply = () => {
+    for (const el of stackable) {
+      if (stacked.matches) {
+        el.removeAttribute("tabindex");
+        el.removeAttribute("role");
+        el.removeAttribute("aria-label");
+      } else {
+        el.tabIndex = 0;
+        el.setAttribute("role", "region");
+        el.setAttribute("aria-label", label.get(el) ?? "");
+      }
+    }
+  };
+  stacked.addEventListener("change", apply);
+  apply();
+}
+
 /* ---- theme chip in the status line ---- */
 const chip = $("#chip-theme");
 if (chip) onThemeChange((choice) => (chip.textContent = `theme:${choice}`));

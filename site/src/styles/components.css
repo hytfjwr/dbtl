@@ -98,6 +98,8 @@ dialog.search::backdrop{background:var(--backdrop)}
 .s-in span{color:var(--accent-text)}
 .s-in input{flex:1;min-width:0;border:0;background:none;outline:0;padding:0}
 .s-in input::placeholder{color:var(--text-faint)}
+/* the field has no outline of its own; the whole row takes the focus ring */
+.s-in:focus-within{outline:2px solid var(--focus);outline-offset:-2px;border-radius:8px 8px 0 0}
 .s-scroll{position:relative;overflow:auto;flex:1;min-height:0}
 .s-bar{position:absolute;left:0;right:0;top:0;height:0;background:var(--surface-hi);border-left:3px solid var(--band);transition:transform var(--dur-2) var(--ease-out),height var(--dur-2) var(--ease-out);pointer-events:none}
 .s-list{position:relative;list-style:none;margin:0;padding:6px 0}

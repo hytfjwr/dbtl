@@ -41,7 +41,7 @@ export default defineConfig({
       excludeLangs: ["math", "text", "plaintext"],
     },
     // Token colors are CSS variables (--astro-code-*), mapped to the site's
-    // --code-* tokens in global.css so light and dark follow data-theme.
+    // --code-* tokens in styles/tokens.css so light and dark follow data-theme.
     shikiConfig: { theme: "css-variables" },
     processor: unified({
       smartypants: false,

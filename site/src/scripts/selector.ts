@@ -62,7 +62,12 @@ function globRegex(pattern: string): RegExp {
       }
     } else out += lit(c);
   }
-  return new RegExp(`${out}$`, "s");
+  try {
+    return new RegExp(`${out}$`, "s");
+  } catch {
+    // A malformed class such as a reversed range `[z-a]` matches nothing, as in dbtl.
+    return /(?!)/;
+  }
 }
 
 /** The atom a factor carries: its leading `+` / `N+` and trailing `+` removed. */

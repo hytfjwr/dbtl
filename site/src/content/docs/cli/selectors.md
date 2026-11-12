@@ -14,9 +14,9 @@ description: The dbt selector grammar that dbtl uses in the TUI search, --select
 | `+name`, `name+`, `+name+` | Add all upstream nodes, all downstream nodes, or both. |
 | `N+name` | A number before `+` limits the expansion to that many hops, for example `2+fct_orders`. |
 | `tag:x` | Nodes with the tag. |
-| `path:x` | Nodes under the path. |
+| `path:x` | Nodes whose path, as dbt records it in the manifest, contains `x`. A model's path is relative to its model directory, for example `marts/fct_orders.sql`. It is a substring match, so `path:marts` also matches `stg_marts.sql`. |
 | `config.materialized:x` | Nodes with the materialization. |
-| `exposure:x` | The named exposure. |
+| `exposure:x` | The named exposure and every node upstream of it. |
 | `meta:key` | Nodes where the `meta` key exists. |
 | `meta:key=value` | Nodes where the stringified `meta` value equals `value`. |
 | `state:modified`, `state:new` | Nodes the `--diff` baseline marks as modified or new. |
@@ -28,8 +28,8 @@ Examples:
 tag:nightly                      # every node tagged nightly
 +fct_orders                      # fct_orders and everything upstream of it
 2+fct_orders                     # fct_orders and two hops upstream
-path:marts+                      # everything under marts, and what depends on it
-config.materialized:table,path:marts   # tables under marts only
+path:marts+                      # nodes whose path contains marts, and their downstream
+config.materialized:table,path:marts   # tables whose path contains marts
 meta:owner=alice                 # nodes whose owner meta is alice
 state:modified+                  # changed nodes and their downstream
 fct_*                            # a glob
