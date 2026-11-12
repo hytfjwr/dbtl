@@ -1,0 +1,120 @@
+---
+title: dbtl lint
+description: Run static best-practice rules over your dbt project graph, with severities, baselines, and no warehouse connection.
+---
+
+`dbtl lint` runs a set of static best-practice rules over the project graph. These are the checks that would otherwise run as models in your warehouse. `dbtl` evaluates them locally against the same graph every other surface reads. There is no warehouse connection and no `dbt run`. In source mode it does not even need `dbt parse` or `dbt compile`. A CI run takes seconds, and the results are deterministic.
+
+```sh
+dbtl lint                                   # auto-detect the data source
+dbtl lint --manifest target/manifest.json
+dbtl lint --select 'path:marts+'            # restrict findings to a selector
+dbtl lint --rules root_models,model_fanout  # a named subset
+dbtl lint --fail-on warn                    # fail on warnings too
+```
+
+Text output is one `PASS`, `WARN`, `FAIL`, or `SKIP` line per rule. Findings sit indented under tripped rules as `file:line rule message`. A closing tally reads `lint: N error(s), M warning(s), K baselined`.
+
+`dbtl check --lint` folds the same evaluation into the [check gate set](check-and-impact.md). The two can never disagree. Setting `check.lint: true` in `.dbtl.yml` makes it the default for `check` runs.
+
+One findings list feeds every surface, so the numbers cannot drift apart:
+
+- `dbtl check --lint` gates on it.
+- `dbtl lint` reports it.
+- [`dbtl docs`](docs.md) puts a summary in the index README and a "Lint violations" section on each page.
+- The TUI reads it through the Lint lens, the `F` filter, `n` and `N` cycling, inspector findings, the `S` worklist, and the home tab.
+
+## The rule set
+
+The rules span:
+
+- graph structure (`model_fanout`, `root_models`, `layer_violation`, and more)
+- governance (`missing_primary_key_tests`, `naming_conventions`, and more)
+- a warn-severity tier (`unused_sources`, `incremental_without_unique_key`, and more)
+- SQL-content checks (`select_star`, `hard_coded_references`, `cartesian_join`, and more)
+- warehouse drift checks against `catalog.json` (`warehouse_type_drift`, `columns_missing_in_warehouse`)
+
+The [lint rules reference](../reference/lint-rules.md) lists every rule with its category, default severity, inputs, rationale, and parameters.
+
+### List and explain rules
+
+`--list-rules` and `--explain <ID>` are query modes. They read `.dbtl.yml` for severity and parameter overrides but never load a data source.
+
+```sh
+dbtl lint --list-rules            # id, category, effective severity, summary
+dbtl lint --explain model_fanout  # rationale, example, declared params
+```
+
+## Severities and fail_on
+
+Every finding carries the severity its rule resolves to. The original twelve structure rules are `error`. The later graph, metadata, SQL, and catalog rules ship at `warn`. The `fail_on` threshold decides what fails the run:
+
+| `fail_on` | Result |
+| --------- | ------ |
+| `error` (default) | Any error finding fails the run (exit 1). Warnings are reported only. |
+| `warn` | Warnings fail the run too. |
+| `never` | Nothing fails. The run only reports. |
+
+The precedence is `--fail-on`, then the top-level `fail_on` in `.dbtl.yml`, then `error`.
+
+## Rule inputs and SKIP
+
+Each rule declares what it needs: the graph alone, parsed model SQL, or the warehouse `catalog.json` record. A rule whose input is absent reports `SKIP lint <rule>: requires …`. That is informational and never a failure.
+
+- `dbtl` parses SQL lazily per model and reuses the result across rules.
+- `catalog.json` is detected next to the data source. Use `--catalog <path>` to point elsewhere.
+- `--sql-dialect` pins the parser dialect.
+- The TUI runs the graph and catalog rules only. Parsing every model up front would stall startup.
+
+## Configure rules
+
+Rule policy lives in the project-local `.dbtl.yml`. It is deliberately not the user-level `config.yml`, so a CI gate cannot vary with the developer's machine.
+
+```yaml
+# .dbtl.yml. Every key is optional; absent rules stay enabled.
+fail_on: warn             # error (default) | warn | never
+lint:
+  rules:
+    model_fanout: false   # disable a rule, or {severity: warn}, or {exclude: [<selectors>]}
+```
+
+The [project config](../configuration/project-config.md) page covers every `lint:` key: per-rule severities, parameters, `exclude` selectors, naming prefixes, and the `meta.dbtl.ignore` opt-out on a single node.
+
+## Freeze existing violations
+
+Adopting lint on a project that already breaks rules should not force a flag day. Two mechanisms work together.
+
+### The baseline file
+
+`dbtl lint --write-baseline` writes every current finding to a file. The path is the one `lint.baseline` names in `.dbtl.yml`, or `.dbtl-baseline.json` at the project root. `--write-baseline <PATH>` picks the path explicitly. The write always exits 0.
+
+Commit the file. Baselined findings still report but never fail, and the tally counts them separately.
+
+- `--no-baseline` ignores the file for one run.
+- `--write-baseline` cannot combine with `--diff` or `--select`. A partial set must never overwrite the frozen one.
+- A missing path that you configured explicitly produces a warning.
+- An unreadable or malformed baseline is an input error (exit 3). A frozen set that cannot be read must never silently unfreeze.
+
+### The diff baseline
+
+`--diff <BASELINE>` narrows the gate to findings the diff baseline does not already carry. It compares finding keys, the same "new only" idea the layer-violation gate uses.
+
+The two compose. Keep `main` green on a committed `.dbtl-baseline.json`, and pull requests fail only on the violations they add:
+
+```sh
+dbtl lint --write-baseline                    # writes .dbtl-baseline.json; commit it
+dbtl check --lint --diff git:origin/main      # PRs fail only on NEW findings
+```
+
+## Reports and exit codes
+
+`dbtl lint` renders the same `dbtl.report/v1` document as `dbtl check`. It accepts `--format`, `--report <FMT>:<PATH>`, `--step-summary`, `--path-prefix`, and `--quiet`. See [report formats](check-and-impact.md#report-formats).
+
+| Code | Meaning |
+| ---- | ------- |
+| `0` | Pass. |
+| `1` | A finding at or above `fail_on`. |
+| `2` | Usage error: an unknown rule name, conflicting flags, or a malformed `.dbtl.yml`. |
+| `3` | Input error: a missing data source or an unreadable baseline. |
+
+The [exit codes](../configuration/exit-codes.md) page has the full table.

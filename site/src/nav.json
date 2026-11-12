@@ -1,0 +1,49 @@
+[
+  {
+    "group": "Getting started",
+    "items": ["getting-started/overview", "getting-started/installation", "getting-started/quick-start"]
+  },
+  {
+    "group": "Using the TUI",
+    "items": [
+      "tui/interface",
+      "tui/lineage",
+      "tui/lenses",
+      "tui/search",
+      "tui/diff",
+      "tui/run-results-and-catalog",
+      "tui/exposures",
+      "tui/themes"
+    ]
+  },
+  {
+    "group": "CLI",
+    "items": [
+      "cli/overview",
+      "cli/selectors",
+      "cli/docs",
+      "cli/columns",
+      "cli/ls",
+      "cli/lint",
+      "cli/check-and-impact",
+      "cli/completions"
+    ]
+  },
+  {
+    "group": "CI integration",
+    "items": ["ci/github-action", "ci/pre-commit", "ci/other-ci"]
+  },
+  {
+    "group": "Configuration",
+    "items": [
+      "configuration/project-config",
+      "configuration/user-config",
+      "configuration/exit-codes",
+      "configuration/troubleshooting"
+    ]
+  },
+  {
+    "group": "Reference",
+    "items": ["reference/cli", "reference/keybindings", "reference/lint-rules", "reference/config"]
+  }
+]
