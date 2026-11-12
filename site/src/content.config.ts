@@ -16,4 +16,9 @@ const reference = defineCollection({
   loader: glob({ base: "../docs/reference", pattern: "*.md" }),
 });
 
-export const collections = { docs, reference };
+// The repository changelog, rendered at build time; no frontmatter either.
+const changelog = defineCollection({
+  loader: glob({ base: "../", pattern: "CHANGELOG.md" }),
+});
+
+export const collections = { docs, reference, changelog };

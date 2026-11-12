@@ -1,4 +1,5 @@
 export { remarkAlerts } from "./alerts.ts";
+export { remarkChangelog } from "./changelog.ts";
 export { remarkComments, remarkReferencePage } from "./page.ts";
 export { remarkLiteralTags } from "./literal.ts";
 export { remarkVersion } from "./version.ts";
