@@ -2,7 +2,7 @@ import { getCollection, type CollectionEntry } from "astro:content";
 import navJson from "../nav.json";
 import { referenceDescriptionFor, referenceTitle } from "./reference.ts";
 
-export type PageKind = "docs" | "reference";
+export type PageKind = "docs" | "reference" | "changelog";
 
 export interface NavPage {
   /** Route path without slashes at either end, e.g. `cli/lint`. */
@@ -13,7 +13,7 @@ export interface NavPage {
   group: string;
   /** Collection entry id, e.g. `cli/lint` (docs) or `lint-rules` (reference). */
   id: string;
-  entry: CollectionEntry<"docs"> | CollectionEntry<"reference">;
+  entry: CollectionEntry<"docs"> | CollectionEntry<"reference"> | CollectionEntry<"changelog">;
 }
 
 export interface NavGroup {
@@ -64,6 +64,17 @@ async function build(): Promise<Nav> {
       title: referenceTitle(body),
       description: referenceDescriptionFor(entry.id, body),
       kind: "reference",
+      id: entry.id,
+      entry,
+    });
+  }
+  for (const entry of await getCollection("changelog")) {
+    const body = entry.body ?? "";
+    available.set(entry.id, {
+      slug: entry.id,
+      title: referenceTitle(body),
+      description: referenceDescriptionFor(entry.id, body),
+      kind: "changelog",
       id: entry.id,
       entry,
     });

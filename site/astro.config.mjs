@@ -5,6 +5,7 @@ import {
   rehypeBlocks,
   rehypeHeadings,
   remarkAlerts,
+  remarkChangelog,
   remarkComments,
   remarkLinks,
   remarkLiteralTags,
@@ -24,6 +25,8 @@ const linkOptions = {
   repoRoot: fileURLToPath(new URL("../", import.meta.url)),
   githubBlob: "https://github.com/hytfjwr/dbtl/blob/main/",
 };
+
+const changelogFile = fileURLToPath(new URL("../CHANGELOG.md", import.meta.url));
 
 export default defineConfig({
   site: "https://hytfjwr.github.io",
@@ -51,6 +54,7 @@ export default defineConfig({
         remarkLiteralTags,
         remarkVersion,
         [remarkReferencePage, { referenceRoot: linkOptions.referenceRoot }],
+        [remarkChangelog, { file: changelogFile }],
         remarkAlerts,
         [remarkLinks, linkOptions],
       ],

@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- The docs site gained a changelog page at
+  https://hytfjwr.github.io/dbtl/changelog/, rendered from this file at
+  each release and linked from the footer and the docs menu.
+
 ### Fixed
 
 - The docs site on phones and narrow windows: the menu drawer scrolls to
