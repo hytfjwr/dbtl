@@ -108,6 +108,7 @@ code.nw{white-space:nowrap}
 /* collapsible "On this page" shown where the side list is hidden (see responsive.css) */
 .toc-drop{display:none;margin:0 0 var(--sp-4);font:var(--fs-1)/1.5 var(--font-mono)}
 .toc-drop summary{display:flex;align-items:center;gap:8px;padding:8px 0;color:var(--accent-text);font-weight:500;cursor:pointer;list-style:none}
+.toc-drop summary::-webkit-details-marker{display:none}
 .toc-drop summary::before{content:"+";width:1em;text-align:center;color:var(--text-faint)}
 .toc-drop[open] summary::before{content:"-"}
 .toc-drop summary::after{content:"";flex:1;border-top:1px solid var(--line)}

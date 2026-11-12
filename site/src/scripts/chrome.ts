@@ -55,8 +55,10 @@ if (side && scrim && openButton && closeButton) {
     }
   });
   // Back on a wide screen the sidebar is a column again: drop the drawer state.
-  window.matchMedia("(min-width: 901px)").addEventListener("change", (e) => {
-    if (e.matches) setDrawer(false);
+  // Mirrors the CSS breakpoint exactly (max-width:900px) so fractional widths
+  // from zoom or DPI can't leave the drawer state stuck on.
+  window.matchMedia("(max-width: 900px)").addEventListener("change", (e) => {
+    if (!e.matches) setDrawer(false);
   });
 }
 
