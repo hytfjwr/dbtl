@@ -2,7 +2,7 @@
 //! surface is re-exported here so callers (the binary, the integration tests)
 //! keep flat `dbtl::X` paths regardless of where a type lives.
 //!
-//! The workspace is split into three member crates:
+//! The workspace's member crates:
 //! - [`dbtl_core`] — the dbt domain (manifest/source parsing → [`Dag`], diff,
 //!   layer taxonomy, Mermaid export core); no terminal dependencies.
 //! - [`dbtl_tui`] — the interactive app (keymap, reducer, ratatui rendering).

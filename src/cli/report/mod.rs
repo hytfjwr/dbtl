@@ -242,3 +242,101 @@ pub fn write_report_file(path: &Path, contents: &str) -> Result<(), CliError> {
         .input()?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--report` specs split on the FIRST `:` — a Windows drive-letter path
+    /// survives intact.
+    #[test]
+    fn report_spec_splits_on_first_colon() {
+        let (fmt, path) = parse_report_spec("json:out/report.json", &ReportFormat::ALL).unwrap();
+        assert_eq!(fmt, ReportFormat::Json);
+        assert_eq!(path, PathBuf::from("out/report.json"));
+        let (fmt, path) = parse_report_spec("sarif:C:\\out\\r.sarif", &ReportFormat::ALL).unwrap();
+        assert_eq!(fmt, ReportFormat::Sarif);
+        assert_eq!(path, PathBuf::from("C:\\out\\r.sarif"));
+    }
+
+    /// Unknown formats, missing colons, and empty paths are all usage errors —
+    /// a mistyped destination must not be silently dropped.
+    #[test]
+    fn report_spec_rejects_bad_input() {
+        for spec in ["bogus:x", "json", "json:"] {
+            assert!(
+                parse_report_spec(spec, &ReportFormat::ALL).is_err(),
+                "{spec} must be a usage error"
+            );
+        }
+        // `impact` only allows markdown/json — every other format is refused.
+        assert!(
+            parse_report_spec(
+                "sarif:o.sarif",
+                &[ReportFormat::Markdown, ReportFormat::Json]
+            )
+            .is_err(),
+            "a format outside the allowed set is a usage error"
+        );
+    }
+
+    /// `--path-prefix` normalizes away `.`, a trailing slash, and emptiness,
+    /// and requires a path-carrying format somewhere in the selection.
+    #[test]
+    fn path_prefix_normalization_and_validation() {
+        let plan = OutputPlan::build(
+            ReportFormat::Github,
+            false,
+            ColorArg::Auto,
+            &[],
+            false,
+            Some("sub/dir/"),
+            &ReportFormat::ALL,
+        )
+        .unwrap();
+        assert_eq!(plan.path_prefix.as_deref(), Some("sub/dir"));
+
+        // `.` and empty prefixes contribute nothing — and don't trip the
+        // path-format requirement either.
+        for prefix in [".", "", "/"] {
+            let plan = OutputPlan::build(
+                ReportFormat::Text,
+                false,
+                ColorArg::Auto,
+                &[],
+                false,
+                Some(prefix),
+                &ReportFormat::ALL,
+            )
+            .unwrap();
+            assert_eq!(plan.path_prefix, None, "{prefix:?} normalizes away");
+        }
+
+        // No path-carrying format anywhere → usage error.
+        assert!(
+            OutputPlan::build(
+                ReportFormat::Text,
+                false,
+                ColorArg::Auto,
+                &[],
+                false,
+                Some("p"),
+                &ReportFormat::ALL
+            )
+            .is_err(),
+            "--path-prefix without a path-carrying format is a usage error"
+        );
+        // …but a --report destination carrying paths satisfies it.
+        let plan = OutputPlan::build(
+            ReportFormat::Text,
+            false,
+            ColorArg::Auto,
+            &["sarif:r.sarif".to_string()],
+            false,
+            Some("p"),
+            &ReportFormat::ALL,
+        )
+        .unwrap();
+        assert_eq!(plan.path_prefix.as_deref(), Some("p"));
+    }
+}
