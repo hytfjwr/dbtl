@@ -16,8 +16,7 @@
 //! supported by modern terminals (truecolor is not), and — unlike the 16 named
 //! ANSI colours — NOT remapped by the user's terminal scheme, so the curated
 //! palette renders as designed. It assumes a dark background (soft pastel
-//! foregrounds over dark surface bands), tuned in the spirit of modern dark
-//! themes (Tokyo Night / Catppuccin). The other presets reproduce upstream
+//! foregrounds over dark surface bands). The other presets reproduce upstream
 //! schemes (ayu, gruvbox) and use truecolor `Color::Rgb` for fidelity — a
 //! terminal without truecolor support approximates them; such users should
 //! keep the default or write an Indexed custom theme.
