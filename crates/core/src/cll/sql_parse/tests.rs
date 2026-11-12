@@ -517,6 +517,108 @@ fn this_relation_produces_no_parent_edges() {
     assert!(edges.iter().all(|e| e.kind == ColumnEdgeKind::FilterOrJoin));
 }
 
+// -- Jinja source map ----------------------------------------------------------
+//
+// `render_jinja_mapped` pairs the rendered text with a byte map back to
+// raw — the lint findings' position backbone. Copied regions map 1:1; a
+// rendered `{{ }}`/`{% %}` maps to its whole tag.
+
+#[test]
+fn render_map_is_byte_identical_to_render_jinja() {
+    let raw = "-- a\r\n{{ config(materialized='table') }}\nselect {% if t %}a,{% endif %}* from {{ ref('x') }}\n";
+    assert_eq!(
+        render_jinja_mapped(raw, JinjaMark::Plain).text,
+        render_jinja_as(raw, JinjaMark::Plain)
+    );
+    assert_eq!(
+        render_jinja_mapped(raw, JinjaMark::Marked).text,
+        render_jinja_as(raw, JinjaMark::Marked)
+    );
+}
+
+#[test]
+fn render_map_maps_copies_11_and_tags_to_the_whole_tag() {
+    let raw = "select a\nfrom {{ ref('up') }} u\n";
+    let rendered = render_jinja_mapped(raw, JinjaMark::Plain);
+    // A copied stretch maps byte-for-byte: `select a` → itself.
+    let s = raw.find("select a").unwrap();
+    assert_eq!(
+        rendered.source_range(s..s + 8),
+        Some(s..s + 8),
+        "a verbatim copy maps 1:1"
+    );
+    // The rendered ref name sits inside the tag's render — every byte of
+    // it maps back to the whole `{{ ref('up') }}` tag.
+    let tag = raw.find("{{ ref('up') }}").unwrap();
+    let r = rendered.text.find("\"up\"").unwrap();
+    assert_eq!(
+        rendered.source_range(r..r + 4),
+        Some(tag..tag + "{{ ref('up') }}".len()),
+        "a span inside a rendered tag underlines the tag, not the render"
+    );
+    // A range straddling copy + tag unions their sources (contiguous).
+    let f = rendered.text.find("from").unwrap();
+    assert_eq!(
+        rendered.source_range(f..rendered.text.len()),
+        Some(raw.find("from").unwrap()..raw.len()),
+        "a span over copy+tag covers the contiguous union"
+    );
+    // Nothing past the text maps.
+    assert_eq!(rendered.source_range(0..rendered.text.len() + 1), None);
+    assert_eq!(rendered.source_range(5..5), None);
+}
+
+#[test]
+fn plain_positions_extract_wildcard_join_and_column_spans() {
+    let raw = "select a, o.*\nfrom {{ ref('o') }} o\njoin b.u\nwhere o.id = b.id";
+    let pos = plain_positions(raw, &*SqlDialect::Generic.sqlparser()).unwrap();
+    // `o.*` — the qualified wildcard underlines itself.
+    assert_eq!(
+        pos.wildcards,
+        vec![raw.find("o.*").unwrap()..raw.find("o.*").unwrap() + 3]
+    );
+    // The conditionless join underlines `b.u` — not the `join` keyword.
+    assert_eq!(
+        pos.cartesian,
+        vec![raw.find("b.u").unwrap()..raw.find("b.u").unwrap() + 3]
+    );
+    // Column refs: `a` bare, plus each compound identifier's tail — the
+    // Jinja-rendered relation and the `o`/`b` qualifiers contribute none.
+    // (Scan order: the WHERE selection walks ahead of the projection.)
+    assert_eq!(
+        pos.columns,
+        vec![
+            (
+                "id".to_string(),
+                raw.find("id").unwrap()..raw.find("id").unwrap() + 2
+            ),
+            (
+                "id".to_string(),
+                raw.rfind("id").unwrap()..raw.rfind("id").unwrap() + 2
+            ),
+            ("a".to_string(), 7..8),
+        ]
+    );
+    // An unparsable text is `None` — never a position to guess.
+    assert!(plain_positions("select from where or", &*SqlDialect::Generic.sqlparser()).is_none());
+}
+
+#[test]
+fn marked_relations_carry_name_spans() {
+    let raw = "select *\nfrom analytics.orders\njoin {{ ref('u') }} u on 1 = 1";
+    let rel = marked_relations(raw, &*SqlDialect::Generic.sqlparser()).unwrap();
+    assert_eq!(rel.names, vec!["analytics.orders".to_string()]);
+    assert_eq!(rel.spans.len(), 1);
+    assert_eq!(
+        rel.spans[0].1,
+        raw.find("analytics.orders").unwrap()
+            ..raw.find("analytics.orders").unwrap() + "analytics.orders".len(),
+        "the written name underlines itself"
+    );
+    // An unparsable text is `None` — never a position to guess.
+    assert!(marked_relations("select from where or", &*SqlDialect::Generic.sqlparser()).is_none());
+}
+
 // -- dialect ---------------------------------------------------------------
 
 #[test]

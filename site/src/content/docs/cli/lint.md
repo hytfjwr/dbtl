@@ -13,7 +13,7 @@ dbtl lint --rules root_models,model_fanout  # a named subset
 dbtl lint --fail-on warn                    # fail on warnings too
 ```
 
-Text output is one `PASS`, `WARN`, `FAIL`, or `SKIP` line per rule. Findings sit indented under tripped rules as `file[:line[:column]] rule message` — findings in a properties `.yml` (descriptions, tests, freshness, contract columns) point at the `- name:` entry's line and column; a `.sql` finding names its file only. A closing tally reads `lint: N error(s), M warning(s), K baselined`.
+Text output is one `PASS`, `WARN`, `FAIL`, or `SKIP` line per rule. Findings sit indented under tripped rules as `file[:line[:column]] rule message` — findings in a properties `.yml` (descriptions, tests, freshness, contract columns) point at the `- name:` entry's line and column, and `.sql` findings point at the offending syntax (the wildcard, relation name, joined table, column reference, or regex match) when the rule can pin it exactly; a position it can't pin reports the file alone. A closing tally reads `lint: N error(s), M warning(s), K baselined`.
 
 `dbtl check --lint` folds the same evaluation into the [check gate set](check-and-impact.md). The two can never disagree. Setting `check.lint: true` in `.dbtl.yml` makes it the default for `check` runs.
 

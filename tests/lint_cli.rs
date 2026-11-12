@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::{dbtl_cmd, manifest_path as fixture_manifest, sample_manifest_path};
+use common::{dbtl_cmd, manifest_path as fixture_manifest, sample_manifest_path, SAMPLE_PROJECT};
 use std::path::{Path, PathBuf};
 
 fn run(args: &[&str]) -> std::process::Output {
@@ -1157,6 +1157,64 @@ fn check_json_findings_carry_the_yml_span_and_metadata() {
         finding["docs_url"],
         "https://hytfjwr.github.io/dbtl/reference/lint-rules/#undocumented_columns"
     );
+}
+
+// ---- SQL-rule positions: findings underline the offending SQL -----------------
+
+#[test]
+fn lint_select_star_points_at_the_wildcard_in_the_model_file() {
+    // `fct_orders`'s `o.*` — the expected line/column is COMPUTED from the
+    // fixture (never a hardcoded line number), so the test survives edits
+    // that move lines around.
+    let file = PathBuf::from(SAMPLE_PROJECT).join("models/marts/fct_orders.sql");
+    let raw = std::fs::read_to_string(&file).unwrap();
+    let at = raw.find("o.*").expect("fct_orders selects o.*");
+    let line = raw[..at].matches('\n').count() + 1;
+    let column = raw[..at].rsplit('\n').next().unwrap().chars().count() + 1;
+
+    let out = run(&["lint", "--source", SAMPLE_PROJECT, "--rules", "select_star"]);
+    let stdout = out_text(&out);
+    assert!(
+        stdout.contains(&format!("models/marts/fct_orders.sql:{line}:{column}")),
+        "the finding anchors at the wildcard (computed {line}:{column}): {stdout}"
+    );
+
+    // JSON carries the full span + the annotation label.
+    let out = run(&[
+        "lint",
+        "--source",
+        SAMPLE_PROJECT,
+        "--rules",
+        "select_star",
+        "--format",
+        "json",
+    ]);
+    let json: serde_json::Value =
+        serde_json::from_str(&out_text(&out)).expect("lint stdout is pure JSON");
+    let finding = json["gates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["id"] == "lint:select_star")
+        .and_then(|g| {
+            g["findings"].as_array().and_then(|a| {
+                a.iter()
+                    .find(|f| f["node_uid"] == "model.sample.fct_orders")
+            })
+        })
+        .expect("a select_star finding on fct_orders");
+    assert_eq!(
+        finding["location"],
+        serde_json::json!({
+            "file": "models/marts/fct_orders.sql",
+            "line": line,
+            "column": column,
+            "end_line": line,
+            "end_column": column + 3,
+        }),
+        "the `o.*` span — end exclusive: {finding}"
+    );
+    assert_eq!(finding["label"], "wildcard");
 }
 
 // ---- --select: findings restricted to the selected nodes ---------------------

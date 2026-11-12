@@ -2,6 +2,10 @@
 // Jinja render — compiled-level text from raw model SQL
 // ---------------------------------------------------------------------------
 
+use std::ops::Range;
+
+use sqlparser::tokenizer::Span;
+
 /// What `{{ this }}` renders to: parses as a normal identifier and never
 /// matches a parent, so self-references contribute no edges instead of
 /// killing the whole parse.
@@ -28,6 +32,130 @@ pub(super) enum JinjaMark {
     Marked,
 }
 
+/// One emitted segment of a [`RenderedSql`]: `out` is the byte range in
+/// the rendered text, `src` the raw-SQL range it came from.
+#[derive(Debug)]
+struct Seg {
+    out: Range<usize>,
+    src: Range<usize>,
+    /// `true`: `src` copied verbatim — offsets map 1:1. `false`: a Jinja
+    /// tag's render — every byte of `out` stands for all of `src`.
+    copy: bool,
+}
+
+/// Raw model SQL rendered for the parser, plus the map back to source:
+/// every byte range of `text` knows which raw range produced it — copied
+/// regions map 1:1, a rendered `{{ }}`/`{% %}`/`{# #}` maps to its whole
+/// tag. `text` is byte-identical to [`render_jinja_as`]'s output.
+pub(super) struct RenderedSql {
+    /// The rendered text the parser reads.
+    pub(super) text: String,
+    /// Segments tiling `text` in emission order (the `src` ranges tile
+    /// the input the same way).
+    segs: Vec<Seg>,
+}
+
+impl RenderedSql {
+    /// The source byte range `rendered` came from. A range inside a
+    /// tag's render maps to the tag's whole source range; a range
+    /// spanning segments takes the union of their sources — the segments
+    /// tile the input, so the union is one contiguous range. `None` for
+    /// an empty or out-of-`text` range.
+    pub(super) fn source_range(&self, rendered: Range<usize>) -> Option<Range<usize>> {
+        if rendered.is_empty() || rendered.end > self.text.len() {
+            return None;
+        }
+        let mut out: Option<Range<usize>> = None;
+        for s in &self.segs {
+            let os = rendered.start.max(s.out.start);
+            let oe = rendered.end.min(s.out.end);
+            if os >= oe {
+                continue;
+            }
+            let r = if s.copy {
+                s.src.start + (os - s.out.start)..s.src.start + (oe - s.out.start)
+            } else {
+                s.src.clone()
+            };
+            out = Some(match out {
+                None => r,
+                Some(prev) => prev.start.min(r.start)..prev.end.max(r.end),
+            });
+        }
+        out
+    }
+
+    /// The source byte range a parsed [`Span`] points at — `None` for an
+    /// empty span or one whose (line, column) math doesn't land on the
+    /// text: a position the renderer can't place is no position.
+    pub(super) fn span_source(&self, span: Span) -> Option<Range<usize>> {
+        if span.start.line == 0 || span.end.line == 0 {
+            return None;
+        }
+        let start = position_offset(&self.text, span.start.line, span.start.column)?;
+        let end = position_offset(&self.text, span.end.line, span.end.column)?;
+        self.source_range(start..end)
+    }
+}
+
+/// The byte offset of 1-based `(line, column)` in `text` — the inverse
+/// of sqlparser's tokenizer walk (columns count `char`s; `\r` is a column
+/// char, `\n` the line break, and a span's end sits ON the last char's
+/// successor). `None` when the position runs past the text — except the
+/// position right after the last char, which is `text.len()`.
+fn position_offset(text: &str, line: u64, column: u64) -> Option<usize> {
+    if line == 0 || column == 0 {
+        return None;
+    }
+    let (mut l, mut c) = (1u64, 1u64);
+    for (i, ch) in text.char_indices() {
+        if l == line && c == column {
+            return Some(i);
+        }
+        match ch {
+            '\n' => {
+                l += 1;
+                c = 1;
+            }
+            _ => c += 1,
+        }
+    }
+    (l == line && c == column).then_some(text.len())
+}
+
+/// Emit `bytes` as a verbatim copy of raw range `src`, merging into the
+/// previous segment when it's a contiguous copy — plain SQL runs (the
+/// byte-at-a-time `_` arm included) stay one segment per stretch.
+fn emit_copy(out: &mut Vec<u8>, segs: &mut Vec<Seg>, src: Range<usize>, bytes: &[u8]) {
+    if let Some(s) = segs.last_mut() {
+        if s.copy && s.src.end == src.start && s.out.end == out.len() {
+            out.extend_from_slice(bytes);
+            s.src.end = src.end;
+            s.out.end = out.len();
+            return;
+        }
+    }
+    let from = out.len();
+    out.extend_from_slice(bytes);
+    segs.push(Seg {
+        out: from..out.len(),
+        src,
+        copy: true,
+    });
+}
+
+/// Emit `bytes` as the render of Jinja range `src` — every emitted byte
+/// stands for the whole tag.
+fn emit_subst(out: &mut Vec<u8>, segs: &mut Vec<Seg>, src: Range<usize>, bytes: &[u8]) {
+    let from = out.len();
+    out.extend_from_slice(bytes);
+    segs.push(Seg {
+        out: from..out.len(),
+        src,
+        copy: false,
+    });
+}
+
 /// Turn raw dbt SQL into something a plain-SQL parser can read:
 /// `ref()`/`source()` render to quoted relation names, other `{{ }}` render
 /// as `NULL`, `{% %}`/`{# #}` drop. Compiled SQL needs nothing (dbt already
@@ -47,8 +175,15 @@ pub(super) fn render_jinja(sql: &str) -> String {
 /// [`render_jinja`] with an explicit marker mode — see [`JinjaMark`]. The
 /// `Plain` mode is byte-identical to the historical renderer.
 pub(super) fn render_jinja_as(sql: &str, mark: JinjaMark) -> String {
+    render_jinja_mapped(sql, mark).text
+}
+
+/// [`render_jinja_as`], plus the rendered→raw byte map the lint rules
+/// convert parsed spans through to point at the written file.
+pub(super) fn render_jinja_mapped(sql: &str, mark: JinjaMark) -> RenderedSql {
     let b = sql.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(b.len() + 16);
+    let mut segs: Vec<Seg> = Vec::new();
     let mut i = 0usize;
     while i < b.len() {
         match b[i] {
@@ -60,7 +195,7 @@ pub(super) fn render_jinja_as(sql: &str, mark: JinjaMark) -> String {
                     .iter()
                     .position(|&c| c == b'\n')
                     .map_or(b.len(), |p| i + p);
-                out.extend_from_slice(&b[i..end]);
+                emit_copy(&mut out, &mut segs, i..end, &b[i..end]);
                 i = end;
             }
             b'/' if b.get(i + 1) == Some(&b'*') => {
@@ -68,13 +203,14 @@ pub(super) fn render_jinja_as(sql: &str, mark: JinjaMark) -> String {
                     .windows(2)
                     .position(|w| w == b"*/")
                     .map_or(b.len(), |p| i + 2 + p + 2);
-                out.extend_from_slice(&b[i..end]);
+                emit_copy(&mut out, &mut segs, i..end, &b[i..end]);
                 i = end;
             }
             // `'…'` string literals and `"…"`/`` `…` `` quoted identifiers
             // pass through verbatim (doubled-quote escapes keep them open)
             // — a `{`-pair inside is literal text, never a marker.
             q @ (b'\'' | b'"' | b'`') => {
+                let start = i;
                 out.push(q);
                 i += 1;
                 while i < b.len() {
@@ -90,6 +226,13 @@ pub(super) fn render_jinja_as(sql: &str, mark: JinjaMark) -> String {
                     }
                     i += 1;
                 }
+                // Pushed byte-wise above (the escape check reads `out`);
+                // record the whole literal as one copy segment.
+                segs.push(Seg {
+                    out: out.len() - (i - start)..out.len(),
+                    src: start..i,
+                    copy: true,
+                });
             }
             // Dollar-quoted strings (`$$…$$` / `$tag$…$tag$`) pass through —
             // the same marker-shielding rule as other literals.
@@ -98,11 +241,11 @@ pub(super) fn render_jinja_as(sql: &str, mark: JinjaMark) -> String {
                     let from = i + dlen;
                     let end =
                         dollar_quote_close(b, from, &b[i..i + dlen]).map_or(b.len(), |c| c + dlen);
-                    out.extend_from_slice(&b[i..end]);
+                    emit_copy(&mut out, &mut segs, i..end, &b[i..end]);
                     i = end;
                 }
                 None => {
-                    out.push(b[i]);
+                    emit_copy(&mut out, &mut segs, i..i + 1, &b[i..i + 1]);
                     i += 1;
                 }
             },
@@ -136,7 +279,12 @@ pub(super) fn render_jinja_as(sql: &str, mark: JinjaMark) -> String {
                         match kind {
                             b'{' => {
                                 let inner = &sql[i + 2..e];
-                                out.extend_from_slice(render_jinja_expr(inner, mark).as_bytes());
+                                emit_subst(
+                                    &mut out,
+                                    &mut segs,
+                                    i..e + 2,
+                                    render_jinja_expr(inner, mark).as_bytes(),
+                                );
                             }
                             // `{% … %}` tags and `{# … #}` comments drop
                             // entirely — the tag's body (if/for branches)
@@ -160,9 +308,14 @@ pub(super) fn render_jinja_as(sql: &str, mark: JinjaMark) -> String {
                                         == Some(&b',')
                                         || b[e + 2..].iter().find(|c| !c.is_ascii_whitespace())
                                             == Some(&b','));
-                                out.push(if split && !literal_comma { b',' } else { b' ' });
+                                emit_subst(
+                                    &mut out,
+                                    &mut segs,
+                                    i..e + 2,
+                                    &[if split && !literal_comma { b',' } else { b' ' }],
+                                );
                             }
-                            _ => out.push(b' '),
+                            _ => emit_subst(&mut out, &mut segs, i..e + 2, b" "),
                         }
                         i = e + 2;
                     }
@@ -173,20 +326,23 @@ pub(super) fn render_jinja_as(sql: &str, mark: JinjaMark) -> String {
                     // name-match. Swallowing the tail would fabricate a
                     // shorter query that parses to wrong edges.
                     None => {
-                        out.extend_from_slice(&b[i..]);
+                        emit_copy(&mut out, &mut segs, i..b.len(), &b[i..]);
                         i = b.len();
                     }
                 }
             }
             _ => {
-                out.push(b[i]);
+                emit_copy(&mut out, &mut segs, i..i + 1, &b[i..i + 1]);
                 i += 1;
             }
         }
     }
     // Jinja interiors are ASCII for anything we render; copied bytes keep
     // the original UTF-8 untouched.
-    String::from_utf8(out).unwrap_or_default()
+    RenderedSql {
+        text: String::from_utf8(out).unwrap_or_default(),
+        segs,
+    }
 }
 
 /// Is `body` (the inside of a `{% … %}` tag, whitespace-control dashes and
