@@ -90,10 +90,12 @@ pub(super) fn chained_views(
         out.push(Finding::new(
             LintRule::ChainedViews,
             (*uid).clone(),
-            chain,
+            chain.clone(),
             format!(
-                "{} ends a chain of {len} consecutive view/ephemeral model(s)",
-                n.name
+                "{} ends a chain of {len} consecutive {}: {}",
+                n.name,
+                pluralize(len, "view/ephemeral model"),
+                name_list(&display_names(dag, &chain)),
             ),
         ));
     }
@@ -132,9 +134,10 @@ pub(super) fn exposure_parents_materializations(
             (*uid).clone(),
             parents.clone(),
             format!(
-                "exposure {} directly depends on {} source or view/ephemeral parent(s)",
+                "exposure {} directly depends on source or view/ephemeral {}: {}",
                 n.name,
-                parents.len()
+                pluralize(parents.len(), "parent"),
+                name_list(&display_names(dag, &parents)),
             ),
         ));
     }

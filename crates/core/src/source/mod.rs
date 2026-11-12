@@ -143,7 +143,8 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
     let mut exposures: HashMap<String, RawExposure> = HashMap::new();
     // name -> unique_id for models/seeds/snapshots, so `ref('x')` can resolve.
     let mut name_index: HashMap<String, String> = HashMap::new();
-    // (uid, Jinja-comment-stripped SQL) deferred to the ref/source pass below.
+    // (uid, Jinja-comment-masked SQL) deferred to the ref/source pass below —
+    // masking preserves byte length, so call-site offsets index the raw text.
     let mut node_sql: Vec<(String, String)> = Vec::new();
     // uid -> dbt_project.yml tree materialization, applied AFTER schema.yml
     // (precedence: in-file config() > schema.yml > project tree > default view).
@@ -198,11 +199,12 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
 
     // --- models (.sql) ---
     for (file, root) in collect_with_root(dir, &model_paths, "sql") {
-        // Keep the pre-strip text for the SQL preview modal (comments intact);
-        // the ref/source/config extractors still see the Jinja-comment-stripped
-        // copy (dbt's Jinja-before-SQL-comments semantics).
+        // Keep the pre-mask text for the SQL preview modal (comments intact);
+        // the ref/source/config extractors still see the Jinja-comment-masked
+        // copy (dbt's Jinja-before-SQL-comments semantics) — masking preserves
+        // byte length, so offsets in it index `raw` too.
         let raw = read(&file);
-        let stripped = strip_jinja_comments(&raw);
+        let masked = mask_jinja_comments(&raw);
         let name = file_stem(&file);
         let uid = format!("model.{proj}.{name}");
         // dbt's `path` is relative to the model-paths root (e.g. `staging/x.sql`)
@@ -217,7 +219,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
         );
         // Disabled models never reach the manifest's `nodes` (dbt parks them
         // under `disabled`); drop them here too, edges included.
-        if pat.disabled(&stripped) || tree.enabled == Some(false) {
+        if pat.disabled(&masked) || tree.enabled == Some(false) {
             continue;
         }
         // `collect_with_root` sorts by path, so the first file to claim a
@@ -244,7 +246,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
         // each the highest level of the same precedence chain `materialized`
         // follows (`access`/`contract` are model-only; `group` is not) —
         // extracted in one pass over the file's config() calls.
-        let gov = config_governance(&stripped);
+        let gov = config_governance(&masked);
         nodes.insert(
             uid.clone(),
             RawNode {
@@ -253,11 +255,11 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                 path: Some(path),
                 original_file_path: Some(rel_path(dir, &file)),
                 config: RawConfig {
-                    materialized: pat.materialized(&stripped),
+                    materialized: pat.materialized(&masked),
                     // In-file `config(unique_key=…)` is the HIGHEST
                     // precedence level — the same chain `materialized`
                     // follows (schema.yml and the tree fill below it).
-                    unique_key: config_unique_key(&stripped),
+                    unique_key: config_unique_key(&masked),
                     incremental_strategy: gov.incremental_strategy.clone(),
                 },
                 access: gov.access.clone(),
@@ -267,17 +269,17 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                 language: Some("sql".to_string()),
                 // In-file `config(meta={…})` is the HIGHEST precedence level;
                 // schema.yml and the project tree merge under it per key.
-                meta: config_meta(&stripped).unwrap_or_default(),
+                meta: config_meta(&masked).unwrap_or_default(),
                 raw_code: Some(raw),
                 // In-file `config(alias=…)` is the highest-precedence relation
                 // name — schema.yml `config.alias` can only fill it when
                 // unset (same precedence chain as `materialized`).
-                alias: config_alias(&stripped),
+                alias: config_alias(&masked),
                 ..Default::default()
             },
         );
         name_index.insert(name, uid.clone());
-        node_sql.push((uid, stripped));
+        node_sql.push((uid, masked));
     }
 
     // --- seeds (.csv) ---
@@ -330,15 +332,15 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
     // --- snapshots ({% snapshot X %} blocks in snapshot-path .sql) ---
     for (file, root) in collect_with_root(dir, &snapshot_paths, "sql") {
         let raw = read(&file);
-        let stripped = strip_jinja_comments(&raw);
+        let masked = mask_jinja_comments(&raw);
         let path = rel_path(&root, &file);
         let ofp = rel_path(dir, &file);
         // An in-file `enabled=false` applies to every block in the file (rare).
-        if pat.disabled(&stripped) {
+        if pat.disabled(&masked) {
             continue;
         }
         // Refs in a multi-block file are attributed to every block in it (rare).
-        for name in pat.snapshots(&stripped) {
+        for name in pat.snapshots(&masked) {
             let uid = format!("snapshot.{proj}.{name}");
             // dbt's {% snapshot %} fqn KEEPS the file stem and appends the
             // snapshot name on top (`[pkg, *dirs, <file-stem>, <name>]` —
@@ -380,27 +382,27 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                         // The `{{ config(…) }}` inside a `{% snapshot %}`
                         // block carries `unique_key` — extracted file-wide
                         // like the other pattern extractors.
-                        unique_key: config_unique_key(&stripped),
+                        unique_key: config_unique_key(&masked),
                         ..Default::default()
                     },
                     // Snapshots can sit in a dbt `group`; `access`/`contract`
                     // stay None — dbt records them on models only.
-                    group: config_governance(&stripped).group,
+                    group: config_governance(&masked).group,
                     // dbt records `language: "sql"` on .sql-defined snapshots.
                     language: Some("sql".to_string()),
                     // The `{{ config(…) }}` inside a `{% snapshot %}` block is
                     // extracted file-wide like the other pattern extractors
                     // (multi-block files share the config — rare).
-                    meta: config_meta(&stripped).unwrap_or_default(),
+                    meta: config_meta(&masked).unwrap_or_default(),
                     // The whole (multi-block) file is stored per block; raw_code
                     // is never compared, and snapshots are rare, so this is fine.
                     raw_code: Some(raw.clone()),
-                    alias: config_alias(&stripped),
+                    alias: config_alias(&masked),
                     ..Default::default()
                 },
             );
             name_index.insert(name, uid.clone());
-            node_sql.push((uid, stripped.clone()));
+            node_sql.push((uid, masked.clone()));
         }
     }
 
@@ -533,16 +535,21 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
     let mut child_map: HashMap<String, Vec<String>> = HashMap::new();
     for (uid, sql) in &node_sql {
         let mut parents: Vec<String> = Vec::new();
-        for ref_name in pat.refs(sql) {
-            // Unresolved refs (cross-package, typo, gated) are dropped, not faked.
-            if let Some(parent) = name_index.get(&ref_name) {
-                parents.push(parent.clone());
+        for site in pat.call_sites(sql) {
+            match site.kind {
+                // Unresolved refs (cross-package, typo, gated) are dropped, not faked.
+                CallKind::Ref { name, .. } => {
+                    if let Some(parent) = name_index.get(&name) {
+                        parents.push(parent.clone());
+                    }
+                }
+                // A source referenced but not declared in schema.yml dangles
+                // here and is pruned later — it never becomes a node.
+                CallKind::Source { source, table } => {
+                    parents.push(format!("source.{proj}.{source}.{table}"));
+                }
+                CallKind::Config => {}
             }
-        }
-        for (src, tbl) in pat.sources(sql) {
-            // A source referenced but not declared in schema.yml dangles here and
-            // is pruned later — it never becomes a node.
-            parents.push(format!("source.{proj}.{src}.{tbl}"));
         }
         parents.sort();
         parents.dedup();
@@ -878,3 +885,8 @@ use patterns::*;
 use schema::*;
 use tests_synth::*;
 use yaml::*;
+
+// The span-carrying call extractors lint uses for finding positions — same
+// machinery as the loaders' own pass, not a second implementation.
+pub(crate) use collect::mask_jinja_comments;
+pub(crate) use patterns::{call_sites, kwarg, lit_value, CallKind, CallSite};

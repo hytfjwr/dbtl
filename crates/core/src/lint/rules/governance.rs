@@ -68,9 +68,10 @@ pub(super) fn exposures_dependent_on_private_models(
             (*uid).clone(),
             parents.clone(),
             format!(
-                "exposure {} directly depends on {} non-public model(s)",
+                "exposure {} directly depends on non-public {}: {}",
                 n.name,
-                parents.len()
+                pluralize(parents.len(), "model"),
+                name_list(&display_names(dag, &parents)),
             ),
         ));
     }
@@ -106,7 +107,11 @@ pub(super) fn undocumented_public_models(
             .map(|c| c.name.as_str())
             .collect();
         if !columns.is_empty() {
-            missing.push(format!("column description(s) ({})", columns.join(", ")));
+            missing.push(format!(
+                "{} ({})",
+                pluralize(columns.len(), "column description"),
+                columns.join(", ")
+            ));
         }
         if missing.is_empty() {
             continue;
@@ -160,8 +165,9 @@ pub(super) fn required_meta_keys(
             (*uid).clone(),
             Vec::new(),
             format!(
-                "{} is missing required meta key(s): {}",
+                "{} is missing required meta {}: {}",
                 n.name,
+                pluralize(missing.len(), "key"),
                 missing.join(", ")
             ),
         ));
@@ -200,8 +206,9 @@ pub(super) fn contract_columns_without_type(
             (*uid).clone(),
             Vec::new(),
             format!(
-                "contract-enforced {} has declared column(s) without data_type: {}",
+                "contract-enforced {} has declared {} without data_type: {}",
                 n.name,
+                pluralize(columns.len(), "column"),
                 columns.join(", ")
             ),
         ));

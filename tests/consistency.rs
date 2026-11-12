@@ -27,7 +27,10 @@ use common::{SAMPLE_MANIFEST as MANIFEST, SAMPLE_PROJECT as PROJECT};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use dbtl::{build_model_list, layout, load_dag, load_dag_from_source, Dag, NodeInfo, SortMode};
+use dbtl::{
+    build_model_list, layout, load_dag, load_dag_from_source, run_rules, Dag, LintConfig,
+    LintInput, NodeInfo, SortMode,
+};
 
 /// (manifest-mode Dag, source-mode Dag) of the same project.
 fn dags() -> (Dag, Dag) {
@@ -297,5 +300,26 @@ fn model_list_and_lineage_render_identically() {
             s_lay.grid.emphasis_regions(),
             "emphasis diverges for {uid}"
         );
+    }
+}
+
+#[test]
+fn lint_findings_are_identical_between_modes() {
+    // The lint pass consumes graph semantics PLUS call-site positions
+    // (`raw_code` offsets): the whole finding vec — rule, node, related,
+    // message, severity, location, labels, help — must agree byte-for-byte
+    // across modes. Same edges produce the same calls; same raw SQL maps
+    // them to the same positions.
+    let (m, s) = dags();
+    let cfg = LintConfig::default();
+    let mf = run_rules(LintInput::new(&m, &cfg)).findings;
+    let sf = run_rules(LintInput::new(&s, &cfg)).findings;
+    assert_eq!(
+        mf.len(),
+        sf.len(),
+        "finding counts diverge between manifest and source modes"
+    );
+    for (m, s) in mf.iter().zip(&sf) {
+        assert_eq!(m, s, "lint finding diverges between modes");
     }
 }

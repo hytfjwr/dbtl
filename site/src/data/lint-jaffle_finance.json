@@ -6,175 +6,175 @@
    "rule": "direct_join_to_source",
    "severity": "error",
    "uid": "model.jaffle_finance.pos_cat",
-   "message": "pos_cat directly depends on 1 source(s) and 1 model(s)",
+   "message": "pos_cat reads source lake_jaffle_payment.pos_cat and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_cat.sql"
   },
   {
    "rule": "direct_join_to_source",
    "severity": "error",
    "uid": "model.jaffle_finance.pos_crt",
-   "message": "pos_crt directly depends on 1 source(s) and 1 model(s)",
+   "message": "pos_crt reads source lake_jaffle_payment.pos_crt and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_crt.sql"
   },
   {
    "rule": "direct_join_to_source",
    "severity": "error",
    "uid": "model.jaffle_finance.pos_inv",
-   "message": "pos_inv directly depends on 1 source(s) and 1 model(s)",
+   "message": "pos_inv reads source lake_jaffle_payment.pos_inv and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_inv.sql"
   },
   {
    "rule": "direct_join_to_source",
    "severity": "error",
    "uid": "model.jaffle_finance.pos_jrn",
-   "message": "pos_jrn directly depends on 1 source(s) and 1 model(s)",
+   "message": "pos_jrn reads source lake_jaffle_payment.pos_jrn and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_jrn.sql"
   },
   {
    "rule": "direct_join_to_source",
    "severity": "error",
    "uid": "model.jaffle_finance.pos_kpi",
-   "message": "pos_kpi directly depends on 1 source(s) and 1 model(s)",
+   "message": "pos_kpi reads source lake_jaffle_payment.pos_kpi and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_kpi.sql"
   },
   {
    "rule": "direct_join_to_source",
    "severity": "error",
    "uid": "model.jaffle_finance.pos_mfg",
-   "message": "pos_mfg directly depends on 1 source(s) and 1 model(s)",
+   "message": "pos_mfg reads source lake_jaffle_payment.pos_mfg and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_mfg.sql"
   },
   {
    "rule": "direct_join_to_source",
    "severity": "error",
    "uid": "model.jaffle_finance.pos_ord",
-   "message": "pos_ord directly depends on 1 source(s) and 1 model(s)",
+   "message": "pos_ord reads source lake_jaffle_payment.pos_ord and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_ord.sql"
   },
   {
    "rule": "direct_join_to_source",
    "severity": "error",
    "uid": "model.jaffle_finance.pos_pay",
-   "message": "pos_pay directly depends on 1 source(s) and 1 model(s)",
+   "message": "pos_pay reads source lake_jaffle_payment.pos_pay and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_pay.sql"
   },
   {
    "rule": "direct_join_to_source",
    "severity": "error",
    "uid": "model.jaffle_finance.pos_rcv",
-   "message": "pos_rcv directly depends on 1 source(s) and 1 model(s)",
+   "message": "pos_rcv reads source lake_jaffle_payment.pos_rcv and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_rcv.sql"
   },
   {
    "rule": "direct_join_to_source",
    "severity": "error",
    "uid": "model.jaffle_finance.pos_shp",
-   "message": "pos_shp directly depends on 1 source(s) and 1 model(s)",
+   "message": "pos_shp reads source lake_jaffle_payment.pos_shp and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_shp.sql"
   },
   {
    "rule": "direct_join_to_source",
    "severity": "error",
    "uid": "model.jaffle_finance.pos_sku",
-   "message": "pos_sku directly depends on 1 source(s) and 1 model(s)",
+   "message": "pos_sku reads source lake_jaffle_payment.pos_sku and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_sku.sql"
   },
   {
    "rule": "direct_join_to_source",
    "severity": "error",
    "uid": "model.jaffle_finance.pos_stk",
-   "message": "pos_stk directly depends on 1 source(s) and 1 model(s)",
+   "message": "pos_stk reads source lake_jaffle_payment.pos_stk and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_stk.sql"
   },
   {
    "rule": "direct_join_to_source",
    "severity": "error",
    "uid": "model.jaffle_finance.pos_sup",
-   "message": "pos_sup directly depends on 1 source(s) and 1 model(s)",
+   "message": "pos_sup reads source lake_jaffle_payment.pos_sup and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_sup.sql"
   },
   {
    "rule": "direct_join_to_source",
    "severity": "error",
    "uid": "model.jaffle_finance.pos_tax",
-   "message": "pos_tax directly depends on 1 source(s) and 1 model(s)",
+   "message": "pos_tax reads source lake_jaffle_payment.pos_tax and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_tax.sql"
   },
   {
    "rule": "direct_join_to_source",
    "severity": "error",
    "uid": "model.jaffle_finance.pos_tkt",
-   "message": "pos_tkt directly depends on 1 source(s) and 1 model(s)",
+   "message": "pos_tkt reads source lake_jaffle_payment.pos_tkt and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_tkt.sql"
   },
   {
    "rule": "direct_join_to_source",
    "severity": "error",
    "uid": "model.jaffle_finance.pos_txn",
-   "message": "pos_txn directly depends on 1 source(s) and 1 model(s)",
+   "message": "pos_txn reads source lake_jaffle_payment.pos_txn and model pos_files__assignment",
    "file": "models/utilities/pos_prep/pos_txn.sql"
   },
   {
    "rule": "multiple_sources_joined",
    "severity": "error",
    "uid": "model.jaffle_finance.pos_files__assignment",
-   "message": "pos_files__assignment directly depends on 4 sources",
+   "message": "pos_files__assignment reads sources lake_jaffle_payment.pos_cat, lake_jaffle_payment.pos_pay, lake_jaffle_payment.pos_rcv, lake_jaffle_payment.pos_shp",
    "file": "models/utilities/pos_prep/base/pos_files__assignment.sql"
   },
   {
    "rule": "source_fanout",
    "severity": "error",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_cat",
-   "message": "source pos_cat directly feeds 2 models",
+   "message": "source lake_jaffle_payment.pos_cat directly feeds 2 models: pos_cat, pos_files__assignment",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "source_fanout",
    "severity": "error",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_pay",
-   "message": "source pos_pay directly feeds 2 models",
+   "message": "source lake_jaffle_payment.pos_pay directly feeds 2 models: pos_files__assignment, pos_pay",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "source_fanout",
    "severity": "error",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_rcv",
-   "message": "source pos_rcv directly feeds 2 models",
+   "message": "source lake_jaffle_payment.pos_rcv directly feeds 2 models: pos_files__assignment, pos_rcv",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "source_fanout",
    "severity": "error",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_shp",
-   "message": "source pos_shp directly feeds 2 models",
+   "message": "source lake_jaffle_payment.pos_shp directly feeds 2 models: pos_files__assignment, pos_shp",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "model_fanout",
    "severity": "error",
    "uid": "model.jaffle_finance.pos_files__assignment",
-   "message": "pos_files__assignment directly feeds 16 leaf models",
+   "message": "pos_files__assignment directly feeds 16 leaf models: pos_cat, pos_crt, pos_inv, pos_jrn, pos_kpi and 11 more",
    "file": "models/utilities/pos_prep/base/pos_files__assignment.sql"
   },
   {
    "rule": "rejoining_upstream",
    "severity": "error",
    "uid": "model.jaffle_finance.fct_delivery_monthly_snapshot",
-   "message": "fct_delivery_monthly_snapshot is a redundant hop: dim_delivery_lanes, dim_fiscal_years already feed(s) rpt_delivery_base_metrics directly",
+   "message": "fct_delivery_monthly_snapshot is a redundant hop: dim_delivery_lanes, dim_fiscal_years already feed rpt_delivery_base_metrics directly",
    "file": "models/marts/dimensional/jaffle/delivery_monthly_snapshot/fct_delivery_monthly_snapshot.sql"
   },
   {
    "rule": "rejoining_upstream",
    "severity": "error",
    "uid": "model.jaffle_finance.fct_delivery_shopper_monthly_visits",
-   "message": "fct_delivery_shopper_monthly_visits is a redundant hop: dim_fiscal_years already feed(s) rpt_delivery_shopper_monthly_visits directly",
+   "message": "fct_delivery_shopper_monthly_visits is a redundant hop: dim_fiscal_years already feeds rpt_delivery_shopper_monthly_visits directly",
    "file": "models/marts/dimensional/jaffle/delivery_shopper_monthly_visits/fct_delivery_shopper_monthly_visits.sql"
   },
   {
    "rule": "rejoining_upstream",
    "severity": "error",
    "uid": "model.jaffle_finance.fct_subscription_process",
-   "message": "fct_subscription_process is a redundant hop: dim_delivery_lanes, dim_fiscal_years already feed(s) fct_delivery_monthly_snapshot directly",
+   "message": "fct_subscription_process is a redundant hop: dim_delivery_lanes, dim_fiscal_years already feed fct_delivery_monthly_snapshot directly",
    "file": "models/marts/dimensional/jaffle/subscription_process/fct_subscription_process.sql"
   },
   {
@@ -195,77 +195,77 @@
    "rule": "unused_sources",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_finance.budgets",
-   "message": "source budgets is not referenced by any node",
+   "message": "source prod_lake_jaffle_finance.budgets is not referenced by any node",
    "file": "models/staging/jaffle/finance/_prod_lake_jaffle_finance__sources.yml"
   },
   {
    "rule": "unused_sources",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_finance.fiscal_years",
-   "message": "source fiscal_years is not referenced by any node",
+   "message": "source prod_lake_jaffle_finance.fiscal_years is not referenced by any node",
    "file": "models/staging/jaffle/finance/_prod_lake_jaffle_finance__sources.yml"
   },
   {
    "rule": "unused_sources",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_masterdata.companies",
-   "message": "source companies is not referenced by any node",
+   "message": "source prod_lake_jaffle_masterdata.companies is not referenced by any node",
    "file": "models/staging/jaffle/masterdata/_prod_lake_jaffle_masterdata__sources.yml"
   },
   {
    "rule": "unused_sources",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_masterdata.deliveries",
-   "message": "source deliveries is not referenced by any node",
+   "message": "source prod_lake_jaffle_masterdata.deliveries is not referenced by any node",
    "file": "models/staging/jaffle/masterdata/_prod_lake_jaffle_masterdata__sources.yml"
   },
   {
    "rule": "unused_sources",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_masterdata.delivery_groups",
-   "message": "source delivery_groups is not referenced by any node",
+   "message": "source prod_lake_jaffle_masterdata.delivery_groups is not referenced by any node",
    "file": "models/staging/jaffle/masterdata/_prod_lake_jaffle_masterdata__sources.yml"
   },
   {
    "rule": "unused_sources",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_payment.scores",
-   "message": "source scores is not referenced by any node",
+   "message": "source prod_lake_jaffle_payment.scores is not referenced by any node",
    "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
   },
   {
    "rule": "unused_sources",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_payment.shoppers",
-   "message": "source shoppers is not referenced by any node",
+   "message": "source prod_lake_jaffle_payment.shoppers is not referenced by any node",
    "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
   },
   {
    "rule": "unused_sources",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_payment.subscriptions",
-   "message": "source subscriptions is not referenced by any node",
+   "message": "source prod_lake_jaffle_payment.subscriptions is not referenced by any node",
    "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
   },
   {
    "rule": "unused_sources",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_payment.supplier_departments",
-   "message": "source supplier_departments is not referenced by any node",
+   "message": "source prod_lake_jaffle_payment.supplier_departments is not referenced by any node",
    "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
   },
   {
    "rule": "unused_sources",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_payment.suppliers",
-   "message": "source suppliers is not referenced by any node",
+   "message": "source prod_lake_jaffle_payment.suppliers is not referenced by any node",
    "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
   },
   {
    "rule": "unused_sources",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_payment.warehouses",
-   "message": "source warehouses is not referenced by any node",
+   "message": "source prod_lake_jaffle_payment.warehouses is not referenced by any node",
    "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
   },
   {
@@ -314,266 +314,266 @@
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.dev_lake_jaffle_finance.budgets",
-   "message": "source budgets has no freshness configured",
+   "message": "source dev_lake_jaffle_finance.budgets has no freshness configured",
    "file": "models/staging/jaffle/finance/_dev_lake_jaffle_finance__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.dev_lake_jaffle_finance.fiscal_years",
-   "message": "source fiscal_years has no freshness configured",
+   "message": "source dev_lake_jaffle_finance.fiscal_years has no freshness configured",
    "file": "models/staging/jaffle/finance/_dev_lake_jaffle_finance__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.dev_lake_jaffle_masterdata.companies",
-   "message": "source companies has no freshness configured",
+   "message": "source dev_lake_jaffle_masterdata.companies has no freshness configured",
    "file": "models/staging/jaffle/masterdata/_dev_lake_jaffle_masterdata__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.dev_lake_jaffle_masterdata.deliveries",
-   "message": "source deliveries has no freshness configured",
+   "message": "source dev_lake_jaffle_masterdata.deliveries has no freshness configured",
    "file": "models/staging/jaffle/masterdata/_dev_lake_jaffle_masterdata__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.dev_lake_jaffle_masterdata.delivery_groups",
-   "message": "source delivery_groups has no freshness configured",
+   "message": "source dev_lake_jaffle_masterdata.delivery_groups has no freshness configured",
    "file": "models/staging/jaffle/masterdata/_dev_lake_jaffle_masterdata__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.dev_lake_jaffle_payment.scores",
-   "message": "source scores has no freshness configured",
+   "message": "source dev_lake_jaffle_payment.scores has no freshness configured",
    "file": "models/staging/jaffle/payment/_dev_lake_jaffle_payment__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.dev_lake_jaffle_payment.shoppers",
-   "message": "source shoppers has no freshness configured",
+   "message": "source dev_lake_jaffle_payment.shoppers has no freshness configured",
    "file": "models/staging/jaffle/payment/_dev_lake_jaffle_payment__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.dev_lake_jaffle_payment.subscriptions",
-   "message": "source subscriptions has no freshness configured",
+   "message": "source dev_lake_jaffle_payment.subscriptions has no freshness configured",
    "file": "models/staging/jaffle/payment/_dev_lake_jaffle_payment__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.dev_lake_jaffle_payment.supplier_departments",
-   "message": "source supplier_departments has no freshness configured",
+   "message": "source dev_lake_jaffle_payment.supplier_departments has no freshness configured",
    "file": "models/staging/jaffle/payment/_dev_lake_jaffle_payment__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.dev_lake_jaffle_payment.suppliers",
-   "message": "source suppliers has no freshness configured",
+   "message": "source dev_lake_jaffle_payment.suppliers has no freshness configured",
    "file": "models/staging/jaffle/payment/_dev_lake_jaffle_payment__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.dev_lake_jaffle_payment.warehouses",
-   "message": "source warehouses has no freshness configured",
+   "message": "source dev_lake_jaffle_payment.warehouses has no freshness configured",
    "file": "models/staging/jaffle/payment/_dev_lake_jaffle_payment__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_cat",
-   "message": "source pos_cat has no freshness configured",
+   "message": "source lake_jaffle_payment.pos_cat has no freshness configured",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_crt",
-   "message": "source pos_crt has no freshness configured",
+   "message": "source lake_jaffle_payment.pos_crt has no freshness configured",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_inv",
-   "message": "source pos_inv has no freshness configured",
+   "message": "source lake_jaffle_payment.pos_inv has no freshness configured",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_jrn",
-   "message": "source pos_jrn has no freshness configured",
+   "message": "source lake_jaffle_payment.pos_jrn has no freshness configured",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_kpi",
-   "message": "source pos_kpi has no freshness configured",
+   "message": "source lake_jaffle_payment.pos_kpi has no freshness configured",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_mfg",
-   "message": "source pos_mfg has no freshness configured",
+   "message": "source lake_jaffle_payment.pos_mfg has no freshness configured",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_ord",
-   "message": "source pos_ord has no freshness configured",
+   "message": "source lake_jaffle_payment.pos_ord has no freshness configured",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_pay",
-   "message": "source pos_pay has no freshness configured",
+   "message": "source lake_jaffle_payment.pos_pay has no freshness configured",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_rcv",
-   "message": "source pos_rcv has no freshness configured",
+   "message": "source lake_jaffle_payment.pos_rcv has no freshness configured",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_shp",
-   "message": "source pos_shp has no freshness configured",
+   "message": "source lake_jaffle_payment.pos_shp has no freshness configured",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_sku",
-   "message": "source pos_sku has no freshness configured",
+   "message": "source lake_jaffle_payment.pos_sku has no freshness configured",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_stk",
-   "message": "source pos_stk has no freshness configured",
+   "message": "source lake_jaffle_payment.pos_stk has no freshness configured",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_sup",
-   "message": "source pos_sup has no freshness configured",
+   "message": "source lake_jaffle_payment.pos_sup has no freshness configured",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_tax",
-   "message": "source pos_tax has no freshness configured",
+   "message": "source lake_jaffle_payment.pos_tax has no freshness configured",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_tkt",
-   "message": "source pos_tkt has no freshness configured",
+   "message": "source lake_jaffle_payment.pos_tkt has no freshness configured",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.lake_jaffle_payment.pos_txn",
-   "message": "source pos_txn has no freshness configured",
+   "message": "source lake_jaffle_payment.pos_txn has no freshness configured",
    "file": "models/utilities/pos_prep/sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_finance.budgets",
-   "message": "source budgets has no freshness configured",
+   "message": "source prod_lake_jaffle_finance.budgets has no freshness configured",
    "file": "models/staging/jaffle/finance/_prod_lake_jaffle_finance__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_finance.fiscal_years",
-   "message": "source fiscal_years has no freshness configured",
+   "message": "source prod_lake_jaffle_finance.fiscal_years has no freshness configured",
    "file": "models/staging/jaffle/finance/_prod_lake_jaffle_finance__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_masterdata.companies",
-   "message": "source companies has no freshness configured",
+   "message": "source prod_lake_jaffle_masterdata.companies has no freshness configured",
    "file": "models/staging/jaffle/masterdata/_prod_lake_jaffle_masterdata__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_masterdata.deliveries",
-   "message": "source deliveries has no freshness configured",
+   "message": "source prod_lake_jaffle_masterdata.deliveries has no freshness configured",
    "file": "models/staging/jaffle/masterdata/_prod_lake_jaffle_masterdata__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_masterdata.delivery_groups",
-   "message": "source delivery_groups has no freshness configured",
+   "message": "source prod_lake_jaffle_masterdata.delivery_groups has no freshness configured",
    "file": "models/staging/jaffle/masterdata/_prod_lake_jaffle_masterdata__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_payment.scores",
-   "message": "source scores has no freshness configured",
+   "message": "source prod_lake_jaffle_payment.scores has no freshness configured",
    "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_payment.shoppers",
-   "message": "source shoppers has no freshness configured",
+   "message": "source prod_lake_jaffle_payment.shoppers has no freshness configured",
    "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_payment.subscriptions",
-   "message": "source subscriptions has no freshness configured",
+   "message": "source prod_lake_jaffle_payment.subscriptions has no freshness configured",
    "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_payment.supplier_departments",
-   "message": "source supplier_departments has no freshness configured",
+   "message": "source prod_lake_jaffle_payment.supplier_departments has no freshness configured",
    "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_payment.suppliers",
-   "message": "source suppliers has no freshness configured",
+   "message": "source prod_lake_jaffle_payment.suppliers has no freshness configured",
    "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
   },
   {
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.jaffle_finance.prod_lake_jaffle_payment.warehouses",
-   "message": "source warehouses has no freshness configured",
+   "message": "source prod_lake_jaffle_payment.warehouses has no freshness configured",
    "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
   },
   {

@@ -13,6 +13,10 @@ use super::*;
 use crate::select::select;
 use crate::{Catalog, SqlParseResolver};
 
+pub(super) use crate::lint::call_sites::{
+    display_name, display_names, name_list, pluralize, CallSites,
+};
+
 mod documentation;
 mod governance;
 mod modeling;
@@ -154,7 +158,7 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
         }
         match rule {
             LintRule::DirectJoinToSource => {
-                modeling::direct_join_to_source(dag, &uids, &in_scope, &mut out)
+                modeling::direct_join_to_source(dag, &uids, &in_scope, config, &mut out)
             }
             LintRule::MultipleSourcesJoined => {
                 modeling::multiple_sources_joined(dag, &uids, &in_scope, &mut out)

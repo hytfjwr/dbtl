@@ -28,6 +28,7 @@ pub use baseline::{Baseline, BASELINE_SCHEMA, DEFAULT_BASELINE_NAME};
 mod registry;
 pub use registry::{Category, ParamKind, ParamSpec, Requires, RuleInfo, Severity, REGISTRY};
 
+mod call_sites;
 mod location;
 pub use location::{
     byte_span_position, fill_finding_lines, yaml_name_line, yaml_name_span, YAML_ATTRIBUTE_RULE_IDS,
