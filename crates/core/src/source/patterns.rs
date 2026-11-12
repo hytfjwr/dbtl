@@ -8,8 +8,9 @@ use std::ops::Range;
 /// spurious edges. A versioned or kwarg-bearing `ref('x', v=2)` /
 /// `ref('x', version=2)` IS matched — the trailing `(?:,[^)]*)?` absorbs any
 /// extra args up to (but never past) the call's closing `)`. Edge resolution
-/// is name-only — the version kwargs ride the arg tail (`call_sites` records
-/// them on `CallKind::Ref` so a position can still pick the versioned call);
+/// is name-only — the version kwargs ride the arg tail (`call_sites_masked`
+/// records them on `CallKind::Ref` so a position can still pick the versioned
+/// call);
 /// the `.vN` node a `versions:` block would define is not synthesized.
 pub(super) struct Patterns {
     pub(super) ref_re: Regex,
@@ -719,7 +720,7 @@ impl LitParser<'_> {
 }
 
 /// One `ref(…)`, `source(…)` or `config(…)` call found in `sql` —
-/// [`Patterns::call_sites`]'s output. `span` covers the callee name through
+/// [`call_sites_masked`]'s output. `span` covers the callee name through
 /// the call's closing `)` (`{{ }}`/`{% %}` wrappers excluded); `args` covers
 /// the argument list between the parens (`None` when the balanced rescan
 /// couldn't read the call — a malformed shape the recognizing regex still
@@ -772,9 +773,8 @@ fn lit_range(text: &str, expr: &str) -> Option<Range<usize>> {
 pub enum CallKind {
     /// `ref(…)` — `name` is the byte range of the resolved model name's
     /// literal text in the masked text (the LAST quoted positional arg,
-    /// `ref('pkg','x')` → the `x` range), the same rule
-    /// [`Patterns::refs`] applies. Ranges index the input text — no
-    /// per-call allocation.
+    /// `ref('pkg','x')` → the `x` range), the same rule `Patterns::refs`
+    /// applies. Ranges index the input text — no per-call allocation.
     Ref {
         name: Range<usize>,
         /// `ref('pkg','x')` → the `pkg` range (the first quoted arg of a
@@ -793,7 +793,7 @@ pub enum CallKind {
     Config,
 }
 
-/// [`Patterns::call_sites_masked`] without needing a [`Patterns`] instance —
+/// `Patterns::call_sites_masked` without needing a `Patterns` instance —
 /// the lint call-site consumer's entry point on text it masked itself,
 /// sharing one compiled `Patterns`.
 pub fn call_sites_masked(masked: &str) -> Vec<CallSite> {
