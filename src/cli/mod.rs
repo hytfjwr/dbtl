@@ -76,7 +76,10 @@ pub struct Cli {
     /// Force Unicode box-drawing glyphs, skipping the terminal probe.
     #[arg(long, conflicts_with = "ascii")]
     pub unicode: bool,
-    /// Start with this model selected (by name, e.g. `stg_orders`).
+    /// Start the TUI on a model's tab: a model name (e.g. `stg_orders`), or
+    /// a dbt selector spec — the spec's first match opens in a tab, and it
+    /// must be a model. `state:` atoms can't match: the `--diff` baseline
+    /// loads after this flag resolves.
     #[arg(long)]
     pub select: Option<String>,
     /// Auto-reload when the data source changes on disk (the manifest file, or
@@ -191,11 +194,11 @@ pub enum Commands {
         lineage_depth: Option<String>,
         /// Generate pages only for nodes matching a dbt selector — the
         /// grammar of `dbtl ls`/`check --select` (`tag:x`, `path:y`,
-        /// `+name+`, `state:modified`, …), NOT the TUI's `--select <name>`
-        /// model-name flag. `state:` atoms need `--diff`; `--diff` on docs
-        /// exists ONLY for them. Repeatable — specs union. The README notes
-        /// the selector and project-wide summary counts stay unchanged;
-        /// links to omitted pages render as plain names.
+        /// `+name+`, `state:modified`, …), NOT the TUI's `--select`, which
+        /// opens one model's tab. `state:` atoms need `--diff`; `--diff`
+        /// on docs exists ONLY for them. Repeatable — specs union. The
+        /// README notes the selector and project-wide summary counts stay
+        /// unchanged; links to omitted pages render as plain names.
         #[arg(long, value_name = "SELECTOR", conflicts_with_all = ["clean", "check"])]
         select: Vec<String>,
         /// Subtract nodes matching a spec from the generated set — applied
@@ -220,9 +223,9 @@ pub enum Commands {
         report: Vec<String>,
         /// Restrict the report to changed nodes matching a dbt selector —
         /// the grammar of `dbtl ls` (`tag:x`, `path:y`, `+name+`,
-        /// `state:modified`, …), NOT the TUI's `--select <name>` model-name
-        /// flag. `state:` atoms compare against the `--diff` baseline.
-        /// Repeatable — specs union.
+        /// `state:modified`, …), NOT the TUI's `--select`, which opens
+        /// one model's tab. `state:` atoms compare against the `--diff`
+        /// baseline. Repeatable — specs union.
         #[arg(long, value_name = "SELECTOR")]
         select: Vec<String>,
     },
@@ -326,8 +329,9 @@ pub enum Commands {
         /// counts, lint findings, and the `--diff` gates all intersect the
         /// selection (`docs_drift` never does; it compares whole doc sets).
         /// The grammar of `dbtl ls` (`tag:x`, `path:y`, `+name+`,
-        /// `state:modified`, …), NOT the TUI's `--select <name>` model-name
-        /// flag; `state:` atoms need `--diff`. Repeatable — specs union.
+        /// `state:modified`, …), NOT the TUI's `--select`, which opens one
+        /// model's tab; `state:` atoms need `--diff`. Repeatable — specs
+        /// union.
         #[arg(long, value_name = "SELECTOR")]
         select: Vec<String>,
         /// Suppress the per-check report on stdout; only the exit code matters.
@@ -397,10 +401,10 @@ pub enum Commands {
         explain: Option<String>,
         /// Restrict findings to nodes matching a dbt selector — the grammar
         /// of `dbtl ls` (`tag:x`, `path:y`, `+name+`, `state:modified`, …),
-        /// NOT the TUI's `--select <name>` model-name flag; `state:` atoms
-        /// need `--diff`. Repeatable — specs union. Cannot combine with
-        /// `--write-baseline` (a partial finding set must never overwrite
-        /// the frozen file).
+        /// NOT the TUI's `--select`, which opens one model's tab.
+        /// `state:` atoms need `--diff`. Repeatable — specs union. Cannot
+        /// combine with `--write-baseline` (a partial finding set must
+        /// never overwrite the frozen file).
         #[arg(long, value_name = "SELECTOR",
                conflicts_with_all = ["write_baseline", "list_rules", "explain"])]
         select: Vec<String>,

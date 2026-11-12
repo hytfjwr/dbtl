@@ -286,8 +286,11 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
     }
     if let Some(name) = &cli.select {
         // Fail as plain text before the terminal is touched, like a load error.
-        // Plain model name first; on a miss, try it as a dbt selector spec
-        // (`--select 'tag:nightly'` → the first matching model, sorted).
+        // Plain model name first; on a miss, try it as a dbt selector spec —
+        // only the first match by unique_id is tried, and it must be a model
+        // (a non-model first hit fails; it does not skip to the next match).
+        // `state:` atoms can't match: `app.diff()` is still `None` — the
+        // `--diff` baseline loads below.
         // `--select` starts on the model's TAB — activating it when
         // it is already open, appending one when it is not.
         let found = app.open_tab_by_name(name)
