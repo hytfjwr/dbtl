@@ -12,7 +12,7 @@
 mod common;
 
 use common::{manifest_json, synth_manifest, write_project, SynthParams};
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use dbtl::ui::{draw as tui_draw, RenderCtx, UiState};
 use dbtl::{
     build_model_list, compute_diff, generate_docs, layout_density, load_dag_from_source,
@@ -21,6 +21,7 @@ use dbtl::{
     SqlParseResolver,
 };
 use ratatui::{backend::TestBackend, Terminal};
+use std::hint::black_box;
 use std::path::PathBuf;
 use std::time::Duration;
 
