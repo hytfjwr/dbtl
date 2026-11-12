@@ -6,31 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-13
+
 ### Breaking changes
 
-- **Exit codes are now classified.** Gate failures still exit `1`, but usage
-  and configuration errors now exit `2` and input errors (missing manifest,
-  unreadable baseline, unresolvable git ref) exit `3`. Scripts that treated
-  every non-zero code alike need no change; scripts that matched `1` for
-  "anything went wrong" should match on non-zero instead, or use the new
-  codes to distinguish a failed gate from a bad invocation. See
-  [the exit-code table](https://hytfjwr.github.io/dbtl/configuration/exit-codes/).
-- **`--project-only` is deprecated.** It still parses for compatibility but
-  is a no-op — the default scope already is the root project — prints a
-  deprecation warning, and conflicts with `--include-packages`. Drop the
-  flag; add `--include-packages` only where the wider scope was wanted.
-- **The generated docs layout changed.** `dbtl docs` now writes node pages
-  into per-resource-type directories (`models/`, `sources/`, `exposures/`,
-  …) and carries new sections (SQL, column lineage cells, lint violations,
-  owner/tag/group index pages). A committed docs tree must be regenerated
-  once — `dbtl docs --out <DIR> --clean` removes the stale pages safely.
-- **The truecolor theme presets were replaced by original palettes** named
-  `dark`, `dusk`, `light`, and `warm`; the old preset names are gone. An
-  unknown name passed with `--theme`/`DBTL_THEME` exits `2` and lists the
-  valid presets; a saved or configured name that no longer exists falls back
-  to `default` with a warning. Pick a new preset with `dbtl --list-themes`,
-  and update any `theme:` name or custom theme's `base:` that pointed at an
-  old preset.
 - **The `text` report format was rebuilt.** `dbtl lint` and
   `dbtl check --lint` now render each counted finding as an annotated
   block — `error[rule]: message` over a `--> file:line:column` position,
@@ -77,13 +56,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Documentation site at https://hytfjwr.github.io/dbtl/, with search, a
-  selector playground, and generated CLI, keybinding, lint-rule, and
-  configuration reference. The README is now a short overview that links to
-  the site.
-- `dbtl lint` subcommand: the static rule set on its own, with
-  `--write-baseline`/`--no-baseline`, `--list-rules`, `--explain`, and the
-  full report-format set.
 - Lint findings carry positions: `.yml` attribute findings underline their
   declaring `- name:` value, and the SQL rules (`select_star`,
   `hard_coded_references`, `cartesian_join`, `unknown_column_reference`,
@@ -91,27 +63,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `.sql` file — additional occurrences ride as secondary labels. A
   position a rule can't pin exactly is left file-scoped rather than
   guessed.
-- Lint rule registry: named rules with declared severities, parameters, and
-  required inputs; a rule whose input is missing reports `SKIP` instead of
-  failing. 15 additional graph/metadata rules ship at `warn` severity,
-  plus SQL-backed rules (`select_star`, `hard_coded_references`,
-  `cartesian_join`, `unknown_column_reference`, `forbidden_patterns`) and
-  catalog-backed drift rules (`warehouse_type_drift`,
-  `columns_missing_in_warehouse`).
-- Project-local `.dbtl.yml`: per-rule enables, severities, thresholds,
-  selector-based excludes, naming prefixes, `check.gates` severity/parameter
-  policy, and `docs` options — plus per-node `meta.dbtl.ignore` suppression.
-- `dbtl ls`: evaluate dbt selectors non-interactively (`names`/`uids`/
-  `selector`/`json` output). `--select`/`--exclude` now also scope `check`,
-  `lint`, `impact`, and `docs`.
-- `--diff git:<rev>`: compare against the project as committed on any
-  revision, materialized read-only via `git ls-tree`/`git cat-file` — no
-  checkout needed.
-- `dbtl check`/`lint` report formats: one `dbtl.report/v1` document rendered
-  as `text`, `concise`, `markdown`, `json`, `github` annotations, `sarif`,
-  `junit`, or `codeclimate`; `--report <FMT>:<PATH>` writes files,
-  `--step-summary` appends to `GITHUB_STEP_SUMMARY`, `--path-prefix`
-  rewrites paths for repository subdirectories.
+- Graph-rule findings point at the offending `ref()`/`source()`/`config()`
+  call site in the model file rather than only naming the file, related
+  nodes are named (`source.name.table`, `name.vN`, plain names), and a
+  help suggestion appears when a staging replacement is uniquely
+  identifiable.
+- Source mode loads the same governance and config fields as manifest
+  mode — `access` (models default to `protected`), `group`,
+  `contract.enforced`, `constraints`, `incremental_strategy`,
+  `deprecation_date`, and `language` — through the same
+  in-file → schema.yml → project-tree precedence chain as `materialized`.
 - `--format concise` on `check`/`lint`: one finding per line as
   `file[:line[:column]]: severity[rule] message` for editors and grep.
 - `--color auto|always|never` on `check`/`lint`: ANSI styling for the
@@ -119,20 +80,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `CLICOLOR_FORCE` under `auto`. Report files, machine formats, and the
   step summary are always unstyled, and a closed stdout pipe
   (`dbtl lint | head`) ends the report without panicking.
-- Composite GitHub Action at the repository root (`uses: hytfjwr/dbtl`):
-  installs a release binary, runs `dbtl check` with annotations, a step
-  summary, optional SARIF upload and a sticky PR comment. A
-  `.pre-commit-hooks.yaml` ships `dbtl-lint` hooks.
-- `dbtl completions` (bash, zsh, fish, powershell, elvish) and a `dbtl man`
-  roff page; both ship pre-generated in the release archives.
-- Release artifacts for Windows (`x86_64-pc-windows-msvc.zip`) and musl
-  Linux (`x86_64`/`aarch64-unknown-linux-musl.tar.gz`), published with
-  `checksums.txt`, build-provenance attestations, and CycloneDX SBOMs.
-- Generated reference documentation under `docs/reference/` (CLI,
-  configuration, keybindings, lint rules) and JSON schemas under `schema/`.
-- Releases now attach `demo.gif` — the recorded TUI demo, rendered at the
-  release tag by the release pipeline (not covered by `checksums.txt` or
-  attestations).
 - Three lint rules. `unused_models` (default: staging + intermediate
   layers, retargetable via `layers`) flags a model nothing reads — any
   downstream counts, including exposures, semantic models, and consumers
@@ -219,6 +166,105 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   counts as integer-shaped at scale 0. Catalog column lookup is
   case-insensitive. The TUI's per-model "last run" notes use the same
   comparison, so TUI and `dbtl lint` now agree on drift.
+- Source-mode fidelity: a source's `schema` defaults to the source name
+  when omitted, generic tests read `column_name` from `kwargs` (legacy
+  and `arguments:` spellings), and blank-only column descriptions count
+  as missing.
+
+## [0.6.1] - 2026-11-12
+
+### Breaking changes
+
+- **The truecolor theme presets were replaced by original palettes** named
+  `dark`, `dusk`, `light`, and `warm`; the old preset names are gone. An
+  unknown name passed with `--theme`/`DBTL_THEME` exits `2` and lists the
+  valid presets; a saved or configured name that no longer exists falls back
+  to `default` with a warning. Pick a new preset with `dbtl --list-themes`,
+  and update any `theme:` name or custom theme's `base:` that pointed at an
+  old preset.
+
+### Added
+
+- Documentation site at https://hytfjwr.github.io/dbtl/, with search, a
+  selector playground, and generated CLI, keybinding, lint-rule, and
+  configuration reference. The README is now a short overview that links to
+  the site.
+- Releases now attach `demo.gif` — the recorded TUI demo, rendered at the
+  release tag by the release pipeline (not covered by `checksums.txt` or
+  attestations).
+
+## [0.6.0] - 2026-11-12
+
+### Breaking changes
+
+- **Exit codes are now classified.** Gate failures still exit `1`, but usage
+  and configuration errors now exit `2` and input errors (missing manifest,
+  unreadable baseline, unresolvable git ref) exit `3`. Scripts that treated
+  every non-zero code alike need no change; scripts that matched `1` for
+  "anything went wrong" should match on non-zero instead, or use the new
+  codes to distinguish a failed gate from a bad invocation. See
+  [the exit-code table](https://hytfjwr.github.io/dbtl/configuration/exit-codes/).
+- `dbtl impact` now reads `.dbtl.yml` and exits `2` on a malformed file.
+- **The generated docs layout changed.** `dbtl docs` now writes node pages
+  into per-resource-type directories (`models/`, `sources/`, `exposures/`,
+  …) and carries new sections (SQL, column lineage cells, lint violations,
+  owner/tag/group index pages). A committed docs tree must be regenerated
+  once — `dbtl docs --out <DIR> --clean` removes the stale pages safely.
+
+### Added
+
+- `--catalog <path>` selects the warehouse `catalog.json` explicitly
+  instead of only auto-detecting a sibling `target/catalog.json`. The
+  data-input flags are now global — they bind before or after a
+  subcommand — and a flag a subcommand does not consume is rejected as a
+  usage error.
+- `dbtl lint` subcommand: the static rule set on its own, with
+  `--write-baseline`/`--no-baseline`, `--list-rules`, `--explain`, and the
+  full report-format set.
+- Lint rule registry: named rules with declared severities, parameters, and
+  required inputs; a rule whose input is missing reports `SKIP` instead of
+  failing. 15 additional graph/metadata rules ship at `warn` severity,
+  plus SQL-backed rules (`select_star`, `hard_coded_references`,
+  `cartesian_join`, `unknown_column_reference`, `forbidden_patterns`) and
+  catalog-backed drift rules (`warehouse_type_drift`,
+  `columns_missing_in_warehouse`).
+- Project-local `.dbtl.yml`: per-rule enables, severities, thresholds,
+  selector-based excludes, naming prefixes, `check.gates` severity/parameter
+  policy, and `docs` options — plus per-node `meta.dbtl.ignore` suppression.
+- Lint findings surface in the TUI by severity: the Lint lens tints each
+  node by its worst finding, `F` filters the model list to linted nodes,
+  `n`/`N` cycle through findings while the lens is active, and the
+  inspector, the home Health line, and the stats worklist split counts
+  into errors and warnings.
+- `dbtl ls`: evaluate dbt selectors non-interactively (`names`/`uids`/
+  `selector`/`json` output). `--select`/`--exclude` now also scope `check`,
+  `lint`, `impact`, and `docs`.
+- `--diff git:<rev>`: compare against the project as committed on any
+  revision, materialized read-only via `git ls-tree`/`git cat-file` — no
+  checkout needed.
+- `dbtl check` gate policy is configurable: `--gate <id>=<severity>`
+  overrides a gate's severity, the `docs_drift` gate reads a generated-docs
+  directory via `--docs-dir`, and a gate missing its inputs reports `SKIP`.
+- `dbtl check`/`lint` report formats: one `dbtl.report/v1` document rendered
+  as `text`, `markdown`, `json`, `github` annotations, `sarif`,
+  `junit`, or `codeclimate`; `--report <FMT>:<PATH>` writes files,
+  `--step-summary` appends to `GITHUB_STEP_SUMMARY`, `--path-prefix`
+  rewrites paths for repository subdirectories.
+- Composite GitHub Action at the repository root (`uses: hytfjwr/dbtl`):
+  installs a release binary, runs `dbtl check` with annotations, a step
+  summary, optional SARIF upload and a sticky PR comment. A
+  `.pre-commit-hooks.yaml` ships `dbtl-lint` hooks.
+- `dbtl completions` (bash, zsh, fish, powershell, elvish) and a `dbtl man`
+  roff page; both ship pre-generated in the release archives.
+- Release artifacts for Windows (`x86_64-pc-windows-msvc.zip`) and musl
+  Linux (`x86_64`/`aarch64-unknown-linux-musl.tar.gz`), published with
+  `checksums.txt`, build-provenance attestations, and CycloneDX SBOMs.
+- Generated reference documentation under `docs/reference/` (CLI,
+  configuration, keybindings, lint rules) and JSON schemas under `schema/`.
+- `dbtl docs` pages can carry warehouse and run metadata:
+  `--catalog`/`--run-results` (or `docs.catalog`/`docs.run_results` in
+  `.dbtl.yml`) opt each page into warehouse type/rows/size bullets and
+  last-run/`unique_key`/`loader`/freshness lines.
 
 ## [0.5.3] - 2026-11-11
 
@@ -262,6 +308,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Package scope defaults to the root project.** Installed-package nodes no
   longer appear unless `--include-packages` is passed; `--project-only`
   became the deprecated alias for the new default.
+- **`--project-only` is deprecated.** It still parses for compatibility but
+  is a no-op — the default scope already is the root project — prints a
+  deprecation warning, and conflicts with `--include-packages`. Drop the
+  flag; add `--include-packages` only where the wider scope was wanted.
 
 ### Added
 
@@ -412,7 +462,10 @@ Maintenance release — dependency updates only.
 - Initial release: a terminal UI for dbt model lineage, from a compiled
   `target/manifest.json` or straight from project source.
 
-[Unreleased]: https://github.com/hytfjwr/dbtl/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/hytfjwr/dbtl/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/hytfjwr/dbtl/compare/v0.6.1...v0.6.2
+[0.6.1]: https://github.com/hytfjwr/dbtl/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/hytfjwr/dbtl/compare/v0.5.3...v0.6.0
 [0.5.3]: https://github.com/hytfjwr/dbtl/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/hytfjwr/dbtl/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/hytfjwr/dbtl/compare/v0.5.0...v0.5.1

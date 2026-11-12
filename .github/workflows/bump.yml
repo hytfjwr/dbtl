@@ -16,6 +16,10 @@ on:
       version:
         description: "Explicit version (overrides level, e.g. 0.2.0)"
         required: false
+      allow_empty:
+        description: "Cut the changelog section even when Unreleased is empty"
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -45,6 +49,13 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Read-only restore of the shared debug/test build — this manual job never saves.
+          shared-key: test
+          save-if: false
+
       - name: Bump version
         id: bump
         env:
@@ -71,6 +82,18 @@ jobs:
           echo "Bumped ${current} -> ${new}"
           echo "version=$new" >> "$GITHUB_OUTPUT"
 
+      # Moves the Unreleased entries into a dated version section and repoints
+      # the footer compare links. Fails here — before any branch is pushed —
+      # when Unreleased is empty, unless allow_empty was set.
+      - name: Cut changelog section
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+          ALLOW_EMPTY: ${{ inputs.allow_empty }}
+        run: |
+          extra=()
+          [ "$ALLOW_EMPTY" = "true" ] && extra+=(--allow-empty)
+          cargo xtask changelog-release --version "$VERSION" --date "$(date -u +%F)" "${extra[@]}"
+
       - name: Push branch and open PR
         env:
           VERSION: ${{ steps.bump.outputs.version }}
@@ -80,7 +103,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
-          git add Cargo.toml Cargo.lock
+          git add Cargo.toml Cargo.lock CHANGELOG.md
           git commit -m "chore: bump version to ${VERSION}"
           git push "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${branch}"
           gh pr create \
@@ -88,6 +111,6 @@ jobs:
             --base main \
             --head "$branch" \
             --title "release: v${VERSION}" \
-            --body "Bumps the version to ${VERSION}.
+            --body "Bumps the version to ${VERSION} and cuts the \`${VERSION}\` section in CHANGELOG.md.
 
           Merging this PR automatically tags \`v${VERSION}\`, builds the release binaries, publishes the GitHub release, and updates the Homebrew tap (see \`.github/workflows/release.yml\`)."

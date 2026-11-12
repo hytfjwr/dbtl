@@ -1,3 +1,4 @@
+mod changelog_cmd;
 mod gen_docs_cmd;
 mod perf_report_cmd;
 mod regen_sample_manifest;
@@ -27,6 +28,10 @@ enum Command {
     /// Regenerate the reference docs under docs/reference/ and the config
     /// JSON Schemas under schema/ (`--check` verifies without writing).
     GenDocs(gen_docs_cmd::Args),
+    /// Cut a `## [X.Y.Z] - <date>` section out of CHANGELOG's `Unreleased`
+    /// entries and repoint the footer compare links (the release workflow
+    /// runs this on the release PR).
+    ChangelogRelease(changelog_cmd::Args),
 }
 
 fn main() -> Result<()> {
@@ -35,5 +40,6 @@ fn main() -> Result<()> {
         Command::Synth(args) => synth_cmd::run(args),
         Command::PerfReport(args) => perf_report_cmd::run(args),
         Command::GenDocs(args) => gen_docs_cmd::run(args),
+        Command::ChangelogRelease(args) => changelog_cmd::run(args),
     }
 }
