@@ -237,6 +237,51 @@ fn model_fanout_flags_leaf_children_at_threshold() {
 }
 
 #[test]
+fn model_fanout_skips_leaves_only_packages_consume() {
+    // `fct_pkg` reads leaf-shaped after the Root prune, but an
+    // installed-package model consumes it — leaf-ness can't be
+    // established, so int_hub counts only fct_leaf and stays under the
+    // threshold. `int_two` feeds two proven leaves: the control flags.
+    let mut pkg = model("pkg_use", "dep/pkg_use.sql");
+    pkg.0 = "model.dep.pkg_use".into();
+    let mut m = manifest(
+        vec![
+            pkg,
+            model("int_hub", "intermediate/int_hub.sql"),
+            model("fct_leaf", "marts/fct_leaf.sql"),
+            model("fct_pkg", "marts/fct_pkg.sql"),
+            model("int_two", "intermediate/int_two.sql"),
+            model("fct_one", "marts/fct_one.sql"),
+            model("fct_two", "marts/fct_two.sql"),
+        ],
+        vec![],
+        &[
+            ("model.p.int_hub", "model.p.fct_leaf"),
+            ("model.p.int_hub", "model.p.fct_pkg"),
+            ("model.p.fct_pkg", "model.dep.pkg_use"),
+            ("model.p.int_two", "model.p.fct_one"),
+            ("model.p.int_two", "model.p.fct_two"),
+        ],
+    );
+    multi_package(&mut m);
+    let (dag, _) = crate::PackageScope::Root.apply_with_warnings(Dag::build(&m));
+    let cfg = config_from("lint:\n  model_fanout_threshold: 2\n");
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::ModelFanout),
+        vec!["model.p.int_two"],
+        "a pruned package consumer keeps fct_pkg from proving leaf-ness"
+    );
+    assert_eq!(
+        dag.pruned_adjacent("model.p.fct_pkg"),
+        Some(&crate::PrunedAdjacent {
+            parents: 0,
+            children: 1
+        })
+    );
+}
+
+#[test]
 fn root_models_flags_parentless_models_only() {
     let m = manifest(
         vec![
@@ -360,6 +405,53 @@ fn rejoining_upstream_flags_a_snapshot_relay() {
     let findings = findings_of(&m, &LintConfig::default());
     let hits = flagged(&findings, LintRule::RejoiningUpstream);
     assert_eq!(hits, vec!["snapshot.p.snap_b"]);
+}
+
+#[test]
+fn rejoining_upstream_skips_bs_with_pruned_package_children() {
+    // The A→B→C + A→C shape is complete, but B's other consumer lives in
+    // an installed package — after the Root prune B reads single-child,
+    // yet "otherwise unused" can't be established. `int_y` is the
+    // all-in-project control: it flags.
+    let mut pkg = model("pkg_use", "dep/pkg_use.sql");
+    pkg.0 = "model.dep.pkg_use".into();
+    let mut m = manifest(
+        vec![
+            pkg,
+            model("stg_a", "staging/stg_a.sql"),
+            model("int_b", "intermediate/int_b.sql"),
+            model("fct_c", "marts/fct_c.sql"),
+            model("stg_x", "staging/stg_x.sql"),
+            model("int_y", "intermediate/int_y.sql"),
+            model("fct_z", "marts/fct_z.sql"),
+        ],
+        vec![],
+        &[
+            ("model.p.stg_a", "model.p.int_b"),
+            ("model.p.int_b", "model.p.fct_c"),
+            ("model.p.stg_a", "model.p.fct_c"),
+            ("model.p.int_b", "model.dep.pkg_use"),
+            ("model.p.stg_x", "model.p.int_y"),
+            ("model.p.int_y", "model.p.fct_z"),
+            ("model.p.stg_x", "model.p.fct_z"),
+        ],
+    );
+    multi_package(&mut m);
+    let (dag, _) = crate::PackageScope::Root.apply_with_warnings(Dag::build(&m));
+    let cfg = cfg_only(&[LintRule::RejoiningUpstream]);
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::RejoiningUpstream),
+        vec!["model.p.int_y"],
+        "a severed package consumer means 'single use' can't be established"
+    );
+    assert_eq!(
+        dag.pruned_adjacent("model.p.int_b"),
+        Some(&crate::PrunedAdjacent {
+            parents: 0,
+            children: 1
+        })
+    );
 }
 
 #[test]
@@ -1988,6 +2080,60 @@ fn chained_views_reports_the_longest_chain_then_the_smallest_parent() {
             "model.p.v6".to_string(),
         ],
         "equal-length parents resolve to the smaller unique_id"
+    );
+}
+
+#[test]
+fn chained_views_skips_ends_only_packages_extend() {
+    // v1→…→v5 is a 5-view chain, but v5's only downstream is an
+    // installed-package model — after the Root prune v5 reads as a chain
+    // end, yet the pruned consumer's materialization is invisible, so the
+    // end can't be established. w1→…→w5 is the same chain all
+    // in-project: the control flags.
+    let mut pkg = mat_model("pkg_v", "view");
+    pkg.0 = "model.dep.pkg_v".into();
+    let mut m = manifest(
+        vec![
+            pkg,
+            mat_model("v1", "view"),
+            mat_model("v2", "view"),
+            mat_model("v3", "view"),
+            mat_model("v4", "view"),
+            mat_model("v5", "view"),
+            mat_model("w1", "view"),
+            mat_model("w2", "view"),
+            mat_model("w3", "view"),
+            mat_model("w4", "view"),
+            mat_model("w5", "view"),
+        ],
+        vec![],
+        &[
+            ("model.p.v1", "model.p.v2"),
+            ("model.p.v2", "model.p.v3"),
+            ("model.p.v3", "model.p.v4"),
+            ("model.p.v4", "model.p.v5"),
+            ("model.p.v5", "model.dep.pkg_v"),
+            ("model.p.w1", "model.p.w2"),
+            ("model.p.w2", "model.p.w3"),
+            ("model.p.w3", "model.p.w4"),
+            ("model.p.w4", "model.p.w5"),
+        ],
+    );
+    multi_package(&mut m);
+    let (dag, _) = crate::PackageScope::Root.apply_with_warnings(Dag::build(&m));
+    let cfg = cfg_only(&[LintRule::ChainedViews]);
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::ChainedViews),
+        vec!["model.p.w5"],
+        "a pruned package child could continue the chain — the end is unprovable"
+    );
+    assert_eq!(
+        dag.pruned_adjacent("model.p.v5"),
+        Some(&crate::PrunedAdjacent {
+            parents: 0,
+            children: 1
+        })
     );
 }
 

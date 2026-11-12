@@ -177,7 +177,9 @@ pub(super) fn source_fanout(
 
 /// `model_fanout`: a model directly feeds >= `model_fanout_threshold` leaf
 /// models (models with no children of their own — the same `direct_down == 0`
-/// leaf notion the orphan worklist uses).
+/// leaf notion the orphan worklist uses, PLUS no package-severed children:
+/// a child only an installed package reads can't prove leaf-ness — the
+/// [`PrunedAdjacent`](crate::PrunedAdjacent) record — so it never counts).
 pub(super) fn model_fanout(
     dag: &Dag,
     uids: &[&String],
@@ -197,8 +199,11 @@ pub(super) fn model_fanout(
             .direct_children(uid)
             .iter()
             .filter(|c| {
-                dag.get(c)
-                    .is_some_and(|n| n.resource_type == "model" && n.direct_down == 0)
+                dag.get(c).is_some_and(|n| {
+                    n.resource_type == "model"
+                        && n.direct_down == 0
+                        && dag.pruned_adjacent(c).is_none_or(|a| a.children == 0)
+                })
             })
             .cloned()
             .collect();
@@ -262,7 +267,11 @@ pub(super) fn root_models(
 /// data-node parent A of B also feeds C directly (A→B→C plus A→C — B is a
 /// redundant hop). "Single use" counts data-carrying children only: the
 /// child count ignores endpoint resources, and A/C aren't model-only (a
-/// source→B→C + source→C or a snapshot relay rejoin counts too).
+/// source→B→C + source→C or a snapshot relay rejoin counts too). A B whose
+/// package-side children a `PackageScope::Root` prune severed (the
+/// [`PrunedAdjacent`](crate::PrunedAdjacent) record) can never ESTABLISH
+/// single use — the missing consumer's resource type is invisible — so it
+/// never flags.
 ///
 /// One finding per B — `related` is the sorted set `{C} ∪ {A₁, A₂, …}` and
 /// `message` names the offenders, so a B bypassed by several parents shows
@@ -280,7 +289,11 @@ pub(super) fn rejoining_upstream(
             continue;
         }
         // "Otherwise unused": exactly ONE data-node child. Endpoint resources
-        // (an exposure reading B, say) don't count as a second use.
+        // (an exposure reading B, say) don't count as a second use — but a
+        // pruned package child might, so its presence ends the check here.
+        if dag.pruned_adjacent(uid).is_some_and(|a| a.children > 0) {
+            continue;
+        }
         let mut children = dag.direct_children(uid).iter().filter(|c| {
             dag.get(c)
                 .is_some_and(|c| is_data_resource(&c.resource_type))

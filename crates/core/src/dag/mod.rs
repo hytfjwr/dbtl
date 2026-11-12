@@ -174,10 +174,13 @@ impl PackageScope {
                     // because they live in an installed package. `filtered`
                     // drops those neighbours — without this map, rules that
                     // judge connectedness (`root_models`, `unused_sources`)
-                    // would read a package-trimmed node as isolated. Counted
-                    // here (inside the scope decision) only: a plain
-                    // `filtered` — `docs --select` narrowing — is a
-                    // presentation cut, not a package boundary.
+                    // would read a package-trimmed node as isolated, and
+                    // degree-judging rules (`rejoining_upstream`,
+                    // `model_fanout`, `chained_views`) would read a severed
+                    // child as absent. Counted here (inside the scope
+                    // decision) only: a plain `filtered` — `docs --select`
+                    // narrowing — is a presentation cut, not a package
+                    // boundary.
                     let mut severed: HashMap<String, PrunedAdjacent> = HashMap::new();
                     for (uid, n) in dag.nodes() {
                         if !keep(n) {
@@ -344,7 +347,9 @@ pub struct ExposureInfo {
 /// consistency contract stay untouched — and source mode never fills it
 /// (it never parsed the packages). `root_models`/`unused_sources` read it
 /// so a node whose only neighbours were package-side isn't reported as
-/// isolated.
+/// isolated, and `rejoining_upstream`/`model_fanout`/`chained_views` read
+/// it so a severed child keeps a degree premise unproven — a finding that
+/// needs a complete child count never fires.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PrunedAdjacent {
     /// Direct parents the scope prune removed.

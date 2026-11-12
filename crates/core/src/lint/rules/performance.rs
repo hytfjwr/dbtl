@@ -9,7 +9,10 @@ use super::*;
 /// `1 + max(chain length over its view/ephemeral model parents)` — `1` when
 /// it has none, `0` when N itself isn't view/ephemeral. A finding lands only
 /// on a chain END: a node at/above the threshold with no view/ephemeral
-/// model child. `related` is the full longest chain upstream→downstream (the
+/// model child — and no package-severed child at all (the
+/// [`PrunedAdjacent`](crate::PrunedAdjacent) record: a pruned consumer's
+/// materialization is invisible, so the END can't be established).
+/// `related` is the full longest chain upstream→downstream (the
 /// flagged node last — it IS one of the chained views); several equal parents
 /// resolve to the smallest `unique_id`. The memoized DFS walks the whole
 /// graph once (O(nodes + edges)).
@@ -61,11 +64,13 @@ pub(super) fn chained_views(
         if len < threshold || !in_scope(n) {
             continue;
         }
-        // Chain ENDS only — a view/ephemeral child means the chain runs on.
+        // Chain ENDS only — a view/ephemeral child means the chain runs on,
+        // and a pruned package child means the end can't be confirmed.
         if dag
             .direct_children(uid)
             .iter()
             .any(|c| dag.get(c).is_some_and(is_view_or_ephemeral))
+            || dag.pruned_adjacent(uid).is_some_and(|a| a.children > 0)
         {
             continue;
         }
