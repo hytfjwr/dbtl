@@ -4,8 +4,67 @@ import { url } from "../lib/site.ts";
 ---
 
 <Base title="Page not found - dbtl" description="This page does not exist.">
-  <div class="wrap page">
-    <h1>Page not found</h1>
-    <p>There is no page at this address. Start from the <a href={url("docs/")}>documentation</a>.</p>
+  <div class="wrap nf vt-page">
+    <p class="nf-code">exit 3</p>
+    <h1>No page at this path.</h1>
+    <p class="lead">Nothing matches <code id="nf-path">this address</code>. The page may have moved, or the link has a typo.</p>
+    <figure class="pane code term">
+      <figcaption class="pane-title">terminal</figcaption>
+      <pre><span class="p">$</span> dbtl ls <span class="s" id="nf-cmd">'path:missing'</span>
+<span class="fail">error:</span> <span class="o">no page matches this path · exit 3</span></pre>
+      <div class="scroll">
+        <div class="lin-host" id="nf-lin" role="img" aria-label="A lineage with one edge that leads to a missing node."></div>
+      </div>
+    </figure>
+    <div class="cta">
+      <a class="btn primary" href={url()}>Go home</a>
+      <a class="btn" href={url("docs/")}>Open the docs</a>
+      <button class="btn" type="button" data-search-open>Search <kbd>/</kbd></button>
+    </div>
   </div>
 </Base>
+
+<script>
+  // Fill in the address that was asked for and draw the two-node diagram: the address, and the node it was looking for.
+  import { reveal } from "../scripts/motion.ts";
+
+  const base = import.meta.env.BASE_URL.replace(/\/?$/, "/");
+  const rest = decodeURIComponent(location.pathname.startsWith(base) ? location.pathname.slice(base.length) : location.pathname.replace(/^\//, ""));
+  const shown = `~/${rest}`;
+  const text = (id: string, value: string) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  };
+  text("nf-path", shown);
+  text("nf-cmd", `'path:${rest || "404"}'`);
+  text("chip-path", shown);
+
+  const escape = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+  /** A box in dbtl's layout: the tag in the top border, the name in the middle row. */
+  function box(tag: string, name: string, kind: string) {
+    const inner = Math.max(name.length + 2, tag.length + 1);
+    const k = (s: string) => `<span class="k-${kind}">${escape(s)}</span>`;
+    return {
+      width: inner + 2,
+      top: k(`╭${tag}${"─".repeat(inner - tag.length)}╮`),
+      mid: `${k("│")} <span class="nm">${escape(name)}</span>${" ".repeat(inner - name.length - 2)} ${k("│")}`,
+      bottom: k(`╰${"─".repeat(inner)}╯`),
+    };
+  }
+
+  const host = document.getElementById("nf-lin");
+  if (host) {
+    const from = box("Page", shown.slice(0, 30), "page");
+    const to = box("Missing", "not found", "missing");
+    const gap = "   ";
+    const rows = [
+      from.top + gap + to.top,
+      `${from.mid}──▶${to.mid}`,
+      from.bottom + gap + to.bottom,
+    ];
+    host.innerHTML = `<div class="lin-stage"><pre class="lin">${rows.join("\n")}</pre></div>`;
+    const stage = host.firstElementChild as HTMLElement;
+    reveal(stage, { colX: [0, from.width + 3], colW: [from.width, to.width] }, { speed: 0.6 });
+  }
+</script>

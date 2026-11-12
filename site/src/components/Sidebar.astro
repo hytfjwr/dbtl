@@ -9,8 +9,12 @@ interface Props {
 const { nav, current } = Astro.props;
 ---
 
-<nav class="sidebar" aria-label="Documentation">
-  <p class="ver"><span>dbtl docs</span> <span class="badge">v{VERSION}</span></p>
+<nav class="sidebar" id="sidebar" aria-label="Documentation">
+  <div class="ver">
+    <span>dbtl docs</span>
+    <span class="badge">v{VERSION}</span>
+    <button type="button" class="copy sidebar-close" id="close-drawer" data-nocopy>close</button>
+  </div>
   {
     nav.groups.map((g) => (
       <>
@@ -18,7 +22,7 @@ const { nav, current } = Astro.props;
         <ul>
           {g.pages.map((p) => (
             <li>
-              <a href={url(`${p.slug}/`)} aria-current={p.slug === current ? "page" : undefined}>
+              <a href={url(`${p.slug}/`)} aria-current={p.slug === current ? "page" : undefined} title={p.title}>
                 {p.title}
               </a>
             </li>

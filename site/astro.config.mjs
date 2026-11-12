@@ -7,6 +7,7 @@ import {
   remarkAlerts,
   remarkComments,
   remarkLinks,
+  remarkLiteralTags,
   remarkReferencePage,
 } from "./src/lib/markdown/index.ts";
 
@@ -46,6 +47,7 @@ export default defineConfig({
       smartypants: false,
       remarkPlugins: [
         remarkComments,
+        remarkLiteralTags,
         [remarkReferencePage, { referenceRoot: linkOptions.referenceRoot }],
         remarkAlerts,
         [remarkLinks, linkOptions],

@@ -7,7 +7,7 @@ export function referenceTitle(body: string): string {
       return line.slice(2).replace(/`/g, "").trim();
     }
   }
-  throw new Error("Reference page has no H1 title");
+  throw new Error("Reference page has no level-1 heading");
 }
 
 /** The first prose paragraph after the title, as plain text, for the meta description. */

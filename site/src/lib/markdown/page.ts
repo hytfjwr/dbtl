@@ -17,8 +17,8 @@ export function remarkComments() {
 }
 
 /**
- * Generated reference pages start with an H1 that the page layout already
- * renders as the title, so the first H1 is removed from the body.
+ * Generated reference pages start with a level-1 heading that the layout already
+ * renders as the title, so that heading is removed from the body.
  */
 export function remarkReferencePage(options: { referenceRoot: string }) {
   return (tree: Root, file: VFile) => {

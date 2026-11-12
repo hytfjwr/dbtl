@@ -1,0 +1,21 @@
+---
+import { REPO_URL } from "../../lib/site.ts";
+import { docsHref, firstDocsSlug } from "./links.ts";
+
+const install = "brew install hytfjwr/tap/dbtl";
+---
+
+<div class="hero">
+  <h1>dbt lineage, drawn in your <em>terminal</em>.<span class="caret" aria-hidden="true"></span></h1>
+  <p class="lead">
+    dbtl reads <code>target/manifest.json</code> or the project source and draws the dependency graph as text. Pick a model and see what it depends on and what it affects. No <code>dbt compile</code>, no browser.
+  </p>
+  <div class="cta">
+    <div class="install">
+      <span class="p" aria-hidden="true">$</span><span class="cmd">{install}</span><button class="copy" type="button" data-copy={install}>copy</button>
+    </div>
+    <a class="btn primary" href={docsHref(firstDocsSlug)}>Get started</a>
+    <a class="btn" href={REPO_URL}>GitHub</a>
+  </div>
+  <slot />
+</div>

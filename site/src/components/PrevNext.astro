@@ -15,13 +15,13 @@ const { prev, next } = Astro.props;
       {prev && (
         <a class="pane prev" href={url(`${prev.slug}/`)} rel="prev">
           <span class="pane-title">previous</span>
-          {prev.title}
+          {"◂"} {prev.title}
         </a>
       )}
       {next && (
         <a class="pane next" href={url(`${next.slug}/`)} rel="next">
           <span class="pane-title">next</span>
-          {next.title}
+          {next.title} {"▸"}
         </a>
       )}
     </nav>

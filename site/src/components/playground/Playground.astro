@@ -1,0 +1,107 @@
+---
+// The playground in its first state. The page works without script as a static result for the
+// starting selector; playground.ts makes the input, the chips and the tabs live.
+import graph from "../../data/graph.json";
+import lintJaffle from "../../data/lint-jaffle_finance.json";
+import lintSample from "../../data/lint-sample.json";
+import { esc } from "../../scripts/html.ts";
+import { layout, stageHtml } from "../../scripts/lineage.ts";
+import {
+  command,
+  drawn,
+  EXAMPLES,
+  lineageNote,
+  lineageStyle,
+  lintHtml,
+  matchedHtml,
+  matchedTitle,
+  PROJECTS,
+  run,
+} from "../../scripts/playground-view.ts";
+import { toProject, type LintData, type RawSample } from "../../scripts/samples.ts";
+
+const lintByProject: Record<string, LintData> = {
+  sample: lintSample as LintData,
+  jaffle_finance: lintJaffle as LintData,
+};
+
+const name = PROJECTS[0]!;
+const project = toProject((graph as Record<string, RawSample>)[name]!);
+const lint = lintByProject[name]!;
+const spec = EXAMPLES[name]![0]!;
+const outcome = run(project, spec);
+const note = lineageNote(project, outcome, spec);
+const L = layout(drawn(project, outcome.hit));
+const lineage = note === null ? stageHtml(L, lineageStyle(outcome.hit, null)(L)) : "";
+const linted = lintHtml(lint, outcome.hit, outcome, spec);
+---
+
+<div class="pane pg-ctl" data-pagefind-ignore>
+  <p class="pane-title">input</p>
+  <div class="pg-row">
+    <span class="lab">project</span>
+    <div class="seg" id="pg-proj" role="group" aria-label="Sample project">
+      {PROJECTS.map((k) => <button type="button" data-p={k} aria-pressed={String(k === name)}>{k}</button>)}
+    </div>
+  </div>
+  <div class="pg-row">
+    <span class="lab">selector</span>
+    <label class="prompt" for="pg-sel">
+      <span class="pre" aria-hidden="true">$ dbtl ls '</span>
+      <input
+        id="pg-sel"
+        type="text"
+        size="12"
+        value={spec}
+        style={`width:${Math.max(1, spec.length)}ch`}
+        spellcheck="false"
+        autocomplete="off"
+        autocapitalize="off"
+        aria-label="dbt selector"
+        aria-describedby="pg-err"
+      />
+      <span class="pre" aria-hidden="true">'</span>
+    </label>
+  </div>
+  <div class="pg-row">
+    <span class="lab">try</span>
+    <div class="seg" id="pg-eg">
+      {EXAMPLES[name]!.map((e) => <button type="button" aria-pressed={String(e === spec)}>{e}</button>)}
+    </div>
+  </div>
+  <p class="pg-err" id="pg-err" role="status">{outcome.error}</p>
+</div>
+
+<div class="pg-tabs" role="tablist" aria-label="Output" data-pagefind-ignore>
+  <button role="tab" type="button" id="pt-lin" aria-controls="pp-lin" aria-selected="true">Lineage<span class="cnt" id="pc-lin">{outcome.hit.size}</span></button>
+  <button role="tab" type="button" id="pt-lint" aria-controls="pp-lint" aria-selected="false" tabindex="-1">Lint findings<span class="cnt" id="pc-lint">{linted.count}</span></button>
+</div>
+
+<div role="tabpanel" id="pp-lin" aria-labelledby="pt-lin" data-pagefind-ignore>
+  <div class="pg-out">
+    <div class="pane pg-match">
+      <p class="pane-title" id="pg-match-title" set:html={matchedTitle(project, outcome)} />
+      <ol id="pg-match" set:html={matchedHtml(project, outcome, spec, null)} />
+    </div>
+    <div class="pane pg-lin">
+      <p class="pane-title" id="pg-lin-title" set:html={`lineage: <b>${esc(project.name)}</b>`} />
+      <div class="lin-scroll" tabindex="0" aria-label="Lineage with matched nodes highlighted">
+        <div class="lin-host" id="pg-lin">
+          <Fragment set:html={lineage} />
+          {note !== null && <p class="pg-note">{note}</p>}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div role="tabpanel" id="pp-lint" aria-labelledby="pt-lint" hidden data-pagefind-ignore>
+  <div class="pane pg-lint"><p class="pane-title">dbtl lint</p><div id="pg-lint" set:html={linted.html} /></div>
+</div>
+
+<div class="pg-cmd" data-pagefind-ignore>
+  <span>run it locally</span><code id="pg-cmd">{command(spec)}</code><button class="copy" type="button" data-copy-from="#pg-cmd">copy</button>
+</div>
+
+<script>
+  import "../../scripts/playground.ts";
+</script>

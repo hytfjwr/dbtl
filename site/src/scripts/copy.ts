@@ -1,16 +1,19 @@
-// Copy buttons on code blocks: <figure class="code"><button class="copy">…</button><pre>…</pre></figure>
+// Copy buttons. The text comes from, in order: `data-copy`, the element named by
+// `data-copy-from`, or the <pre> next to the button.
+import { pulse } from "./motion.ts";
 
 function fallbackCopy(text: string): void {
-  const area = document.createElement("textarea");
-  area.value = text;
-  area.style.position = "fixed";
-  area.style.opacity = "0";
-  document.body.appendChild(area);
-  area.select();
   try {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
     document.execCommand("copy");
-  } finally {
     area.remove();
+  } catch {
+    // nothing else to try
   }
 }
 
@@ -22,18 +25,33 @@ async function copyText(text: string): Promise<void> {
   }
 }
 
+/** A terminal transcript copies as its commands only: lines that start with `$ `, minus the prompt. */
+function textOf(pre: Element): string {
+  const text = pre.textContent ?? "";
+  const commands = text.split("\n").filter((line) => line.startsWith("$ "));
+  return commands.length > 0 ? commands.map((line) => line.slice(2)).join("\n") : text;
+}
+
+function sourceOf(button: HTMLElement): string {
+  const inline = button.getAttribute("data-copy");
+  if (inline !== null) return inline;
+  const selector = button.getAttribute("data-copy-from");
+  const el = selector ? document.querySelector(selector) : button.parentElement?.querySelector("pre");
+  if (!el) return "";
+  return el.tagName === "PRE" ? textOf(el) : (el.textContent ?? "");
+}
+
 document.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof Element)) return;
   const button = target.closest<HTMLButtonElement>("button.copy");
-  const pre = button?.parentElement?.querySelector("pre");
-  if (!button || !pre) return;
-  void copyText(pre.textContent ?? "").then(() => {
-    button.dataset.state = "done";
-    button.textContent = "copied";
-    setTimeout(() => {
-      delete button.dataset.state;
-      button.textContent = "copy";
-    }, 1400);
-  });
+  if (!button || button.hasAttribute("data-nocopy")) return;
+  void copyText(sourceOf(button));
+  button.classList.add("done");
+  button.textContent = "copied";
+  pulse(button.closest(".pane, .install"), "flash", 700);
+  setTimeout(() => {
+    button.classList.remove("done");
+    button.textContent = "copy";
+  }, 1400);
 });

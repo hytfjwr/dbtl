@@ -11,7 +11,7 @@ const docs = defineCollection({
   }),
 });
 
-// Pages generated from the source; no frontmatter, the title is the first H1.
+// Pages generated from the source; no frontmatter, the title is the first level-1 heading.
 const reference = defineCollection({
   loader: glob({ base: "../docs/reference", pattern: "*.md" }),
 });
