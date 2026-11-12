@@ -27,7 +27,7 @@
 // so `scan_expr` walks every expression shape `expr_refs` walks, matching
 // that exhaustive structure one-for-one.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use sqlparser::ast::{
     AccessExpr, Distinct, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArgumentClause,
@@ -50,6 +50,10 @@ use super::jinja::JINJA_MARK_PREFIX;
 /// same walk, one AST span per fact occurrence, in source order. Column
 /// refs collect only under [`scan_statements_positions`] — every
 /// identifier qualifies, so the facts scan doesn't pay for them.
+///
+/// `cte_defs`/`cte_uses` are the `unused_cte` bookkeeping: every `WITH`
+/// entry the walk declares (index = id) plus the ids a FROM-visible
+/// single-part name resolved to — the complement is the unread set.
 #[derive(Debug, Default)]
 pub(super) struct RelationScan {
     /// Hand-written relation names (`sch.t` dotted), sorted.
@@ -67,8 +71,19 @@ pub(super) struct RelationScan {
     /// order — `Identifier` and `CompoundIdentifier` tails, the pool
     /// `unknown_column_reference` matches names against.
     pub column_refs: Vec<(String, Span)>,
+    /// `(normalized alias name, alias-name span)` of every `WITH` CTE the
+    /// walk declares, in traversal order — an entry's index is its id.
+    pub cte_defs: Vec<(String, Span)>,
+    /// Ids (indices into `cte_defs`) a relation reference resolved to —
+    /// a CTE never named by a FROM position is unread.
+    pub cte_uses: BTreeSet<usize>,
     /// Whether `column_refs` fills — set by the positions scan only.
     collect_column_refs: bool,
+    /// The CTE name→id frames visible at the current walk point, one per
+    /// enclosing query's `WITH` — `find_map` from the innermost frame
+    /// out resolves a reference to the CTE it binds. Traversal state,
+    /// not output: `scan_query` pushes/pops around each query level.
+    cte_frames: Vec<BTreeMap<String, usize>>,
 }
 
 /// Scan every statement `stmts` parsed into — models are single statements,
@@ -108,14 +123,26 @@ fn scan_query(q: &Query, ctes: &BTreeSet<String>, out: &mut RelationScan) {
     // Insert BEFORE scanning the body, then the name stays visible for the
     // rest of the WITH list and the body below.
     let mut scope = ctes.clone();
+    // The name→id frame this query's WITH adds, filled one entry per CTE
+    // as the walk reaches it so a later sibling resolves earlier ones.
+    // Pushed around the body scan only — CTE bodies get a frame holding
+    // just the earlier siblings, so a CTE referencing its own name finds
+    // nothing (a recursive self-read isn't a use).
+    let mut with_frame: BTreeMap<String, usize> = BTreeMap::new();
     if let Some(with) = &q.with {
         for cte in &with.cte_tables {
             let name = norm_ident(&cte.alias.name);
-            scope.insert(name);
+            let id = out.cte_defs.len();
+            out.cte_defs.push((name.clone(), cte.alias.name.span));
+            scope.insert(name.clone());
             let body_scope = scope.clone();
+            out.cte_frames.push(with_frame.clone());
             scan_query(&cte.query, &body_scope, out);
+            out.cte_frames.pop();
+            with_frame.insert(name, id);
         }
     }
+    out.cte_frames.push(with_frame);
     scan_set_expr(&q.body, &scope, out);
     if let Some(ob) = &q.order_by {
         if let OrderByKind::Expressions(exprs) = &ob.kind {
@@ -158,6 +185,7 @@ fn scan_query(q: &Query, ctes: &BTreeSet<String>, out: &mut RelationScan) {
     for po in &q.pipe_operators {
         scan_pipe(po, &scope, out);
     }
+    out.cte_frames.pop();
 }
 
 fn scan_set_expr(e: &SetExpr, scope: &BTreeSet<String>, out: &mut RelationScan) {
@@ -893,6 +921,19 @@ fn scan_function_arg(a: &FunctionArg, scope: &BTreeSet<String>, out: &mut Relati
 /// alike). `span` is the recorded name's own AST span, kept in
 /// `hard_coded_spans` per occurrence.
 fn record_name(span: Span, parts: &[String], scope: &BTreeSet<String>, out: &mut RelationScan) {
+    // A single-part name resolves against the visible CTE frames
+    // innermost-first — a hit counts as that CTE's read (`unused_cte`),
+    // independent of whether the same name is also a written relation.
+    if let [name] = parts {
+        if let Some(id) = out
+            .cte_frames
+            .iter()
+            .rev()
+            .find_map(|f| f.get(name.as_str()))
+        {
+            out.cte_uses.insert(*id);
+        }
+    }
     if parts.is_empty()
         || parts.iter().any(|p| p.starts_with(JINJA_MARK_PREFIX))
         || (parts.len() == 1 && scope.contains(parts[0].as_str()))

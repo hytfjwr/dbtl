@@ -331,6 +331,31 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 catalog.expect("gated"),
                 &mut out,
             ),
+            LintRule::TrailingSemicolon => sql::trailing_semicolon(dag, &uids, &in_scope, &mut out),
+            LintRule::DuplicateOutputColumns => sql::duplicate_output_columns(
+                dag,
+                &uids,
+                &in_scope,
+                sql.expect("gated"),
+                &mut unparsed,
+                &mut out,
+            ),
+            LintRule::UnusedCte => sql::unused_cte(
+                dag,
+                &uids,
+                &in_scope,
+                sql.expect("gated"),
+                &mut unparsed,
+                &mut out,
+            ),
+            LintRule::OrderByWithoutLimit => sql::order_by_without_limit(
+                dag,
+                &uids,
+                &in_scope,
+                sql.expect("gated"),
+                &mut unparsed,
+                &mut out,
+            ),
         }
     }
     // The envelope fields are filled in ONE place — the severity the config

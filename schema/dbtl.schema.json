@@ -1522,6 +1522,154 @@
                   }
                 }
               ]
+            },
+            "trailing_semicolon": {
+              "description": "a model's SQL ends with a semicolon",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "duplicate_output_columns": {
+              "description": "a model's final SELECT emits the same output column name twice",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "unused_cte": {
+              "description": "a CTE is defined but never read",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "order_by_without_limit": {
+              "description": "a model's final query has ORDER BY without LIMIT",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
             }
           }
         }

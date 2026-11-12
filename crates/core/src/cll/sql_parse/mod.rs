@@ -77,6 +77,7 @@ mod ast;
 mod bind;
 mod dialect;
 mod expr;
+mod facts;
 mod jinja;
 mod positions;
 mod query;
@@ -87,6 +88,8 @@ mod tests;
 
 use ast::*;
 pub use dialect::SqlDialect;
+use facts::outer_order_by_span;
+pub(crate) use jinja::trailing_semicolon;
 use jinja::*;
 use positions::{marked_relations, plain_positions};
 pub use positions::{MarkedRelations, SqlPositions};
@@ -132,6 +135,22 @@ pub struct SqlFacts {
     /// sorted — `unknown_column_reference` filters these further by
     /// [`SqlParseResolver::trusted_parent_columns`].
     pub unresolved: Vec<(String, String)>,
+    /// `(normalized name, occurrence count)` of every output column name
+    /// the output-defining SELECT emits more than once, first-occurrence
+    /// order — `duplicate_output_columns`. The positions pass pairs a
+    /// judged name only when the raw render counted it exactly once or
+    /// the same number of times — the shared name/count key.
+    pub duplicate_outputs: Vec<(String, usize)>,
+    /// Normalized names of `WITH` CTEs no FROM-visible reference reads,
+    /// traversal order — `unused_cte`. A name can repeat (nested queries
+    /// each declare one); the positions pass pairs a judged name only
+    /// when the raw render's unread declarations counted it exactly once
+    /// or the same number of times.
+    pub unused_ctes: Vec<String>,
+    /// The final query's `ORDER BY` has no `LIMIT`/`FETCH`/`TOP` bound —
+    /// `order_by_without_limit`. Positions underlines the ORDER BY
+    /// expressions when the raw render's own outer ORDER BY exists.
+    pub unlimited_order_by: bool,
 }
 
 /// The parser-backed resolver: parses each model's SQL (compiled first, raw as
@@ -249,6 +268,9 @@ impl SqlParseResolver {
                 cartesian: an.cartesian.clone(),
                 cartesian_count: an.cartesian_count,
                 unresolved: an.unresolved.iter().cloned().collect(),
+                duplicate_outputs: an.duplicate_outputs.clone(),
+                unused_ctes: an.unused_ctes.clone(),
+                unlimited_order_by: an.unlimited_order_by,
             })
         });
         self.facts_memo
@@ -509,6 +531,26 @@ impl SqlParseResolver {
             let (res, scope) = self.resolve_query_full(&ctx, env, query)?;
             let scan = scan_statements(&stmts);
             let wildcards = query_wildcard_items(query);
+            // The resolved output list IS the output-name truth: `*`/`t.*`
+            // already expanded where bindings know their columns (an
+            // unexpandable wildcard contributes nothing, so only the
+            // explicit names compare — the documented "can't establish"
+            // direction). Synthetic `__colN` placeholders aren't written
+            // names and can't collide.
+            let mut dup_order: Vec<String> = Vec::new();
+            let mut dup_counts: Vec<usize> = Vec::new();
+            for o in &res.out {
+                if o.synthetic {
+                    continue;
+                }
+                match dup_order.iter().position(|n| *n == o.name) {
+                    Some(i) => dup_counts[i] += 1,
+                    None => {
+                        dup_order.push(o.name.clone());
+                        dup_counts.push(1);
+                    }
+                }
+            }
             Some(Rc::new(Analyzed {
                 scope,
                 out: res.out,
@@ -518,6 +560,19 @@ impl SqlParseResolver {
                 cartesian: scan.cartesian.iter().cloned().collect(),
                 cartesian_count: scan.cartesian_spans.len(),
                 unresolved: ctx.unresolved.into_inner(),
+                duplicate_outputs: dup_order
+                    .into_iter()
+                    .zip(dup_counts)
+                    .filter(|(_, c)| *c > 1)
+                    .collect(),
+                unused_ctes: scan
+                    .cte_defs
+                    .iter()
+                    .enumerate()
+                    .filter(|(id, _)| !scan.cte_uses.contains(id))
+                    .map(|(_, (name, _))| name.clone())
+                    .collect(),
+                unlimited_order_by: outer_order_by_span(query).is_some(),
             }))
         })();
         self.analyzing.borrow_mut().remove(node);

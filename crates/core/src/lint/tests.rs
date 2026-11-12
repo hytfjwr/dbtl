@@ -850,7 +850,7 @@ fn registry_rows_match_all_one_for_one_in_order() {
 
 #[test]
 fn registry_rows_carry_the_fixed_metadata() {
-    // The 36 ids are a fixed contract — config keys, --rules args and the
+    // The 40 ids are a fixed contract — config keys, --rules args and the
     // baseline format all rely on them. The original structure rules lead;
     // rules added later append in the registry's order so the emitted
     // sequence stays stable.
@@ -894,6 +894,10 @@ fn registry_rows_carry_the_fixed_metadata() {
             "unused_models",
             "references_deprecated_model",
             "undeclared_warehouse_columns",
+            "trailing_semicolon",
+            "duplicate_output_columns",
+            "unused_cte",
+            "order_by_without_limit",
         ]
     );
     // Only rules that represent a broken guarantee or a build failure
@@ -903,15 +907,21 @@ fn registry_rows_carry_the_fixed_metadata() {
         "missing_primary_key_tests",
         "public_models_without_contract",
         "unknown_column_reference",
+        "trailing_semicolon",
+        "duplicate_output_columns",
     ];
     // `requires` is a fixed contract too — only the SQL-scanning and
-    // catalog-reading rules ask for more than the graph.
+    // catalog-reading rules ask for more than the graph (`trailing_semicolon`
+    // reads `raw_code`, which the graph already carries).
     let sql_rules = [
         "select_star",
         "hard_coded_references",
         "cartesian_join",
         "unknown_column_reference",
         "forbidden_patterns",
+        "duplicate_output_columns",
+        "unused_cte",
+        "order_by_without_limit",
     ];
     let catalog_rules = [
         "warehouse_type_drift",
@@ -5279,6 +5289,650 @@ fn sql_positions_are_identical_across_runs() {
     );
 }
 
+// ---- trailing_semicolon -------------------------------------------------------
+
+#[test]
+fn trailing_semicolon_flags_the_effective_tail_only() {
+    let m = manifest(
+        vec![
+            model_sql("bare", "select 1;"),
+            model_sql("ws", "select 1;  \n\t"),
+            model_sql("line_comment", "select 1; -- done"),
+            model_sql("block_comment", "select 1; /* tail */"),
+            model_sql("jinja_tag", "select 1;{% endif %}"),
+            model_sql("jinja_comment", "select 1;\n{# note #}"),
+            model_sql("config", "{{ config(materialized='view') }}\nselect 1;"),
+            model_sql("after_tag", "select {{ ref('x') }};"),
+            model_sql("clean", "select 1"),
+            model_sql("semi_in_comment", "select 1 -- ;"),
+            model_sql("semi_in_literal", "select ';'"),
+            model_sql("semi_in_block", "select 1 /* ; */"),
+            // A `;` before a `{{ }}` that renders text is mid-file, not a
+            // tail.
+            model_sql("mid_file", "select 1; {{ more_sql() }}"),
+            model_sql("stray_endif", "select 1 {% endif %}"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    // No resolver: a graph-only rule still runs (Requires::Graph).
+    let cfg = cfg_only(&[LintRule::TrailingSemicolon]);
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::TrailingSemicolon),
+        vec![
+            "model.p.after_tag",
+            "model.p.bare",
+            "model.p.block_comment",
+            "model.p.config",
+            "model.p.jinja_comment",
+            "model.p.jinja_tag",
+            "model.p.line_comment",
+            "model.p.ws",
+        ],
+        "only an effective-tail `;` flags — comments, literals and mid-file don't count"
+    );
+    assert!(
+        out.unparsed.is_empty() && out.skipped.is_empty(),
+        "a raw-text rule never parses and needs no resolver"
+    );
+}
+
+#[test]
+fn trailing_semicolon_flags_unparsable_sql_without_counting_unparsed() {
+    // The rule never parses — a broken model that still ends in `;` flags
+    // like any other, and no rule asked for a parse so `unparsed` stays
+    // empty.
+    let m = manifest(vec![model_sql("bad", "select from where or;")], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::TrailingSemicolon]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::TrailingSemicolon),
+        vec!["model.p.bad"]
+    );
+    assert!(
+        out.unparsed.is_empty(),
+        "a raw-text rule contributes no unparsed entry"
+    );
+    assert_eq!(res.analyzed_count(), 0, "no parse ever happened");
+}
+
+#[test]
+fn trailing_semicolon_never_judges_python() {
+    // Both axes: a `language: python` model's raw isn't SQL, and a `.py`
+    // `original_file_path` can't carry SQL either (source-mode Python
+    // models are the same shape).
+    let lang = model_lang("lang_py", "python", "def model(dbt, session):\n    x = 1;");
+    let mut file = model_sql_pos("file_py", "x = 1;");
+    file.1.original_file_path = Some("models/file_py.py".into());
+    let m = manifest(vec![lang, file, model_sql("sql", "select 1;")], vec![], &[]);
+    let dag = Dag::build(&m);
+    let cfg = cfg_only(&[LintRule::TrailingSemicolon]);
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::TrailingSemicolon),
+        vec!["model.p.sql"],
+        "a tail `;` in Python is valid syntax, not a broken statement"
+    );
+}
+
+#[test]
+fn trailing_semicolon_positions_point_at_the_semicolon() {
+    let raw = "select a\nfrom t;\n-- a trailing comment";
+    let m = manifest(vec![model_sql_pos("m", raw)], vec![], &[]);
+    let dag = Dag::build(&m);
+    let cfg = cfg_only(&[LintRule::TrailingSemicolon]);
+    let out = lint_outcome(&dag, &cfg, None, None);
+
+    let f = finding_on(&out.findings, LintRule::TrailingSemicolon, "model.p.m");
+    let (l, c, el, ec) = needle_pos(raw, ";", 0);
+    assert_eq!(
+        pos_of(f),
+        ("models/m.sql".to_string(), l, c, el, ec),
+        "the underline is the `;` itself"
+    );
+    assert_eq!(f.label.as_deref(), Some("trailing semicolon"));
+    assert!(f.labels.is_empty());
+}
+
+// ---- duplicate_output_columns -------------------------------------------------
+
+#[test]
+fn duplicate_output_columns_flags_repeated_output_names() {
+    let m = manifest(
+        vec![
+            model_sql("bare_dup", "select a, a from t"),
+            model_sql("folded", "select A, a from t"),
+            model_sql("aliased", "select x as a, y as a from t"),
+            model_sql("two_names", "select a as x, b as x, c as y, d as y from t"),
+            model_sql("quoted_diff", "select \"A\", a from t"),
+            model_sql("quoted_dup", "select \"A\", \"A\" from t"),
+            model_sql("clean", "select a, b from t"),
+            // A second UNION arm's duplicate isn't the output name — the
+            // first arm names every column.
+            model_sql("second_arm", "select a, b from t union select x, x from u"),
+            model_sql("first_arm", "select a, a from t union select x, y from u"),
+            // `select 1, 1` — positional outputs never claim a name.
+            model_sql("literals", "select 1, 1 from t"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::DuplicateOutputColumns]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::DuplicateOutputColumns),
+        vec![
+            "model.p.aliased",
+            "model.p.bare_dup",
+            "model.p.first_arm",
+            "model.p.folded",
+            "model.p.quoted_dup",
+            "model.p.two_names",
+        ],
+        "explicit repeats flag; quoted-case, second-arm and literals don't"
+    );
+    let f = finding_on(
+        &out.findings,
+        LintRule::DuplicateOutputColumns,
+        "model.p.two_names",
+    );
+    assert!(
+        f.message.ends_with(": x, y"),
+        "one finding names every repeated output: {}",
+        f.message
+    );
+}
+
+#[test]
+fn duplicate_output_columns_counts_what_a_wildcard_carries() {
+    // `*` over a resolvable parent expands its columns: `a` arrives via
+    // the wildcard AND explicitly → dup. An unexpandable `*` contributes
+    // nothing, so `*, a` alone stays clean.
+    let m = manifest(
+        vec![
+            model_sql("stg", "select id, a from t"),
+            model_sql("expanded", "select *, a from stg"),
+            model_sql("expanded_qualified", "select stg.*, a from stg"),
+            model_sql("unknown_star", "select *, a from extern"),
+            model_sql("star_only", "select * from stg"),
+        ],
+        vec![],
+        &[
+            ("model.p.stg", "model.p.expanded"),
+            ("model.p.stg", "model.p.expanded_qualified"),
+            ("model.p.stg", "model.p.star_only"),
+        ],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::DuplicateOutputColumns]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::DuplicateOutputColumns),
+        vec!["model.p.expanded", "model.p.expanded_qualified"],
+        "a wildcard's carried columns count; an unknown wildcard contributes nothing"
+    );
+}
+
+#[test]
+fn duplicate_output_columns_positions_pair_second_with_first() {
+    let raw = "select a, b as x, c, d as x\nfrom t";
+    let m = manifest(vec![model_sql_pos("m", raw)], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::DuplicateOutputColumns]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let f = finding_on(&out.findings, LintRule::DuplicateOutputColumns, "model.p.m");
+    // `x` is the first (only) duplicated name: its second occurrence is
+    // the primary position, the first a `first defined here` label.
+    let (l, c, el, ec) = needle_pos(raw, "x", 1);
+    assert_eq!(
+        pos_of(f),
+        ("models/m.sql".to_string(), l, c, el, ec),
+        "the second occurrence is the primary position"
+    );
+    assert_eq!(f.label.as_deref(), Some("duplicate output name"));
+    assert_eq!(f.labels.len(), 1);
+    let (l2, c2, el2, ec2) = needle_pos(raw, "x", 0);
+    assert_eq!(
+        (
+            f.labels[0].line,
+            f.labels[0].column,
+            f.labels[0].end_line,
+            f.labels[0].end_column
+        ),
+        (l2, Some(c2), Some(el2), Some(ec2)),
+        "the first occurrence rides as a label"
+    );
+    assert_eq!(f.labels[0].message, "first defined here");
+}
+
+#[test]
+fn duplicate_output_columns_positions_skip_a_macro_changed_count() {
+    // Compiled selects `a` three times; raw writes it twice — the counts
+    // disagree so no occurrence pairs: the finding stays file-scoped.
+    let mut m = model_sql_pos("m", "select a, a from t");
+    m.1.compiled_code = Some("select a, a, a from t".into());
+    let m = manifest(vec![m], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::DuplicateOutputColumns]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let f = finding_on(&out.findings, LintRule::DuplicateOutputColumns, "model.p.m");
+    assert!(
+        f.location.as_ref().is_none_or(|l| l.line.is_none()),
+        "a count mismatch leaves no position: {f:?}"
+    );
+}
+
+#[test]
+fn duplicate_output_columns_positions_pair_the_single_raw_name() {
+    // Compiled's macro made the second `a`; raw wrote `a` once — the lone
+    // occurrence can only be the first `a`, so it pairs as a
+    // `first defined here` label while `x` (counted twice on both sides)
+    // supplies the primary. A lone-name finding can't anchor that way —
+    // the envelope drops labels that have no position to annotate.
+    let raw = "select a, b as x, c as x from t";
+    let mut m = model_sql_pos("m", raw);
+    m.1.compiled_code = Some("select a, a, b as x, c as x from t".into());
+    let m = manifest(vec![m], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::DuplicateOutputColumns]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let f = finding_on(&out.findings, LintRule::DuplicateOutputColumns, "model.p.m");
+    let (l, c, el, ec) = needle_pos(raw, "x", 1);
+    assert_eq!(
+        pos_of(f),
+        ("models/m.sql".to_string(), l, c, el, ec),
+        "the pairable name's second occurrence is primary"
+    );
+    // `a`'s only raw occurrence rides as a `first defined here` label,
+    // and `x`'s first does too.
+    let firsts = f
+        .labels
+        .iter()
+        .filter(|l| l.message == "first defined here")
+        .count();
+    assert_eq!(firsts, 2, "{:?}", f.labels);
+    let (al, ac, ael, aec) = needle_pos(raw, "a", 0);
+    let (xl, xc, xel, xec) = needle_pos(raw, "x", 0);
+    let a_label = f
+        .labels
+        .iter()
+        .find(|l| l.line == al && l.column == Some(ac))
+        .expect("a's first occurrence labels");
+    assert_eq!(
+        (a_label.end_line, a_label.end_column),
+        (Some(ael), Some(aec))
+    );
+    let x_label = f
+        .labels
+        .iter()
+        .find(|l| l.line == xl && l.column == Some(xc))
+        .expect("x's first occurrence labels");
+    assert_eq!(
+        (x_label.end_line, x_label.end_column),
+        (Some(xel), Some(xec))
+    );
+}
+
+// ---- unused_cte ---------------------------------------------------------------
+
+#[test]
+fn unused_cte_flags_only_unread_definitions() {
+    let m = manifest(
+        vec![
+            model_sql("read", "with a as (select 1) select * from a"),
+            model_sql("unread", "with a as (select 1) select 2"),
+            // Read only through a sibling CTE — still a read.
+            model_sql(
+                "via_sibling",
+                "with a as (select 1), b as (select * from a) select * from b",
+            ),
+            model_sql(
+                "one_of_two",
+                "with a as (select 1), b as (select 2) select * from b",
+            ),
+            // A recursive CTE's own body never counts as a read — only the
+            // outer query's `from n` does.
+            model_sql(
+                "recursive_read",
+                "with n(i) as (select 1 union all select i + 1 from n) select * from n",
+            ),
+            model_sql(
+                "recursive_unread",
+                "with n(i) as (select 1 union all select i + 1 from n) select 2",
+            ),
+            // A qualified name can't bind the CTE — `sch.t` is the table,
+            // so the CTE stays unread.
+            model_sql("shadowed", "with t as (select 1) select * from sch.t"),
+            // A nested query sees the outer WITH.
+            model_sql(
+                "nested_read",
+                "with a as (select 1) select * from (select * from a) d",
+            ),
+            // A CTE inside a derived table's own WITH is judged too.
+            model_sql(
+                "inner_with",
+                "select * from (with b as (select 1) select 2) d",
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::UnusedCte]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::UnusedCte),
+        vec![
+            "model.p.inner_with",
+            "model.p.one_of_two",
+            "model.p.recursive_unread",
+            "model.p.shadowed",
+            "model.p.unread",
+        ],
+        "reads from the body, siblings, or nested queries all count"
+    );
+    let f = finding_on(&out.findings, LintRule::UnusedCte, "model.p.one_of_two");
+    assert!(
+        f.message.ends_with(": a"),
+        "only the unread CTE is named: {}",
+        f.message
+    );
+}
+
+#[test]
+fn unused_cte_lists_every_unread_name_in_one_finding() {
+    let raw = "with a as (select 1),\n     b as (select 2)\nselect 3";
+    let m = manifest(vec![model_sql_pos("m", raw)], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::UnusedCte]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let fs: Vec<_> = out
+        .findings
+        .iter()
+        .filter(|f| f.rule == LintRule::UnusedCte)
+        .collect();
+    assert_eq!(fs.len(), 1, "one finding carries both names");
+    let f = fs[0];
+    assert!(
+        f.message.contains("a") && f.message.contains("b"),
+        "{}",
+        f.message
+    );
+    let (l, c, el, ec) = needle_pos(raw, "a", 0);
+    assert_eq!(
+        pos_of(f),
+        ("models/m.sql".to_string(), l, c, el, ec),
+        "the first unread CTE's name is primary"
+    );
+    assert_eq!(f.label.as_deref(), Some("never read"));
+    let (l2, c2, el2, ec2) = needle_pos(raw, "b", 0);
+    assert_eq!(f.labels.len(), 1);
+    assert_eq!(
+        (
+            f.labels[0].line,
+            f.labels[0].column,
+            f.labels[0].end_line,
+            f.labels[0].end_column
+        ),
+        (l2, Some(c2), Some(el2), Some(ec2)),
+        "the second unread name rides as a label"
+    );
+}
+
+#[test]
+fn unused_cte_positions_pair_the_single_raw_decl() {
+    // Raw declares one unread `a`; compiled's macro adds a second — the
+    // name's counts disagree, but the lone written decl can only be an
+    // unread `a`: the exactly-one pairing still underlines it.
+    let raw = "with a as (select 1) select 2";
+    let mut m = model_sql_pos("m", raw);
+    m.1.compiled_code = Some("with a as (select 1), a as (select 2) select 3".into());
+    let m = manifest(vec![m], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::UnusedCte]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let f = finding_on(&out.findings, LintRule::UnusedCte, "model.p.m");
+    let (l, c, el, ec) = needle_pos(raw, "a", 0);
+    assert_eq!(
+        pos_of(f),
+        ("models/m.sql".to_string(), l, c, el, ec),
+        "the one raw `a` decl is unambiguously unread"
+    );
+    assert_eq!(f.label.as_deref(), Some("never read"));
+}
+
+#[test]
+fn unused_cte_positions_skip_a_macro_shifted_count() {
+    // Raw declares two unread `a`s; compiled adds a third — two written
+    // `a`s can't tell which three judged decls they are, so nothing
+    // underlines.
+    let mut m = model_sql_pos("m", "with a as (select 1), a as (select 2) select 3");
+    m.1.compiled_code =
+        Some("with a as (select 1), a as (select 2), a as (select 4) select 3".into());
+    let m = manifest(vec![m], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::UnusedCte]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let f = finding_on(&out.findings, LintRule::UnusedCte, "model.p.m");
+    assert!(
+        f.location.as_ref().is_none_or(|l| l.line.is_none()),
+        "a count mismatch leaves no position: {f:?}"
+    );
+}
+
+// ---- order_by_without_limit ---------------------------------------------------
+
+#[test]
+fn order_by_without_limit_flags_only_the_unbounded_final_sort() {
+    let m = manifest(
+        vec![
+            model_sql("bare", "select a from t order by a"),
+            model_sql("positional", "select a from t order by 1"),
+            // An OFFSET isn't a row bound — the sort still can't survive
+            // downstream.
+            model_sql("offset_only", "select a from t order by a offset 2"),
+            model_sql("limited", "select a from t order by a limit 10"),
+            model_sql(
+                "offset_limited",
+                "select a from t order by a limit 10 offset 2",
+            ),
+            model_sql(
+                "fetched",
+                "select a from t order by a fetch first 5 rows only",
+            ),
+            model_sql("topped", "select top 5 a from t order by a"),
+            // A window function's ORDER BY isn't the final sort.
+            model_sql(
+                "windowed",
+                "select row_number() over (order by a) as rn from t",
+            ),
+            // CTE/subquery ORDER BYs never count.
+            model_sql(
+                "cte_sorted",
+                "with x as (select a from t order by a) select * from x",
+            ),
+            model_sql(
+                "derived_sorted",
+                "select * from (select a from t order by a) d",
+            ),
+            // `order by` inside a string literal isn't a clause.
+            model_sql("literal", "select 'order by a' as s from t"),
+            // The parenthesized final query's own tail IS the model's.
+            model_sql("parens", "(select a from t order by a)"),
+            model_sql("parens_sorted", "(select a from t) order by a"),
+            model_sql("parens_limited", "(select a from t order by a) limit 3"),
+            model_sql("no_order", "select a from t"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::OrderByWithoutLimit]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::OrderByWithoutLimit),
+        vec![
+            "model.p.bare",
+            "model.p.offset_only",
+            "model.p.parens",
+            "model.p.parens_sorted",
+            "model.p.positional",
+        ],
+        "only the final, unbounded ORDER BY flags"
+    );
+}
+
+#[test]
+fn order_by_without_limit_positions_underline_the_expressions() {
+    // sqlparser's span starts after the `ORDER BY` keyword — the
+    // expressions get the underline.
+    let raw = "select a\nfrom t\norder by a desc, b";
+    let m = manifest(vec![model_sql_pos("m", raw)], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::OrderByWithoutLimit]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let f = finding_on(&out.findings, LintRule::OrderByWithoutLimit, "model.p.m");
+    let (l, c, el, ec) = needle_pos(raw, "a desc, b", 0);
+    assert_eq!(
+        pos_of(f),
+        ("models/m.sql".to_string(), l, c, el, ec),
+        "the expressions span — `ORDER BY` itself stays outside"
+    );
+    assert_eq!(f.label.as_deref(), Some("ORDER BY without LIMIT"));
+}
+
+#[test]
+fn order_by_without_limit_positions_stay_off_when_raw_bounds_it() {
+    // The compiled text lost the `limit` to a macro — judged unbounded —
+    // but the raw file's own outer ORDER BY IS bounded, so underlining it
+    // would lie: file-scoped, never a line.
+    let mut m = model_sql_pos("m", "select a from t order by a limit 10");
+    m.1.compiled_code = Some("select a from t order by a".into());
+    let m = manifest(vec![m], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::OrderByWithoutLimit]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let f = finding_on(&out.findings, LintRule::OrderByWithoutLimit, "model.p.m");
+    assert!(
+        f.location.as_ref().is_none_or(|l| l.line.is_none()),
+        "the raw query is bounded — no honest underline: {f:?}"
+    );
+}
+
+// ---- new-rule suppression + modes ---------------------------------------------
+
+#[test]
+fn new_sql_rules_respect_exclude_and_meta_ignore() {
+    // `exclude:` drops findings by selector; `meta.dbtl.ignore` suppresses
+    // the named rule — one of each across the four rules.
+    let mut ignored = model_sql("ignored_cte", "with a as (select 1) select 2");
+    ignored.1.meta = serde_json::json!({"dbtl": {"ignore": ["unused_cte"]}})
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let m = manifest(
+        vec![
+            model_sql("semi_excluded", "select 1;"),
+            model_sql("semi_kept", "select 2;"),
+            ignored,
+            model_sql("kept_cte", "with b as (select 1) select 2"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let mut cfg =
+        config_from("lint:\n  rules:\n    trailing_semicolon: {exclude: [\"semi_excluded\"]}\n");
+    for r in LintRule::ALL {
+        if !matches!(
+            r,
+            LintRule::TrailingSemicolon | LintRule::DuplicateOutputColumns | LintRule::UnusedCte
+        ) {
+            cfg.severities.insert(r, None);
+        }
+    }
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::TrailingSemicolon),
+        vec!["model.p.semi_kept"],
+        "exclude drops the selected node"
+    );
+    assert_eq!(
+        flagged(&out.findings, LintRule::UnusedCte),
+        vec!["model.p.kept_cte"],
+        "meta.dbtl.ignore suppresses the named rule"
+    );
+}
+
+#[test]
+fn new_sql_rules_fire_in_source_mode() {
+    // The same four facts come off a source-loaded Dag — `manifest_from_source`
+    // carries each model file's text as `raw_code`.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    std::fs::write(dir.path().join("dbt_project.yml"), "name: p\n").unwrap();
+    std::fs::write(dir.path().join("models/semi.sql"), "select 1;\n").unwrap();
+    std::fs::write(dir.path().join("models/dup.sql"), "select a, a from t\n").unwrap();
+    std::fs::write(
+        dir.path().join("models/cte.sql"),
+        "with a as (select 1) select 2\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("models/sorted.sql"),
+        "select a from t order by a\n",
+    )
+    .unwrap();
+    let sm = crate::manifest_from_source(dir.path()).unwrap();
+    let dag = Dag::build(&sm);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[
+        LintRule::TrailingSemicolon,
+        LintRule::DuplicateOutputColumns,
+        LintRule::UnusedCte,
+        LintRule::OrderByWithoutLimit,
+    ]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    for (rule, uid) in [
+        (LintRule::TrailingSemicolon, "model.p.semi"),
+        (LintRule::DuplicateOutputColumns, "model.p.dup"),
+        (LintRule::UnusedCte, "model.p.cte"),
+        (LintRule::OrderByWithoutLimit, "model.p.sorted"),
+    ] {
+        assert_eq!(
+            flagged(&out.findings, rule),
+            vec![uid],
+            "{rule:?} fires under source mode"
+        );
+    }
+}
+
 // ---- catalog-backed rules ---------------------------------------------------
 
 /// A model with declared columns and no SQL — the warehouse rules only
@@ -5465,9 +6119,10 @@ fn missing_inputs_report_skipped_rules_not_findings() {
     let dag = Dag::build(&m);
     let cfg = LintConfig::default();
 
-    // No aux inputs at all: the five Sql rules + three Catalog rules skip.
+    // No aux inputs at all: the eight Sql rules + three Catalog rules skip
+    // (`trailing_semicolon` needs only the graph — it still runs).
     let out = lint_outcome(&dag, &cfg, None, None);
-    assert_eq!(out.skipped.len(), 8);
+    assert_eq!(out.skipped.len(), 11);
     let sql_skips: Vec<_> = out
         .skipped
         .iter()
@@ -5482,6 +6137,9 @@ fn missing_inputs_report_skipped_rules_not_findings() {
             LintRule::CartesianJoin,
             LintRule::UnknownColumnReference,
             LintRule::ForbiddenPatterns,
+            LintRule::DuplicateOutputColumns,
+            LintRule::UnusedCte,
+            LintRule::OrderByWithoutLimit,
         ],
         "skipped entries stay in LintRule::ALL order"
     );
@@ -5565,12 +6223,15 @@ fn enabled_sql_rules_share_one_parse_per_model() {
         LintRule::CartesianJoin,
         LintRule::UnknownColumnReference,
         LintRule::HardCodedReferences,
+        LintRule::DuplicateOutputColumns,
+        LintRule::UnusedCte,
+        LintRule::OrderByWithoutLimit,
     ]);
     let out = lint_outcome(&dag, &cfg, Some(&res), None);
     assert_eq!(
         res.analyzed_count(),
         2,
-        "four SQL rules × two models = one shared analysis each"
+        "seven SQL rules × two models = one shared analysis each"
     );
     assert_eq!(
         res.hard_coded_count(),
@@ -5601,7 +6262,12 @@ fn sql_rules_never_judge_a_python_model() {
         "python",
         "def model(dbt, session):\n    return dbt.ref('up')\n",
     );
-    py.1.compiled_code = Some("select *\nfrom t".into());
+    // The compiled artifact WOULD trip every SQL rule — a wildcard, a
+    // written relation, a conditionless join, a repeated output, an
+    // unread CTE, an unbounded sort — so a missing language guard can't
+    // hide behind a clean model.
+    py.1.compiled_code =
+        Some("with u as (select 1) select *, a, a from t cross join v order by a".into());
     let m = manifest(vec![py, model_sql("clean", "select 1")], vec![], &[]);
     let dag = Dag::build(&m);
     let res = sql_resolver(None);
@@ -5611,6 +6277,9 @@ fn sql_rules_never_judge_a_python_model() {
         LintRule::CartesianJoin,
         LintRule::UnknownColumnReference,
         LintRule::ForbiddenPatterns,
+        LintRule::DuplicateOutputColumns,
+        LintRule::UnusedCte,
+        LintRule::OrderByWithoutLimit,
     ]);
     let out = lint_outcome(&dag, &cfg, Some(&res), None);
     assert!(
@@ -5632,7 +6301,7 @@ fn sql_rules_never_judge_a_python_model() {
 #[test]
 fn unparsed_counts_models_whose_sql_wont_parse_once() {
     // `unparsable` has raw SQL that fails to parse (its uid lands on
-    // `unparsed` once though four SQL rules each asked for its facts);
+    // `unparsed` once though seven SQL rules each asked for its facts);
     // `no_sql` carries none at all (never judged, never counted);
     // `compiled_only` has no raw — `hard_coded_relations` declines it but
     // that's a deliberate non-judgment, not a parse failure.
@@ -5653,6 +6322,9 @@ fn unparsed_counts_models_whose_sql_wont_parse_once() {
         LintRule::HardCodedReferences,
         LintRule::CartesianJoin,
         LintRule::UnknownColumnReference,
+        LintRule::DuplicateOutputColumns,
+        LintRule::UnusedCte,
+        LintRule::OrderByWithoutLimit,
     ]);
     let out = lint_outcome(&dag, &cfg, Some(&res), None);
     assert_eq!(

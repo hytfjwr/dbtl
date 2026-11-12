@@ -2,7 +2,7 @@
 
 # Lint rules
 
-36 rules, evaluated by `dbtl lint`, `dbtl check --lint`, the docs generator, and the TUI's Lint lens — one registry table also backs `--list-rules`, `--explain`, SARIF metadata, and `.dbtl.yml` validation, so all of them describe the same rule set.
+40 rules, evaluated by `dbtl lint`, `dbtl check --lint`, the docs generator, and the TUI's Lint lens — one registry table also backs `--list-rules`, `--explain`, SARIF metadata, and `.dbtl.yml` validation, so all of them describe the same rule set.
 
 | Rule | Category | Default severity | Inputs | Summary |
 | ---- | -------- | ---------------- | ------ | ------- |
@@ -42,6 +42,10 @@
 | [`unused_models`](#unused_models) | modeling | warn | graph | a model in a checked layer has no downstream |
 | [`references_deprecated_model`](#references_deprecated_model) | governance | warn | graph | a node directly depends on a model with a deprecation_date |
 | [`undeclared_warehouse_columns`](#undeclared_warehouse_columns) | warehouse | warn | graph + catalog | a warehouse column the node doesn't declare |
+| [`trailing_semicolon`](#trailing_semicolon) | sql | error | graph | a model's SQL ends with a semicolon |
+| [`duplicate_output_columns`](#duplicate_output_columns) | sql | error | graph + parsed SQL | a model's final SELECT emits the same output column name twice |
+| [`unused_cte`](#unused_cte) | sql | warn | graph + parsed SQL | a CTE is defined but never read |
+| [`order_by_without_limit`](#order_by_without_limit) | sql | warn | graph + parsed SQL | a model's final query has ORDER BY without LIMIT |
 
 ## `direct_join_to_source`
 
@@ -589,5 +593,61 @@ A warehouse column the node doesn't declare.
 **Example:** fct_orders declares order_id and total, but the warehouse also carries currency. Fix: declare the missing columns in the model's schema.yml entry.
 
 **Fix:** declare the warehouse's extra columns in the node's schema.yml entry
+
+**Parameters:** none.
+
+## `trailing_semicolon`
+
+Category: `sql` · Default severity: `error` · Inputs: graph
+
+A model's SQL ends with a semicolon.
+
+**Why:** dbt wraps a model's SELECT in `create … as (…)` or an incremental merge — a statement terminator at the end of the file splits that wrapper into broken syntax at build time. The semicolon fails the model's first run and then sits in review waiting to break again.
+
+**Example:** stg_orders ends `select * from raw_orders;`. Fix: drop the trailing `;` — the model's SELECT must stay a single statement.
+
+**Fix:** remove the trailing semicolon
+
+**Parameters:** none.
+
+## `duplicate_output_columns`
+
+Category: `sql` · Default severity: `error` · Inputs: graph + parsed SQL
+
+A model's final SELECT emits the same output column name twice.
+
+**Why:** Two outputs sharing one name leave readers no way to say which column they mean — downstream refs resolve to one of them silently (or the warehouse rejects the model), and column order becomes the only thing telling them apart.
+
+**Example:** fct_orders selects `unit_price, unit_price` — the second was meant to be discounted_price. Fix: alias one of them so every output name is unique.
+
+**Fix:** alias one of the columns so every output name is unique
+
+**Parameters:** none.
+
+## `unused_cte`
+
+Category: `sql` · Default severity: `warn` · Inputs: graph + parsed SQL
+
+A CTE is defined but never read.
+
+**Why:** A WITH clause the query never reads is dead code reviewers still parse — usually the sign a refactor dropped the consumer, or that the wrong CTE name landed where the read was meant to go.
+
+**Example:** fct_orders defines `with dedup as (…) select * from orders` — dedup is never selected from. Fix: delete it, or select from it where it was meant to be used.
+
+**Fix:** delete the CTE, or select from it
+
+**Parameters:** none.
+
+## `order_by_without_limit`
+
+Category: `sql` · Default severity: `warn` · Inputs: graph + parsed SQL
+
+A model's final query has ORDER BY without LIMIT.
+
+**Why:** A table or view doesn't promise row order — the outer ORDER BY's cost is paid every build while no reader can rely on the result. The consumer that wants sorted rows should sort them at read time.
+
+**Example:** fct_orders ends `select * from items order by created_at` with no limit. Fix: drop the ORDER BY and let the query reading the model sort instead.
+
+**Fix:** remove the ORDER BY; sort in the query that reads the model
 
 **Parameters:** none.

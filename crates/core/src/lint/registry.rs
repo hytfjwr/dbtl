@@ -702,6 +702,75 @@ pub static REGISTRY: &[RuleInfo] = &[
         params: &[],
         requires: Requires::Catalog,
     },
+    RuleInfo {
+        rule: LintRule::TrailingSemicolon,
+        id: "trailing_semicolon",
+        category: Category::Sql,
+        default_severity: Severity::Error,
+        summary: "a model's SQL ends with a semicolon",
+        rationale: "dbt wraps a model's SELECT in `create … as (…)` or an \
+                    incremental merge — a statement terminator at the end of \
+                    the file splits that wrapper into broken syntax at build \
+                    time. The semicolon fails the model's first run and then \
+                    sits in review waiting to break again.",
+        example: "stg_orders ends `select * from raw_orders;`. Fix: drop the \
+                  trailing `;` — the model's SELECT must stay a single \
+                  statement.",
+        help: "remove the trailing semicolon",
+        params: &[],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::DuplicateOutputColumns,
+        id: "duplicate_output_columns",
+        category: Category::Sql,
+        default_severity: Severity::Error,
+        summary: "a model's final SELECT emits the same output column name twice",
+        rationale: "Two outputs sharing one name leave readers no way to say \
+                    which column they mean — downstream refs resolve to one of \
+                    them silently (or the warehouse rejects the model), and \
+                    column order becomes the only thing telling them apart.",
+        example: "fct_orders selects `unit_price, unit_price` — the second was \
+                  meant to be discounted_price. Fix: alias one of them so every \
+                  output name is unique.",
+        help: "alias one of the columns so every output name is unique",
+        params: &[],
+        requires: Requires::Sql,
+    },
+    RuleInfo {
+        rule: LintRule::UnusedCte,
+        id: "unused_cte",
+        category: Category::Sql,
+        default_severity: Severity::Warn,
+        summary: "a CTE is defined but never read",
+        rationale: "A WITH clause the query never reads is dead code reviewers \
+                    still parse — usually the sign a refactor dropped the \
+                    consumer, or that the wrong CTE name landed where the read \
+                    was meant to go.",
+        example: "fct_orders defines `with dedup as (…) select * from orders` — \
+                  dedup is never selected from. Fix: delete it, or select from \
+                  it where it was meant to be used.",
+        help: "delete the CTE, or select from it",
+        params: &[],
+        requires: Requires::Sql,
+    },
+    RuleInfo {
+        rule: LintRule::OrderByWithoutLimit,
+        id: "order_by_without_limit",
+        category: Category::Sql,
+        default_severity: Severity::Warn,
+        summary: "a model's final query has ORDER BY without LIMIT",
+        rationale: "A table or view doesn't promise row order — the outer \
+                    ORDER BY's cost is paid every build while no reader can \
+                    rely on the result. The consumer that wants sorted rows \
+                    should sort them at read time.",
+        example: "fct_orders ends `select * from items order by created_at` \
+                  with no limit. Fix: drop the ORDER BY and let the query \
+                  reading the model sort instead.",
+        help: "remove the ORDER BY; sort in the query that reads the model",
+        params: &[],
+        requires: Requires::Sql,
+    },
 ];
 
 /// A rule the registry once carried and has since dropped. The id stays

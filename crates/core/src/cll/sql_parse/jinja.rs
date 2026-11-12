@@ -481,3 +481,75 @@ pub(super) fn jinja_call_args(e: &str, fname: &str) -> Option<Vec<String>> {
     }
     Some(args)
 }
+
+/// The raw byte range of a model file's trailing `;` — `None` when the
+/// SQL doesn't effectively end with one. "Effectively" = after the Jinja
+/// render (`{% %}`/`{# #}` emit nothing, `{{ config(...) }}` renders
+/// empty, every other `{{ }}` emits text), and after trailing whitespace
+/// and `--`/`/* */` comments. The `;` is mapped back through the render's
+/// source map to its raw byte range — the lint rule's position.
+///
+/// The rule asks "does the model file END with `;`": dbt wraps a model's
+/// SELECT in `create … as (…)` and a statement terminator inside the
+/// wrapper is broken syntax at build time. A `;` inside a string literal
+/// or quoted identifier isn't the tail (the scanner skips literals the
+/// same way [`render_jinja_mapped`] does); a `;` mid-file (`select 1; {{
+/// more }}`) isn't either — only the LAST meaningful byte counts.
+pub(crate) fn trailing_semicolon(sql: &str) -> Option<Range<usize>> {
+    let rendered = render_jinja_mapped(sql, JinjaMark::Plain);
+    let b = rendered.text.as_bytes();
+    // The offset of the last byte that isn't whitespace, a comment, or
+    // inside a literal — the file's effective tail. Since only `;` can
+    // qualify as a tail, `last` never needs to point INTO a skipped
+    // region: skipping a literal leaves it at whatever preceded.
+    let mut last: Option<usize> = None;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                i = b[i..]
+                    .iter()
+                    .position(|&c| c == b'\n')
+                    .map_or(b.len(), |p| i + p);
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i = b[i + 2..]
+                    .windows(2)
+                    .position(|w| w == b"*/")
+                    .map_or(b.len(), |p| i + 2 + p + 2);
+            }
+            q @ (b'\'' | b'"' | b'`') => {
+                i += 1;
+                while i < b.len() {
+                    if b[i] == q {
+                        if b.get(i + 1) == Some(&q) {
+                            i += 2;
+                            continue;
+                        }
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'$' => match dollar_quote_open(b, i) {
+                Some(dlen) => {
+                    let from = i + dlen;
+                    i = dollar_quote_close(b, from, &b[i..i + dlen]).map_or(b.len(), |c| c + dlen);
+                }
+                None => {
+                    last = Some(i);
+                    i += 1;
+                }
+            },
+            c => {
+                if !c.is_ascii_whitespace() {
+                    last = Some(i);
+                }
+                i += 1;
+            }
+        }
+    }
+    let start = last.filter(|&s| b[s] == b';')?;
+    rendered.source_range(start..start + 1)
+}

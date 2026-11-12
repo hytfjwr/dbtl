@@ -21,6 +21,7 @@ use std::rc::Rc;
 
 use serde::Serialize;
 
+pub(crate) use sql_parse::trailing_semicolon;
 pub use sql_parse::{MarkedRelations, SqlDialect, SqlFacts, SqlParseResolver, SqlPositions};
 
 use crate::catalog::Catalog;

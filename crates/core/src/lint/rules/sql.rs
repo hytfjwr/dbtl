@@ -1,6 +1,10 @@
-//! `sql` — SQL-body rules (`Requires::Sql`): wildcard projections,
-//! hand-written relations, conditionless joins, provably-missing parent
-//! columns, and the configured forbidden-pattern scan.
+//! `sql` — SQL-body rules: wildcard projections, hand-written
+//! relations, conditionless joins, provably-missing parent columns, the
+//! configured forbidden-pattern scan, a trailing-`;` tail, repeated
+//! output column names, unread CTEs, and an unbounded final `ORDER BY`.
+//! All but `trailing_semicolon` carry `Requires::Sql` — the semicolon
+//! check reads `raw_code` as text (`Requires::Graph`), so it runs even
+//! where no parser exists.
 //!
 //! Every rule reads the SHARED [`SqlParseResolver`] from [`LintInput`]:
 //! `sql_facts`/`hard_coded_relations` are memoized per uid, so several
@@ -406,5 +410,310 @@ pub(super) fn forbidden_patterns(
             }
             out.push(f);
         }
+    }
+}
+
+/// `SpanNote`s → `Label`s: each range converted by `byte_span_position`,
+/// ranges it can't pin dropped (never guessed) — `with_labels` sorts.
+fn labels_of(raw: &str, spans: &[SpanNote]) -> Vec<Label> {
+    spans
+        .iter()
+        .filter_map(|(r, msg)| {
+            byte_span_position(raw, r.start, r.end).map(|(line, column, end_line, end_column)| {
+                Label {
+                    line,
+                    column: Some(column),
+                    end_line: Some(end_line),
+                    end_column: Some(end_column),
+                    message: msg.clone(),
+                }
+            })
+        })
+        .collect()
+}
+
+/// `trailing_semicolon`: the model file's effective tail is `;` —
+/// trailing whitespace, `--`/`/* */` comments, `{# #}` comments and
+/// output-less Jinja tags (`{% endif %}`, `{{ config(...) }}`) stripped
+/// first. A raw-text rule (`Requires::Graph` — `raw_code` lives on the
+/// graph, so it judges where no SQL resolver exists and never feeds
+/// `unparsed`), but `.py` models are excluded on BOTH axes
+/// [`is_sql_model`] knows: `language` and the `.py` file itself — a tail
+/// `;` in Python is valid syntax, not a broken SQL statement.
+pub(super) fn trailing_semicolon(
+    dag: &Dag,
+    uids: &[&String],
+    in_scope: &dyn Fn(&NodeInfo) -> bool,
+    out: &mut Vec<Finding>,
+) {
+    for uid in uids {
+        let Some(n) = dag.get(uid) else { continue };
+        if !is_sql_model(dag, n) || !in_scope(n) {
+            continue;
+        }
+        if dag
+            .detail(uid)
+            .and_then(|d| d.original_file_path.as_deref())
+            .is_some_and(|f| f.ends_with(".py"))
+        {
+            continue;
+        }
+        let Some(raw) = dag.raw_code(uid) else {
+            continue;
+        };
+        let Some(semi) = crate::cll::trailing_semicolon(raw) else {
+            continue;
+        };
+        let mut f = Finding::new(
+            LintRule::TrailingSemicolon,
+            (*uid).clone(),
+            vec![],
+            format!("{}'s SQL ends with a semicolon", n.name),
+        );
+        if let Some((file, raw)) = sql_anchor(dag, uid) {
+            let mut spans: Vec<SpanNote> = vec![(semi, "trailing semicolon".to_string())];
+            f = with_positions(f, &file, raw, &mut spans);
+        }
+        out.push(f);
+    }
+}
+
+/// `duplicate_output_columns`: the output-defining SELECT — a UNION's
+/// first arm, the only one that names outputs — emits the same column
+/// name twice. The resolved output list decides, so an expandable `*`/
+/// `t.*` counts its carried names while an unknown wildcard stays out
+/// (explicit names still compare). Unquoted identifiers fold case,
+/// quoted ones keep it: `A`/`a` collide, `"A"`/`a` don't.
+pub(super) fn duplicate_output_columns(
+    dag: &Dag,
+    uids: &[&String],
+    in_scope: &dyn Fn(&NodeInfo) -> bool,
+    sql: &SqlParseResolver,
+    unparsed: &mut BTreeSet<String>,
+    out: &mut Vec<Finding>,
+) {
+    for uid in uids {
+        let Some(n) = dag.get(uid) else { continue };
+        if !is_sql_model(dag, n) || !in_scope(n) {
+            continue;
+        }
+        let Some(facts) = sql.sql_facts(dag, uid) else {
+            record_unparsed(dag, uid, unparsed);
+            continue;
+        };
+        if facts.duplicate_outputs.is_empty() {
+            continue;
+        }
+        let names: Vec<String> = facts
+            .duplicate_outputs
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect();
+        let mut f = Finding::new(
+            LintRule::DuplicateOutputColumns,
+            (*uid).clone(),
+            vec![],
+            format!(
+                "{} produces duplicate output {}: {}",
+                n.name,
+                pluralize(names.len(), "column"),
+                name_list(&names)
+            ),
+        );
+        if let Some((file, raw)) = sql_anchor(dag, uid) {
+            if let Some(pos) = sql.sql_positions(dag, uid) {
+                f = dup_column_positions(f, &file, raw, &facts.duplicate_outputs, &pos);
+            }
+        }
+        out.push(f);
+    }
+}
+
+/// Attach `duplicate_output_columns` positions: a judged name pairs with
+/// the raw render's own occurrences ONLY when raw counted it the same —
+/// or exactly once, when the lone written `a` can only be the first
+/// judged `a` — the shared name/count pairing key. A macro-made repeat
+/// can't shift an underline onto a column the raw text never duplicated.
+/// The first pairable name's SECOND occurrence becomes the primary
+/// position (`duplicate output name`), each name's first occurrence a
+/// `first defined here` label, and the remaining repeats duplicate
+/// labels of their own.
+fn dup_column_positions(
+    f: Finding,
+    file: &str,
+    raw: &str,
+    judged: &[(String, usize)],
+    pos: &crate::SqlPositions,
+) -> Finding {
+    let mut notes: Vec<SpanNote> = Vec::new();
+    let mut repeats: Vec<Range<usize>> = Vec::new();
+    for (name, count) in judged {
+        let Some(ranges) = pos
+            .output_names
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, rs)| rs)
+        else {
+            continue;
+        };
+        // `ranges.len() == 1` pairs the single raw occurrence with the
+        // first judged one (a `first defined here` label, no repeat —
+        // the finding stays file-scoped); `== count` pairs all in
+        // order; anything else can't be established.
+        let paired = if ranges.len() == *count {
+            ranges.as_slice()
+        } else if ranges.len() == 1 {
+            &ranges[..1]
+        } else {
+            continue;
+        };
+        notes.push((paired[0].clone(), "first defined here".to_string()));
+        repeats.extend(paired[1..].iter().cloned());
+    }
+    // The primary position is the first convertible repeat — the earliest
+    // duplicated name's second occurrence in projection order.
+    let primary = repeats
+        .iter()
+        .enumerate()
+        .find_map(|(i, r)| byte_span_position(raw, r.start, r.end).map(|p| (i, p)));
+    let Some((primary_idx, (line, column, end_line, end_column))) = primary else {
+        return f;
+    };
+    notes.extend(
+        repeats
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != primary_idx)
+            .map(|(_, r)| (r.clone(), "duplicate output name".to_string())),
+    );
+    f.with_span(file, line, column, end_line, end_column)
+        .with_label("duplicate output name")
+        .with_labels(labels_of(raw, &notes))
+}
+
+/// `unused_cte`: a `WITH` entry nothing reads — not the final query, not
+/// a sibling CTE, not a nested query inside either. A recursive CTE's own
+/// body never counts as a use; a CTE shadowed by a real table or an inner
+/// `WITH` redeclaring the name stays unread.
+pub(super) fn unused_cte(
+    dag: &Dag,
+    uids: &[&String],
+    in_scope: &dyn Fn(&NodeInfo) -> bool,
+    sql: &SqlParseResolver,
+    unparsed: &mut BTreeSet<String>,
+    out: &mut Vec<Finding>,
+) {
+    for uid in uids {
+        let Some(n) = dag.get(uid) else { continue };
+        if !is_sql_model(dag, n) || !in_scope(n) {
+            continue;
+        }
+        let Some(facts) = sql.sql_facts(dag, uid) else {
+            record_unparsed(dag, uid, unparsed);
+            continue;
+        };
+        if facts.unused_ctes.is_empty() {
+            continue;
+        }
+        // One finding per model — the message lists every unread name
+        // once (a name can repeat across nested queries).
+        let mut names: Vec<String> = Vec::new();
+        for name in &facts.unused_ctes {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
+        let mut f = Finding::new(
+            LintRule::UnusedCte,
+            (*uid).clone(),
+            vec![],
+            format!(
+                "{} defines {} it never reads: {}",
+                n.name,
+                pluralize(names.len(), "CTE"),
+                name_list(&names)
+            ),
+        );
+        if let Some((file, raw)) = sql_anchor(dag, uid) {
+            if let Some(pos) = sql.sql_positions(dag, uid) {
+                // Name + count pairing like the duplicate columns: a
+                // judged name's raw declarations underline when raw
+                // counted it the same — or exactly once, when the lone
+                // written decl can only be an unread `a` — so a
+                // Jinja-produced CTE can't misalign the list.
+                let mut spans: Vec<SpanNote> = Vec::new();
+                for name in &names {
+                    let judged = facts.unused_ctes.iter().filter(|n| n == &name).count();
+                    let hits: Vec<&Range<usize>> = pos
+                        .unused_ctes
+                        .iter()
+                        .filter(|(n, _)| n == name)
+                        .map(|(_, r)| r)
+                        .collect();
+                    let paired = if hits.len() == judged {
+                        hits.as_slice()
+                    } else if hits.len() == 1 {
+                        &hits[..1]
+                    } else {
+                        continue;
+                    };
+                    spans.extend(
+                        paired
+                            .iter()
+                            .map(|r| ((*r).clone(), "never read".to_string())),
+                    );
+                }
+                f = with_positions(f, &file, raw, &mut spans);
+            }
+        }
+        out.push(f);
+    }
+}
+
+/// `order_by_without_limit`: the model's outermost query sorts rows
+/// nothing bounds — `ORDER BY` with no `LIMIT`/`FETCH`/`TOP` on or above
+/// its level (a `LIMIT` wrapping `… order by …` makes the sort
+/// meaningful). A table or view can't honour row order downstream, so the
+/// sort only costs; CTE-internal, subquery and window-function ORDER BYs
+/// are never the finding — only the final ordering is.
+pub(super) fn order_by_without_limit(
+    dag: &Dag,
+    uids: &[&String],
+    in_scope: &dyn Fn(&NodeInfo) -> bool,
+    sql: &SqlParseResolver,
+    unparsed: &mut BTreeSet<String>,
+    out: &mut Vec<Finding>,
+) {
+    for uid in uids {
+        let Some(n) = dag.get(uid) else { continue };
+        if !is_sql_model(dag, n) || !in_scope(n) {
+            continue;
+        }
+        let Some(facts) = sql.sql_facts(dag, uid) else {
+            record_unparsed(dag, uid, unparsed);
+            continue;
+        };
+        if !facts.unlimited_order_by {
+            continue;
+        }
+        let mut f = Finding::new(
+            LintRule::OrderByWithoutLimit,
+            (*uid).clone(),
+            vec![],
+            format!("{}'s final query has ORDER BY but no LIMIT", n.name),
+        );
+        if let Some((file, raw)) = sql_anchor(dag, uid) {
+            if let Some(pos) = sql.sql_positions(dag, uid) {
+                // The underline exists only when the raw render's own
+                // outer ORDER BY is there to point at — the span covers
+                // the expressions, never the `ORDER BY` keyword.
+                if let Some(r) = &pos.order_by {
+                    let mut spans: Vec<SpanNote> =
+                        vec![(r.clone(), "ORDER BY without LIMIT".to_string())];
+                    f = with_positions(f, &file, raw, &mut spans);
+                }
+            }
+        }
+        out.push(f);
     }
 }
