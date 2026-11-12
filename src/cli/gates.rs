@@ -84,9 +84,9 @@ pub fn run_impact(
         }
     };
     match format {
-        ImpactFormat::Markdown => write_stdout(&markdown, anstream::ColorChoice::Auto),
+        ImpactFormat::Markdown => write_stdout(&markdown, anstream::ColorChoice::Auto)?,
         ImpactFormat::Json => {
-            write_stdout(&json_bytes(&mut json_cache)?, anstream::ColorChoice::Auto)
+            write_stdout(&json_bytes(&mut json_cache)?, anstream::ColorChoice::Auto)?
         }
     }
     for (fmt, path) in &files {

@@ -26,7 +26,24 @@ dbtl impact --diff git:main --select 'tag:marts+'               # only matching 
 
 ## dbtl check
 
-`dbtl check` prints one `PASS`, `WARN`, `FAIL`, or `SKIP` line per gate. It exits 1 when any gate fails at or above `--fail-on`. With `--lint`, the findings print first as annotated blocks — position, source excerpt, and fix links — and the lint gates follow the other rows.
+`dbtl check` prints one `PASS`, `WARN`, `FAIL`, or `SKIP` line per gate. It exits 1 when any gate fails at or above `--fail-on`. With `--lint`, the findings print first as annotated blocks — position, source excerpt, and fix links (see [dbtl lint](lint.md) for the block shape) — then the gate rows, with clean lint rules collapsed into one `PASS lint` row, and the lint tally at the end.
+
+```text
+scope: root project only
+PASS coverage: 10/22 (45%)
+FAIL lint multiple_sources_joined: 1 finding
+FAIL lint root_models: 7 findings
+FAIL lint marts_depend_on_source: 1 finding
+FAIL lint missing_primary_key_tests: 9 findings
+…
+WARN lint select_star: 6 findings
+SKIP lint warehouse_type_drift: requires graph + catalog input
+SKIP lint columns_missing_in_warehouse: requires graph + catalog input
+PASS lint: 16 rules clean
+
+Found 26 errors and 20 warnings in 21 files
+16 rules reported findings; 2 skipped (need --catalog)
+```
 
 ```sh
 dbtl check --coverage-min 80                                    # fail under 80% test coverage

@@ -393,6 +393,45 @@ fn path_prefix_without_a_path_format_is_a_usage_error() {
     );
 }
 
+#[test]
+fn path_prefix_does_not_reach_concise_lines() {
+    // A path-carrying --report makes --path-prefix valid, but the prefix is
+    // a github/sarif/codeclimate concern — concise lines (stdout AND the
+    // --report concise: file) keep the project-relative path, exactly like
+    // text's findings.
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    let concise = tmp.path().join("r.txt");
+    let sarif = tmp.path().join("r.sarif");
+    let out = check_on(
+        &m,
+        &[
+            "--lint",
+            "--format",
+            "concise",
+            "--path-prefix",
+            "sub/dir",
+            "--report",
+            &format!("concise:{}", concise.display()),
+            "--report",
+            &format!("sarif:{}", sarif.display()),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1), "lint still gates");
+    let stdout = out_text(&out);
+    let file = std::fs::read_to_string(&concise).unwrap();
+    for (label, body) in [("stdout", &stdout), ("--report concise:", &file)] {
+        let line = body
+            .lines()
+            .find(|l| l.contains("[select_star]") || l.contains("[root_models]"))
+            .unwrap_or_else(|| panic!("{label} carries a finding line: {body}"));
+        assert!(
+            !line.starts_with("sub/dir"),
+            "{label} stays project-relative: {line}"
+        );
+    }
+}
+
 // ---- check --docs-dir -------------------------------------------------------
 
 /// Generate docs into `dir` via the real `docs` subcommand.

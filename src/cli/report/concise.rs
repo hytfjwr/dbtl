@@ -48,11 +48,9 @@ fn finding_line(f: &dbtl::Finding, ctx: &RenderCtx<'_>) -> String {
     } else {
         tag
     };
-    format!(
-        "{}: {tag} {}",
-        finding_anchor(f, ctx.path_prefix),
-        f.message
-    )
+    // `--path-prefix` is a github/sarif/codeclimate concern — like `text`,
+    // `concise` prints the project-relative path verbatim.
+    format!("{}: {tag} {}", finding_anchor(f, None), f.message)
 }
 
 #[cfg(test)]

@@ -388,11 +388,14 @@ fn collect_sources(report: &Report, env: &RenderEnv<'_>) -> BTreeMap<String, Str
 /// Write `body` to stdout through `anstream` — ANSI escapes pass through
 /// or strip per `choice` (`auto` follows the terminal/environment
 /// detection). A closed pipe (`dbtl lint | head`) is a normal end of
-/// output, never a panic: the write error is simply ignored.
-pub(crate) fn write_stdout(body: &str, choice: anstream::ColorChoice) {
+/// output; any other write error surfaces to the caller.
+pub(crate) fn write_stdout(body: &str, choice: anstream::ColorChoice) -> Result<(), CliError> {
     let mut out = anstream::AutoStream::new(std::io::stdout(), choice);
-    let _ = out.write_all(body.as_bytes());
-    let _ = out.flush();
+    match out.write_all(body.as_bytes()).and_then(|()| out.flush()) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(e) => Err(CliError::new(e.into())),
+    }
 }
 
 /// A `file[:line[:column]]` anchor for a finding: the project-relative path
@@ -568,7 +571,7 @@ impl OutputPlan {
                 styled: self.format.is_human() && self.color != anstream::ColorChoice::Never,
                 ..ctx
             };
-            write_stdout(&render_report(self.format, report, &stdout_ctx), self.color);
+            write_stdout(&render_report(self.format, report, &stdout_ctx), self.color)?;
         }
         for (format, path) in &self.reports {
             write_report_file(path, &render_report(*format, report, &ctx))?;

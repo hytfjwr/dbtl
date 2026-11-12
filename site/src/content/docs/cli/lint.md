@@ -15,7 +15,42 @@ dbtl lint --fail-on warn                    # fail on warnings too
 
 Text output is one annotated block per finding: an `error[rule]`/`warning[rule]` header, a `--> file[:line[:column]]` position, the source excerpt with the span underlined when it resolves, and `= help:`/`= docs:` footers. Findings in a properties `.yml` (descriptions, tests, freshness, contract columns) point at the `- name:` entry's line and column; a `.sql` finding names its file only. A closing tally reads `Found N errors and M warnings in K files` — with `K baselined`/`K pre-existing, not counted` in parentheses when a baseline or `--diff` suppresses findings — plus `N rules reported findings; M skipped (need --catalog)`.
 
-`--format concise` prints the same findings as `file[:line[:column]]: severity[rule] message` one-liners for editors and grep. `--color auto|always|never` controls ANSI styling of the human formats on stdout (`auto` is the default; report files and machine formats never carry color).
+```text
+error[public_models_without_contract]: fct_public_api is access: public without an enforced contract
+  --> models/marts/governance.yml:15:11
+   |
+15 |   - name: fct_public_api
+   |           ^^^^^^^^^^^^^^ declared here
+   |
+   = help: set contract: { enforced: true } on the model
+   = docs: https://hytfjwr.github.io/dbtl/reference/lint-rules/#public_models_without_contract
+
+warning[contract_columns_without_type]: contract-enforced fct_contracted has declared column(s) without data_type: status
+  --> models/marts/governance.yml:63:15
+   |
+63 |       - name: status
+   |               ^^^^^^ declared here
+   |
+   = help: declare data_type for every contract column
+   = docs: https://hytfjwr.github.io/dbtl/reference/lint-rules/#contract_columns_without_type
+
+…
+
+Found 26 errors and 20 warnings in 21 files
+16 rules reported findings; 2 skipped (need --catalog)
+```
+
+`--format concise` prints the same findings as `file[:line[:column]]: severity[rule] message` one-liners for editors and grep.
+
+```text
+models/marts/governance.yml:15:11: error[public_models_without_contract] fct_public_api is access: public without an enforced contract
+models/marts/governance.yml:63:15: warning[contract_columns_without_type] contract-enforced fct_contracted has declared column(s) without data_type: status
+models/marts/governance.yml:111:15: warning[undocumented_columns] fct_model_tests has declared column(s) without descriptions: notes
+models/marts/schema.yml:4:11: error[missing_primary_key_tests] fct_orders has no unique+not_null test pair (or unique_combination_of_columns)
+…
+```
+
+`--color auto|always|never` controls ANSI styling of the human formats on stdout (`auto` is the default; report files and machine formats never carry color).
 
 `dbtl check --lint` folds the same evaluation into the [check gate set](check-and-impact.md). The two can never disagree. Setting `check.lint: true` in `.dbtl.yml` makes it the default for `check` runs.
 

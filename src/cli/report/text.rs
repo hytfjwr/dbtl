@@ -403,7 +403,7 @@ fn position_byte(text: &str, line: u32, column: u32) -> Option<usize> {
 
 /// The `= note:` body — the related node names the message doesn't
 /// already mention, resolved through the dag, up to five then
-/// `, and N more`. `None` when there's nothing to add.
+/// ` and N more`. `None` when there's nothing to add.
 fn note_body(f: &dbtl::Finding, ctx: &RenderCtx<'_>) -> Option<String> {
     if f.related.is_empty() {
         return None;
@@ -423,7 +423,7 @@ fn note_body(f: &dbtl::Finding, ctx: &RenderCtx<'_>) -> Option<String> {
     }
     let shown = names.iter().take(5).copied().collect::<Vec<_>>().join(", ");
     Some(if names.len() > 5 {
-        format!("{shown}, and {} more", names.len() - 5)
+        format!("{shown} and {} more", names.len() - 5)
     } else {
         shown
     })
@@ -507,7 +507,7 @@ mod tests {
         assert_eq!(position_byte(text, 0, 1), None);
     }
 
-    /// A synthetic sql+yml finding set renders the byte-exact excerpt
+    /// A synthetic yml+sql finding set renders the byte-exact excerpt
     /// block — the position, underline, and footers all land where the
     /// position says.
     #[test]
@@ -520,6 +520,7 @@ mod tests {
             unparsed_models: 0,
         });
         let yml = "- name: fct_orders\n  columns:\n    - name: order_id\n";
+        let sql = "select a,\n       b.*\nfrom t\n";
         let mut f = finding(
             dbtl::LintRule::MissingPrimaryKeyTests,
             "model.p.fct_orders",
@@ -544,9 +545,36 @@ mod tests {
             "lint missing_primary_key_tests: 1 violation(s): fct_orders".to_string(),
         ));
         r.gates[0].findings.push(f);
+        // A .sql finding with a pinned span — positions on .sql files
+        // precede the work that assigns them, so the test builds its own.
+        let mut f = finding(
+            dbtl::LintRule::SelectStar,
+            "model.p.stg_orders",
+            "stg_orders's final SELECT uses select * / t.*",
+            dbtl::Severity::Warn,
+            Some("models/staging/stg_orders.sql"),
+            false,
+        );
+        f.location = Some(dbtl::Location {
+            file: "models/staging/stg_orders.sql".to_string(),
+            line: Some(2),
+            column: Some(10),
+            end_line: Some(2),
+            end_column: Some(11),
+        });
+        f.label = Some("star here".to_string());
+        r.gates.push(GateResult::new(
+            "lint:select_star",
+            "lint select_star",
+            dbtl::Severity::Warn,
+            GateStatus::Warn,
+            "lint select_star: 1 violation(s): stg_orders".to_string(),
+        ));
+        r.gates[1].findings.push(f);
 
         let mut sources = std::collections::BTreeMap::new();
         sources.insert("models/marts/schema.yml".to_string(), yml.to_string());
+        sources.insert("models/staging/stg_orders.sql".to_string(), sql.to_string());
         let ctx = RenderCtx {
             command: "lint",
             path_prefix: None,
@@ -566,9 +594,18 @@ mod tests {
              \x20 = help: add unique and not_null tests to one key column, or a unique_combination_of_columns test\n\
              \x20 = docs: https://hytfjwr.github.io/dbtl/reference/lint-rules/#missing_primary_key_tests\n\
              \n\
-             Found 1 error and 0 warnings in 1 file\n\
-             1 rule reported findings\n",
-            "the annotated excerpt + summary render byte-exactly"
+             warning[select_star]: stg_orders's final SELECT uses select * / t.*\n\
+             \x20--> models/staging/stg_orders.sql:2:10\n\
+             \x20 |\n\
+             2 |        b.*\n\
+             \x20 |          ^ star here\n\
+             \x20 |\n\
+             \x20 = help: list the columns the model produces\n\
+             \x20 = docs: https://hytfjwr.github.io/dbtl/reference/lint-rules/#select_star\n\
+             \n\
+             Found 1 error and 1 warning in 2 files\n\
+             2 rules reported findings\n",
+            "the annotated excerpts + summary render byte-exactly"
         );
     }
 }
