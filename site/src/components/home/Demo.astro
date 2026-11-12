@@ -18,7 +18,7 @@ import {
 import { layout, stageHtml } from "../../scripts/lineage.ts";
 import { toProject, type RawSample } from "../../scripts/samples.ts";
 
-const raw = (graph as Record<string, RawSample>)[HOME.project];
+const raw = (graph as unknown as Record<string, RawSample>)[HOME.project];
 if (!raw) throw new Error(`home demo: no sample project named ${HOME.project}`);
 const project = toProject(raw);
 const ids = homeIds(project);

@@ -19,7 +19,7 @@ export function ms(name: string): number {
   const value = getComputedStyle(root).getPropertyValue(name).trim();
   const n = parseFloat(value);
   if (Number.isNaN(n)) return 0;
-  return /ms$/.test(value) ? n : n * 1000;
+  return value.endsWith("ms") ? n : n * 1000;
 }
 
 export type TransitionKind = "route" | "theme";

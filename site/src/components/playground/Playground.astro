@@ -26,7 +26,7 @@ const lintByProject: Record<string, LintData> = {
 };
 
 const name = PROJECTS[0]!;
-const project = toProject((graph as Record<string, RawSample>)[name]!);
+const project = toProject((graph as unknown as Record<string, RawSample>)[name]!);
 const lint = lintByProject[name]!;
 const spec = EXAMPLES[name]![0]!;
 const outcome = run(project, spec);
@@ -41,7 +41,7 @@ const linted = lintHtml(lint, outcome.hit, outcome, spec);
   <div class="pg-row">
     <span class="lab">project</span>
     <div class="seg" id="pg-proj" role="group" aria-label="Sample project">
-      {PROJECTS.map((k) => <button type="button" data-p={k} aria-pressed={String(k === name)}>{k}</button>)}
+      {PROJECTS.map((k) => <button type="button" data-p={k} aria-pressed={k === name}>{k}</button>)}
     </div>
   </div>
   <div class="pg-row">
@@ -66,7 +66,7 @@ const linted = lintHtml(lint, outcome.hit, outcome, spec);
   <div class="pg-row">
     <span class="lab">try</span>
     <div class="seg" id="pg-eg">
-      {EXAMPLES[name]!.map((e) => <button type="button" aria-pressed={String(e === spec)}>{e}</button>)}
+      {EXAMPLES[name]!.map((e) => <button type="button" aria-pressed={e === spec}>{e}</button>)}
     </div>
   </div>
   <p class="pg-err" id="pg-err" role="status">{outcome.error}</p>

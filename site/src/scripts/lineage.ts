@@ -114,7 +114,9 @@ export function layout(graph: Graph<LineageNode>): Layout {
       y += BOX_H + ROW_GAP;
     }
   });
-  const cells: (Cell | null)[][] = Array.from({ length: H }, () => new Array<Cell | null>(W).fill(null));
+  const cells: (Cell | null)[][] = Array.from({ length: H }, () =>
+    Array.from({ length: W }, () => null),
+  );
 
   // pass 1: connector runs and corners
   for (const [pid, cid] of edges) {
