@@ -127,7 +127,7 @@ fn menu_rect_anchors_at_the_pointer_and_flips_inside_the_screen() {
 #[test]
 fn detail_yank_execute_returns_to_the_modal() {
     // Structure -> y -> y (copy unique_id): the action runs AND the modal it
-    // stacked over is restored — the which-key is one-shot with a `back`.
+    // stacked over is restored — the yank menu is one-shot with a `back`.
     let mut a = sample_app();
     open_detail(&mut a, "model.sample.stg_orders");
     apply_action(&mut a, Action::YankPrefix);
@@ -146,7 +146,7 @@ fn detail_yank_execute_returns_to_the_modal() {
 fn pointer_row_picks_move_the_overlay_cursor() {
     let mut a = sample_app();
     a.select_by_unique_id("model.sample.stg_orders");
-    // Yank which-key: YankPick moves the highlighted row.
+    // Yank menu: YankPick moves the highlighted row.
     apply_action(&mut a, Action::YankPrefix);
     apply_action(&mut a, Action::YankPick(2));
     match &a.mode {
@@ -154,7 +154,7 @@ fn pointer_row_picks_move_the_overlay_cursor() {
         m => panic!("expected Mode::Yank, got {m:?}"),
     }
     // Menu: MenuSelect hovers a row without running it, skips separators.
-    apply_action(&mut a, Action::DetailClose); // close which-key -> Selection
+    apply_action(&mut a, Action::DetailClose); // close yank menu -> Selection
     apply_action(&mut a, Action::MenuOpen);
     let pick = menu_state(&a)
         .items

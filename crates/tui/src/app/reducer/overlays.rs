@@ -223,7 +223,7 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
         Action::DetailClose => {
             // Esc/q is mode-agnostic on purpose — whichever BINDINGS row named
             // it, the close restores what the overlay stacked over: the yank
-            // which-key and the node menu carry their origin mode in `back`
+            // menu and the node menu carry their origin mode in `back`
             // (so Structure -> y -> Esc lands back on the structure modal,
             // not the idle layer), every other overlay closes to the idle
             // mode (Selection — or Home while the home tab is active).
@@ -235,11 +235,11 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
             };
             Outcome::cont()
         }
-        // Open the yank-prefix which-key (`y` + key). The menu itself is
+        // Open the yank menu (`y` + key). The menu itself is
         // rendered from the M::Yank BINDINGS rows; the one-shot close lives in
         // the post-match step at the bottom of this function. Over the Detail
         // modal BOTH the modal's node and its column target are stashed — and
-        // the modal itself is stacked into `back` so the which-key's close
+        // the modal itself is stacked into `back` so the menu's close
         // RESTORES it instead of landing on Selection — or every
         // `y<key>` yank would silently act on the list selection instead of
         // the modal's node. (The `y` row exists in Mode::Detail's bindings.)

@@ -338,7 +338,7 @@ fn sql_and_yank_compiled_keys_dispatch() {
         dispatch(&sql_mode, press(KeyCode::Char('c'))),
         Some(Action::SqlToggleCompiled)
     );
-    // …and `ys` inside the yank prefix copies the compiled SQL.
+    // …and `ys` inside the yank menu copies the compiled SQL.
     assert_eq!(
         dispatch(
             &Mode::Yank { back: None, sel: 0 },

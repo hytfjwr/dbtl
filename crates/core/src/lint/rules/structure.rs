@@ -4,7 +4,7 @@ use super::*;
 
 /// `naming_conventions`: a model whose [`lint_model_type`] is listed in
 /// `naming_prefixes` must start with one of that type's prefixes. The type is
-/// resolved prefix-first like the evaluator — `staging/fct_x` is a *marts*
+/// resolved prefix-first — `staging/fct_x` is a *marts*
 /// model (not a misnamed staging one) and `reports/x` is `other`, which is
 /// prefix-free unless the config defines an `other:` layer.
 pub(super) fn naming_conventions(

@@ -22,7 +22,7 @@
 //! equivalent of `dbt --select state:modified+`; `state:new` is the added
 //! side alone.
 //!
-//! The evaluator stays permissive on purpose — an unknown atom or a `state:`
+//! The evaluation stays permissive on purpose — an unknown atom or a `state:`
 //! selector without a diff just yields an empty set, so the interactive `!`
 //! search never errors mid-typing. Command-line surfaces (`--select`,
 //! `--exclude`, `dbtl ls`, `.dbtl.yml` `exclude:`) share the ONE strict
@@ -186,7 +186,7 @@ fn evaluate_atom(dag: &Dag, diff: Option<&DagDiff>, atom: &str) -> BTreeSet<Stri
 /// right for an interactive `!` search, wrong for a CI flag where it would
 /// silently check nothing. This shares the SAME grammar `select` parses so
 /// the two can't drift: the error cases are exactly the inputs the lenient
-/// evaluator would misread.
+/// evaluation would misread.
 pub fn validate_selector(spec: &str) -> Result<(), String> {
     if spec.trim().is_empty() {
         return Err("empty selector".to_string());
@@ -232,7 +232,7 @@ fn validate_factor(factor: &str) -> Result<(), String> {
     }
     // Mirror evaluate_factor's hop split: a leading `+` or `<N>+` is fine,
     // a NON-numeric lead before a non-empty rest is `a+b`-style nonsense —
-    // the lenient evaluator would read it as the literal name `a+b`.
+    // the lenient evaluation would read it as the literal name `a+b`.
     if let Some((lead, rest)) = factor.split_once('+') {
         if !lead.is_empty() && !lead.chars().all(|c| c.is_ascii_digit()) && !rest.is_empty() {
             return Err(format!(
@@ -724,7 +724,7 @@ mod tests {
 
     // ---- validate_selector -------------------------------------------------
 
-    /// The accepted grammar — every shape the evaluator understands.
+    /// The accepted grammar — every shape `select` understands.
     #[test]
     fn validate_accepts_the_full_grammar() {
         for spec in [
@@ -751,7 +751,7 @@ mod tests {
         }
     }
 
-    /// Every malformed shape the lenient evaluator would silently misread —
+    /// Every malformed shape the lenient evaluation would silently misread —
     /// each rejected with an error naming the bad piece.
     #[test]
     fn validate_rejects_malformed_selectors() {
@@ -802,7 +802,7 @@ mod tests {
     /// `x` plus a downstream hop, never the (atom-less) `x+`-as-upstream
     /// misread.
     #[test]
-    fn validate_matches_the_evaluator_for_edge_hops() {
+    fn validate_matches_select_for_edge_hops() {
         // `x+` — trailing hop on a bare name: valid.
         assert_eq!(validate_selector("stg+"), Ok(()));
         // `2+` — a bounded upstream hop with NO atom: invalid.
