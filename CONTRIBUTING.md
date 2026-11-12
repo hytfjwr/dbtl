@@ -108,6 +108,11 @@ The documentation site lives in `site/`.
   `cargo xtask gen-docs` generates.
 - To preview locally, run `cd site && pnpm install && pnpm run dev`. To check
   search as well, run `pnpm run build && pnpm run preview`.
+- The site is published only when a release is cut. A pull request builds it
+  to check it, and nothing is deployed.
+- In examples, write the release version as `@DBTL_TAG@` (for example `v1.2.3`) or
+  `@DBTL_VERSION@` (`1.2.3`). The build replaces them with the version in
+  `Cargo.toml`, and an unknown `@DBTL_...@` token fails the build.
 
 ## Reporting bugs
 

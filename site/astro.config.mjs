@@ -9,6 +9,7 @@ import {
   remarkLinks,
   remarkLiteralTags,
   remarkReferencePage,
+  remarkVersion,
 } from "./src/lib/markdown/index.ts";
 
 const BASE = "/dbtl";
@@ -48,6 +49,7 @@ export default defineConfig({
       remarkPlugins: [
         remarkComments,
         remarkLiteralTags,
+        remarkVersion,
         [remarkReferencePage, { referenceRoot: linkOptions.referenceRoot }],
         remarkAlerts,
         [remarkLinks, linkOptions],

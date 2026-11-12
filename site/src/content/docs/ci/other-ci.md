@@ -26,7 +26,7 @@ jobs:
 
       - name: Install dbtl
         env:
-          TAG: v0.6.0
+          TAG: @DBTL_TAG@
         run: |
           curl -fsSLO "https://github.com/hytfjwr/dbtl/releases/download/${TAG}/checksums.txt"
           curl -fsSLO "https://github.com/hytfjwr/dbtl/releases/download/${TAG}/dbtl-${TAG}-x86_64-unknown-linux-gnu.tar.gz"

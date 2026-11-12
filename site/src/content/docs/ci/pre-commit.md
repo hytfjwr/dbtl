@@ -14,7 +14,7 @@ Add one to your `.pre-commit-config.yaml`:
 
 ```yaml
 - repo: https://github.com/hytfjwr/dbtl
-  rev: v0.6.0
+  rev: @DBTL_TAG@
   hooks:
     - id: dbtl-lint-system
 ```

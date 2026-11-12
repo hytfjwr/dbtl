@@ -256,3 +256,25 @@ jobs:
     with:
       ref: ${{ needs.prepare.outputs.tag }}
       release-tag: ${{ needs.prepare.outputs.tag }}
+
+  # Publishes the docs site as of the release tag. The release is created
+  # with GITHUB_TOKEN, so a `release: published` trigger would never fire;
+  # this job starts the Docs site workflow explicitly instead, from main
+  # (GitHub Pages deploys only from main) with the tag as the content to
+  # build. Like `demo`, nothing depends on this job, so a failure here leaves
+  # the release and the tap update untouched. To publish by hand, run the
+  # Docs site workflow on main.
+  docs:
+    name: Docs site
+    needs: [prepare, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      # gh workflow run: dispatching a workflow needs actions: write.
+      actions: write
+    steps:
+      - name: Start the Docs site workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh workflow run docs-site.yml --repo "$GITHUB_REPOSITORY" --ref main -f ref="$TAG"

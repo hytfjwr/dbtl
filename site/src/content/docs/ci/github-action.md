@@ -32,13 +32,13 @@ jobs:
           fetch-depth: 0
 
       - name: dbtl check
-        uses: hytfjwr/dbtl@<commit-sha> # v0.6.0
+        uses: hytfjwr/dbtl@<commit-sha> # @DBTL_TAG@
         with:
-          version: v0.6.0
+          version: @DBTL_TAG@
           project-dir: .
 ```
 
-Pin the action to a commit SHA. The `# v0.6.0` comment keeps the tag readable. Set `version:` to the release tag too, because a SHA ref carries no version for the installer to resolve.
+Pin the action to a commit SHA. The `# @DBTL_TAG@` comment keeps the tag readable. Set `version:` to the release tag too, because a SHA ref carries no version for the installer to resolve.
 
 `fetch-depth: 0` makes the base commit resolvable for `--diff git:`. The action also fetches a missing base sha itself at depth 1.
 
@@ -79,9 +79,9 @@ Set `sarif: 'true'` to upload findings to code scanning, and `comment: 'true'` t
       pull-requests: write     # sticky comment
     steps:
       # ... checkout ...
-      - uses: hytfjwr/dbtl@<commit-sha> # v0.6.0
+      - uses: hytfjwr/dbtl@<commit-sha> # @DBTL_TAG@
         with:
-          version: v0.6.0
+          version: @DBTL_TAG@
           sarif: 'true'
           comment: 'true'
 ```

@@ -32,7 +32,7 @@ Verify the download against `checksums.txt` and the build provenance before you 
 
 ```sh
 sha256sum --check --ignore-missing checksums.txt
-gh attestation verify dbtl-v0.6.0-aarch64-apple-darwin.tar.gz --repo hytfjwr/dbtl
+gh attestation verify dbtl-@DBTL_TAG@-aarch64-apple-darwin.tar.gz --repo hytfjwr/dbtl
 ```
 
 ## From source

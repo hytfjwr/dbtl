@@ -43,6 +43,14 @@ a failed attach — run the **Demo** workflow manually with `release-tag`
 set to the release tag; it renders the GIF at the ref you run it on and
 uploads it over any existing `demo.gif`.
 
+The pipeline also starts the **Docs site** workflow
+(`.github/workflows/docs-site.yml`) on `main`, which builds the site from
+the release tag and publishes it to GitHub Pages. This is the only way the
+site is published; pull requests just build it. A failure here never blocks
+the release or the tap update. To publish again by hand, run the **Docs
+site** workflow on `main` with `ref` set to a release tag (empty means the
+latest release).
+
 ## The tag-push and resume paths
 
 - Pushing a `v*` tag directly also runs the pipeline — an escape hatch that
