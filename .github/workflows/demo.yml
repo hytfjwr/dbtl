@@ -1,11 +1,29 @@
 name: Demo
 
-# Manual only — renders demo/demo.tape into demo/demo.gif and uploads it as
-# a workflow artifact for README/docs use. Nothing is committed back.
+# Renders demo/demo.tape into demo/demo.gif with vhs. Runs on pull requests
+# that touch the tape or the TUI (the GIF lands in the run's `demo-gif`
+# artifact, so reviewers can see the screen changes), manually, and as a
+# reusable workflow other pipelines can call for the same render.
 on:
+  pull_request:
+    paths:
+      - "demo/**"
+      - "crates/tui/**"
+      - "src/main.rs"
+      - ".github/workflows/demo.yml"
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to check out and render (default: the caller's ref)"
+        required: false
+        type: string
 
 permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   demo:
@@ -18,6 +36,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
 
       - name: Install Rust toolchain
@@ -27,6 +46,12 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Reads the shared release-build cache main wrote; never saves —
+          # a render-only job would just duplicate the same binaries under
+          # a second key.
+          shared-key: release
+          save-if: false
 
       - name: Build dbtl
         run: cargo build --release --locked
@@ -41,4 +66,15 @@ jobs:
         with:
           name: demo-gif
           path: demo/demo.gif
+          retention-days: 14
           if-no-files-found: error
+
+      - name: Point to the artifact in the run summary
+        run: |
+          BYTES=$(stat -c %s demo/demo.gif)
+          {
+            echo "### Demo GIF"
+            echo
+            echo "- artifact: \`demo-gif\` (the Artifacts section of this run, kept 14 days)"
+            echo "- size: ${BYTES} bytes"
+          } >> "$GITHUB_STEP_SUMMARY"
