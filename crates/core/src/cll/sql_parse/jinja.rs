@@ -395,14 +395,14 @@ pub(super) fn dollar_quote_close(b: &[u8], from: usize, delim: &[u8]) -> Option<
 /// an expression that yields no column refs either way, but that a lint
 /// scan can recognise as generated.
 pub(super) fn render_jinja_expr(inner: &str, mark: JinjaMark) -> String {
+    if jinja_expr_emits_nothing(inner) {
+        return " ".to_string();
+    }
     let e = inner
         .trim()
         .trim_start_matches(['-', '+', '~'])
         .trim_end_matches(['-', '+', '~'])
         .trim();
-    if e.starts_with("config") && e[6..].trim_start().starts_with('(') {
-        return " ".to_string();
-    }
     if let Some(args) = jinja_call_args(e, "ref") {
         // ref('model') / ref("pkg","model") — the LAST literal arg is the
         // model name (a two-arg ref's first arg is the package).
@@ -437,6 +437,19 @@ pub(super) fn render_jinja_expr(inner: &str, mark: JinjaMark) -> String {
         // keeps the parse valid and tells the scan "generated, not written".
         JinjaMark::Marked => quoted_ident(&format!("{JINJA_MARK_PREFIX}jinja__")),
     }
+}
+
+/// Does a `{{ … }}` body render to nothing? Only `config(…)` emits
+/// whitespace — every other expression yields text. Shared by
+/// [`render_jinja_expr`] and the trailing-semicolon scan, which asks the
+/// same question without paying for the rendered string.
+pub(super) fn jinja_expr_emits_nothing(inner: &str) -> bool {
+    let e = inner
+        .trim()
+        .trim_start_matches(['-', '+', '~'])
+        .trim_end_matches(['-', '+', '~'])
+        .trim();
+    e.starts_with("config") && e[6..].trim_start().starts_with('(')
 }
 
 /// Double-quote an identifier for the rendered SQL (inner `"`s doubled).
@@ -579,10 +592,7 @@ pub(crate) fn trailing_semicolon(sql: &str) -> Option<Range<usize>> {
                             // other `{{ }}` emits text — meaningful, but
                             // never a `;`, so any non-`;` byte stands in.
                             b'{' => {
-                                if !render_jinja_expr(&sql[i + 2..e], JinjaMark::Plain)
-                                    .trim()
-                                    .is_empty()
-                                {
+                                if !jinja_expr_emits_nothing(&sql[i + 2..e]) {
                                     last = Some((i, b'"'));
                                 }
                             }
