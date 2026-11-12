@@ -84,8 +84,10 @@ pub fn run_impact(
         }
     };
     match format {
-        ImpactFormat::Markdown => print!("{markdown}"),
-        ImpactFormat::Json => print!("{}", json_bytes(&mut json_cache)?),
+        ImpactFormat::Markdown => write_stdout(&markdown, anstream::ColorChoice::Auto)?,
+        ImpactFormat::Json => {
+            write_stdout(&json_bytes(&mut json_cache)?, anstream::ColorChoice::Auto)?
+        }
     }
     for (fmt, path) in &files {
         let contents = match fmt {
@@ -123,6 +125,8 @@ pub struct CheckArgs<'a> {
     pub fail_on: Option<dbtl::FailOn>,
     /// `--format` — the stdout report format.
     pub format: ReportFormat,
+    /// `--color` — when the stdout `text`/`concise` report may be styled.
+    pub color: ColorArg,
     /// `--quiet` — suppress stdout; the exit code carries the verdict.
     pub quiet: bool,
     /// `--report <FMT>:<PATH>` destinations (repeatable).
@@ -262,6 +266,7 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
     let plan = OutputPlan::build(
         args.format,
         args.quiet,
+        args.color,
         args.reports,
         args.step_summary,
         args.path_prefix,
@@ -650,6 +655,12 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
         // filled before `lint_gates` lifts the findings into the Report.
         dbtl::fill_finding_lines(&mut outcome.findings, dag, &lint_project_root(&candidates));
         gates.extend(lint_gates(dag, &outcome));
+        report.lint = Some(LintTally {
+            pre_existing: outcome.rules.iter().map(|r| r.pre_existing).sum(),
+            has_diff: outcome.has_diff,
+            skipped: outcome.skipped,
+            unparsed_models: 0,
+        });
     }
 
     let failures = gates
@@ -658,7 +669,20 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
         .count();
     report.gates = gates;
     report.summary = Report::summarize(&report.gates);
-    plan.emit(&report, "check")?;
+    // The same `.dbtl.yml`-candidate root `fill_finding_lines` resolved
+    // `location.file` against — `.yml` excerpts read from disk here.
+    let lint_root = lint_project_root(&dbtl::project_config_candidates(
+        manifest_arg.as_deref(),
+        project_arg.as_deref(),
+    ));
+    plan.emit(
+        &report,
+        "check",
+        &RenderEnv {
+            dag,
+            project_root: &lint_root,
+        },
+    )?;
     if failures == 0 {
         Ok(())
     } else {

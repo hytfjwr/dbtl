@@ -323,32 +323,37 @@ fn check_lint_reports_one_gate_per_rule() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
+    // Every tripped rule reports one `STATUS lint <rule>:` row…
     for rule in [
         "direct_join_to_source",
         "multiple_sources_joined",
         "source_fanout",
         "model_fanout",
-        "root_models",
         "rejoining_upstream",
-        "marts_depend_on_source",
         "missing_primary_key_tests",
-        "public_models_without_contract",
-        "undocumented_models",
-        "naming_conventions",
-        "layer_violation",
+        "unused_sources",
+        "incremental_without_unique_key",
+        "sources_without_freshness",
+        "select_star",
     ] {
         assert!(
             stdout.contains(&format!("lint {rule}:")),
-            "a line for every rule, got: {stdout:?}"
+            "a row for {rule}, got: {stdout:?}"
         );
     }
     assert!(
-        stdout.contains("FAIL lint direct_join_to_source: 16 violation(s):"),
+        stdout.contains("FAIL lint direct_join_to_source: 16 findings"),
         "the frozen count, got: {stdout:?}"
     );
+    // …while clean rules (undocumented_models, naming_conventions, …)
+    // collapse into the single folded PASS row.
     assert!(
-        stdout.contains("PASS lint undocumented_models: none"),
-        "clean rules still report PASS"
+        stdout.contains("PASS lint: ") && stdout.contains("clean"),
+        "clean rules collapse, got: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("lint undocumented_models:"),
+        "a clean rule folds, got: {stdout:?}"
     );
 }
 
@@ -371,10 +376,13 @@ fn check_rules_selects_a_subset_and_implies_lint() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("PASS lint root_models:"));
-    assert!(stdout.contains("PASS lint undocumented_models:"));
+    // Both clean rules fold into the collapsed PASS row.
     assert!(
-        !stdout.contains("lint direct_join_to_source:"),
+        stdout.contains("PASS lint: 2 rules clean"),
+        "the clean subset folds, got: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("direct_join_to_source"),
         "unselected rules don't report, got: {stdout:?}"
     );
 }
@@ -417,7 +425,7 @@ fn check_lint_diff_gates_on_new_violations_only() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("PASS lint direct_join_to_source: no new violations (16 pre-existing)"),
+        stdout.contains("No findings") && stdout.contains("pre-existing"),
         "pre-existing count is reported, got: {stdout:?}"
     );
 
@@ -445,13 +453,19 @@ fn check_lint_diff_gates_on_new_violations_only() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("FAIL lint undocumented_models: 1 new violation(s): pos_txn"),
+        stdout.contains("FAIL lint undocumented_models: 1 new finding"),
         "only the new finding gates, got: {stdout:?}"
     );
-    // The pre-existing violations still don't gate.
     assert!(
-        stdout.contains("PASS lint direct_join_to_source: no new violations"),
-        "stale violations stay PASS, got: {stdout:?}"
+        stdout.contains("error[undocumented_models]:") && stdout.contains("pos_txn"),
+        "the new finding's block names the node, got: {stdout:?}"
+    );
+    // The pre-existing violations still don't gate — every other lint
+    // rule folds into the collapsed PASS row, and the summary reports
+    // the not-counted tally.
+    assert!(
+        stdout.contains("pre-existing"),
+        "stale violations stay uncounted, got: {stdout:?}"
     );
 }
 
@@ -534,10 +548,11 @@ fn check_lint_dbtl_yml_disables_rules() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        !stdout.contains("lint direct_join_to_source:"),
+        !stdout.contains("direct_join_to_source"),
         "a disabled rule prints no line, got: {stdout:?}"
     );
-    assert!(stdout.contains("PASS lint undocumented_models: none"));
+    // Clean rules collapse into the folded PASS row.
+    assert!(stdout.contains("PASS lint: "), "got: {stdout:?}");
 }
 
 // ---- `impact`/`check` column-level diff -----------------------------------
@@ -970,7 +985,8 @@ fn check_select_narrows_lint_findings() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("FAIL lint missing_primary_key_tests: 1 violation(s): fct_orders"),
+        stdout.contains("FAIL lint missing_primary_key_tests: 1 finding")
+            && stdout.contains("fct_orders"),
         "narrowed to the selection, got: {stdout:?}"
     );
     // And an `fct_*`-passing rule selected under the same spec passes.

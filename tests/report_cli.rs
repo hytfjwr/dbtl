@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{dbtl_cmd, manifest_path as fixture_manifest};
+use common::{dbtl_cmd, fixture_path, manifest_path as fixture_manifest};
 use std::path::{Path, PathBuf};
 
 fn run(args: &[&str]) -> std::process::Output {
@@ -265,7 +265,7 @@ fn report_writes_multiple_formats_matching_stdout() {
     // The stdout format is text; the files carry their own formats — the
     // exact bytes `--format` would print.
     let stdout = out_text(&out);
-    assert!(stdout.starts_with("scope:"));
+    assert!(stdout.contains("scope: root project only"));
     let file_json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
     assert_eq!(file_json["schema"], "dbtl.report/v1");
@@ -394,6 +394,45 @@ fn path_prefix_without_a_path_format_is_a_usage_error() {
         uri.starts_with("sub/dir/"),
         "the prefix lands on sarif uris: {uri}"
     );
+}
+
+#[test]
+fn path_prefix_does_not_reach_concise_lines() {
+    // A path-carrying --report makes --path-prefix valid, but the prefix is
+    // a github/sarif/codeclimate concern — concise lines (stdout AND the
+    // --report concise: file) keep the project-relative path, exactly like
+    // text's findings.
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    let concise = tmp.path().join("r.txt");
+    let sarif = tmp.path().join("r.sarif");
+    let out = check_on(
+        &m,
+        &[
+            "--lint",
+            "--format",
+            "concise",
+            "--path-prefix",
+            "sub/dir",
+            "--report",
+            &format!("concise:{}", concise.display()),
+            "--report",
+            &format!("sarif:{}", sarif.display()),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1), "lint still gates");
+    let stdout = out_text(&out);
+    let file = std::fs::read_to_string(&concise).unwrap();
+    for (label, body) in [("stdout", &stdout), ("--report concise:", &file)] {
+        let line = body
+            .lines()
+            .find(|l| l.contains("[select_star]") || l.contains("[root_models]"))
+            .unwrap_or_else(|| panic!("{label} carries a finding line: {body}"));
+        assert!(
+            !line.starts_with("sub/dir"),
+            "{label} stays project-relative: {line}"
+        );
+    }
 }
 
 // ---- check --docs-dir -------------------------------------------------------
@@ -563,6 +602,7 @@ fn lint_accepts_every_format_and_report_flag() {
     let m = manifest_in(tmp.path());
     for fmt in [
         "text",
+        "concise",
         "markdown",
         "json",
         "github",
@@ -583,4 +623,262 @@ fn lint_accepts_every_format_and_report_flag() {
     // source is still a usage error, not an input error.
     let out = run(&["lint", "--report", "bogus:x"]);
     assert_eq!(out.status.code(), Some(2));
+}
+
+// ---- concise: one greppable line per finding ---------------------------------
+
+/// The committed sample project — source-mode runs carry real yml
+/// positions the manifest fixture can't produce.
+fn sample_project() -> PathBuf {
+    fixture_path("sample_project")
+}
+
+#[test]
+fn concise_is_one_greppable_line_per_finding() {
+    // `file:line:col: severity[rule] message` — the positions come from
+    // the finding, so a `.sql` finding with no recorded span anchors at
+    // its file and never invents a `:1`.
+    let proj = sample_project();
+    let out = run(&[
+        "lint",
+        "--source",
+        proj.to_str().unwrap(),
+        "--rules",
+        "missing_primary_key_tests",
+        "--format",
+        "concise",
+    ]);
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
+    let stdout = out_text(&out);
+    assert!(
+        stdout
+            .contains("models/marts/schema.yml:4:11: error[missing_primary_key_tests] fct_orders"),
+        "a positioned anchor: {stdout}"
+    );
+    assert!(
+        stdout.contains("models/marts/agg_country_orders.sql: error[missing_primary_key_tests]"),
+        "a file-only anchor: {stdout}"
+    );
+    assert!(!stdout.contains(".sql:1"), "no invented :1: {stdout}");
+    // …and the same summary the text report ends with.
+    assert!(stdout.contains("Found 9 errors and 0 warnings in 5 files"));
+    assert!(stdout.contains("1 rule reported findings"));
+}
+
+#[test]
+fn concise_lines_match_the_json_finding_set() {
+    // The line count is the counted-finding count — nothing extra lists,
+    // nothing drops (modulo the blank separator + summary tail).
+    let m = fixture_manifest();
+    let out = run(&[
+        "lint",
+        "--manifest",
+        m.to_str().unwrap(),
+        "--format",
+        "concise",
+    ]);
+    let stdout = out_text(&out);
+    let concise_count = stdout
+        .lines()
+        .filter(|l| l.contains("[") && !l.starts_with("Found") && !l.starts_with("No findings"))
+        .count();
+    assert_eq!(concise_count, counted_findings(&m));
+    // The machine reports never adopt the human formats' anchors — the
+    // json gate messages keep their `violation(s)` wording.
+    let out = lint_on_json(&m);
+    assert!(out.contains("violation(s)"), "machine wording: {out}");
+}
+
+/// `lint --format json`'s raw stdout — the machine-report oracle.
+fn lint_on_json(m: &Path) -> String {
+    let out = run(&[
+        "lint",
+        "--manifest",
+        m.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    out_text(&out)
+}
+
+// ---- --color + ANSI discipline -------------------------------------------------
+
+/// The escape byte ANSI styling starts with — every "no color" assertion
+/// searches stdout/the report files for it.
+const ESC: char = '\u{1b}';
+
+#[test]
+fn color_flag_and_env_control_the_ansi() {
+    let m = fixture_manifest();
+    // `--color always` styles the human formats — even through a pipe.
+    let out = run(&[
+        "lint",
+        "--manifest",
+        m.to_str().unwrap(),
+        "--color",
+        "always",
+    ]);
+    assert!(
+        out_text(&out).contains(ESC),
+        "always forces styling: {}",
+        out_text(&out)
+    );
+    // `--color never` stays plain — and it beats the environment's force.
+    let out = dbtl_cmd()
+        .args([
+            "lint",
+            "--manifest",
+            m.to_str().unwrap(),
+            "--color",
+            "never",
+        ])
+        .env("CLICOLOR_FORCE", "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run");
+    assert!(
+        !out_text(&out).contains(ESC),
+        "never wins over CLICOLOR_FORCE"
+    );
+    // Under `auto` the environment speaks: CLICOLOR_FORCE colors a piped
+    // run, NO_COLOR uncolors it.
+    let out = dbtl_cmd()
+        .args(["lint", "--manifest", m.to_str().unwrap()])
+        .env("CLICOLOR_FORCE", "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run");
+    assert!(
+        out_text(&out).contains(ESC),
+        "auto honors CLICOLOR_FORCE: {}",
+        out_text(&out)
+    );
+    let out = dbtl_cmd()
+        .args(["lint", "--manifest", m.to_str().unwrap()])
+        .env("CLICOLOR_FORCE", "1")
+        .env("NO_COLOR", "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run");
+    assert!(
+        !out_text(&out).contains(ESC),
+        "NO_COLOR beats the force under auto"
+    );
+    // A bogus value is a usage error — the flag is closed-world.
+    let out = run(&[
+        "lint",
+        "--manifest",
+        m.to_str().unwrap(),
+        "--color",
+        "bogus",
+    ]);
+    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
+}
+
+#[test]
+fn ansi_never_reaches_machine_formats_or_report_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    let txt = tmp.path().join("r.txt");
+    let json = tmp.path().join("r.json");
+    // `--color always` is a stdout knob — the report files stay plain.
+    let out = run(&[
+        "lint",
+        "--manifest",
+        m.to_str().unwrap(),
+        "--color",
+        "always",
+        "--report",
+        &format!("text:{}", txt.display()),
+        "--report",
+        &format!("json:{}", json.display()),
+    ]);
+    assert!(out_text(&out).contains(ESC), "stdout is styled");
+    for file in [&txt, &json] {
+        let body = std::fs::read_to_string(file).unwrap();
+        assert!(!body.contains(ESC), "{} carries no ANSI", file.display());
+    }
+    // …and so does every machine format on stdout itself.
+    for fmt in [
+        "json",
+        "sarif",
+        "junit",
+        "codeclimate",
+        "markdown",
+        "github",
+    ] {
+        let out = run(&[
+            "lint",
+            "--manifest",
+            m.to_str().unwrap(),
+            "--format",
+            fmt,
+            "--color",
+            "always",
+        ]);
+        assert!(
+            !out_text(&out).contains(ESC),
+            "{fmt} stdout carries no ANSI"
+        );
+    }
+}
+
+// ---- the annotated excerpt, end to end -----------------------------------------
+
+#[test]
+fn text_report_underlines_the_declaring_source_line() {
+    // `missing_primary_key_tests` on fct_orders pins the `- name:` entry
+    // at schema.yml:4:11 — the excerpt prints that line and underlines
+    // exactly its value span.
+    let proj = sample_project();
+    let out = run(&[
+        "lint",
+        "--source",
+        proj.to_str().unwrap(),
+        "--rules",
+        "missing_primary_key_tests",
+    ]);
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
+    let stdout = out_text(&out);
+    for needle in [
+        "error[missing_primary_key_tests]: fct_orders",
+        "--> models/marts/schema.yml:4:11",
+        "4 |   - name: fct_orders",
+        "^^^^^^^^^^ declared here",
+        "= help:",
+        "= docs: https://hytfjwr.github.io/dbtl/reference/lint-rules/#missing_primary_key_tests",
+    ] {
+        assert!(stdout.contains(needle), "missing {needle:?} in:\n{stdout}");
+    }
+}
+
+// ---- broken pipes ---------------------------------------------------------------
+
+#[test]
+fn lint_survives_a_broken_stdout_pipe() {
+    // `dbtl lint | head` — a reader closing mid-report is a normal end of
+    // output, not a panic. (The child may legitimately die by SIGPIPE like
+    // any unix filter; it must never crash-report.)
+    let m = fixture_manifest();
+    let mut child = dbtl_cmd()
+        .args([
+            "lint",
+            "--manifest",
+            m.to_str().unwrap(),
+            "--color",
+            "always",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn dbtl");
+    let mut stdout = child.stdout.take().unwrap();
+    use std::io::Read;
+    let _ = stdout.read(&mut [0u8; 64]); // consume a bit, then close
+    drop(stdout);
+    let out = child.wait_with_output().expect("wait");
+    assert_ne!(out.status.code(), Some(101), "no panic on a closed pipe");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("panic"), "no panic on stderr either: {err}");
 }

@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::{dbtl_cmd, manifest_path as fixture_manifest, sample_manifest_path};
+use common::{dbtl_cmd, manifest_path as fixture_manifest, sample_manifest_path, SAMPLE_PROJECT};
 use std::path::{Path, PathBuf};
 
 fn run(args: &[&str]) -> std::process::Output {
@@ -66,7 +66,7 @@ fn error_findings_exit_one_and_warn_only_exits_zero() {
         stderr(&out)
     );
     let stdout = out_text(&out);
-    assert!(stdout.contains("FAIL lint"), "verdict line: {stdout}");
+    assert!(stdout.contains("error["), "verdict line: {stdout}");
 
     // Downgrade every firing rule to warn → only warnings remain → pass.
     std::fs::write(
@@ -82,7 +82,7 @@ fn error_findings_exit_one_and_warn_only_exits_zero() {
         stderr(&out)
     );
     let text = out_text(&out);
-    assert!(text.contains("WARN lint"), "verdict line: {text}");
+    assert!(text.contains("warning["), "verdict line: {text}");
     // …but `--fail-on warn` fails on them again.
     let out = lint_on(&m, &["--fail-on", "warn"]);
     assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
@@ -165,19 +165,15 @@ fn warn_findings_report_with_their_severity() {
     let out = lint_on(&m, &[]);
     assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
     let stdout = out_text(&out);
-    // The gate line carries its severity tag…
+    // The finding header carries the configured severity tag…
     assert!(
-        stdout
-            .lines()
-            .any(|l| l.starts_with("WARN lint direct_join_to_source:") && l.ends_with("(warn)")),
-        "a warn gate line: {stdout}"
+        stdout.contains("warning[direct_join_to_source]:"),
+        "warn-severity finding headers: {stdout}"
     );
-    // …and a counted finding line nests under it.
+    // …and the block carries its position anchor + fix guidance.
     assert!(
-        stdout
-            .lines()
-            .any(|l| l.starts_with("  ") && l.contains("direct_join_to_source ")),
-        "a finding line: {stdout}"
+        stdout.contains("--> ") && stdout.contains("= help:"),
+        "an annotated block per finding: {stdout}"
     );
 }
 
@@ -510,7 +506,7 @@ fn baseline_file_and_diff_compose_at_the_cli() {
     );
     let stdout = out_text(&out);
     assert!(
-        stdout.contains("no new violations") && stdout.contains("baselined"),
+        stdout.contains("No findings") && stdout.contains("baselined"),
         "the baselined count reports under --diff: {stdout}"
     );
     assert!(
@@ -556,7 +552,7 @@ fn diff_counts_only_new_violations() {
     );
     let stdout = out_text(&out);
     assert!(
-        stdout.contains("no new violations") && stdout.contains("pre-existing"),
+        stdout.contains("No findings") && stdout.contains("pre-existing"),
         "the diff wording: {stdout}"
     );
 }
@@ -734,14 +730,12 @@ fn text_output_is_deterministic_across_runs() {
     let a = lint_on(&m, &[]);
     let b = lint_on(&m, &[]);
     assert_eq!(a.stdout, b.stdout, "same input → byte-identical stdout");
-    // One counted finding per line under the gate it tripped —
-    // `file[:line[:col]] rule message`.
+    // One annotated block per counted finding — `severity[rule]: message`
+    // over a position line + fix footer.
     let stdout = out_text(&a);
     assert!(
-        stdout
-            .lines()
-            .any(|l| l.starts_with("  ") && l.contains("direct_join_to_source ")),
-        "finding lines: {stdout}"
+        stdout.contains("error[direct_join_to_source]:"),
+        "finding blocks: {stdout}"
     );
 }
 
@@ -918,19 +912,17 @@ fn catalog_rules_skip_without_a_catalog_and_report_with_one() {
     let out = lint_on(&m, &["--fail-on", "never"]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
     let text = out_text(&out);
-    for rule in ["warehouse_type_drift", "columns_missing_in_warehouse"] {
-        assert!(
-            text.contains(&format!("SKIP lint {rule}:")),
-            "the skip gate names {rule}: {text}"
-        );
-    }
+    assert!(
+        text.contains("2 skipped (need --catalog)"),
+        "the skipped-rule tally lands on the summary line: {text}"
+    );
 
     // A sibling catalog.json is auto-detected → both rules evaluate.
     catalog_in(tmp.path(), &m);
     let out = lint_on(&m, &["--fail-on", "never"]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
     assert!(
-        !out_text(&out).contains("SKIP lint "),
+        !out_text(&out).contains("skipped"),
         "with a catalog nothing skips: {}",
         out_text(&out)
     );
@@ -1061,7 +1053,7 @@ fn check_diff_marks_pre_existing_findings() {
     ]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
     assert!(
-        out_text(&out).contains("no new violations"),
+        out_text(&out).contains("pre-existing"),
         "self-diff suppresses every finding: {}",
         out_text(&out)
     );
@@ -1159,6 +1151,64 @@ fn check_json_findings_carry_the_yml_span_and_metadata() {
     );
 }
 
+// ---- SQL-rule positions: findings underline the offending SQL -----------------
+
+#[test]
+fn lint_select_star_points_at_the_wildcard_in_the_model_file() {
+    // `fct_orders`'s `o.*` — the expected line/column is COMPUTED from the
+    // fixture (never a hardcoded line number), so the test survives edits
+    // that move lines around.
+    let file = PathBuf::from(SAMPLE_PROJECT).join("models/marts/fct_orders.sql");
+    let raw = std::fs::read_to_string(&file).unwrap();
+    let at = raw.find("o.*").expect("fct_orders selects o.*");
+    let line = raw[..at].matches('\n').count() + 1;
+    let column = raw[..at].rsplit('\n').next().unwrap().chars().count() + 1;
+
+    let out = run(&["lint", "--source", SAMPLE_PROJECT, "--rules", "select_star"]);
+    let stdout = out_text(&out);
+    assert!(
+        stdout.contains(&format!("models/marts/fct_orders.sql:{line}:{column}")),
+        "the finding anchors at the wildcard (computed {line}:{column}): {stdout}"
+    );
+
+    // JSON carries the full span + the annotation label.
+    let out = run(&[
+        "lint",
+        "--source",
+        SAMPLE_PROJECT,
+        "--rules",
+        "select_star",
+        "--format",
+        "json",
+    ]);
+    let json: serde_json::Value =
+        serde_json::from_str(&out_text(&out)).expect("lint stdout is pure JSON");
+    let finding = json["gates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["id"] == "lint:select_star")
+        .and_then(|g| {
+            g["findings"].as_array().and_then(|a| {
+                a.iter()
+                    .find(|f| f["node_uid"] == "model.sample.fct_orders")
+            })
+        })
+        .expect("a select_star finding on fct_orders");
+    assert_eq!(
+        finding["location"],
+        serde_json::json!({
+            "file": "models/marts/fct_orders.sql",
+            "line": line,
+            "column": column,
+            "end_line": line,
+            "end_column": column + 3,
+        }),
+        "the `o.*` span — end exclusive: {finding}"
+    );
+    assert_eq!(finding["label"], "wildcard");
+}
+
 // ---- --select: findings restricted to the selected nodes ---------------------
 
 #[test]
@@ -1173,7 +1223,7 @@ fn lint_select_restricts_findings_to_the_selection() {
         "no fct_* node violates the prefix rule, stderr: {}",
         stderr(&out)
     );
-    assert!(out_text(&out).contains("PASS lint naming_conventions: none"));
+    assert!(out_text(&out).contains("No findings"));
 
     let out = lint_on(
         &m,
@@ -1182,7 +1232,7 @@ fn lint_select_restricts_findings_to_the_selection() {
     assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
     let stdout = out_text(&out);
     assert!(
-        stdout.contains("FAIL lint naming_conventions: 1 violation(s): cll_demo"),
+        stdout.contains("error[naming_conventions]:") && stdout.contains("cll_demo"),
         "only the selected node's finding, got: {stdout}"
     );
     assert!(!stdout.contains("agg_country_orders"), "{stdout}");

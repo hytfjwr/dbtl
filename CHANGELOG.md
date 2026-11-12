@@ -31,6 +31,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   to `default` with a warning. Pick a new preset with `dbtl --list-themes`,
   and update any `theme:` name or custom theme's `base:` that pointed at an
   old preset.
+- **The `text` report format was rebuilt.** `dbtl lint` and
+  `dbtl check --lint` now render each counted finding as an annotated
+  block — `error[rule]: message` over a `--> file:line:column` position,
+  the source excerpt with the span underlined, and `= help:`/`= docs:`
+  footers — followed by `Found N errors and M warnings in K files` and
+  `N rules reported findings; M skipped (…)` summary lines. The previous
+  per-rule `PASS`/`WARN`/`FAIL` lines with indented findings are gone:
+  clean lint rules fold into a single `PASS lint: N rules clean` row,
+  `dbtl check` keeps a `STATUS lint <rule>: N [new] finding(s)` row for
+  each tripped rule only, and `dbtl lint` reports skipped rules on the
+  summary line instead of `SKIP lint <rule>:` rows. Scripts parsing the
+  old layout should switch to `--format concise` or a machine format.
 
 ### Added
 
@@ -41,6 +53,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `dbtl lint` subcommand: the static rule set on its own, with
   `--write-baseline`/`--no-baseline`, `--list-rules`, `--explain`, and the
   full report-format set.
+- Lint findings carry positions: `.yml` attribute findings underline their
+  declaring `- name:` value, and the SQL rules (`select_star`,
+  `hard_coded_references`, `cartesian_join`, `unknown_column_reference`,
+  `forbidden_patterns`) underline the offending syntax in the model's
+  `.sql` file — additional occurrences ride as secondary labels. A
+  position a rule can't pin exactly is left file-scoped rather than
+  guessed.
 - Lint rule registry: named rules with declared severities, parameters, and
   required inputs; a rule whose input is missing reports `SKIP` instead of
   failing. 15 additional graph/metadata rules ship at `warn` severity,
@@ -58,10 +77,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   revision, materialized read-only via `git ls-tree`/`git cat-file` — no
   checkout needed.
 - `dbtl check`/`lint` report formats: one `dbtl.report/v1` document rendered
-  as `text`, `markdown`, `json`, `github` annotations, `sarif`, `junit`, or
-  `codeclimate`; `--report <FMT>:<PATH>` writes files, `--step-summary`
-  appends to `GITHUB_STEP_SUMMARY`, `--path-prefix` rewrites paths for
-  repository subdirectories.
+  as `text`, `concise`, `markdown`, `json`, `github` annotations, `sarif`,
+  `junit`, or `codeclimate`; `--report <FMT>:<PATH>` writes files,
+  `--step-summary` appends to `GITHUB_STEP_SUMMARY`, `--path-prefix`
+  rewrites paths for repository subdirectories.
+- `--format concise` on `check`/`lint`: one finding per line as
+  `file[:line[:column]]: severity[rule] message` for editors and grep.
+- `--color auto|always|never` on `check`/`lint`: ANSI styling for the
+  stdout human formats, honoring the terminal and `NO_COLOR`/
+  `CLICOLOR_FORCE` under `auto`. Report files, machine formats, and the
+  step summary are always unstyled, and a closed stdout pipe
+  (`dbtl lint | head`) ends the report without panicking.
 - Composite GitHub Action at the repository root (`uses: hytfjwr/dbtl`):
   installs a release binary, runs `dbtl check` with annotations, a step
   summary, optional SARIF upload and a sticky PR comment. A

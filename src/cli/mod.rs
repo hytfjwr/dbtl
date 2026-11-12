@@ -296,17 +296,26 @@ pub enum Commands {
         /// shipped default.
         #[arg(long, value_enum)]
         fail_on: Option<FailOnArg>,
-        /// Report format on stdout: `text` (the line report, default),
+        /// Report format on stdout: `text` (the annotated report, default),
+        /// `concise` (one finding per line — editor/grep-friendly),
         /// `markdown` (a document suited to a PR comment), `json` (the
         /// `dbtl.report/v1` payload), `github` (Actions workflow
         /// annotations), `sarif` (code-scanning upload), `junit` (test
         /// report XML), or `codeclimate` (Code Quality issues).
         #[arg(long, value_enum, default_value = "text")]
         format: ReportFormat,
+        /// When the stdout `text`/`concise` report uses ANSI color: `auto`
+        /// (default) colors only when the terminal and environment allow,
+        /// `always` colors even when stdout is piped, `never` disables it.
+        /// Every other format, every `--report` file, and the step summary
+        /// are always unstyled.
+        #[arg(long, value_enum, default_value = "auto")]
+        color: ColorArg,
         /// Also write the report to a file: `--report <FMT>:<PATH>`
         /// (repeatable; `FMT` is any `--format` value). Contents match the
-        /// bytes that format prints on stdout; parent directories are
-        /// created and existing files overwritten.
+        /// bytes that format prints on stdout apart from color — files are
+        /// always unstyled; parent directories are created and existing
+        /// files overwritten.
         #[arg(long, value_name = "FMT:PATH")]
         report: Vec<String>,
         /// Append the markdown report to the file the GITHUB_STEP_SUMMARY
@@ -355,17 +364,26 @@ pub enum Commands {
         /// only reports. Overrides `.dbtl.yml`'s top-level `fail_on`.
         #[arg(long, value_enum)]
         fail_on: Option<FailOnArg>,
-        /// Report format on stdout: `text` (the line report, default),
+        /// Report format on stdout: `text` (the annotated report, default),
+        /// `concise` (one finding per line — editor/grep-friendly),
         /// `markdown` (a document suited to a PR comment), `json` (the
         /// `dbtl.report/v1` payload), `github` (Actions workflow
         /// annotations), `sarif` (code-scanning upload), `junit` (test
         /// report XML), or `codeclimate` (Code Quality issues).
         #[arg(long, value_enum, default_value = "text")]
         format: ReportFormat,
+        /// When the stdout `text`/`concise` report uses ANSI color: `auto`
+        /// (default) colors only when the terminal and environment allow,
+        /// `always` colors even when stdout is piped, `never` disables it.
+        /// Every other format, every `--report` file, and the step summary
+        /// are always unstyled.
+        #[arg(long, value_enum, default_value = "auto")]
+        color: ColorArg,
         /// Also write the report to a file: `--report <FMT>:<PATH>`
         /// (repeatable; `FMT` is any `--format` value). Contents match the
-        /// bytes that format prints on stdout; parent directories are
-        /// created and existing files overwritten.
+        /// bytes that format prints on stdout apart from color — files are
+        /// always unstyled; parent directories are created and existing
+        /// files overwritten.
         #[arg(long, value_name = "FMT:PATH")]
         report: Vec<String>,
         /// Append the markdown report to the file the GITHUB_STEP_SUMMARY
@@ -384,7 +402,7 @@ pub enum Commands {
         /// the project root). Writes always exit 0 and cannot combine with
         /// `--diff`.
         #[arg(long, num_args = 0..=1, value_name = "PATH",
-               conflicts_with_all = ["list_rules", "explain", "fail_on", "format", "no_baseline", "report", "step_summary", "path_prefix"])]
+               conflicts_with_all = ["list_rules", "explain", "fail_on", "format", "color", "no_baseline", "report", "step_summary", "path_prefix"])]
         write_baseline: Option<Option<String>>,
         /// Do not read the lint baseline file — every finding counts again.
         #[arg(long)]
@@ -392,12 +410,12 @@ pub enum Commands {
         /// List every lint rule — id, category, effective severity, summary —
         /// and exit. Reads `.dbtl.yml` when found; never loads a data source.
         #[arg(long,
-               conflicts_with_all = ["explain", "write_baseline", "quiet", "format", "fail_on", "no_baseline", "report", "step_summary", "path_prefix"])]
+               conflicts_with_all = ["explain", "write_baseline", "quiet", "format", "color", "fail_on", "no_baseline", "report", "step_summary", "path_prefix"])]
         list_rules: bool,
         /// Show one rule's full registry entry (rationale, example, params,
         /// fix guidance, docs link) and exit — no data load.
         #[arg(long, value_name = "ID",
-               conflicts_with_all = ["list_rules", "write_baseline", "quiet", "format", "fail_on", "no_baseline", "report", "step_summary", "path_prefix"])]
+               conflicts_with_all = ["list_rules", "write_baseline", "quiet", "format", "color", "fail_on", "no_baseline", "report", "step_summary", "path_prefix"])]
         explain: Option<String>,
         /// Restrict findings to nodes matching a dbt selector — the grammar
         /// of `dbtl ls` (`tag:x`, `path:y`, `+name+`, `state:modified`, …),
@@ -533,6 +551,30 @@ impl From<FailOnArg> for dbtl::FailOn {
             FailOnArg::Error => dbtl::FailOn::Error,
             FailOnArg::Warn => dbtl::FailOn::Warn,
             FailOnArg::Never => dbtl::FailOn::Never,
+        }
+    }
+}
+
+/// The `--color` argument `check`/`lint` accept: when the stdout `text`/
+/// `concise` report carries ANSI styling. Resolved to `anstream`'s choice
+/// (the detection itself stays with anstream — tty probing, `NO_COLOR`,
+/// `CLICOLOR[_FORCE]`, `TERM`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ColorArg {
+    /// Color when the terminal/environment allows it (the default).
+    Auto,
+    /// Always emit ANSI color on stdout, even piped.
+    Always,
+    /// Never emit ANSI color.
+    Never,
+}
+
+impl From<ColorArg> for anstream::ColorChoice {
+    fn from(v: ColorArg) -> Self {
+        match v {
+            ColorArg::Auto => anstream::ColorChoice::Auto,
+            ColorArg::Always => anstream::ColorChoice::Always,
+            ColorArg::Never => anstream::ColorChoice::Never,
         }
     }
 }

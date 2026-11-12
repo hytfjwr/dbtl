@@ -29,9 +29,11 @@ use std::collections::BTreeSet;
 use sqlparser::ast::{
     AccessExpr, Distinct, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArgumentClause,
     FunctionArguments, GroupByExpr, InTarget, Join, JoinConstraint, JoinOperator, LimitClause,
-    NamedWindowExpr, OrderByKind, PivotValueSource, Query, Select, SelectItem, SetExpr, Statement,
-    Subscript, TableFactor, TableWithJoins, TopQuantity, WindowSpec, WindowType,
+    NamedWindowExpr, ObjectNamePart, OrderByKind, PivotValueSource, Query, Select, SelectItem,
+    SetExpr, Spanned, Statement, Subscript, TableFactor, TableWithJoins, TopQuantity, WindowSpec,
+    WindowType,
 };
+use sqlparser::tokenizer::Span;
 
 use super::ast::{join_constraint, norm_ident, object_name_parts};
 use super::jinja::JINJA_MARK_PREFIX;
@@ -40,19 +42,51 @@ use super::jinja::JINJA_MARK_PREFIX;
 /// module doc above. `hard_coded` is only meaningful on a
 /// `JinjaMark::Marked` parse (an unmarked render maps `{{ ref('x') }}` to
 /// a plain name, indistinguishable from a written one).
+///
+/// The `*_spans`/`column_refs` lists are the lint rules' position data:
+/// same walk, one AST span per fact occurrence, in source order. Column
+/// refs collect only under [`scan_statements_positions`] — every
+/// identifier qualifies, so the facts scan doesn't pay for them.
 #[derive(Debug, Default)]
 pub(super) struct RelationScan {
     /// Hand-written relation names (`sch.t` dotted), sorted.
     pub hard_coded: BTreeSet<String>,
     /// `JOIN`-arm display text with no join condition, sorted.
     pub cartesian: BTreeSet<String>,
+    /// The joined relation's span for each conditionless JOIN arm, in
+    /// occurrence order — `cartesian` dedups display text, a model can
+    /// hit the same join text twice.
+    pub cartesian_spans: Vec<Span>,
+    /// Every recorded relation name + its name span, in source order —
+    /// the positions `hard_coded_references` points at.
+    pub hard_coded_spans: Vec<(String, Span)>,
+    /// `(normalized last part, span)` of every column reference, in scan
+    /// order — `Identifier` and `CompoundIdentifier` tails, the pool
+    /// `unknown_column_reference` matches names against.
+    pub column_refs: Vec<(String, Span)>,
+    /// Whether `column_refs` fills — set by the positions scan only.
+    collect_column_refs: bool,
 }
 
 /// Scan every statement `stmts` parsed into — models are single statements,
 /// but a multi-statement text scans each `Query` (other statement kinds
 /// aren't a model's SELECT — the resolver ignores them too).
 pub(super) fn scan_statements(stmts: &[Statement]) -> RelationScan {
-    let mut out = RelationScan::default();
+    scan_stmts(stmts, false)
+}
+
+/// [`scan_statements`] with column references collected — the lint
+/// positions pass; the facts path leaves them off (dense: one entry per
+/// identifier expression anywhere in the query).
+pub(super) fn scan_statements_positions(stmts: &[Statement]) -> RelationScan {
+    scan_stmts(stmts, true)
+}
+
+fn scan_stmts(stmts: &[Statement], collect_column_refs: bool) -> RelationScan {
+    let mut out = RelationScan {
+        collect_column_refs,
+        ..RelationScan::default()
+    };
     for s in stmts {
         if let Statement::Query(q) = s {
             scan_query(q, &BTreeSet::new(), &mut out);
@@ -148,7 +182,8 @@ fn scan_set_expr(e: &SetExpr, scope: &BTreeSet<String>, out: &mut RelationScan) 
             if let Some(n) = &t.table_name {
                 parts.push(norm_ident(n));
             }
-            record_name(&parts, scope, out);
+            let span = Span::union_iter(t.schema_name.iter().chain(&t.table_name).map(|i| i.span));
+            record_name(span, &parts, scope, out);
         }
         // Insert/Update/Delete/Merge bodies aren't a model's SELECT — the
         // resolver ignores them too.
@@ -260,6 +295,9 @@ fn scan_join(j: &Join, scope: &BTreeSet<String>, out: &mut RelationScan) {
             || matches!(join_constraint(j), Some(JoinConstraint::None)));
     if unconditional {
         out.cartesian.insert(j.to_string());
+        // The relation's own span — the `JOIN` keyword stays outside it,
+        // so the finding underlines the joined table, not the keyword.
+        out.cartesian_spans.push(j.relation.span());
     }
     if let JoinOperator::AsOf {
         match_condition, ..
@@ -287,7 +325,7 @@ fn scan_factor(f: &TableFactor, scope: &BTreeSet<String>, out: &mut RelationScan
             // a relation name — record nothing for the name itself.
             if args.is_none() {
                 let parts = object_name_parts(name);
-                record_name(&parts, scope, out);
+                record_name(name.span(), &parts, scope, out);
             } else if let Some(a) = args {
                 for a in &a.args {
                     scan_function_arg(a, scope, out);
@@ -511,7 +549,7 @@ fn scan_expr(e: &Expr, scope: &BTreeSet<String>, out: &mut RelationScan) {
                     for a in args.iter().flatten() {
                         scan_function_arg(a, scope, out);
                     }
-                    record_name(&object_name_parts(name), scope, out);
+                    record_name(name.span(), &object_name_parts(name), scope, out);
                 }
             }
         }
@@ -686,8 +724,31 @@ fn scan_expr(e: &Expr, scope: &BTreeSet<String>, out: &mut RelationScan) {
             scan_expr(&m.array, scope, out);
         }
         Expr::Lambda(l) => scan_expr(&l.body, scope, out),
-        // Identifiers, compound identifiers, `MATCH(...) COLUMNS(...)` names,
-        // literals, typed strings and wildcards carry no subquery.
+        // Column references — collected only on the positions scan, as
+        // `(last part normalized, span)` pairs. A qualified `t.c` counts
+        // once at `c` (the parts are the qualifier).
+        Expr::Identifier(i) => {
+            if out.collect_column_refs {
+                out.column_refs.push((norm_ident(i), i.span));
+            }
+        }
+        Expr::CompoundIdentifier(parts) => {
+            if let (true, Some(last)) = (out.collect_column_refs, parts.last()) {
+                out.column_refs.push((norm_ident(last), last.span));
+            }
+        }
+        // `MATCH (a, t.b) AGAINST ('…')` — its column list is real column
+        // references too (the match value is a literal). Without this a
+        // name written once here and once elsewhere looks "unique" to the
+        // positional pairing.
+        Expr::MatchAgainst { columns, .. } if out.collect_column_refs => {
+            for c in columns {
+                if let Some(ObjectNamePart::Identifier(i)) = c.0.last() {
+                    out.column_refs.push((norm_ident(i), i.span));
+                }
+            }
+        }
+        // Literals, typed strings and wildcards carry no subquery.
         _ => {}
     }
 }
@@ -775,8 +836,9 @@ fn scan_function_arg(a: &FunctionArg, scope: &BTreeSet<String>, out: &mut Relati
 /// Record a FROM/JOIN/`TABLE`/`IN` name as hand-written — unless it is a
 /// `__dbtl_`-marked Jinja render (generated, not written) or a visible CTE
 /// name (CTE references are unqualified-only: `sch.c` is always a real
-/// relation, matching the binder's rule).
-fn record_name(parts: &[String], scope: &BTreeSet<String>, out: &mut RelationScan) {
+/// relation, matching the binder's rule). `span` is the recorded name's
+/// own AST span, kept in `hard_coded_spans` per occurrence.
+fn record_name(span: Span, parts: &[String], scope: &BTreeSet<String>, out: &mut RelationScan) {
     if parts.is_empty()
         || parts.iter().any(|p| p.starts_with(JINJA_MARK_PREFIX))
         || (parts.len() == 1 && scope.contains(parts[0].as_str()))
@@ -784,4 +846,5 @@ fn record_name(parts: &[String], scope: &BTreeSet<String>, out: &mut RelationSca
         return;
     }
     out.hard_coded.insert(parts.join("."));
+    out.hard_coded_spans.push((parts.join("."), span));
 }
