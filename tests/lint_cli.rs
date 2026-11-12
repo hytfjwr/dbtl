@@ -644,7 +644,9 @@ fn explain_prints_the_registry_entry_and_effective_values() {
         "requires:",
         "Rationale:",
         "Example:",
+        "Help:",
         "Params:",
+        "Docs:",
     ] {
         assert!(
             stdout.contains(heading),
@@ -655,6 +657,16 @@ fn explain_prints_the_registry_entry_and_effective_values() {
     assert!(
         stdout.contains("default") && stdout.contains("current 3"),
         "param defaults and current values: {stdout}"
+    );
+    // The fix guidance is the registry's help, and the docs link anchors
+    // at the rule's own id.
+    assert!(
+        stdout.contains(dbtl::LintRule::ModelFanout.info().help),
+        "the Help: body: {stdout}"
+    );
+    assert!(
+        stdout.contains("https://hytfjwr.github.io/dbtl/reference/lint-rules/#model_fanout"),
+        "the Docs: URL: {stdout}"
     );
 }
 
@@ -723,13 +735,37 @@ fn text_output_is_deterministic_across_runs() {
     let b = lint_on(&m, &[]);
     assert_eq!(a.stdout, b.stdout, "same input → byte-identical stdout");
     // One counted finding per line under the gate it tripped —
-    // `file:line rule message`.
+    // `file[:line[:col]] rule message`.
     let stdout = out_text(&a);
     assert!(
         stdout
             .lines()
             .any(|l| l.starts_with("  ") && l.contains("direct_join_to_source ")),
         "finding lines: {stdout}"
+    );
+}
+
+#[test]
+fn no_format_invents_a_line_one_for_file_scoped_findings() {
+    // A `.sql` (or unreadable `.yml`) finding names its file only — the
+    // human formats never guess line 1 (SARIF/codeclimate's required
+    // stand-ins are the documented exception, covered by their own
+    // tests).
+    let m = fixture_manifest();
+    let text = out_text(&lint_on(&m, &["--format", "text"]));
+    assert!(
+        !text.contains(".sql:1") && !text.contains(".yml:1"),
+        "no :1 anchor in text: {text}"
+    );
+    let github = out_text(&lint_on(&m, &["--format", "github"]));
+    assert!(
+        !github.contains("line=1,") && !github.contains(",line=1"),
+        "no line=1 prop in github annotations: {github}"
+    );
+    let json = out_text(&lint_on(&m, &["--format", "json"]));
+    assert!(
+        !json.contains("\"line\":1") && !json.contains("\"line\": 1"),
+        "no \"line\": 1 in the json report"
     );
 }
 
@@ -1055,7 +1091,7 @@ fn column_project(dir: &Path) -> PathBuf {
 }
 
 #[test]
-fn lint_prints_the_yml_line_for_column_findings() {
+fn lint_prints_the_yml_line_and_column_for_column_findings() {
     let tmp = tempfile::tempdir().unwrap();
     let root = column_project(tmp.path());
     let out = run(&[
@@ -1066,9 +1102,10 @@ fn lint_prints_the_yml_line_for_column_findings() {
         "undocumented_columns",
     ]);
     let stdout = out_text(&out);
+    // `- name: id` is line 7 and the `id` value sits at column 15.
     assert!(
-        stdout.contains("models/schema.yml:7"),
-        "the column finding prints the declaring yml + its line: {stdout}"
+        stdout.contains("models/schema.yml:7:15"),
+        "the column finding prints the declaring yml + its span: {stdout}"
     );
     assert!(
         stdout.contains("undocumented_columns"),
@@ -1077,7 +1114,7 @@ fn lint_prints_the_yml_line_for_column_findings() {
 }
 
 #[test]
-fn check_json_findings_carry_the_yml_line() {
+fn check_json_findings_carry_the_yml_span_and_metadata() {
     let tmp = tempfile::tempdir().unwrap();
     let root = column_project(tmp.path());
     let out = run(&[
@@ -1099,8 +1136,27 @@ fn check_json_findings_carry_the_yml_line() {
         .find(|g| g["id"] == "lint:undocumented_columns")
         .and_then(|g| g["findings"].as_array().and_then(|a| a.first()))
         .expect("an undocumented_columns finding exists");
-    assert_eq!(finding["location"]["file"], "models/schema.yml");
-    assert_eq!(finding["location"]["line"], 7);
+    assert_eq!(
+        finding["location"],
+        serde_json::json!({
+            "file": "models/schema.yml",
+            "line": 7,
+            "column": 15,
+            "end_line": 7,
+            "end_column": 17,
+        }),
+        "the `- name: id` value's whole span: {finding}"
+    );
+    assert_eq!(finding["label"], "declared here");
+    assert_eq!(
+        finding["help"],
+        dbtl::LintRule::UndocumentedColumns.info().help,
+        "the effective help serializes"
+    );
+    assert_eq!(
+        finding["docs_url"],
+        "https://hytfjwr.github.io/dbtl/reference/lint-rules/#undocumented_columns"
+    );
 }
 
 // ---- --select: findings restricted to the selected nodes ---------------------

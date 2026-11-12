@@ -49,9 +49,10 @@ pub use impact::{
 };
 pub use layer::{first_dir, layer_rank, LAYER_ORDER};
 pub use lint::{
-    fill_finding_lines, run_rules, yaml_name_line, Baseline, Category, Finding, LintConfig,
-    LintInput, LintOutcome, LintRule, Location, ParamKind, ParamSpec, Requires, RuleInfo, Severity,
-    SkippedRule, BASELINE_SCHEMA, DEFAULT_BASELINE_NAME, REGISTRY, YAML_ATTRIBUTE_RULE_IDS,
+    byte_span_position, fill_finding_lines, run_rules, yaml_name_line, yaml_name_span, Baseline,
+    Category, Finding, Label, LintConfig, LintInput, LintOutcome, LintRule, Location, ParamKind,
+    ParamSpec, Requires, RuleInfo, Severity, SkippedRule, BASELINE_SCHEMA, DEFAULT_BASELINE_NAME,
+    LINT_RULE_DOCS_BASE, REGISTRY, YAML_ATTRIBUTE_RULE_IDS,
 };
 pub use manifest::{
     load_manifest, RawConfig, RawDependsOn, RawDoc, RawExposure, RawExposureOwner, RawFreshness,

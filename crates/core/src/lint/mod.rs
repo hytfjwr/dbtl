@@ -29,7 +29,9 @@ mod registry;
 pub use registry::{Category, ParamKind, ParamSpec, Requires, RuleInfo, Severity, REGISTRY};
 
 mod location;
-pub use location::{fill_finding_lines, yaml_name_line, YAML_ATTRIBUTE_RULE_IDS};
+pub use location::{
+    byte_span_position, fill_finding_lines, yaml_name_line, yaml_name_span, YAML_ATTRIBUTE_RULE_IDS,
+};
 
 mod rules;
 pub use rules::{run_rules, LintInput, LintOutcome, SkippedRule};
@@ -183,25 +185,87 @@ impl LintRule {
     pub fn description(self) -> &'static str {
         self.info().summary
     }
+
+    /// This rule's anchor on the lint rules reference —
+    /// `<docs site>/reference/lint-rules/#<id>`: the json report's
+    /// `docs_url`, SARIF's `helpUri` and `--explain`'s `Docs:` line.
+    pub fn docs_url(self) -> String {
+        format!("{LINT_RULE_DOCS_BASE}#{}", self.name())
+    }
 }
 
 /// Where a finding happened. `file` is the project-relative
-/// `original_file_path`; `line` stays `None` until a rule can pin a line.
+/// `original_file_path`; `line` and `column` are the 1-based start of the
+/// position a UI could jump to, `end_line`/`end_column` the range's
+/// exclusive end (one `char` past the last character — the convention
+/// [`byte_span_position`] returns). Columns count `char`s: a tab is one.
+/// Every position field stays `None` when a rule can't pin it exactly — a
+/// file-scoped finding carries `file` alone, never a guessed position.
+/// For nodes declared in a properties yml (`patch_path`), `file` is that
+/// yml, not the model's `.sql`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Location {
     pub file: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_column: Option<u32>,
 }
+
+impl Location {
+    /// A location that names `file` only — every position unknown.
+    pub fn new(file: impl Into<String>) -> Self {
+        Location {
+            file: file.into(),
+            line: None,
+            column: None,
+            end_line: None,
+            end_column: None,
+        }
+    }
+}
+
+/// A secondary position inside a finding's own file — the other spots a
+/// one-finding-per-node rule points at from the finding's primary position
+/// (the other `*` selects, the other literals a `hard_coded_references`
+/// finding rolls up). `line` is required — a label without a line renders
+/// nothing; `column` and the exclusive `end_line`/`end_column` are
+/// optional (a line-level note carries no span).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Label {
+    pub line: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_column: Option<u32>,
+    pub message: String,
+}
+
+/// The docs site's lint-rules page — the ONE base every per-rule link
+/// builds on: `--explain`'s `Docs:` line, the json report's `docs_url`
+/// and SARIF's `helpUri`.
+pub const LINT_RULE_DOCS_BASE: &str = "https://hytfjwr.github.io/dbtl/reference/lint-rules/";
 
 /// One rule violation on one node: the violating node, the related nodes for
 /// context (a layer violation's parent, a rejoin's C+A endpoints, a fanout's
 /// children — sorted), a human-readable explanation, and the envelope
 /// (`severity`/`location`/`baselined`) `run_rules` fills in one place.
 ///
+/// `label` and `labels` are the pointer annotations — the short text the
+/// primary position's underline shows (`label`) and secondary positions in
+/// the same file (`labels`, kept sorted by position). `help` is
+/// finding-specific fix guidance; `None` means the rule's registry `help`
+/// applies — [`Finding::effective_help`] resolves that default.
+///
 /// `check --lint` gates on these, the `Lint` lens tints `node_uid`, the stats
 /// worklist lists them per rule, and docs pages quote `message` verbatim.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
     /// The rule that fired.
     pub rule: LintRule,
@@ -221,10 +285,22 @@ pub struct Finding {
     /// The severity the finding ran at — the config's `severity` override
     /// or the registry's `default_severity`.
     pub severity: Severity,
-    /// The node's project file when known (`original_file_path`); omitted
-    /// from JSON when absent.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The node's project file when known (`original_file_path`, or the
+    /// declaring yml for attribute rules); omitted from JSON when absent.
+    /// A rule may attach its own position via [`Finding::with_span`];
+    /// `run_rules` fills `file` only and drops a position whose file
+    /// disagrees with the one it resolves.
     pub location: Option<Location>,
+    /// The short text the primary position's underline carries (the name
+    /// that "declared here" points at, a `select *` marker) — `None` when
+    /// there is no position to annotate.
+    pub label: Option<String>,
+    /// Secondary positions in `location.file`, sorted by position — the
+    /// other spots the rule folded into this one finding.
+    pub labels: Vec<Label>,
+    /// Finding-specific fix guidance — `None` falls back to the rule's
+    /// registry `help` (see [`Finding::effective_help`]).
+    pub help: Option<String>,
     /// `true` when a baseline entry matched — set by [`Baseline::apply`],
     /// never by `run_rules` itself.
     pub baselined: bool,
@@ -247,8 +323,62 @@ impl Finding {
             message: message.into(),
             severity: rule.info().default_severity,
             location: None,
+            label: None,
+            labels: Vec::new(),
+            help: None,
             baselined: false,
         }
+    }
+
+    /// Attach the primary position: `file` and the 1-based
+    /// `(line, column)`–`(end_line, end_column)` span the finding's pointer
+    /// renders — `end_*` exclusive, matching [`byte_span_position`].
+    /// `run_rules` keeps the position only while its `file` agrees with the
+    /// file the envelope resolves.
+    pub fn with_span(
+        mut self,
+        file: impl Into<String>,
+        line: u32,
+        column: u32,
+        end_line: u32,
+        end_column: u32,
+    ) -> Self {
+        self.location = Some(Location {
+            file: file.into(),
+            line: Some(line),
+            column: Some(column),
+            end_line: Some(end_line),
+            end_column: Some(end_column),
+        });
+        self
+    }
+
+    /// The short text the primary position's underline carries.
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    /// Secondary positions in the same file — sorted by position, the
+    /// order the reports render them.
+    pub fn with_labels(mut self, labels: Vec<Label>) -> Self {
+        self.labels = labels;
+        self.labels
+            .sort_by_key(|l| (l.line, l.column, l.end_line, l.end_column));
+        self
+    }
+
+    /// Finding-specific fix guidance — overrides the rule's registry
+    /// `help` for this one finding.
+    pub fn with_help(mut self, help: impl Into<String>) -> Self {
+        self.help = Some(help.into());
+        self
+    }
+
+    /// The fix guidance shown for this finding — its own `help` when a
+    /// rule attached one, else the rule's registry `help`.
+    pub fn effective_help(&self) -> &str {
+        self.help.as_deref().unwrap_or(self.rule.info().help)
     }
 
     /// The identity used by `check --lint --diff`'s "new violations only"
@@ -266,6 +396,42 @@ impl Finding {
             }
             _ => (self.rule, self.node_uid.as_str(), &[]),
         }
+    }
+}
+
+// The report wire shape — written out by hand so the json format can emit
+// fields `Finding` doesn't store: `help` is always the EFFECTIVE help (the
+// registry default when the finding carries none) and `docs_url` is
+// computed from the rule id. Every pre-existing key keeps its slot;
+// `label`/`labels`/`help`/`docs_url` append after `baselined`, and
+// unknown positions stay absent rather than serializing as `null`.
+impl Serialize for Finding {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = s.serialize_struct(
+            "Finding",
+            8 + self.location.is_some() as usize
+                + self.label.is_some() as usize
+                + !self.labels.is_empty() as usize,
+        )?;
+        st.serialize_field("rule", &self.rule)?;
+        st.serialize_field("node_uid", &self.node_uid)?;
+        st.serialize_field("related", &self.related)?;
+        st.serialize_field("message", &self.message)?;
+        st.serialize_field("severity", &self.severity)?;
+        if let Some(location) = &self.location {
+            st.serialize_field("location", location)?;
+        }
+        st.serialize_field("baselined", &self.baselined)?;
+        if let Some(label) = &self.label {
+            st.serialize_field("label", label)?;
+        }
+        if !self.labels.is_empty() {
+            st.serialize_field("labels", &self.labels)?;
+        }
+        st.serialize_field("help", self.effective_help())?;
+        st.serialize_field("docs_url", &self.rule.docs_url())?;
+        st.end()
     }
 }
 

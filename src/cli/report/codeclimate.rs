@@ -26,16 +26,36 @@ pub fn render(report: &Report, ctx: &RenderCtx<'_>) -> String {
             });
             // `location.path` must be a real repository path — a finding
             // without a file location omits the block rather than filing the
-            // issue against a `unique_id` that resolves to no file.
+            // issue against a `unique_id` that resolves to no file. When the
+            // (line, column) pair is known the issue spans a `positions`
+            // range (begin AND end, ends defaulting to the start for a
+            // point); otherwise the line-only `lines` form carries whatever
+            // line is known — with `begin` format-required, 1 is the
+            // file-level stand-in.
             if let Some(loc) = &f.location {
                 let path = match ctx.path_prefix {
                     Some(prefix) => format!("{prefix}/{}", loc.file),
                     None => loc.file.clone(),
                 };
-                issue["location"] = json!({
-                    "path": path,
-                    "lines": { "begin": loc.line.unwrap_or(1) },
-                });
+                // `positions` needs the (line, column) pair — a column
+                // without its line points at nothing, so anything missing
+                // a line falls back to the line-only `lines` form.
+                issue["location"] = match (loc.line, loc.column) {
+                    (Some(line), Some(column)) => json!({
+                        "path": path,
+                        "positions": {
+                            "begin": { "line": line, "column": column },
+                            "end": {
+                                "line": loc.end_line.unwrap_or(line),
+                                "column": loc.end_column.unwrap_or(column),
+                            },
+                        },
+                    }),
+                    _ => json!({
+                        "path": path,
+                        "lines": { "begin": loc.line.unwrap_or(1) },
+                    }),
+                };
             }
             issue
         })
@@ -75,7 +95,8 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::fnv1a_64;
+    use super::*;
+    use crate::cli::report::samples::*;
 
     /// The published FNV-1a-64 reference vectors pin the implementation —
     /// a fingerprint that drifted would silently re-file every issue.
@@ -84,5 +105,56 @@ mod tests {
         assert_eq!(fnv1a_64(b""), 0xcbf29ce484222325);
         assert_eq!(fnv1a_64(b"a"), 0xaf63dc4c8601ec8c);
         assert_eq!(fnv1a_64(b"foobar"), 0x85944171f73967e8);
+    }
+
+    /// Column-known findings carry a `positions` begin/end range; the
+    /// file-scoped ones fall back to `lines.begin` — the format-required
+    /// line stand-in.
+    #[test]
+    fn positions_when_columns_known_lines_otherwise() {
+        let mut r = Report::new("proj", "root project only");
+        r.gates = vec![gate(
+            "lint:root_models",
+            "lint root_models",
+            dbtl::Severity::Error,
+            GateStatus::Fail,
+            "lint root_models: 2 violation(s): a, b",
+            vec![
+                finding(
+                    dbtl::LintRule::RootModels,
+                    "model.proj.a",
+                    "a has no parents",
+                    dbtl::Severity::Error,
+                    Some("models/a.sql"),
+                    false,
+                ),
+                unpositioned(
+                    dbtl::LintRule::RootModels,
+                    "model.proj.b",
+                    "b has no parents",
+                    dbtl::Severity::Error,
+                    "models/b.sql",
+                    false,
+                ),
+            ],
+        )];
+        r.summary = Report::summarize(&r.gates);
+        let out = render(&r, &ctx(None));
+        let v: serde_json::Value = serde_json::from_str(&out).expect("issues parse");
+        let issues = v.as_array().unwrap();
+        assert_eq!(issues.len(), 2);
+        let pos = &issues[0]["location"]["positions"];
+        assert_eq!(pos["begin"], serde_json::json!({"line": 7, "column": 3}));
+        assert_eq!(pos["end"], serde_json::json!({"line": 7, "column": 5}));
+        assert!(
+            issues[0]["location"].get("lines").is_none(),
+            "positions replaces lines"
+        );
+        let loc = &issues[1]["location"];
+        assert_eq!(loc["lines"]["begin"], 1, "the format-required stand-in");
+        assert!(
+            loc.get("positions").is_none(),
+            "no positions without columns"
+        );
     }
 }

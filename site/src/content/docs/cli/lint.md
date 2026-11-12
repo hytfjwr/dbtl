@@ -13,7 +13,7 @@ dbtl lint --rules root_models,model_fanout  # a named subset
 dbtl lint --fail-on warn                    # fail on warnings too
 ```
 
-Text output is one `PASS`, `WARN`, `FAIL`, or `SKIP` line per rule. Findings sit indented under tripped rules as `file:line rule message`. A closing tally reads `lint: N error(s), M warning(s), K baselined`.
+Text output is one `PASS`, `WARN`, `FAIL`, or `SKIP` line per rule. Findings sit indented under tripped rules as `file[:line[:column]] rule message` — findings in a properties `.yml` (descriptions, tests, freshness, contract columns) point at the `- name:` entry's line and column; a `.sql` finding names its file only. A closing tally reads `lint: N error(s), M warning(s), K baselined`.
 
 `dbtl check --lint` folds the same evaluation into the [check gate set](check-and-impact.md). The two can never disagree. Setting `check.lint: true` in `.dbtl.yml` makes it the default for `check` runs.
 
@@ -34,7 +34,7 @@ The rules span:
 - SQL-content checks (`select_star`, `hard_coded_references`, `cartesian_join`, and more)
 - warehouse drift checks against `catalog.json` (`warehouse_type_drift`, `columns_missing_in_warehouse`)
 
-The [lint rules reference](../reference/lint-rules.md) lists every rule with its category, default severity, inputs, rationale, and parameters.
+The [lint rules reference](../reference/lint-rules.md) lists every rule with its category, default severity, inputs, rationale, fix guidance, and parameters.
 
 ### List and explain rules
 
@@ -42,7 +42,7 @@ The [lint rules reference](../reference/lint-rules.md) lists every rule with its
 
 ```sh
 dbtl lint --list-rules            # id, category, effective severity, summary
-dbtl lint --explain model_fanout  # rationale, example, declared params
+dbtl lint --explain model_fanout  # rationale, example, fix guidance, params, docs link
 ```
 
 ## Severities and fail_on

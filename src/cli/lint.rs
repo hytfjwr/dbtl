@@ -558,8 +558,9 @@ fn print_rules_table(cfg: &dbtl::LintConfig) {
 }
 
 /// `--explain <ID>` — the full registry entry plus the effective severity
-/// and parameter values under the resolved config. An unknown id is a
-/// usage error listing the valid set.
+/// and parameter values under the resolved config, the fix guidance, and
+/// the rule's reference link. An unknown id is a usage error listing the
+/// valid set.
 fn explain_rule(id: &str, cfg: &dbtl::LintConfig) -> Result<(), CliError> {
     let Some(rule) = dbtl::LintRule::from_name(id) else {
         return Err(CliError::usage(anyhow::anyhow!(
@@ -587,6 +588,9 @@ fn explain_rule(id: &str, cfg: &dbtl::LintConfig) -> Result<(), CliError> {
     println!();
     println!("Example:");
     println!("{}", info.example);
+    println!();
+    println!("Help:");
+    println!("{}", info.help);
     println!();
     println!("Params:");
     if info.params.is_empty() {
@@ -631,6 +635,9 @@ fn explain_rule(id: &str, cfg: &dbtl::LintConfig) -> Result<(), CliError> {
             }
         }
     }
+    println!();
+    println!("Docs:");
+    println!("{}", rule.docs_url());
     Ok(())
 }
 

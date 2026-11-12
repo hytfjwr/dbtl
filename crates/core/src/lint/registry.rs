@@ -25,6 +25,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "order_summary joins stg_orders (model) with \
                   raw.payments (source). Fix: model payments through staging \
                   and ref the staging model instead.",
+        help: "model the source through a staging model and ref the staging model instead",
         params: &[],
         requires: Requires::Graph,
     },
@@ -41,6 +42,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "fct_orders selects from raw.shopify.orders and \
                   raw.stripe.charges. Fix: stage each source as stg_shopify \
                   / stg_stripe and join those models.",
+        help: "give each source its own staging model and join those instead",
         params: &[],
         requires: Requires::Graph,
     },
@@ -57,6 +59,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "raw.crm.contacts is read by stg_contacts, fct_leads and \
                   rpt_pipeline. Fix: only stg_contacts reads the source; the \
                   marts ref stg_contacts.",
+        help: "let one staging model read the source and ref that model from the others",
         params: &[ParamSpec::int("threshold", 1, 2, "minimum direct children to flag")],
         requires: Requires::Graph,
     },
@@ -74,6 +77,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "int_customers feeds fct_orders, fct_returns, rpt_cohorts, \
                   rpt_ltv and dim_customers. Fix: introduce narrower \
                     intermediates per domain instead of one grab-bag hub.",
+        help: "split the hub into narrower intermediate models per domain and ref those",
         params: &[ParamSpec::int(
             "threshold",
             1,
@@ -95,6 +99,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "dim_regions is a plain `select ...` with no ref/source \
                   calls. Fix: make it a seed, or declare it as a source if an \
                   external system owns it.",
+        help: "select from a source() or ref() so the model has lineage",
         params: &[],
         requires: Requires::Graph,
     },
@@ -112,6 +117,7 @@ pub static REGISTRY: &[RuleInfo] = &[
                   parent stg_orders is also refed directly by fct_orders. Fix: \
                   drop the redundant stg_orders ref or move the shared logic \
                     into int_pricing.",
+        help: "drop the redundant direct ref, or move the shared logic into the intermediate model",
         params: &[],
         requires: Requires::Graph,
     },
@@ -127,6 +133,7 @@ pub static REGISTRY: &[RuleInfo] = &[
                     so the mart breaks the moment the raw shape changes.",
         example: "fct_orders reads raw.shopify.orders. Fix: create \
                   stg_shopify__orders and ref that from the mart.",
+        help: "stage the source and ref the staging model from the mart",
         params: &[],
         requires: Requires::Graph,
     },
@@ -143,6 +150,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "stg_orders has no test on order_id. Fix: add unique and \
                   not_null tests on order_id (or a \
                   unique_combination_of_columns test for a composite grain).",
+        help: "add unique and not_null tests to one key column, or a unique_combination_of_columns test",
         params: &[ParamSpec::string_list(
             "resource_types",
             &["model"],
@@ -164,6 +172,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "rpt_monthly_revenue sets access: public but no contract. \
                   Fix: add contract: { enforced: true } so schema drift fails \
                   the build instead of downstream BI.",
+        help: "set contract: { enforced: true } on the model",
         params: &[],
         requires: Requires::Graph,
     },
@@ -181,6 +190,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "stg_customers has no description. Fix: add a `description:` \
                   in its schema.yml entry (or a docs block) saying what one \
                   row represents.",
+        help: "add a description to the model's schema.yml entry",
         params: &[],
         requires: Requires::Graph,
     },
@@ -197,6 +207,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "models/marts/orders.sql is named `orders` but marts expects \
                   a fct_/dim_/rpt_ prefix. Fix: rename to fct_orders (or widen \
                   `lint.naming_prefixes.marts` in .dbtl.yml).",
+        help: "rename the model with one of its layer's prefixes, or widen lint.naming_prefixes",
         params: &[],
         requires: Requires::Graph,
     },
@@ -213,6 +224,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "stg_orders refs fct_payments (staging reading a mart). Fix: \
                   move the shared logic upstream — staging should never need \
                   a marts model.",
+        help: "move the shared logic upstream so the edge points toward marts",
         params: &[],
         requires: Requires::Graph,
     },
@@ -230,6 +242,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "raw.legacy_exports is declared but no model or exposure \
                   reads it. Fix: delete the declaration, or build the staging \
                   model that was meant to consume it.",
+        help: "delete the declaration, or ref the source from a model",
         params: &[],
         requires: Requires::Graph,
     },
@@ -246,6 +259,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "raw.app.users and mirror.app_users both resolve to \
                   app.public.users. Fix: keep one declaration and update every \
                   source() call to it.",
+        help: "keep one declaration and point every source() call at it",
         params: &[],
         requires: Requires::Graph,
     },
@@ -262,6 +276,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "stg_order_items refs stg_orders to compute line totals. Fix: \
                   move the join or aggregation into an int_ model so staging \
                   stays a pure source-mapping layer.",
+        help: "move the join or aggregation into an intermediate model so staging reads sources only",
         params: &[],
         requires: Requires::Graph,
     },
@@ -278,6 +293,7 @@ pub static REGISTRY: &[RuleInfo] = &[
                     testable.",
         example: "fct_checkout reads 9 models and sources. Fix: pre-join the \
                   related inputs in int_ models and ref those instead.",
+        help: "pre-join related inputs in intermediate models and ref those instead",
         params: &[ParamSpec::int(
             "threshold",
             1,
@@ -299,6 +315,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "rpt_daily runs five views deep from stg_events. Fix: \
                   materialize the heavy middle step (table or incremental) so \
                   the chain has a checkpoint.",
+        help: "materialize a middle step of the chain as a table or incremental model",
         params: &[ParamSpec::int(
             "threshold",
             1,
@@ -321,6 +338,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "the churn dashboard reads int_features (a view) and \
                   raw.events. Fix: point the exposure at the mart that already \
                   materializes those inputs.",
+        help: "point the exposure at the durable mart that materializes the inputs",
         params: &[],
         requires: Requires::Graph,
     },
@@ -338,6 +356,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "the finance dashboard depends on dim_salaries (access: \
                   private). Fix: publish a public mart for the dashboard, or \
                   narrow the exposure's depends_on.",
+        help: "publish a public mart for the exposure, or narrow the exposure's depends_on",
         params: &[],
         requires: Requires::Graph,
     },
@@ -354,6 +373,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "raw.billing.events has no description. Fix: add a \
                   description in its schema.yml entry saying what the upstream \
                   system emits.",
+        help: "add a description to the source's schema.yml entry",
         params: &[],
         requires: Requires::Graph,
     },
@@ -371,6 +391,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "fct_orders declares order_total without a description. Fix: \
                   describe each column in schema.yml (units, semantics, edge \
                   cases).",
+        help: "describe each column in schema.yml",
         params: &[],
         requires: Requires::Graph,
     },
@@ -387,6 +408,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "rpt_revenue is access: public but has no description and two \
                   undocumented columns. Fix: document the model and every \
                   public column.",
+        help: "document the model and every public column",
         params: &[],
         requires: Requires::Graph,
     },
@@ -403,6 +425,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "models/staging/fct_orders.sql. Fix: move the file to \
                   models/marts/, or rename it stg_* if it truly belongs to \
                   staging.",
+        help: "move the file under the directory matching its name prefix, or rename it",
         params: &[],
         requires: Requires::Graph,
     },
@@ -418,6 +441,7 @@ pub static REGISTRY: &[RuleInfo] = &[
                     and groupings built on that tag.",
         example: "with keys: [owner] configured, dim_products lacks meta.owner. \
                   Fix: add owner: data-team to the model's meta.",
+        help: "add the required keys to the model's meta",
         params: &[ParamSpec::string_list(
             "keys",
             &[],
@@ -438,6 +462,7 @@ pub static REGISTRY: &[RuleInfo] = &[
                     strong as the column definitions behind it.",
         example: "dim_customers enforces a contract but column segment has no \
                   data_type. Fix: declare data_type for every contract column.",
+        help: "declare data_type for every contract column",
         params: &[],
         requires: Requires::Graph,
     },
@@ -458,6 +483,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "fct_events materializes incrementally but declares no \
                   unique_key. Fix: set unique_key: event_id in its config \
                   (or a list for a composite grain).",
+        help: "set unique_key in the model's config, or exclude the model when the strategy needs no key",
         params: &[],
         requires: Requires::Graph,
     },
@@ -475,6 +501,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "source raw declares tables but no freshness block. Fix: \
                   add freshness: {warn_after: {count: 12, period: hour}} at \
                   the source level — it cascades to every table.",
+        help: "add a freshness block with warn_after or error_after thresholds to the source",
         params: &[],
         requires: Requires::Graph,
     },
@@ -492,6 +519,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "fct_orders ends with `select * from joined`. Fix: spell \
                   out the columns the model actually produces so its output \
                   contract is explicit.",
+        help: "list the columns the model produces",
         params: &[],
         requires: Requires::Sql,
     },
@@ -510,6 +538,7 @@ pub static REGISTRY: &[RuleInfo] = &[
                   source('prod', 'raw_events'). Fix: declare the relation \
                   with ref()/source() so it joins the lineage and gets \
                   environment-aware naming.",
+        help: "declare the relation with ref() or source() so it joins the lineage",
         params: &[],
         requires: Requires::Sql,
     },
@@ -527,6 +556,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "fct_events writes `join dim_users` with no ON. Fix: add \
                   the join predicate (`on e.user_id = u.id`) — or use \
                   `cross join` only when the product is truly intended.",
+        help: "add an ON or USING join condition",
         params: &[],
         requires: Requires::Sql,
     },
@@ -544,6 +574,7 @@ pub static REGISTRY: &[RuleInfo] = &[
                   (enforced contract) declares only order_id/amount. Fix: \
                   correct the column name, or extend the parent's declared \
                   columns.",
+        help: "correct the column name, or add it to the upstream's declared columns",
         params: &[],
         requires: Requires::Sql,
     },
@@ -560,6 +591,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "with patterns: [\"\\\\bUNSAFE_UDF\\\\b\"], stg_events calls \
                   UNSAFE_UDF(). Fix: remove the call, or narrow the pattern \
                   in .dbtl.yml when the match is legitimate.",
+        help: "remove the matched construct, or narrow the configured patterns",
         params: &[ParamSpec::regex_list(
             "patterns",
             &[],
@@ -580,6 +612,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "stg_orders declares amount as int but the catalog records \
                   NUMERIC(10,2). Fix: correct the declared data_type (or the \
                     model's cast) so docs match the warehouse.",
+        help: "correct the declared data_type or the model's cast so it matches the warehouse",
         params: &[],
         requires: Requires::Catalog,
     },
@@ -596,14 +629,14 @@ pub static REGISTRY: &[RuleInfo] = &[
         example: "fct_orders declares ship_method but the catalog lists no \
                   such column. Fix: rename the declaration to the real \
                   column, or add it back to the model's output.",
+        help: "rename the declared column to the real one, or restore it to the model's output",
         params: &[],
         requires: Requires::Catalog,
     },
 ];
 
 /// A rule family — used for grouping in `--list-rules`-style output and for
-/// deciding what data a rule may rely on. All eight values exist today even
-/// though only five have rules: the set is the taxonomy, not the census.
+/// deciding what data a rule may rely on. All eight values have rules today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Category {
@@ -615,7 +648,7 @@ pub enum Category {
     Documentation,
     /// Naming and file/structure conventions.
     Structure,
-    /// Query-shape findings (needs SQL text — no rules yet).
+    /// Build/rebuild cost findings (view chains, exposure materializations).
     Performance,
     /// Access/contract conventions.
     Governance,
@@ -773,6 +806,11 @@ pub struct RuleInfo {
     pub rationale: &'static str,
     /// A concrete bad shape and the fix.
     pub example: &'static str,
+    /// One imperative sentence telling the reader what to change — the
+    /// fix guidance surfaces print under a finding (SARIF's `help.text`,
+    /// json's `help`, `--explain`'s `Help:`). Starts lowercase, ends
+    /// without a period, mentions no other tools.
+    pub help: &'static str,
     /// The rule's accepted object-form parameters (`rules.<id>.<param>`).
     /// Unknown parameters in config are a hard error naming the rule and
     /// these names.

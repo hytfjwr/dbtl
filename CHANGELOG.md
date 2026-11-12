@@ -77,6 +77,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   release tag by the release pipeline (not covered by `checksums.txt` or
   attestations).
 
+### Changed
+
+- Lint findings now carry precise positions and guidance. `.yml` findings
+  (descriptions, tests, freshness, contract columns) point at the
+  declaring `- name:` entry's line, column and end column in text,
+  markdown, junit, json, github, sarif and codeclimate output, and the
+  finding anchor prints `file:line:column` — findings that only name a
+  file no longer print a guessed `:1` (SARIF/codeclimate keep their
+  format-required `startLine`/`begin` stand-ins). The json report also
+  emits each finding's `label`, `help` and a per-rule `docs_url`, SARIF
+  rules carry `help`/`helpUri`, and `lint --explain` shows `Help:` and
+  `Docs:` lines.
+
 ### Fixed
 
 - The `--select` help text now describes what the flag accepts: a model
