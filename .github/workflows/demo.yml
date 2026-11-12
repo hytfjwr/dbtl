@@ -39,7 +39,12 @@ on:
 permissions: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Inside a workflow_call, github.workflow resolves to the caller's name —
+  # so an unprefixed group would land the called jobs in the caller's own
+  # concurrency group, which GitHub reports as a deadlock and cancels. The
+  # demo- prefix keeps this workflow's renders grouped per caller and ref
+  # while never colliding with a calling workflow's group.
+  group: demo-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
