@@ -45,7 +45,7 @@ pub fn render(report: &Report, ctx: &RenderCtx<'_>) -> String {
             continue;
         }
         out.push_str(&format!("\n## {}\n\n", gate.title));
-        let counted: Vec<&dbtl::Finding> = gate.counted().collect();
+        let counted: Vec<&dbtl_core::Finding> = gate.counted().collect();
         for f in counted.iter().take(SECTION_CAP) {
             out.push_str(&format!("- {}\n", finding_line(f)));
         }
@@ -66,7 +66,7 @@ pub fn render(report: &Report, ctx: &RenderCtx<'_>) -> String {
     // as the section heading here.
     if let Some(impact) = &report.impact {
         out.push_str("\n---\n\n");
-        out.push_str(&dbtl::pr_impact_markdown(&report.project, impact));
+        out.push_str(&dbtl_core::pr_impact_markdown(&report.project, impact));
         if !out.ends_with('\n') {
             out.push('\n');
         }
@@ -94,7 +94,7 @@ fn escape_cell(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::report::samples::*;
+    use crate::samples::*;
 
     /// The document contract: marker first, summary table, per-gate sections
     /// capped at 50 listed findings with `+K more`, baselined reduced to a
@@ -104,23 +104,23 @@ mod tests {
         let mut r = report();
         // Push the failing gate past the cap: 51 counted findings, keeping
         // the kitchen-sink baselined one so both contracts show at once.
-        let mut many: Vec<dbtl::Finding> = (0..51)
+        let mut many: Vec<dbtl_core::Finding> = (0..51)
             .map(|i| {
                 finding(
-                    dbtl::LintRule::RootModels,
+                    dbtl_core::LintRule::RootModels,
                     &format!("model.proj.n{i}"),
                     &format!("n{i} has no parents"),
-                    dbtl::Severity::Error,
+                    dbtl_core::Severity::Error,
                     Some("models/n.sql"),
                     false,
                 )
             })
             .collect();
         many.push(finding(
-            dbtl::LintRule::RootModels,
+            dbtl_core::LintRule::RootModels,
             "model.proj.c",
             "c has no parents",
-            dbtl::Severity::Error,
+            dbtl_core::Severity::Error,
             Some("models/c.sql"),
             true,
         ));
@@ -145,12 +145,12 @@ mod tests {
     #[test]
     fn impact_embeds_the_shared_document() {
         let mut r = report();
-        r.impact = Some(dbtl::DiffReport {
+        r.impact = Some(dbtl_core::DiffReport {
             baseline: "base".into(),
-            scope: dbtl::PackageScope::Root,
+            scope: dbtl_core::PackageScope::Root,
             ..Default::default()
         });
-        let expected = dbtl::pr_impact_markdown(&r.project, r.impact.as_ref().unwrap());
+        let expected = dbtl_core::pr_impact_markdown(&r.project, r.impact.as_ref().unwrap());
         let out = render(&r, &ctx(None));
         assert!(
             out.contains(expected.trim_end()),

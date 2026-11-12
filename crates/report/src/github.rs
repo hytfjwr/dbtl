@@ -15,8 +15,8 @@ pub fn render(report: &Report, ctx: &RenderCtx<'_>) -> String {
     for gate in &report.gates {
         for f in gate.counted() {
             let (level, rank) = match f.severity {
-                dbtl::Severity::Error => ("error", 0u8),
-                dbtl::Severity::Warn => ("warning", 1u8),
+                dbtl_core::Severity::Error => ("error", 0u8),
+                dbtl_core::Severity::Warn => ("warning", 1u8),
             };
             let props = match &f.location {
                 Some(loc) => {
@@ -119,7 +119,7 @@ pub fn escape_prop(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::report::samples::*;
+    use crate::samples::*;
 
     /// Command escapes — data side `%` CR LF; property side adds `:` `,`.
     #[test]
@@ -163,14 +163,14 @@ mod tests {
         r.gates = vec![gate(
             "lint:root_models",
             "lint root_models",
-            dbtl::Severity::Error,
+            dbtl_core::Severity::Error,
             GateStatus::Fail,
             "lint root_models: 1 violation(s): a",
             vec![unpositioned(
-                dbtl::LintRule::RootModels,
+                dbtl_core::LintRule::RootModels,
                 "model.proj.a",
                 "a has no parents",
-                dbtl::Severity::Error,
+                dbtl_core::Severity::Error,
                 "models/a.sql",
                 false,
             )],
@@ -194,14 +194,14 @@ mod tests {
             GateResult::new(
                 "coverage",
                 "coverage",
-                dbtl::Severity::Error,
+                dbtl_core::Severity::Error,
                 GateStatus::Fail,
                 "coverage 33% below --coverage-min 90% (1/3)".to_string(),
             ),
             GateResult::new(
                 "docs_drift",
                 "docs drift",
-                dbtl::Severity::Error,
+                dbtl_core::Severity::Error,
                 GateStatus::Warn,
                 "docs drift: 2 difference(s)".to_string(),
             ),

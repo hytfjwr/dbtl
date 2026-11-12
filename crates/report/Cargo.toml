@@ -1,0 +1,16 @@
+[package]
+name = "dbtl-report"
+description = "dbtl's check/lint report model (`dbtl.report/v1`), its format renderers, and the shared lint gate assembly"
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+dbtl-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+annotate-snippets.workspace = true
+anstyle.workspace = true

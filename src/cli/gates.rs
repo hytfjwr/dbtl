@@ -239,10 +239,10 @@ fn push_gate(
 /// changes, changed hubs, affected exposures, blast radius), all read off
 /// the single [`dbtl::diff_report`] analysis the `impact` command prints.
 /// `check.lint`/`--lint`/`--rules` add one gate per enabled static-lint
-/// rule through the shared [`evaluate_lint`] — the SAME counted-finding
-/// set `dbtl lint` reports. A diff gate the user explicitly enabled but
-/// can't evaluate (no `--diff`) reports `skip`, never a failure — same for
-/// an enabled `docs_drift` with no directory.
+/// rule through the shared [`lint_assembly`](dbtl_report::lint_assembly) —
+/// the SAME counted-finding set `dbtl lint` reports. A diff gate the user
+/// explicitly enabled but can't evaluate (no `--diff`) reports `skip`,
+/// never a failure — same for an enabled `docs_drift` with no directory.
 ///
 /// Every gate is severity-aware: a configured `warn` gate trips as WARN
 /// (which `--fail-on warn` still fails), `off` removes the row, and
@@ -613,6 +613,17 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
         }
     }
 
+    // The `.yml` text source the lint gates fill positions from AND the
+    // human formats excerpt — one memoized read per file per run, rooted at
+    // the same `.dbtl.yml`-candidate project root `fill_finding_lines`
+    // resolved `location.file` against.
+    let lint_root = lint_project_root(&dbtl::project_config_candidates(
+        manifest_arg.as_deref(),
+        project_arg.as_deref(),
+    ));
+    let lint_sources = SourceTexts::new(&lint_root);
+    let read_text = lint_sources.read_text();
+
     // Static lint — the shared evaluation `dbtl lint` runs verbatim: the
     // same `run_rules` findings, the same baseline file, the same `--diff`
     // new-violation narrowing, so the two commands can never count
@@ -638,29 +649,22 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
         let lint_base_resolver = base_ctx
             .as_ref()
             .map(|(b, _)| src.baseline_resolver(dag, b));
-        let mut outcome = evaluate_lint(
+        let assembly = lint_assembly(&LintRunInputs {
             dag,
-            &cfg,
-            base_ctx.as_ref().map(|(b, _)| b),
-            baseline.as_ref(),
+            cfg: &cfg,
+            base: base_ctx.as_ref().map(|(b, _)| b),
+            baseline: baseline.as_ref(),
             fail_on,
-            LintAux {
+            aux: LintAux {
                 sql: Some(&lint_resolver),
                 catalog: lint_catalog.as_deref(),
                 base_sql: lint_base_resolver.as_ref(),
             },
-            selection.as_ref(),
-        );
-        // The same best-effort yml line fill `dbtl lint` reports —
-        // filled before `lint_gates` lifts the findings into the Report.
-        dbtl::fill_finding_lines(&mut outcome.findings, dag, &lint_project_root(&candidates));
-        gates.extend(lint_gates(dag, &outcome));
-        report.lint = Some(LintTally {
-            pre_existing: outcome.rules.iter().map(|r| r.pre_existing).sum(),
-            has_diff: outcome.has_diff,
-            skipped: outcome.skipped,
-            unparsed_models: outcome.unparsed.len(),
+            selection: selection.as_ref(),
+            read_text: &read_text,
         });
+        gates.extend(assembly.gates);
+        report.lint = Some(assembly.tally);
     }
 
     let failures = gates
@@ -669,18 +673,12 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
         .count();
     report.gates = gates;
     report.summary = Report::summarize(&report.gates);
-    // The same `.dbtl.yml`-candidate root `fill_finding_lines` resolved
-    // `location.file` against — `.yml` excerpts read from disk here.
-    let lint_root = lint_project_root(&dbtl::project_config_candidates(
-        manifest_arg.as_deref(),
-        project_arg.as_deref(),
-    ));
     plan.emit(
         &report,
         "check",
         &RenderEnv {
             dag,
-            project_root: &lint_root,
+            read_text: &read_text,
         },
     )?;
     if failures == 0 {

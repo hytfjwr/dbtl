@@ -285,6 +285,22 @@ fn offending_column(dag: &Dag, f: &Finding) -> Option<String> {
 ///
 /// [`run_rules`]: crate::lint::run_rules
 pub fn fill_finding_lines(findings: &mut [Finding], dag: &Dag, project_root: &Path) {
+    fill_finding_lines_with(findings, dag, &|file| {
+        fs::read_to_string(project_root.join(file)).ok()
+    });
+}
+
+/// The same fill as [`fill_finding_lines`], with the file read inverted:
+/// `read_text` resolves a `location.file` path into the file's text
+/// (`None` leaves the position unset, exactly like an unreadable file).
+/// Each file is resolved at most once — the same `location.file` shares
+/// one text across every finding that lands in it. Callers that hold the
+/// sources in memory rather than on disk run this entry point.
+pub fn fill_finding_lines_with(
+    findings: &mut [Finding],
+    dag: &Dag,
+    read_text: &dyn Fn(&str) -> Option<String>,
+) {
     let mut texts: HashMap<String, Option<String>> = HashMap::new();
     for f in findings.iter_mut() {
         let Some(loc) = f.location.as_ref() else {
@@ -303,7 +319,7 @@ pub fn fill_finding_lines(findings: &mut [Finding], dag: &Dag, project_root: &Pa
         };
         let text = texts
             .entry(file.clone())
-            .or_insert_with(|| fs::read_to_string(project_root.join(&file)).ok());
+            .or_insert_with(|| read_text(&file));
         let Some(text) = text.as_deref() else {
             continue;
         };

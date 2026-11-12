@@ -46,15 +46,15 @@ pub fn render(report: &Report, ctx: &RenderCtx<'_>) -> String {
 
 /// A `lint:*` gate — the `text`/`concise` formats treat its findings as
 /// the report's real payload; everything else stays a gate row.
-pub(super) fn is_lint_gate(gate: &GateResult) -> bool {
+pub(crate) fn is_lint_gate(gate: &GateResult) -> bool {
     gate.id.starts_with("lint:")
 }
 
 /// The counted lint findings across the `lint:*` gates, in display order:
 /// positioned findings by (file, line, column, rule, node uid), then every
 /// position-less finding by (node uid, rule) — deterministic across runs.
-pub(super) fn sorted_lint_findings(report: &Report) -> Vec<&dbtl::Finding> {
-    let mut findings: Vec<&dbtl::Finding> = report
+pub(crate) fn sorted_lint_findings(report: &Report) -> Vec<&dbtl_core::Finding> {
+    let mut findings: Vec<&dbtl_core::Finding> = report
         .gates
         .iter()
         .filter(|g| is_lint_gate(g))
@@ -84,7 +84,7 @@ pub(super) fn sorted_lint_findings(report: &Report) -> Vec<&dbtl::Finding> {
 /// get structured rows — the node-name lists the machine formats carry
 /// stay off — and the all-clean lint rules collapse into one summary row
 /// instead of a `PASS` line each.
-pub(super) fn gates_section(report: &Report, ctx: &RenderCtx<'_>) -> String {
+pub(crate) fn gates_section(report: &Report, ctx: &RenderCtx<'_>) -> String {
     let mut lines = vec![format!("scope: {}", report.scope)];
     let mut clean_rules = 0usize;
     for (i, gate) in report.gates.iter().enumerate() {
@@ -125,7 +125,7 @@ pub(super) fn gates_section(report: &Report, ctx: &RenderCtx<'_>) -> String {
 /// tally, baselined and `--diff`-suppressed tallies in parentheses, then
 /// the reported/skipped rule line — and the unparsable-SQL line when its
 /// tally lands (the slot is in place; nothing fills it yet).
-pub(super) fn summary_lines(report: &Report, lint: &LintTally, styled: bool) -> String {
+pub(crate) fn summary_lines(report: &Report, lint: &LintTally, styled: bool) -> String {
     let (mut errors, mut warnings, mut baselined, mut reported_rules) =
         (0usize, 0usize, 0usize, 0usize);
     let mut files = BTreeSet::new();
@@ -138,8 +138,8 @@ pub(super) fn summary_lines(report: &Report, lint: &LintTally, styled: bool) -> 
             }
             reported = true;
             match f.severity {
-                dbtl::Severity::Error => errors += 1,
-                dbtl::Severity::Warn => warnings += 1,
+                dbtl_core::Severity::Error => errors += 1,
+                dbtl_core::Severity::Warn => warnings += 1,
             }
             if let Some(loc) = &f.location {
                 files.insert(loc.file.as_str());
@@ -209,11 +209,11 @@ pub(super) fn summary_lines(report: &Report, lint: &LintTally, styled: bool) -> 
 /// The summary's short reason for a skipped lint rule — the actionable
 /// hint in parentheses on the rule line. The full "requires graph + X
 /// input" phrasing stays on the SKIP gate row and in `--explain`.
-fn skip_reason(s: &dbtl::SkippedRule) -> &'static str {
+fn skip_reason(s: &dbtl_core::SkippedRule) -> &'static str {
     match s.missing {
-        dbtl::Requires::Sql => "need parsed SQL",
-        dbtl::Requires::Catalog => "need --catalog",
-        dbtl::Requires::Graph => "need a graph",
+        dbtl_core::Requires::Sql => "need parsed SQL",
+        dbtl_core::Requires::Catalog => "need --catalog",
+        dbtl_core::Requires::Graph => "need a graph",
     }
 }
 
@@ -259,10 +259,10 @@ fn lint_gate_row(gate: &GateResult, report: &Report, styled: bool) -> String {
 /// One finding's annotated block — the `annotate-snippets` group carrying
 /// the header, position, excerpt+underlines when the source and position
 /// both resolve, and the help/docs/note footers.
-fn finding_block(f: &dbtl::Finding, ctx: &RenderCtx<'_>) -> String {
+fn finding_block(f: &dbtl_core::Finding, ctx: &RenderCtx<'_>) -> String {
     let level = match f.severity {
-        dbtl::Severity::Error => Level::ERROR,
-        dbtl::Severity::Warn => Level::WARNING,
+        dbtl_core::Severity::Error => Level::ERROR,
+        dbtl_core::Severity::Warn => Level::WARNING,
     };
     let mut group = level
         .primary_title(f.message.clone())
@@ -281,7 +281,7 @@ fn finding_block(f: &dbtl::Finding, ctx: &RenderCtx<'_>) -> String {
 /// file + recorded position, or the node uid for a file-less finding.
 /// Nothing is invented: a missing file or an unresolvable span degrades
 /// to the origin alone.
-fn position_element<'a>(f: &'a dbtl::Finding, ctx: &'a RenderCtx<'a>) -> Element<'a> {
+fn position_element<'a>(f: &'a dbtl_core::Finding, ctx: &'a RenderCtx<'a>) -> Element<'a> {
     if let Some(s) = snippet(f, ctx) {
         return s.into();
     }
@@ -304,7 +304,7 @@ fn position_element<'a>(f: &'a dbtl::Finding, ctx: &'a RenderCtx<'a>) -> Element
 /// location carries a line+column AND `ctx.sources` has the file's text
 /// AND the span pins inside it.
 fn snippet<'a>(
-    f: &'a dbtl::Finding,
+    f: &'a dbtl_core::Finding,
     ctx: &'a RenderCtx<'a>,
 ) -> Option<Snippet<'a, annotate_snippets::Annotation<'a>>> {
     let loc = f.location.as_ref()?;
@@ -330,7 +330,7 @@ fn snippet<'a>(
 /// else the single char under the start — `None` only when the start
 /// itself can't be pinned (a position that doesn't exist underlines
 /// nothing).
-fn primary_span(text: &str, loc: &dbtl::Location) -> Option<Range<usize>> {
+fn primary_span(text: &str, loc: &dbtl_core::Location) -> Option<Range<usize>> {
     let (line, column) = (loc.line?, loc.column?);
     let start = position_byte(text, line, column)?;
     let point = position_byte(text, line, column + 1)
@@ -346,7 +346,7 @@ fn primary_span(text: &str, loc: &dbtl::Location) -> Option<Range<usize>> {
 /// `(end_line, end_column)` span (defaulting the end to one char past the
 /// start when only the start is given), else the whole line when the
 /// label is line-level.
-fn label_span(text: &str, l: &dbtl::Label) -> Option<Range<usize>> {
+fn label_span(text: &str, l: &dbtl_core::Label) -> Option<Range<usize>> {
     match l.column {
         Some(c) => {
             let end = match (l.end_line, l.end_column) {
@@ -404,7 +404,7 @@ fn position_byte(text: &str, line: u32, column: u32) -> Option<usize> {
 /// The `= note:` body — the related node names the message doesn't
 /// already mention, resolved through the dag, up to five then
 /// ` and N more`. `None` when there's nothing to add.
-fn note_body(f: &dbtl::Finding, ctx: &RenderCtx<'_>) -> Option<String> {
+fn note_body(f: &dbtl_core::Finding, ctx: &RenderCtx<'_>) -> Option<String> {
     if f.related.is_empty() {
         return None;
     }
@@ -430,7 +430,7 @@ fn note_body(f: &dbtl::Finding, ctx: &RenderCtx<'_>) -> Option<String> {
 }
 
 /// `1 <one>` / `N <many>` — the report's pluralization in one place.
-pub(super) fn counted(n: usize, one: &'static str, many: &'static str) -> String {
+pub(crate) fn counted(n: usize, one: &'static str, many: &'static str) -> String {
     if n == 1 {
         format!("{n} {one}")
     } else {
@@ -440,7 +440,7 @@ pub(super) fn counted(n: usize, one: &'static str, many: &'static str) -> String
 
 /// The gate status word — `PASS`/`WARN`/`FAIL`/`SKIP` — styled for the
 /// colored output, plain otherwise.
-pub(super) fn status_word(status: GateStatus, styled: bool) -> String {
+pub(crate) fn status_word(status: GateStatus, styled: bool) -> String {
     let word = status.word();
     if !styled {
         return word.to_string();
@@ -457,15 +457,15 @@ pub(super) fn status_word(status: GateStatus, styled: bool) -> String {
 /// `text` with `style`'s ANSI codes — used where the hand-built lines
 /// carry their own color (the annotate-snippets renderer styles its own
 /// elements).
-pub(super) fn paint(text: &str, style: Style) -> String {
+pub(crate) fn paint(text: &str, style: Style) -> String {
     format!("{style}{text}{style:#}")
 }
 
-pub(super) fn error_style() -> Style {
+pub(crate) fn error_style() -> Style {
     AnsiColor::BrightRed.on_default().effects(Effects::BOLD)
 }
 
-pub(super) fn warn_style() -> Style {
+pub(crate) fn warn_style() -> Style {
     AnsiColor::Yellow.on_default().effects(Effects::BOLD)
 }
 
@@ -486,8 +486,8 @@ fn renderer(ctx: &RenderCtx<'_>) -> Renderer {
 
 #[cfg(test)]
 mod tests {
-    use super::super::samples::*;
     use super::*;
+    use crate::samples::*;
 
     /// `position_byte` maps a 1-based (line, char-column) to a byte offset
     /// across `\n` and `\r\n` endings, and refuses out-of-range positions.
@@ -522,14 +522,14 @@ mod tests {
         let yml = "- name: fct_orders\n  columns:\n    - name: order_id\n";
         let sql = "select a,\n       b.*\nfrom t\n";
         let mut f = finding(
-            dbtl::LintRule::MissingPrimaryKeyTests,
+            dbtl_core::LintRule::MissingPrimaryKeyTests,
             "model.p.fct_orders",
             "fct_orders has no primary-key test",
-            dbtl::Severity::Error,
+            dbtl_core::Severity::Error,
             Some("models/marts/schema.yml"),
             false,
         );
-        f.location = Some(dbtl::Location {
+        f.location = Some(dbtl_core::Location {
             file: "models/marts/schema.yml".to_string(),
             line: Some(1),
             column: Some(9),
@@ -540,7 +540,7 @@ mod tests {
         r.gates.push(GateResult::new(
             "lint:missing_primary_key_tests",
             "lint missing_primary_key_tests",
-            dbtl::Severity::Error,
+            dbtl_core::Severity::Error,
             GateStatus::Fail,
             "lint missing_primary_key_tests: 1 violation(s): fct_orders".to_string(),
         ));
@@ -548,14 +548,14 @@ mod tests {
         // A .sql finding with a pinned span — positions on .sql files
         // precede the work that assigns them, so the test builds its own.
         let mut f = finding(
-            dbtl::LintRule::SelectStar,
+            dbtl_core::LintRule::SelectStar,
             "model.p.stg_orders",
             "stg_orders's final SELECT uses select * / t.*",
-            dbtl::Severity::Warn,
+            dbtl_core::Severity::Warn,
             Some("models/staging/stg_orders.sql"),
             false,
         );
-        f.location = Some(dbtl::Location {
+        f.location = Some(dbtl_core::Location {
             file: "models/staging/stg_orders.sql".to_string(),
             line: Some(2),
             column: Some(10),
@@ -566,7 +566,7 @@ mod tests {
         r.gates.push(GateResult::new(
             "lint:select_star",
             "lint select_star",
-            dbtl::Severity::Warn,
+            dbtl_core::Severity::Warn,
             GateStatus::Warn,
             "lint select_star: 1 violation(s): stg_orders".to_string(),
         ));

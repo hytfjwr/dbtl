@@ -110,7 +110,7 @@ fn escape_text(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::report::samples::*;
+    use crate::samples::*;
 
     /// One testcase per gate; fail → `<failure>` carrying the finding list,
     /// warn → `<system-out>`, skip → `<skipped/>`; suite counters agree.
@@ -137,14 +137,14 @@ mod tests {
         r.gates = vec![samples::gate(
             "g\"'",
             "t",
-            dbtl::Severity::Error,
+            dbtl_core::Severity::Error,
             GateStatus::Fail,
             "m<&>",
             vec![samples::finding(
-                dbtl::LintRule::RootModels,
+                dbtl_core::LintRule::RootModels,
                 "model.p.x",
                 "msg \u{0007}<&",
-                dbtl::Severity::Error,
+                dbtl_core::Severity::Error,
                 Some("f.sql"),
                 false,
             )],

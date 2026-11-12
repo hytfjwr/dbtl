@@ -31,18 +31,18 @@ pub fn render(report: &Report, ctx: &RenderCtx<'_>) -> String {
 /// `<anchor>: error|warning[<rule>] <message>` — the anchor is the same
 /// `file[:line[:column]]`/uid shape every format uses, the severity tag
 /// the only styled part.
-fn finding_line(f: &dbtl::Finding, ctx: &RenderCtx<'_>) -> String {
+fn finding_line(f: &dbtl_core::Finding, ctx: &RenderCtx<'_>) -> String {
     let word = match f.severity {
-        dbtl::Severity::Error => "error",
-        dbtl::Severity::Warn => "warning",
+        dbtl_core::Severity::Error => "error",
+        dbtl_core::Severity::Warn => "warning",
     };
     let tag = format!("{word}[{}]", f.rule.name());
     let tag = if ctx.styled {
         text::paint(
             &tag,
             match f.severity {
-                dbtl::Severity::Error => text::error_style(),
-                dbtl::Severity::Warn => text::warn_style(),
+                dbtl_core::Severity::Error => text::error_style(),
+                dbtl_core::Severity::Warn => text::warn_style(),
             },
         )
     } else {
@@ -55,8 +55,8 @@ fn finding_line(f: &dbtl::Finding, ctx: &RenderCtx<'_>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::samples::*;
     use super::*;
+    use crate::samples::*;
     use std::collections::BTreeMap;
 
     /// A synthetic lint report with two positioned findings — one yml,
@@ -72,26 +72,26 @@ mod tests {
         });
         for (rule, uid, msg, sev, file, line, col) in [
             (
-                dbtl::LintRule::MissingPrimaryKeyTests,
+                dbtl_core::LintRule::MissingPrimaryKeyTests,
                 "model.p.fct_orders",
                 "fct_orders has no primary-key test",
-                dbtl::Severity::Error,
+                dbtl_core::Severity::Error,
                 "models/marts/schema.yml",
                 4u32,
                 11u32,
             ),
             (
-                dbtl::LintRule::SelectStar,
+                dbtl_core::LintRule::SelectStar,
                 "model.p.stg_orders",
                 "stg_orders uses select *",
-                dbtl::Severity::Warn,
+                dbtl_core::Severity::Warn,
                 "models/staging/stg_orders.sql",
                 10u32,
                 5u32,
             ),
         ] {
             let mut f = finding(rule, uid, msg, sev, Some(file), false);
-            f.location = Some(dbtl::Location {
+            f.location = Some(dbtl_core::Location {
                 file: file.to_string(),
                 line: Some(line),
                 column: Some(col),

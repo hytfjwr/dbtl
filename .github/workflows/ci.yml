@@ -155,6 +155,7 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
+          targets: wasm32-unknown-unknown
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -174,6 +175,16 @@ jobs:
         run: cargo doc --workspace --no-deps --locked
         env:
           RUSTDOCFLAGS: "-D warnings"
+
+      # dbtl-core is the crate a wasm build will link — keep it type-clean
+      # for the wasm target even though nothing here links or runs it.
+      - name: Check dbtl-core (wasm32)
+        run: cargo check -p dbtl-core --target wasm32-unknown-unknown --locked
+
+      # dbtl-report is the report-building crate a wasm caller links — same
+      # type-clean contract as dbtl-core (no filesystem/terminal deps).
+      - name: Check dbtl-report (wasm32)
+        run: cargo check -p dbtl-report --target wasm32-unknown-unknown --locked
 
   docs-reference:
     name: Docs reference
@@ -242,7 +253,7 @@ jobs:
             echo
             echo '| Crate | Lines covered | Coverage |'
             echo '|---|---|---|'
-            for pkg in dbtl dbtl-core dbtl-tui dbtl-docs xtask; do
+            for pkg in dbtl dbtl-core dbtl-tui dbtl-docs dbtl-report xtask; do
               cargo llvm-cov report -p "$pkg" --summary-only --json \
                 | jq -r --arg pkg "$pkg" \
                   '(.data[0].totals.lines // {covered:0,count:0,percent:0}) | "| \($pkg) | \(.covered)/\(.count) | \(.percent)%"'

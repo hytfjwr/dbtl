@@ -15,7 +15,7 @@ pub fn render(report: &Report, _ctx: &RenderCtx<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::report::samples::*;
+    use crate::samples::*;
 
     /// The canonical document: schema marker, gates, summary — and the
     /// conditional blocks absent when nothing engaged them.

@@ -50,11 +50,11 @@ pub use impact::{
 };
 pub use layer::{first_dir, layer_rank, LAYER_ORDER, VIOLATION_LAYERS};
 pub use lint::{
-    byte_span_position, display_name, display_names, fill_finding_lines, name_list, removed_rule,
-    removed_rule_error, run_rules, yaml_name_line, yaml_name_span, Baseline, Category, Finding,
-    Label, LintConfig, LintInput, LintOutcome, LintRule, Location, ParamKind, ParamSpec,
-    RemovedRule, Requires, RuleInfo, Severity, SkippedRule, BASELINE_SCHEMA, DEFAULT_BASELINE_NAME,
-    LINT_RULE_DOCS_BASE, REGISTRY, REMOVED_RULES, YAML_ATTRIBUTE_RULE_IDS,
+    byte_span_position, display_name, display_names, fill_finding_lines, fill_finding_lines_with,
+    name_list, removed_rule, removed_rule_error, run_rules, yaml_name_line, yaml_name_span,
+    Baseline, Category, Finding, Label, LintConfig, LintInput, LintOutcome, LintRule, Location,
+    ParamKind, ParamSpec, RemovedRule, Requires, RuleInfo, Severity, SkippedRule, BASELINE_SCHEMA,
+    DEFAULT_BASELINE_NAME, LINT_RULE_DOCS_BASE, REGISTRY, REMOVED_RULES, YAML_ATTRIBUTE_RULE_IDS,
 };
 pub use manifest::{
     load_manifest, RawConfig, RawConstraint, RawContract, RawDependsOn, RawDoc, RawExposure,

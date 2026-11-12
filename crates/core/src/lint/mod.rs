@@ -35,7 +35,8 @@ mod call_sites;
 pub use call_sites::{display_name, display_names, name_list};
 mod location;
 pub use location::{
-    byte_span_position, fill_finding_lines, yaml_name_line, yaml_name_span, YAML_ATTRIBUTE_RULE_IDS,
+    byte_span_position, fill_finding_lines, fill_finding_lines_with, yaml_name_line,
+    yaml_name_span, YAML_ATTRIBUTE_RULE_IDS,
 };
 
 mod rules;

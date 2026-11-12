@@ -72,15 +72,21 @@ unicode-width = "0.2"
 # feature flip can't silently change traversal).
 sqlparser = "0.64"
 tempfile = "3"
+# `text`/`concise` report renderers in dbtl-report: annotated source
+# excerpts, and the styling palette the ANSI output paints with.
+annotate-snippets = "=0.12.17"
+anstyle = "1"
 
 dbtl-core = { path = "crates/core" }
 dbtl-tui = { path = "crates/tui" }
 dbtl-docs = { path = "crates/docs" }
+dbtl-report = { path = "crates/report" }
 
 [dependencies]
 dbtl-core.workspace = true
 dbtl-tui.workspace = true
 dbtl-docs.workspace = true
+dbtl-report.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 # Generated output (shell completions / the man page) is rendered from the
@@ -88,13 +94,10 @@ clap.workspace = true
 clap_complete = "4.6.11"
 clap_mangen = "0.3.3"
 ratatui.workspace = true
-serde.workspace = true
 serde_json.workspace = true
-# `text`/`concise` lint reports: annotated source excerpts, and styled
-# output with terminal/environment-aware stripping (`--color`).
-annotate-snippets = "=0.12.17"
+# Styled stdout for the human report formats: terminal/environment-aware
+# ANSI stripping (`--color`). The styling itself is built in dbtl-report.
 anstream = "1"
-anstyle = "1"
 
 [dev-dependencies]
 # Temp dbt projects for the symlink-loop regression test (tests/source_fixture.rs).
