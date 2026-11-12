@@ -9,6 +9,20 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "xtask/**"
+      # The workflow's own changes exercise `Perf (report)` on the PR.
+      - ".github/workflows/perf.yml"
+  push:
+    branches: [main]
+    paths:
+      # Same set as pull_request — the prebuild job warms whatever the
+      # report job measures.
+      - "crates/**"
+      - "src/**"
+      - "benches/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "xtask/**"
+      - ".github/workflows/perf.yml"
   # Daily — release-mode perf tests plus the ignored `perf_*` suite.
   schedule:
     - cron: "41 2 * * *"
@@ -22,6 +36,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Build-affecting paths: the trigger list minus this workflow file. The
+  # prebuilt-binaries key derives from the last commit that touched them,
+  # so commits that cannot change the binaries keep the same key. Both key
+  # derivations below read this one list — keep them identical.
+  PERF_INPUT_PATHS: crates src benches Cargo.toml Cargo.lock xtask
 
 jobs:
   # Report-only base-vs-head comparison: short Criterion runs on both sides
@@ -38,8 +57,8 @@ jobs:
       contents: read
     steps:
       # WORK is one scratch root for everything the job produces: the base
-      # worktree, both criterion output dirs, the synth project, and the
-      # metrics files the report renderer reads.
+      # worktree or restored binaries, both criterion output dirs, the
+      # synth project, and the metrics files the report renderer reads.
       - name: Prepare the scratch dir
         run: mkdir -p "$RUNNER_TEMP/perf" && echo "WORK=$RUNNER_TEMP/perf" >> "$GITHUB_ENV"
       - name: Checkout
@@ -57,7 +76,10 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Shares the cache `Perf (prebuild)` writes, so the head build
+          # pays only for what this PR changed. Saving is that job's alone.
+          shared-key: perf
+          save-if: false
 
       - name: Resolve the merge base
         id: base
@@ -77,8 +99,63 @@ jobs:
             echo "sha=" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Check out the base in a worktree
+      # `Perf (prebuild)` publishes the binaries `Perf (report)` would
+      # otherwise compile for its base side on every PR: the release `dbtl`
+      # plus the compiled Criterion harness. The key derives from the
+      # toolchain and the last build-affecting commit at the merge base, so
+      # binaries never stand in for a different base — a miss falls back to
+      # building the merge base in a worktree exactly as before. Measured
+      # numbers are never cached: both sides always run on this runner.
+      - name: Resolve the prebuilt-base key
+        id: base-key
         if: steps.base.outputs.sha != ''
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          RUNNER_OS: ${{ runner.os }}
+        run: |
+          # Same derivation `Perf (prebuild)` saves under — keep them in sync.
+          read -ra paths <<< "$PERF_INPUT_PATHS"
+          input_sha=$(git log -1 --format=%H "$BASE_SHA" -- "${paths[@]}")
+          toolchain_hash=$(rustc -V | sha256sum | cut -c1-16)
+          echo "input-sha=$input_sha" >> "$GITHUB_OUTPUT"
+          echo "key=perf-bin-${RUNNER_OS}-${toolchain_hash}-${input_sha:-none}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the prebuilt base binaries
+        id: prebuilt
+        if: steps.base.outputs.sha != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/perf/prebuilt
+          key: ${{ steps.base-key.outputs.key }}
+
+      - name: Verify and classify the base source
+        id: base-bin
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          INPUT_SHA: ${{ steps.base-key.outputs.input-sha }}
+          CACHE_HIT: ${{ steps.prebuilt.outputs.cache-hit }}
+        run: |
+          mode=build
+          if [ -z "$BASE_SHA" ]; then
+            mode=none
+          elif [ "$CACHE_HIT" = "true" ] \
+            && [ -x "$WORK/prebuilt/dbtl" ] \
+            && [ -x "$WORK/prebuilt/pipeline" ] \
+            && "$WORK/prebuilt/dbtl" --version >/dev/null 2>&1 \
+            && "$WORK/prebuilt/pipeline" --bench --list >/dev/null 2>&1; then
+            # Restored bits must actually run before they may stand in for
+            # the base — a broken restore falls back to the in-job build.
+            mode=prebuilt
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          case "$mode" in
+            prebuilt) echo "base: prebuilt binaries for ${INPUT_SHA:0:7}" ;;
+            build)    echo "base: built in this job" ;;
+            none)     echo "base: n/a (merge base unresolved)" ;;
+          esac >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check out the base in a worktree
+        if: steps.base-bin.outputs.mode == 'build'
         env:
           BASE_SHA: ${{ steps.base.outputs.sha }}
         run: git worktree add "$WORK/base" "$BASE_SHA"
@@ -106,7 +183,7 @@ jobs:
           cargo build --release --locked -p dbtl -p xtask || true
 
       - name: Build base (release)
-        if: steps.base.outputs.sha != ''
+        if: steps.base-bin.outputs.mode == 'build'
         run: |
           cd "$WORK/base"
           cargo build --release --locked || true
@@ -118,8 +195,16 @@ jobs:
           CRITERION_HOME: ${{ runner.temp }}/perf/criterion-head
         run: cargo bench --locked --bench pipeline -- --measurement-time 2 --warm-up-time 1 --sample-size 10 || true
 
+      - name: Benchmark base (prebuilt)
+        if: steps.base-bin.outputs.mode == 'prebuilt'
+        env:
+          CRITERION_HOME: ${{ runner.temp }}/perf/criterion-base
+          BASE_BIN: ${{ runner.temp }}/perf/prebuilt
+        run: |
+          "$BASE_BIN/pipeline" --bench --measurement-time 2 --warm-up-time 1 --sample-size 10 || true
+
       - name: Benchmark base
-        if: steps.base.outputs.sha != ''
+        if: steps.base-bin.outputs.mode == 'build'
         env:
           CRITERION_HOME: ${{ runner.temp }}/perf/criterion-base
         run: |
@@ -133,6 +218,8 @@ jobs:
       # distinguishes a gate finding (exit 1 — still a valid measurement)
       # from an unusable run (≥2 → n/a).
       - name: Measure check/docs and binary sizes
+        env:
+          BASE_MODE: ${{ steps.base-bin.outputs.mode }}
         run: |
           mkdir -p "$WORK/metrics"
           measure() {
@@ -154,6 +241,9 @@ jobs:
             fi
           }
           base_bin="$WORK/base/target/release/dbtl"
+          if [ "$BASE_MODE" = "prebuilt" ]; then
+            base_bin="$WORK/prebuilt/dbtl"
+          fi
           head_bin="$GITHUB_WORKSPACE/target/release/dbtl"
           if [ -x "$base_bin" ]; then
             measure check base "$base_bin" check --project "$WORK/synth" --lint --quiet
@@ -216,12 +306,109 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  # Compiles the binaries `Perf (report)` needs for its base side — the
+  # release `dbtl` and the Criterion harness — and stores them under the
+  # key the report job derives from its merge base. A restore hit means the
+  # same inputs were already built, so the job exits without rebuilding;
+  # this keeps non-code pushes cheap even when the path filter lets them
+  # through. The binaries are keyed by toolchain plus the last commit that
+  # touched the build-affecting paths, never by measured output.
+  perf-prebuild:
+    name: Perf (prebuild)
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The input-SHA lookup walks back to the last commit that
+          # touched the build-affecting paths.
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # One shared key for everything the perf jobs build; only this
+          # job may write it, and only on a main push.
+          shared-key: perf
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Resolve the prebuilt-binaries key
+        id: key
+        env:
+          RUNNER_OS: ${{ runner.os }}
+        run: |
+          # Same derivation `Perf (report)` looks up under — keep them in sync.
+          read -ra paths <<< "$PERF_INPUT_PATHS"
+          input_sha=$(git log -1 --format=%H HEAD -- "${paths[@]}")
+          toolchain_hash=$(rustc -V | sha256sum | cut -c1-16)
+          echo "input-sha=$input_sha" >> "$GITHUB_OUTPUT"
+          echo "key=perf-bin-${RUNNER_OS}-${toolchain_hash}-${input_sha:-none}" >> "$GITHUB_OUTPUT"
+
+      - name: Look up the prebuilt binaries
+        id: prebuilt
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/perf-bin
+          key: ${{ steps.key.outputs.key }}
+          # Presence check only — a hit means these exact inputs were
+          # already built, so there is nothing to download or rebuild.
+          lookup-only: true
+
+      - name: Build the release binaries and the bench harness
+        if: steps.prebuilt.outputs.cache-hit != 'true'
+        env:
+          STAGE: ${{ runner.temp }}/perf-bin
+        run: |
+          mkdir -p "$STAGE"
+          cargo build --release --locked
+          # `--no-run` compiles the harness without measuring; the JSON
+          # stream carries the produced executable's path.
+          cargo bench --locked --bench pipeline --no-run --message-format=json-render-diagnostics \
+            > "$RUNNER_TEMP/bench-artifacts.json"
+
+      - name: Stage the binaries and the provenance note
+        if: steps.prebuilt.outputs.cache-hit != 'true'
+        env:
+          STAGE: ${{ runner.temp }}/perf-bin
+          INPUT_SHA: ${{ steps.key.outputs.input-sha }}
+        run: |
+          bench_exe=$(jq -r \
+            'select(.reason == "compiler-artifact" and .target.name == "pipeline" and .executable != null) | .executable' \
+            "$RUNNER_TEMP/bench-artifacts.json" | tail -n 1)
+          if [ -z "$bench_exe" ] || [ ! -x "$bench_exe" ]; then
+            echo "could not locate the compiled pipeline bench harness"
+            exit 1
+          fi
+          cp target/release/dbtl "$STAGE/dbtl"
+          cp "$bench_exe" "$STAGE/pipeline"
+          printf 'input_sha=%s\ntoolchain=%s\n' "$INPUT_SHA" "$(rustc -V)" > "$STAGE/META"
+          ls -la "$STAGE"
+
+      - name: Save the prebuilt binaries
+        if: steps.prebuilt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/perf-bin
+          key: ${{ steps.key.outputs.key }}
+
   # The ignored `perf_*` tests under a release build — a smoke budget per
   # workload, run against main daily so a pathological regression surfaces
   # even without a PR touching it.
   perf-nightly:
     name: Perf (nightly)
-    if: github.event_name != 'pull_request'
+    # Adding the push trigger must not widen what runs this job — it stays
+    # scheduled/dispatch-only, as before.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -240,7 +427,9 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Read-only: `Perf (prebuild)` owns the shared key's writes.
+          shared-key: perf
+          save-if: false
 
       - name: Run perf tests (release)
         run: cargo test --release --workspace --locked -- --ignored perf_
