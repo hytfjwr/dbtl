@@ -1,13 +1,16 @@
 name: Release dry run
 
 # Builds and packages every release target through the same reusable
-# pipeline release.yml calls — under a dummy tag, so nothing is published:
-# no tag is created, no GitHub release, no tap update, no attestation
-# (this workflow never requests an id-token).
+# pipeline release.yml calls, and renders the demo GIF the same way a real
+# release does — under a dummy tag, so nothing is published: no tag is
+# created, no GitHub release, no tap update, no attestation (this workflow
+# never requests an id-token), and no demo.gif attach (no release-tag is
+# passed).
 on:
   pull_request:
     paths:
       - ".github/workflows/release*.yml"
+      - ".github/workflows/demo.yml"
       - "Cargo.toml"
       - "Cargo.lock"
   workflow_dispatch:
@@ -31,3 +34,16 @@ jobs:
       ref: ${{ github.sha }}
       # Dry-run artifacts are inspection-only — keep them short-lived.
       artifact-retention-days: 7
+
+  # Renders the demo GIF through the same reusable workflow a real release
+  # calls — without a release-tag, so the attach job is skipped and nothing
+  # is published. The write ceiling only exists because GitHub validates a
+  # called workflow's declared permissions at startup, skipped jobs
+  # included; nothing here ever uses it.
+  demo:
+    name: Demo GIF
+    uses: ./.github/workflows/demo.yml
+    permissions:
+      contents: write
+    with:
+      ref: ${{ github.sha }}

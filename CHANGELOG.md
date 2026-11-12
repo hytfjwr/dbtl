@@ -62,6 +62,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `checksums.txt`, build-provenance attestations, and CycloneDX SBOMs.
 - Generated reference documentation under `docs/reference/` (CLI,
   configuration, keybindings, lint rules) and JSON schemas under `schema/`.
+- Releases now attach `demo.gif` — the recorded TUI demo, rendered at the
+  release tag by the release pipeline (not covered by `checksums.txt` or
+  attestations).
 
 ## [0.5.3] - 2026-11-11
 
