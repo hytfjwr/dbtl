@@ -240,6 +240,11 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             tree_uk.insert(uid.clone(), uk.clone());
         }
         tree_gov.insert(uid.clone(), tree.clone());
+        // The in-file `config(…)` spellings of the model governance fields —
+        // each the highest level of the same precedence chain `materialized`
+        // follows (`access`/`contract` are model-only; `group` is not) —
+        // extracted in one pass over the file's config() calls.
+        let gov = config_governance(&stripped);
         nodes.insert(
             uid.clone(),
             RawNode {
@@ -253,15 +258,11 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                     // precedence level — the same chain `materialized`
                     // follows (schema.yml and the tree fill below it).
                     unique_key: config_unique_key(&stripped),
-                    // Same chain for `config(incremental_strategy=…)`.
-                    incremental_strategy: config_string(&stripped, "incremental_strategy"),
+                    incremental_strategy: gov.incremental_strategy.clone(),
                 },
-                // The in-file `config(…)` spellings of the model governance
-                // fields — each the highest level of the same precedence
-                // chain (`access`/`contract` are model-only; `group` is not).
-                access: config_string(&stripped, "access"),
-                group: config_string(&stripped, "group"),
-                contract: config_contract(&stripped),
+                access: gov.access.clone(),
+                group: gov.group.clone(),
+                contract: gov.contract.clone(),
                 // dbt records `language: "sql"` on every .sql-defined model.
                 language: Some("sql".to_string()),
                 // In-file `config(meta={…})` is the HIGHEST precedence level;
@@ -384,7 +385,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                     },
                     // Snapshots can sit in a dbt `group`; `access`/`contract`
                     // stay None — dbt records them on models only.
-                    group: config_string(&stripped, "group"),
+                    group: config_governance(&stripped).group,
                     // dbt records `language: "sql"` on .sql-defined snapshots.
                     language: Some("sql".to_string()),
                     // The `{{ config(…) }}` inside a `{% snapshot %}` block is
