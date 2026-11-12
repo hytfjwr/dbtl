@@ -1394,6 +1394,134 @@
                   }
                 }
               ]
+            },
+            "unused_models": {
+              "description": "a model in a checked layer has no downstream",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    },
+                    "layers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "staging",
+                          "intermediate",
+                          "marts",
+                          "other"
+                        ]
+                      },
+                      "default": [
+                        "staging",
+                        "intermediate"
+                      ],
+                      "description": "model layers the unused check applies to"
+                    }
+                  }
+                }
+              ]
+            },
+            "references_deprecated_model": {
+              "description": "a node directly depends on a model with a deprecation_date",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
+            },
+            "undeclared_warehouse_columns": {
+              "description": "a warehouse column the node doesn't declare",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    }
+                  }
+                }
+              ]
             }
           }
         }

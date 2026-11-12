@@ -116,6 +116,15 @@ pub enum LintRule {
     WarehouseTypeDrift,
     /// Declared columns the catalog doesn't know (needs a catalog).
     ColumnsMissingInWarehouse,
+    /// A model in a configured layer (default staging/intermediate) has no
+    /// downstream — no node, exposure, or `semantic_models:` consumer.
+    UnusedModels,
+    /// A node directly depends on a model carrying `deprecation_date` —
+    /// a deprecation scheduled upstream it should migrate off.
+    ReferencesDeprecatedModel,
+    /// Warehouse columns the catalog reports but the node doesn't declare
+    /// (needs a catalog) — docs/schema.yml coverage, not a type question.
+    UndeclaredWarehouseColumns,
 }
 
 impl LintRule {
@@ -123,7 +132,7 @@ impl LintRule {
     /// order of the enum and of [`REGISTRY`]. The original structure rules
     /// lead; rules added later append in registry order so the emitted
     /// sequence stays stable.
-    pub const ALL: [LintRule; 33] = [
+    pub const ALL: [LintRule; 36] = [
         Self::DirectJoinToSource,
         Self::MultipleSourcesJoined,
         Self::SourceFanout,
@@ -157,6 +166,9 @@ impl LintRule {
         Self::ForbiddenPatterns,
         Self::WarehouseTypeDrift,
         Self::ColumnsMissingInWarehouse,
+        Self::UnusedModels,
+        Self::ReferencesDeprecatedModel,
+        Self::UndeclaredWarehouseColumns,
     ];
 
     /// This rule's registry row — every rule has exactly one (drift-tested).

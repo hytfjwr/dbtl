@@ -257,6 +257,14 @@ impl Dag {
             }
         }
         semantic_edges.sort_by_key(|(uid, _)| *uid);
+        // `semantic_model` consumers also stamp the consumed node's
+        // `semantic_dependents` — the manifest-mode half of the channel
+        // source mode fills through `RawNode::semantic_dependents` (the
+        // source loader synthesizes no semantic-layer nodes). Metric /
+        // saved-query consumers don't stamp: they are graph nodes only in
+        // manifest mode, and the field exists to answer "a `semantic_models:`
+        // entry reads this" identically in both modes.
+        let mut semantic_dependents: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for (uid, deps) in semantic_edges {
             for dep in deps {
                 if !kept.contains(dep) {
@@ -270,6 +278,19 @@ impl Dag {
                 if !c.contains(uid) {
                     c.push(uid.clone());
                 }
+                if nodes[uid].resource_type == "semantic_model" {
+                    semantic_dependents
+                        .entry(dep.clone())
+                        .or_default()
+                        .insert(nodes[uid].name.clone());
+                }
+            }
+        }
+        for (uid, names) in semantic_dependents {
+            if let Some(d) = details.get_mut(&uid) {
+                d.semantic_dependents.extend(names);
+                d.semantic_dependents.sort();
+                d.semantic_dependents.dedup();
             }
         }
 

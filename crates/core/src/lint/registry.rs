@@ -640,6 +640,68 @@ pub static REGISTRY: &[RuleInfo] = &[
         params: &[],
         requires: Requires::Catalog,
     },
+    RuleInfo {
+        rule: LintRule::UnusedModels,
+        id: "unused_models",
+        category: Category::Modeling,
+        default_severity: Severity::Warn,
+        summary: "a model in a checked layer has no downstream",
+        rationale: "A model nothing reads is dead weight: it still builds on \
+                    every run, still sits in the lineage, and its name keeps \
+                    promising a purpose it no longer serves. An unused \
+                    intermediate is a refactor leftover; an unused staging \
+                    model keeps a source contract alive that the project \
+                    silently abandoned. Either wire it into a consumer or \
+                    delete it so the DAG shows what actually runs.",
+        example: "int_pricing_v2 was left behind when fct_orders moved to \
+                  int_pricing. Fix: delete the model — or ref it from the \
+                  consumer it was built for.",
+        help: "delete the model, or ref it from the consumer it was built for",
+        params: &[ParamSpec::string_list(
+            "layers",
+            &["staging", "intermediate"],
+            Some(&["staging", "intermediate", "marts", "other"]),
+            "model layers the unused check applies to",
+        )],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::ReferencesDeprecatedModel,
+        id: "references_deprecated_model",
+        category: Category::Governance,
+        default_severity: Severity::Warn,
+        summary: "a node directly depends on a model with a deprecation_date",
+        rationale: "A deprecation_date is the upstream's promise that the \
+                    model is going away. Every dependent that hasn't migrated \
+                    breaks when the cutoff passes — and the warning is easy \
+                    to miss until the build stops. Repointing early keeps \
+                    the cutover on the consumer's schedule, not the \
+                    deprecated model's.",
+        example: "fct_orders refs dim_customers.v1, which carries \
+                  deprecation_date 2026-12-01. Fix: repoint the ref to \
+                  dim_customers.v2 before the cutoff.",
+        help: "repoint the ref to the deprecated model's successor",
+        params: &[],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::UndeclaredWarehouseColumns,
+        id: "undeclared_warehouse_columns",
+        category: Category::Warehouse,
+        default_severity: Severity::Warn,
+        summary: "a warehouse column the node doesn't declare",
+        rationale: "The catalog reports columns schema.yml never mentions — \
+                    the declared schema is incomplete. Undeclared columns hide \
+                    from column tests, docs coverage, and every check that \
+                    trusts the declared shape, so they drift unnoticed until \
+                    a reader trips over them.",
+        example: "fct_orders declares order_id and total, but the warehouse \
+                  also carries currency. Fix: declare the missing columns in \
+                  the model's schema.yml entry.",
+        help: "declare the warehouse's extra columns in the node's schema.yml entry",
+        params: &[],
+        requires: Requires::Catalog,
+    },
 ];
 
 /// A rule the registry once carried and has since dropped. The id stays

@@ -736,6 +736,33 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             );
         }
 
+        // Semantic models: a YAML-only consumer like the exposures above —
+        // but no node is synthesized for it (a real manifest would carry
+        // `semantic_models` records + edges; the source loader leaves those
+        // maps empty). Instead each entry's `model: ref('x')` stamps the
+        // consumed node's `semantic_dependents`, the `#[serde(skip)]`
+        // channel `detail_from_node` copies into `NodeDetail` — so "the
+        // semantic layer reads this model" answers identically in both
+        // modes (`unused_models` depends on it).
+        for sm in &schema.semantic_models {
+            // `enabled: false` — either spelling — parks the entry like
+            // dbt's `disabled` (it never consumes its `model:` then);
+            // the `config:` spelling wins when both are declared.
+            if sm.config.enabled.or(sm.enabled) == Some(false) {
+                continue;
+            }
+            let Some(model) = &sm.model else {
+                continue;
+            };
+            for ref_name in pat.refs(model) {
+                if let Some(uid) = name_index.get(&ref_name) {
+                    if let Some(node) = nodes.get_mut(uid) {
+                        node.semantic_dependents.push(sm.name.clone());
+                    }
+                }
+            }
+        }
+
         apply_meta(
             &mut nodes,
             &mut test_ctx,
@@ -813,6 +840,11 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                 node.config.incremental_strategy = gov.and_then(|g| g.incremental_strategy.clone());
             }
         }
+        // Deterministic `semantic_dependents` — stamped per schema file,
+        // so sort/dedup once here (a name can't legitimately repeat, but a
+        // duplicate `semantic_models:` entry across files must not double).
+        node.semantic_dependents.sort();
+        node.semantic_dependents.dedup();
     }
 
     // The `{% docs __overview__ %}` block rides into the manifest's `docs`
@@ -858,8 +890,12 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             parent_map,
             child_map,
             macros: HashMap::new(),
-            // Source mode never synthesizes the semantic layer or unit tests —
-            // they're YAML-only resources the source parser doesn't scan.
+            // Source mode never synthesizes semantic-layer resources or unit
+            // tests — they're YAML-only resources the source parser doesn't
+            // scan. `semantic_models:` entries ARE scanned, but only to mark
+            // each consumed node's `semantic_dependents` (above) — the same
+            // fact `Dag::build` derives from this map's records in manifest
+            // mode, so neither side needs the nodes themselves.
             semantic_models: HashMap::new(),
             metrics: HashMap::new(),
             saved_queries: HashMap::new(),

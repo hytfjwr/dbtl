@@ -160,6 +160,11 @@ pub(super) fn detail_from_node(node: &RawNode) -> NodeDetail {
             .alias
             .clone()
             .filter(|a| !a.trim().is_empty() && a != &node.name),
+        // The source-mode channel: the `semantic_models:` consumers the
+        // loader recorded without synthesizing nodes for. `Dag::build`
+        // merges the same names it derives from the manifest's
+        // `semantic_models` map on top.
+        semantic_dependents: node.semantic_dependents.clone(),
         // The ingestion fields below are source-only.
         ..Default::default()
     }

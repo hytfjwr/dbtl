@@ -164,6 +164,17 @@ pub struct RawNode {
     /// alone misses roughly a third of relations on alias-heavy projects.
     #[serde(default)]
     pub alias: Option<String>,
+    /// The `semantic_models:` entries that consume this node — source-mode
+    /// ONLY: a real manifest records those consumers as `semantic_model`
+    /// nodes plus edges, but the source loader synthesizes neither and
+    /// still needs the "the semantic layer reads this" signal, so it fills
+    /// this synthesized channel from each entry's `model: ref()` instead.
+    /// `#[serde(skip)]` keeps it off the wire entirely (a real manifest
+    /// can't carry it, a serialized one never writes it); `Dag::build`
+    /// merges it with the same names it derives from `semantic_models`
+    /// records, so both modes answer identically.
+    #[serde(skip)]
+    pub semantic_dependents: Vec<String>,
 }
 
 /// `contract` sub-object: whether `enforced` is on (the declared column list

@@ -133,6 +133,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Releases now attach `demo.gif` — the recorded TUI demo, rendered at the
   release tag by the release pipeline (not covered by `checksums.txt` or
   attestations).
+- Three lint rules. `unused_models` (default: staging + intermediate
+  layers, retargetable via `layers`) flags a model nothing reads — any
+  downstream counts, including exposures, semantic models, and consumers
+  hidden by package pruning; `references_deprecated_model` flags a node
+  whose direct parent carries a `deprecation_date`, pointing at the
+  offending `ref()`/`source()` call; `undeclared_warehouse_columns`
+  reports warehouse columns the node's declared schema never mentions
+  (models, seeds, and snapshots; `--catalog` required). Source mode now
+  reads `semantic_models:` entries — including `enabled: false` under
+  either spelling — so a model consumed only by the semantic layer
+  answers "used" exactly like manifest mode.
 
 ### Changed
 

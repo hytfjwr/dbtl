@@ -1,6 +1,6 @@
 {
  "project": "jaffle_finance",
- "rules": 31,
+ "rules": 33,
  "findings": [
   {
    "rule": "direct_join_to_source",
@@ -890,6 +890,13 @@
    "uid": "model.jaffle_finance.stg_payment__warehouses",
    "message": "stg_payment__warehouses's final SELECT uses select * / t.*",
    "file": "models/staging/jaffle/payment/stg_payment__warehouses.sql"
+  },
+  {
+   "rule": "unused_models",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.int_shoppers__combined",
+   "message": "intermediate model int_shoppers__combined has no downstream",
+   "file": "models/intermediate/jaffle/shoppers/int_shoppers__combined.sql"
   }
  ]
 }

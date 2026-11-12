@@ -432,6 +432,13 @@ pub struct NodeDetail {
     /// `FROM "db"."schema"."<relation>"` against it; `None` means the
     /// `name`/`unique_id` segment is the relation.
     pub relation_name: Option<String>,
+    /// Names of the `semantic_models:` entries that consume this node —
+    /// a downstream signal that is a real `semantic_model` graph node only
+    /// in manifest mode. Source mode synthesizes no semantic-layer nodes
+    /// but still records the consumption (from each entry's `model: ref()`),
+    /// so a model feeding only the semantic layer counts as used in both
+    /// modes. Sorted, deduplicated.
+    pub semantic_dependents: Vec<String>,
     // --- source ingestion metadata (sources only) ---
     /// `loaded_at_field` — the timestamp column freshness is measured
     /// against. The already-resolved effective value (table > source).

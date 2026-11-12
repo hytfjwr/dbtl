@@ -37,7 +37,7 @@ warning[select_star]: fct_daily_orders's final SELECT uses select * / t.*
 …
 
 Found 10 errors and 36 warnings in 21 files
-16 rules reported findings; 2 skipped (need --catalog)
+16 rules reported findings; 3 skipped (need --catalog)
 ```
 
 `--format concise` prints the same findings as `file[:line[:column]]: severity[rule] message` one-liners for editors and grep.
@@ -66,11 +66,11 @@ One findings list feeds every surface, so the numbers cannot drift apart:
 The rules span:
 
 - graph structure (`model_fanout`, `root_models`, `layer_violation`, and more)
-- governance (`missing_primary_key_tests`, `naming_conventions`, `public_models_without_contract`, and more)
+- governance (`missing_primary_key_tests`, `naming_conventions`, `public_models_without_contract`, `references_deprecated_model`, and more)
 - documentation and metadata (`undocumented_models`, `undocumented_columns`, `required_meta_keys`, and more)
-- source and performance checks (`unused_sources`, `incremental_without_unique_key`, and more)
+- source and performance checks (`unused_sources`, `unused_models`, `incremental_without_unique_key`, and more)
 - SQL-content checks (`select_star`, `hard_coded_references`, `cartesian_join`, and more)
-- warehouse drift checks against `catalog.json` (`warehouse_type_drift`, `columns_missing_in_warehouse`)
+- warehouse drift checks against `catalog.json` (`warehouse_type_drift`, `columns_missing_in_warehouse`, `undeclared_warehouse_columns`)
 
 The [lint rules reference](../reference/lint-rules.md) lists every rule with its category, default severity, inputs, rationale, fix guidance, and parameters.
 

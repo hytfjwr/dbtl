@@ -75,6 +75,11 @@ pub(super) struct SchemaFile {
     pub(super) snapshots: Vec<SchemaModel>,
     #[serde(default)]
     pub(super) exposures: Vec<SchemaExposure>,
+    /// `semantic_models:` — read only for each entry's `model:` ref, the
+    /// semantic-layer consumption signal the synthesized manifest can't
+    /// carry as nodes (no semantic-layer resources are synthesized).
+    #[serde(default)]
+    pub(super) semantic_models: Vec<SchemaSemanticModel>,
 }
 
 /// Shared shape for `models:` / `seeds:` / `snapshots:` entries (only what we read).
@@ -207,6 +212,33 @@ pub(super) struct SchemaExposureOwner {
     pub(super) name: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub(super) email: Option<String>,
+}
+
+/// A `semantic_models:` entry (only what marks consumption). `model:` holds
+/// a Jinja string (`ref('x')`) per the dbt spec; `enabled` is honored at
+/// both spellings — top-level and `config.enabled` (config wins when both
+/// are declared, the precedence the model `config:` block follows).
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct SchemaSemanticModel {
+    #[serde(deserialize_with = "de_string")]
+    pub(super) name: String,
+    /// The `model:` Jinja expression — `ref('x')` in every real project.
+    /// Kept raw so a `disabled` entry still deserializes; the caller drops
+    /// disabled entries before parsing the ref.
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) model: Option<String>,
+    /// Top-level `enabled:` — a semantic-model property (unlike models,
+    /// where `enabled` only lives under `config:`).
+    #[serde(default)]
+    pub(super) enabled: Option<bool>,
+    #[serde(default)]
+    pub(super) config: SchemaSemanticModelConfig,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct SchemaSemanticModelConfig {
+    #[serde(default)]
+    pub(super) enabled: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]

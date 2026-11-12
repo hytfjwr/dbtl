@@ -162,3 +162,81 @@ pub(super) fn contract_columns_without_type(
         ));
     }
 }
+
+/// `references_deprecated_model`: a node directly depends on a model
+/// carrying `deprecation_date` — the upstream's scheduled retirement.
+/// Every resource kind that CAN parent a model is checked (models,
+/// snapshots, exposures, the semantic-layer resources); the deprecated
+/// model itself never flags — the finding names the edge, not the
+/// sunset. The date is read as declared text only (never parsed — the
+/// judgment is "a deprecation is declared", not "the cutoff passed"), and
+/// a blank string is no declaration at all. The position lands on the
+/// dependent's first `ref()` to a deprecated parent; every other
+/// deprecated-parent call is a label.
+pub(super) fn references_deprecated_model(
+    dag: &Dag,
+    uids: &[&String],
+    in_scope: &dyn Fn(&NodeInfo) -> bool,
+    sites: &CallSiteResolver<'_>,
+    out: &mut Vec<Finding>,
+) {
+    for uid in uids {
+        let Some(n) = dag.get(uid) else { continue };
+        if !matches!(
+            n.resource_type.as_str(),
+            "model" | "snapshot" | "exposure" | "semantic_model" | "metric" | "saved_query"
+        ) || !in_scope(n)
+        {
+            continue;
+        }
+        let mut parents: Vec<String> = dag
+            .direct_parents(uid)
+            .iter()
+            .filter(|p| {
+                dag.get(p).is_some_and(|p| p.resource_type == "model")
+                    && dag
+                        .detail(p)
+                        .and_then(|d| d.deprecation_date.as_deref())
+                        .is_some_and(|s| !s.trim().is_empty())
+            })
+            .cloned()
+            .collect();
+        if parents.is_empty() {
+            continue;
+        }
+        parents.sort();
+        let names: Vec<String> = parents
+            .iter()
+            .map(|p| {
+                format!(
+                    "{} (deprecated on {})",
+                    display_name(dag, p),
+                    dag.detail(p)
+                        .and_then(|d| d.deprecation_date.as_deref())
+                        .expect("filtered above")
+                )
+            })
+            .collect();
+        let mut f = Finding::new(
+            LintRule::ReferencesDeprecatedModel,
+            (*uid).clone(),
+            parents.clone(),
+            format!("{} depends on {}", n.name, name_list(&names)),
+        );
+        // Primary on the first ref to a deprecated parent; every other
+        // deprecated-parent call is a label naming what it reads.
+        if let Some(cs) = sites.for_node(uid) {
+            let mut spots: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+            for parent in &parents {
+                for span in cs.calls_to(parent) {
+                    spots.push((span, format!("{} is deprecated", display_name(dag, parent))));
+                }
+            }
+            spots.sort_by_key(|(r, _)| r.start);
+            if let Some(first) = spots.first().cloned() {
+                f = cs.annotate(f, first, spots[1..].to_vec());
+            }
+        }
+        out.push(f);
+    }
+}

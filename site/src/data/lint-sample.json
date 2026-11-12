@@ -1,6 +1,6 @@
 {
  "project": "sample",
- "rules": 31,
+ "rules": 33,
  "findings": [
   {
    "rule": "multiple_sources_joined",
@@ -323,6 +323,20 @@
    "uid": "model.sample.stg_orders",
    "message": "stg_orders's final SELECT uses select * / t.*",
    "file": "models/staging/stg_orders.sql"
+  },
+  {
+   "rule": "unused_models",
+   "severity": "warn",
+   "uid": "model.sample.stg_dup_probe",
+   "message": "staging model stg_dup_probe has no downstream",
+   "file": "models/staging/dup_sources.yml"
+  },
+  {
+   "rule": "unused_models",
+   "severity": "warn",
+   "uid": "model.sample.stg_two_configs",
+   "message": "staging model stg_two_configs has no downstream",
+   "file": "models/staging/stg_two_configs.sql"
   }
  ]
 }

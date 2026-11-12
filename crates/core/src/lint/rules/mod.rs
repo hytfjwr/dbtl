@@ -318,6 +318,19 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 catalog.expect("gated"),
                 &mut out,
             ),
+            LintRule::UnusedModels => {
+                modeling::unused_models(dag, &uids, &in_scope, config, &mut out)
+            }
+            LintRule::ReferencesDeprecatedModel => {
+                governance::references_deprecated_model(dag, &uids, &in_scope, &sites, &mut out)
+            }
+            LintRule::UndeclaredWarehouseColumns => warehouse::undeclared_warehouse_columns(
+                dag,
+                &uids,
+                &in_scope,
+                catalog.expect("gated"),
+                &mut out,
+            ),
         }
     }
     // The envelope fields are filled in ONE place — the severity the config

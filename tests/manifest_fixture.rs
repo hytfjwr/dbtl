@@ -228,8 +228,10 @@ fn warn_severity_rules_match_frozen_fixture_counts() {
     // separately from the gate set (which is switched off here). Verified
     // by hand: the five structure rules named above plus 11 sources feeding
     // nothing at all — not even an exposure; 6 incremental models declare no
-    // unique_key; and none of its 38 sources carries a freshness block —
-    // nothing else on this graph matches a warn rule.
+    // unique_key; none of its 38 sources carries a freshness block; and
+    // `int_shoppers__combined` is an unused intermediate (its only
+    // "child" is a unique test — not a consumer) — nothing else on this
+    // graph matches a warn rule.
     let dag = fixture_dag();
     let mut cfg = LintConfig::default();
     for rule in LintRule::ALL {
@@ -252,6 +254,7 @@ fn warn_severity_rules_match_frozen_fixture_counts() {
             "forbidden_patterns",
             "warehouse_type_drift",
             "columns_missing_in_warehouse",
+            "undeclared_warehouse_columns",
         ],
         "the enabled aux-backed rules skip in registry order"
     );
@@ -269,6 +272,7 @@ fn warn_severity_rules_match_frozen_fixture_counts() {
         ("incremental_without_unique_key", 6),
         ("sources_without_freshness", 38),
         ("unused_sources", 11),
+        ("unused_models", 1),
     ]);
     assert_eq!(
         counts, expected,
