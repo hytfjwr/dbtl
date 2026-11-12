@@ -88,8 +88,8 @@ pub fn esc_action(mode: &Mode) -> Option<Action> {
         .map(|b| b.action)
 }
 
-/// The which-key menu's BINDINGS rows (`ModeKind::Yank`, in table order) —
-/// the single enumeration the which-key renderer, the event loop's click→row
+/// The yank menu's BINDINGS rows (`ModeKind::Yank`, in table order) —
+/// the single enumeration the yank menu's renderer, the event loop's click→row
 /// map, and the tests all share, so a new `y<key>` binding rows every surface
 /// at once.
 pub fn yank_bindings() -> impl Iterator<Item = &'static KeyBinding> {

@@ -99,7 +99,7 @@ fn yank_column_lineage_copies_the_selected_columns_downstream_closure() {
     assert!(text.contains("## Downstream columns (16)"));
     assert!(text.contains("`fct_orders.id`"));
     assert_eq!(a.take_notice().as_deref(), Some("Copied column lineage"));
-    // One-shot close RESTORES the structure modal the which-key stacked over
+    // One-shot close RESTORES the structure modal the yank menu stacked over
     // (the nested-overlay rule — `back` is the Detail mode).
     assert!(matches!(a.mode, Mode::Detail(_)), "returns to the modal");
 }
@@ -168,14 +168,14 @@ fn yank_menu_over_the_modal_targets_the_modal_node_not_the_selection() {
         "yy copies the modal's uid, not the list selection's fct_orders"
     );
     // One-shot close restores the stacked modal (nested-overlay rule), and
-    // the stash dies with the which-key either way.
+    // the stash dies with the yank menu either way.
     assert!(matches!(a.mode, Mode::Detail(_)), "returns to the modal");
     assert!(a.pending_node.is_none(), "the stash dies with the menu");
 }
 
 #[test]
 fn yank_name_and_impact_over_the_modal_also_follow_the_modal_node() {
-    // (The which-key is one-shot, so each yank gets its own modal-open pass.)
+    // (The yank menu is one-shot, so each yank gets its own modal-open pass.)
     let mut a = sample_app();
     open_detail(&mut a, "model.sample.stg_orders");
     a.select_by_unique_id("model.sample.fct_orders");
@@ -254,7 +254,7 @@ fn a_stale_modal_stash_cannot_leak_into_a_later_selection_yank() {
     apply_action(&mut a, Action::DetailClose); // cancel: back to the stacked modal
     assert!(
         matches!(a.mode, Mode::Detail(_)),
-        "Esc on the which-key restores the modal it stacked over"
+        "Esc on the yank menu restores the modal it stacked over"
     );
     apply_action(&mut a, Action::DetailClose); // then close the modal itself
     assert_eq!(a.mode, Mode::Selection);
@@ -272,7 +272,7 @@ fn a_stale_modal_stash_cannot_leak_into_a_later_selection_yank() {
 #[test]
 fn help_over_the_yank_menu_keeps_the_modal_stash_alive() {
     // The review sequence: Detail → y → ? → Esc → yy. The `?` help LAYERS
-    // over the which-key menu (back = Yank) — the stashed modal target must
+    // over the yank menu (back = Yank) — the stashed modal target must
     // survive it, or the yank silently hits the list selection instead of
     // the modal's node (a quiet wrong-target, the worst kind).
     let mut a = sample_app();

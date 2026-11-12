@@ -137,7 +137,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Semantic-layer resources (semantic models, metrics, saved queries), dbt
   unit tests, and governance fields (access, group, contract, version).
 - Two-node path anchoring (`p`), full-text search, and a `y`-prefixed
-  which-key yank menu.
+  yank menu.
 - Per-project UI state persistence and `config.yml` defaults.
 - `dbtl docs --clean` and `--check` for generated-docs housekeeping.
 - Shared-macro change detection in manifest-vs-manifest diffs.

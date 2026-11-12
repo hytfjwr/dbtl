@@ -42,7 +42,7 @@ Top-level flags that configure the interactive app. An explicit occurrence next 
 
 ### `dbtl docs`
 
-Generate static Markdown docs (tbls-style) for the project and exit, without launching the TUI. Writes one Markdown page per node plus an index README.md under <DIR>. The data source is resolved the same way the TUI resolves it (--manifest / --source / --project / auto-detect)
+Generate static Markdown docs for the project and exit, without launching the TUI. Writes one Markdown page per node plus an index README.md under <DIR>. The data source is resolved the same way the TUI resolves it (--manifest / --source / --project / auto-detect)
 
 ```text
 Usage: dbtl docs [OPTIONS] --out <OUT>

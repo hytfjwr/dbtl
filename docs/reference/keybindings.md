@@ -98,7 +98,7 @@ The main three-pane screen.
 
 ## Yank
 
-The `y` yank-prefix which-key menu.
+The `y` yank-prefix menu.
 
 | Keys | Action |
 | ---- | ------ |

@@ -121,7 +121,7 @@ pub enum Action {
     /// the App when `y` opened the menu; without it the action explains how
     /// to pick one instead of writing noise to the clipboard.
     YankColumnLineage,
-    /// Open the yank prefix menu (a which-key over `Mode::Yank`): every yank
+    /// Open the `y` prefix menu (`Mode::Yank`): every yank
     /// action is also reachable as `y` + the same letter it always used
     /// (`ym` = Mermaid, `yi` = impact, `yy` = unique_id). The single-key
     /// bindings stay bound for the migration period.
@@ -247,10 +247,10 @@ pub enum Action {
     /// Highlight the menu item at `items` index `i` (pointer hover) — pure
     /// cursor move, no execution.
     MenuSelect(usize),
-    /// Highlight the `y` which-key row `i` (a row click selects, per the
+    /// Highlight the `y` menu's row `i` (a row click selects, per the
     /// row-bearing-modal rule) — the index into [`yank_bindings`].
     YankPick(usize),
-    /// Execute the `y` which-key row `i` (a double-click), resolving through
+    /// Execute the `y` menu's row `i` (a double-click), resolving through
     /// the same [`yank_bindings`] table the renderer draws.
     YankInvoke(usize),
     /// Highlight palette candidate `i` (a row click; double-click then fires

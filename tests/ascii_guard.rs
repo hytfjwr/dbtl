@@ -861,7 +861,7 @@ fn node_menu_overlay_is_all_ascii() {
 
 #[test]
 fn yank_menu_overlay_is_all_ascii() {
-    // The `y` which-key menu (y<key> rows + box) in both sizes.
+    // The `y` yank menu (y<key> rows + box) in both sizes.
     let mut app = ascii_app();
     apply_action(&mut app, Action::YankPrefix);
     assert_all_ascii(&render(&mut app, 100, 40), "yank menu 100x40");

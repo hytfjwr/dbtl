@@ -231,7 +231,7 @@ fn mode_blurb(mode: ModeKind) -> Option<&'static str> {
         ModeKind::Columns => "The column-lineage modal.",
         ModeKind::Notifications => "The `Ctrl-n` notification centre.",
         ModeKind::Palette => "The `Ctrl-p` command palette.",
-        ModeKind::Yank => "The `y` yank-prefix which-key menu.",
+        ModeKind::Yank => "The `y` yank-prefix menu.",
         ModeKind::Menu => "The node context menu (`a` / right-click).",
         ModeKind::Help => "The `?` help overlay itself.",
         ModeKind::Home => "The home tab.",

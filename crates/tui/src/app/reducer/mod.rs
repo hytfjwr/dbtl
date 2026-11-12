@@ -121,7 +121,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         app.set_notice("view filters are off while tracing a column (Esc to exit)");
         return Outcome::cont();
     }
-    // The yank-prefix menu is a one-shot which-key: ANY action dispatched out
+    // The yank-prefix menu is one-shot: ANY action dispatched out
     // of it (a yank, the Esc/q cancel) closes it afterwards. Snapshotting the
     // mode BEFORE the match keeps the close logic in this one place instead of
     // duplicating it into every Yank-mode arm.
@@ -246,12 +246,12 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
                 | Action::DetailScrollEnd
         )
     {
-        // A yank / an unhandled key closes the one-shot which-key: the mode it
+        // A yank / an unhandled key closes the one-shot menu: the mode it
         // stacked over (`back`, e.g. the structure modal) comes back — NOT a
         // jump to Selection (the nested-overlay rule). Two gestures are
         // exempt: `YankPick` (a pointer hover/row click only moves the
-        // highlight) and the DetailScroll family (a wheel over the which-key
-        // is a no-op — the menu has no scroll slot — and must not dismiss it).
+        // highlight) and the DetailScroll family (a wheel over the menu is a
+        // no-op — the menu has no scroll slot — and must not dismiss it).
         if let Mode::Yank { back, .. } = &mut app.mode {
             if let Some(back) = back.take() {
                 app.mode = *back;
@@ -260,7 +260,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
             }
         }
     }
-    // The yank stashes live only while the which-key is open — that INCLUDES
+    // The yank stashes live only while the yank menu is open — that INCLUDES
     // a `?` help layer sitting on top of it (`Help` whose `back` is `Yank`):
     // Esc peels the help back to the menu, which must find the modal target
     // still stashed, or the next `y<key>` silently yanks the list selection

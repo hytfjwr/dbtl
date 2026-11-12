@@ -332,7 +332,7 @@ pub(super) fn yank_menu_renders_every_binding_row() {
     dbtl::app::apply_action(&mut app, dbtl::Action::YankPrefix);
     let buffer = render_app(&app, 140, 50);
     let text = buffer_to_string(&buffer);
-    // Every `y<key>` row of the which-key menu is drawn — enumerate them from
+    // Every `y<key>` row of the yank menu is drawn — enumerate them from
     // the same BINDINGS source the renderer reads, so a new `y<key>` row is
     // asserted automatically.
     for b in dbtl::action::yank_bindings() {

@@ -455,7 +455,7 @@ pub fn draw(frame: &mut Frame, ctx: &RenderCtx) {
     }
     draw_status(frame, rects.status, ctx);
 
-    // Overlays: a stacked mode (the `y` which-key / the node menu / help over
+    // Overlays: a stacked mode (the `y` yank menu / the node menu / help over
     // a modal) draws its origin's overlay UNDER itself first, then the whole
     // screen minus the top box is dimmed to `text_faint`,
     // then the top overlay paints. `overlay_rect` is the single rect

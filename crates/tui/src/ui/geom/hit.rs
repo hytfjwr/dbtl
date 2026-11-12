@@ -97,7 +97,7 @@ pub enum HitTarget {
     TitleLens,
     /// An interior ROW of a covering overlay: `(row - inner.y)`, 0-based
     /// inside the overlay's border. Which row MEANS what is mode-specific —
-    /// the event loop resolves it (a menu item index, a which-key row, a
+    /// the event loop resolves it (a menu item index, a yank menu row, a
     /// palette candidate, a columns row), keeping the hit test mode-agnostic.
     OverlayRow(usize),
     /// Inside a covering overlay's frame but not on an interior row (its

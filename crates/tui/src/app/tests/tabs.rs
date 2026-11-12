@@ -226,8 +226,8 @@ fn at_query_in_the_plain_palette_still_reroots_the_active_tab() {
 }
 
 #[test]
-fn wheel_over_the_whichkey_does_not_close_it() {
-    // Review: a wheel scroll dispatched Action::DetailScroll into the which-key
+fn wheel_over_the_yank_menu_does_not_close_it() {
+    // Review: a wheel scroll dispatched Action::DetailScroll into the yank menu
     // — a no-op scroll, but the one-shot close fired anyway and dropped the
     // menu. The scroll family is exempt now, like YankPick.
     let mut a = sample_app();
@@ -242,7 +242,7 @@ fn wheel_over_the_whichkey_does_not_close_it() {
         apply_action(&mut a, act);
         assert!(
             matches!(a.mode, Mode::Yank { .. }),
-            "{act:?} must not close the which-key"
+            "{act:?} must not close the yank menu"
         );
     }
 }

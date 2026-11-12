@@ -259,7 +259,7 @@ pub(crate) fn draw_palette(
     super::stamp_scrollbar(frame, rect, total, off, view_h, glyphs, t);
 }
 
-/// Draw the `y` yank-prefix which-key menu into `rect` (precomputed by
+/// Draw the `y` yank-prefix menu into `rect` (precomputed by
 /// [`super::geom::yank_menu_rect`] so the hit-test targets the same box):
 /// a row per `y<key>` binding, GENERATED from the `M::Yank` keymap entries
 /// (same source of truth as dispatch + `?` help). `sel` is the pointer's
