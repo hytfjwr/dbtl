@@ -156,14 +156,9 @@ pub(super) fn expr_ident_names(e: &Expr) -> BTreeSet<String> {
 /// `*`/`t.*` over a binding whose column list is unknown leaves carried
 /// columns invisible to `Analyzed::out` — the only case the declared-column
 /// probe can legitimately fill (without a wildcard every output is named,
-/// so an unproduced declared name was never selected).
-pub(super) fn query_has_output_wildcard(q: &Query) -> bool {
-    !query_wildcard_items(q).is_empty()
-}
-
-/// Every output-producing wildcard `SelectItem` in traversal (UNION-arm)
-/// order — the items behind [`query_has_output_wildcard`]'s verdict and
-/// the spans `select_star` points findings at.
+/// so an unproduced declared name was never selected). `is_empty()` on
+/// the result IS that verdict; the items' spans are what `select_star`
+/// points findings at.
 pub(super) fn query_wildcard_items(q: &Query) -> Vec<&SelectItem> {
     let mut out = Vec::new();
     collect_wildcard_items(&q.body, &mut out);

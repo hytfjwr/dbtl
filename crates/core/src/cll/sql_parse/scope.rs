@@ -124,6 +124,10 @@ pub(super) struct Analyzed {
     /// Without one, every output is explicitly named and probing an
     /// unproduced declared name can only fabricate edges.
     pub(super) unbounded_wildcard: bool,
+    /// Occurrence count behind `unbounded_wildcard` (UNION arms and pipe
+    /// steps can carry several) — the lint positions pass pairs wildcard
+    /// items positionally only when its raw-render count matches.
+    pub(super) wildcard_count: usize,
     /// Display text of every JOIN arm carrying no join condition
     /// (`CROSS JOIN`, or `JOIN`/`INNER`/`LEFT`/… with no ON/USING/NATURAL)
     /// — the `cartesian_join` lint input, collected by the same parse that

@@ -19,9 +19,14 @@ type SpanNote = (Range<usize>, String);
 
 /// The `(file, raw SQL)` a SQL finding's positions anchor into — the
 /// `.sql` path plus the raw text byte ranges index into. `None` when
-/// either is unknown: the finding still reports, it just can't point.
+/// either is unknown — or when the file is a `.py` model (its `raw_code`
+/// is Python: a coincidental regex hit or parsed token would underline
+/// Python, never SQL). The finding still reports, it just can't point.
 fn sql_anchor<'a>(dag: &'a Dag, uid: &str) -> Option<(String, &'a str)> {
     let file = dag.detail(uid)?.original_file_path.clone()?;
+    if file.ends_with(".py") {
+        return None;
+    }
     let raw = dag.raw_code(uid)?;
     Some((file, raw))
 }
@@ -83,14 +88,21 @@ pub(super) fn select_star(
         );
         if let Some((file, raw)) = sql_anchor(dag, uid) {
             if let Some(pos) = sql.sql_positions(dag, uid) {
-                // The first wildcard is the primary position; further
-                // ones (UNION arms) become secondary labels.
-                let mut spans: Vec<SpanNote> = pos
-                    .wildcards
-                    .iter()
-                    .map(|r| (r.clone(), "wildcard".to_string()))
-                    .collect();
-                f = with_positions(f, &file, raw, &mut spans);
+                // Positional pairing by wildcard count: when the judged
+                // text (compiled-preferred) and the raw render see the
+                // same number of output wildcards, each raw one is
+                // locatable — otherwise a Jinja-dropped UNION arm could
+                // shift the underline onto a different arm's `*`, so the
+                // finding stays unlocated. The first wildcard is the
+                // primary position; further ones ride as labels.
+                if pos.wildcards.len() == facts.wildcard_count {
+                    let mut spans: Vec<SpanNote> = pos
+                        .wildcards
+                        .iter()
+                        .map(|r| (r.clone(), "wildcard".to_string()))
+                        .collect();
+                    f = with_positions(f, &file, raw, &mut spans);
+                }
             }
         }
         out.push(f);

@@ -113,6 +113,11 @@ pub struct SqlFacts {
     /// An output-producing projection (`*`/`t.*`, incl. `|> SELECT *` and
     /// UNION arms) can't enumerate its columns — `select_star` flags it.
     pub unbounded_wildcard: bool,
+    /// Occurrence count behind `unbounded_wildcard` (UNION arms and pipe
+    /// steps can carry several). The positions pass attaches only when
+    /// its raw-render wildcard count matches — a Jinja-dropped UNION arm
+    /// can't then shift the underline onto a different arm.
+    pub wildcard_count: usize,
     /// Display text of every JOIN arm with no join condition
     /// (`CROSS JOIN`, or a conditional operator with no ON/USING/NATURAL),
     /// sorted — `cartesian_join`'s input.
@@ -240,6 +245,7 @@ impl SqlParseResolver {
         let out = self.analyzed(dag, uid).map(|an| {
             Rc::new(SqlFacts {
                 unbounded_wildcard: an.unbounded_wildcard,
+                wildcard_count: an.wildcard_count,
                 cartesian: an.cartesian.clone(),
                 cartesian_count: an.cartesian_count,
                 unresolved: an.unresolved.iter().cloned().collect(),
@@ -282,24 +288,19 @@ impl SqlParseResolver {
     }
 
     /// Source positions in the node's `raw_code` the lint SQL rules attach
-    /// to findings. `None` when the node has no `raw_code`, its
-    /// `original_file_path` is a `.py` model (Python text could
-    /// coincidentally parse into wrong positions), or the raw render/parse
-    /// produced nothing usable — the finding then reports file-only, never
-    /// a guessed position. Memoized; populated lazily — a rule calls it
-    /// only after a fact flagged the model.
+    /// to findings. `None` when the node has no `raw_code` or the raw
+    /// render/parse produced nothing usable — the finding then reports
+    /// file-only, never a guessed position. (`raw_code` on a `.py` model
+    /// is Python; the rules' `sql_anchor` refuses positions for it before
+    /// reaching here.) Memoized; populated lazily — a rule calls it only
+    /// after a fact flagged the model.
     pub fn sql_positions(&self, dag: &Dag, uid: &str) -> Option<Rc<SqlPositions>> {
         if let Some(v) = self.positions_memo.borrow().get(uid) {
             return v.clone();
         }
         let out = (|| {
             let raw = dag.raw_code(uid)?;
-            if raw.trim().is_empty()
-                || dag
-                    .detail(uid)
-                    .and_then(|d| d.original_file_path.as_deref())
-                    .is_some_and(|p| p.ends_with(".py"))
-            {
+            if raw.trim().is_empty() {
                 return None;
             }
             plain_positions(raw, &*self.dialect.sqlparser()).map(Rc::new)
@@ -507,11 +508,13 @@ impl SqlParseResolver {
             };
             let (res, scope) = self.resolve_query_full(&ctx, env, query)?;
             let scan = scan_statements(&stmts);
+            let wildcards = query_wildcard_items(query);
             Some(Rc::new(Analyzed {
                 scope,
                 out: res.out,
                 foj: res.foj,
-                unbounded_wildcard: query_has_output_wildcard(query),
+                unbounded_wildcard: !wildcards.is_empty(),
+                wildcard_count: wildcards.len(),
                 cartesian: scan.cartesian.iter().cloned().collect(),
                 cartesian_count: scan.cartesian_spans.len(),
                 unresolved: ctx.unresolved.into_inner(),

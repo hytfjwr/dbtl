@@ -29,8 +29,9 @@ use std::collections::BTreeSet;
 use sqlparser::ast::{
     AccessExpr, Distinct, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArgumentClause,
     FunctionArguments, GroupByExpr, InTarget, Join, JoinConstraint, JoinOperator, LimitClause,
-    NamedWindowExpr, OrderByKind, PivotValueSource, Query, Select, SelectItem, SetExpr, Spanned,
-    Statement, Subscript, TableFactor, TableWithJoins, TopQuantity, WindowSpec, WindowType,
+    NamedWindowExpr, ObjectNamePart, OrderByKind, PivotValueSource, Query, Select, SelectItem,
+    SetExpr, Spanned, Statement, Subscript, TableFactor, TableWithJoins, TopQuantity, WindowSpec,
+    WindowType,
 };
 use sqlparser::tokenizer::Span;
 
@@ -736,8 +737,18 @@ fn scan_expr(e: &Expr, scope: &BTreeSet<String>, out: &mut RelationScan) {
                 out.column_refs.push((norm_ident(last), last.span));
             }
         }
-        // `MATCH(...) COLUMNS(...)` names, literals, typed strings and
-        // wildcards carry no subquery.
+        // `MATCH (a, t.b) AGAINST ('…')` — its column list is real column
+        // references too (the match value is a literal). Without this a
+        // name written once here and once elsewhere looks "unique" to the
+        // positional pairing.
+        Expr::MatchAgainst { columns, .. } if out.collect_column_refs => {
+            for c in columns {
+                if let Some(ObjectNamePart::Identifier(i)) = c.0.last() {
+                    out.column_refs.push((norm_ident(i), i.span));
+                }
+            }
+        }
+        // Literals, typed strings and wildcards carry no subquery.
         _ => {}
     }
 }

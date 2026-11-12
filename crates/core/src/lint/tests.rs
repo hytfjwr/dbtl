@@ -3914,19 +3914,189 @@ fn forbidden_patterns_positions_mark_every_match() {
     assert_eq!(f.labels.len(), 2, "the other two matches ride as labels");
     let (l2, c2, el2, ec2) = needle_pos(raw, "unsafe_udf", 1);
     assert_eq!(
-        (f.labels[0].line, f.labels[0].column, f.labels[0].end_column),
-        (l2, Some(c2), Some(ec2)),
+        (
+            f.labels[0].line,
+            f.labels[0].column,
+            f.labels[0].end_line,
+            f.labels[0].end_column
+        ),
+        (l2, Some(c2), Some(el2), Some(ec2)),
         "second `unsafe_udf` call"
     );
     let (l3, c3, el3, ec3) = needle_pos(raw, "drop table", 0);
     assert_eq!(
-        (f.labels[1].line, f.labels[1].column, f.labels[1].end_column),
-        (l3, Some(c3), Some(ec3)),
+        (
+            f.labels[1].line,
+            f.labels[1].column,
+            f.labels[1].end_line,
+            f.labels[1].end_column
+        ),
+        (l3, Some(c3), Some(el3), Some(ec3)),
         "the comment's `drop table` — raw matches comments verbatim"
     );
     assert_eq!(f.labels[1].message, "matches drop table");
-    let _ = el2;
-    let _ = el3;
+}
+
+#[test]
+fn select_star_positions_skip_a_jinja_dropped_union_arm() {
+    // Raw carries two UNION arms, the judged (compiled) text only one —
+    // a Jinja `{% if %}` dropped the other. Wildcard counts disagree, so
+    // no arm's `*` may be underlined: the first raw wildcard belongs to
+    // the arm the compiled text doesn't have.
+    let mut m = model_sql_pos("arms", "select *\nfrom a\nunion all\nselect *\nfrom b");
+    m.1.compiled_code = Some("select *\nfrom b".into());
+    let m = manifest(vec![m], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::SelectStar]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let f = finding_on(&out.findings, LintRule::SelectStar, "model.p.arms");
+    assert!(
+        f.location.as_ref().is_none_or(|l| l.line.is_none()),
+        "arm counts disagree — underlining either `*` picks an arm: {f:?}"
+    );
+    assert!(f.labels.is_empty());
+}
+
+#[test]
+fn cartesian_join_positions_underline_a_jinja_tag_wholly() {
+    // The conditionless join's relation is `{{ ref('x') }}`: the rendered
+    // `"x"` maps back to the whole tag, so the underline covers the tag —
+    // not the rendered name inside it.
+    let raw = "select *\nfrom a\njoin {{ ref('x') }}";
+    let m = manifest(vec![model_sql_pos("j", raw)], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::CartesianJoin]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let f = finding_on(&out.findings, LintRule::CartesianJoin, "model.p.j");
+    let (l, c, el, ec) = needle_pos(raw, "{{ ref('x') }}", 0);
+    assert_eq!(
+        pos_of(f),
+        ("models/j.sql".to_string(), l, c, el, ec),
+        "the position covers the complete `{{ ref('x') }}` tag"
+    );
+}
+
+#[test]
+fn cartesian_join_positions_label_every_conditionless_arm() {
+    let raw = "select *\nfrom a\njoin b.u\njoin c.v";
+    let m = manifest(vec![model_sql_pos("j", raw)], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::CartesianJoin]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let f = finding_on(&out.findings, LintRule::CartesianJoin, "model.p.j");
+    let (l, c, el, ec) = needle_pos(raw, "b.u", 0);
+    assert_eq!(
+        pos_of(f),
+        ("models/j.sql".to_string(), l, c, el, ec),
+        "the first conditionless relation is primary"
+    );
+    assert_eq!(f.labels.len(), 1, "the second arm rides as a label");
+    let (l2, c2, el2, ec2) = needle_pos(raw, "c.v", 0);
+    assert_eq!(
+        (
+            f.labels[0].line,
+            f.labels[0].column,
+            f.labels[0].end_line,
+            f.labels[0].end_column
+        ),
+        (l2, Some(c2), Some(el2), Some(ec2)),
+        "the label underlines `c.v`"
+    );
+    assert_eq!(f.labels[0].message, "no join condition");
+}
+
+#[test]
+fn hard_coded_references_positions_underline_quoted_parts() {
+    // `FROM "sch"."t"` — the position covers the whole qualified name,
+    // quotes included.
+    let raw = "select *\nfrom \"sch\".\"t\"";
+    let m = manifest(vec![model_sql_pos("h", raw)], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::HardCodedReferences]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let f = finding_on(&out.findings, LintRule::HardCodedReferences, "model.p.h");
+    let (l, c, el, ec) = needle_pos(raw, "\"sch\".\"t\"", 0);
+    assert_eq!(
+        pos_of(f),
+        ("models/h.sql".to_string(), l, c, el, ec),
+        "the qualified name underlines itself, quotes included"
+    );
+}
+
+#[test]
+fn unknown_column_reference_positions_skip_a_match_against_shadow() {
+    // `nope` appears once in the projection and once inside MATCH(…)
+    // AGAINST — two real occurrences, so "unique" can't be claimed.
+    let m = manifest(
+        vec![
+            model_sql_cols("stg", "select 1", &[("id", None)], true),
+            model_sql_pos(
+                "ma",
+                "select id, nope from stg\nwhere match (nope) against ('term')",
+            ),
+        ],
+        vec![],
+        &[("model.p.stg", "model.p.ma")],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::UnknownColumnReference]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let f = finding_on(
+        &out.findings,
+        LintRule::UnknownColumnReference,
+        "model.p.ma",
+    );
+    assert!(
+        f.location.as_ref().is_none_or(|l| l.line.is_none()),
+        "two `nope` occurrences (projection + MATCH AGAINST) — no single position: {f:?}"
+    );
+}
+
+#[test]
+fn sql_rule_positions_never_point_into_a_python_model() {
+    // A `.py` model's `raw_code` is Python text: a regex hit or a parsed
+    // token there would underline Python, not SQL — no rule may attach a
+    // position. The findings still report file-scoped.
+    let mut py = model_sql_pos(
+        "pymodel",
+        "def model(dbt, session):\n    return dbt.ref('up')\n",
+    );
+    py.1.original_file_path = Some("models/pymodel.py".into());
+    py.1.compiled_code = Some("select *\nfrom t".into()); // fires select_star
+    let m = manifest(vec![py], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+
+    let cfg = cfg_only(&[LintRule::SelectStar]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    let f = finding_on(&out.findings, LintRule::SelectStar, "model.p.pymodel");
+    let l = f.location.as_ref().expect("the .py file is still named");
+    assert_eq!(l.file, "models/pymodel.py");
+    assert!(l.line.is_none(), "a .py file never gets a line: {f:?}");
+
+    // forbidden_patterns matches the Python raw verbatim — position or
+    // not, the file stays line-free.
+    let cfg =
+        config_from("lint:\n  rules:\n    forbidden_patterns:\n      patterns: ['dbt\\.ref']\n");
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    let f = finding_on(
+        &out.findings,
+        LintRule::ForbiddenPatterns,
+        "model.p.pymodel",
+    );
+    let l = f.location.as_ref().expect("the .py file is still named");
+    assert_eq!(l.file, "models/pymodel.py");
+    assert!(l.line.is_none(), "a .py file never gets a line: {f:?}");
 }
 
 #[test]
