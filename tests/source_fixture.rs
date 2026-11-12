@@ -1421,7 +1421,7 @@ fn semantic_models_entries_mark_the_consumed_models_dependents() {
 
 #[test]
 fn references_deprecated_model_evaluates_in_source_mode() {
-    // `deprecation_date` rides the schema.yml entry (the Issue-15 intake) —
+    // `deprecation_date` rides the schema.yml entry (the schema.yml governance intake) —
     // a dependent's finding lands with the same shape manifest mode gives,
     // position included (the ref() in the dependent's own .sql).
     let tmp = tiny_project(&[

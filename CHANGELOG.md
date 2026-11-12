@@ -176,7 +176,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - The `--select` help text now describes what the flag accepts: a model
-  name or a selector spec — the spec's first match opens in a tab and
+  name or a selector spec — its first match opens in a tab and
   must be a model — and notes that `state:` atoms cannot match (the flag
   resolves before `--diff` loads).
 - Lint rules no longer flag what they can't establish. `root_models` and

@@ -77,7 +77,7 @@ pub struct Cli {
     #[arg(long, conflicts_with = "ascii")]
     pub unicode: bool,
     /// Start the TUI on a model's tab: a model name (e.g. `stg_orders`), or
-    /// a dbt selector spec — the spec's first match opens in a tab, and it
+    /// a dbt selector spec — its first match opens in a tab, and it
     /// must be a model. `state:` atoms can't match: the `--diff` baseline
     /// loads after this flag resolves.
     #[arg(long)]
