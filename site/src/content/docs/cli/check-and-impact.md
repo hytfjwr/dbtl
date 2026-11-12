@@ -26,7 +26,7 @@ dbtl impact --diff git:main --select 'tag:marts+'               # only matching 
 
 ## dbtl check
 
-`dbtl check` prints one `PASS`, `WARN`, `FAIL`, or `SKIP` line per gate. It exits 1 when any gate fails at or above `--fail-on`.
+`dbtl check` prints one `PASS`, `WARN`, `FAIL`, or `SKIP` line per gate. It exits 1 when any gate fails at or above `--fail-on`. With `--lint`, the findings print first as annotated blocks — position, source excerpt, and fix links — and the lint gates follow the other rows.
 
 ```sh
 dbtl check --coverage-min 80                                    # fail under 80% test coverage
@@ -53,7 +53,7 @@ Key flags:
 | `--fail-on error\|warn\|never` | The minimum severity that fails the run. With `never`, a tripped gate prints `WARN` and never counts. |
 | `--select <SELECTOR>` | Scope every gate to matching nodes. `docs_drift` is never scoped, because it compares whole doc sets. |
 | `--docs-dir <DIR>` | Gate on generated-docs freshness. |
-| `--format`, `--report`, `--step-summary`, `--path-prefix`, `--quiet` | Control the report. See [Report formats](#report-formats). |
+| `--format`, `--color`, `--report`, `--step-summary`, `--path-prefix`, `--quiet` | Control the report. See [Report formats](#report-formats). |
 
 `check` accepts `--select` with the full [selector grammar](selectors.md). `--diff` takes a manifest file, a project directory, or a git revision. See [Git diffs and baselines](#git-diffs-and-baselines).
 
@@ -98,11 +98,12 @@ Only breaking changes trip `--no-breaking`. Partial-breaking changes show up in 
 
 ## Report formats
 
-`check` and `lint` build one `dbtl.report/v1` document and render it in seven formats. `--format <fmt>` prints one to stdout (default `text`). `--report <fmt>:<path>` writes one to a file and is repeatable.
+`check` and `lint` build one `dbtl.report/v1` document and render it in eight formats. `--format <fmt>` prints one to stdout (default `text`). `--report <fmt>:<path>` writes one to a file and is repeatable.
 
 | Format | Use |
 | ------ | --- |
-| `text` | The line report: one `PASS`, `WARN`, `FAIL`, or `SKIP` row per gate, with findings indented. |
+| `text` | The annotated report: each lint finding renders as an `error[rule]`/`warning[rule]` block with its position, the source excerpt underlined, and `= help:`/`= docs:` footers; `check` prints its `PASS`/`WARN`/`FAIL`/`SKIP` gate rows after the blocks. |
+| `concise` | One finding per line as `file[:line[:column]]: severity[rule] message` — for editors and grep. |
 | `markdown` | A document marked with `<!-- dbtl:report -->`, for PR comments and step summaries. |
 | `json` | The `dbtl.report/v1` payload verbatim, for `jq` pipelines. |
 | `github` | GitHub Actions workflow annotations. |
@@ -111,7 +112,8 @@ Only breaking changes trip `--no-breaking`. Partial-breaking changes show up in 
 | `codeclimate` | GitLab Code Quality issues. |
 
 - `--quiet` suppresses stdout only. Files still write and the exit code still gates.
-- `--report` writes parent directories as needed and overwrites existing files. The file contents match the bytes that format prints on stdout.
+- `--color auto|always|never` controls ANSI styling of the `text` and `concise` output on stdout. `auto` (the default) follows the terminal and the `NO_COLOR`/`CLICOLOR_FORCE` conventions; `always` colors even when piped. Machine formats never carry color.
+- `--report` writes parent directories as needed and overwrites existing files. The file contents match the bytes that format prints on stdout — always without color.
 - `--step-summary` appends the Markdown report to the file that `GITHUB_STEP_SUMMARY` names. It does nothing when the variable is unset or empty.
 - `--path-prefix` prepends a prefix to file paths in the `github`, `sarif`, and `codeclimate` formats, for a project that lives in a repository subdirectory. It is a usage error when none of those formats is selected.
 - `impact` prints Markdown or `--format json`, and takes `--report markdown:<path>` and `--report json:<path>`.

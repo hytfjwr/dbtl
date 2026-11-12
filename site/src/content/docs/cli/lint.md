@@ -13,7 +13,9 @@ dbtl lint --rules root_models,model_fanout  # a named subset
 dbtl lint --fail-on warn                    # fail on warnings too
 ```
 
-Text output is one `PASS`, `WARN`, `FAIL`, or `SKIP` line per rule. Findings sit indented under tripped rules as `file[:line[:column]] rule message` — findings in a properties `.yml` (descriptions, tests, freshness, contract columns) point at the `- name:` entry's line and column; a `.sql` finding names its file only. A closing tally reads `lint: N error(s), M warning(s), K baselined`.
+Text output is one annotated block per finding: an `error[rule]`/`warning[rule]` header, a `--> file[:line[:column]]` position, the source excerpt with the span underlined when it resolves, and `= help:`/`= docs:` footers. Findings in a properties `.yml` (descriptions, tests, freshness, contract columns) point at the `- name:` entry's line and column; a `.sql` finding names its file only. A closing tally reads `Found N errors and M warnings in K files` — with `K baselined`/`K pre-existing, not counted` in parentheses when a baseline or `--diff` suppresses findings — plus `N rules reported findings; M skipped (need --catalog)`.
+
+`--format concise` prints the same findings as `file[:line[:column]]: severity[rule] message` one-liners for editors and grep. `--color auto|always|never` controls ANSI styling of the human formats on stdout (`auto` is the default; report files and machine formats never carry color).
 
 `dbtl check --lint` folds the same evaluation into the [check gate set](check-and-impact.md). The two can never disagree. Setting `check.lint: true` in `.dbtl.yml` makes it the default for `check` runs.
 
@@ -59,7 +61,7 @@ The precedence is `--fail-on`, then the top-level `fail_on` in `.dbtl.yml`, then
 
 ## Rule inputs and SKIP
 
-Each rule declares what it needs: the graph alone, parsed model SQL, or the warehouse `catalog.json` record. A rule whose input is absent reports `SKIP lint <rule>: requires …`. That is informational and never a failure.
+Each rule declares what it needs: the graph alone, parsed model SQL, or the warehouse `catalog.json` record. A rule whose input is absent never runs — `dbtl check` prints a `SKIP lint <rule>: requires …` row and `dbtl lint` counts it on the summary line (`M skipped (need --catalog)`). That is informational and never a failure.
 
 - `dbtl` parses SQL lazily per model and reuses the result across rules.
 - `catalog.json` is detected next to the data source. Use `--catalog <path>` to point elsewhere.
@@ -108,7 +110,7 @@ dbtl check --lint --diff git:origin/main      # PRs fail only on NEW findings
 
 ## Reports and exit codes
 
-`dbtl lint` renders the same `dbtl.report/v1` document as `dbtl check`. It accepts `--format`, `--report <FMT>:<PATH>`, `--step-summary`, `--path-prefix`, and `--quiet`. See [report formats](check-and-impact.md#report-formats).
+`dbtl lint` renders the same `dbtl.report/v1` document as `dbtl check`. It accepts `--format`, `--color`, `--report <FMT>:<PATH>`, `--step-summary`, `--path-prefix`, and `--quiet`. See [report formats](check-and-impact.md#report-formats).
 
 | Code | Meaning |
 | ---- | ------- |

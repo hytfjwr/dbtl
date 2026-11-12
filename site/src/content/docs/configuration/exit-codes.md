@@ -23,6 +23,7 @@ Code `1` means a gate failure only.
 - **`dbtl docs --check`.** Any difference between the committed tree and the generated set exits 1.
 - **`dbtl ls`.** An empty match prints nothing and exits 0. A malformed spec exits 2.
 - **`dbtl columns`.** An unknown node exits 3.
+- **A closed stdout pipe** (`dbtl lint | head`, `| grep -q`) ends the report normally — it is never a panic, so it never reaches code 101.
 
 ## Use the codes in CI
 

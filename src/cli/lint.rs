@@ -304,6 +304,8 @@ pub struct LintArgs<'a> {
     pub fail_on: Option<dbtl::FailOn>,
     /// `--format` — the stdout report format.
     pub format: ReportFormat,
+    /// `--color` — when the stdout `text`/`concise` report may be styled.
+    pub color: ColorArg,
     /// `--write-baseline` — `Some(None)` = the flag with no PATH argument.
     pub write_baseline: Option<&'a Option<String>>,
     /// `--no-baseline` — never read the baseline file.
@@ -387,6 +389,7 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
     let plan = OutputPlan::build(
         args.format,
         args.quiet,
+        args.color,
         args.reports,
         args.step_summary,
         args.path_prefix,
@@ -494,11 +497,8 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
     // Best-effort yml line numbers — the file-reading pass `run_rules`
     // stays free of. Unreadable files simply keep `line` unset. Filled
     // before the Report build so every format carries them.
-    dbtl::fill_finding_lines(
-        &mut outcome.findings,
-        &resolved.dag,
-        &lint_project_root(&candidates),
-    );
+    let project_root = lint_project_root(&candidates);
+    dbtl::fill_finding_lines(&mut outcome.findings, &resolved.dag, &project_root);
     // One gate per rule — the same `lint:*` gates `check --lint` reports,
     // rendered by the same formats.
     let mut report = Report::new(
@@ -507,7 +507,20 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
     );
     report.gates = lint_gates(&resolved.dag, &outcome);
     report.summary = Report::summarize(&report.gates);
-    plan.emit(&report, "lint")?;
+    report.lint = Some(LintTally {
+        pre_existing: outcome.rules.iter().map(|r| r.pre_existing).sum(),
+        has_diff: outcome.has_diff,
+        skipped: outcome.skipped.clone(),
+        unparsed_models: 0,
+    });
+    plan.emit(
+        &report,
+        "lint",
+        &RenderEnv {
+            dag: &resolved.dag,
+            project_root: &project_root,
+        },
+    )?;
     if outcome.failed {
         Err(CliError::gate(anyhow::anyhow!(
             "lint: {} finding(s) at or above fail-on '{}'",

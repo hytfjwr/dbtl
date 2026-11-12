@@ -96,7 +96,7 @@ fn check_lint_in_config_runs_lint_without_the_flag() {
     let out = run(&["check", "--manifest", manifest.to_str().unwrap()]);
     let stdout = stdout(&out);
     assert!(
-        stdout.contains("lint direct_join_to_source:"),
+        stdout.contains("lint root_models:"),
         "lint rows without --lint, got: {stdout:?}"
     );
     assert_eq!(
