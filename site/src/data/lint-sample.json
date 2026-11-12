@@ -6,7 +6,7 @@
    "rule": "multiple_sources_joined",
    "severity": "error",
    "uid": "model.sample.stg_dup_probe",
-   "message": "stg_dup_probe directly depends on 2 sources",
+   "message": "stg_dup_probe reads sources ledger.payments, shared.payments",
    "file": "models/staging/stg_dup_probe.sql"
   },
   {
@@ -62,7 +62,7 @@
    "rule": "marts_depend_on_source",
    "severity": "error",
    "uid": "model.sample.dim_customers",
-   "message": "marts model dim_customers directly depends on 1 source(s)",
+   "message": "marts model dim_customers reads source raw.customers",
    "file": "models/marts/dim_customers.sql"
   },
   {
@@ -167,105 +167,105 @@
    "rule": "naming_conventions",
    "severity": "error",
    "uid": "model.sample.agg_country_orders",
-   "message": "marts model agg_country_orders doesn't match prefix(es): fct_, dim_, rpt_",
+   "message": "marts model agg_country_orders doesn't match prefixes: fct_, dim_, rpt_",
    "file": "models/marts/agg_country_orders.sql"
   },
   {
    "rule": "naming_conventions",
    "severity": "error",
    "uid": "model.sample.cll_demo",
-   "message": "marts model cll_demo doesn't match prefix(es): fct_, dim_, rpt_",
+   "message": "marts model cll_demo doesn't match prefixes: fct_, dim_, rpt_",
    "file": "models/marts/cll_demo.sql"
   },
   {
    "rule": "naming_conventions",
    "severity": "error",
    "uid": "model.sample.cll_syntax",
-   "message": "marts model cll_syntax doesn't match prefix(es): fct_, dim_, rpt_",
+   "message": "marts model cll_syntax doesn't match prefixes: fct_, dim_, rpt_",
    "file": "models/marts/cll_syntax.sql"
   },
   {
    "rule": "unused_sources",
    "severity": "warn",
    "uid": "source.sample.archive.audit_log",
-   "message": "source audit_log is not referenced by any node",
+   "message": "source archive.audit_log is not referenced by any node",
    "file": "models/staging/schema.yml"
   },
   {
    "rule": "unused_sources",
    "severity": "warn",
    "uid": "source.sample.raw.payments",
-   "message": "source payments is not referenced by any node",
+   "message": "source raw.payments is not referenced by any node",
    "file": "models/staging/schema.yml"
   },
   {
    "rule": "duplicate_sources",
    "severity": "warn",
    "uid": "source.sample.ledger.payments",
-   "message": "source payments points at the same relation as payments",
+   "message": "source ledger.payments points at the same relation as shared.payments",
    "file": "models/staging/dup_sources.yml"
   },
   {
    "rule": "duplicate_sources",
    "severity": "warn",
    "uid": "source.sample.shared.payments",
-   "message": "source payments points at the same relation as payments",
+   "message": "source shared.payments points at the same relation as ledger.payments",
    "file": "models/staging/dup_sources.yml"
   },
   {
    "rule": "exposure_parents_materializations",
    "severity": "warn",
    "uid": "exposure.sample.churn_notebook",
-   "message": "exposure churn_notebook directly depends on 1 source or view/ephemeral parent(s)",
+   "message": "exposure churn_notebook directly depends on source or view/ephemeral parent: raw.customers",
    "file": "models/marts/schema.yml"
   },
   {
    "rule": "exposures_dependent_on_private_models",
    "severity": "warn",
    "uid": "exposure.sample.churn_notebook",
-   "message": "exposure churn_notebook directly depends on 1 non-public model(s)",
+   "message": "exposure churn_notebook directly depends on non-public model: dim_customers",
    "file": "models/marts/schema.yml"
   },
   {
    "rule": "exposures_dependent_on_private_models",
    "severity": "warn",
    "uid": "exposure.sample.orders_dashboard",
-   "message": "exposure orders_dashboard directly depends on 2 non-public model(s)",
+   "message": "exposure orders_dashboard directly depends on non-public models: agg_country_orders, fct_orders",
    "file": "models/marts/schema.yml"
   },
   {
    "rule": "undocumented_columns",
    "severity": "warn",
    "uid": "model.sample.cll_syntax",
-   "message": "cll_syntax has declared column(s) without descriptions: order_id, status, status_upper, country, jp_id, rn, order_id_next",
+   "message": "cll_syntax has declared columns without descriptions: order_id, status, status_upper, country, jp_id, rn, order_id_next",
    "file": "models/marts/schema.yml"
   },
   {
    "rule": "undocumented_columns",
    "severity": "warn",
    "uid": "model.sample.fct_model_tests",
-   "message": "fct_model_tests has declared column(s) without descriptions: notes",
+   "message": "fct_model_tests has declared column without descriptions: notes",
    "file": "models/marts/governance.yml"
   },
   {
    "rule": "undocumented_columns",
    "severity": "warn",
    "uid": "model.sample.fct_orders",
-   "message": "fct_orders has declared column(s) without descriptions: id, status, country_code, country",
+   "message": "fct_orders has declared columns without descriptions: id, status, country_code, country",
    "file": "models/marts/schema.yml"
   },
   {
    "rule": "undocumented_columns",
    "severity": "warn",
    "uid": "model.sample.stg_orders",
-   "message": "stg_orders has declared column(s) without descriptions: status, country_code, disabled_flag",
+   "message": "stg_orders has declared columns without descriptions: status, country_code, disabled_flag",
    "file": "models/staging/schema.yml"
   },
   {
    "rule": "contract_columns_without_type",
    "severity": "warn",
    "uid": "model.sample.fct_contracted",
-   "message": "contract-enforced fct_contracted has declared column(s) without data_type: status",
+   "message": "contract-enforced fct_contracted has declared column without data_type: status",
    "file": "models/marts/governance.yml"
   },
   {
@@ -279,7 +279,7 @@
    "rule": "sources_without_freshness",
    "severity": "warn",
    "uid": "source.sample.raw.customers",
-   "message": "source customers has no freshness configured",
+   "message": "source raw.customers has no freshness configured",
    "file": "models/staging/schema.yml"
   },
   {

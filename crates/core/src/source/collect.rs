@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use super::*;
 
 /// Build a manifest-shaped `columns` object (`{name: {name,data_type,description}}`)
@@ -141,15 +143,51 @@ pub(super) fn collect_files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Strip Jinja comments (`{# #}`) ONLY — deliberately NOT `--` / `/* */`.
+/// Mask Jinja comments (`{# #}`) to spaces — deliberately NOT `--` / `/* */`.
 ///
 /// dbt renders Jinja BEFORE the SQL (and its comments) exists, so a
 /// `{{ ref() }}` inside a `--` or `/* */` SQL comment IS a real dependency in
 /// the manifest; only `{# #}` hides Jinja from dbt. The extractors must see
 /// exactly what dbt sees, or source mode silently drops edges the manifest has
 /// (the consistency contract).
-pub(super) fn strip_jinja_comments(sql: &str) -> String {
-    strip_jinja_comments_with(sql, " ")
+///
+/// Every comment byte (the `{#`/`#}` markers included, `\n` excepted) becomes
+/// one space: tokens can never fuse across a comment AND the result has the
+/// same byte length as the input, so an offset computed on the masked text
+/// indexes the original text too (call-site positions).
+///
+/// A text without `{#` needs no copy — the borrowed input returns as-is.
+pub fn mask_jinja_comments(text: &str) -> Cow<'_, str> {
+    if !text.contains("{#") {
+        return Cow::Borrowed(text);
+    }
+    let b = text.as_bytes();
+    let mut out = b.to_vec();
+    let mut i = 0;
+    while i + 1 < b.len() {
+        if b[i] == b'{' && b[i + 1] == b'#' {
+            // Match `(?s)\{#.*?#\}`'s shape: the FIRST `#}` closes the
+            // comment; an unclosed `{#` is not a comment and stays.
+            let mut j = i + 2;
+            while j + 1 < b.len() && !(b[j] == b'#' && b[j + 1] == b'}') {
+                j += 1;
+            }
+            if j + 1 >= b.len() {
+                break;
+            }
+            for c in &mut out[i..j + 2] {
+                if *c != b'\n' {
+                    *c = b' ';
+                }
+            }
+            i = j + 2;
+        } else {
+            i += 1;
+        }
+    }
+    // Every replaced byte is ASCII (space or the kept '\n'), so the output
+    // is valid UTF-8 of the same byte length as the input.
+    Cow::Owned(String::from_utf8(out).expect("comment masking produces ASCII-only output"))
 }
 
 /// Strip Jinja comments from NON-SQL text (descriptions, docs-block bodies).

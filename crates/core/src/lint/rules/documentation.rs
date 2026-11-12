@@ -53,7 +53,7 @@ pub(super) fn undocumented_sources(
             LintRule::UndocumentedSources,
             (*uid).clone(),
             Vec::new(),
-            format!("source {} has no description", n.name),
+            format!("source {} has no description", display_name(dag, uid)),
         ));
     }
 }
@@ -87,8 +87,9 @@ pub(super) fn undocumented_columns(
             (*uid).clone(),
             Vec::new(),
             format!(
-                "{} has declared column(s) without descriptions: {}",
+                "{} has declared {} without descriptions: {}",
                 n.name,
+                pluralize(columns.len(), "column"),
                 columns.join(", ")
             ),
         ));

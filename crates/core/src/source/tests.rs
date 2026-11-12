@@ -527,3 +527,162 @@ fn tree_config_reads_unique_key_and_freshness() {
     assert!(cfg.freshness.is_none());
     assert_eq!(w.len(), 1, "{w:?}");
 }
+
+// ---- call_sites: the span-carrying extractors -------------------------------
+
+#[test]
+fn mask_jinja_comments_preserves_byte_length_and_lines() {
+    // Every comment byte (markers included) becomes a space — except
+    // newlines, so line numbers never shift. Length matches the input, so
+    // an offset in the masked text indexes the original.
+    let text = "a{# c1\n c2 #}b\nselect é -- keep me\n{# open";
+    let masked = mask_jinja_comments(text);
+    assert_eq!(masked.len(), text.len());
+    assert_eq!(
+        masked, "a     \n      b\nselect é -- keep me\n{# open",
+        "the comment vanishes, newlines and the unclosed `{{#` stay"
+    );
+    // SQL comments are NOT masked — dbt sees through them.
+    assert_eq!(
+        mask_jinja_comments("-- {{ ref('x') }}"),
+        "-- {{ ref('x') }}"
+    );
+    assert_eq!(mask_jinja_comments("/* ref('x') */"), "/* ref('x') */");
+}
+
+/// The full mask+scan path on raw SQL — what `call_sites` composes.
+fn sites_of(sql: &str) -> Vec<CallSite> {
+    call_sites_masked(&mask_jinja_comments(sql))
+}
+
+/// The `(name, package, version)` of a `Ref` site, sliced back out of
+/// `sql` — kind fields are byte ranges into the (masked) text.
+fn ref_args<'a>(sql: &'a str, site: &CallSite) -> (&'a str, Option<&'a str>, Option<&'a str>) {
+    let CallKind::Ref {
+        name,
+        package,
+        version,
+    } = &site.kind
+    else {
+        panic!("expected a ref site, got {:?}", site.kind);
+    };
+    (
+        &sql[name.clone()],
+        package.as_ref().map(|r| &sql[r.clone()]),
+        version.as_ref().map(|r| &sql[r.clone()]),
+    )
+}
+
+/// The `(source, table)` of a `Source` site, sliced back out of `sql`.
+fn source_args<'a>(sql: &'a str, site: &CallSite) -> (&'a str, &'a str) {
+    let CallKind::Source { source, table } = &site.kind else {
+        panic!("expected a source site, got {:?}", site.kind);
+    };
+    (&sql[source.clone()], &sql[table.clone()])
+}
+
+#[test]
+fn call_sites_span_excludes_the_jinja_wrapper() {
+    let sql = "select * from {{ ref('a') }} t\njoin {{ source('s', 'b') }} u on true\n";
+    let sites = sites_of(sql);
+    assert_eq!(sites.len(), 2);
+    // `ref('a')` — the call, not the `{{ }}` around it.
+    let r = &sites[0];
+    assert_eq!(ref_args(sql, r), ("a", None, None));
+    assert_eq!(&sql[r.span.clone()], "ref('a')");
+    assert_eq!(&sql[r.args.clone().unwrap()], "'a'");
+    let s = &sites[1];
+    assert_eq!(source_args(sql, s), ("s", "b"));
+    assert_eq!(&sql[s.span.clone()], "source('s', 'b')");
+}
+
+#[test]
+fn call_sites_index_the_original_text_through_comments() {
+    // The `{# #}` comment masks `ref('ghost')` out entirely AND keeps the
+    // following `ref('b')` span pointing at the same bytes of `sql`.
+    let sql = "{# {{ ref('ghost') }} #}\nselect * from {{ ref('b') }}\n";
+    let sites = sites_of(sql);
+    assert_eq!(sites.len(), 1);
+    assert_eq!(&sql[sites[0].span.clone()], "ref('b')");
+    assert_eq!(sites[0].span.start, sql.find("ref('b')").unwrap());
+    // `--`/`/* */` comments do NOT hide calls — dbt renders Jinja before
+    // SQL comments exist.
+    let commented = "-- {{ ref('a') }}\n/* {{ source('s', 't') }} */";
+    let sites = sites_of(commented);
+    assert_eq!(sites.len(), 2);
+    assert_eq!(ref_args(commented, &sites[0]), ("a", None, None));
+    assert_eq!(source_args(commented, &sites[1]), ("s", "t"));
+}
+
+#[test]
+fn call_sites_skip_embedded_identifiers_and_capture_packages_versions() {
+    // `my_ref`/`other_source`/`refactor` embed the callee inside a longer
+    // identifier — `\b` keeps them out (the dim_customers fixture case).
+    assert!(
+        sites_of("select my_ref('a'), other_source('s','t'), xrefactor('c') from d").is_empty()
+    );
+    // `ref('pkg','x')` resolves to `x` and records the package; `v=` and
+    // `version=` kwargs both land in `version` as literal text.
+    let sql = "{{ ref('pkg', 'x') }} {{ ref('y', v=2) }} {{ ref('z', version='v3') }}";
+    let sites = sites_of(sql);
+    assert_eq!(
+        sites.iter().map(|c| ref_args(sql, c)).collect::<Vec<_>>(),
+        vec![
+            ("x", Some("pkg"), None),
+            ("y", None, Some("2")),
+            ("z", None, Some("v3")),
+        ]
+    );
+}
+
+#[test]
+fn call_sites_rescan_balanced_args_and_report_duplicates() {
+    // A `)` inside an argument can't truncate the call: the regex match
+    // ends early but the balanced rescan lands the TRUE close.
+    let sql = "{{ ref('a', other=func(1)) }}\n{{ ref('a') }}\n";
+    let sites = sites_of(sql);
+    assert_eq!(sites.len(), 2);
+    assert_eq!(&sql[sites[0].span.clone()], "ref('a', other=func(1))");
+    assert_eq!(&sql[sites[1].span.clone()], "ref('a')");
+    // Every call is its own site — duplicates are the positions lint
+    // labels individually.
+    assert_eq!(
+        sites_of(sql)
+            .iter()
+            .map(|c| c.span.start)
+            .collect::<Vec<_>>(),
+        sites_of(sql)
+            .iter()
+            .map(|c| c.span.start)
+            .collect::<Vec<_>>(),
+        "extraction is deterministic"
+    );
+    // A malformed call the regex still recognized keeps its match-range
+    // span and reports no args (`ref('x', 'unclosed)`).
+    let broken = sites_of("{{ ref('x', 'unclosed) }}");
+    assert_eq!(broken.len(), 1);
+    assert_eq!(broken[0].args, None);
+}
+
+#[test]
+fn call_sites_find_config_calls_for_metadata_positions() {
+    // `config()` is a call site too — `args` carries the kwarg list for
+    // readers like `materialized_arg`; identifier-embedded `my_config` is
+    // not a call and nested parens can't truncate the arg scan.
+    let sql = "{{ config(materialized='incremental', meta={'a': 'b)'}) }}\n{{ my_config(materialized='view') }}\nselect 1\n";
+    let sites = sites_of(sql);
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0].kind, CallKind::Config);
+    assert_eq!(
+        &sql[sites[0].args.clone().unwrap()],
+        "materialized='incremental', meta={'a': 'b)'}"
+    );
+    // A config() inside `{# #}` is invisible like any other call.
+    assert!(sites_of("{# {{ config(materialized='x') }} #}").is_empty());
+    // An unclosed config swallows the rest of the file — nothing after it
+    // can still be a call.
+    assert_eq!(
+        sites_of("{{ config(materialized='x' {{ ref('a') }}").len(),
+        1
+    );
+}

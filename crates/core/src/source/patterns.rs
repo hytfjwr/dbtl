@@ -1,4 +1,5 @@
 use super::*;
+use std::ops::Range;
 
 /// The dbt-syntax extractors, compiled once. The `regex` crate has no
 /// backreferences, so each quote is matched independently (`['"]`) — a mismatched
@@ -6,10 +7,11 @@ use super::*;
 /// leading `\b` stops `my_ref(...)` / `data_source(...)` identifiers producing
 /// spurious edges. A versioned or kwarg-bearing `ref('x', v=2)` /
 /// `ref('x', version=2)` IS matched — the trailing `(?:,[^)]*)?` absorbs any
-/// extra args up to (but never past) the call's closing `)`, so the version
-/// is ignored and the edge resolves to the unversioned name `x` (an
-/// approximation; the `.vN` node a `versions:` block would define is not
-/// synthesized).
+/// extra args up to (but never past) the call's closing `)`. Edge resolution
+/// is name-only — the version kwargs ride the arg tail (`call_sites_masked`
+/// records them on `CallKind::Ref` so a position can still pick the versioned
+/// call);
+/// the `.vN` node a `versions:` block would define is not synthesized.
 pub(super) struct Patterns {
     pub(super) ref_re: Regex,
     pub(super) source_re: Regex,
@@ -78,6 +80,155 @@ impl Patterns {
                 ))
             })
             .collect()
+    }
+
+    /// The `ref()`/`source()`/`config()` calls in `sql`, ordered by position —
+    /// the span-carrying extension of [`refs`](Patterns::refs) /
+    /// [`sources`](Patterns::sources). The SAME regexes recognize the calls
+    /// (extraction semantics are identical: `my_ref(` can't match, an
+    /// unquoted or unclosed call is not a call), then a balanced-paren,
+    /// quote-aware rescan takes the call's TRUE end — the regex's `[^)]*`
+    /// arg tail can stop early at a `)` inside an argument string. When the
+    /// rescan fails (a malformed call the regex still recognized, e.g.
+    /// `ref('x', 'unclosed)`), the match's own range is the span and the
+    /// call reports no arg list.
+    ///
+    /// `masked` is [`mask_jinja_comments`] output — the callers (the
+    /// loader's `node_sql`, lint's `Sites`) already hold it, so the mask
+    /// runs once per file, not once per consumer. `{# #}` is the only
+    /// thing masked — `--`/`/* */` comments still see calls (dbt renders
+    /// Jinja before SQL comments exist) — and masking preserves byte
+    /// length, so every returned range indexes the caller's ORIGINAL text.
+    ///
+    /// One `site_head` pass finds every `ref`/`source`/`config` callee;
+    /// the balanced/quote-aware arg scan + top-level segment parse then
+    /// validates each head without a second regex evaluation — a call is
+    /// a ref/source site exactly when its first positional args are the
+    /// quoted literals the kind regexes would have matched (`ref(var)`,
+    /// `source('a')`, `ref('a' junk)` → not sites). The kind regexes only
+    /// still run when the balanced scan fails (a malformed call the regex
+    /// may still recognize, e.g. `ref('x', 'unclosed)` → the regex match
+    /// becomes the span, args stay unknown).
+    pub fn call_sites_masked(&self, masked: &str) -> Vec<CallSite> {
+        let mut out = Vec::new();
+        // `config_call_args_list`'s traversal: a `config(` head inside a
+        // previous config call's args is skipped (`config_floor`), and an
+        // unclosed config swallows the rest — for configs only; ref and
+        // source heads inside either still resolve, as the independent
+        // full-text scans did.
+        let mut config_floor = 0usize;
+        for m in site_head_re().find_iter(masked) {
+            let head = &masked[m.start()..];
+            if head.starts_with("config") {
+                if m.start() < config_floor {
+                    continue;
+                }
+                match scan_call_args(masked, m.end()) {
+                    Some((args, end)) => {
+                        out.push(CallSite {
+                            kind: CallKind::Config,
+                            span: m.start()..end,
+                            args: Some(m.end()..m.end() + args.len()),
+                        });
+                        config_floor = end;
+                    }
+                    None => config_floor = usize::MAX,
+                }
+                continue;
+            }
+            let is_ref = head.starts_with("ref");
+            // The balanced scan takes the call's TRUE arg list; the
+            // positional-quoted-literal check below then accepts exactly
+            // the calls `ref_re`/`source_re` would — without a second
+            // regex pass per call.
+            let Some((args_text, end)) = scan_call_args(masked, m.end()) else {
+                // A malformed call the regex still recognized (e.g.
+                // `ref('x', 'unclosed)`) keeps the regex match as its span
+                // and reports no args — the only place the kind regexes
+                // still run.
+                let re = if is_ref {
+                    &self.ref_re
+                } else {
+                    &self.source_re
+                };
+                let Some(c) = re.captures_at(masked, m.start()) else {
+                    continue;
+                };
+                let cm = c.get(0).expect("a full match");
+                if cm.start() != m.start() {
+                    continue;
+                }
+                let kind = if is_ref {
+                    CallKind::Ref {
+                        name: c
+                            .get(2)
+                            .or_else(|| c.get(1))
+                            .expect("ref_re's name group")
+                            .range(),
+                        package: c.get(2).map(|_| c.get(1).expect("ref_re group 1").range()),
+                        version: None, // args could not be read
+                    }
+                } else {
+                    CallKind::Source {
+                        source: c.get(1).expect("source_re group 1").range(),
+                        table: c.get(2).expect("source_re group 2").range(),
+                    }
+                };
+                out.push(CallSite {
+                    kind,
+                    span: cm.start()..cm.end(),
+                    args: None,
+                });
+                continue;
+            };
+            let span = m.start()..end;
+            let args = m.end()..m.end() + args_text.len();
+            let mut segs = top_level_segs(args_text);
+            let kind = if is_ref {
+                // `refs()`'s rule: the LAST quoted positional arg is the
+                // model; when it exists, the first is the package. seg0
+                // must be a quoted literal (a `ref(var)` call is not a
+                // ref site); a quoted seg1 makes `ref('pkg','x')` →
+                // (pkg, x) while `ref('x', v=2)` keeps name = seg0.
+                let Some(first) = segs.next().and_then(|s| quoted_lit(masked, s)) else {
+                    continue;
+                };
+                let (name, package) = match segs.next().and_then(|s| quoted_lit(masked, s)) {
+                    Some(second) => (second, Some(first)),
+                    None => (first, None),
+                };
+                // The trailing args hold the version kwargs — `ref('x', v=2)`
+                // / `ref('x', version=2)`; `v` is dbt's short spelling. The
+                // `=` gate skips the kwarg walks for the argless-`=` case
+                // (`ref('x')`, `ref('pkg','x')` — most calls).
+                let version = args_text
+                    .contains('=')
+                    .then(|| kwarg(args_text, "v").or_else(|| kwarg(args_text, "version")))
+                    .flatten()
+                    .and_then(|expr| lit_range(masked, expr));
+                CallKind::Ref {
+                    name,
+                    package,
+                    version,
+                }
+            } else {
+                // `sources()`'s shape: EXACTLY two quoted literals.
+                let (Some(s1), Some(s2), None) = (segs.next(), segs.next(), segs.next()) else {
+                    continue;
+                };
+                let (Some(source), Some(table)) = (quoted_lit(masked, s1), quoted_lit(masked, s2))
+                else {
+                    continue;
+                };
+                CallKind::Source { source, table }
+            };
+            out.push(CallSite {
+                kind,
+                span,
+                args: Some(args),
+            });
+        }
+        out
     }
 
     /// The snapshot names declared by `{% snapshot X %}` blocks.
@@ -236,6 +387,19 @@ pub(super) fn config_governance(sql: &str) -> FileConfig {
     out
 }
 
+/// The `\bconfig\s*\(` finder [`config_call_args_list`] uses.
+fn config_re() -> &'static Regex {
+    static CONFIG: OnceLock<Regex> = OnceLock::new();
+    CONFIG.get_or_init(|| Regex::new(r"\bconfig\s*\(").unwrap())
+}
+
+/// Any `ref`/`source`/`config` callee — [`Patterns::call_sites_masked`]'s
+/// single full-text pass; the kind regexes then re-validate each head.
+fn site_head_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\b(?:ref|source|config)\s*\(").unwrap())
+}
+
 /// The argument text of EVERY `config(…)` call in `sql`, in order — each
 /// string is the text between that call's parens, found by a balanced-
 /// paren/quote scan so nested `(`/`)` inside dicts or macro calls can't end
@@ -244,11 +408,9 @@ pub(super) fn config_governance(sql: &str) -> FileConfig {
 /// (verified: `config(materialized='v')` then `config(materialized='t')`
 /// yields `t`), so kwarg readers take the LAST resolvable value.
 pub(super) fn config_call_args_list(sql: &str) -> Vec<&str> {
-    static CONFIG: OnceLock<Regex> = OnceLock::new();
-    let re = CONFIG.get_or_init(|| Regex::new(r"\bconfig\s*\(").unwrap());
     let mut out = Vec::new();
     let mut pos = 0usize;
-    while let Some(m) = re.find_at(sql, pos) {
+    while let Some(m) = config_re().find_at(sql, pos) {
         match scan_call_args(sql, m.end()) {
             Some((args, end)) => {
                 out.push(args);
@@ -266,29 +428,36 @@ pub(super) fn config_call_args_list(sql: &str) -> Vec<&str> {
 /// parens and the position just past the closing `)`. A bare `]`/`}` at
 /// depth 0 or an unclosed call is malformed → `None`.
 pub(super) fn scan_call_args(sql: &str, start: usize) -> Option<(&str, usize)> {
+    // Byte-wise: every delimiter is ASCII and UTF-8 continuation bytes are
+    // >= 0x80, so a multi-byte char can never fake a `(`, `)`, or quote.
+    let bytes = sql.as_bytes();
     let mut depth = 0usize;
-    let mut chars = sql[start..].char_indices().peekable();
-    while let Some((i, c)) = chars.next() {
-        match c {
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => {
+    let mut pos = start;
+    while pos < bytes.len() {
+        match bytes[pos] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
                 if depth == 0 {
-                    return (c == ')').then(|| (&sql[start..start + i], start + i + 1));
+                    return (bytes[pos] == b')').then(|| (&sql[start..pos], pos + 1));
                 }
                 depth -= 1;
             }
-            '\'' | '"' => {
-                let it = chars.by_ref();
-                while let Some((_, d)) = it.next() {
-                    if d == '\\' {
-                        it.next(); // consume the escaped char
-                    } else if d == c {
+            q @ (b'\'' | b'"') => {
+                pos += 1;
+                while pos < bytes.len() {
+                    let b = bytes[pos];
+                    pos += 1;
+                    if b == b'\\' {
+                        pos += 1; // consume the escaped byte
+                    } else if b == q {
                         break;
                     }
                 }
+                continue;
             }
             _ => {}
         }
+        pos += 1;
     }
     None // unclosed call
 }
@@ -306,7 +475,7 @@ pub(super) fn config_kwarg_exprs<'a>(sql: &'a str, name: &str) -> Vec<&'a str> {
 /// Parse `expr` as a complete literal: the whole text must be a single
 /// [`LitParser`] value — trailing tokens mean it wasn't a clean literal
 /// (`'x' or 'y'`-style expressions dbt evaluates but source mode can't).
-pub(super) fn lit_value(expr: &str) -> Option<serde_json::Value> {
+pub(crate) fn lit_value(expr: &str) -> Option<serde_json::Value> {
     let mut p = LitParser { s: expr, i: 0 };
     let v = p.value()?;
     p.ws();
@@ -320,40 +489,58 @@ pub(super) fn lit_value(expr: &str) -> Option<serde_json::Value> {
 /// the top-level kwargs of a `config(…)` call (a comma inside `{'a': 'b'}`,
 /// `[x, y]`, or a quoted string must not split the argument list).
 pub(super) fn top_level_segments(s: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut last = 0;
-    let mut depth = 0usize;
-    let mut chars = s.char_indices().peekable();
-    while let Some((i, c)) = chars.next() {
-        match c {
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth = depth.saturating_sub(1),
-            '\'' | '"' => {
-                let it = chars.by_ref();
-                while let Some((_, d)) = it.next() {
-                    if d == '\\' {
-                        it.next();
-                    } else if d == c {
-                        break;
-                    }
-                }
-            }
-            ',' if depth == 0 => {
-                out.push(&s[last..i]);
-                last = i + 1;
-            }
-            _ => {}
-        }
-    }
-    out.push(&s[last..]);
-    out
+    top_level_segs(s).collect()
 }
 
-/// The expression text bound to keyword `name` inside a `config(…)` call's
-/// arguments (`meta={…}` → `{…}`). `name` must match exactly — a
-/// `metadata=` kwarg is not `meta`. The name/expr separator is the first
-/// `=` at bracket-depth 0 outside quotes.
-pub(super) fn kwarg<'a>(args: &'a str, name: &str) -> Option<&'a str> {
+/// The lazy form of [`top_level_segments`] — callers that only need the
+/// first few arguments (call-site name/literal checks) stop scanning early
+/// and never allocate.
+fn top_level_segs(s: &str) -> impl Iterator<Item = &str> {
+    let mut last = 0usize;
+    let mut depth = 0usize;
+    let mut pos = 0usize;
+    let mut quote = 0u8;
+    let mut done = false;
+    let bytes = s.as_bytes();
+    std::iter::from_fn(move || {
+        if done {
+            return None;
+        }
+        while pos < bytes.len() {
+            let b = bytes[pos];
+            if quote != 0 {
+                pos += 1;
+                if b == b'\\' {
+                    pos += 1; // skip the escaped char
+                } else if b == quote {
+                    quote = 0;
+                }
+                continue;
+            }
+            match b {
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+                b'\'' | b'"' => quote = b,
+                b',' if depth == 0 => {
+                    let seg = &s[last..pos];
+                    last = pos + 1;
+                    pos += 1;
+                    return Some(seg);
+                }
+                _ => {}
+            }
+            pos += 1;
+        }
+        done = true;
+        Some(&s[last..])
+    })
+}
+
+/// The expression text bound to keyword `name` inside a call's argument
+/// list (`meta={…}` → `{…}`). `name` must match exactly — a `metadata=`
+/// kwarg is not `meta`. The name/expr separator is the first `=` at
+/// bracket-depth 0 outside quotes.
+pub(crate) fn kwarg<'a>(args: &'a str, name: &str) -> Option<&'a str> {
     for seg in top_level_segments(args) {
         let seg = seg.trim();
         let mut depth = 0usize;
@@ -530,4 +717,86 @@ impl LitParser<'_> {
                 .map(Into::into)
         }
     }
+}
+
+/// One `ref(…)`, `source(…)` or `config(…)` call found in `sql` —
+/// [`call_sites_masked`]'s output. `span` covers the callee name through
+/// the call's closing `)` (`{{ }}`/`{% %}` wrappers excluded); `args` covers
+/// the argument list between the parens (`None` when the balanced rescan
+/// couldn't read the call — a malformed shape the recognizing regex still
+/// accepted). `{# #}` comments are masked length-preserving before matching,
+/// so every range indexes the caller's ORIGINAL text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallSite {
+    pub kind: CallKind,
+    pub span: Range<usize>,
+    /// The text between the call's parens, when the balanced rescan read it.
+    pub args: Option<Range<usize>>,
+}
+
+/// The byte range of `seg`'s INNER text when `seg` — a subslice of
+/// `text` — is a quoted literal: the `['"]([^'"]+)['"]` shape
+/// `ref_re`/`source_re` require of ref/source name args (a kwarg or an
+/// unquoted expression is never a name). Either quote char may open/close
+/// — the regexes check them independently — and the inner text must
+/// carry no quote at all.
+fn quoted_lit(text: &str, seg: &str) -> Option<Range<usize>> {
+    let s = seg.trim();
+    let b = s.as_bytes();
+    if b.len() < 3 || !matches!(b[0], b'\'' | b'"') || !matches!(b[b.len() - 1], b'\'' | b'"') {
+        return None;
+    }
+    let inner = &s[1..s.len() - 1];
+    if inner.contains(['\'', '"']) {
+        return None;
+    }
+    let start = inner.as_ptr() as usize - text.as_ptr() as usize;
+    Some(start..start + inner.len())
+}
+
+/// The byte range of `expr` — a literal INSIDE `text` — as offsets into
+/// `text`, unquoted when the literal is a string (`'v2'` → the `v2`
+/// range). `expr` must be a subslice of `text` (the pointer delta is the
+/// offset); anything that isn't a clean string or number literal is not a
+/// resolvable value → `None`, mirroring [`lit_value`]'s accept set.
+fn lit_range(text: &str, expr: &str) -> Option<Range<usize>> {
+    let e = expr.trim();
+    let start = e.as_ptr() as usize - text.as_ptr() as usize;
+    match lit_value(e)? {
+        serde_json::Value::String(_) => Some(start + 1..start + e.len() - 1),
+        serde_json::Value::Number(_) => Some(start..start + e.len()),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallKind {
+    /// `ref(…)` — `name` is the byte range of the resolved model name's
+    /// literal text in the masked text (the LAST quoted positional arg,
+    /// `ref('pkg','x')` → the `x` range), the same rule `Patterns::refs`
+    /// applies. Ranges index the input text — no per-call allocation.
+    Ref {
+        name: Range<usize>,
+        /// `ref('pkg','x')` → the `pkg` range (the first quoted arg of a
+        /// two-arg call).
+        package: Option<Range<usize>>,
+        /// The `v=`/`version=` kwarg's UNQUOTED literal range (`v=2` → the
+        /// `2`, `v='v2'` → the `v2`) — `None` when absent or unresolvable.
+        version: Option<Range<usize>>,
+    },
+    /// `source('source_name', 'table_name')` — both ranges.
+    Source {
+        source: Range<usize>,
+        table: Range<usize>,
+    },
+    /// `config(…)` — `args` carries the argument list.
+    Config,
+}
+
+/// `Patterns::call_sites_masked` without needing a `Patterns` instance —
+/// the lint call-site consumer's entry point on text it masked itself,
+/// sharing one compiled `Patterns`.
+pub fn call_sites_masked(masked: &str) -> Vec<CallSite> {
+    static P: OnceLock<Patterns> = OnceLock::new();
+    P.get_or_init(Patterns::new).call_sites_masked(masked)
 }

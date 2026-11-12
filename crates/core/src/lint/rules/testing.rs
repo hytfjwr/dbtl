@@ -60,7 +60,10 @@ pub(super) fn sources_without_freshness(
             LintRule::SourcesWithoutFreshness,
             (*uid).clone(),
             Vec::new(),
-            format!("source {} has no freshness configured", n.name),
+            format!(
+                "source {} has no freshness configured",
+                display_name(dag, uid)
+            ),
         ));
     }
 }

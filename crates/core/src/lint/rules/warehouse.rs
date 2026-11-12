@@ -47,8 +47,9 @@ pub(super) fn warehouse_type_drift(
                 (*uid).clone(),
                 vec![],
                 format!(
-                    "{} declares column type(s) that disagree with the warehouse: {}",
+                    "{} declares {} disagreeing with the warehouse: {}",
                     n.name,
+                    pluralize(drifted.len(), "column type"),
                     drifted.join(", ")
                 ),
             ));
@@ -86,8 +87,9 @@ pub(super) fn columns_missing_in_warehouse(
                 (*uid).clone(),
                 vec![],
                 format!(
-                    "{} declares column(s) missing in the warehouse: {}",
+                    "{} declares {} missing in the warehouse: {}",
                     n.name,
+                    pluralize(missing.len(), "column"),
                     missing.join(", ")
                 ),
             ));

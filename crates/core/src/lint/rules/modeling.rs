@@ -3,12 +3,38 @@
 
 use super::*;
 
+/// Exactly one OTHER staging-layer model reads `source` directly → the
+/// concrete model to `ref` instead. More or fewer readers → no confident
+/// fix suggestion.
+fn single_staging_reader(
+    dag: &Dag,
+    source: &str,
+    excluding: &str,
+    config: &LintConfig,
+) -> Option<String> {
+    let mut readers: Vec<&String> = dag
+        .direct_children(source)
+        .iter()
+        .filter(|c| c.as_str() != excluding)
+        .filter(|c| {
+            dag.get(c).is_some_and(|n| {
+                n.resource_type == "model" && lint_model_type(n, config) == "staging"
+            })
+        })
+        .collect();
+    readers.sort();
+    (readers.len() == 1).then(|| display_name(dag, readers[0]))
+}
+
 /// `direct_join_to_source`: a model directly depends on both a source and a
-/// model.
+/// model. The position lands on the first `source()` call — `source()`
+/// labels mark the raw reads, `ref()` labels the model reads.
 pub(super) fn direct_join_to_source(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
+    config: &LintConfig,
+    sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -20,27 +46,54 @@ pub(super) fn direct_join_to_source(
         if models.is_empty() || sources.is_empty() {
             continue;
         }
-        let n_sources = sources.len();
-        let n_models = models.len();
-        let mut related = sources;
-        related.extend(models);
-        out.push(Finding::new(
+        let mut related = sources.clone();
+        related.extend(models.iter().cloned());
+        let mut f = Finding::new(
             LintRule::DirectJoinToSource,
             (*uid).clone(),
             related,
             format!(
-                "{} directly depends on {n_sources} source(s) and {n_models} model(s)",
-                n.name
+                "{} reads {} {} and {} {}",
+                n.name,
+                pluralize(sources.len(), "source"),
+                name_list(&display_names(dag, &sources)),
+                pluralize(models.len(), "model"),
+                name_list(&display_names(dag, &models)),
             ),
-        ));
+        );
+        if sources.len() == 1 {
+            if let Some(stg) = single_staging_reader(dag, &sources[0], uid, config) {
+                f = f.with_help(format!("select from {stg} instead"));
+            }
+        }
+        if let Some(cs) = sites.for_node(uid) {
+            let mut src_spans: Vec<_> = sources.iter().flat_map(|s| cs.calls_to(s)).collect();
+            src_spans.sort_by_key(|r| r.start);
+            if let Some(first) = src_spans.first().cloned() {
+                let secondary = src_spans[1..]
+                    .iter()
+                    .map(|r| (r.clone(), "source".to_string()))
+                    .chain(
+                        models
+                            .iter()
+                            .flat_map(|m| cs.calls_to(m))
+                            .map(|r| (r, "model".to_string())),
+                    )
+                    .collect();
+                f = cs.annotate(f, (first, "source"), secondary);
+            }
+        }
+        out.push(f);
     }
 }
 
-/// `multiple_sources_joined`: a model directly depends on 2+ sources.
+/// `multiple_sources_joined`: a model directly depends on 2+ sources. The
+/// position lands on the first `source()` call; the rest are labels.
 pub(super) fn multiple_sources_joined(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
+    sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -52,12 +105,31 @@ pub(super) fn multiple_sources_joined(
         if sources.len() < 2 {
             continue;
         }
-        out.push(Finding::new(
+        let mut f = Finding::new(
             LintRule::MultipleSourcesJoined,
             (*uid).clone(),
             sources.clone(),
-            format!("{} directly depends on {} sources", n.name, sources.len()),
-        ));
+            format!(
+                "{} reads {} {}",
+                n.name,
+                pluralize(sources.len(), "source"),
+                name_list(&display_names(dag, &sources)),
+            ),
+        );
+        if let Some(cs) = sites.for_node(uid) {
+            let mut spans: Vec<_> = sources.iter().flat_map(|s| cs.calls_to(s)).collect();
+            spans.sort_by_key(|r| r.start);
+            if let Some((first, rest)) = spans.split_first() {
+                f = cs.annotate(
+                    f,
+                    (first.clone(), "source"),
+                    rest.iter()
+                        .map(|r| (r.clone(), "source".to_string()))
+                        .collect(),
+                );
+            }
+        }
+        out.push(f);
     }
 }
 
@@ -92,7 +164,13 @@ pub(super) fn source_fanout(
             LintRule::SourceFanout,
             (*uid).clone(),
             models.clone(),
-            format!("source {} directly feeds {} models", n.name, models.len()),
+            format!(
+                "source {} directly feeds {} {}: {}",
+                display_name(dag, uid),
+                models.len(),
+                pluralize(models.len(), "model"),
+                name_list(&display_names(dag, &models)),
+            ),
         ));
     }
 }
@@ -132,7 +210,13 @@ pub(super) fn model_fanout(
             LintRule::ModelFanout,
             (*uid).clone(),
             leaves.clone(),
-            format!("{} directly feeds {} leaf models", n.name, leaves.len()),
+            format!(
+                "{} directly feeds {} {}: {}",
+                n.name,
+                leaves.len(),
+                pluralize(leaves.len(), "leaf model"),
+                name_list(&display_names(dag, &leaves)),
+            ),
         ));
     }
 }
@@ -171,6 +255,7 @@ pub(super) fn rejoining_upstream(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
+    sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -206,27 +291,40 @@ pub(super) fn rejoining_upstream(
         }
         a_uids.sort();
         a_uids.dedup();
-        let cname = dag
-            .get(&c_uid)
-            .map_or_else(|| c_uid.clone(), |c| c.name.clone());
-        let anames = a_uids
-            .iter()
-            .map(|a| dag.get(a).map_or(a.as_str(), |a| a.name.as_str()))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let cname = display_name(dag, &c_uid);
+        let anames = name_list(&display_names(dag, &a_uids));
         let mut related = vec![c_uid];
         related.extend(a_uids.iter().cloned());
         related.sort();
         related.dedup();
-        out.push(Finding::new(
+        let mut f = Finding::new(
             LintRule::RejoiningUpstream,
             (*uid).clone(),
             related,
             format!(
-                "{} is a redundant hop: {anames} already feed(s) {cname} directly",
-                n.name
+                "{} is a redundant hop: {anames} already {} {cname} directly",
+                n.name,
+                if a_uids.len() == 1 { "feeds" } else { "feed" },
             ),
-        ));
+        );
+        // The position is the ref in B that reads A directly — the edge C
+        // makes redundant.
+        if let Some(cs) = sites.for_node(uid) {
+            let mut spans: Vec<_> = a_uids.iter().flat_map(|a| cs.calls_to(a)).collect();
+            spans.sort_by_key(|r| r.start);
+            if let Some(first) = spans.first().cloned() {
+                let label = format!("also read directly by {cname}");
+                f = cs.annotate(
+                    f,
+                    (first, label.clone()),
+                    spans[1..]
+                        .iter()
+                        .map(|r| (r.clone(), label.clone()))
+                        .collect(),
+                );
+            }
+        }
+        out.push(f);
     }
 }
 
@@ -241,6 +339,7 @@ pub(super) fn marts_depend_on_source(
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     config: &LintConfig,
+    sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -256,32 +355,68 @@ pub(super) fn marts_depend_on_source(
         if sources.is_empty() {
             continue;
         }
-        out.push(Finding::new(
+        let mut f = Finding::new(
             LintRule::MartsDependOnSource,
             (*uid).clone(),
             sources.clone(),
             format!(
-                "{layer} model {} directly depends on {} source(s)",
+                "{layer} model {} reads {} {}",
                 n.name,
-                sources.len()
+                pluralize(sources.len(), "source"),
+                name_list(&display_names(dag, &sources)),
             ),
-        ));
+        );
+        if sources.len() == 1 {
+            if let Some(stg) = single_staging_reader(dag, &sources[0], uid, config) {
+                f = f.with_help(format!("select from {stg} instead"));
+            }
+        }
+        if let Some(cs) = sites.for_node(uid) {
+            let mut spans: Vec<_> = sources.iter().flat_map(|s| cs.calls_to(s)).collect();
+            spans.sort_by_key(|r| r.start);
+            if let Some((first, rest)) = spans.split_first() {
+                f = cs.annotate(
+                    f,
+                    (first.clone(), "source used here"),
+                    rest.iter()
+                        .map(|r| (r.clone(), "source used here".to_string()))
+                        .collect(),
+                );
+            }
+        }
+        out.push(f);
     }
 }
 
 /// `layer_violation`: a backward edge between logical layers — the shared
 /// [`layer_violation_edges`] predicate, surfaced as a lint rule. `node_uid`
-/// is the CHILD endpoint (the model doing the backward dependency).
-pub(super) fn layer_violation(dag: &Dag, out: &mut Vec<Finding>) {
+/// is the CHILD endpoint (the model doing the backward dependency); the
+/// position lands on the child's ref to the later-layer parent.
+pub(super) fn layer_violation(dag: &Dag, sites: &CallSiteResolver<'_>, out: &mut Vec<Finding>) {
     for (parent, child) in layer_violation_edges(dag) {
-        let pname = dag.get(&parent).map_or(&*parent, |n| &n.name).to_string();
-        let cname = dag.get(&child).map_or(&*child, |n| &n.name).to_string();
-        out.push(Finding::new(
+        let pname = display_name(dag, &parent);
+        let cname = display_name(dag, &child);
+        let mut f = Finding::new(
             LintRule::LayerViolation,
-            child,
-            vec![parent],
+            child.clone(),
+            vec![parent.clone()],
             format!("{cname} directly depends on {pname} (a later layer)"),
-        ));
+        );
+        if let Some(cs) = sites.for_node(&child) {
+            let spans = cs.calls_to(&parent);
+            if let Some(first) = spans.first().cloned() {
+                let label = format!("{pname} is in a later layer");
+                f = cs.annotate(
+                    f,
+                    (first, label.clone()),
+                    spans[1..]
+                        .iter()
+                        .map(|r| (r.clone(), label.clone()))
+                        .collect(),
+                );
+            }
+        }
+        out.push(f);
     }
 }
 
@@ -302,7 +437,10 @@ pub(super) fn unused_sources(
             LintRule::UnusedSources,
             (*uid).clone(),
             Vec::new(),
-            format!("source {} is not referenced by any node", n.name),
+            format!(
+                "source {} is not referenced by any node",
+                display_name(dag, uid)
+            ),
         ));
     }
 }
@@ -372,16 +510,15 @@ pub(super) fn duplicate_sources(
         if related.is_empty() {
             continue;
         }
-        let names = related
-            .iter()
-            .map(|u| dag.get(u).map_or(u.as_str(), |n| n.name.as_str()))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let names = name_list(&display_names(dag, &related));
         out.push(Finding::new(
             LintRule::DuplicateSources,
             (**uid).clone(),
             related,
-            format!("source {} points at the same relation as {names}", n.name),
+            format!(
+                "source {} points at the same relation as {names}",
+                display_name(dag, uid)
+            ),
         ));
     }
 }
@@ -395,6 +532,7 @@ pub(super) fn staging_depends_on_staging(
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     config: &LintConfig,
+    sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -419,16 +557,33 @@ pub(super) fn staging_depends_on_staging(
             continue;
         }
         parents.sort();
-        out.push(Finding::new(
+        let mut f = Finding::new(
             LintRule::StagingDependsOnStaging,
             (*uid).clone(),
             parents.clone(),
             format!(
-                "staging model {} directly depends on {} staging model(s)",
+                "staging model {} directly depends on {} {}",
                 n.name,
-                parents.len()
+                pluralize(parents.len(), "staging model"),
+                name_list(&display_names(dag, &parents)),
             ),
-        ));
+        );
+        // The position is the first ref to a staging parent — the read
+        // that skips the source.
+        if let Some(cs) = sites.for_node(uid) {
+            let mut spans: Vec<_> = parents.iter().flat_map(|p| cs.calls_to(p)).collect();
+            spans.sort_by_key(|r| r.start);
+            if let Some((first, rest)) = spans.split_first() {
+                f = cs.annotate(
+                    f,
+                    (first.clone(), "staging model"),
+                    rest.iter()
+                        .map(|r| (r.clone(), "staging model".to_string()))
+                        .collect(),
+                );
+            }
+        }
+        out.push(f);
     }
 }
 
@@ -441,6 +596,7 @@ pub(super) fn too_many_joins(
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     config: &LintConfig,
+    sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
 ) {
     let threshold = config
@@ -464,16 +620,33 @@ pub(super) fn too_many_joins(
             continue;
         }
         parents.sort();
-        out.push(Finding::new(
+        let mut f = Finding::new(
             LintRule::TooManyJoins,
             (*uid).clone(),
             parents.clone(),
             format!(
-                "{} directly depends on {} data resources",
+                "{} directly depends on {} {}: {}",
                 n.name,
-                parents.len()
+                parents.len(),
+                pluralize(parents.len(), "data resource"),
+                name_list(&display_names(dag, &parents)),
             ),
-        ));
+        );
+        // Primary on the first ref/source call; every other parent call is
+        // a label naming what it reads.
+        if let Some(cs) = sites.for_node(uid) {
+            let mut spots: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+            for parent in &parents {
+                for span in cs.calls_to(parent) {
+                    spots.push((span, format!("reads {}", display_name(dag, parent))));
+                }
+            }
+            spots.sort_by_key(|(r, _)| r.start);
+            if let Some(first) = spots.first().cloned() {
+                f = cs.annotate(f, first, spots[1..].to_vec());
+            }
+        }
+        out.push(f);
     }
 }
 
@@ -485,6 +658,7 @@ pub(super) fn incremental_without_unique_key(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
+    sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -498,11 +672,21 @@ pub(super) fn incremental_without_unique_key(
         if dag.detail(uid).is_some_and(|d| !d.unique_key.is_empty()) {
             continue;
         }
-        out.push(Finding::new(
+        let mut f = Finding::new(
             LintRule::IncrementalWithoutUniqueKey,
             (*uid).clone(),
             Vec::new(),
             format!("incremental model {} has no unique_key", n.name),
-        ));
+        );
+        // The position is the `config()` argument that declared
+        // `materialized='incremental'` — the key the fix sits next to.
+        if let Some(cs) = sites.for_node(uid) {
+            if let Some((span, value)) = cs.materialized_arg() {
+                if value == "incremental" {
+                    f = cs.annotate(f, (span, format!("materialized '{value}'")), vec![]);
+                }
+            }
+        }
+        out.push(f);
     }
 }

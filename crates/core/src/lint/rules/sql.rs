@@ -135,8 +135,9 @@ pub(super) fn hard_coded_references(
                 (*uid).clone(),
                 vec![],
                 format!(
-                    "{} reads relation(s) without ref()/source(): {}",
+                    "{} reads {} without ref()/source(): {}",
                     n.name,
+                    pluralize(scan.names.len(), "relation"),
                     scan.names.join(", ")
                 ),
             );
@@ -247,8 +248,9 @@ pub(super) fn unknown_column_reference(
             (*uid).clone(),
             related,
             format!(
-                "{} names column(s) its upstream doesn't emit: {}",
+                "{} names {} its upstream doesn't emit: {}",
                 n.name,
+                pluralize(pairs.len(), "column"),
                 pairs.join(", ")
             ),
         );
@@ -320,8 +322,9 @@ pub(super) fn forbidden_patterns(
                 (*uid).clone(),
                 vec![],
                 format!(
-                    "{}'s raw SQL matches forbidden pattern(s): {}",
+                    "{}'s raw SQL matches forbidden {}: {}",
                     n.name,
+                    pluralize(hits.len(), "pattern"),
                     hits.join(", ")
                 ),
             );

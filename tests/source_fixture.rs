@@ -1192,3 +1192,163 @@ fn whitespace_only_column_description_is_undocumented() {
         .expect("undocumented_columns fires on fct_model_tests");
     assert!(f.message.contains("notes"), "{:?}", f.message);
 }
+
+/// `dim_customers` reads `source('raw', 'customers')` directly — the
+/// `marts_depend_on_source` finding's position underlines that call
+/// (line 13, columns 9–35; the `{{ }}` wrapper is not part of the span).
+/// The `--`-commented `ref('country_codes')` is a real edge by dbt's
+/// Jinja-before-SQL semantics, and the identifier-embedded `my_ref(` /
+/// `other_source(` fakes contribute no calls.
+#[test]
+fn graph_findings_position_the_source_call_that_made_the_edge() {
+    let dag = load_dag_from_source(PROJECT).unwrap();
+    let findings = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    let f = findings
+        .iter()
+        .find(|f| {
+            f.rule == LintRule::MartsDependOnSource && f.node_uid == "model.sample.dim_customers"
+        })
+        .expect("marts_depend_on_source fires on dim_customers");
+    assert_eq!(
+        f.message,
+        "marts model dim_customers reads source raw.customers"
+    );
+    let loc = f.location.as_ref().expect("a call-site position lands");
+    assert_eq!(loc.file, "models/marts/dim_customers.sql");
+    assert_eq!(
+        (loc.line, loc.column, loc.end_line, loc.end_column),
+        (Some(13), Some(9), Some(13), Some(35)),
+        "the source('raw', 'customers') call on the from line"
+    );
+    assert_eq!(f.label.as_deref(), Some("source used here"));
+    // No staging model reads raw.customers — nothing concrete to suggest,
+    // so the finding keeps the registry help rather than a named fix.
+    assert_eq!(f.help, None);
+    // stg_dup_probe's two source() calls: first in file order is primary,
+    // the second its labeled secondary.
+    let f = findings
+        .iter()
+        .find(|f| {
+            f.rule == LintRule::MultipleSourcesJoined && f.node_uid == "model.sample.stg_dup_probe"
+        })
+        .expect("multiple_sources_joined fires on stg_dup_probe");
+    assert_eq!(
+        f.message,
+        "stg_dup_probe reads sources ledger.payments, shared.payments"
+    );
+    let loc = f.location.as_ref().expect("a call-site position lands");
+    assert_eq!(loc.file, "models/staging/stg_dup_probe.sql");
+    assert_eq!(
+        (loc.line, loc.column, loc.end_line, loc.end_column),
+        (Some(4), Some(9), Some(4), Some(37))
+    );
+    assert_eq!(
+        f.labels
+            .iter()
+            .map(|l| (l.line, l.column, l.message.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(7, Some(9), "source")]
+    );
+}
+
+/// `fct_daily_orders` declares `materialized='incremental'` with no
+/// `unique_key` anywhere — the finding underlines the config argument's
+/// VALUE (line 1, columns 24–37: the `'incremental'` literal).
+#[test]
+fn incremental_without_unique_key_positions_the_config_arg() {
+    let dag = load_dag_from_source(PROJECT).unwrap();
+    let findings = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    let f = findings
+        .iter()
+        .find(|f| {
+            f.rule == LintRule::IncrementalWithoutUniqueKey
+                && f.node_uid == "model.sample.fct_daily_orders"
+        })
+        .expect("incremental_without_unique_key fires on fct_daily_orders");
+    let loc = f.location.as_ref().expect("the config arg positions");
+    assert_eq!(loc.file, "models/marts/fct_daily_orders.sql");
+    assert_eq!(
+        (loc.line, loc.column, loc.end_line, loc.end_column),
+        (Some(1), Some(24), Some(1), Some(37))
+    );
+    assert_eq!(f.label.as_deref(), Some("materialized 'incremental'"));
+    // fct_line_items is incremental too but its unique_key comes from
+    // schema.yml — no finding.
+    assert!(
+        !findings.iter().any(|f| {
+            f.rule == LintRule::IncrementalWithoutUniqueKey
+                && f.node_uid == "model.sample.fct_line_items"
+        }),
+        "the schema.yml unique_key clears the rule"
+    );
+}
+
+/// The byte offset `text`'s `line`/`column` (1-based, columns count `char`s
+/// like `byte_span_position`) marks.
+fn offset_of(text: &str, line: u32, column: u32) -> usize {
+    let mut byte = 0usize;
+    for _ in 1..line {
+        byte += text[byte..].find('\n').expect("line exists") + 1;
+    }
+    byte + text[byte..]
+        .char_indices()
+        .nth(column as usize - 1)
+        .expect("column exists")
+        .0
+}
+
+/// Every positioned finding's `line:col` (and every secondary label's)
+/// underlines text that actually starts `ref(`/`source(` — or the
+/// `materialized` literal for `incremental_without_unique_key`. The
+/// mechanical wrong-position detector: an off-by-one in extraction or the
+/// masking shows up as a span that isn't a call.
+#[test]
+fn every_position_underlines_a_real_call() {
+    let dag = load_dag_from_source(PROJECT).unwrap();
+    let findings = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    let positioned: Vec<_> = findings
+        .iter()
+        .filter(|f| {
+            f.location
+                .as_ref()
+                .is_some_and(|l| l.line.is_some() && l.column.is_some())
+        })
+        .collect();
+    assert!(
+        !positioned.is_empty(),
+        "the fixture produces call-site-positioned findings"
+    );
+    for f in &positioned {
+        let loc = f.location.as_ref().unwrap();
+        let text = std::fs::read_to_string(std::path::Path::new(PROJECT).join(&loc.file))
+            .expect("the located file exists");
+        let mut spans = vec![(loc.line.unwrap(), loc.column.unwrap(), "primary")];
+        spans.extend(
+            f.labels
+                .iter()
+                .map(|l| (l.line, l.column.expect("labels carry columns"), "label")),
+        );
+        for (line, col, kind) in spans {
+            let at = &text[offset_of(&text, line, col)..];
+            let is_call = at.starts_with("ref(") || at.starts_with("source(");
+            if f.rule == LintRule::IncrementalWithoutUniqueKey {
+                assert!(
+                    at.starts_with("'incremental'") || at.starts_with("\"incremental\""),
+                    "{kind} {line}:{col} of {} must be the materialized literal, found {:?}",
+                    loc.file,
+                    &at[..30]
+                );
+            } else {
+                assert!(
+                    is_call,
+                    "{kind} {line}:{col} of {} must start a ref()/source() call, found {:?}",
+                    loc.file,
+                    &at[..30]
+                );
+            }
+        }
+    }
+    // Two evaluations agree on everything — the deterministic contract.
+    let again = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    assert_eq!(findings, again);
+}

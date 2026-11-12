@@ -2919,6 +2919,665 @@ fn envelope_keeps_a_position_it_cannot_check() {
     );
 }
 
+// ---- call-site positions ----------------------------------------------------
+// Graph findings point at the `ref()`/`source()`/`config()` call that made
+// the edge — `raw_code` + `original_file_path` are what `CallSites` resolves
+// against (the same file the envelope resolves).
+
+/// A model carrying `raw_code` AND `original_file_path` — the two fields a
+/// call-site position indexes and survives the envelope on. `ofp` follows
+/// the `models/<dir>/<name>.sql` convention; `path` (the layer dir the
+/// layer-rank rules read) is the same path minus the `models/` root.
+fn sited_model(name: &str, ofp: &str, raw: &str) -> (String, RawNode) {
+    let mut m = model_sql(name, raw);
+    m.1.path = Some(ofp.trim_start_matches("models/").into());
+    m.1.original_file_path = Some(ofp.into());
+    m
+}
+
+fn finding_of<'a>(findings: &'a [Finding], rule: LintRule, uid: &str) -> &'a Finding {
+    findings
+        .iter()
+        .find(|f| f.rule == rule && f.node_uid == uid)
+        .unwrap_or_else(|| panic!("{rule:?} must fire on {uid}"))
+}
+
+#[test]
+fn direct_join_positions_the_source_call_and_labels_the_model_calls() {
+    // bad.sql's `source('s', 'raw')` sits at line 2 col 10; its two
+    // `ref('stg_a')` calls are the secondary labels — the primary is the
+    // FIRST source() call, every model read a labeled position.
+    let raw = "select *\nfrom {{ source('s', 'raw') }} a\njoin {{ ref('stg_a') }} b on a.id = b.id\njoin {{ ref('stg_a') }} c on a.id = c.id\n";
+    let m = manifest(
+        vec![
+            model("stg_a", "staging/stg_a.sql"),
+            sited_model("bad", "models/marts/bad.sql", raw),
+        ],
+        vec![source("s.raw")],
+        &[
+            ("source.p.s.raw", "model.p.stg_a"),
+            ("source.p.s.raw", "model.p.bad"),
+            ("model.p.stg_a", "model.p.bad"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hit = finding_of(&f, LintRule::DirectJoinToSource, "model.p.bad");
+    assert_eq!(
+        hit.location,
+        Some(Location {
+            file: "models/marts/bad.sql".into(),
+            line: Some(2),
+            column: Some(9),
+            end_line: Some(2),
+            end_column: Some(27),
+        }),
+        "the primary position is the source() call, `{{ }}` excluded"
+    );
+    assert_eq!(hit.label.as_deref(), Some("source"));
+    assert_eq!(
+        hit.labels
+            .iter()
+            .map(|l| (l.line, l.column, l.message.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(3, Some(9), "model"), (4, Some(9), "model"),],
+        "each model read gets its own labeled position"
+    );
+    assert_eq!(hit.message, "bad reads source s.raw and model stg_a");
+    assert_eq!(hit.related, ["source.p.s.raw", "model.p.stg_a"]);
+    // stg_a is the ONLY other staging reader of s.raw → a concrete fix.
+    assert_eq!(hit.help.as_deref(), Some("select from stg_a instead"));
+}
+
+#[test]
+fn direct_join_suggests_nothing_without_a_single_staging_reader() {
+    // No staging model reads s.raw → the finding can't name the fix; and
+    // with TWO staging readers the choice is ambiguous — both leave help
+    // at the registry default.
+    let m = manifest(
+        vec![
+            model("stg_a", "staging/stg_a.sql"),
+            model("stg_b", "staging/stg_b.sql"),
+            sited_model(
+                "bad",
+                "models/marts/bad.sql",
+                "select * from {{ source('s', 'raw') }}",
+            ),
+            sited_model(
+                "worse",
+                "models/marts/worse.sql",
+                "select * from {{ source('s', 'shared') }}",
+            ),
+        ],
+        vec![source("s.raw"), source("s.shared")],
+        &[
+            ("source.p.s.shared", "model.p.stg_a"),
+            ("source.p.s.shared", "model.p.stg_b"),
+            ("source.p.s.shared", "model.p.worse"),
+            ("model.p.stg_a", "model.p.worse"),
+            ("source.p.s.raw", "model.p.bad"),
+            ("model.p.stg_a", "model.p.bad"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        finding_of(&f, LintRule::DirectJoinToSource, "model.p.bad").help,
+        None,
+        "zero staging readers — nothing to suggest"
+    );
+    assert_eq!(
+        finding_of(&f, LintRule::DirectJoinToSource, "model.p.worse").help,
+        None,
+        "two staging readers — the fix is ambiguous"
+    );
+}
+
+#[test]
+fn multiple_sources_joined_positions_each_source_call() {
+    let raw = "select 1\nunion all\nselect 2 from {{ source('a', 't') }}\nunion all\nselect 3 from {{ source('b', 't') }}\n";
+    let m = manifest(
+        vec![sited_model("stg_dup", "models/staging/stg_dup.sql", raw)],
+        vec![source("a.t"), source("b.t")],
+        &[
+            ("source.p.a.t", "model.p.stg_dup"),
+            ("source.p.b.t", "model.p.stg_dup"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hit = finding_of(&f, LintRule::MultipleSourcesJoined, "model.p.stg_dup");
+    assert_eq!(hit.message, "stg_dup reads sources a.t, b.t");
+    assert_eq!(
+        hit.location,
+        Some(Location {
+            file: "models/staging/stg_dup.sql".into(),
+            line: Some(3),
+            column: Some(18),
+            end_line: Some(3),
+            end_column: Some(34),
+        }),
+        "the first source() call in file order is primary"
+    );
+    assert_eq!(hit.label.as_deref(), Some("source"));
+    assert_eq!(
+        hit.labels
+            .iter()
+            .map(|l| (l.line, l.column, l.message.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(5, Some(18), "source")]
+    );
+}
+
+#[test]
+fn jinja_commented_calls_contribute_no_position() {
+    // `{# {{ ref('stg_a') }} #}` is not a call — the only real call is the
+    // source() on line 2, which becomes the primary; stg_a's edge exists
+    // (it's a parent) but gets no label.
+    let raw = "{# {{ ref('stg_a') }} #}\nselect * from {{ source('s', 'raw') }}\n";
+    let m = manifest(
+        vec![
+            model("stg_a", "staging/stg_a.sql"),
+            sited_model("bad", "models/marts/bad.sql", raw),
+        ],
+        vec![source("s.raw")],
+        &[
+            ("source.p.s.raw", "model.p.bad"),
+            ("model.p.stg_a", "model.p.bad"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hit = finding_of(&f, LintRule::DirectJoinToSource, "model.p.bad");
+    assert_eq!(
+        hit.location,
+        Some(Location {
+            file: "models/marts/bad.sql".into(),
+            line: Some(2),
+            column: Some(18),
+            end_line: Some(2),
+            end_column: Some(36),
+        })
+    );
+    assert!(
+        hit.labels.is_empty(),
+        "the commented ref is invisible — no label for stg_a"
+    );
+}
+
+#[test]
+fn sql_commented_calls_still_produce_positions() {
+    // `-- {{ ref('stg_a') }}` IS a dependency in dbt's semantics (Jinja
+    // renders before SQL comments exist) — the edge AND its position land.
+    let raw = "-- {{ ref('stg_a') }}\nselect * from {{ source('s', 'raw') }}\n";
+    let m = manifest(
+        vec![
+            model("stg_a", "staging/stg_a.sql"),
+            sited_model("bad", "models/marts/bad.sql", raw),
+        ],
+        vec![source("s.raw")],
+        &[
+            ("source.p.s.raw", "model.p.bad"),
+            ("model.p.stg_a", "model.p.bad"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hit = finding_of(&f, LintRule::DirectJoinToSource, "model.p.bad");
+    assert_eq!(
+        hit.labels
+            .iter()
+            .map(|l| (l.line, l.column, l.message.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(1, Some(7), "model")],
+        "the SQL-commented ref is a real call — labeled on line 1"
+    );
+}
+
+#[test]
+fn marts_depend_on_source_positions_the_source_call() {
+    // dim_x reads s.raw directly; stg_a is the single staging reader → the
+    // help names it and the position underlines the source() call.
+    let m = manifest(
+        vec![
+            model("stg_a", "staging/stg_a.sql"),
+            sited_model(
+                "dim_x",
+                "models/marts/dim_x.sql",
+                "select * from {{ source('s', 'raw') }}",
+            ),
+        ],
+        vec![source("s.raw")],
+        &[
+            ("source.p.s.raw", "model.p.stg_a"),
+            ("source.p.s.raw", "model.p.dim_x"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hit = finding_of(&f, LintRule::MartsDependOnSource, "model.p.dim_x");
+    assert_eq!(hit.message, "marts model dim_x reads source s.raw");
+    assert_eq!(hit.help.as_deref(), Some("select from stg_a instead"));
+    assert_eq!(
+        hit.location,
+        Some(Location {
+            file: "models/marts/dim_x.sql".into(),
+            line: Some(1),
+            column: Some(18),
+            end_line: Some(1),
+            end_column: Some(36),
+        })
+    );
+    assert_eq!(hit.label.as_deref(), Some("source used here"));
+}
+
+#[test]
+fn layer_violation_positions_the_later_layer_ref() {
+    // stg_b reads fct_y — an edge staging→marts (parent rank > child rank).
+    // The position is stg_b's own `ref('fct_y')` call.
+    let m = manifest(
+        vec![
+            model("fct_y", "marts/fct_y.sql"),
+            sited_model(
+                "stg_b",
+                "models/staging/stg_b.sql",
+                "select * from {{ ref('fct_y') }}",
+            ),
+        ],
+        vec![],
+        &[("model.p.fct_y", "model.p.stg_b")],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hit = finding_of(&f, LintRule::LayerViolation, "model.p.stg_b");
+    assert_eq!(hit.related, ["model.p.fct_y"]);
+    assert_eq!(
+        hit.message,
+        "stg_b directly depends on fct_y (a later layer)"
+    );
+    assert_eq!(
+        hit.location,
+        Some(Location {
+            file: "models/staging/stg_b.sql".into(),
+            line: Some(1),
+            column: Some(18),
+            end_line: Some(1),
+            end_column: Some(30),
+        })
+    );
+    assert_eq!(hit.label.as_deref(), Some("fct_y is in a later layer"));
+}
+
+#[test]
+fn layer_violation_picks_the_versioned_call_for_the_right_parent() {
+    // stg_c reads BOTH versions: `ref('x')` resolves to the family's latest
+    // (v2), `ref('x', version='v1')` names v1 explicitly — each violation's
+    // position underlines the call that made ITS edge.
+    let v1 = (
+        "model.p.x.v1".to_string(),
+        RawNode {
+            name: "x".into(),
+            resource_type: "model".into(),
+            path: Some("marts/x_v1.sql".into()),
+            version: Some("1".into()),
+            latest_version: Some("2".into()),
+            ..Default::default()
+        },
+    );
+    let v2 = (
+        "model.p.x.v2".to_string(),
+        RawNode {
+            name: "x".into(),
+            resource_type: "model".into(),
+            path: Some("marts/x_v2.sql".into()),
+            version: Some("2".into()),
+            latest_version: Some("2".into()),
+            ..Default::default()
+        },
+    );
+    let raw = "{{ ref('x') }}\n{{ ref('x', version='v1') }}\n";
+    let m = manifest(
+        vec![
+            v1,
+            v2,
+            sited_model("stg_c", "models/staging/stg_c.sql", raw),
+        ],
+        vec![],
+        &[
+            ("model.p.x.v1", "model.p.stg_c"),
+            ("model.p.x.v2", "model.p.stg_c"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hit_v1 = f
+        .iter()
+        .find(|f| f.rule == LintRule::LayerViolation && f.related == ["model.p.x.v1"])
+        .expect("v1 violation");
+    let hit_v2 = f
+        .iter()
+        .find(|f| f.rule == LintRule::LayerViolation && f.related == ["model.p.x.v2"])
+        .expect("v2 violation");
+    assert_eq!(
+        hit_v1.location.as_ref().and_then(|l| l.line),
+        Some(2),
+        "v1's edge comes from the explicit version call"
+    );
+    assert_eq!(
+        hit_v2.location.as_ref().and_then(|l| l.line),
+        Some(1),
+        "v2's edge comes from the bare ref — the family's latest"
+    );
+}
+
+#[test]
+fn rejoining_upstream_positions_the_redundant_ref() {
+    // int_a → stg_b → fct_c plus int_a → fct_c: stg_b's ONLY data child is
+    // fct_c, and int_a feeds fct_c directly — stg_b is the redundant hop.
+    // The position is stg_b's `ref('int_a')` (the edge fct_c bypasses).
+    let m = manifest(
+        vec![
+            model("int_a", "intermediate/int_a.sql"),
+            sited_model(
+                "stg_b",
+                "models/staging/stg_b.sql",
+                "select * from {{ ref('int_a') }}",
+            ),
+            model("fct_c", "marts/fct_c.sql"),
+        ],
+        vec![],
+        &[
+            ("model.p.int_a", "model.p.stg_b"),
+            ("model.p.stg_b", "model.p.fct_c"),
+            ("model.p.int_a", "model.p.fct_c"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hit = finding_of(&f, LintRule::RejoiningUpstream, "model.p.stg_b");
+    assert_eq!(hit.related, ["model.p.fct_c", "model.p.int_a"]);
+    assert_eq!(
+        hit.message,
+        "stg_b is a redundant hop: int_a already feeds fct_c directly"
+    );
+    assert_eq!(
+        hit.location,
+        Some(Location {
+            file: "models/staging/stg_b.sql".into(),
+            line: Some(1),
+            column: Some(18),
+            end_line: Some(1),
+            end_column: Some(30),
+        })
+    );
+    assert_eq!(hit.label.as_deref(), Some("also read directly by fct_c"));
+}
+
+#[test]
+fn staging_depends_on_staging_positions_the_staging_ref() {
+    let m = manifest(
+        vec![
+            model("stg_a", "staging/stg_a.sql"),
+            sited_model(
+                "stg_b",
+                "models/staging/stg_b.sql",
+                "select * from {{ ref('stg_a') }}",
+            ),
+        ],
+        vec![],
+        &[("model.p.stg_a", "model.p.stg_b")],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hit = finding_of(&f, LintRule::StagingDependsOnStaging, "model.p.stg_b");
+    assert_eq!(
+        hit.message,
+        "staging model stg_b directly depends on staging model stg_a"
+    );
+    assert_eq!(
+        hit.location,
+        Some(Location {
+            file: "models/staging/stg_b.sql".into(),
+            line: Some(1),
+            column: Some(18),
+            end_line: Some(1),
+            end_column: Some(30),
+        })
+    );
+    assert_eq!(hit.label.as_deref(), Some("staging model"));
+}
+
+#[test]
+fn too_many_joins_labels_every_parent_call() {
+    // Threshold 2 via config: `fct_x` reads two parents; the first call in
+    // file order is primary, the second the labeled secondary naming its
+    // target.
+    let raw = "select *\nfrom {{ ref('stg_a') }}\njoin {{ ref('stg_b') }} on true\n";
+    let m = manifest(
+        vec![
+            model("stg_a", "staging/stg_a.sql"),
+            model("stg_b", "staging/stg_b.sql"),
+            sited_model("fct_x", "models/marts/fct_x.sql", raw),
+        ],
+        vec![],
+        &[
+            ("model.p.stg_a", "model.p.fct_x"),
+            ("model.p.stg_b", "model.p.fct_x"),
+        ],
+    );
+    let cfg = config_from("lint:\n  rules:\n    too_many_joins: {threshold: 2}\n");
+    let f = findings_of(&m, &cfg);
+    let hit = finding_of(&f, LintRule::TooManyJoins, "model.p.fct_x");
+    assert_eq!(
+        hit.message,
+        "fct_x directly depends on 2 data resources: stg_a, stg_b"
+    );
+    assert_eq!(hit.label.as_deref(), Some("reads stg_a"));
+    assert_eq!(
+        hit.labels
+            .iter()
+            .map(|l| (l.line, l.message.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(3, "reads stg_b")]
+    );
+}
+
+#[test]
+fn incremental_without_unique_key_positions_the_materialized_arg() {
+    // The position underlines the `materialized='incremental'` VALUE — the
+    // argument the missing unique_key would sit beside.
+    let mut node = keyed_model("no_key", "incremental", None);
+    node.1.raw_code = Some("{{ config(materialized='incremental') }}\nselect 1\n".into());
+    let m = manifest(vec![node], vec![], &[]);
+    let f = findings_of(&m, &LintConfig::default());
+    let hit = finding_of(&f, LintRule::IncrementalWithoutUniqueKey, "model.p.no_key");
+    assert_eq!(
+        hit.location,
+        Some(Location {
+            file: "models/marts/no_key.sql".into(),
+            line: Some(1),
+            column: Some(24),
+            end_line: Some(1),
+            end_column: Some(37),
+        }),
+        "the 'incremental' literal — where the fix's unique_key goes"
+    );
+    assert_eq!(hit.label.as_deref(), Some("materialized 'incremental'"));
+}
+
+#[test]
+fn incremental_without_unique_key_positions_through_a_config_comment() {
+    // A `{# #}` INSIDE the config() args: the loader resolves
+    // `materialized='incremental'` on the masked text, and the position
+    // lookup must parse that same masked text — the literal still lands.
+    let mut node = keyed_model("no_key", "incremental", None);
+    node.1.raw_code = Some(
+        "{{ config(\n    materialized = 'incremental', {# trailing note #}\n) }}\nselect 1\n"
+            .into(),
+    );
+    let m = manifest(vec![node], vec![], &[]);
+    let f = findings_of(&m, &LintConfig::default());
+    let hit = finding_of(&f, LintRule::IncrementalWithoutUniqueKey, "model.p.no_key");
+    assert_eq!(
+        hit.location,
+        Some(Location {
+            file: "models/marts/no_key.sql".into(),
+            line: Some(2),
+            column: Some(20),
+            end_line: Some(2),
+            end_column: Some(33),
+        }),
+        "the 'incremental' literal on line 2 — the comment doesn't derail it"
+    );
+}
+
+#[test]
+fn duplicate_calls_all_get_labeled() {
+    // The same source() called twice in one file plus a ref() between
+    // them: the first site is primary, the rest labeled — and `with_labels`
+    // re-sorts by position, not by insertion order.
+    let raw = "select * from {{ source('s', 'raw') }}\njoin {{ ref('stg_a') }} on true\nunion all\nselect * from {{ source('s', 'raw') }}\n";
+    let m = manifest(
+        vec![
+            model("stg_a", "staging/stg_a.sql"),
+            sited_model("dim_x", "models/marts/dim_x.sql", raw),
+        ],
+        vec![source("s.raw")],
+        &[
+            ("source.p.s.raw", "model.p.stg_a"),
+            ("source.p.s.raw", "model.p.dim_x"),
+            ("model.p.stg_a", "model.p.dim_x"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hit = finding_of(&f, LintRule::DirectJoinToSource, "model.p.dim_x");
+    assert_eq!(
+        hit.location.as_ref().and_then(|l| l.line),
+        Some(1),
+        "the first source() call is primary"
+    );
+    assert_eq!(hit.label.as_deref(), Some("source"));
+    assert_eq!(
+        hit.labels
+            .iter()
+            .map(|l| (l.line, l.message.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(2, "model"), (4, "source")],
+        "the ref and the repeated source() label at their own positions"
+    );
+}
+
+#[test]
+fn call_positions_survive_jinja_crlf_tabs_and_multibyte() {
+    // Positions index the ORIGINAL bytes; columns count chars — `{% if %}`
+    // blocks, a multiline `{{ config(…) }}`, CRLF newlines, a leading tab
+    // and non-ASCII text all leave the call where it actually is.
+    let raw = "{% if true %}\r\n\t{{ config(\r\n    materialized='view',\r\n) }}\r\n{% endif %}\r\n-- あいう {{ ref('stg_a') }}\r\nselect * from {{ source('s', 'raw') }}\r\n";
+    let m = manifest(
+        vec![
+            model("stg_a", "staging/stg_a.sql"),
+            sited_model("bad", "models/marts/bad.sql", raw),
+        ],
+        vec![source("s.raw")],
+        &[
+            ("source.p.s.raw", "model.p.bad"),
+            ("model.p.stg_a", "model.p.bad"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hit = finding_of(&f, LintRule::DirectJoinToSource, "model.p.bad");
+    assert_eq!(
+        hit.location,
+        Some(Location {
+            file: "models/marts/bad.sql".into(),
+            line: Some(7),
+            column: Some(18),
+            end_line: Some(7),
+            end_column: Some(36),
+        }),
+        "CRLF counts once per line; the config() block's lines still count"
+    );
+    assert_eq!(
+        hit.labels
+            .iter()
+            .map(|l| (l.line, l.column, l.message.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(6, Some(11), "model")],
+        "`-- あいう {{ ` is ten chars — the ref lands at column 11"
+    );
+}
+
+#[test]
+fn a_variable_ref_gets_no_label() {
+    // `ref(var('stg_a'))` is not a literal call — extraction never saw it,
+    // so the stg_a edge exists but gets no position.
+    let raw = "select * from {{ ref(var('stg_a')) }} join {{ source('s', 'raw') }} on true\n";
+    let m = manifest(
+        vec![
+            model("stg_a", "staging/stg_a.sql"),
+            sited_model("bad", "models/marts/bad.sql", raw),
+        ],
+        vec![source("s.raw")],
+        &[
+            ("source.p.s.raw", "model.p.bad"),
+            ("model.p.stg_a", "model.p.bad"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hit = finding_of(&f, LintRule::DirectJoinToSource, "model.p.bad");
+    assert_eq!(
+        hit.location.as_ref().and_then(|l| l.line),
+        Some(1),
+        "the source() call still positions the finding"
+    );
+    assert!(
+        hit.labels.is_empty(),
+        "no label for a call lint can't resolve"
+    );
+}
+
+#[test]
+fn call_site_positions_are_deterministic_across_runs() {
+    // The whole finding vec — positions, labels, help — is stable across
+    // two evaluations of the same dag.
+    let raw = "select *\nfrom {{ source('a', 't') }}\njoin {{ source('b', 't') }} on true\njoin {{ ref('stg_a') }} on true\n";
+    let m = manifest(
+        vec![
+            model("stg_a", "staging/stg_a.sql"),
+            sited_model("bad", "models/marts/bad.sql", raw),
+        ],
+        vec![source("a.t"), source("b.t")],
+        &[
+            ("source.p.a.t", "model.p.stg_a"),
+            ("source.p.a.t", "model.p.bad"),
+            ("source.p.b.t", "model.p.bad"),
+            ("model.p.stg_a", "model.p.bad"),
+        ],
+    );
+    let cfg = LintConfig::default();
+    let dag = Dag::build(&m);
+    let a = run_rules(LintInput::new(&dag, &cfg)).findings;
+    let b = run_rules(LintInput::new(&dag, &cfg)).findings;
+    assert_eq!(a, b);
+}
+
+#[test]
+fn a_node_without_sql_keeps_the_file_only_location() {
+    // `raw_code` absent (a manifest that records none) or a .py model:
+    // `CallSites::for_node` returns None and the finding keeps just the
+    // file — no position is guessed.
+    let mut py = model("bad", "marts/bad.py");
+    py.1.language = Some("python".into());
+    py.1.original_file_path = Some("models/marts/bad.py".into());
+    let m = manifest(
+        vec![model("stg_a", "staging/stg_a.sql"), py],
+        vec![source("s.raw")],
+        &[
+            ("source.p.s.raw", "model.p.bad"),
+            ("model.p.stg_a", "model.p.bad"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hit = finding_of(&f, LintRule::DirectJoinToSource, "model.p.bad");
+    assert_eq!(
+        hit.location,
+        Some(Location::new("models/marts/bad.py")),
+        "the envelope's file with no position — Python call sites aren't read"
+    );
+    assert!(hit.labels.is_empty());
+    assert_eq!(hit.label, None);
+}
+
 // ---- byte_span_position --------------------------------------------------------------
 
 #[test]

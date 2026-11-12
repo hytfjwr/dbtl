@@ -75,9 +75,10 @@ fn check_format_markdown_is_real_markdown() {
         "a per-gate section: {stdout}"
     );
     // Findings list under the gate section as file anchors — a `.sql`
-    // finding names its file only, no line is guessed.
+    // finding carries its call-site `line:col` (the source() call that
+    // made the edge).
     assert!(
-        stdout.contains("- models/utilities/pos_prep/pos_cat.sql direct_join_to_source"),
+        stdout.contains("- models/utilities/pos_prep/pos_cat.sql:4:18 direct_join_to_source"),
         "a finding row: {stdout}"
     );
 }
@@ -123,10 +124,12 @@ fn check_format_github_emits_workflow_commands() {
     assert_eq!(out.status.code(), Some(1));
     let stdout = out_text(&out);
     // A file-bound annotation carries file/title — `line` rides along only
-    // when the finding's position is actually known, never a guessed 1.
+    // when the finding's position is actually known, never a guessed 1;
+    // graph findings pin the call site (line 4, columns 18–58 = the
+    // source() call's real span).
     assert!(
         stdout.contains(
-            "::error file=models/utilities/pos_prep/pos_cat.sql,title=direct_join_to_source::"
+            "::error file=models/utilities/pos_prep/pos_cat.sql,line=4,endLine=4,col=18,endColumn=58,title=direct_join_to_source::"
         ),
         "the annotation shape: {stdout}"
     );
@@ -214,9 +217,9 @@ fn check_format_junit_is_wellformed_xml() {
         "the catalog rules skip without a catalog: {stdout}"
     );
     // The listing inside a failure is the shared `file[:line[:col]] rule
-    // message` anchor — `.sql` findings stop at the file.
+    // message` anchor — a `.sql` finding carries its call-site position.
     assert!(
-        stdout.contains("models/utilities/pos_prep/pos_cat.sql direct_join_to_source"),
+        stdout.contains("models/utilities/pos_prep/pos_cat.sql:4:18 direct_join_to_source"),
         "finding bodies: {stdout}"
     );
 }

@@ -13,6 +13,10 @@ use super::*;
 use crate::select::select;
 use crate::{Catalog, SqlParseResolver};
 
+pub(super) use crate::lint::call_sites::{
+    display_name, display_names, name_list, pluralize, CallSiteResolver,
+};
+
 mod documentation;
 mod governance;
 mod modeling;
@@ -125,6 +129,8 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
     let in_scope = |n: &NodeInfo| primary.as_deref().is_none_or(|p| in_package(n, p));
     let mut uids: Vec<&String> = dag.nodes().keys().collect();
     uids.sort();
+    // One call-site extraction per node, shared by every graph rule.
+    let sites = CallSiteResolver::new(dag);
     let mut out = Vec::new();
     let mut skipped = Vec::new();
     for rule in LintRule::ALL {
@@ -154,10 +160,10 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
         }
         match rule {
             LintRule::DirectJoinToSource => {
-                modeling::direct_join_to_source(dag, &uids, &in_scope, &mut out)
+                modeling::direct_join_to_source(dag, &uids, &in_scope, config, &sites, &mut out)
             }
             LintRule::MultipleSourcesJoined => {
-                modeling::multiple_sources_joined(dag, &uids, &in_scope, &mut out)
+                modeling::multiple_sources_joined(dag, &uids, &in_scope, &sites, &mut out)
             }
             LintRule::SourceFanout => {
                 modeling::source_fanout(dag, &uids, &in_scope, config, &mut out)
@@ -167,10 +173,10 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
             }
             LintRule::RootModels => modeling::root_models(dag, &uids, &in_scope, &mut out),
             LintRule::RejoiningUpstream => {
-                modeling::rejoining_upstream(dag, &uids, &in_scope, &mut out)
+                modeling::rejoining_upstream(dag, &uids, &in_scope, &sites, &mut out)
             }
             LintRule::MartsDependOnSource => {
-                modeling::marts_depend_on_source(dag, &uids, &in_scope, config, &mut out)
+                modeling::marts_depend_on_source(dag, &uids, &in_scope, config, &sites, &mut out)
             }
             LintRule::MissingPrimaryKeyTests => {
                 testing::missing_primary_key_tests(dag, &uids, &in_scope, config, &mut out)
@@ -184,16 +190,16 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
             LintRule::NamingConventions => {
                 structure::naming_conventions(dag, &uids, &in_scope, config, &mut out)
             }
-            LintRule::LayerViolation => modeling::layer_violation(dag, &mut out),
+            LintRule::LayerViolation => modeling::layer_violation(dag, &sites, &mut out),
             LintRule::UnusedSources => modeling::unused_sources(dag, &uids, &in_scope, &mut out),
             LintRule::DuplicateSources => {
                 modeling::duplicate_sources(dag, &uids, &in_scope, &mut out)
             }
-            LintRule::StagingDependsOnStaging => {
-                modeling::staging_depends_on_staging(dag, &uids, &in_scope, config, &mut out)
-            }
+            LintRule::StagingDependsOnStaging => modeling::staging_depends_on_staging(
+                dag, &uids, &in_scope, config, &sites, &mut out,
+            ),
             LintRule::TooManyJoins => {
-                modeling::too_many_joins(dag, &uids, &in_scope, config, &mut out)
+                modeling::too_many_joins(dag, &uids, &in_scope, config, &sites, &mut out)
             }
             LintRule::ChainedViews => {
                 performance::chained_views(dag, &uids, &in_scope, config, &mut out)
@@ -223,7 +229,7 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 governance::contract_columns_without_type(dag, &uids, &in_scope, &mut out)
             }
             LintRule::IncrementalWithoutUniqueKey => {
-                modeling::incremental_without_unique_key(dag, &uids, &in_scope, &mut out)
+                modeling::incremental_without_unique_key(dag, &uids, &in_scope, &sites, &mut out)
             }
             LintRule::SourcesWithoutFreshness => {
                 testing::sources_without_freshness(dag, &uids, &in_scope, &mut out)

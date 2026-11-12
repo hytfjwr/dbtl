@@ -31,8 +31,9 @@ pub(super) fn naming_conventions(
             (*uid).clone(),
             Vec::new(),
             format!(
-                "{layer} model {} doesn't match prefix(es): {}",
+                "{layer} model {} doesn't match {}: {}",
                 n.name,
+                pluralize(prefixes.len(), "prefix"),
                 prefixes.join(", ")
             ),
         ));
