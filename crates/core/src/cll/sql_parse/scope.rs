@@ -130,6 +130,10 @@ pub(super) struct Analyzed {
     /// produced the rest of `self` (the scan is join-blind to rendered
     /// relation names, so no marked re-parse is needed).
     pub(super) cartesian: Vec<String>,
+    /// Occurrence count behind `cartesian` (the list dedups display text)
+    /// — the lint positions pass compares its raw-render count against
+    /// this before pairing arms positionally.
+    pub(super) cartesian_count: usize,
     /// `(parent uid, column)` refs that bound a parent with a KNOWN column
     /// list and missed it — the model names a column that doesn't exist.
     /// Recorded, not resolved: the `--diff` dangling-consumer scan reads it

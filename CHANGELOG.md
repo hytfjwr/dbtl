@@ -41,6 +41,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `dbtl lint` subcommand: the static rule set on its own, with
   `--write-baseline`/`--no-baseline`, `--list-rules`, `--explain`, and the
   full report-format set.
+- Lint findings carry positions: `.yml` attribute findings underline their
+  declaring `- name:` value, and the SQL rules (`select_star`,
+  `hard_coded_references`, `cartesian_join`, `unknown_column_reference`,
+  `forbidden_patterns`) underline the offending syntax in the model's
+  `.sql` file — additional occurrences ride as secondary labels. A
+  position a rule can't pin exactly is left file-scoped rather than
+  guessed.
 - Lint rule registry: named rules with declared severities, parameters, and
   required inputs; a rule whose input is missing reports `SKIP` instead of
   failing. 15 additional graph/metadata rules ship at `warn` severity,

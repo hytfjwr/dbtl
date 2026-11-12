@@ -78,6 +78,7 @@ mod bind;
 mod dialect;
 mod expr;
 mod jinja;
+mod positions;
 mod query;
 mod scan;
 mod scope;
@@ -87,6 +88,8 @@ mod tests;
 use ast::*;
 pub use dialect::SqlDialect;
 use jinja::*;
+use positions::{marked_relations, plain_positions};
+pub use positions::{MarkedRelations, SqlPositions};
 use scan::scan_statements;
 use scope::*;
 // ---------------------------------------------------------------------------
@@ -114,6 +117,11 @@ pub struct SqlFacts {
     /// (`CROSS JOIN`, or a conditional operator with no ON/USING/NATURAL),
     /// sorted — `cartesian_join`'s input.
     pub cartesian: Vec<String>,
+    /// Occurrence count behind `cartesian` (the list dedups display text —
+    /// a model can hit the same conditionless join twice). The positions
+    /// pass attaches only when its raw-render count matches this, so an
+    /// arm added/removed by a macro can't misalign positional pairing.
+    pub cartesian_count: usize,
     /// `(parent uid, normalized column)` refs the model names but the
     /// parent provably doesn't emit (a KNOWN column list missed them),
     /// sorted — `unknown_column_reference` filters these further by
@@ -151,7 +159,12 @@ pub struct SqlParseResolver {
     /// from `analyzed_memo`: the marked text is a different parse, and a
     /// run enabling only `hard_coded_references` shouldn't pay the
     /// resolution walk.
-    hard_coded_memo: RefCell<BTreeMap<String, Option<Rc<Vec<String>>>>>,
+    hard_coded_memo: RefCell<BTreeMap<String, Option<Rc<MarkedRelations>>>>,
+    /// uid → raw-SQL [`SqlPositions`] (`None` = no `raw_code`, a `.py`
+    /// model, or the render/parse failed → the finding reports without
+    /// positions rather than guessed ones). A SEPARATE memo populated
+    /// lazily — the rules call it only for models a fact already flagged.
+    positions_memo: RefCell<BTreeMap<String, Option<Rc<SqlPositions>>>>,
     /// uids whose resolution went through `NameMatchResolver` — the
     /// `[name-match]` tag / CLI fallback count source.
     fallbacks: RefCell<BTreeSet<String>>,
@@ -174,6 +187,7 @@ impl SqlParseResolver {
             exprs_memo: RefCell::new(BTreeMap::new()),
             facts_memo: RefCell::new(BTreeMap::new()),
             hard_coded_memo: RefCell::new(BTreeMap::new()),
+            positions_memo: RefCell::new(BTreeMap::new()),
             fallbacks: RefCell::new(BTreeSet::new()),
             analyzing: RefCell::new(BTreeSet::new()),
         }
@@ -227,6 +241,7 @@ impl SqlParseResolver {
             Rc::new(SqlFacts {
                 unbounded_wildcard: an.unbounded_wildcard,
                 cartesian: an.cartesian.clone(),
+                cartesian_count: an.cartesian_count,
                 unresolved: an.unresolved.iter().cloned().collect(),
             })
         });
@@ -243,12 +258,13 @@ impl SqlParseResolver {
     /// never count. `None` when the node has no `raw_code` (compiled-only
     /// models are deliberately NOT judged — a compiled `{{ ref('x') }}`
     /// renders to a written-looking name) or the marked text fails to
-    /// parse. Sorted, dotted (`sch.t`).
+    /// parse. `names` are sorted + dotted (`sch.t`); `spans` carry each
+    /// recorded occurrence's raw byte range for lint positions.
     ///
     /// Deliberately NOT `resolution_sql`-based: that accessor prefers
     /// compiled SQL, where a `ref()` is indistinguishable from a
     /// hand-written name.
-    pub fn hard_coded_relations(&self, dag: &Dag, uid: &str) -> Option<Rc<Vec<String>>> {
+    pub fn hard_coded_relations(&self, dag: &Dag, uid: &str) -> Option<Rc<MarkedRelations>> {
         if let Some(v) = self.hard_coded_memo.borrow().get(uid) {
             return v.clone();
         }
@@ -257,13 +273,38 @@ impl SqlParseResolver {
             if raw.trim().is_empty() {
                 return None;
             }
-            let sql = render_jinja_as(raw, JinjaMark::Marked);
-            let dialect = self.dialect.sqlparser();
-            let stmts = Parser::parse_sql(&*dialect, &sql).ok()?;
-            let scan = scan_statements(&stmts);
-            Some(Rc::new(scan.hard_coded.into_iter().collect::<Vec<_>>()))
+            marked_relations(raw, &*self.dialect.sqlparser()).map(Rc::new)
         })();
         self.hard_coded_memo
+            .borrow_mut()
+            .insert(uid.to_string(), out.clone());
+        out
+    }
+
+    /// Source positions in the node's `raw_code` the lint SQL rules attach
+    /// to findings. `None` when the node has no `raw_code`, its
+    /// `original_file_path` is a `.py` model (Python text could
+    /// coincidentally parse into wrong positions), or the raw render/parse
+    /// produced nothing usable — the finding then reports file-only, never
+    /// a guessed position. Memoized; populated lazily — a rule calls it
+    /// only after a fact flagged the model.
+    pub fn sql_positions(&self, dag: &Dag, uid: &str) -> Option<Rc<SqlPositions>> {
+        if let Some(v) = self.positions_memo.borrow().get(uid) {
+            return v.clone();
+        }
+        let out = (|| {
+            let raw = dag.raw_code(uid)?;
+            if raw.trim().is_empty()
+                || dag
+                    .detail(uid)
+                    .and_then(|d| d.original_file_path.as_deref())
+                    .is_some_and(|p| p.ends_with(".py"))
+            {
+                return None;
+            }
+            plain_positions(raw, &*self.dialect.sqlparser()).map(Rc::new)
+        })();
+        self.positions_memo
             .borrow_mut()
             .insert(uid.to_string(), out.clone());
         out
@@ -465,12 +506,14 @@ impl SqlParseResolver {
                 locals: &NO_LOCALS,
             };
             let (res, scope) = self.resolve_query_full(&ctx, env, query)?;
+            let scan = scan_statements(&stmts);
             Some(Rc::new(Analyzed {
                 scope,
                 out: res.out,
                 foj: res.foj,
                 unbounded_wildcard: query_has_output_wildcard(query),
-                cartesian: scan_statements(&stmts).cartesian.into_iter().collect(),
+                cartesian: scan.cartesian.iter().cloned().collect(),
+                cartesian_count: scan.cartesian_spans.len(),
                 unresolved: ctx.unresolved.into_inner(),
             }))
         })();

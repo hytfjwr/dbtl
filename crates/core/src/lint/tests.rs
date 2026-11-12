@@ -3616,6 +3616,335 @@ fn forbidden_patterns_matches_raw_sql_verbatim() {
     );
 }
 
+// ---- SQL-rule positions: raw-file spans the findings carry ----------------
+//
+// A finding's position comes from the node's `raw_code` through the Jinja
+// source map — never from compiled text (a macro can move everything).
+// Expected positions are COMPUTED from the raw string (needle → byte span
+// → line/column via `byte_span_position`), never hardcoded.
+
+/// `model_sql` with `original_file_path` — the `.sql` path the positions
+/// anchor into (no path → the finding reports unlocated).
+fn model_sql_pos(name: &str, raw: &str) -> (String, RawNode) {
+    let mut m = model_sql(name, raw);
+    m.1.original_file_path = Some(format!("models/{name}.sql"));
+    m
+}
+
+/// `(file, line, column, end_line, end_column)` of `f`'s location —
+/// panics when unlocated (a positionless finding is a test bug here).
+fn pos_of(f: &Finding) -> (String, u32, u32, u32, u32) {
+    let l = f
+        .location
+        .as_ref()
+        .unwrap_or_else(|| panic!("{f:?} has no location"));
+    (
+        l.file.clone(),
+        l.line.unwrap(),
+        l.column.unwrap(),
+        l.end_line.unwrap(),
+        l.end_column.unwrap(),
+    )
+}
+
+/// The `Finding` `rule` produced on `uid` — panics when absent.
+fn finding_on<'a>(findings: &'a [Finding], rule: LintRule, uid: &str) -> &'a Finding {
+    findings
+        .iter()
+        .find(|f| f.rule == rule && f.node_uid == uid)
+        .unwrap_or_else(|| panic!("{rule:?} on {uid} missing"))
+}
+
+/// `(line, column, end_line, end_column)` `needle`'s `nth` occurrence in
+/// `raw` resolves to — the dynamic expected position.
+fn needle_pos(raw: &str, needle: &str, nth: usize) -> (u32, u32, u32, u32) {
+    let start = raw
+        .match_indices(needle)
+        .nth(nth)
+        .unwrap_or_else(|| panic!("{needle:?} occurrence {nth} missing"))
+        .0;
+    byte_span_position(raw, start, start + needle.len())
+        .unwrap_or_else(|| panic!("{needle:?} position resolves"))
+}
+
+#[test]
+fn select_star_positions_point_at_each_wildcard() {
+    let m = manifest(
+        vec![
+            model_sql_pos("star", "select id,\n       o.*\nfrom orders o"),
+            model_sql_pos("qual", "select t.* from t"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::SelectStar]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let star_raw = dag.raw_code("model.p.star").unwrap();
+    let f = finding_on(&out.findings, LintRule::SelectStar, "model.p.star");
+    let (l, c, el, ec) = needle_pos(star_raw, "o.*", 0);
+    assert_eq!(
+        pos_of(f),
+        ("models/star.sql".to_string(), l, c, el, ec),
+        "the qualified wildcard underlines `o.*` itself"
+    );
+    assert_eq!(f.label.as_deref(), Some("wildcard"));
+
+    let qual_raw = dag.raw_code("model.p.qual").unwrap();
+    let f = finding_on(&out.findings, LintRule::SelectStar, "model.p.qual");
+    let (l, c, el, ec) = needle_pos(qual_raw, "t.*", 0);
+    assert_eq!(
+        pos_of(f),
+        ("models/qual.sql".to_string(), l, c, el, ec),
+        "`t.*` underlines the qualifier plus the star"
+    );
+}
+
+#[test]
+fn select_star_positions_label_every_union_arm() {
+    // Two wildcard UNION arms: the first is the primary position, the
+    // second a secondary label — one finding for the whole model.
+    let raw = "select *\nfrom a\nunion all\nselect *\nfrom b";
+    let m = manifest(vec![model_sql_pos("u", raw)], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::SelectStar]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let f = finding_on(&out.findings, LintRule::SelectStar, "model.p.u");
+    let (l, c, el, ec) = needle_pos(raw, "*", 0);
+    assert_eq!(pos_of(f), ("models/u.sql".to_string(), l, c, el, ec));
+    assert_eq!(f.labels.len(), 1, "the second arm rides as a label");
+    let (l2, c2, el2, ec2) = needle_pos(raw, "*", 1);
+    let lbl = &f.labels[0];
+    assert_eq!(
+        (lbl.line, lbl.column, lbl.end_line, lbl.end_column),
+        (l2, Some(c2), Some(el2), Some(ec2)),
+        "the label underlines the second arm's `*`"
+    );
+    assert_eq!(lbl.message, "wildcard");
+}
+
+#[test]
+fn select_star_positions_survive_jinja_and_encoding() {
+    // `{{ config }}`, a multi-line `{% if %}`, `{{ ref() }}` in FROM, CRLF
+    // endings, a tab indent, and a non-ASCII comment — the rendered SQL
+    // shifts, the raw positions must not.
+    let raw = "-- 日本語コメント\r\n{{ config(materialized='table') }}\r\nselect\r\n{% if True %}\r\n  a,\r\n{% endif %}\r\n\t*\r\nfrom {{ ref('src') }}";
+    let m = manifest(vec![model_sql_pos("j", raw)], vec![source("src.raw")], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::SelectStar]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let f = finding_on(&out.findings, LintRule::SelectStar, "model.p.j");
+    let (l, c, el, ec) = needle_pos(raw, "*", 0);
+    assert_eq!(
+        pos_of(f),
+        ("models/j.sql".to_string(), l, c, el, ec),
+        "the wildcard after every Jinja block, CRLF, tab, and multibyte comment"
+    );
+    assert_eq!(l, 7, "the `*` really is line 7 (1-based)");
+    assert_eq!(c, 2, "the tab indents it (a tab is one column)");
+}
+
+#[test]
+fn select_star_positions_never_point_into_compiled_sql() {
+    // A wildcard that exists ONLY after macro expansion: the fact flags
+    // (compiled text is judged), but raw has no `*` to underline.
+    let mut m = model_sql_pos("macro_star", "select a\nfrom {{ star_macro() }}");
+    m.1.compiled_code = Some("select *\nfrom t".into());
+    // A truly compiled-only node: no raw at all — file-only location.
+    let mut c = model_compiled_only("compiled_only", "select * from t");
+    c.1.original_file_path = Some("models/compiled_only.sql".into());
+    let m = manifest(vec![m, c], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::SelectStar]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let f = finding_on(&out.findings, LintRule::SelectStar, "model.p.macro_star");
+    assert!(
+        f.location.as_ref().is_none_or(|l| l.line.is_none()),
+        "a macro-rendered `*` has no raw position to point at: {f:?}"
+    );
+    let f = finding_on(&out.findings, LintRule::SelectStar, "model.p.compiled_only");
+    let l = f.location.as_ref().expect("the .sql file is still named");
+    assert_eq!(l.file, "models/compiled_only.sql");
+    assert!(
+        l.line.is_none(),
+        "no raw text — file-only, never a compiled line"
+    );
+}
+
+#[test]
+fn cartesian_join_positions_underline_the_relation_not_the_keyword() {
+    let raw = "select *\nfrom a.t\njoin b.u";
+    let m = manifest(vec![model_sql_pos("j", raw)], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::CartesianJoin]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let f = finding_on(&out.findings, LintRule::CartesianJoin, "model.p.j");
+    let (l, c, el, ec) = needle_pos(raw, "b.u", 0);
+    assert_eq!(
+        pos_of(f),
+        ("models/j.sql".to_string(), l, c, el, ec),
+        "the joined relation `b.u` is underlined — `join` stays outside"
+    );
+    assert_eq!(f.label.as_deref(), Some("no join condition"));
+}
+
+#[test]
+fn cartesian_join_positions_skip_a_macro_changed_count() {
+    // Raw shows one conditionless join, compiled gains a second from a
+    // macro — counts disagree, so no positional pairing is trusted.
+    let mut m = model_sql_pos("j", "select * from a.t join b.u");
+    m.1.compiled_code = Some("select * from a.t join b.u join c.v".into());
+    let m = manifest(vec![m], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::CartesianJoin]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let f = finding_on(&out.findings, LintRule::CartesianJoin, "model.p.j");
+    assert!(
+        f.location.as_ref().is_none_or(|l| l.line.is_none()),
+        "a count mismatch leaves the finding unlocated: {f:?}"
+    );
+}
+
+#[test]
+fn hard_coded_references_positions_underline_the_relation_name() {
+    let raw = "select *\nfrom analytics.orders\njoin mart.users u on 1 = 1";
+    let m = manifest(vec![model_sql_pos("h", raw)], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::HardCodedReferences]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let f = finding_on(&out.findings, LintRule::HardCodedReferences, "model.p.h");
+    let (l, c, el, ec) = needle_pos(raw, "analytics.orders", 0);
+    assert_eq!(
+        pos_of(f),
+        ("models/h.sql".to_string(), l, c, el, ec),
+        "the first written relation name is the primary position"
+    );
+    assert_eq!(f.label.as_deref(), Some("not a ref() or source()"));
+    let (l2, c2, el2, ec2) = needle_pos(raw, "mart.users", 0);
+    let lbl = &f.labels[0];
+    assert_eq!(
+        (lbl.line, lbl.column, lbl.end_line, lbl.end_column),
+        (l2, Some(c2), Some(el2), Some(ec2)),
+        "the second literal rides as a label"
+    );
+    assert_eq!(lbl.message, "not a ref() or source()");
+}
+
+#[test]
+fn unknown_column_reference_positions_the_unique_reference() {
+    let m = manifest(
+        vec![
+            model_sql_cols("stg", "select 1", &[("id", None), ("amount", None)], true),
+            model_sql_pos("uni", "select id, nope from stg"),
+            // `nope` twice — can't tell WHICH occurrence is wrong.
+            model_sql_pos("dup", "select nope, nope from stg"),
+        ],
+        vec![],
+        &[
+            ("model.p.stg", "model.p.uni"),
+            ("model.p.stg", "model.p.dup"),
+        ],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::UnknownColumnReference]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let raw = dag.raw_code("model.p.uni").unwrap();
+    let f = finding_on(
+        &out.findings,
+        LintRule::UnknownColumnReference,
+        "model.p.uni",
+    );
+    let (l, c, el, ec) = needle_pos(raw, "nope", 0);
+    assert_eq!(
+        pos_of(f),
+        ("models/uni.sql".to_string(), l, c, el, ec),
+        "the one `nope` occurrence underlines the column reference"
+    );
+    assert_eq!(
+        f.label.as_deref(),
+        Some("model.p.stg does not output this column")
+    );
+
+    let f = finding_on(
+        &out.findings,
+        LintRule::UnknownColumnReference,
+        "model.p.dup",
+    );
+    assert!(
+        f.location.as_ref().is_none_or(|l| l.line.is_none()),
+        "two `nope` occurrences — no single position is honest: {f:?}"
+    );
+}
+
+#[test]
+fn forbidden_patterns_positions_mark_every_match() {
+    let raw = "select unsafe_udf(x),\n       unsafe_udf(y)\nfrom t -- drop table stays readable";
+    let m = manifest(vec![model_sql_pos("bad", raw)], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = config_from(
+        "lint:\n  rules:\n    forbidden_patterns:\n      patterns: ['unsafe_udf', 'drop table']\n",
+    );
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+
+    let f = finding_on(&out.findings, LintRule::ForbiddenPatterns, "model.p.bad");
+    let (l, c, el, ec) = needle_pos(raw, "unsafe_udf", 0);
+    assert_eq!(
+        pos_of(f),
+        ("models/bad.sql".to_string(), l, c, el, ec),
+        "the first match is the primary position"
+    );
+    assert_eq!(f.label.as_deref(), Some("matches unsafe_udf"));
+    assert_eq!(f.labels.len(), 2, "the other two matches ride as labels");
+    let (l2, c2, el2, ec2) = needle_pos(raw, "unsafe_udf", 1);
+    assert_eq!(
+        (f.labels[0].line, f.labels[0].column, f.labels[0].end_column),
+        (l2, Some(c2), Some(ec2)),
+        "second `unsafe_udf` call"
+    );
+    let (l3, c3, el3, ec3) = needle_pos(raw, "drop table", 0);
+    assert_eq!(
+        (f.labels[1].line, f.labels[1].column, f.labels[1].end_column),
+        (l3, Some(c3), Some(ec3)),
+        "the comment's `drop table` — raw matches comments verbatim"
+    );
+    assert_eq!(f.labels[1].message, "matches drop table");
+    let _ = el2;
+    let _ = el3;
+}
+
+#[test]
+fn sql_positions_are_identical_across_runs() {
+    // Same dag + resolver evaluated twice — positions, labels and all.
+    let raw = "select *\nfrom a\nunion all\nselect *\nfrom b";
+    let m = manifest(vec![model_sql_pos("u", raw)], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::SelectStar]);
+    let first = lint_outcome(&dag, &cfg, Some(&res), None);
+    let second = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        first.findings, second.findings,
+        "a position is a fact — memoized or recomputed it must not move"
+    );
+}
+
 // ---- catalog-backed rules ---------------------------------------------------
 
 /// A model with declared columns and no SQL — the warehouse rules only
