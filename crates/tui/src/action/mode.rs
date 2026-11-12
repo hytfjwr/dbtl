@@ -22,7 +22,7 @@ pub enum Mode {
     Notifications(NotificationsView),
     /// Command palette: a fuzzy finder over every Selection-mode command.
     Palette(PaletteState),
-    /// The `y` yank-prefix menu: any key dispatched here runs its
+    /// The `y` yank menu: any key dispatched here runs its
     /// yank action and closes the menu (one-shot); `Esc`/`q` cancel. `back`
     /// restores the overlay it was opened over (structure modal → `y` → Esc
     /// returns to the structure modal, not the panes); `sel` is the

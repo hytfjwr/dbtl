@@ -1,6 +1,6 @@
 //! `dbtl ls <SELECTOR>...` — the non-interactive selector listing: evaluate
 //! the selector(s) against the resolved dag and print the matching nodes. The
-//! ONE strict grammar [`dbtl::validate_selector`] + evaluator
+//! ONE strict grammar [`dbtl::validate_selector`] + evaluation
 //! [`dbtl::select`] every `--select`/`--exclude` flag uses, so `ls` shows
 //! exactly what another command's selection would pick.
 

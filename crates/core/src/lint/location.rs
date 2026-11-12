@@ -8,7 +8,7 @@
 //!   finding belongs to a yml".
 //! - [`yaml_name_line`] / [`fill_finding_lines`] — best-effort 1-based line
 //!   numbers inside a properties yml, filled by a separate pass the `check`
-//!   and `lint` CLIs call. Kept out of `run_rules` so the shared evaluator
+//!   and `lint` CLIs call. Kept out of `run_rules` so the shared pass
 //!   stays pure (the TUI reads no files).
 
 use std::collections::HashMap;

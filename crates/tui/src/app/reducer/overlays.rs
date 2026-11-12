@@ -235,7 +235,7 @@ pub(super) fn apply(app: &mut App, action: Action) -> Arm {
             };
             Outcome::cont()
         }
-        // Open the yank-prefix menu (`y` + key). The menu itself is
+        // Open the yank menu (`y` + key). The menu itself is
         // rendered from the M::Yank BINDINGS rows; the one-shot close lives in
         // the post-match step at the bottom of this function. Over the Detail
         // modal BOTH the modal's node and its column target are stashed — and

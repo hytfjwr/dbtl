@@ -263,8 +263,8 @@ pub enum Commands {
         /// this enables it at error severity. Needs `--diff`.
         #[arg(long, value_name = "N")]
         max_blast_radius: Option<usize>,
-        /// Run the static structure-lint rules (the `dbt_project_evaluator`-
-        /// style checks — no warehouse or `dbt compile` needed). Rule
+        /// Run the static structure-lint rules (best-practice checks over
+        /// the project graph — no warehouse or `dbt compile` needed). Rule
         /// enable/disable, thresholds, and naming prefixes come from the
         /// project-local `.dbtl.yml`. With --diff, only violations that did
         /// not exist in the baseline gate.

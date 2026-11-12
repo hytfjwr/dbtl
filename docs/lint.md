@@ -1,7 +1,7 @@
 # Lint (`dbtl lint`)
 
 `dbtl lint` runs a set of static best-practice rules over the project graph —
-the style of checks `dbt_project_evaluator` materializes in a warehouse,
+the kind of checks that would otherwise run as models inside your warehouse,
 evaluated locally against the same `Dag` everything else reads. No warehouse
 connection, no `dbt run`; in source mode not even `dbt parse`. The full rule
 set with severities, rationales, and parameters lives in the generated

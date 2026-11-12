@@ -121,7 +121,7 @@ pub fn apply_action(app: &mut App, action: Action) -> Outcome {
         app.set_notice("view filters are off while tracing a column (Esc to exit)");
         return Outcome::cont();
     }
-    // The yank-prefix menu is one-shot: ANY action dispatched out
+    // The yank menu is one-shot: ANY action dispatched out
     // of it (a yank, the Esc/q cancel) closes it afterwards. Snapshotting the
     // mode BEFORE the match keeps the close logic in this one place instead of
     // duplicating it into every Yank-mode arm.
