@@ -36,11 +36,13 @@ jobs:
 
   # Renders the demo GIF through the same reusable workflow a real release
   # calls — without a release-tag, so the attach job is skipped and nothing
-  # is published.
+  # is published. The write ceiling only exists because GitHub validates a
+  # called workflow's declared permissions at startup, skipped jobs
+  # included; nothing here ever uses it.
   demo:
     name: Demo GIF
     uses: ./.github/workflows/demo.yml
     permissions:
-      contents: read
+      contents: write
     with:
       ref: ${{ github.sha }}

@@ -250,7 +250,8 @@ jobs:
     uses: ./.github/workflows/demo.yml
     permissions:
       # Ceiling for the called jobs — the render only reads, the attach
-      # writes the release.
+      # writes the release. The grant must cover both: GitHub validates a
+      # called workflow's declared permissions at startup.
       contents: write
     with:
       ref: ${{ needs.prepare.outputs.tag }}
