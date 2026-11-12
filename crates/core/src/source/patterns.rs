@@ -92,78 +92,92 @@ impl Patterns {
     /// `ref('x', 'unclosed)`), the match's own range is the span and the
     /// call reports no arg list.
     ///
-    /// `{# #}` comments are masked first, LENGTH-PRESERVING, so a comment
-    /// hides a call like it does for the name-only extractors AND every
-    /// returned byte range indexes the caller's original text. `{# #}` is
-    /// the only thing masked — `--`/`/* */` comments still see calls (dbt
-    /// renders Jinja before SQL comments exist).
-    pub(crate) fn call_sites(&self, sql: &str) -> Vec<CallSite> {
-        let masked = mask_jinja_comments(sql);
+    /// `masked` is [`mask_jinja_comments`] output — the callers (the
+    /// loader's `node_sql`, lint's `Sites`) already hold it, so the mask
+    /// runs once per file, not once per consumer. `{# #}` is the only
+    /// thing masked — `--`/`/* */` comments still see calls (dbt renders
+    /// Jinja before SQL comments exist) — and masking preserves byte
+    /// length, so every returned range indexes the caller's ORIGINAL text.
+    ///
+    /// One `site_head` pass finds every `ref`/`source`/`config` callee;
+    /// the per-kind regex then re-validates ANCHORED at that head
+    /// (`captures_at` evaluates `\b` against the whole text, and a head
+    /// that doesn't start a valid call — `ref(var)`, `source('a')` —
+    /// produces a later match whose start differs → not a site). That
+    /// keeps the extraction identical to three independent scans while
+    /// paying one full-text pass plus short local re-matches.
+    pub(crate) fn call_sites_masked(&self, masked: &str) -> Vec<CallSite> {
         let mut out = Vec::new();
-        for c in self.ref_re.captures_iter(&masked) {
-            let m = c.get(0).expect("a full match");
-            let (span, args) = call_span(&masked, m.start(), m.end());
-            // The trailing args hold the version kwargs — `ref('x', v=2)` /
-            // `ref('x', version=2)`; `v` is dbt's short spelling.
-            let version = args
-                .as_ref()
-                .and_then(|a| {
-                    let args = &masked[a.clone()];
-                    kwarg(args, "v").or_else(|| kwarg(args, "version"))
-                })
-                .and_then(lit_value)
-                .and_then(|v| match v {
-                    serde_json::Value::String(s) => Some(s),
-                    serde_json::Value::Number(n) => Some(n.to_string()),
-                    _ => None,
-                });
-            out.push(CallSite {
-                kind: CallKind::Ref {
+        // `config_call_args_list`'s traversal: a `config(` head inside a
+        // previous config call's args is skipped (`config_floor`), and an
+        // unclosed config swallows the rest — for configs only; ref and
+        // source heads inside either still resolve, as the independent
+        // full-text scans did.
+        let mut config_floor = 0usize;
+        for m in site_head_re().find_iter(masked) {
+            let head = &masked[m.start()..];
+            if head.starts_with("config") {
+                if m.start() < config_floor {
+                    continue;
+                }
+                match scan_call_args(masked, m.end()) {
+                    Some((args, end)) => {
+                        out.push(CallSite {
+                            kind: CallKind::Config,
+                            span: m.start()..end,
+                            args: Some(m.end()..m.end() + args.len()),
+                        });
+                        config_floor = end;
+                    }
+                    None => config_floor = usize::MAX,
+                }
+                continue;
+            }
+            let re = if head.starts_with("ref") {
+                &self.ref_re
+            } else {
+                &self.source_re
+            };
+            let Some(c) = re.captures_at(masked, m.start()) else {
+                continue;
+            };
+            let cm = c.get(0).expect("a full match");
+            if cm.start() != m.start() {
+                continue; // not a call at this head — the match sits later
+            }
+            let (span, args) = call_span(masked, m.start(), cm.end());
+            let kind = if head.starts_with("ref") {
+                // The trailing args hold the version kwargs — `ref('x', v=2)`
+                // / `ref('x', version=2)`; `v` is dbt's short spelling. The
+                // `=` gate skips the kwarg walks for the argless-`=` case
+                // (`ref('x')`, `ref('pkg','x')` — most calls).
+                let version = args
+                    .as_ref()
+                    .filter(|a| masked[(**a).clone()].contains('='))
+                    .and_then(|a| {
+                        let args = &masked[a.clone()];
+                        kwarg(args, "v").or_else(|| kwarg(args, "version"))
+                    })
+                    .and_then(|expr| lit_range(masked, expr));
+                CallKind::Ref {
                     // `refs()`'s rule: the LAST quoted positional arg is the
                     // model; when it exists, the first is the package.
                     name: c
                         .get(2)
                         .or_else(|| c.get(1))
                         .expect("ref_re's name group")
-                        .as_str()
-                        .to_string(),
-                    package: c
-                        .get(2)
-                        .map(|_| c.get(1).expect("ref_re group 1").as_str().to_string()),
+                        .range(),
+                    package: c.get(2).map(|_| c.get(1).expect("ref_re group 1").range()),
                     version,
-                },
-                span,
-                args,
-            });
-        }
-        for c in self.source_re.captures_iter(&masked) {
-            let m = c.get(0).expect("a full match");
-            let (span, args) = call_span(&masked, m.start(), m.end());
-            out.push(CallSite {
-                kind: CallKind::Source {
-                    source: c.get(1).expect("source_re group 1").as_str().to_string(),
-                    table: c.get(2).expect("source_re group 2").as_str().to_string(),
-                },
-                span,
-                args,
-            });
-        }
-        // `config_call_args_list`'s traversal: the next `config(` is searched
-        // AFTER the current call's `)`, so a config nested inside another's
-        // args is never double-counted.
-        let mut pos = 0usize;
-        while let Some(m) = config_re().find_at(&masked, pos) {
-            let Some((args, end)) = scan_call_args(&masked, m.end()) else {
-                break; // an unclosed call swallows the rest of the file
+                }
+            } else {
+                CallKind::Source {
+                    source: c.get(1).expect("source_re group 1").range(),
+                    table: c.get(2).expect("source_re group 2").range(),
+                }
             };
-            out.push(CallSite {
-                kind: CallKind::Config,
-                span: m.start()..end,
-                args: Some(m.end()..m.end() + args.len()),
-            });
-            pos = end;
+            out.push(CallSite { kind, span, args });
         }
-        out.sort_by_key(|c| c.span.start);
         out
     }
 
@@ -323,11 +337,17 @@ pub(super) fn config_governance(sql: &str) -> FileConfig {
     out
 }
 
-/// The `\bconfig\s*\(` finder [`config_call_args_list`] and
-/// [`Patterns::call_sites`] share.
+/// The `\bconfig\s*\(` finder [`config_call_args_list`] uses.
 fn config_re() -> &'static Regex {
     static CONFIG: OnceLock<Regex> = OnceLock::new();
     CONFIG.get_or_init(|| Regex::new(r"\bconfig\s*\(").unwrap())
+}
+
+/// Any `ref`/`source`/`config` callee — [`Patterns::call_sites_masked`]'s
+/// single full-text pass; the kind regexes then re-validate each head.
+fn site_head_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\b(?:ref|source|config)\s*\(").unwrap())
 }
 
 /// The argument text of EVERY `config(…)` call in `sql`, in order — each
@@ -639,30 +659,52 @@ pub(crate) struct CallSite {
     pub args: Option<Range<usize>>,
 }
 
+/// The byte range of `expr` — a literal INSIDE `text` — as offsets into
+/// `text`, unquoted when the literal is a string (`'v2'` → the `v2`
+/// range). `expr` must be a subslice of `text` (the pointer delta is the
+/// offset); anything that isn't a clean string or number literal is not a
+/// resolvable value → `None`, mirroring [`lit_value`]'s accept set.
+fn lit_range(text: &str, expr: &str) -> Option<Range<usize>> {
+    let e = expr.trim();
+    let start = e.as_ptr() as usize - text.as_ptr() as usize;
+    match lit_value(e)? {
+        serde_json::Value::String(_) => Some(start + 1..start + e.len() - 1),
+        serde_json::Value::Number(_) => Some(start..start + e.len()),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CallKind {
-    /// `ref(…)` — `name` is the resolved model (the LAST quoted positional
-    /// arg, `ref('pkg','x')` → `x`), the same rule [`Patterns::refs`] applies.
+    /// `ref(…)` — `name` is the byte range of the resolved model name's
+    /// literal text in the masked text (the LAST quoted positional arg,
+    /// `ref('pkg','x')` → the `x` range), the same rule
+    /// [`Patterns::refs`] applies. Ranges index the input text — no
+    /// per-call allocation.
     Ref {
-        name: String,
-        /// `ref('pkg','x')` → `pkg` (the first quoted arg of a two-arg call).
-        package: Option<String>,
-        /// The `v=`/`version=` kwarg's literal as text (`v=2` → `"2"`,
-        /// `v='v2'` → `"v2"`) — `None` when absent or unresolvable.
-        version: Option<String>,
+        name: Range<usize>,
+        /// `ref('pkg','x')` → the `pkg` range (the first quoted arg of a
+        /// two-arg call).
+        package: Option<Range<usize>>,
+        /// The `v=`/`version=` kwarg's UNQUOTED literal range (`v=2` → the
+        /// `2`, `v='v2'` → the `v2`) — `None` when absent or unresolvable.
+        version: Option<Range<usize>>,
     },
-    /// `source('source_name', 'table_name')`.
-    Source { source: String, table: String },
+    /// `source('source_name', 'table_name')` — both ranges.
+    Source {
+        source: Range<usize>,
+        table: Range<usize>,
+    },
     /// `config(…)` — `args` carries the argument list.
     Config,
 }
 
-/// The `ref()`/`source()`/`config()` calls in `sql` without needing a
-/// [`Patterns`] instance — the lint call-site consumer's entry point,
+/// [`Patterns::call_sites_masked`] without needing a [`Patterns`] instance —
+/// the lint call-site consumer's entry point on text it masked itself,
 /// sharing one compiled `Patterns`.
-pub(crate) fn call_sites(sql: &str) -> Vec<CallSite> {
+pub(crate) fn call_sites_masked(masked: &str) -> Vec<CallSite> {
     static P: OnceLock<Patterns> = OnceLock::new();
-    P.get_or_init(Patterns::new).call_sites(sql)
+    P.get_or_init(Patterns::new).call_sites_masked(masked)
 }
 
 /// The full `(span, args)` pair for a callee match that starts at `ref`/

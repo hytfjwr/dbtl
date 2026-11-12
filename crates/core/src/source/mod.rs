@@ -204,7 +204,9 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
         // copy (dbt's Jinja-before-SQL-comments semantics) — masking preserves
         // byte length, so offsets in it index `raw` too.
         let raw = read(&file);
-        let masked = mask_jinja_comments(&raw);
+        // `raw` moves into `RawNode` below, so the mask is owned here —
+        // comment-free files skip the byte loop and keep just the copy.
+        let masked = mask_jinja_comments(&raw).into_owned();
         let name = file_stem(&file);
         let uid = format!("model.{proj}.{name}");
         // dbt's `path` is relative to the model-paths root (e.g. `staging/x.sql`)
@@ -402,7 +404,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                 },
             );
             name_index.insert(name, uid.clone());
-            node_sql.push((uid, masked.clone()));
+            node_sql.push((uid, masked.clone().into_owned()));
         }
     }
 
@@ -535,18 +537,19 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
     let mut child_map: HashMap<String, Vec<String>> = HashMap::new();
     for (uid, sql) in &node_sql {
         let mut parents: Vec<String> = Vec::new();
-        for site in pat.call_sites(sql) {
+        // `sql` is already comment-masked — no second mask pass.
+        for site in pat.call_sites_masked(sql) {
             match site.kind {
                 // Unresolved refs (cross-package, typo, gated) are dropped, not faked.
                 CallKind::Ref { name, .. } => {
-                    if let Some(parent) = name_index.get(&name) {
+                    if let Some(parent) = name_index.get(&sql[name]) {
                         parents.push(parent.clone());
                     }
                 }
                 // A source referenced but not declared in schema.yml dangles
                 // here and is pruned later — it never becomes a node.
                 CallKind::Source { source, table } => {
-                    parents.push(format!("source.{proj}.{source}.{table}"));
+                    parents.push(format!("source.{proj}.{}.{}", &sql[source], &sql[table]));
                 }
                 CallKind::Config => {}
             }
@@ -889,4 +892,4 @@ use yaml::*;
 // The span-carrying call extractors lint uses for finding positions — same
 // machinery as the loaders' own pass, not a second implementation.
 pub(crate) use collect::mask_jinja_comments;
-pub(crate) use patterns::{call_sites, kwarg, lit_value, CallKind, CallSite};
+pub(crate) use patterns::{call_sites_masked, kwarg, lit_value, CallKind, CallSite};

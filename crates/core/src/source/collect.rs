@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use super::*;
 
 /// Build a manifest-shaped `columns` object (`{name: {name,data_type,description}}`)
@@ -153,7 +155,12 @@ pub(super) fn collect_files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
 /// one space: tokens can never fuse across a comment AND the result has the
 /// same byte length as the input, so an offset computed on the masked text
 /// indexes the original text too (call-site positions).
-pub(crate) fn mask_jinja_comments(text: &str) -> String {
+///
+/// A text without `{#` needs no copy — the borrowed input returns as-is.
+pub(crate) fn mask_jinja_comments(text: &str) -> Cow<'_, str> {
+    if !text.contains("{#") {
+        return Cow::Borrowed(text);
+    }
     let b = text.as_bytes();
     let mut out = b.to_vec();
     let mut i = 0;
@@ -180,7 +187,7 @@ pub(crate) fn mask_jinja_comments(text: &str) -> String {
     }
     // Every replaced byte is ASCII (space or the kept '\n'), so the output
     // is valid UTF-8 of the same byte length as the input.
-    String::from_utf8(out).expect("comment masking produces ASCII-only output")
+    Cow::Owned(String::from_utf8(out).expect("comment masking produces ASCII-only output"))
 }
 
 /// Strip Jinja comments from NON-SQL text (descriptions, docs-block bodies).

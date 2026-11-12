@@ -34,6 +34,7 @@ pub(super) fn direct_join_to_source(
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     config: &LintConfig,
+    sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -65,7 +66,7 @@ pub(super) fn direct_join_to_source(
                 f = f.with_help(format!("select from {stg} instead"));
             }
         }
-        if let Some(cs) = CallSites::for_node(dag, uid) {
+        if let Some(cs) = sites.for_node(uid) {
             let mut src_spans: Vec<_> = sources.iter().flat_map(|s| cs.calls_to(s)).collect();
             src_spans.sort_by_key(|r| r.start);
             if let Some(first) = src_spans.first().cloned() {
@@ -92,6 +93,7 @@ pub(super) fn multiple_sources_joined(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
+    sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -114,7 +116,7 @@ pub(super) fn multiple_sources_joined(
                 name_list(&display_names(dag, &sources)),
             ),
         );
-        if let Some(cs) = CallSites::for_node(dag, uid) {
+        if let Some(cs) = sites.for_node(uid) {
             let mut spans: Vec<_> = sources.iter().flat_map(|s| cs.calls_to(s)).collect();
             spans.sort_by_key(|r| r.start);
             if let Some((first, rest)) = spans.split_first() {
@@ -253,6 +255,7 @@ pub(super) fn rejoining_upstream(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
+    sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -306,7 +309,7 @@ pub(super) fn rejoining_upstream(
         );
         // The position is the ref in B that reads A directly — the edge C
         // makes redundant.
-        if let Some(cs) = CallSites::for_node(dag, uid) {
+        if let Some(cs) = sites.for_node(uid) {
             let mut spans: Vec<_> = a_uids.iter().flat_map(|a| cs.calls_to(a)).collect();
             spans.sort_by_key(|r| r.start);
             if let Some(first) = spans.first().cloned() {
@@ -336,6 +339,7 @@ pub(super) fn marts_depend_on_source(
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     config: &LintConfig,
+    sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -367,7 +371,7 @@ pub(super) fn marts_depend_on_source(
                 f = f.with_help(format!("select from {stg} instead"));
             }
         }
-        if let Some(cs) = CallSites::for_node(dag, uid) {
+        if let Some(cs) = sites.for_node(uid) {
             let mut spans: Vec<_> = sources.iter().flat_map(|s| cs.calls_to(s)).collect();
             spans.sort_by_key(|r| r.start);
             if let Some((first, rest)) = spans.split_first() {
@@ -388,7 +392,7 @@ pub(super) fn marts_depend_on_source(
 /// [`layer_violation_edges`] predicate, surfaced as a lint rule. `node_uid`
 /// is the CHILD endpoint (the model doing the backward dependency); the
 /// position lands on the child's ref to the later-layer parent.
-pub(super) fn layer_violation(dag: &Dag, out: &mut Vec<Finding>) {
+pub(super) fn layer_violation(dag: &Dag, sites: &CallSiteResolver<'_>, out: &mut Vec<Finding>) {
     for (parent, child) in layer_violation_edges(dag) {
         let pname = display_name(dag, &parent);
         let cname = display_name(dag, &child);
@@ -398,7 +402,7 @@ pub(super) fn layer_violation(dag: &Dag, out: &mut Vec<Finding>) {
             vec![parent.clone()],
             format!("{cname} directly depends on {pname} (a later layer)"),
         );
-        if let Some(cs) = CallSites::for_node(dag, &child) {
+        if let Some(cs) = sites.for_node(&child) {
             let spans = cs.calls_to(&parent);
             if let Some(first) = spans.first().cloned() {
                 let label = format!("{pname} is in a later layer");
@@ -528,6 +532,7 @@ pub(super) fn staging_depends_on_staging(
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     config: &LintConfig,
+    sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -565,7 +570,7 @@ pub(super) fn staging_depends_on_staging(
         );
         // The position is the first ref to a staging parent — the read
         // that skips the source.
-        if let Some(cs) = CallSites::for_node(dag, uid) {
+        if let Some(cs) = sites.for_node(uid) {
             let mut spans: Vec<_> = parents.iter().flat_map(|p| cs.calls_to(p)).collect();
             spans.sort_by_key(|r| r.start);
             if let Some((first, rest)) = spans.split_first() {
@@ -591,6 +596,7 @@ pub(super) fn too_many_joins(
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     config: &LintConfig,
+    sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
 ) {
     let threshold = config
@@ -628,7 +634,7 @@ pub(super) fn too_many_joins(
         );
         // Primary on the first ref/source call; every other parent call is
         // a label naming what it reads.
-        if let Some(cs) = CallSites::for_node(dag, uid) {
+        if let Some(cs) = sites.for_node(uid) {
             let mut spots: Vec<(std::ops::Range<usize>, String)> = Vec::new();
             for parent in &parents {
                 for span in cs.calls_to(parent) {
@@ -652,6 +658,7 @@ pub(super) fn incremental_without_unique_key(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
+    sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -673,7 +680,7 @@ pub(super) fn incremental_without_unique_key(
         );
         // The position is the `config()` argument that declared
         // `materialized='incremental'` — the key the fix sits next to.
-        if let Some(cs) = CallSites::for_node(dag, uid) {
+        if let Some(cs) = sites.for_node(uid) {
             if let Some((span, value)) = cs.materialized_arg() {
                 if value == "incremental" {
                     f = cs.annotate(f, (span, format!("materialized '{value}'")), vec![]);

@@ -8,12 +8,16 @@
 //! text — extraction masks `{# #}` comments length-preserving internally —
 //! and become line/column positions through [`byte_span_position`].
 
+use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ops::Range;
+use std::rc::Rc;
 
 use crate::dag::Dag;
-use crate::source::{call_sites, kwarg, lit_value, mask_jinja_comments, CallKind, CallSite};
+use crate::source::{call_sites_masked, kwarg, lit_value, mask_jinja_comments, CallKind, CallSite};
 
-use super::{byte_span_position, Finding, Label};
+use super::{Finding, Label};
 
 /// The name a message shows for `uid` — `source.p.raw.orders` reads
 /// `raw.orders`, a versioned `model.p.dim.v2` reads `dim.v2`, everything
@@ -74,62 +78,155 @@ fn version_number(uid: &str) -> Option<u64> {
     normalize_version(uid.split('.').nth(3)?).parse().ok()
 }
 
+/// The masked-SQL + call-site pair [`CallSiteResolver`] extracts once per
+/// node and shares across rules — along with the node's file path, raw
+/// text, and direct-parent uids so the per-rule view construction is a
+/// struct copy, not more `Dag` lookups.
+struct Sites<'a> {
+    file: &'a str,
+    text: &'a str,
+    parents: &'a [String],
+    masked: Cow<'a, str>,
+    sites: Vec<CallSite>,
+    /// Byte offset of each line start (index 0 = offset 0) — built on the
+    /// first positioned label so `position` is a binary search + one
+    /// line's char count instead of a full-text scan per label.
+    lines: std::cell::OnceCell<Vec<u32>>,
+}
+
+/// The per-`run_rules` call-site cache every graph rule shares —
+/// [`SqlParseResolver`](crate::SqlParseResolver)'s memo shape. Without it
+/// each rule re-parses the same `raw_code`: the extraction (mask + regex
+/// scan) dominates lint runtime, so `for_node` memoizes by uid — a node
+/// with no positionable calls caches `None` the same way.
+pub(crate) struct CallSiteResolver<'a> {
+    dag: &'a Dag,
+    memo: RefCell<HashMap<String, Option<Rc<Sites<'a>>>>>,
+}
+
+impl<'a> CallSiteResolver<'a> {
+    pub(crate) fn new(dag: &'a Dag) -> Self {
+        Self {
+            dag,
+            memo: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// The calls `uid`'s raw SQL makes — `None` for a node without raw
+    /// code (sources/seeds/exposures), without a declared file, or whose
+    /// file isn't SQL (`dbt.ref()` in a Python model gets no position).
+    pub(crate) fn for_node(&self, uid: &str) -> Option<CallSites<'a>> {
+        if let Some(entry) = self.memo.borrow().get(uid) {
+            return entry.as_ref().map(|sites| self.make(sites.clone()));
+        }
+        let entry = self.extract(uid).map(Rc::new);
+        self.memo
+            .borrow_mut()
+            .insert(uid.to_string(), entry.clone());
+        entry.map(|sites| self.make(sites))
+    }
+
+    /// The one extraction the memo stores — the file/raw-code gates plus
+    /// the masked text and the calls in it. `parents` is captured too:
+    /// `is_latest`'s version-family fallback would otherwise re-read the
+    /// edge set per call/parent pair.
+    fn extract(&self, uid: &str) -> Option<Sites<'a>> {
+        let file = self.dag.detail(uid)?.original_file_path.as_deref()?;
+        if !file.ends_with(".sql") {
+            return None;
+        }
+        let text = self.dag.raw_code(uid)?;
+        // One mask pass feeds both the call scan and the arg parsing —
+        // free when the file carries no `{#` comments.
+        let masked = mask_jinja_comments(text);
+        let sites = call_sites_masked(&masked);
+        Some(Sites {
+            file,
+            text,
+            parents: self.dag.direct_parents(uid), // &[String] — no clone
+            masked,
+            sites,
+            lines: std::cell::OnceCell::new(),
+        })
+    }
+
+    fn make(&self, sites: Rc<Sites<'a>>) -> CallSites<'a> {
+        CallSites {
+            dag: self.dag,
+            sites,
+        }
+    }
+}
+
 /// The `ref()`/`source()`/`config()` calls in one node's `raw_code`,
 /// resolvable against its graph parents. Spans index the raw text;
 /// `file` is the node's `original_file_path` — the file the position
 /// names.
 pub(crate) struct CallSites<'a> {
     dag: &'a Dag,
-    pub(crate) file: &'a str,
-    /// The node's raw SQL — positions index it.
-    text: &'a str,
-    /// `text` with `{# #}` comments masked to spaces (same byte length) —
-    /// the text argument parsing sees, matching the loader's extractors.
-    masked: String,
-    uid: &'a str,
-    sites: Vec<CallSite>,
+    /// The extracted calls + the comment-masked text argument parsing
+    /// sees — shared with every other rule via the resolver.
+    sites: Rc<Sites<'a>>,
 }
 
 impl<'a> CallSites<'a> {
-    /// The calls `uid`'s raw SQL makes — `None` for a node without raw
-    /// code (sources/seeds/exposures), without a declared file, or whose
-    /// file isn't SQL (`dbt.ref()` in a Python model gets no position).
-    pub(crate) fn for_node(dag: &'a Dag, uid: &'a str) -> Option<Self> {
-        let file = dag.detail(uid)?.original_file_path.as_deref()?;
-        if !file.ends_with(".sql") {
-            return None;
-        }
-        let text = dag.raw_code(uid)?;
-        Some(Self {
-            dag,
-            file,
-            text,
-            masked: mask_jinja_comments(text),
-            uid,
-            sites: call_sites(text),
-        })
+    /// The node's `original_file_path` — the file positions name.
+    pub(crate) fn file(&self) -> &'a str {
+        self.sites.file
     }
 
-    /// The `(line, column, end_line, end_column)` of `span` in the raw text.
+    /// The `(line, column, end_line, end_column)` of `span` in the raw
+    /// text — the same shape [`byte_span_position`](super::byte_span_position)
+    /// computes, resolved against the per-node line index (binary search +
+    /// a single line's char count) rather than a full-text walk per label.
     fn position(&self, span: &Range<usize>) -> Option<(u32, u32, u32, u32)> {
-        byte_span_position(self.text, span.start, span.end)
+        let text = self.sites.text;
+        if span.end < span.start
+            || span.end > text.len()
+            || !text.is_char_boundary(span.start)
+            || !text.is_char_boundary(span.end)
+        {
+            return None;
+        }
+        let (line, column) = self.offset_position(span.start);
+        let (end_line, end_column) = self.offset_position(span.end);
+        Some((line, column, end_line, end_column))
+    }
+
+    /// The 1-based `(line, column)` of `offset` — a char column like
+    /// [`byte_span_position`](super::byte_span_position), so `\r`, tabs,
+    /// and multibyte text count the same way.
+    fn offset_position(&self, offset: usize) -> (u32, u32) {
+        let text = self.sites.text;
+        let lines = self.sites.lines.get_or_init(|| {
+            let mut v = vec![0u32];
+            v.extend(text.match_indices('\n').map(|(i, _)| i as u32 + 1));
+            v
+        });
+        let idx = lines.partition_point(|&o| o as usize <= offset) - 1;
+        let column = text[lines[idx] as usize..offset].chars().count() as u32 + 1;
+        (idx as u32 + 1, column)
     }
 
     /// Every call span resolving to the parent `uid`, sorted by position —
     /// a duplicated `ref()`/`source()` reports every site.
     pub(crate) fn calls_to(&self, parent: &str) -> Vec<Range<usize>> {
+        let segs: Vec<&str> = parent.split('.').collect();
         let mut spans: Vec<Range<usize>> = self
             .sites
+            .sites
             .iter()
-            .filter(|c| self.targets(c, parent))
+            .filter(|c| self.targets(c, parent, &segs))
             .map(|c| c.span.clone())
             .collect();
         spans.sort_by_key(|r| r.start);
         spans
     }
 
-    /// Does `call` resolve to the `parent` uid? Mirrors what the edges
-    /// already encode: `source('s','t')` hits `source.*.s.t`; `ref()` hits
+    /// Does `call` resolve to the `parent` uid (`segs` = `parent`'s `.`
+    /// split, precomputed once per [`calls_to`](CallSites::calls_to) so
+    /// per-site checks don't re-split)? Mirrors what the edges already
+    /// encode: `source('s','t')` hits `source.*.s.t`; `ref()` hits
     /// `model|seed|snapshot.*.<name>` by NAME alone — the loader's
     /// name-index resolution ignores the package arg (`ref('pkg','x')`
     /// lands on the local `x`), so a call naming any package still marks
@@ -137,23 +234,36 @@ impl<'a> CallSites<'a> {
     /// same-named unversioned uid, the name-only approximation the source
     /// loader makes — and a bare `ref('x')` lands on an unversioned uid or
     /// the family's latest version.
-    fn targets(&self, call: &CallSite, parent: &str) -> bool {
-        let segs: Vec<&str> = parent.split('.').collect();
+    fn targets(&self, call: &CallSite, parent: &str, segs: &[&str]) -> bool {
         match &call.kind {
             CallKind::Source { source, table } => {
-                matches!(segs.as_slice(), ["source", _, s, t] if s == source && t == table)
+                matches!(segs, ["source", _, s, t]
+                    if self.sites.masked[source.clone()] == **s
+                        && self.sites.masked[table.clone()] == **t)
             }
             CallKind::Ref { name, version, .. } => {
-                let [kind, _, uname, ..] = segs.as_slice() else {
+                let [kind, _, uname, ..] = segs else {
                     return false;
                 };
-                if !matches!(*kind, "model" | "seed" | "snapshot") || uname != name {
+                if !matches!(*kind, "model" | "seed" | "snapshot")
+                    || self.sites.masked[name.clone()] != **uname
+                {
                     return false;
                 }
                 let uid_version = segs.get(3).map(|v| normalize_version(v));
                 match version {
-                    Some(v) => uid_version.is_none() || uid_version == Some(normalize_version(v)),
-                    None => uid_version.is_none() || self.is_latest(parent),
+                    Some(v) => {
+                        let Some(uv) = uid_version else { return true };
+                        // Compare as numbers first (`v=02` and `.v2` are
+                        // the same version), then as normalized text
+                        // (non-numeric spellings like `v='x'`).
+                        let v = normalize_version(&self.sites.masked[v.clone()]);
+                        match (v.parse::<u64>(), uv.parse::<u64>()) {
+                            (Ok(a), Ok(b)) => a == b,
+                            _ => v == uv,
+                        }
+                    }
+                    None => uid_version.is_none() || self.is_latest(parent, segs),
                 }
             }
             CallKind::Config => false,
@@ -164,7 +274,7 @@ impl<'a> CallSites<'a> {
     /// parents — where a bare `ref('x')` lands (`detail.latest_version`
     /// when the manifest carries it, else the highest `.vN` suffix among
     /// the same kind/package/name parents).
-    fn is_latest(&self, parent: &str) -> bool {
+    fn is_latest(&self, parent: &str, segs: &[&str]) -> bool {
         if let Some((version, latest)) = self
             .dag
             .detail(parent)
@@ -172,13 +282,12 @@ impl<'a> CallSites<'a> {
         {
             return normalize_version(version) == normalize_version(latest);
         }
-        let segs: Vec<&str> = parent.split('.').collect();
-        let [kind, pkg, name, ..] = segs.as_slice() else {
+        let [kind, pkg, name, ..] = segs else {
             return false;
         };
         let Some(max) = self
-            .dag
-            .direct_parents(self.uid)
+            .sites
+            .parents
             .iter()
             .filter_map(|p| match p.split('.').collect::<Vec<_>>().as_slice() {
                 [k, pk, n, ..] if k == kind && pk == pkg && n == name => version_number(p),
@@ -198,20 +307,20 @@ impl<'a> CallSites<'a> {
     /// sees; the mask preserves byte length, so the offsets index `text`).
     pub(crate) fn materialized_arg(&self) -> Option<(Range<usize>, String)> {
         let mut last = None;
-        for site in &self.sites {
+        for site in &self.sites.sites {
             let (CallKind::Config, Some(args)) = (&site.kind, &site.args) else {
                 continue;
             };
-            let Some(expr) = kwarg(&self.masked[args.clone()], "materialized") else {
+            let Some(expr) = kwarg(&self.sites.masked[args.clone()], "materialized") else {
                 continue;
             };
             let expr = expr.trim();
             let Some(serde_json::Value::String(s)) = lit_value(expr) else {
                 continue;
             };
-            // `expr` is a subslice of `self.masked` — the offset is the
-            // pointer delta (equal length ⇒ valid in `text` too).
-            let start = expr.as_ptr() as usize - self.masked.as_ptr() as usize;
+            // `expr` is a subslice of `self.sites.masked` — the offset is
+            // the pointer delta (equal length ⇒ valid in `text` too).
+            let start = expr.as_ptr() as usize - self.sites.masked.as_ptr() as usize;
             last = Some((start..start + expr.len(), s));
         }
         last
@@ -248,7 +357,7 @@ impl<'a> CallSites<'a> {
                     })
             })
             .collect();
-        f.with_span(self.file, line, column, end_line, end_column)
+        f.with_span(self.file(), line, column, end_line, end_column)
             .with_label(primary.1.into())
             .with_labels(labels)
     }
