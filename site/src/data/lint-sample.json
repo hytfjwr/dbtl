@@ -1,0 +1,244 @@
+{
+ "project": "sample",
+ "rules": 32,
+ "findings": [
+  {
+   "rule": "root_models",
+   "severity": "error",
+   "uid": "model.sample.stg_two_configs",
+   "message": "stg_two_configs has no parents",
+   "file": "models/staging/stg_two_configs.sql"
+  },
+  {
+   "rule": "marts_depend_on_source",
+   "severity": "error",
+   "uid": "model.sample.dim_customers",
+   "message": "marts model dim_customers directly depends on 1 source(s)",
+   "file": "models/marts/dim_customers.sql"
+  },
+  {
+   "rule": "missing_primary_key_tests",
+   "severity": "error",
+   "uid": "model.sample.agg_country_orders",
+   "message": "agg_country_orders has no unique+not_null test pair (or unique_combination_of_columns)",
+   "file": "models/marts/agg_country_orders.sql"
+  },
+  {
+   "rule": "missing_primary_key_tests",
+   "severity": "error",
+   "uid": "model.sample.cll_demo",
+   "message": "cll_demo has no unique+not_null test pair (or unique_combination_of_columns)",
+   "file": "models/marts/cll_demo.sql"
+  },
+  {
+   "rule": "missing_primary_key_tests",
+   "severity": "error",
+   "uid": "model.sample.cll_syntax",
+   "message": "cll_syntax has no unique+not_null test pair (or unique_combination_of_columns)",
+   "file": "models/marts/schema.yml"
+  },
+  {
+   "rule": "missing_primary_key_tests",
+   "severity": "error",
+   "uid": "model.sample.dim_customers",
+   "message": "dim_customers has no unique+not_null test pair (or unique_combination_of_columns)",
+   "file": "models/marts/schema.yml"
+  },
+  {
+   "rule": "missing_primary_key_tests",
+   "severity": "error",
+   "uid": "model.sample.fct_customer_history",
+   "message": "fct_customer_history has no unique+not_null test pair (or unique_combination_of_columns)",
+   "file": "models/marts/fct_customer_history.sql"
+  },
+  {
+   "rule": "missing_primary_key_tests",
+   "severity": "error",
+   "uid": "model.sample.fct_daily_orders",
+   "message": "fct_daily_orders has no unique+not_null test pair (or unique_combination_of_columns)",
+   "file": "models/marts/schema.yml"
+  },
+  {
+   "rule": "missing_primary_key_tests",
+   "severity": "error",
+   "uid": "model.sample.fct_line_items",
+   "message": "fct_line_items has no unique+not_null test pair (or unique_combination_of_columns)",
+   "file": "models/marts/schema.yml"
+  },
+  {
+   "rule": "missing_primary_key_tests",
+   "severity": "error",
+   "uid": "model.sample.fct_orders",
+   "message": "fct_orders has no unique+not_null test pair (or unique_combination_of_columns)",
+   "file": "models/marts/schema.yml"
+  },
+  {
+   "rule": "missing_primary_key_tests",
+   "severity": "error",
+   "uid": "model.sample.stg_two_configs",
+   "message": "stg_two_configs has no unique+not_null test pair (or unique_combination_of_columns)",
+   "file": "models/staging/stg_two_configs.sql"
+  },
+  {
+   "rule": "undocumented_models",
+   "severity": "error",
+   "uid": "model.sample.agg_country_orders",
+   "message": "agg_country_orders has no description",
+   "file": "models/marts/agg_country_orders.sql"
+  },
+  {
+   "rule": "undocumented_models",
+   "severity": "error",
+   "uid": "model.sample.cll_demo",
+   "message": "cll_demo has no description",
+   "file": "models/marts/cll_demo.sql"
+  },
+  {
+   "rule": "undocumented_models",
+   "severity": "error",
+   "uid": "model.sample.fct_customer_history",
+   "message": "fct_customer_history has no description",
+   "file": "models/marts/fct_customer_history.sql"
+  },
+  {
+   "rule": "undocumented_models",
+   "severity": "error",
+   "uid": "model.sample.stg_two_configs",
+   "message": "stg_two_configs has no description",
+   "file": "models/staging/stg_two_configs.sql"
+  },
+  {
+   "rule": "naming_conventions",
+   "severity": "error",
+   "uid": "model.sample.agg_country_orders",
+   "message": "marts model agg_country_orders doesn't match prefix(es): fct_, dim_, rpt_",
+   "file": "models/marts/agg_country_orders.sql"
+  },
+  {
+   "rule": "naming_conventions",
+   "severity": "error",
+   "uid": "model.sample.cll_demo",
+   "message": "marts model cll_demo doesn't match prefix(es): fct_, dim_, rpt_",
+   "file": "models/marts/cll_demo.sql"
+  },
+  {
+   "rule": "naming_conventions",
+   "severity": "error",
+   "uid": "model.sample.cll_syntax",
+   "message": "marts model cll_syntax doesn't match prefix(es): fct_, dim_, rpt_",
+   "file": "models/marts/cll_syntax.sql"
+  },
+  {
+   "rule": "unused_sources",
+   "severity": "warn",
+   "uid": "source.sample.archive.audit_log",
+   "message": "source audit_log is not referenced by any node",
+   "file": "models/staging/schema.yml"
+  },
+  {
+   "rule": "unused_sources",
+   "severity": "warn",
+   "uid": "source.sample.raw.payments",
+   "message": "source payments is not referenced by any node",
+   "file": "models/staging/schema.yml"
+  },
+  {
+   "rule": "exposure_parents_materializations",
+   "severity": "warn",
+   "uid": "exposure.sample.churn_notebook",
+   "message": "exposure churn_notebook directly depends on 1 source or view/ephemeral parent(s)",
+   "file": "models/marts/schema.yml"
+  },
+  {
+   "rule": "exposures_dependent_on_private_models",
+   "severity": "warn",
+   "uid": "exposure.sample.churn_notebook",
+   "message": "exposure churn_notebook directly depends on 1 non-public model(s)",
+   "file": "models/marts/schema.yml"
+  },
+  {
+   "rule": "exposures_dependent_on_private_models",
+   "severity": "warn",
+   "uid": "exposure.sample.orders_dashboard",
+   "message": "exposure orders_dashboard directly depends on 2 non-public model(s)",
+   "file": "models/marts/schema.yml"
+  },
+  {
+   "rule": "undocumented_columns",
+   "severity": "warn",
+   "uid": "model.sample.cll_syntax",
+   "message": "cll_syntax has declared column(s) without descriptions: order_id, status, status_upper, country, jp_id, rn, order_id_next",
+   "file": "models/marts/schema.yml"
+  },
+  {
+   "rule": "undocumented_columns",
+   "severity": "warn",
+   "uid": "model.sample.fct_orders",
+   "message": "fct_orders has declared column(s) without descriptions: id, status, country_code, country",
+   "file": "models/marts/schema.yml"
+  },
+  {
+   "rule": "undocumented_columns",
+   "severity": "warn",
+   "uid": "model.sample.stg_orders",
+   "message": "stg_orders has declared column(s) without descriptions: status, country_code, disabled_flag",
+   "file": "models/staging/schema.yml"
+  },
+  {
+   "rule": "incremental_without_unique_key",
+   "severity": "warn",
+   "uid": "model.sample.fct_daily_orders",
+   "message": "incremental model fct_daily_orders has no unique_key",
+   "file": "models/marts/fct_daily_orders.sql"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.sample.raw.customers",
+   "message": "source customers has no freshness configured",
+   "file": "models/staging/schema.yml"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.sample.cll_syntax",
+   "message": "cll_syntax's final SELECT uses select * / t.*",
+   "file": "models/marts/cll_syntax.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.sample.fct_customer_history",
+   "message": "fct_customer_history's final SELECT uses select * / t.*",
+   "file": "models/marts/fct_customer_history.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.sample.fct_daily_orders",
+   "message": "fct_daily_orders's final SELECT uses select * / t.*",
+   "file": "models/marts/fct_daily_orders.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.sample.fct_line_items",
+   "message": "fct_line_items's final SELECT uses select * / t.*",
+   "file": "models/marts/fct_line_items.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.sample.fct_orders",
+   "message": "fct_orders's final SELECT uses select * / t.*",
+   "file": "models/marts/fct_orders.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.sample.stg_orders",
+   "message": "stg_orders's final SELECT uses select * / t.*",
+   "file": "models/staging/stg_orders.sql"
+  }
+ ]
+}

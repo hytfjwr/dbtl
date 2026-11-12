@@ -1,0 +1,14 @@
+---
+import Playground from "../components/playground/Playground.astro";
+import Base from "../layouts/Base.astro";
+---
+
+<Base title="Playground - dbtl" description="Try dbt selectors in the browser on a sample project." section="playground">
+  <div class="wrap pg vt-page" data-pagefind-body data-pagefind-meta="section:Playground">
+    <h1>Playground</h1>
+    <p class="lead">
+      Type a dbt selector and see which nodes it picks. It runs in your browser on a sample project, so nothing is uploaded.
+    </p>
+    <Playground />
+  </div>
+</Base>

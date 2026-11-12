@@ -1,0 +1,106 @@
+---
+import "@fontsource/ibm-plex-mono/latin-400.css";
+import "@fontsource/ibm-plex-mono/latin-500.css";
+import "@fontsource/ibm-plex-mono/latin-600.css";
+import "@fontsource/ibm-plex-mono/latin-400-italic.css";
+import "@fontsource/ibm-plex-sans/latin-400.css";
+import "@fontsource/ibm-plex-sans/latin-500.css";
+import "@fontsource/ibm-plex-sans/latin-600.css";
+import monoRegular from "@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2?url";
+import sansRegular from "@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-400-normal.woff2?url";
+import "../styles/tokens.css";
+import "../styles/base.css";
+import "../styles/layout.css";
+import "../styles/components.css";
+import "../styles/pages.css";
+import "../styles/motion.css";
+import "../styles/responsive.css";
+import SearchModal from "../components/SearchModal.astro";
+import SiteFooter from "../components/SiteFooter.astro";
+import StatusLine from "../components/StatusLine.astro";
+import ThemeSwitch from "../components/ThemeSwitch.astro";
+import { loadNav } from "../lib/nav.ts";
+import { REPO_URL, url } from "../lib/site.ts";
+
+interface Props {
+  title: string;
+  description: string;
+  /** Which header tab is current. */
+  section?: "home" | "docs" | "playground";
+}
+const { title, description, section } = Astro.props;
+
+const canonical = new URL(Astro.url.pathname, Astro.site).href;
+// The docs tab opens the first page directly, so the hop through /docs/ never shows.
+const first = (await loadNav()).pages[0];
+const tabs = [
+  { id: "home", n: 1, href: url() },
+  { id: "docs", n: 2, href: first ? url(`${first.slug}/`) : url("docs/") },
+  { id: "playground", n: 3, href: url("playground/") },
+];
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href={url("favicon.svg")} type="image/svg+xml" />
+    <link rel="apple-touch-icon" href={url("apple-touch-icon.png")} />
+    <link rel="preload" href={sansRegular} as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href={monoRegular} as="font" type="font/woff2" crossorigin />
+    <script is:inline>
+      (function () {
+        try {
+          var t = localStorage.getItem("dbtl-theme");
+          if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+
+    <header class="top">
+      <a class="brand" href={url()} aria-label="dbtl home">
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true"><rect x="1.5" y="4.5" width="19" height="13" rx="3" stroke="currentColor" stroke-width="1.6"/><rect x="5" y="9" width="12" height="4" rx="1" fill="#ffc857"/></svg>
+        dbtl
+      </a>
+      <nav class="tabs" aria-label="Sections">
+        {
+          tabs.map((t) => (
+            <a href={t.href} aria-current={t.id === section ? "page" : undefined}>
+              <span class="n" aria-hidden="true">{t.n}</span>{t.id}<span class="ink"></span>
+            </a>
+          ))
+        }
+      </nav>
+      <div class="tools">
+        <button class="search-btn" type="button" data-search-open aria-label="Search docs" aria-keyshortcuts="Control+K Meta+K /">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14" stroke-linecap="round"/></svg>
+          <span class="lbl">Search docs</span><kbd data-search-kbd>Ctrl K</kbd>
+        </button>
+        <ThemeSwitch />
+        <a class="icon-btn" href={REPO_URL} aria-label="dbtl on GitHub">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38v-1.33c-2.23.48-2.7-1.07-2.7-1.07-.36-.93-.89-1.17-.89-1.17-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.71 1.22 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.77-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 8 0Z"/></svg>
+        </a>
+      </div>
+    </header>
+
+    <main id="main" tabindex="-1">
+      <slot />
+    </main>
+    <SiteFooter />
+    <StatusLine tabs={tabs} />
+    <div class="scrim" id="scrim" hidden></div>
+    <SearchModal />
+    <script>
+      import "../scripts/copy.ts";
+      import "../scripts/chrome.ts";
+    </script>
+  </body>
+</html>

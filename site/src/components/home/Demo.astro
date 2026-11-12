@@ -1,0 +1,61 @@
+---
+// The demo panel in its first state (the cursor at the end of the trail, its path lit).
+// The page works without script; home.ts makes it interactive and replays the walk once per session.
+import graph from "../../data/graph.json";
+import { index } from "../../scripts/graph.ts";
+import {
+  coverageText,
+  demoStyle,
+  HOME,
+  homeIds,
+  impactText,
+  inspectorHtml,
+  listHtml,
+  neighbourhood,
+  pathSet,
+  titleHtml,
+} from "../../scripts/home-view.ts";
+import { layout, stageHtml } from "../../scripts/lineage.ts";
+import { toProject, type RawSample } from "../../scripts/samples.ts";
+
+const raw = (graph as Record<string, RawSample>)[HOME.project];
+if (!raw) throw new Error(`home demo: no sample project named ${HOME.project}`);
+const project = toProject(raw);
+const ids = homeIds(project);
+const root = ids.root;
+const cursor = ids.trail[ids.trail.length - 1]!;
+const path = pathSet(project, root, cursor);
+const L = layout(neighbourhood(project, root, HOME.depth));
+const stage = stageHtml(L, demoStyle(root, cursor, path, path)(L), cursor);
+const rootName = index(project).by.get(root)!.name;
+---
+
+<div class="tui" id="hero-tui" aria-label="dbtl demo: model list, lineage and inspector" data-pagefind-ignore>
+  <div class="tui-tabs" aria-hidden="true">
+    <span>⌂</span><span class="act" id="hero-tab">{rootName} ×</span><span>+</span><span class="proj">{project.name} · manifest</span>
+  </div>
+  <div class="tui-body">
+    <div class="pane tui-list"><p class="pane-title">Models</p><div id="hero-list" set:html={listHtml(project, root)} /></div>
+    <div class="pane tui-lin">
+      <p class="pane-title" id="hero-title" set:html={titleHtml(rootName, HOME.depth)} />
+      <div
+        class="lin-scroll"
+        id="hero-scroll"
+        tabindex="0"
+        role="application"
+        aria-label="Lineage diagram. Use h j k l or the arrow keys to move the cursor, Enter to re-root, Escape to return to the root."
+      >
+        <div class="lin-host" id="hero-lin" set:html={stage} />
+      </div>
+    </div>
+    <div class="pane tui-insp"><p class="pane-title">Inspector</p><div id="hero-insp" set:html={inspectorHtml(project, cursor)} /></div>
+  </div>
+  <div class="tui-status">
+    <span class="l"><b>h j k l</b> move cursor · <b>Enter</b> re-root · <b>Esc</b> root · click a node or a model</span>
+    <span class="r"><span id="hero-impact">{impactText(project, cursor)}</span><span>{coverageText(project)}</span><span>scope:root</span></span>
+  </div>
+</div>
+
+<script>
+  import "../../scripts/home.ts";
+</script>

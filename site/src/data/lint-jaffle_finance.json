@@ -1,0 +1,895 @@
+{
+ "project": "jaffle_finance",
+ "rules": 32,
+ "findings": [
+  {
+   "rule": "direct_join_to_source",
+   "severity": "error",
+   "uid": "model.jaffle_finance.pos_cat",
+   "message": "pos_cat directly depends on 1 source(s) and 1 model(s)",
+   "file": "models/utilities/pos_prep/pos_cat.sql"
+  },
+  {
+   "rule": "direct_join_to_source",
+   "severity": "error",
+   "uid": "model.jaffle_finance.pos_crt",
+   "message": "pos_crt directly depends on 1 source(s) and 1 model(s)",
+   "file": "models/utilities/pos_prep/pos_crt.sql"
+  },
+  {
+   "rule": "direct_join_to_source",
+   "severity": "error",
+   "uid": "model.jaffle_finance.pos_inv",
+   "message": "pos_inv directly depends on 1 source(s) and 1 model(s)",
+   "file": "models/utilities/pos_prep/pos_inv.sql"
+  },
+  {
+   "rule": "direct_join_to_source",
+   "severity": "error",
+   "uid": "model.jaffle_finance.pos_jrn",
+   "message": "pos_jrn directly depends on 1 source(s) and 1 model(s)",
+   "file": "models/utilities/pos_prep/pos_jrn.sql"
+  },
+  {
+   "rule": "direct_join_to_source",
+   "severity": "error",
+   "uid": "model.jaffle_finance.pos_kpi",
+   "message": "pos_kpi directly depends on 1 source(s) and 1 model(s)",
+   "file": "models/utilities/pos_prep/pos_kpi.sql"
+  },
+  {
+   "rule": "direct_join_to_source",
+   "severity": "error",
+   "uid": "model.jaffle_finance.pos_mfg",
+   "message": "pos_mfg directly depends on 1 source(s) and 1 model(s)",
+   "file": "models/utilities/pos_prep/pos_mfg.sql"
+  },
+  {
+   "rule": "direct_join_to_source",
+   "severity": "error",
+   "uid": "model.jaffle_finance.pos_ord",
+   "message": "pos_ord directly depends on 1 source(s) and 1 model(s)",
+   "file": "models/utilities/pos_prep/pos_ord.sql"
+  },
+  {
+   "rule": "direct_join_to_source",
+   "severity": "error",
+   "uid": "model.jaffle_finance.pos_pay",
+   "message": "pos_pay directly depends on 1 source(s) and 1 model(s)",
+   "file": "models/utilities/pos_prep/pos_pay.sql"
+  },
+  {
+   "rule": "direct_join_to_source",
+   "severity": "error",
+   "uid": "model.jaffle_finance.pos_rcv",
+   "message": "pos_rcv directly depends on 1 source(s) and 1 model(s)",
+   "file": "models/utilities/pos_prep/pos_rcv.sql"
+  },
+  {
+   "rule": "direct_join_to_source",
+   "severity": "error",
+   "uid": "model.jaffle_finance.pos_shp",
+   "message": "pos_shp directly depends on 1 source(s) and 1 model(s)",
+   "file": "models/utilities/pos_prep/pos_shp.sql"
+  },
+  {
+   "rule": "direct_join_to_source",
+   "severity": "error",
+   "uid": "model.jaffle_finance.pos_sku",
+   "message": "pos_sku directly depends on 1 source(s) and 1 model(s)",
+   "file": "models/utilities/pos_prep/pos_sku.sql"
+  },
+  {
+   "rule": "direct_join_to_source",
+   "severity": "error",
+   "uid": "model.jaffle_finance.pos_stk",
+   "message": "pos_stk directly depends on 1 source(s) and 1 model(s)",
+   "file": "models/utilities/pos_prep/pos_stk.sql"
+  },
+  {
+   "rule": "direct_join_to_source",
+   "severity": "error",
+   "uid": "model.jaffle_finance.pos_sup",
+   "message": "pos_sup directly depends on 1 source(s) and 1 model(s)",
+   "file": "models/utilities/pos_prep/pos_sup.sql"
+  },
+  {
+   "rule": "direct_join_to_source",
+   "severity": "error",
+   "uid": "model.jaffle_finance.pos_tax",
+   "message": "pos_tax directly depends on 1 source(s) and 1 model(s)",
+   "file": "models/utilities/pos_prep/pos_tax.sql"
+  },
+  {
+   "rule": "direct_join_to_source",
+   "severity": "error",
+   "uid": "model.jaffle_finance.pos_tkt",
+   "message": "pos_tkt directly depends on 1 source(s) and 1 model(s)",
+   "file": "models/utilities/pos_prep/pos_tkt.sql"
+  },
+  {
+   "rule": "direct_join_to_source",
+   "severity": "error",
+   "uid": "model.jaffle_finance.pos_txn",
+   "message": "pos_txn directly depends on 1 source(s) and 1 model(s)",
+   "file": "models/utilities/pos_prep/pos_txn.sql"
+  },
+  {
+   "rule": "multiple_sources_joined",
+   "severity": "error",
+   "uid": "model.jaffle_finance.pos_files__assignment",
+   "message": "pos_files__assignment directly depends on 4 sources",
+   "file": "models/utilities/pos_prep/base/pos_files__assignment.sql"
+  },
+  {
+   "rule": "source_fanout",
+   "severity": "error",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_cat",
+   "message": "source pos_cat directly feeds 2 models",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "source_fanout",
+   "severity": "error",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_pay",
+   "message": "source pos_pay directly feeds 2 models",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "source_fanout",
+   "severity": "error",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_rcv",
+   "message": "source pos_rcv directly feeds 2 models",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "source_fanout",
+   "severity": "error",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_shp",
+   "message": "source pos_shp directly feeds 2 models",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "model_fanout",
+   "severity": "error",
+   "uid": "model.jaffle_finance.pos_files__assignment",
+   "message": "pos_files__assignment directly feeds 16 leaf models",
+   "file": "models/utilities/pos_prep/base/pos_files__assignment.sql"
+  },
+  {
+   "rule": "rejoining_upstream",
+   "severity": "error",
+   "uid": "model.jaffle_finance.fct_delivery_monthly_snapshot",
+   "message": "fct_delivery_monthly_snapshot is a redundant hop: dim_delivery_lanes, dim_fiscal_years already feed(s) rpt_delivery_base_metrics directly",
+   "file": "models/marts/dimensional/jaffle/delivery_monthly_snapshot/fct_delivery_monthly_snapshot.sql"
+  },
+  {
+   "rule": "rejoining_upstream",
+   "severity": "error",
+   "uid": "model.jaffle_finance.fct_delivery_shopper_monthly_visits",
+   "message": "fct_delivery_shopper_monthly_visits is a redundant hop: dim_fiscal_years already feed(s) rpt_delivery_shopper_monthly_visits directly",
+   "file": "models/marts/dimensional/jaffle/delivery_shopper_monthly_visits/fct_delivery_shopper_monthly_visits.sql"
+  },
+  {
+   "rule": "rejoining_upstream",
+   "severity": "error",
+   "uid": "model.jaffle_finance.fct_subscription_process",
+   "message": "fct_subscription_process is a redundant hop: dim_delivery_lanes, dim_fiscal_years already feed(s) fct_delivery_monthly_snapshot directly",
+   "file": "models/marts/dimensional/jaffle/subscription_process/fct_subscription_process.sql"
+  },
+  {
+   "rule": "missing_primary_key_tests",
+   "severity": "error",
+   "uid": "model.jaffle_finance.int_fiscal_years__combined",
+   "message": "int_fiscal_years__combined has no unique+not_null test pair (or unique_combination_of_columns)",
+   "file": "models/intermediate/jaffle/fiscal_years/int_fiscal_years__combined.sql"
+  },
+  {
+   "rule": "missing_primary_key_tests",
+   "severity": "error",
+   "uid": "model.jaffle_finance.int_shoppers__combined",
+   "message": "int_shoppers__combined has no unique+not_null test pair (or unique_combination_of_columns)",
+   "file": "models/intermediate/jaffle/shoppers/int_shoppers__combined.sql"
+  },
+  {
+   "rule": "unused_sources",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_finance.budgets",
+   "message": "source budgets is not referenced by any node",
+   "file": "models/staging/jaffle/finance/_prod_lake_jaffle_finance__sources.yml"
+  },
+  {
+   "rule": "unused_sources",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_finance.fiscal_years",
+   "message": "source fiscal_years is not referenced by any node",
+   "file": "models/staging/jaffle/finance/_prod_lake_jaffle_finance__sources.yml"
+  },
+  {
+   "rule": "unused_sources",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_masterdata.companies",
+   "message": "source companies is not referenced by any node",
+   "file": "models/staging/jaffle/masterdata/_prod_lake_jaffle_masterdata__sources.yml"
+  },
+  {
+   "rule": "unused_sources",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_masterdata.deliveries",
+   "message": "source deliveries is not referenced by any node",
+   "file": "models/staging/jaffle/masterdata/_prod_lake_jaffle_masterdata__sources.yml"
+  },
+  {
+   "rule": "unused_sources",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_masterdata.delivery_groups",
+   "message": "source delivery_groups is not referenced by any node",
+   "file": "models/staging/jaffle/masterdata/_prod_lake_jaffle_masterdata__sources.yml"
+  },
+  {
+   "rule": "unused_sources",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_payment.scores",
+   "message": "source scores is not referenced by any node",
+   "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
+  },
+  {
+   "rule": "unused_sources",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_payment.shoppers",
+   "message": "source shoppers is not referenced by any node",
+   "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
+  },
+  {
+   "rule": "unused_sources",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_payment.subscriptions",
+   "message": "source subscriptions is not referenced by any node",
+   "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
+  },
+  {
+   "rule": "unused_sources",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_payment.supplier_departments",
+   "message": "source supplier_departments is not referenced by any node",
+   "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
+  },
+  {
+   "rule": "unused_sources",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_payment.suppliers",
+   "message": "source suppliers is not referenced by any node",
+   "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
+  },
+  {
+   "rule": "unused_sources",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_payment.warehouses",
+   "message": "source warehouses is not referenced by any node",
+   "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
+  },
+  {
+   "rule": "incremental_without_unique_key",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.dim_fiscal_years",
+   "message": "incremental model dim_fiscal_years has no unique_key",
+   "file": "models/marts/dimensional/jaffle/fiscal_years/dim_fiscal_years.sql"
+  },
+  {
+   "rule": "incremental_without_unique_key",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.dim_supplier_departments",
+   "message": "incremental model dim_supplier_departments has no unique_key",
+   "file": "models/marts/dimensional/jaffle/supplier_departments/dim_supplier_departments.sql"
+  },
+  {
+   "rule": "incremental_without_unique_key",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.dim_suppliers",
+   "message": "incremental model dim_suppliers has no unique_key",
+   "file": "models/marts/dimensional/jaffle/suppliers/dim_suppliers.sql"
+  },
+  {
+   "rule": "incremental_without_unique_key",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.fct_delivery_monthly_snapshot",
+   "message": "incremental model fct_delivery_monthly_snapshot has no unique_key",
+   "file": "models/marts/dimensional/jaffle/delivery_monthly_snapshot/fct_delivery_monthly_snapshot.sql"
+  },
+  {
+   "rule": "incremental_without_unique_key",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.rpt_delivery_base_metrics",
+   "message": "incremental model rpt_delivery_base_metrics has no unique_key",
+   "file": "models/marts/analysis/jaffle/rpt_delivery_base_metrics.sql"
+  },
+  {
+   "rule": "incremental_without_unique_key",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.rpt_delivery_shopper_monthly_visits",
+   "message": "incremental model rpt_delivery_shopper_monthly_visits has no unique_key",
+   "file": "models/marts/analysis/jaffle/rpt_delivery_shopper_monthly_visits.sql"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.dev_lake_jaffle_finance.budgets",
+   "message": "source budgets has no freshness configured",
+   "file": "models/staging/jaffle/finance/_dev_lake_jaffle_finance__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.dev_lake_jaffle_finance.fiscal_years",
+   "message": "source fiscal_years has no freshness configured",
+   "file": "models/staging/jaffle/finance/_dev_lake_jaffle_finance__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.dev_lake_jaffle_masterdata.companies",
+   "message": "source companies has no freshness configured",
+   "file": "models/staging/jaffle/masterdata/_dev_lake_jaffle_masterdata__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.dev_lake_jaffle_masterdata.deliveries",
+   "message": "source deliveries has no freshness configured",
+   "file": "models/staging/jaffle/masterdata/_dev_lake_jaffle_masterdata__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.dev_lake_jaffle_masterdata.delivery_groups",
+   "message": "source delivery_groups has no freshness configured",
+   "file": "models/staging/jaffle/masterdata/_dev_lake_jaffle_masterdata__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.dev_lake_jaffle_payment.scores",
+   "message": "source scores has no freshness configured",
+   "file": "models/staging/jaffle/payment/_dev_lake_jaffle_payment__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.dev_lake_jaffle_payment.shoppers",
+   "message": "source shoppers has no freshness configured",
+   "file": "models/staging/jaffle/payment/_dev_lake_jaffle_payment__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.dev_lake_jaffle_payment.subscriptions",
+   "message": "source subscriptions has no freshness configured",
+   "file": "models/staging/jaffle/payment/_dev_lake_jaffle_payment__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.dev_lake_jaffle_payment.supplier_departments",
+   "message": "source supplier_departments has no freshness configured",
+   "file": "models/staging/jaffle/payment/_dev_lake_jaffle_payment__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.dev_lake_jaffle_payment.suppliers",
+   "message": "source suppliers has no freshness configured",
+   "file": "models/staging/jaffle/payment/_dev_lake_jaffle_payment__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.dev_lake_jaffle_payment.warehouses",
+   "message": "source warehouses has no freshness configured",
+   "file": "models/staging/jaffle/payment/_dev_lake_jaffle_payment__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_cat",
+   "message": "source pos_cat has no freshness configured",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_crt",
+   "message": "source pos_crt has no freshness configured",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_inv",
+   "message": "source pos_inv has no freshness configured",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_jrn",
+   "message": "source pos_jrn has no freshness configured",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_kpi",
+   "message": "source pos_kpi has no freshness configured",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_mfg",
+   "message": "source pos_mfg has no freshness configured",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_ord",
+   "message": "source pos_ord has no freshness configured",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_pay",
+   "message": "source pos_pay has no freshness configured",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_rcv",
+   "message": "source pos_rcv has no freshness configured",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_shp",
+   "message": "source pos_shp has no freshness configured",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_sku",
+   "message": "source pos_sku has no freshness configured",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_stk",
+   "message": "source pos_stk has no freshness configured",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_sup",
+   "message": "source pos_sup has no freshness configured",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_tax",
+   "message": "source pos_tax has no freshness configured",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_tkt",
+   "message": "source pos_tkt has no freshness configured",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.lake_jaffle_payment.pos_txn",
+   "message": "source pos_txn has no freshness configured",
+   "file": "models/utilities/pos_prep/sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_finance.budgets",
+   "message": "source budgets has no freshness configured",
+   "file": "models/staging/jaffle/finance/_prod_lake_jaffle_finance__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_finance.fiscal_years",
+   "message": "source fiscal_years has no freshness configured",
+   "file": "models/staging/jaffle/finance/_prod_lake_jaffle_finance__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_masterdata.companies",
+   "message": "source companies has no freshness configured",
+   "file": "models/staging/jaffle/masterdata/_prod_lake_jaffle_masterdata__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_masterdata.deliveries",
+   "message": "source deliveries has no freshness configured",
+   "file": "models/staging/jaffle/masterdata/_prod_lake_jaffle_masterdata__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_masterdata.delivery_groups",
+   "message": "source delivery_groups has no freshness configured",
+   "file": "models/staging/jaffle/masterdata/_prod_lake_jaffle_masterdata__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_payment.scores",
+   "message": "source scores has no freshness configured",
+   "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_payment.shoppers",
+   "message": "source shoppers has no freshness configured",
+   "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_payment.subscriptions",
+   "message": "source subscriptions has no freshness configured",
+   "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_payment.supplier_departments",
+   "message": "source supplier_departments has no freshness configured",
+   "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_payment.suppliers",
+   "message": "source suppliers has no freshness configured",
+   "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
+  },
+  {
+   "rule": "sources_without_freshness",
+   "severity": "warn",
+   "uid": "source.jaffle_finance.prod_lake_jaffle_payment.warehouses",
+   "message": "source warehouses has no freshness configured",
+   "file": "models/staging/jaffle/payment/_prod_lake_jaffle_payment__sources.yml"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.dim_delivery_lanes",
+   "message": "dim_delivery_lanes's final SELECT uses select * / t.*",
+   "file": "models/marts/dimensional/jaffle/delivery_lanes/dim_delivery_lanes.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.dim_fiscal_years",
+   "message": "dim_fiscal_years's final SELECT uses select * / t.*",
+   "file": "models/marts/dimensional/jaffle/fiscal_years/dim_fiscal_years.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.dim_supplier_departments",
+   "message": "dim_supplier_departments's final SELECT uses select * / t.*",
+   "file": "models/marts/dimensional/jaffle/supplier_departments/dim_supplier_departments.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.dim_suppliers",
+   "message": "dim_suppliers's final SELECT uses select * / t.*",
+   "file": "models/marts/dimensional/jaffle/suppliers/dim_suppliers.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.fct_delivery_monthly_snapshot",
+   "message": "fct_delivery_monthly_snapshot's final SELECT uses select * / t.*",
+   "file": "models/marts/dimensional/jaffle/delivery_monthly_snapshot/fct_delivery_monthly_snapshot.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.fct_delivery_shopper_monthly_visits",
+   "message": "fct_delivery_shopper_monthly_visits's final SELECT uses select * / t.*",
+   "file": "models/marts/dimensional/jaffle/delivery_shopper_monthly_visits/fct_delivery_shopper_monthly_visits.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.fct_subscription_process",
+   "message": "fct_subscription_process's final SELECT uses select * / t.*",
+   "file": "models/marts/dimensional/jaffle/subscription_process/fct_subscription_process.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.int_delivery_lanes__combined",
+   "message": "int_delivery_lanes__combined's final SELECT uses select * / t.*",
+   "file": "models/intermediate/jaffle/delivery_lanes/int_delivery_lanes__combined.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.int_delivery_monthly__combined",
+   "message": "int_delivery_monthly__combined's final SELECT uses select * / t.*",
+   "file": "models/intermediate/jaffle/delivery_monthly/int_delivery_monthly__combined.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.int_delivery_shopper_monthly__combined",
+   "message": "int_delivery_shopper_monthly__combined's final SELECT uses select * / t.*",
+   "file": "models/intermediate/jaffle/delivery_shopper_monthly/int_delivery_shopper_monthly__combined.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.int_fiscal_years__combined",
+   "message": "int_fiscal_years__combined's final SELECT uses select * / t.*",
+   "file": "models/intermediate/jaffle/fiscal_years/int_fiscal_years__combined.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.int_shoppers__combined",
+   "message": "int_shoppers__combined's final SELECT uses select * / t.*",
+   "file": "models/intermediate/jaffle/shoppers/int_shoppers__combined.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.int_subscriptions__combined",
+   "message": "int_subscriptions__combined's final SELECT uses select * / t.*",
+   "file": "models/intermediate/jaffle/subscriptions/int_subscriptions__combined.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.int_supplier_departments__combined",
+   "message": "int_supplier_departments__combined's final SELECT uses select * / t.*",
+   "file": "models/intermediate/jaffle/supplier_departments/int_supplier_departments__combined.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.int_suppliers__combined",
+   "message": "int_suppliers__combined's final SELECT uses select * / t.*",
+   "file": "models/intermediate/jaffle/suppliers/int_suppliers__combined.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.pos_cat",
+   "message": "pos_cat's final SELECT uses select * / t.*",
+   "file": "models/utilities/pos_prep/pos_cat.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.pos_crt",
+   "message": "pos_crt's final SELECT uses select * / t.*",
+   "file": "models/utilities/pos_prep/pos_crt.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.pos_files__assignment",
+   "message": "pos_files__assignment's final SELECT uses select * / t.*",
+   "file": "models/utilities/pos_prep/base/pos_files__assignment.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.pos_inv",
+   "message": "pos_inv's final SELECT uses select * / t.*",
+   "file": "models/utilities/pos_prep/pos_inv.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.pos_jrn",
+   "message": "pos_jrn's final SELECT uses select * / t.*",
+   "file": "models/utilities/pos_prep/pos_jrn.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.pos_kpi",
+   "message": "pos_kpi's final SELECT uses select * / t.*",
+   "file": "models/utilities/pos_prep/pos_kpi.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.pos_mfg",
+   "message": "pos_mfg's final SELECT uses select * / t.*",
+   "file": "models/utilities/pos_prep/pos_mfg.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.pos_ord",
+   "message": "pos_ord's final SELECT uses select * / t.*",
+   "file": "models/utilities/pos_prep/pos_ord.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.pos_pay",
+   "message": "pos_pay's final SELECT uses select * / t.*",
+   "file": "models/utilities/pos_prep/pos_pay.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.pos_rcv",
+   "message": "pos_rcv's final SELECT uses select * / t.*",
+   "file": "models/utilities/pos_prep/pos_rcv.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.pos_shp",
+   "message": "pos_shp's final SELECT uses select * / t.*",
+   "file": "models/utilities/pos_prep/pos_shp.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.pos_sku",
+   "message": "pos_sku's final SELECT uses select * / t.*",
+   "file": "models/utilities/pos_prep/pos_sku.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.pos_stk",
+   "message": "pos_stk's final SELECT uses select * / t.*",
+   "file": "models/utilities/pos_prep/pos_stk.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.pos_sup",
+   "message": "pos_sup's final SELECT uses select * / t.*",
+   "file": "models/utilities/pos_prep/pos_sup.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.pos_tax",
+   "message": "pos_tax's final SELECT uses select * / t.*",
+   "file": "models/utilities/pos_prep/pos_tax.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.pos_tkt",
+   "message": "pos_tkt's final SELECT uses select * / t.*",
+   "file": "models/utilities/pos_prep/pos_tkt.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.pos_txn",
+   "message": "pos_txn's final SELECT uses select * / t.*",
+   "file": "models/utilities/pos_prep/pos_txn.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.rpt_delivery_base_metrics",
+   "message": "rpt_delivery_base_metrics's final SELECT uses select * / t.*",
+   "file": "models/marts/analysis/jaffle/rpt_delivery_base_metrics.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.rpt_delivery_shopper_monthly_visits",
+   "message": "rpt_delivery_shopper_monthly_visits's final SELECT uses select * / t.*",
+   "file": "models/marts/analysis/jaffle/rpt_delivery_shopper_monthly_visits.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.stg_finance__budgets",
+   "message": "stg_finance__budgets's final SELECT uses select * / t.*",
+   "file": "models/staging/jaffle/finance/stg_finance__budgets.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.stg_finance__fiscal_years",
+   "message": "stg_finance__fiscal_years's final SELECT uses select * / t.*",
+   "file": "models/staging/jaffle/finance/stg_finance__fiscal_years.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.stg_masterdata__companies",
+   "message": "stg_masterdata__companies's final SELECT uses select * / t.*",
+   "file": "models/staging/jaffle/masterdata/stg_masterdata__companies.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.stg_masterdata__deliveries",
+   "message": "stg_masterdata__deliveries's final SELECT uses select * / t.*",
+   "file": "models/staging/jaffle/masterdata/stg_masterdata__deliveries.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.stg_masterdata__delivery_groups",
+   "message": "stg_masterdata__delivery_groups's final SELECT uses select * / t.*",
+   "file": "models/staging/jaffle/masterdata/stg_masterdata__delivery_groups.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.stg_payment__scores",
+   "message": "stg_payment__scores's final SELECT uses select * / t.*",
+   "file": "models/staging/jaffle/payment/stg_payment__scores.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.stg_payment__shoppers",
+   "message": "stg_payment__shoppers's final SELECT uses select * / t.*",
+   "file": "models/staging/jaffle/payment/stg_payment__shoppers.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.stg_payment__subscriptions",
+   "message": "stg_payment__subscriptions's final SELECT uses select * / t.*",
+   "file": "models/staging/jaffle/payment/stg_payment__subscriptions.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.stg_payment__supplier_departments",
+   "message": "stg_payment__supplier_departments's final SELECT uses select * / t.*",
+   "file": "models/staging/jaffle/payment/stg_payment__supplier_departments.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.stg_payment__suppliers",
+   "message": "stg_payment__suppliers's final SELECT uses select * / t.*",
+   "file": "models/staging/jaffle/payment/stg_payment__suppliers.sql"
+  },
+  {
+   "rule": "select_star",
+   "severity": "warn",
+   "uid": "model.jaffle_finance.stg_payment__warehouses",
+   "message": "stg_payment__warehouses's final SELECT uses select * / t.*",
+   "file": "models/staging/jaffle/payment/stg_payment__warehouses.sql"
+  }
+ ]
+}

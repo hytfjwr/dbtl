@@ -1,0 +1,17 @@
+---
+import Commands from "../components/home/Commands.astro";
+import Demo from "../components/home/Demo.astro";
+import Features from "../components/home/Features.astro";
+import Hero from "../components/home/Hero.astro";
+import Base from "../layouts/Base.astro";
+---
+
+<Base title="dbtl" description="dbtl draws dbt model lineage as text in your terminal." section="home">
+  <div class="wrap vt-page" data-pagefind-body data-pagefind-meta="section:Home">
+    <Hero>
+      <Demo />
+    </Hero>
+    <Features />
+    <Commands />
+  </div>
+</Base>

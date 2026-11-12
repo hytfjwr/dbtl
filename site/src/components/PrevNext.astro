@@ -1,0 +1,29 @@
+---
+import type { NavPage } from "../lib/nav.ts";
+import { url } from "../lib/site.ts";
+
+interface Props {
+  prev?: NavPage;
+  next?: NavPage;
+}
+const { prev, next } = Astro.props;
+---
+
+{
+  (prev || next) && (
+    <nav class="pager" aria-label="Previous and next page" data-pagefind-ignore>
+      {prev && (
+        <a class="pane prev" href={url(`${prev.slug}/`)} rel="prev">
+          <span class="pane-title">previous</span>
+          {"◂"} {prev.title}
+        </a>
+      )}
+      {next && (
+        <a class="pane next" href={url(`${next.slug}/`)} rel="next">
+          <span class="pane-title">next</span>
+          {next.title} {"▸"}
+        </a>
+      )}
+    </nav>
+  )
+}

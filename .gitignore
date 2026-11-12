@@ -14,3 +14,10 @@ demo/demo.gif
 
 # local progress scratchpad (session work tracking — not for the repo)
 PROGRESS.md
+
+# docs site (site/): dependencies, build output, and the data prebuild.mjs generates
+site/node_modules/
+site/dist/
+site/.astro/
+site/src/data/graph.json
+site/src/data/version.json

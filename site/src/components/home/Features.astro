@@ -1,0 +1,62 @@
+---
+import { docsHref } from "./links.ts";
+
+// Text and examples are HTML so they can carry <code>, <kbd> and the PASS/WARN/FAIL marks.
+const features = [
+  {
+    title: "No compile, no browser",
+    slug: "getting-started/quick-start",
+    text: "Lineage comes from <code>dbt_project.yml</code>, model SQL and <code>schema.yml</code>. One static binary. It runs over SSH.",
+    eg: '<span class="p">$</span> <b>dbtl --source .</b>',
+  },
+  {
+    title: "Navigate the graph",
+    slug: "tui/lineage",
+    text: "Move a cursor between nodes and re-root on any model. Go back and forward through the re-root history.",
+    eg: "<kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> move · <kbd>Enter</kbd> re-root · <kbd>b</kbd> <kbd>f</kbd> history",
+  },
+  {
+    title: "Trace a path",
+    slug: "tui/lineage",
+    text: "The path from the root to the cursor lights up and the rest dims. Anchor a start node to ask why one model reaches another.",
+    eg: "<kbd>p</kbd> anchor a path · <kbd>v</kbd> compact · <kbd>w</kbd> whole graph",
+  },
+  {
+    title: "Lenses",
+    slug: "tui/lenses",
+    text: "Tint the lineage by test coverage, blast radius, layer, lint findings, last-run status or runtime.",
+    eg: "<kbd>t</kbd> cycle lens · <kbd>S</kbd> stats · <kbd>n</kbd> next untested model",
+  },
+  {
+    title: "Review a branch",
+    slug: "tui/diff",
+    text: "Diff against another manifest, a checkout or a git ref. The impact report lists changed nodes, blast radius and owners.",
+    eg: '<span class="p">$</span> <b>dbtl --diff git:main</b>\n<kbd>D</kbd> impact report · <kbd>e</kbd> export it as Markdown',
+  },
+  {
+    title: "Gates for CI",
+    slug: "cli/check-and-impact",
+    text: "Coverage, layer violations, untested and breaking changes, and a static lint rule set. Also a GitHub Action and pre-commit hooks.",
+    eg: '<span class="p">$</span> <b>dbtl check --lint --diff git:main</b>\n<span class="pass">PASS</span> coverage  <span class="warn">WARN</span> lint select_star  <span class="fail">FAIL</span> lint root_models',
+  },
+];
+---
+
+<div class="sec">
+  <h2>What the terminal UI does</h2>
+  <div class="feats">
+    {
+      features.map((f) => (
+        <article class="pane feat">
+          <h3 class="pane-title">
+            <a href={docsHref(f.slug)}>
+              <b>{f.title}</b>
+            </a>
+          </h3>
+          <p set:html={f.text} />
+          <div class="eg" set:html={f.eg} />
+        </article>
+      ))
+    }
+  </div>
+</div>

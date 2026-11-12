@@ -1,0 +1,47 @@
+/* ==========================================================================
+   3. LAYOUT  (top strip, status line, page width, docs grid)
+   ========================================================================== */
+.skip{position:fixed;left:var(--sp-3);top:-60px;z-index:60;padding:8px 14px;border:1px solid var(--band);border-radius:var(--radius);background:var(--band);color:var(--band-ink);font:500 var(--fs-2) var(--font-mono)}
+.skip:focus{top:var(--sp-2)}
+
+.top{position:sticky;top:0;z-index:30;height:var(--top-h);display:flex;align-items:stretch;gap:var(--sp-4);padding:0 var(--sp-5);background:var(--bg);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:8px;font:600 17px var(--font-mono);text-decoration:none;letter-spacing:-.02em}
+.tabs{display:flex;align-items:stretch;margin-left:var(--sp-3)}
+.tabs a{display:flex;align-items:center;gap:8px;padding:0 14px;font:500 var(--fs-2) var(--font-mono);color:var(--text-muted);text-decoration:none;border-left:1px solid var(--line);position:relative;transition:color var(--dur-1),background var(--dur-1)}
+.tabs a:last-child{border-right:1px solid var(--line)}
+.tabs a .n{font-size:11px;color:var(--text-faint)}
+.tabs a:hover{color:var(--text);background:var(--surface)}
+.tabs a[aria-current="page"]{color:var(--text);background:var(--surface)}
+.tabs a .ink{display:none;position:absolute;left:0;right:0;bottom:-1px;height:3px;background:var(--band)}
+.tabs a[aria-current="page"] .ink{display:block;view-transition-name:tab-ink}
+.tools{margin-left:auto;display:flex;align-items:center;gap:var(--sp-2)}
+.search-btn{display:flex;align-items:center;gap:10px;height:32px;min-width:220px;padding:0 8px 0 10px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);color:var(--text-muted);font:var(--fs-2) var(--font-mono);transition:border-color var(--dur-1),color var(--dur-1)}
+.search-btn:hover{border-color:var(--line-strong);color:var(--text)}
+.search-btn .lbl{flex:1;text-align:left}
+.icon-btn{display:grid;place-items:center;width:32px;height:32px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);color:var(--text-muted)}
+.icon-btn:hover{color:var(--text);border-color:var(--line-strong)}
+.theme-seg{display:flex;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);padding:2px;gap:2px}
+.theme-seg button{display:grid;place-items:center;width:28px;height:26px;border:0;border-radius:4px;background:none;color:var(--text-faint)}
+.theme-seg button:hover{color:var(--text)}
+.theme-seg button[aria-pressed="true"]{background:var(--band);color:var(--band-ink)}
+
+.statusline{position:fixed;left:0;right:0;bottom:0;z-index:30;height:var(--status-h);display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);padding:0 var(--sp-4);background:var(--surface);border-top:1px solid var(--line);font:var(--fs-1) var(--font-mono);color:var(--text-muted);white-space:nowrap}
+.hints{display:flex;gap:2px;min-width:0;overflow:hidden}
+.hints button,.hints a{display:flex;align-items:center;gap:6px;height:24px;padding:0 8px;border:0;border-radius:4px;background:none;color:inherit;text-decoration:none;font:inherit}
+.hints button:hover,.hints a:hover{background:var(--surface-hi);color:var(--text)}
+.hints kbd{font-size:11px;min-width:1.5em;padding:0 4px;line-height:1.35;transition:background var(--dur-1),color var(--dur-1),border-color var(--dur-1)}
+.hints .pressed{color:var(--text)}
+.hints .pressed kbd{background:var(--band);border-color:var(--band);color:var(--band-ink)}
+.chips{display:flex;gap:var(--sp-4)}
+.chips span+span::before{content:"│";color:var(--line-strong);margin-right:var(--sp-4)}
+
+.wrap{max-width:var(--page-w);margin:0 auto;padding:0 var(--sp-5)}
+.vt-page{view-transition-name:page}
+
+.docs{display:grid;grid-template-columns:268px minmax(0,1fr) 232px;gap:0 var(--sp-6);max-width:1440px;margin:0 auto;padding:0 var(--sp-5)}
+.docs[data-page="reference"]{grid-template-columns:268px minmax(0,1fr)}
+.docs[data-page="reference"] .toc{display:none}
+.doc-main{min-width:0}
+.docbar{display:none}
+.sidebar{position:sticky;top:var(--top-h);align-self:start;height:calc(100vh - var(--top-h) - var(--status-h));overflow:auto;padding:var(--sp-5) var(--sp-3) var(--sp-5) 0;border-right:1px solid var(--line);font:var(--fs-2) var(--font-mono)}
+.scrim{position:fixed;inset:0;z-index:38;background:var(--backdrop)}

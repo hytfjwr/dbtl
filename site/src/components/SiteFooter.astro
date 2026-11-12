@@ -1,0 +1,57 @@
+---
+import { loadNav } from "../lib/nav.ts";
+import { REPO_URL, url } from "../lib/site.ts";
+
+const nav = await loadNav();
+
+/** A link to a page by slug. A slug that has no page fails the build. */
+function page(label: string, slug: string) {
+  if (!nav.pages.some((p) => p.slug === slug)) throw new Error(`Footer links to "${slug}", which is not a page`);
+  return { label, href: url(`${slug}/`) };
+}
+
+const columns = [
+  {
+    title: "Docs",
+    links: [
+      page("Quick start", "getting-started/quick-start"),
+      page("Keybindings", "reference/keybindings"),
+      page("CLI reference", "reference/cli"),
+    ],
+  },
+  {
+    title: "CI",
+    links: [
+      page("GitHub Action", "ci/github-action"),
+      page("pre-commit hooks", "ci/pre-commit"),
+      page("Lint rules", "reference/lint-rules"),
+    ],
+  },
+  {
+    title: "Project",
+    links: [
+      { label: "GitHub", href: REPO_URL },
+      { label: "Releases", href: `${REPO_URL}/releases` },
+      { label: "Changelog", href: `${REPO_URL}/blob/main/CHANGELOG.md` },
+    ],
+  },
+];
+---
+
+<footer class="site-foot">
+  <div class="wrap cols">
+    <div><h3>dbtl</h3>A terminal UI for dbt model lineage.<br />MIT license.</div>
+    {
+      columns.map((c) => (
+        <div>
+          <h3>{c.title}</h3>
+          <ul>
+            {c.links.map((l) => (
+              <li><a href={l.href}>{l.label}</a></li>
+            ))}
+          </ul>
+        </div>
+      ))
+    }
+  </div>
+</footer>

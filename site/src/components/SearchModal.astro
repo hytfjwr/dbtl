@@ -1,0 +1,65 @@
+---
+import { loadNav } from "../lib/nav.ts";
+import { url } from "../lib/site.ts";
+
+const nav = await loadNav();
+
+// Pages offered while the query is empty. Titles and descriptions come from the pages themselves.
+const slugs = [
+  "getting-started/quick-start",
+  "cli/selectors",
+  "reference/keybindings",
+  "reference/cli",
+  "ci/github-action",
+];
+const suggestions = slugs.map((slug) => {
+  const page = nav.pages.find((p) => p.slug === slug);
+  if (!page) throw new Error(`Search suggestion "${slug}" is not a page`);
+  return { url: url(`${slug}/`), title: page.title, section: "Suggested", excerpt: escape(page.description) };
+});
+suggestions.push({
+  url: url("playground/"),
+  title: "Playground",
+  section: "Suggested",
+  excerpt: escape("Try dbt selectors in the browser on a sample project."),
+});
+
+/** The excerpt field is HTML. */
+function escape(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+---
+
+<dialog class="search" id="search" aria-label="Search docs">
+  <span class="s-title" aria-hidden="true">search</span>
+  <div class="s-in">
+    <span aria-hidden="true">&gt;</span>
+    <input
+      id="s-input"
+      type="text"
+      role="combobox"
+      aria-expanded="true"
+      aria-controls="s-list"
+      aria-autocomplete="list"
+      aria-label="Search docs"
+      placeholder="Search pages, commands, keys"
+      spellcheck="false"
+      autocomplete="off"
+    />
+  </div>
+  <div class="s-scroll">
+    <span class="s-bar" id="s-bar" aria-hidden="true"></span>
+    <ul class="s-list" id="s-list" role="listbox" aria-label="Results"></ul>
+  </div>
+  <div class="s-foot">
+    <span><kbd>&uarr;</kbd><kbd>&darr;</kbd>move</span>
+    <span><kbd>Enter</kbd>open</span>
+    <span><kbd>Esc</kbd>close</span>
+    <span class="r" id="s-count" role="status"></span>
+  </div>
+  <script is:inline type="application/json" id="s-suggest" set:html={JSON.stringify(suggestions).replace(/</g, "\\u003c")} />
+</dialog>
+
+<script>
+  import "../scripts/search-modal.ts";
+</script>
