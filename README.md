@@ -68,6 +68,47 @@ If `target/manifest.json` exists, `dbtl` uses it. Otherwise it parses the projec
 - [Lint](https://hytfjwr.github.io/dbtl/cli/lint/): `dbtl lint` checks the project graph against a static rule set.
 - [CI gates](https://hytfjwr.github.io/dbtl/cli/check-and-impact/): `dbtl check` and `dbtl impact` gate a pull request, with a [GitHub Action](https://hytfjwr.github.io/dbtl/ci/github-action/) and a [pre-commit hook](https://hytfjwr.github.io/dbtl/ci/pre-commit/).
 
+## Keybindings
+
+Press `?` in the app for every key in the current mode, or read the [keybindings reference](https://hytfjwr.github.io/dbtl/reference/keybindings/).
+
+<details>
+<summary>The keys you use most</summary>
+
+| Key | Action |
+|---|---|
+| `j` `k` `h` `l` | Move in the list or the lineage (arrow keys work too) |
+| `g` `G` | Jump to the first or last model |
+| `PgUp` `PgDn` | Page the list (`Ctrl-u` `Ctrl-d` also work) |
+| `Tab` | Cycle focus: list, lineage, inspector |
+| `Enter` | Open the structure view, or re-root on a lineage model |
+| `/` | Search the list. A `!` prefix takes a dbt selector, a `?` prefix searches full text |
+| `t` | Cycle the lineage lens |
+| `p` | Anchor or clear a two-node path |
+| `u` `d` `[` `]` `0` | Filter the lineage by direction and depth, or reset the view |
+| `b` `f` | Go back or forward in the re-root history |
+| `z` | Send the lineage cursor home and re-center |
+| `v` `w` `M` | Toggle compact nodes, the whole-graph overview, the minimap |
+| `O` `X` | Open the cursor's node in a new tab, close the active tab |
+| `{` `}` `~` | Previous tab, next tab, the home tab |
+| `Space` `'` `"` | Bookmark the model, cycle bookmarks forward or backward |
+| `T` `*` `F` | Filter the list to untested, bookmarked, or lint-finding models |
+| `s` `S` | SQL preview, project stats |
+| `D` | PR impact report against the `--diff` baseline |
+| `K` | Column lineage for the traced column |
+| `a` | Node actions menu |
+| `y` | Yank menu: `yy` unique_id, `ym` Mermaid, `yc` ASCII art, `y!` dbt selector |
+| `o` | Open the model's SQL in `$EDITOR` |
+| `P` | Run `dbt parse` and switch to the manifest |
+| `r` | Reload the data source |
+| `Ctrl-p` | Command palette |
+| `Ctrl-n` | Notification center |
+| `Ctrl-t` | Cycle the color theme |
+| `?` | Help for the current mode |
+| `q` | Quit (`Ctrl-c` from anywhere) |
+
+</details>
+
 ## Documentation
 
 - [Getting started](https://hytfjwr.github.io/dbtl/getting-started/overview/)
