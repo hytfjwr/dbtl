@@ -39,8 +39,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          # Beta-toolchain artifacts fit no other job; this weekly job
-          # restores a matching entry but never saves.
+          # Beta-toolchain artifacts fit no other job; this weekly job restores a matching entry but never saves.
           save-if: false
 
       - name: Clippy (warnings are errors)

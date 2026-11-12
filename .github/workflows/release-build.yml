@@ -35,6 +35,9 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+    env:
+      # rust-toolchain already exports this — pinning it keeps the cache key's CARGO_* env input stable.
+      CARGO_TERM_COLOR: always
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -50,8 +53,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          # Restores the shared release build — same command on the same
-          # runner family as the job that saves it; never saves itself.
+          # Restores the shared release build — same command and runner family as the job that saves it; never saves.
           shared-key: release
           save-if: false
 
@@ -122,8 +124,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          # Per-target artifacts land under target/<target>/, so they share
-          # nothing with other jobs' builds; never saves.
+          # Per-target artifacts land under target/<target>/ and share nothing with other jobs; never saves.
           save-if: false
 
       # psm's build script compiles a C file, and musl binaries must link

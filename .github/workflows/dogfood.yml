@@ -38,9 +38,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          # Restores the shared release build — Dogfood E2E runs the same
-          # `cargo build --release --locked` on the same runner and saves it;
-          # this job never saves.
+          # Restores the shared release build — Dogfood E2E runs the same command on the same runner and saves it; this job never saves.
           shared-key: release
           save-if: false
 
@@ -140,8 +138,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          # Shared release build — saved on pushes to main only; pull
-          # request runs and the other release-building jobs restore it.
+          # Shared release build — saved on pushes to main only; PR runs and the other release builders restore it.
           shared-key: release
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 

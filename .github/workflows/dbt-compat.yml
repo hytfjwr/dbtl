@@ -68,8 +68,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          # Restores the shared debug/test build — it already covers xtask
-          # and the test targets below; this scheduled job never saves.
+          # Restores the shared debug/test build — it already covers xtask and the test targets below; this scheduled job never saves.
           shared-key: test
           save-if: false
 

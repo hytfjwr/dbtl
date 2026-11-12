@@ -36,8 +36,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          # Own key (clippy artifacts differ from normal builds); saved on
-          # pushes to main only — pull request runs restore it.
+          # Own key (clippy artifacts differ from normal builds); saved on pushes to main only.
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Check formatting
@@ -70,8 +69,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          # Shared per-OS debug/test build; saved on pushes to main only —
-          # pull request runs and the other test-driving jobs restore it.
+          # Shared per-OS debug/test build; saved on pushes to main only — PR runs and other test jobs restore it.
           shared-key: test
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
@@ -132,8 +130,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          # Own key — the MSRV toolchain's artifacts are incompatible with
-          # stable's; saved on pushes to main only.
+          # Own key — the MSRV toolchain's artifacts are incompatible with stable's; saved on pushes to main only.
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Check (minimum supported toolchain)
@@ -162,8 +159,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          # Own key — rustdoc and machete artifacts differ from normal
-          # builds; saved on pushes to main only.
+          # Own key — rustdoc output differs from normal builds; saved on pushes to main only.
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-machete
@@ -199,8 +195,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          # Restores the shared debug build — it already covers xtask and
-          # its dependencies; never saves.
+          # Restores the shared debug/test build — it already covers xtask and its dependencies; never saves.
           shared-key: test
           save-if: false
 
@@ -228,8 +223,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          # llvm-cov's instrumented artifacts help no other job, so this
-          # report-only job restores a matching entry but never saves.
+          # llvm-cov's instrumented artifacts help no other job; this report-only job restores a matching entry but never saves.
           save-if: false
 
       - name: Install cargo-llvm-cov
@@ -287,8 +281,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          # Restores the shared per-OS debug/test build — it already covers
-          # this suite's test targets and dependencies; never saves.
+          # Restores the shared per-OS debug/test build covering this suite's targets and dependencies; never saves.
           shared-key: test
           save-if: false
 
