@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::SqlDialect;
+
 /// The default side-map location: `target/catalog.json` next to the data
 /// source — a `manifest.json` lives inside `target/` so its sibling is used,
 /// a project dir gets `target/catalog.json` appended (the shared
@@ -193,12 +195,22 @@ impl Catalog {
 }
 
 impl CatalogNode {
-    /// The warehouse type for a column (dbt lowercases catalog column keys
-    /// but manifests may not — try both spellings).
+    /// The warehouse type for a column — case-insensitive on BOTH sides:
+    /// dbt lowercases catalog column keys but a manifest's `data_type`
+    /// author and some adapters (Snowflake's uppercase catalog) don't
+    /// follow, so a `USER_ID`-keyed column still resolves for a
+    /// `user_id` declaration.
     pub fn column_type(&self, column: &str) -> Option<&str> {
         self.columns
             .get(column)
             .or_else(|| self.columns.get(&column.to_lowercase()))
+            .or_else(|| {
+                let lower = column.to_lowercase();
+                self.columns
+                    .iter()
+                    .find(|(k, _)| k.to_lowercase() == lower)
+                    .map(|(_, c)| c)
+            })
             .and_then(|c| c.data_type.as_deref())
     }
 
@@ -226,35 +238,189 @@ impl CatalogNode {
     /// Documented-but-missing / present-but-undocumented columns vs the
     /// manifest's declared set — the schema.yml ↔ warehouse drift readout.
     /// `(missing_in_warehouse, missing_in_docs)`, both sorted.
+    /// Membership compares case-insensitively on BOTH sides (an
+    /// uppercase-keyed catalog doesn't re-flag every declared column);
+    /// output keeps the declaring side's spelling — the documented names
+    /// for `missing_in_warehouse`, the catalog's for `missing_in_docs`.
     pub fn drift(&self, documented: &[String]) -> (Vec<String>, Vec<String>) {
-        let actual: BTreeSet<String> = self.columns.keys().cloned().collect();
+        let actual: BTreeSet<String> = self.columns.keys().map(|k| k.to_lowercase()).collect();
         let declared: BTreeSet<String> = documented.iter().map(|c| c.to_lowercase()).collect();
         (
-            declared.difference(&actual).cloned().collect(),
-            actual.difference(&declared).cloned().collect(),
+            documented
+                .iter()
+                .filter(|c| !actual.contains(&c.to_lowercase()))
+                .cloned()
+                .collect(),
+            self.columns
+                .keys()
+                .filter(|k| !declared.contains(&k.to_lowercase()))
+                .cloned()
+                .collect(),
         )
     }
 
     /// Per-column documented↔warehouse type disagreement, in documented-
     /// column order: one [`TypeDrift`] per column the catalog knows whose
-    /// recorded type differs from the declared `data_type` (a missing
-    /// declared type still lists — the TUI's note surfaces the real type as
-    /// information). The single comparison both `catalog_note` and lint's
-    /// `warehouse_type_drift` call — byte-for-byte, no type-string
-    /// normalization (normalizing `varchar`/`VARCHAR(255)` would change the
-    /// TUI's output, so it is deliberately out of scope).
-    pub fn type_drift(&self, documented: &[crate::ColumnInfo]) -> Vec<TypeDrift> {
+    /// recorded type [`types_equivalent`] calls different from the declared
+    /// `data_type` (a missing declared type still lists — the TUI's note
+    /// surfaces the real type as information). The single comparison both
+    /// `catalog_note` and lint's `warehouse_type_drift` call — the dialect
+    /// selects which adapter alias table applies (`Generic` = the common
+    /// table only).
+    pub fn type_drift(
+        &self,
+        documented: &[crate::ColumnInfo],
+        dialect: SqlDialect,
+    ) -> Vec<TypeDrift> {
         documented
             .iter()
             .filter_map(|col| {
                 let warehouse = self.column_type(&col.name)?;
-                (col.data_type.as_deref() != Some(warehouse)).then(|| TypeDrift {
+                let differs = match col.data_type.as_deref() {
+                    Some(declared) => !types_equivalent(declared, warehouse, dialect),
+                    None => true,
+                };
+                differs.then(|| TypeDrift {
                     name: col.name.clone(),
                     declared: col.data_type.clone(),
                     warehouse: warehouse.to_string(),
                 })
             })
             .collect()
+    }
+}
+
+/// Whether two type names name the same warehouse type under `dialect` —
+/// the `warehouse_type_drift` comparison:
+///
+/// - names lowercase, internal whitespace collapses (`double  precision`),
+/// - a parenthesized args tail (`varchar(255)`, `number(38,0)`) compares
+///   ONLY when both sides carry one — a bare `varchar` declaration never
+///   promised a width,
+/// - base names equal by table lookup: `COMMON_TYPE_FAMILIES` plus the
+///   `dialect`'s adapter table (`dialect_type_families`) — a name pair
+///   in no shared family is NOT equal (distinct types are the drift the
+///   rule reports).
+pub fn types_equivalent(declared: &str, warehouse: &str, dialect: SqlDialect) -> bool {
+    let (db, da) = type_parts(declared);
+    let (wb, wa) = type_parts(warehouse);
+    if da.is_some() && wa.is_some() && da != wa {
+        return false;
+    }
+    // Snowflake's `number`/`decimal`/`numeric`/`dec` all spell NUMBER —
+    // scale decides the shape: bare (dbt's `(38,0)` default), `(p)` or
+    // `(p, 0)` is integer-family, `(p, s>0)` is decimal-family. Read every
+    // spelling through that pivot so `decimal(10,2)` ≡ `number(10,2)` and
+    // a bare `decimal` ≡ `int` ≡ `number` — all genuinely the same stored
+    // type — while `int` vs `number(10,2)` stays drift.
+    let snow_shape = |base: String, args: Option<&str>| -> String {
+        if dialect == SqlDialect::Snowflake
+            && matches!(base.as_str(), "number" | "numeric" | "decimal" | "dec")
+        {
+            if number_scale_zero(args) {
+                "number".to_string()
+            } else {
+                "numeric".to_string()
+            }
+        } else {
+            base
+        }
+    };
+    let db = snow_shape(db, da.as_deref());
+    let wb = snow_shape(wb, wa.as_deref());
+    if db == wb {
+        return true;
+    }
+    COMMON_TYPE_FAMILIES
+        .iter()
+        .chain(dialect_type_families(dialect))
+        .any(|family| family.contains(&db.as_str()) && family.contains(&wb.as_str()))
+}
+
+/// Type-name alias families: names in one row name the same type wherever
+/// they print. Names are the already-normalized base form (lowercase,
+/// whitespace-collapsed, args stripped — see [`type_parts`]). Kept as flat
+/// data so an added alias is one list entry.
+const COMMON_TYPE_FAMILIES: &[&[&str]] = &[
+    &["varchar", "character varying", "text", "string"],
+    &["int", "integer", "int4"],
+    &["bigint", "int8"],
+    &["smallint", "int2"],
+    &["bool", "boolean"],
+    &["float8", "double precision", "double"],
+    &["float4", "real"],
+    &["numeric", "decimal", "dec"],
+    &["timestamp", "timestamp without time zone"],
+    &["timestamptz", "timestamp with time zone"],
+];
+
+/// The adapter-specific alias families `types_equivalent` adds for
+/// `dialect` — ONLY synonyms that adapter's official type docs state (the
+/// catalog prints these spellings):
+///
+/// - BigQuery: `INT64` is the only integer type (declared `int`/`bigint`/
+///   `smallint` all come back `INT64`); `FLOAT64` is the only float;
+///   `BIGNUMERIC`/`BIGDECIMAL` alias like `NUMERIC`/`DECIMAL`.
+/// - Snowflake: `INT`/`INTEGER`/`BIGINT`/`SMALLINT`/`TINYINT`/`BYTEINT` are
+///   all `NUMBER(38,0)`; `FLOAT`/`FLOAT4`/`FLOAT8`/`DOUBLE`/
+///   `DOUBLE PRECISION`/`REAL` are all `FLOAT`. `NUMBER` and its
+///   `DECIMAL`/`NUMERIC`/`DEC` spellings join the integer family only at
+///   scale 0 — [`types_equivalent`] pivots them before the family lookup.
+fn dialect_type_families(dialect: SqlDialect) -> &'static [&'static [&'static str]] {
+    match dialect {
+        SqlDialect::BigQuery => &[
+            &[
+                "int64", "int", "integer", "int4", "bigint", "int8", "smallint", "int2",
+            ],
+            &["float64", "float8", "double precision", "double"],
+            &["bignumeric", "bigdecimal"],
+        ],
+        SqlDialect::Snowflake => &[
+            &[
+                "number", "int", "integer", "int4", "bigint", "int8", "smallint", "int2",
+                "tinyint", "byteint",
+            ],
+            &[
+                "float",
+                "float4",
+                "float8",
+                "double",
+                "double precision",
+                "real",
+            ],
+        ],
+        _ => &[],
+    }
+}
+
+/// Split a type name into `(base, args)`: the base lowercased with
+/// whitespace collapsed (`DOUBLE  PRECISION` → `double precision`), args
+/// the inside of the first `(...)` tail with each comma-separated token
+/// trimmed (`number(38, 0)` → `Some("38,0")`, `decimal` → `None`) — so
+/// `decimal(10, 2)` and `DECIMAL(10,2)` compare as the same shape, not as
+/// raw strings. A trailing args group after `)` is ignored — the width is
+/// what comparison needs.
+fn type_parts(t: &str) -> (String, Option<String>) {
+    let lower = t.trim().to_lowercase();
+    let (base, args) = match lower.split_once('(') {
+        Some((b, a)) => (b.trim(), a.split(')').next().unwrap_or(a)),
+        None => (lower.as_str(), ""),
+    };
+    let base = base.split_whitespace().collect::<Vec<_>>().join(" ");
+    let args = args.split(',').map(str::trim).collect::<Vec<_>>().join(",");
+    (base, (!args.is_empty()).then_some(args))
+}
+
+/// Snowflake `NUMBER` args count as integer-shaped only at scale 0: bare
+/// (dbt's default `(38,0)`), a bare precision `(p)`, or `(p, 0)`.
+fn number_scale_zero(args: Option<&str>) -> bool {
+    match args {
+        None => true,
+        Some(a) => {
+            let mut parts = a.split(',').map(str::trim);
+            parts.next(); // the precision itself doesn't matter
+            matches!(parts.next(), None | Some("0")) && parts.next().is_none()
+        }
     }
 }
 
@@ -330,11 +496,15 @@ mod tests {
         // Declared order is preserved; a column the catalog doesn't know
         // contributes nothing; a matching declared type contributes nothing;
         // a missing declared type still lists the warehouse's real type.
-        let drift = n.type_drift(&[
-            col("order_id", Some("bigint")), // byte-for-byte: INT64 != bigint
-            col("status", None),
-            col("ghost_col", Some("INT")),
-        ]);
+        // Generic dialect: no adapter table, so `INT64` ≠ `bigint`.
+        let drift = n.type_drift(
+            &[
+                col("order_id", Some("bigint")),
+                col("status", None),
+                col("ghost_col", Some("INT")),
+            ],
+            SqlDialect::Generic,
+        );
         assert_eq!(
             drift,
             vec![
@@ -350,5 +520,64 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn types_equivalent_normalizes_case_whitespace_and_arg_tails() {
+        let d = SqlDialect::Generic;
+        // Case + whitespace collapse.
+        assert!(types_equivalent("DOUBLE  PRECISION", "double precision", d));
+        assert!(types_equivalent("int", "INT", d));
+        // Args compare ONLY when both sides carry them — a bare `varchar`
+        // never promised a width; a pinned `varchar(10)` did.
+        assert!(types_equivalent("varchar", "VARCHAR(255)", d));
+        assert!(types_equivalent("varchar(255)", "varchar(255)", d));
+        assert!(!types_equivalent("varchar(10)", "VARCHAR(255)", d));
+        // Common families: int/integer, numeric/decimal/dec, bool/boolean.
+        assert!(types_equivalent("integer", "int", d));
+        assert!(types_equivalent("numeric(10,2)", "decimal(10,2)", d));
+        assert!(types_equivalent("dec(10,2)", "NUMERIC(10,2)", d));
+        assert!(types_equivalent("bool", "BOOLEAN", d));
+        // Args compare token-wise, not as raw strings: padding inside the
+        // parens never decides, but a different token does.
+        assert!(types_equivalent("decimal(10, 2)", "DECIMAL(10,2)", d));
+        assert!(types_equivalent("varchar( 255 )", "varchar(255)", d));
+        assert!(!types_equivalent("decimal(10, 2)", "decimal(10, 3)", d));
+        // Genuinely different types differ — that IS the drift.
+        assert!(!types_equivalent("int", "varchar", d));
+        assert!(!types_equivalent("date", "timestamp", d));
+    }
+
+    #[test]
+    fn types_equivalent_applies_adapter_alias_tables() {
+        // BigQuery's only integer spelling is INT64 — every declared
+        // integer alias reads as it.
+        let bq = SqlDialect::BigQuery;
+        assert!(types_equivalent("bigint", "INT64", bq));
+        assert!(types_equivalent("smallint", "INT64", bq));
+        assert!(types_equivalent("double", "FLOAT64", bq));
+        // Under Generic there is no int64↔bigint family.
+        assert!(!types_equivalent("bigint", "INT64", SqlDialect::Generic));
+        // Snowflake integers are NUMBER(38,0); floats collapse to FLOAT.
+        let sf = SqlDialect::Snowflake;
+        assert!(types_equivalent("int", "NUMBER", sf));
+        assert!(types_equivalent("bigint", "NUMBER(38,0)", sf));
+        assert!(types_equivalent("byteint", "NUMBER(38,0)", sf));
+        assert!(types_equivalent("double precision", "FLOAT", sf));
+        // …but `NUMBER` is integer-shaped ONLY at scale 0.
+        assert!(!types_equivalent("int", "NUMBER(10,2)", sf));
+        assert!(!types_equivalent("number(10,2)", "int", sf));
+        // A bare-precision `NUMBER(10)` still defaults to scale 0.
+        assert!(types_equivalent("int", "NUMBER(10)", sf));
+        // DECIMAL/NUMERIC/DEC are NUMBER spellings, so the same scale
+        // pivot applies: `decimal(10,2)` ≡ `number(10,2)`, and a bare
+        // `decimal`/`numeric` is `NUMBER(38,0)` — integer-shaped.
+        assert!(types_equivalent("decimal(10,2)", "number(10,2)", sf));
+        assert!(types_equivalent("number(10,2)", "numeric(10,2)", sf));
+        assert!(types_equivalent("dec(5,2)", "DECIMAL(5,2)", sf));
+        assert!(types_equivalent("decimal", "NUMBER(38,0)", sf));
+        assert!(types_equivalent("int", "NUMERIC", sf));
+        // …and the decimal shape never equates to the integer family.
+        assert!(!types_equivalent("decimal(10,2)", "int", sf));
     }
 }

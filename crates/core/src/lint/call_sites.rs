@@ -23,7 +23,7 @@ use super::{Finding, Label};
 /// `raw.orders`, a versioned `model.p.dim.v2` reads `dim.v2`, everything
 /// else the node name (the uid's last segment, which `NodeInfo.name`
 /// agrees with).
-pub(crate) fn display_name(dag: &Dag, uid: &str) -> String {
+pub fn display_name(dag: &Dag, uid: &str) -> String {
     // `it.next()` x5 — no Vec: uids have ≤4 segments.
     let mut it = uid.split('.');
     match (it.next(), it.next(), it.next(), it.next(), it.next()) {
@@ -41,13 +41,13 @@ pub(crate) fn display_name(dag: &Dag, uid: &str) -> String {
 }
 
 /// [`display_name`] over a uid list, in the same order.
-pub(crate) fn display_names(dag: &Dag, uids: &[String]) -> Vec<String> {
+pub fn display_names(dag: &Dag, uids: &[String]) -> Vec<String> {
     uids.iter().map(|u| display_name(dag, u)).collect()
 }
 
 /// `a, b, c` — names past the fifth collapse to `and N more`
 /// (`a, b, c, d, e and 2 more`), the shared enumeration cap.
-pub(crate) fn name_list(names: &[String]) -> String {
+pub fn name_list(names: &[String]) -> String {
     const CAP: usize = 5;
     if names.len() <= CAP {
         names.join(", ")
@@ -236,6 +236,19 @@ impl<'a> CallSites<'a> {
         let idx = lines.partition_point(|&o| o as usize <= offset) - 1;
         let column = text[lines[idx] as usize..offset].chars().count() as u32 + 1;
         (idx as u32 + 1, column)
+    }
+
+    /// Whether the node's raw SQL calls `ref()` or `source()` at all —
+    /// regardless of whether any call produced a graph edge. `root_models`
+    /// uses it to tell a genuinely parentless model from one whose only
+    /// refs failed to resolve (source mode never parses installed
+    /// packages, so a `ref('pkg_model')` drops without an edge — the model
+    /// is not a root, it is under-connected).
+    pub(crate) fn has_dependency_calls(&self) -> bool {
+        self.sites
+            .sites
+            .iter()
+            .any(|c| matches!(c.kind, CallKind::Ref { .. } | CallKind::Source { .. }))
     }
 
     /// Every call span resolving to the parent `uid`, sorted by position —

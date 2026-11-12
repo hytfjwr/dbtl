@@ -218,13 +218,20 @@ fn descend(
 fn name_chain(dag: &Dag, f: &Finding) -> Option<Vec<String>> {
     let n = dag.get(&f.node_uid)?;
     if n.resource_type == "source" {
-        // `source.<pkg>.<source>.<table>` — the two declaring names.
+        // `source.<pkg>.<source>.<table>` — the two declaring names, plus
+        // the column for a column-scoped finding (`undocumented_columns`
+        // under `resource_types: [source]` points at the bare `- name:`
+        // inside the table's `columns:` list, not the table's own).
         let mut parts = f.node_uid.splitn(4, '.');
         parts.next()?;
         parts.next()?;
         let source = parts.next()?;
         let table = parts.next()?;
-        return Some(vec![source.to_string(), table.to_string()]);
+        let mut chain = vec![source.to_string(), table.to_string()];
+        if let Some(column) = offending_column(dag, f) {
+            chain.push(column);
+        }
+        return Some(chain);
     }
     let mut chain = vec![n.name.clone()];
     if let Some(column) = offending_column(dag, f) {

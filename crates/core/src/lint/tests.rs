@@ -237,6 +237,51 @@ fn model_fanout_flags_leaf_children_at_threshold() {
 }
 
 #[test]
+fn model_fanout_skips_leaves_only_packages_consume() {
+    // `fct_pkg` reads leaf-shaped after the Root prune, but an
+    // installed-package model consumes it — leaf-ness can't be
+    // established, so int_hub counts only fct_leaf and stays under the
+    // threshold. `int_two` feeds two proven leaves: the control flags.
+    let mut pkg = model("pkg_use", "dep/pkg_use.sql");
+    pkg.0 = "model.dep.pkg_use".into();
+    let mut m = manifest(
+        vec![
+            pkg,
+            model("int_hub", "intermediate/int_hub.sql"),
+            model("fct_leaf", "marts/fct_leaf.sql"),
+            model("fct_pkg", "marts/fct_pkg.sql"),
+            model("int_two", "intermediate/int_two.sql"),
+            model("fct_one", "marts/fct_one.sql"),
+            model("fct_two", "marts/fct_two.sql"),
+        ],
+        vec![],
+        &[
+            ("model.p.int_hub", "model.p.fct_leaf"),
+            ("model.p.int_hub", "model.p.fct_pkg"),
+            ("model.p.fct_pkg", "model.dep.pkg_use"),
+            ("model.p.int_two", "model.p.fct_one"),
+            ("model.p.int_two", "model.p.fct_two"),
+        ],
+    );
+    multi_package(&mut m);
+    let (dag, _) = crate::PackageScope::Root.apply_with_warnings(Dag::build(&m));
+    let cfg = config_from("lint:\n  model_fanout_threshold: 2\n");
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::ModelFanout),
+        vec!["model.p.int_two"],
+        "a pruned package consumer keeps fct_pkg from proving leaf-ness"
+    );
+    assert_eq!(
+        dag.pruned_adjacent("model.p.fct_pkg"),
+        Some(&crate::PrunedAdjacent {
+            parents: 0,
+            children: 1
+        })
+    );
+}
+
+#[test]
 fn root_models_flags_parentless_models_only() {
     let m = manifest(
         vec![
@@ -360,6 +405,53 @@ fn rejoining_upstream_flags_a_snapshot_relay() {
     let findings = findings_of(&m, &LintConfig::default());
     let hits = flagged(&findings, LintRule::RejoiningUpstream);
     assert_eq!(hits, vec!["snapshot.p.snap_b"]);
+}
+
+#[test]
+fn rejoining_upstream_skips_bs_with_pruned_package_children() {
+    // The A→B→C + A→C shape is complete, but B's other consumer lives in
+    // an installed package — after the Root prune B reads single-child,
+    // yet "otherwise unused" can't be established. `int_y` is the
+    // all-in-project control: it flags.
+    let mut pkg = model("pkg_use", "dep/pkg_use.sql");
+    pkg.0 = "model.dep.pkg_use".into();
+    let mut m = manifest(
+        vec![
+            pkg,
+            model("stg_a", "staging/stg_a.sql"),
+            model("int_b", "intermediate/int_b.sql"),
+            model("fct_c", "marts/fct_c.sql"),
+            model("stg_x", "staging/stg_x.sql"),
+            model("int_y", "intermediate/int_y.sql"),
+            model("fct_z", "marts/fct_z.sql"),
+        ],
+        vec![],
+        &[
+            ("model.p.stg_a", "model.p.int_b"),
+            ("model.p.int_b", "model.p.fct_c"),
+            ("model.p.stg_a", "model.p.fct_c"),
+            ("model.p.int_b", "model.dep.pkg_use"),
+            ("model.p.stg_x", "model.p.int_y"),
+            ("model.p.int_y", "model.p.fct_z"),
+            ("model.p.stg_x", "model.p.fct_z"),
+        ],
+    );
+    multi_package(&mut m);
+    let (dag, _) = crate::PackageScope::Root.apply_with_warnings(Dag::build(&m));
+    let cfg = cfg_only(&[LintRule::RejoiningUpstream]);
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::RejoiningUpstream),
+        vec!["model.p.int_y"],
+        "a severed package consumer means 'single use' can't be established"
+    );
+    assert_eq!(
+        dag.pruned_adjacent("model.p.int_b"),
+        Some(&crate::PrunedAdjacent {
+            parents: 0,
+            children: 1
+        })
+    );
 }
 
 #[test]
@@ -905,6 +997,15 @@ fn registry_params_are_the_declared_config_keys_with_matching_defaults() {
                             p.name
                         );
                     }
+                }
+                ParamKind::Bool { default } => {
+                    assert_eq!(
+                        LintConfig::default().bool_param(row.rule, p.name),
+                        Some(default),
+                        "{}.{}",
+                        row.id,
+                        p.name
+                    );
                 }
             }
         }
@@ -1979,6 +2080,60 @@ fn chained_views_reports_the_longest_chain_then_the_smallest_parent() {
             "model.p.v6".to_string(),
         ],
         "equal-length parents resolve to the smaller unique_id"
+    );
+}
+
+#[test]
+fn chained_views_skips_ends_only_packages_extend() {
+    // v1→…→v5 is a 5-view chain, but v5's only downstream is an
+    // installed-package model — after the Root prune v5 reads as a chain
+    // end, yet the pruned consumer's materialization is invisible, so the
+    // end can't be established. w1→…→w5 is the same chain all
+    // in-project: the control flags.
+    let mut pkg = mat_model("pkg_v", "view");
+    pkg.0 = "model.dep.pkg_v".into();
+    let mut m = manifest(
+        vec![
+            pkg,
+            mat_model("v1", "view"),
+            mat_model("v2", "view"),
+            mat_model("v3", "view"),
+            mat_model("v4", "view"),
+            mat_model("v5", "view"),
+            mat_model("w1", "view"),
+            mat_model("w2", "view"),
+            mat_model("w3", "view"),
+            mat_model("w4", "view"),
+            mat_model("w5", "view"),
+        ],
+        vec![],
+        &[
+            ("model.p.v1", "model.p.v2"),
+            ("model.p.v2", "model.p.v3"),
+            ("model.p.v3", "model.p.v4"),
+            ("model.p.v4", "model.p.v5"),
+            ("model.p.v5", "model.dep.pkg_v"),
+            ("model.p.w1", "model.p.w2"),
+            ("model.p.w2", "model.p.w3"),
+            ("model.p.w3", "model.p.w4"),
+            ("model.p.w4", "model.p.w5"),
+        ],
+    );
+    multi_package(&mut m);
+    let (dag, _) = crate::PackageScope::Root.apply_with_warnings(Dag::build(&m));
+    let cfg = cfg_only(&[LintRule::ChainedViews]);
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::ChainedViews),
+        vec!["model.p.w5"],
+        "a pruned package child could continue the chain — the end is unprovable"
+    );
+    assert_eq!(
+        dag.pruned_adjacent("model.p.v5"),
+        Some(&crate::PrunedAdjacent {
+            parents: 0,
+            children: 1
+        })
     );
 }
 
@@ -4985,4 +5140,627 @@ fn enabled_sql_rules_share_one_parse_per_model() {
         "the marked re-parse is one per raw-carrying model"
     );
     assert_eq!(out.findings.len(), 4); // a + b flag select_star AND hard_coded
+}
+
+// ---- rule accuracy boundaries (parse coverage, python, pruning, dialects) ----
+
+/// A model literal carrying `language` — `python` is the only value the
+/// SQL guard distinguishes.
+fn model_lang(name: &str, language: &str, raw: &str) -> (String, RawNode) {
+    let mut m = model_sql(name, raw);
+    m.1.language = Some(language.into());
+    m
+}
+
+#[test]
+fn sql_rules_never_judge_a_python_model() {
+    // The `.py` model's raw_code is Python — a coincidental `select *`-like
+    // string and a `dbt.ref(` call must not produce findings NOR an
+    // `unparsed` entry: the model is out of the rules' scope, not a parse
+    // failure. `forbidden_patterns` (raw-text) is bound by the same guard.
+    let mut py = model_lang(
+        "pymodel",
+        "python",
+        "def model(dbt, session):\n    return dbt.ref('up')\n",
+    );
+    py.1.compiled_code = Some("select *\nfrom t".into());
+    let m = manifest(vec![py, model_sql("clean", "select 1")], vec![], &[]);
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[
+        LintRule::SelectStar,
+        LintRule::HardCodedReferences,
+        LintRule::CartesianJoin,
+        LintRule::UnknownColumnReference,
+        LintRule::ForbiddenPatterns,
+    ]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert!(
+        out.findings.is_empty(),
+        "a python model produces no SQL finding: {:?}",
+        out.findings
+    );
+    assert!(
+        out.unparsed.is_empty(),
+        "a python model is out of scope, not unparsed"
+    );
+    assert_eq!(
+        res.analyzed_count(),
+        1,
+        "only the SQL model was ever parsed"
+    );
+}
+
+#[test]
+fn unparsed_counts_models_whose_sql_wont_parse_once() {
+    // `unparsable` has raw SQL that fails to parse (its uid lands on
+    // `unparsed` once though four SQL rules each asked for its facts);
+    // `no_sql` carries none at all (never judged, never counted);
+    // `compiled_only` has no raw — `hard_coded_relations` declines it but
+    // that's a deliberate non-judgment, not a parse failure.
+    let m = manifest(
+        vec![
+            model_sql("unparsable", "select from where or"),
+            model("no_sql", "staging/no_sql.sql"),
+            model_compiled_only("compiled_only", "select 1"),
+            model_sql("clean", "select 1"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[
+        LintRule::SelectStar,
+        LintRule::HardCodedReferences,
+        LintRule::CartesianJoin,
+        LintRule::UnknownColumnReference,
+    ]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        out.unparsed.iter().collect::<Vec<_>>(),
+        vec!["model.p.unparsable"],
+        "each unparsable model lands once, however many rules asked"
+    );
+}
+
+#[test]
+fn forbidden_patterns_never_adds_to_unparsed() {
+    // A raw-text rule: even against unparsable SQL it judges the text it
+    // can see — it asks for no parse, so it records no unparsed entry.
+    let m = manifest(
+        vec![model_sql("bad", "select from where or -- unsafe_udf")],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg =
+        config_from("lint:\n  rules:\n    forbidden_patterns:\n      patterns: ['unsafe_udf']\n");
+    let mut cfg = cfg;
+    for r in LintRule::ALL {
+        if r != LintRule::ForbiddenPatterns {
+            cfg.severities.insert(r, None);
+        }
+    }
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::ForbiddenPatterns),
+        vec!["model.p.bad"]
+    );
+    assert!(out.unparsed.is_empty(), "a raw-text rule never parses");
+}
+
+/// A `metadata.project_name`-pinned manifest so `PackageScope::Root`
+/// prunes the `dep` package without an ambiguity warning.
+fn multi_package(m: &mut RawManifest) {
+    m.metadata.project_name = Some("p".into());
+}
+
+#[test]
+fn root_models_skips_pruned_package_parents_and_unresolved_refs() {
+    // `child`'s only parent lives in an installed package — after the
+    // Root-scope prune it reads parentless, but the PrunedAdjacent record
+    // says otherwise. `cross_pkg` refs a model source mode never parsed:
+    // the unresolved `ref()` is still a dependency call, so the model is
+    // under-connected, not a root. `bare` is the real root.
+    let mut dep = model("base", "dep/base.sql");
+    dep.0 = "model.dep.base".into();
+    let mut child = model_sql_pos("stg_child", "select * from {{ ref('base') }}");
+    child.0 = "model.p.stg_child".into();
+    let mut cross = model_sql_pos(
+        "stg_cross",
+        "select * from {{ ref('dep', 'other_pkg_model') }}",
+    );
+    cross.0 = "model.p.stg_cross".into();
+    let mut m = manifest(
+        vec![dep, child, cross, model("stg_bare", "staging/stg_bare.sql")],
+        vec![],
+        &[("model.dep.base", "model.p.stg_child")],
+    );
+    multi_package(&mut m);
+    let (dag, _) = crate::PackageScope::Root.apply_with_warnings(Dag::build(&m));
+    let cfg = cfg_only(&[LintRule::RootModels]);
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::RootModels),
+        vec!["model.p.stg_bare"],
+        "pruned-package parents and unresolved refs are connectivity, not roots"
+    );
+    assert_eq!(
+        dag.pruned_adjacent("model.p.stg_child"),
+        Some(&crate::PrunedAdjacent {
+            parents: 1,
+            children: 0
+        })
+    );
+    // The record survives a presentation `filtered` cut — subgraph
+    // narrowing must not lose the package boundary.
+    let sub = dag.filtered(|n| n.unique_id == "model.p.stg_child");
+    assert_eq!(
+        sub.pruned_adjacent("model.p.stg_child"),
+        Some(&crate::PrunedAdjacent {
+            parents: 1,
+            children: 0
+        })
+    );
+}
+
+#[test]
+fn unused_sources_skips_sources_only_packages_read() {
+    // `s.pkg_read`'s only consumer is an installed-package model: after
+    // the Root prune the source has no visible child — but something DID
+    // read it, so it is not unused. `s.dead` is genuinely unread.
+    let mut pkg = model("pkg_model", "dep/pkg_model.sql");
+    pkg.0 = "model.dep.pkg_model".into();
+    let mut m = manifest(
+        vec![pkg],
+        vec![source("s.pkg_read"), source("s.dead")],
+        &[("source.p.s.pkg_read", "model.dep.pkg_model")],
+    );
+    multi_package(&mut m);
+    let (dag, _) = crate::PackageScope::Root.apply_with_warnings(Dag::build(&m));
+    let cfg = cfg_only(&[LintRule::UnusedSources]);
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::UnusedSources),
+        vec!["source.p.s.dead"],
+        "a source a package model consumes is used — just not visibly"
+    );
+    assert_eq!(
+        dag.pruned_adjacent("source.p.s.pkg_read"),
+        Some(&crate::PrunedAdjacent {
+            parents: 0,
+            children: 1
+        })
+    );
+}
+
+#[test]
+fn missing_primary_key_tests_accepts_constraints_only_when_opted_in() {
+    // Model-level and column-level `primary_key` constraints are NOT a
+    // test guarantee under the default config — most warehouses never
+    // enforce them — and substitute only under the explicit opt-in.
+    let mut model_pk = model("stg_model_pk", "staging/stg_model_pk.sql");
+    model_pk.1.constraints = vec![crate::manifest::RawConstraint {
+        constraint_type: Some("primary_key".into()),
+        ..Default::default()
+    }];
+    let mut col_pk = model("stg_col_pk", "staging/stg_col_pk.sql");
+    col_pk.1.columns = serde_json::Map::from_iter([(
+        "id".to_string(),
+        serde_json::json!({
+            "name": "id",
+            "constraints": [{"type": "primary_key", "columns": null}]
+        }),
+    )]);
+    let m = manifest(
+        vec![
+            model_pk,
+            col_pk,
+            model("stg_tested", "staging/stg_tested.sql"),
+            model("stg_bare", "staging/stg_bare.sql"),
+            test_on("stg_tested", "unique", "id"),
+            test_on("stg_tested", "not_null", "id"),
+        ],
+        vec![],
+        &[],
+    );
+    let cfg = cfg_only(&[LintRule::MissingPrimaryKeyTests]);
+    let dag = Dag::build(&m);
+    let out = lint_outcome(&dag, &cfg, None, None);
+    let mut got = flagged(&out.findings, LintRule::MissingPrimaryKeyTests);
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec![
+            "model.p.stg_bare",
+            "model.p.stg_col_pk",
+            "model.p.stg_model_pk"
+        ],
+        "constraints are not tests by default"
+    );
+    let cfg = config_from(
+        "lint:\n  rules:\n    missing_primary_key_tests:\n      accept_primary_key_constraint: true\n",
+    );
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::MissingPrimaryKeyTests),
+        vec!["model.p.stg_bare"],
+        "opted in, either constraint level stands in for the test pair"
+    );
+}
+
+#[test]
+fn undocumented_rules_honour_their_resource_types() {
+    // Default `[model]` checks models only; widening to
+    // `resource_types: [model, seed, snapshot, source]` sweeps the rest —
+    // `undocumented_columns` included (a source's bare column flags, and
+    // its yml chain descends [source, table, column]).
+    let mut seed = (
+        "seed.p.raw_seed".to_string(),
+        RawNode {
+            name: "raw_seed".into(),
+            resource_type: "seed".into(),
+            path: Some("seeds/raw_seed.csv".into()),
+            ..Default::default()
+        },
+    );
+    seed.1.columns = columns(&[("id", None, None)]);
+    let mut snap = (
+        "snapshot.p.snap".to_string(),
+        RawNode {
+            name: "snap".into(),
+            resource_type: "snapshot".into(),
+            path: Some("snapshots/snap.sql".into()),
+            ..Default::default()
+        },
+    );
+    snap.1.columns = columns(&[("id", None, None)]);
+    let mut src = source("s.raw");
+    src.1.columns = columns(&[("id", None, None)]);
+    let m = manifest(
+        vec![model("stg_bare", "staging/stg_bare.sql"), seed, snap],
+        vec![src],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let cfg = cfg_only(&[LintRule::UndocumentedModels, LintRule::UndocumentedColumns]);
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::UndocumentedModels),
+        vec!["model.p.stg_bare"],
+        "the default checks models only"
+    );
+    assert_eq!(
+        flagged(&out.findings, LintRule::UndocumentedColumns),
+        Vec::<&str>::new(),
+        "the default model has no declared columns"
+    );
+    let cfg = config_from(
+        "lint:\n  rules:\n    undocumented_models:\n      resource_types: [model, seed, snapshot]\n    undocumented_columns:\n      resource_types: [model, seed, snapshot, source]\n",
+    );
+    let out = lint_outcome(&dag, &cfg, None, None);
+    let mut got = flagged(&out.findings, LintRule::UndocumentedModels);
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec!["model.p.stg_bare", "seed.p.raw_seed", "snapshot.p.snap"]
+    );
+    let mut got = flagged(&out.findings, LintRule::UndocumentedColumns);
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec!["seed.p.raw_seed", "snapshot.p.snap", "source.p.s.raw"],
+        "sources sweep too — their declared columns need descriptions"
+    );
+}
+
+#[test]
+fn a_source_column_finding_descends_source_table_column() {
+    // `undocumented_columns` on a source (opted in above) points at the
+    // column's own `- name:` inside the table's `columns:` — the
+    // [source, table, column] chain — never the table's entry.
+    let yml = "version: 2\n\nsources:\n  - name: s\n    tables:\n      - name: raw\n        columns:\n          - name: id\n";
+    assert_eq!(
+        yaml_name_line(yml, &names(&["s", "raw", "id"])),
+        Some(8),
+        "the three-part chain lands on the column entry"
+    );
+}
+
+#[test]
+fn layer_violation_only_judges_data_flow_layers_on_root_nodes() {
+    // `utilities/` carries no data-flow direction — an edge touching it is
+    // never a violation. `unknown/` maps to no layer either. And under a
+    // multi-package graph a package-side endpoint is context, never the
+    // flagged edge. Only marts→staging is the real backward jump.
+    let mut pkg_marts = model("pkg_marts", "marts/pkg_marts.sql");
+    pkg_marts.0 = "model.dep.pkg_marts".into();
+    let mut m = manifest(
+        vec![
+            model("stg_a", "staging/stg_a.sql"),
+            model("stg_utils", "staging/stg_utils.sql"),
+            model("util_helper", "utilities/util_helper.sql"),
+            model("other_x", "unknown/other_x.sql"),
+            model("fct_back", "marts/fct_back.sql"),
+            pkg_marts,
+        ],
+        vec![],
+        &[
+            // utilities -> staging: backward by rank, but not a data layer.
+            ("model.p.util_helper", "model.p.stg_utils"),
+            // unmapped dir -> staging: no direction to compare.
+            ("model.p.other_x", "model.p.stg_a"),
+            // The genuine violation.
+            ("model.p.fct_back", "model.p.stg_a"),
+            // Package-side backward edge: context only.
+            ("model.dep.pkg_marts", "model.p.stg_a"),
+        ],
+    );
+    multi_package(&mut m);
+    let dag = Dag::build(&m);
+    let cfg = cfg_only(&[LintRule::LayerViolation]);
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::LayerViolation),
+        vec!["model.p.stg_a"],
+        "utilities/unmapped/package edges never count"
+    );
+    let f = finding_on(&out.findings, LintRule::LayerViolation, "model.p.stg_a");
+    assert_eq!(f.related, vec!["model.p.fct_back".to_string()]);
+}
+
+#[test]
+fn incremental_without_unique_key_ignores_strategies_that_never_merge() {
+    // `append`, `insert_overwrite`, `microbatch` take no unique_key in
+    // dbt — flagging them is a false positive. `merge`/`delete+insert`
+    // still flag, with the strategy named.
+    let strategy = |name: &str, s: &str| {
+        let mut m = keyed_model(name, "incremental", None);
+        m.1.config.incremental_strategy = Some(s.into());
+        m
+    };
+    let m = manifest(
+        vec![
+            strategy("app", "append"),
+            strategy("over", "insert_overwrite"),
+            strategy("micro", "microbatch"),
+            strategy("merged", "merge"),
+            strategy("delins", "delete+insert"),
+            keyed_model("plain", "incremental", None),
+        ],
+        vec![],
+        &[],
+    );
+    let cfg = cfg_only(&[LintRule::IncrementalWithoutUniqueKey]);
+    let dag = Dag::build(&m);
+    let out = lint_outcome(&dag, &cfg, None, None);
+    let mut got = flagged(&out.findings, LintRule::IncrementalWithoutUniqueKey);
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec!["model.p.delins", "model.p.merged", "model.p.plain"],
+        "non-merge strategies take no unique_key"
+    );
+    let f = finding_on(
+        &out.findings,
+        LintRule::IncrementalWithoutUniqueKey,
+        "model.p.merged",
+    );
+    assert!(
+        f.message.contains("incremental_strategy: merge"),
+        "the configured strategy names itself: {}",
+        f.message
+    );
+}
+
+#[test]
+fn hard_coded_references_honours_ignore_globs_and_information_schema() {
+    let m = manifest(
+        vec![
+            model_sql("audit", "select * from staging.tmp_audit"),
+            model_sql("legacy", "select * from analytics.legacy_orders"),
+            model_sql("meta", "select * from db.information_schema.columns"),
+            model_sql("plain", "select * from analytics.orders"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = config_from(
+        "lint:\n  rules:\n    hard_coded_references:\n      ignore: ['*.tmp_*', 'legacy_orders']\n",
+    );
+    let mut cfg = cfg;
+    for r in LintRule::ALL {
+        if r != LintRule::HardCodedReferences {
+            cfg.severities.insert(r, None);
+        }
+    }
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::HardCodedReferences),
+        vec!["model.p.plain"],
+        "globs drop matching names (by suffix too) — information_schema never reaches the set"
+    );
+}
+
+#[test]
+fn cartesian_join_flags_comma_from_and_tautological_conditions() {
+    let m = manifest(
+        vec![
+            model_sql("comma", "select * from a.t, b.u"),
+            model_sql(
+                "comma_filtered",
+                "select * from a.t, b.u where a.t.id = b.u.id",
+            ),
+            model_sql("on_true", "select * from a.t join b.u on true"),
+            model_sql("on_one", "select * from a.t join b.u on 1 = 1"),
+            model_sql("on_literal", "select * from a.t join b.u on 'x' = 'x'"),
+            model_sql(
+                "on_columns",
+                "select * from a.t join b.u on a.t.id = a.t.id",
+            ),
+            model_sql("comma_unnest", "select * from a.t, unnest(a.t.arr) as x"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::CartesianJoin]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    let mut got = flagged(&out.findings, LintRule::CartesianJoin);
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec![
+            "model.p.comma",
+            "model.p.on_literal",
+            "model.p.on_one",
+            "model.p.on_true"
+        ],
+        "comma-FROM with no WHERE and never-rejecting ONs are cross products; a column self-comparison stays a condition"
+    );
+}
+
+#[test]
+fn cartesian_join_evaluates_a_cross_join_constraint() {
+    // MySQL parses a constraint on CROSS JOIN (its INNER JOIN spelling):
+    // a real ON is a conditioned join, not a product — a bare or
+    // never-rejecting one still is.
+    let m = manifest(
+        vec![
+            model_sql(
+                "cross_on",
+                "select * from a.t cross join b.u on a.t.id = b.u.id",
+            ),
+            model_sql("cross_bare", "select * from a.t cross join b.u"),
+            model_sql("cross_true", "select * from a.t cross join b.u on true"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = SqlParseResolver::new(None, SqlDialect::MySql);
+    let cfg = cfg_only(&[LintRule::CartesianJoin]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::CartesianJoin),
+        vec!["model.p.cross_bare", "model.p.cross_true"],
+        "CROSS JOIN with a real ON is MySQL's inner-join spelling — not a product"
+    );
+}
+
+#[test]
+fn warehouse_type_drift_compares_under_the_resolved_dialect() {
+    // `bigint` declared vs an `INT64` catalog: a false positive under
+    // Generic (no shared alias family), equivalent under BigQuery (its
+    // only integer type is INT64). The same run also exercises the
+    // case-insensitive catalog column lookup.
+    let m = manifest(
+        vec![model_cols(
+            "m",
+            &[("amount", Some("bigint")), ("ID", Some("STRING"))],
+        )],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let cat = catalog_json(
+        r#"{"nodes": {"model.p.m": {"columns": {"amount": {"type": "INT64"}, "id": {"type": "STRING"}}}}}"#,
+    );
+    let cfg = cfg_only(&[LintRule::WarehouseTypeDrift]);
+
+    // Generic: INT64 and bigint are different names — the drift stands.
+    let res = SqlParseResolver::new(Some(cat.clone()), SqlDialect::Generic);
+    let out = lint_outcome(&dag, &cfg, Some(&res), Some(&cat));
+    assert_eq!(
+        flagged(&out.findings, LintRule::WarehouseTypeDrift),
+        vec!["model.p.m"],
+        "generic knows no int64↔bigint alias"
+    );
+
+    // BigQuery: INT64 IS bigint — no drift, and the `ID`/`id` case gap
+    // still resolves.
+    let res = SqlParseResolver::new(Some(cat.clone()), SqlDialect::BigQuery);
+    let out = lint_outcome(&dag, &cfg, Some(&res), Some(&cat));
+    assert!(
+        flagged(&out.findings, LintRule::WarehouseTypeDrift).is_empty(),
+        "the resolver's dialect flows into the comparison"
+    );
+}
+
+#[test]
+fn warehouse_type_drift_honours_snowflake_number_semantics() {
+    // Snowflake `NUMBER` is integer-shaped only at scale 0: declared
+    // `int` vs `NUMBER`/`NUMBER(38,0)` agree, `int` vs `NUMBER(10,2)`
+    // drifts — and a bare `varchar` promise accepts `VARCHAR(255)` while
+    // `varchar(10)` doesn't.
+    let m = manifest(
+        vec![
+            model_cols("exact", &[("amount", Some("int"))]),
+            model_cols("scaled", &[("amount", Some("int"))]),
+            model_cols("bare_width", &[("name", Some("varchar"))]),
+            model_cols("pinned_width", &[("name", Some("varchar(10)"))]),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let cat = catalog_json(
+        r#"{"nodes": {
+            "model.p.exact": {"columns": {"amount": {"type": "NUMBER(38,0)"}}},
+            "model.p.scaled": {"columns": {"amount": {"type": "NUMBER(10,2)"}}},
+            "model.p.bare_width": {"columns": {"name": {"type": "VARCHAR(255)"}}},
+            "model.p.pinned_width": {"columns": {"name": {"type": "VARCHAR(255)"}}}
+        }}"#,
+    );
+    let res = SqlParseResolver::new(Some(cat.clone()), SqlDialect::Snowflake);
+    let cfg = cfg_only(&[LintRule::WarehouseTypeDrift]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), Some(&cat));
+    let mut got = flagged(&out.findings, LintRule::WarehouseTypeDrift);
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec!["model.p.pinned_width", "model.p.scaled"],
+        "scale-0 NUMBER is int-shaped, (10,2) is not; a declared width is a real promise"
+    );
+}
+
+#[test]
+fn lint_input_dialect_follows_the_resolver_then_the_override() {
+    // `new` auto-resolves from the dag adapter; `with_sql` adopts the
+    // resolver's; `with_dialect` pins over both.
+    let m = manifest(vec![model("a", "staging/a.sql")], vec![], &[]);
+    let dag = Dag::build(&m);
+    let cfg = LintConfig::default();
+    assert_eq!(
+        LintInput::new(&dag, &cfg).dialect,
+        SqlDialect::Generic,
+        "no adapter metadata → generic"
+    );
+    let res = SqlParseResolver::new(None, SqlDialect::Snowflake);
+    assert_eq!(
+        LintInput::new(&dag, &cfg).with_sql(Some(&res)).dialect,
+        SqlDialect::Snowflake,
+        "the resolver's dialect is adopted — SQL and catalog rules agree"
+    );
+    assert_eq!(
+        LintInput::new(&dag, &cfg)
+            .with_sql(Some(&res))
+            .with_dialect(Some(SqlDialect::BigQuery))
+            .dialect,
+        SqlDialect::BigQuery,
+        "an explicit pin wins"
+    );
+    assert_eq!(
+        LintInput::new(&dag, &cfg)
+            .with_sql(Some(&res))
+            .with_dialect(None)
+            .dialect,
+        SqlDialect::Snowflake,
+        "a None pin changes nothing"
+    );
 }

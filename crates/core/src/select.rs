@@ -301,8 +301,9 @@ fn validate_atom(atom: &str) -> Result<(), String> {
 /// malformed class degrades to literals rather than erroring, matching
 /// fnmatch's "an unmatched `[` is a literal `[`" rule — and the regex keeps
 /// matching free of the exponential backtracking a naive recursive matcher
-/// risks on adversarial `*a*a*a*`-style patterns.
-fn glob_regex(pattern: &str) -> regex::Regex {
+/// risks on adversarial `*a*a*a*`-style patterns. `pub(crate)` — lint's
+/// `hard_coded_references.ignore` patterns match by the same glob.
+pub(crate) fn glob_regex(pattern: &str) -> regex::Regex {
     // `(?s)` mirrors fnmatch's DOTALL `.*` (node names can't contain `\n`
     // anyway); `\A…\z` anchors the whole input.
     let mut out = String::from("\\A(?s)");

@@ -11,6 +11,7 @@ use serde::Serialize;
 
 use super::*;
 use crate::select::select;
+use crate::SqlDialect;
 use crate::{Catalog, SqlParseResolver};
 
 pub(super) use crate::lint::call_sites::{
@@ -42,6 +43,13 @@ pub struct LintInput<'a> {
     pub sql: Option<&'a SqlParseResolver>,
     /// The warehouse catalog [`Requires::Catalog`] rules read.
     pub catalog: Option<&'a Catalog>,
+    /// The adapter context dialect-aware judging uses —
+    /// `warehouse_type_drift`'s type-alias table selection. Resolved in
+    /// [`LintInput::new`] like every caller's "auto" path (`--sql-dialect`
+    /// wins via [`LintInput::with_dialect`], else the manifest's adapter,
+    /// else [`SqlDialect::Generic`]); [`LintInput::with_sql`] adopts the
+    /// resolver's own dialect so both sides of a diff agree.
+    pub dialect: SqlDialect,
 }
 
 impl<'a> LintInput<'a> {
@@ -51,12 +59,19 @@ impl<'a> LintInput<'a> {
             config,
             sql: None,
             catalog: None,
+            dialect: SqlDialect::from_dag(dag),
         }
     }
 
-    /// Supply the SQL resolver (`Requires::Sql` rules then evaluate).
+    /// Supply the SQL resolver (`Requires::Sql` rules then evaluate). The
+    /// resolver's own dialect becomes the input's adapter context — the
+    /// SQL rules and the catalog rules can never parse under different
+    /// dialects.
     pub fn with_sql(mut self, sql: Option<&'a SqlParseResolver>) -> Self {
         self.sql = sql;
+        if let Some(r) = sql {
+            self.dialect = r.dialect();
+        }
         self
     }
 
@@ -64,6 +79,16 @@ impl<'a> LintInput<'a> {
     /// evaluate).
     pub fn with_catalog(mut self, catalog: Option<&'a Catalog>) -> Self {
         self.catalog = catalog;
+        self
+    }
+
+    /// Pin the adapter context explicitly (the TUI's `--sql-dialect`
+    /// setting when it carries no SQL resolver — `Some` overrides the
+    /// `new`-resolved/`with_sql`-adopted value, `None` leaves it).
+    pub fn with_dialect(mut self, dialect: Option<SqlDialect>) -> Self {
+        if let Some(d) = dialect {
+            self.dialect = d;
+        }
         self
     }
 }
@@ -77,6 +102,7 @@ impl std::fmt::Debug for LintInput<'_> {
             .field("config", &self.config)
             .field("sql", &self.sql.is_some())
             .field("catalog", &self.catalog.is_some())
+            .field("dialect", &self.dialect)
             .finish()
     }
 }
@@ -106,6 +132,12 @@ pub struct LintOutcome {
     /// Enabled rules whose `requires` weren't satisfied, in
     /// [`LintRule::ALL`] order.
     pub skipped: Vec<SkippedRule>,
+    /// Models a [`Requires::Sql`] rule could not judge because their SQL
+    /// exists (raw or compiled) but wouldn't parse/select — each uid once
+    /// even when several SQL rules hit the same failure. Sorted by the
+    /// `BTreeSet`; `forbidden_patterns` (a raw-text rule) never
+    /// contributes, and neither do models that simply HAVE no SQL.
+    pub unparsed: BTreeSet<String>,
 }
 
 /// Evaluate the enabled rules over the input's dag and return every
@@ -123,6 +155,7 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
         config,
         sql,
         catalog,
+        dialect,
     } = input;
     // Resolve the owning package ONCE — `is_root_project` re-resolves per call.
     let primary = dag.primary_package();
@@ -133,6 +166,9 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
     let sites = CallSiteResolver::new(dag);
     let mut out = Vec::new();
     let mut skipped = Vec::new();
+    // Models whose SQL exists but wouldn't parse for a `Requires::Sql`
+    // rule — one uid per model regardless of how many SQL rules asked.
+    let mut unparsed = BTreeSet::new();
     for rule in LintRule::ALL {
         if !config.enabled(rule) {
             continue;
@@ -171,7 +207,7 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
             LintRule::ModelFanout => {
                 modeling::model_fanout(dag, &uids, &in_scope, config, &mut out)
             }
-            LintRule::RootModels => modeling::root_models(dag, &uids, &in_scope, &mut out),
+            LintRule::RootModels => modeling::root_models(dag, &uids, &in_scope, &sites, &mut out),
             LintRule::RejoiningUpstream => {
                 modeling::rejoining_upstream(dag, &uids, &in_scope, &sites, &mut out)
             }
@@ -185,7 +221,7 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 governance::public_models_without_contract(dag, &uids, &in_scope, &mut out)
             }
             LintRule::UndocumentedModels => {
-                documentation::undocumented_models(dag, &uids, &in_scope, &mut out)
+                documentation::undocumented_models(dag, &uids, &in_scope, config, &mut out)
             }
             LintRule::NamingConventions => {
                 structure::naming_conventions(dag, &uids, &in_scope, config, &mut out)
@@ -214,7 +250,7 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 documentation::undocumented_sources(dag, &uids, &in_scope, &mut out)
             }
             LintRule::UndocumentedColumns => {
-                documentation::undocumented_columns(dag, &uids, &in_scope, &mut out)
+                documentation::undocumented_columns(dag, &uids, &in_scope, config, &mut out)
             }
             LintRule::UndocumentedPublicModels => {
                 governance::undocumented_public_models(dag, &uids, &in_scope, &mut out)
@@ -234,18 +270,39 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
             LintRule::SourcesWithoutFreshness => {
                 testing::sources_without_freshness(dag, &uids, &in_scope, &mut out)
             }
-            LintRule::SelectStar => {
-                sql::select_star(dag, &uids, &in_scope, sql.expect("gated"), &mut out)
-            }
-            LintRule::HardCodedReferences => {
-                sql::hard_coded_references(dag, &uids, &in_scope, sql.expect("gated"), &mut out)
-            }
-            LintRule::CartesianJoin => {
-                sql::cartesian_join(dag, &uids, &in_scope, sql.expect("gated"), &mut out)
-            }
-            LintRule::UnknownColumnReference => {
-                sql::unknown_column_reference(dag, &uids, &in_scope, sql.expect("gated"), &mut out)
-            }
+            LintRule::SelectStar => sql::select_star(
+                dag,
+                &uids,
+                &in_scope,
+                sql.expect("gated"),
+                &mut unparsed,
+                &mut out,
+            ),
+            LintRule::HardCodedReferences => sql::hard_coded_references(
+                dag,
+                &uids,
+                &in_scope,
+                config,
+                sql.expect("gated"),
+                &mut unparsed,
+                &mut out,
+            ),
+            LintRule::CartesianJoin => sql::cartesian_join(
+                dag,
+                &uids,
+                &in_scope,
+                sql.expect("gated"),
+                &mut unparsed,
+                &mut out,
+            ),
+            LintRule::UnknownColumnReference => sql::unknown_column_reference(
+                dag,
+                &uids,
+                &in_scope,
+                sql.expect("gated"),
+                &mut unparsed,
+                &mut out,
+            ),
             LintRule::ForbiddenPatterns => {
                 sql::forbidden_patterns(dag, &uids, &in_scope, config, &mut out)
             }
@@ -254,6 +311,7 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 &uids,
                 &in_scope,
                 catalog.expect("gated"),
+                dialect,
                 &mut out,
             ),
             LintRule::ColumnsMissingInWarehouse => warehouse::columns_missing_in_warehouse(
@@ -275,6 +333,7 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
     LintOutcome {
         findings: out,
         skipped,
+        unparsed,
     }
 }
 
@@ -415,6 +474,19 @@ pub(super) fn is_data_resource(resource_type: &str) -> bool {
 /// recorded doesn't count (its storage shape is unknown, not virtual).
 pub(super) fn is_view_or_ephemeral(n: &NodeInfo) -> bool {
     n.resource_type == "model" && matches!(n.materialized.as_deref(), Some("view" | "ephemeral"))
+}
+
+/// Whether `n` is a model whose SQL body a rule can read —
+/// `resource_type == "model"` and not `language == "python"`. A Python
+/// model's `raw_code` is Python source, so scanning it for wildcards,
+/// relation names, or regex hits fabricates findings (the position pass
+/// independently refuses `.py` files — this keeps it from flagging at
+/// all). No `detail` entry = language unknown = treated as SQL.
+pub(super) fn is_sql_model(dag: &Dag, n: &NodeInfo) -> bool {
+    n.resource_type == "model"
+        && dag
+            .detail(&n.unique_id)
+            .is_none_or(|d| d.language.as_deref() != Some("python"))
 }
 
 /// The PREFIX stage of [`lint_model_type`]: the configured layer whose

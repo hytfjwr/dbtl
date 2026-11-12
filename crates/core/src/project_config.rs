@@ -286,6 +286,12 @@ impl ProjectConfig {
                                     .or_default()
                                     .insert(param, list);
                             }
+                            ParamKind::Bool { .. } => {
+                                let v = value.as_bool().ok_or_else(|| {
+                                    format!("{name}.{param} must be true or false")
+                                })?;
+                                lint.bool_params.entry(rule).or_default().insert(param, v);
+                            }
                         }
                     }
                 }

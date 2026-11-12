@@ -122,6 +122,46 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   name or a selector spec — the spec's first match opens in a tab and
   must be a model — and notes that `state:` atoms cannot match (the flag
   resolves before `--diff` loads).
+- Lint rules no longer flag what they can't establish. `root_models` and
+  `unused_sources` ignore neighbours removed by package pruning (a model
+  whose only parent is a pruned package node is not a root, and a source
+  whose only consumers live in a pruned package is not unused), and
+  `root_models` also skips models whose `ref()`/`source()` calls never
+  resolved to an edge — a root is only reported when every dependency
+  call resolved.
+- `layer_violation` now only judges the data-flow layers
+  (`staging`/`intermediate`/`marts`): `utilities/` helpers and unmapped
+  directories carry no direction, and both edge endpoints must be
+  root-project models, so package taxonomy no longer fabricates
+  backwards flows.
+- `incremental_without_unique_key` skips the strategies dbt never keys
+  on (`append`, `insert_overwrite`, `microbatch`) and names the
+  configured `incremental_strategy` in its message.
+- `missing_primary_key_tests` no longer treats a declared `primary_key`
+  constraint as a substitute for a test — most warehouses never enforce
+  it. Set `accept_primary_key_constraint: true` where the warehouse
+  does. Both it and `undocumented_models`/`undocumented_columns` accept
+  a `resource_types` list (`model`/`snapshot`/`seed`, plus `source` for
+  columns) so snapshot/seed governance can be enforced or silenced
+  deliberately.
+- The SQL rules stay in their lane: python models are never scanned as
+  SQL, a model whose SQL exists but fails to parse is counted in the
+  report summary (`N models skipped SQL rules`) instead of silently
+  passing, `cartesian_join` catches a comma-`FROM` without `WHERE` and
+  never-rejecting `ON` conditions (`ON TRUE`, `ON 1 = 1`),
+  `hard_coded_references` ignores `information_schema` reads at any
+  qualification depth and accepts `ignore:` glob patterns for
+  known-staging metadata, and `select_star`/`cartesian_join` cover UNION
+  arms and `|>` pipe projections. `forbidden_patterns` stays a raw-text
+  rule and no longer counts its matches against the unparsed tally.
+- `warehouse_type_drift` compares types accurately: names are
+  case/whitespace-normalized, a one-sided argument tail (`numeric` vs
+  `numeric(10,2)`) still matches, and common plus adapter alias families
+  are honoured under the active SQL dialect — BigQuery `INT64` vs
+  declared `bigint` is no longer drift, and Snowflake `NUMBER` only
+  counts as integer-shaped at scale 0. Catalog column lookup is
+  case-insensitive. The TUI's per-model "last run" notes use the same
+  comparison, so TUI and `dbtl lint` now agree on drift.
 
 ## [0.5.3] - 2026-11-11
 

@@ -516,7 +516,9 @@ impl App {
         };
         // The TUI passes its catalog (warehouse rules are parse-free and
         // cheap) but never a SQL resolver — parsing every model would block
-        // startup/reload, so `requires: Sql` rules come back `skipped`.
+        // startup/reload, so `requires: Sql` rules come back `skipped`. No
+        // `.with_dialect` needed at construction — a `--sql-dialect` pin
+        // lands later via `set_sql_dialect`, which recomputes these.
         let lint_findings = crate::run_rules(
             crate::LintInput::new(&dag, &lint_config).with_catalog(catalog.as_deref()),
         )

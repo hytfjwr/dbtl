@@ -169,7 +169,43 @@ impl PackageScope {
                 if dag.nodes().values().all(&keep) {
                     (dag, warnings) // already root-only — skip the prune + clone
                 } else {
-                    let scoped = dag.filtered(keep);
+                    // The severed-adjacency record: for each SURVIVING node,
+                    // how many direct parents/children the prune removes
+                    // because they live in an installed package. `filtered`
+                    // drops those neighbours — without this map, rules that
+                    // judge connectedness (`root_models`, `unused_sources`)
+                    // would read a package-trimmed node as isolated, and
+                    // degree-judging rules (`rejoining_upstream`,
+                    // `model_fanout`, `chained_views`) would read a severed
+                    // child as absent. Counted here (inside the scope
+                    // decision) only: a plain `filtered` — `docs --select`
+                    // narrowing — is a presentation cut, not a package
+                    // boundary.
+                    let mut severed: HashMap<String, PrunedAdjacent> = HashMap::new();
+                    for (uid, n) in dag.nodes() {
+                        if !keep(n) {
+                            continue;
+                        }
+                        let parents = dag
+                            .direct_parents(uid)
+                            .iter()
+                            .filter(|p| dag.get(p).is_none_or(|m| !keep(m)))
+                            .count();
+                        let children = dag
+                            .direct_children(uid)
+                            .iter()
+                            .filter(|c| dag.get(c).is_none_or(|m| !keep(m)))
+                            .count();
+                        if parents + children > 0 {
+                            severed.insert(uid.clone(), PrunedAdjacent { parents, children });
+                        }
+                    }
+                    let mut scoped = dag.filtered(keep);
+                    for (uid, s) in severed {
+                        let e = scoped.pruned_adjacent.entry(uid).or_default();
+                        e.parents += s.parents;
+                        e.children += s.children;
+                    }
                     if scoped.is_empty() {
                         if let Some(pkg) = &primary {
                             warnings.push(format!(
@@ -301,6 +337,25 @@ pub struct ExposureInfo {
     pub owner_name: Option<String>,
     pub owner_email: Option<String>,
     pub url: Option<String>,
+}
+
+/// The adjacency a [`PackageScope::Root`] prune severed for a kept node —
+/// how many of its direct parents/children disappeared because they belong
+/// to an installed package. Hung off the [`Dag`] as a side map (like
+/// `details`/`tests`): it is a LOAD-SCOPE record, not node identity, so
+/// `NodeInfo` (the hot clone/equality path) and the manifest↔source
+/// consistency contract stay untouched — and source mode never fills it
+/// (it never parsed the packages). `root_models`/`unused_sources` read it
+/// so a node whose only neighbours were package-side isn't reported as
+/// isolated, and `rejoining_upstream`/`model_fanout`/`chained_views` read
+/// it so a severed child keeps a degree premise unproven — a finding that
+/// needs a complete child count never fires.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrunedAdjacent {
+    /// Direct parents the scope prune removed.
+    pub parents: usize,
+    /// Direct children the scope prune removed.
+    pub children: usize,
 }
 
 /// One source freshness threshold (`{count: 12, period: hour}`). A threshold
@@ -508,6 +563,12 @@ pub struct Dag {
     /// manifest, can only win when the project is literally named `dbt`).
     /// [`filtered`](Dag::filtered) carries it over.
     overview: Option<String>,
+    /// Per-kept-node adjacency the `PackageScope::Root` prune severed
+    /// (installed-package neighbours only — [`PackageScope::apply_with_warnings`]
+    /// records it; plain [`filtered`](Dag::filtered) carries but never
+    /// recomputes it). Empty when no package prune ever ran — source mode
+    /// and `All`-scope loads among them.
+    pruned_adjacent: HashMap<String, PrunedAdjacent>,
 }
 
 /// A manifest macro's diff-relevant payload. The [`Dag`] stores these keyed by

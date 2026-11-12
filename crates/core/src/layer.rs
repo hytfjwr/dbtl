@@ -15,6 +15,13 @@ use crate::NodeInfo;
 /// fifth top-level directory is appended after these, so we never panic.
 pub const LAYER_ORDER: [&str; 4] = ["staging", "intermediate", "marts", "utilities"];
 
+/// The layers a layer-VIOLATION judges — the data-flow pipeline. `utilities`
+/// ranks inside [`LAYER_ORDER`] but carries no data-flow direction (a
+/// `utils/` helper read by staging is normal, not a backward jump), and a
+/// dir naming none of these three has no direction at all — edges touching
+/// either never count as violations.
+pub const VIOLATION_LAYERS: [&str; 3] = ["staging", "intermediate", "marts"];
+
 /// First directory of a `path` (the part before the first `/`).
 ///
 /// Returns `None` when the node has no `path` (sources/seeds/snapshots), so

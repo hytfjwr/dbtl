@@ -13,11 +13,14 @@
 //   other `{{ }}` all carry the mark, so only genuinely hand-written names
 //   land in the set. Names are dotted (`analytics.orders`), sorted.
 // - `cartesian`: the display text of every JOIN arm carrying no join
-//   condition — `CROSS JOIN` (a cross product by definition) and any
-//   constrained-operator join whose constraint is `None` (`JOIN t` with no
-//   ON/USING/NATURAL). `NATURAL`, `ON`, `USING`, ASOF's match condition,
-//   and the apply/array-join operators (lateral invocations, like UNNEST)
-//   are never Cartesian.
+//   condition — a `JoinConstraint::None` arm (`JOIN t`, or `CROSS JOIN t`
+//   — the spelling of a product) — plus an `ON` that can never reject a
+//   row (`ON TRUE`, `ON 1 = 1`). The constraint is evaluated wherever the
+//   grammar carries one: MySQL parses `CROSS JOIN t ON cond` (its INNER
+//   JOIN spelling), so the operator alone never decides. `NATURAL`,
+//   real `ON`/`USING` conditions, ASOF's match condition, and the
+//   apply/array-join operators (lateral invocations, like UNNEST) are
+//   never Cartesian.
 //
 // Subqueries everywhere count — derived tables, nested joins, and
 // expression positions (`IN (SELECT …)`, `EXISTS …`, scalar subqueries) —
@@ -195,6 +198,21 @@ fn scan_select(sel: &Select, scope: &BTreeSet<String>, out: &mut RelationScan) {
     for twj in &sel.from {
         scan_twj(twj, scope, out);
     }
+    // Comma-separated `FROM a, b` with no WHERE is an unconditional cross
+    // product — every relation after the first is joined conditionlessly,
+    // so each counts exactly like a conditionless JOIN arm (and carries
+    // its own span). A `WHERE` clause, even one that never relates the
+    // tables, suppresses the flag — filtered products aren't the
+    // foot-gun shape the rule targets. Lateral/UNNEST factors are
+    // per-row expansions, not products, same as the JOIN-arm rule.
+    if sel.from.len() > 1 && sel.selection.is_none() {
+        for twj in sel.from.iter().skip(1) {
+            if !functionish_factor(&twj.relation) {
+                out.cartesian.insert(twj.relation.to_string());
+                out.cartesian_spans.push(twj.relation.span());
+            }
+        }
+    }
     for def in &sel.named_window {
         if let NamedWindowExpr::WindowSpec(spec) = &def.1 {
             scan_window_spec(spec, scope, out);
@@ -273,26 +291,59 @@ fn scan_twj(twj: &TableWithJoins, scope: &BTreeSet<String>, out: &mut RelationSc
     }
 }
 
-fn scan_join(j: &Join, scope: &BTreeSet<String>, out: &mut RelationScan) {
-    scan_factor(&j.relation, scope, out);
-    // A `CROSS JOIN` is a cross product by definition; any other
-    // constrained operator with `JoinConstraint::None` joins every row.
-    // `NATURAL`/`ON`/`USING` conditions and the apply/ASOF/array operators
-    // (a lateral invocation or a conditioned match) never count — and
-    // neither does a join TARGET that isn't a relation at all (UNNEST /
-    // table functions / lateral applies are per-row, not products).
-    let functionish = matches!(
-        j.relation,
+/// A join TARGET that isn't a relation at all — UNNEST, table functions,
+/// lateral applies are per-row invocations, not cross products.
+fn functionish_factor(f: &TableFactor) -> bool {
+    matches!(
+        f,
         TableFactor::UNNEST { .. }
             | TableFactor::Function { .. }
             | TableFactor::TableFunction { .. }
             | TableFactor::Table { args: Some(_), .. }
             | TableFactor::Derived { lateral: true, .. }
-    );
-    let unconditional = !functionish
+    )
+}
+
+/// Whether an `ON` condition can never reject a row: `ON TRUE` (parens
+/// unwrapped) or a self-comparison of equal literals (`ON 1 = 1`,
+/// `ON 'x' = 'x'`). Only LITERAL equality counts — `a.id = a.id` is
+/// column-shaped and stays a normal (if pointless) condition.
+fn tautological_condition(e: &Expr) -> bool {
+    match e {
+        Expr::Nested(e) => tautological_condition(e),
+        Expr::Value(v) => matches!(&v.value, sqlparser::ast::Value::Boolean(true)),
+        Expr::BinaryOp {
+            left,
+            op: sqlparser::ast::BinaryOperator::Eq,
+            right,
+        } => {
+            matches!(&**left, Expr::Value(_))
+                && matches!(&**right, Expr::Value(_))
+                && left.to_string() == right.to_string()
+        }
+        _ => false,
+    }
+}
+
+fn scan_join(j: &Join, scope: &BTreeSet<String>, out: &mut RelationScan) {
+    scan_factor(&j.relation, scope, out);
+    // A conditionless arm joins every row: `JoinConstraint::None` is a
+    // cross product (`CROSS JOIN` spells it intentionally), and an `ON`
+    // that can never reject a row (`ON TRUE`, `ON 1 = 1`) joins them all
+    // the same. The constraint is evaluated wherever one exists — MySQL
+    // parses `CROSS JOIN t ON cond` (its INNER JOIN spelling), so the
+    // operator never decides alone. `NATURAL`/real `ON`/`USING`
+    // conditions and the apply/ASOF/array operators (a lateral
+    // invocation or a conditioned match) never count — and neither does
+    // a join TARGET that isn't a relation at all (UNNEST / table
+    // functions / lateral applies are per-row, not products).
+    let unconditional = !functionish_factor(&j.relation)
         && !matches!(j.join_operator, JoinOperator::AsOf { .. })
-        && (matches!(j.join_operator, JoinOperator::CrossJoin(_))
-            || matches!(join_constraint(j), Some(JoinConstraint::None)));
+        && match join_constraint(j) {
+            Some(JoinConstraint::None) => true,
+            Some(JoinConstraint::On(e)) => tautological_condition(e),
+            _ => false,
+        };
     if unconditional {
         out.cartesian.insert(j.to_string());
         // The relation's own span — the `JOIN` keyword stays outside it,
@@ -834,14 +885,20 @@ fn scan_function_arg(a: &FunctionArg, scope: &BTreeSet<String>, out: &mut Relati
 }
 
 /// Record a FROM/JOIN/`TABLE`/`IN` name as hand-written — unless it is a
-/// `__dbtl_`-marked Jinja render (generated, not written) or a visible CTE
+/// `__dbtl_`-marked Jinja render (generated, not written), a visible CTE
 /// name (CTE references are unqualified-only: `sch.c` is always a real
-/// relation, matching the binder's rule). `span` is the recorded name's
-/// own AST span, kept in `hard_coded_spans` per occurrence.
+/// relation, matching the binder's rule), or an `information_schema`
+/// read at ANY qualification depth (a metadata query, not a bypassed
+/// dependency — `db.information_schema.t` and `information_schema.t`
+/// alike). `span` is the recorded name's own AST span, kept in
+/// `hard_coded_spans` per occurrence.
 fn record_name(span: Span, parts: &[String], scope: &BTreeSet<String>, out: &mut RelationScan) {
     if parts.is_empty()
         || parts.iter().any(|p| p.starts_with(JINJA_MARK_PREFIX))
         || (parts.len() == 1 && scope.contains(parts[0].as_str()))
+        || parts
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case("information_schema"))
     {
         return;
     }

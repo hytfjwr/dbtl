@@ -659,7 +659,7 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
             pre_existing: outcome.rules.iter().map(|r| r.pre_existing).sum(),
             has_diff: outcome.has_diff,
             skipped: outcome.skipped,
-            unparsed_models: 0,
+            unparsed_models: outcome.unparsed.len(),
         });
     }
 

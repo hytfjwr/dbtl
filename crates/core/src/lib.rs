@@ -23,8 +23,8 @@ pub mod select;
 pub mod source;
 
 pub use catalog::{
-    default_catalog_path, resolve_catalog_path, Catalog, CatalogColumn, CatalogNode, CatalogStat,
-    TypeDrift,
+    default_catalog_path, resolve_catalog_path, types_equivalent, Catalog, CatalogColumn,
+    CatalogNode, CatalogStat, TypeDrift,
 };
 pub use cll::{
     closure_report, normalize_column, resolution_sql, ClosureDirection, ColumnEdge, ColumnEdgeKind,
@@ -36,7 +36,7 @@ pub use dag::{
     coverage_gap, description_blank, has_pk_guarantee, in_package, is_exposure, load_dag,
     load_dag_with_warnings, unhandled_resource_types, ColumnInfo, ConstraintInfo, Dag, Edge,
     ExposureInfo, FreshnessThreshold, MacroInfo, NodeDetail, NodeInfo, PackageScope,
-    ResourceTypeSupport, Subgraph, TestInfo, UnitTestShape,
+    PrunedAdjacent, ResourceTypeSupport, Subgraph, TestInfo, UnitTestShape,
 };
 pub use diff::{
     compute_diff, compute_diff_with, ColumnChange, ColumnChangeClass, ColumnChangeKind, DagDiff,
@@ -48,12 +48,13 @@ pub use impact::{
     doc_coverage_counts, exposure_note, layer_violation_edges, model_documented, pr_impact,
     pr_impact_markdown, DiffReport, ImpactOpts, PrImpact, PR_HUB_MIN_DOWNSTREAM,
 };
-pub use layer::{first_dir, layer_rank, LAYER_ORDER};
+pub use layer::{first_dir, layer_rank, LAYER_ORDER, VIOLATION_LAYERS};
 pub use lint::{
-    byte_span_position, fill_finding_lines, run_rules, yaml_name_line, yaml_name_span, Baseline,
-    Category, Finding, Label, LintConfig, LintInput, LintOutcome, LintRule, Location, ParamKind,
-    ParamSpec, Requires, RuleInfo, Severity, SkippedRule, BASELINE_SCHEMA, DEFAULT_BASELINE_NAME,
-    LINT_RULE_DOCS_BASE, REGISTRY, YAML_ATTRIBUTE_RULE_IDS,
+    byte_span_position, display_name, display_names, fill_finding_lines, name_list, run_rules,
+    yaml_name_line, yaml_name_span, Baseline, Category, Finding, Label, LintConfig, LintInput,
+    LintOutcome, LintRule, Location, ParamKind, ParamSpec, Requires, RuleInfo, Severity,
+    SkippedRule, BASELINE_SCHEMA, DEFAULT_BASELINE_NAME, LINT_RULE_DOCS_BASE, REGISTRY,
+    YAML_ATTRIBUTE_RULE_IDS,
 };
 pub use manifest::{
     load_manifest, RawConfig, RawConstraint, RawContract, RawDependsOn, RawDoc, RawExposure,

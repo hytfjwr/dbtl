@@ -5,15 +5,21 @@ use super::*;
 /// `undocumented_models`: a model with no description — the
 /// [`crate::model_documented`] predicate the `doc_coverage` gate counts by
 /// (`clean_desc` already normalizes whitespace-only to `None` at build).
+/// The `resource_types` parameter (default `[model]`) widens the check to
+/// seeds and snapshots.
 pub(super) fn undocumented_models(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
+    config: &LintConfig,
     out: &mut Vec<Finding>,
 ) {
+    let types = config
+        .str_list_param(LintRule::UndocumentedModels, "resource_types")
+        .expect("the registry declares undocumented_models.resource_types");
     for uid in uids {
         let Some(n) = dag.get(uid) else { continue };
-        if n.resource_type != "model" || !in_scope(n) {
+        if !types.iter().any(|t| t == &n.resource_type) || !in_scope(n) {
             continue;
         }
         if dag.detail(uid).is_some_and(crate::model_documented) {
@@ -58,18 +64,25 @@ pub(super) fn undocumented_sources(
     }
 }
 
-/// `undocumented_columns`: a model whose declared columns include at least
-/// one without a description — one finding per model naming the bare columns
-/// (a model with no declared columns is not "missing column descriptions").
+/// `undocumented_columns`: a node whose declared columns include at least
+/// one without a description — one finding per node naming the bare columns
+/// (a node with no declared columns is not "missing column descriptions").
+/// The `resource_types` parameter (default `[model]`) widens the check to
+/// seeds, snapshots, and sources — a source finding's name chain lands on
+/// the `[source, table, column]` path (see `location.rs::name_chain`).
 pub(super) fn undocumented_columns(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
+    config: &LintConfig,
     out: &mut Vec<Finding>,
 ) {
+    let types = config
+        .str_list_param(LintRule::UndocumentedColumns, "resource_types")
+        .expect("the registry declares undocumented_columns.resource_types");
     for uid in uids {
         let Some(n) = dag.get(uid) else { continue };
-        if n.resource_type != "model" || !in_scope(n) {
+        if !types.iter().any(|t| t == &n.resource_type) || !in_scope(n) {
             continue;
         }
         let Some(d) = dag.detail(uid) else { continue };
@@ -88,7 +101,7 @@ pub(super) fn undocumented_columns(
             Vec::new(),
             format!(
                 "{} has declared {} without descriptions: {}",
-                n.name,
+                display_name(dag, uid),
                 pluralize(columns.len(), "column"),
                 columns.join(", ")
             ),

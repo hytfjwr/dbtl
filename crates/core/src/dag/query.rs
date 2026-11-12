@@ -120,6 +120,18 @@ impl Dag {
         self.children.get(unique_id).map_or(&[], Vec::as_slice)
     }
 
+    /// The adjacency a `PackageScope::Root` prune severed for `unique_id`
+    /// (installed-package parents/children it used to touch), or `None`
+    /// when the scope never pruned one of its neighbours. The
+    /// connectedness rules (`root_models`, `unused_sources`) add these
+    /// counts back to `direct_*` so a package-trimmed node isn't reported
+    /// as isolated, and the degree-judging rules (`rejoining_upstream`,
+    /// `model_fanout`, `chained_views`) treat a severed child as
+    /// unprovable — a premise their finding needs never holds.
+    pub fn pruned_adjacent(&self, unique_id: &str) -> Option<&PrunedAdjacent> {
+        self.pruned_adjacent.get(unique_id)
+    }
+
     /// Test-only seam: inject a compiled-SQL entry directly. A `stale` flag
     /// cannot be expressed in a manifest literal, and forging
     /// `target/compiled/` mtimes inside a unit test needs `filetime`-grade APIs
@@ -220,20 +232,24 @@ impl Dag {
 
     /// The sub-Dag holding only the root project's own nodes — the `Root`
     /// [`PackageScope`] applied: installed-package nodes pruned, every edge
-    /// endpoint and side-map entry of theirs dropped via
-    /// [`filtered`](Dag::filtered). This is exactly what `--project-only`
-    /// produced; it is now the default load shape, so a manifest-mode Dag
-    /// carries the same nodes a source-mode parse of the project would.
+    /// endpoint and side-map entry of theirs dropped, and the severed
+    /// adjacency recorded in [`pruned_adjacent`](Dag::pruned_adjacent).
+    /// This is exactly what `--project-only` produced; it is now the
+    /// default load shape, so a manifest-mode Dag carries the same nodes a
+    /// source-mode parse of the project would.
     ///
     /// A root model whose only upstream/downstream was a package node loses
     /// that edge here — the same "unresolved ref drops" shape source mode
     /// already produces — so `direct_*` degrees (and thus orphan detection)
     /// agree across modes under the default scope.
+    ///
+    /// Delegates to [`PackageScope::apply`] on a clone, NOT to
+    /// [`filtered`](Dag::filtered): this IS the package boundary, so the
+    /// severed-adjacency record must be written — a plain `filtered` cut
+    /// would leave the map empty and let degree-reading rules misjudge a
+    /// package-trimmed node.
     pub fn root_scoped(&self) -> Dag {
-        // Resolved ONCE, not per node: the `primary_package` fallback scan is
-        // O(nodes) and `filtered` calls the closure per node.
-        let primary = self.primary_package();
-        self.filtered(|n| primary.as_deref().is_none_or(|pkg| in_package(n, pkg)))
+        PackageScope::Root.apply(self.clone())
     }
 
     /// The sub-Dag containing only nodes `keep` accepts — every side map
@@ -311,6 +327,15 @@ impl Dag {
             macros: self.macros.clone(),
             node_macros: self
                 .node_macros
+                .iter()
+                .filter(|(k, _)| nodes.contains_key(*k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            // The severed-adjacency record is carried over, never
+            // recomputed — it describes the package boundary's prune, not
+            // this (presentation) cut.
+            pruned_adjacent: self
+                .pruned_adjacent
                 .iter()
                 .filter(|(k, _)| nodes.contains_key(*k))
                 .map(|(k, v)| (k.clone(), v.clone()))

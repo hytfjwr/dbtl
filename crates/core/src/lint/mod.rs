@@ -29,6 +29,7 @@ mod registry;
 pub use registry::{Category, ParamKind, ParamSpec, Requires, RuleInfo, Severity, REGISTRY};
 
 mod call_sites;
+pub use call_sites::{display_name, display_names, name_list};
 mod location;
 pub use location::{
     byte_span_position, fill_finding_lines, yaml_name_line, yaml_name_span, YAML_ATTRIBUTE_RULE_IDS,
@@ -459,6 +460,10 @@ pub struct LintConfig {
     /// (`required_meta_keys.keys`, `missing_primary_key_tests.resource_types`)
     /// — validated against the registry's [`ParamSpec`] like the integer map.
     pub list_params: BTreeMap<LintRule, BTreeMap<String, Vec<String>>>,
+    /// rule → declared boolean parameter values
+    /// (`missing_primary_key_tests.accept_primary_key_constraint`) —
+    /// validated against the registry's [`ParamSpec`] like the integer map.
+    pub bool_params: BTreeMap<LintRule, BTreeMap<String, bool>>,
     /// `naming_conventions`: model TYPE → allowed name prefixes, where the
     /// type is resolved by `lint_model_type` (prefix-first, then
     /// [`first_dir`] folder, else `other`). A model whose resolved type is
@@ -483,6 +488,7 @@ impl Default for LintConfig {
             exclude: BTreeMap::new(),
             params: BTreeMap::new(),
             list_params: BTreeMap::new(),
+            bool_params: BTreeMap::new(),
             naming_prefixes: BTreeMap::from([
                 ("staging".to_string(), vec!["stg_".to_string()]),
                 ("intermediate".to_string(), vec!["int_".to_string()]),
@@ -545,6 +551,17 @@ impl LintConfig {
                     .str_list_param(param)
                     .map(|(default, _)| default.iter().map(|s| s.to_string()).collect())
             })
+    }
+
+    /// The effective value of `rule`'s boolean parameter `param` — a
+    /// configured override else the registry-declared default. `None` only
+    /// when `rule` declares no boolean parameter of that name.
+    pub fn bool_param(&self, rule: LintRule, param: &str) -> Option<bool> {
+        self.bool_params
+            .get(&rule)
+            .and_then(|m| m.get(param))
+            .copied()
+            .or_else(|| rule.info().bool_param(param))
     }
 }
 

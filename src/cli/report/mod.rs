@@ -152,9 +152,10 @@ pub struct LintTally {
     /// Enabled lint rules `run_rules` skipped for a missing input, in
     /// `LintRule::ALL` order.
     pub skipped: Vec<dbtl::SkippedRule>,
-    /// Models whose SQL couldn't be parsed so the SQL rules skipped them —
-    /// the summary's third line; populated when the rules start reporting
-    /// parse failures (the field and line are in place, currently zero).
+    /// Models whose SQL exists but wouldn't parse so the SQL rules skipped
+    /// them — the summary's third line, populated from
+    /// [`dbtl::LintOutcome::unparsed`] (each uid once, however many SQL
+    /// rules hit the same parse failure).
     pub unparsed_models: usize,
 }
 
