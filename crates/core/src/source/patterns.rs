@@ -182,17 +182,17 @@ impl Patterns {
             };
             let span = m.start()..end;
             let args = m.end()..m.end() + args_text.len();
-            let segs = top_level_segments(args_text);
+            let mut segs = top_level_segs(args_text);
             let kind = if is_ref {
                 // `refs()`'s rule: the LAST quoted positional arg is the
                 // model; when it exists, the first is the package. seg0
                 // must be a quoted literal (a `ref(var)` call is not a
                 // ref site); a quoted seg1 makes `ref('pkg','x')` →
                 // (pkg, x) while `ref('x', v=2)` keeps name = seg0.
-                let Some(first) = segs.first().and_then(|s| quoted_lit(masked, s)) else {
+                let Some(first) = segs.next().and_then(|s| quoted_lit(masked, s)) else {
                     continue;
                 };
-                let (name, package) = match segs.get(1).and_then(|s| quoted_lit(masked, s)) {
+                let (name, package) = match segs.next().and_then(|s| quoted_lit(masked, s)) {
                     Some(second) => (second, Some(first)),
                     None => (first, None),
                 };
@@ -212,7 +212,9 @@ impl Patterns {
                 }
             } else {
                 // `sources()`'s shape: EXACTLY two quoted literals.
-                let [s1, s2] = segs.as_slice() else { continue };
+                let (Some(s1), Some(s2), None) = (segs.next(), segs.next(), segs.next()) else {
+                    continue;
+                };
                 let (Some(source), Some(table)) = (quoted_lit(masked, s1), quoted_lit(masked, s2))
                 else {
                     continue;
@@ -425,29 +427,36 @@ pub(super) fn config_call_args_list(sql: &str) -> Vec<&str> {
 /// parens and the position just past the closing `)`. A bare `]`/`}` at
 /// depth 0 or an unclosed call is malformed → `None`.
 pub(super) fn scan_call_args(sql: &str, start: usize) -> Option<(&str, usize)> {
+    // Byte-wise: every delimiter is ASCII and UTF-8 continuation bytes are
+    // >= 0x80, so a multi-byte char can never fake a `(`, `)`, or quote.
+    let bytes = sql.as_bytes();
     let mut depth = 0usize;
-    let mut chars = sql[start..].char_indices().peekable();
-    while let Some((i, c)) = chars.next() {
-        match c {
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => {
+    let mut pos = start;
+    while pos < bytes.len() {
+        match bytes[pos] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
                 if depth == 0 {
-                    return (c == ')').then(|| (&sql[start..start + i], start + i + 1));
+                    return (bytes[pos] == b')').then(|| (&sql[start..pos], pos + 1));
                 }
                 depth -= 1;
             }
-            '\'' | '"' => {
-                let it = chars.by_ref();
-                while let Some((_, d)) = it.next() {
-                    if d == '\\' {
-                        it.next(); // consume the escaped char
-                    } else if d == c {
+            q @ (b'\'' | b'"') => {
+                pos += 1;
+                while pos < bytes.len() {
+                    let b = bytes[pos];
+                    pos += 1;
+                    if b == b'\\' {
+                        pos += 1; // consume the escaped byte
+                    } else if b == q {
                         break;
                     }
                 }
+                continue;
             }
             _ => {}
         }
+        pos += 1;
     }
     None // unclosed call
 }
@@ -479,33 +488,51 @@ pub(crate) fn lit_value(expr: &str) -> Option<serde_json::Value> {
 /// the top-level kwargs of a `config(…)` call (a comma inside `{'a': 'b'}`,
 /// `[x, y]`, or a quoted string must not split the argument list).
 pub(super) fn top_level_segments(s: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut last = 0;
+    top_level_segs(s).collect()
+}
+
+/// The lazy form of [`top_level_segments`] — callers that only need the
+/// first few arguments (call-site name/literal checks) stop scanning early
+/// and never allocate.
+fn top_level_segs(s: &str) -> impl Iterator<Item = &str> {
+    let mut last = 0usize;
     let mut depth = 0usize;
-    let mut chars = s.char_indices().peekable();
-    while let Some((i, c)) = chars.next() {
-        match c {
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth = depth.saturating_sub(1),
-            '\'' | '"' => {
-                let it = chars.by_ref();
-                while let Some((_, d)) = it.next() {
-                    if d == '\\' {
-                        it.next();
-                    } else if d == c {
-                        break;
-                    }
-                }
-            }
-            ',' if depth == 0 => {
-                out.push(&s[last..i]);
-                last = i + 1;
-            }
-            _ => {}
+    let mut pos = 0usize;
+    let mut quote = 0u8;
+    let mut done = false;
+    let bytes = s.as_bytes();
+    std::iter::from_fn(move || {
+        if done {
+            return None;
         }
-    }
-    out.push(&s[last..]);
-    out
+        while pos < bytes.len() {
+            let b = bytes[pos];
+            if quote != 0 {
+                pos += 1;
+                if b == b'\\' {
+                    pos += 1; // skip the escaped char
+                } else if b == quote {
+                    quote = 0;
+                }
+                continue;
+            }
+            match b {
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+                b'\'' | b'"' => quote = b,
+                b',' if depth == 0 => {
+                    let seg = &s[last..pos];
+                    last = pos + 1;
+                    pos += 1;
+                    return Some(seg);
+                }
+                _ => {}
+            }
+            pos += 1;
+        }
+        done = true;
+        Some(&s[last..])
+    })
 }
 
 /// The expression text bound to keyword `name` inside a call's argument

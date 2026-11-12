@@ -24,10 +24,16 @@ use super::{Finding, Label};
 /// else the node name (the uid's last segment, which `NodeInfo.name`
 /// agrees with).
 pub(crate) fn display_name(dag: &Dag, uid: &str) -> String {
-    match uid.split('.').collect::<Vec<_>>().as_slice() {
-        ["source", _, source, table] => format!("{source}.{table}"),
-        ["model", _, name, version] => format!("{name}.{version}"),
-        [_, _, name] => (*name).to_string(),
+    // `it.next()` x5 — no Vec: uids have ≤4 segments.
+    let mut it = uid.split('.');
+    match (it.next(), it.next(), it.next(), it.next(), it.next()) {
+        (Some("source"), Some(_), Some(source), Some(table), None) => {
+            format!("{source}.{table}")
+        }
+        (Some("model"), Some(_), Some(name), Some(version), None) => {
+            format!("{name}.{version}")
+        }
+        (Some(_), Some(_), Some(name), None, None) => name.to_string(),
         _ => dag
             .get(uid)
             .map_or_else(|| uid.to_string(), |n| n.name.clone()),
@@ -289,9 +295,15 @@ impl<'a> CallSites<'a> {
             .sites
             .parents
             .iter()
-            .filter_map(|p| match p.split('.').collect::<Vec<_>>().as_slice() {
-                [k, pk, n, ..] if k == kind && pk == pkg && n == name => version_number(p),
-                _ => None,
+            .filter_map(|p| {
+                // `k.pk.n.vN` — compare kind/pkg/name without collecting.
+                let mut it = p.split('.');
+                match (it.next(), it.next(), it.next()) {
+                    (Some(k), Some(pk), Some(n)) if k == *kind && pk == *pkg && n == *name => {
+                        version_number(p)
+                    }
+                    _ => None,
+                }
             })
             .max()
         else {
@@ -342,10 +354,20 @@ impl<'a> CallSites<'a> {
         let Some((line, column, end_line, end_column)) = self.position(&primary.0) else {
             return f;
         };
-        let mut seen = std::collections::HashSet::from([(primary.0.start, primary.0.end)]);
+        // The span list is tiny (≤ a few calls per edge) — a linear dedup
+        // beats a HashSet alloc per finding.
+        let mut seen: Vec<(usize, usize)> = vec![(primary.0.start, primary.0.end)];
         let labels: Vec<Label> = secondary
             .into_iter()
-            .filter(|(span, _)| seen.insert((span.start, span.end)))
+            .filter(|(span, _)| {
+                let key = (span.start, span.end);
+                if seen.contains(&key) {
+                    false
+                } else {
+                    seen.push(key);
+                    true
+                }
+            })
             .filter_map(|(span, message)| {
                 self.position(&span)
                     .map(|(line, column, end_line, end_column)| Label {
