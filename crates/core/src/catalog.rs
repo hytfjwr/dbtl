@@ -349,7 +349,7 @@ const COMMON_TYPE_FAMILIES: &[&[&str]] = &[
     &["bool", "boolean"],
     &["float8", "double precision", "double"],
     &["float4", "real"],
-    &["numeric", "decimal"],
+    &["numeric", "decimal", "dec"],
     &["timestamp", "timestamp without time zone"],
     &["timestamptz", "timestamp with time zone"],
 ];
@@ -395,9 +395,11 @@ fn dialect_type_families(dialect: SqlDialect) -> &'static [&'static [&'static st
 
 /// Split a type name into `(base, args)`: the base lowercased with
 /// whitespace collapsed (`DOUBLE  PRECISION` → `double precision`), args
-/// the inside of the first `(...)` tail (`number(38,0)` → `Some("38,0")`,
-/// `decimal` → `None`). A trailing args group after `)` is ignored — the
-/// width is what comparison needs.
+/// the inside of the first `(...)` tail with each comma-separated token
+/// trimmed (`number(38, 0)` → `Some("38,0")`, `decimal` → `None`) — so
+/// `decimal(10, 2)` and `DECIMAL(10,2)` compare as the same shape, not as
+/// raw strings. A trailing args group after `)` is ignored — the width is
+/// what comparison needs.
 fn type_parts(t: &str) -> (String, Option<String>) {
     let lower = t.trim().to_lowercase();
     let (base, args) = match lower.split_once('(') {
@@ -405,8 +407,8 @@ fn type_parts(t: &str) -> (String, Option<String>) {
         None => (lower.as_str(), ""),
     };
     let base = base.split_whitespace().collect::<Vec<_>>().join(" ");
-    let args = args.trim();
-    (base, (!args.is_empty()).then(|| args.to_string()))
+    let args = args.split(',').map(str::trim).collect::<Vec<_>>().join(",");
+    (base, (!args.is_empty()).then_some(args))
 }
 
 /// Snowflake `NUMBER` args count as integer-shaped only at scale 0: bare
@@ -531,10 +533,16 @@ mod tests {
         assert!(types_equivalent("varchar", "VARCHAR(255)", d));
         assert!(types_equivalent("varchar(255)", "varchar(255)", d));
         assert!(!types_equivalent("varchar(10)", "VARCHAR(255)", d));
-        // Common families: int/integer, numeric/decimal, bool/boolean.
+        // Common families: int/integer, numeric/decimal/dec, bool/boolean.
         assert!(types_equivalent("integer", "int", d));
         assert!(types_equivalent("numeric(10,2)", "decimal(10,2)", d));
+        assert!(types_equivalent("dec(10,2)", "NUMERIC(10,2)", d));
         assert!(types_equivalent("bool", "BOOLEAN", d));
+        // Args compare token-wise, not as raw strings: padding inside the
+        // parens never decides, but a different token does.
+        assert!(types_equivalent("decimal(10, 2)", "DECIMAL(10,2)", d));
+        assert!(types_equivalent("varchar( 255 )", "varchar(255)", d));
+        assert!(!types_equivalent("decimal(10, 2)", "decimal(10, 3)", d));
         // Genuinely different types differ — that IS the drift.
         assert!(!types_equivalent("int", "varchar", d));
         assert!(!types_equivalent("date", "timestamp", d));
