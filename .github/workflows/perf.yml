@@ -125,7 +125,10 @@ jobs:
         if: steps.base.outputs.sha != ''
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/perf/prebuilt
+          # Must be the exact path `Perf (prebuild)` saves under: the cache
+          # version is hashed over the path list, so a different directory
+          # looks the key up under a different version and can never hit.
+          path: ${{ runner.temp }}/perf-bin
           key: ${{ steps.base-key.outputs.key }}
 
       - name: Verify and classify the base source
@@ -134,15 +137,16 @@ jobs:
           BASE_SHA: ${{ steps.base.outputs.sha }}
           INPUT_SHA: ${{ steps.base-key.outputs.input-sha }}
           CACHE_HIT: ${{ steps.prebuilt.outputs.cache-hit }}
+          PREBUILT: ${{ runner.temp }}/perf-bin
         run: |
           mode=build
           if [ -z "$BASE_SHA" ]; then
             mode=none
           elif [ "$CACHE_HIT" = "true" ] \
-            && [ -x "$WORK/prebuilt/dbtl" ] \
-            && [ -x "$WORK/prebuilt/pipeline" ] \
-            && "$WORK/prebuilt/dbtl" --version >/dev/null 2>&1 \
-            && "$WORK/prebuilt/pipeline" --bench --list >/dev/null 2>&1; then
+            && [ -x "$PREBUILT/dbtl" ] \
+            && [ -x "$PREBUILT/pipeline" ] \
+            && "$PREBUILT/dbtl" --version >/dev/null 2>&1 \
+            && "$PREBUILT/pipeline" --bench --list >/dev/null 2>&1; then
             # Restored bits must actually run before they may stand in for
             # the base — a broken restore falls back to the in-job build.
             mode=prebuilt
@@ -199,7 +203,7 @@ jobs:
         if: steps.base-bin.outputs.mode == 'prebuilt'
         env:
           CRITERION_HOME: ${{ runner.temp }}/perf/criterion-base
-          BASE_BIN: ${{ runner.temp }}/perf/prebuilt
+          BASE_BIN: ${{ runner.temp }}/perf-bin
         run: |
           "$BASE_BIN/pipeline" --bench --measurement-time 2 --warm-up-time 1 --sample-size 10 || true
 
@@ -242,7 +246,7 @@ jobs:
           }
           base_bin="$WORK/base/target/release/dbtl"
           if [ "$BASE_MODE" = "prebuilt" ]; then
-            base_bin="$WORK/prebuilt/dbtl"
+            base_bin="${{ runner.temp }}/perf-bin/dbtl"
           fi
           head_bin="$GITHUB_WORKSPACE/target/release/dbtl"
           if [ -x "$base_bin" ]; then
