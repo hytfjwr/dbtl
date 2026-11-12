@@ -38,7 +38,7 @@ function escape(text: string): string {
       id="s-input"
       type="text"
       role="combobox"
-      aria-expanded="true"
+      aria-expanded="false"
       aria-controls="s-list"
       aria-autocomplete="list"
       aria-label="Search docs"
@@ -46,6 +46,7 @@ function escape(text: string): string {
       spellcheck="false"
       autocomplete="off"
     />
+    <button class="copy s-close" type="button" aria-label="Close search" data-nocopy>close</button>
   </div>
   <div class="s-scroll">
     <span class="s-bar" id="s-bar" aria-hidden="true"></span>
