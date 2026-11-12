@@ -209,12 +209,13 @@ pub(super) fn hard_coded_references(
     }
 }
 
-/// `cartesian_join`: a JOIN arm carries no condition — `CROSS JOIN` by
-/// definition, a conditional operator (`JOIN`/`INNER`/`LEFT`/…) with no
-/// ON/USING/NATURAL, an `ON` that can never reject a row (`ON TRUE`,
-/// `ON 1 = 1`), or a comma-separated `FROM a, b` with no `WHERE`. Lateral
-/// applies, ASOF matches and UNNEST don't count (a condition or a per-row
-/// explode, not a product).
+/// `cartesian_join`: a JOIN arm carries no condition — `CROSS JOIN` with
+/// no constraint (MySQL lets one carry `ON` — a real condition there is a
+/// join, not a product), a conditional operator (`JOIN`/`INNER`/`LEFT`/…)
+/// with no ON/USING/NATURAL, an `ON` that can never reject a row
+/// (`ON TRUE`, `ON 1 = 1`), or a comma-separated `FROM a, b` with no
+/// `WHERE`. Lateral applies, ASOF matches and UNNEST don't count (a
+/// condition or a per-row explode, not a product).
 pub(super) fn cartesian_join(
     dag: &Dag,
     uids: &[&String],

@@ -13,11 +13,14 @@
 //   other `{{ }}` all carry the mark, so only genuinely hand-written names
 //   land in the set. Names are dotted (`analytics.orders`), sorted.
 // - `cartesian`: the display text of every JOIN arm carrying no join
-//   condition — `CROSS JOIN` (a cross product by definition) and any
-//   constrained-operator join whose constraint is `None` (`JOIN t` with no
-//   ON/USING/NATURAL). `NATURAL`, `ON`, `USING`, ASOF's match condition,
-//   and the apply/array-join operators (lateral invocations, like UNNEST)
-//   are never Cartesian.
+//   condition — a `JoinConstraint::None` arm (`JOIN t`, or `CROSS JOIN t`
+//   — the spelling of a product) — plus an `ON` that can never reject a
+//   row (`ON TRUE`, `ON 1 = 1`). The constraint is evaluated wherever the
+//   grammar carries one: MySQL parses `CROSS JOIN t ON cond` (its INNER
+//   JOIN spelling), so the operator alone never decides. `NATURAL`,
+//   real `ON`/`USING` conditions, ASOF's match condition, and the
+//   apply/array-join operators (lateral invocations, like UNNEST) are
+//   never Cartesian.
 //
 // Subqueries everywhere count — derived tables, nested joins, and
 // expression positions (`IN (SELECT …)`, `EXISTS …`, scalar subqueries) —
@@ -324,22 +327,23 @@ fn tautological_condition(e: &Expr) -> bool {
 
 fn scan_join(j: &Join, scope: &BTreeSet<String>, out: &mut RelationScan) {
     scan_factor(&j.relation, scope, out);
-    // A `CROSS JOIN` is a cross product by definition; any other
-    // constrained operator with `JoinConstraint::None` joins every row,
-    // and an `ON` that can never reject a row (`ON TRUE`, `ON 1 = 1`)
-    // joins them all the same. `NATURAL`/`ON`/`USING` conditions and the
-    // apply/ASOF/array operators (a lateral invocation or a conditioned
-    // match) never count — and neither does a join TARGET that isn't a
-    // relation at all (UNNEST / table functions / lateral applies are
-    // per-row, not products).
+    // A conditionless arm joins every row: `JoinConstraint::None` is a
+    // cross product (`CROSS JOIN` spells it intentionally), and an `ON`
+    // that can never reject a row (`ON TRUE`, `ON 1 = 1`) joins them all
+    // the same. The constraint is evaluated wherever one exists — MySQL
+    // parses `CROSS JOIN t ON cond` (its INNER JOIN spelling), so the
+    // operator never decides alone. `NATURAL`/real `ON`/`USING`
+    // conditions and the apply/ASOF/array operators (a lateral
+    // invocation or a conditioned match) never count — and neither does
+    // a join TARGET that isn't a relation at all (UNNEST / table
+    // functions / lateral applies are per-row, not products).
     let unconditional = !functionish_factor(&j.relation)
         && !matches!(j.join_operator, JoinOperator::AsOf { .. })
-        && (matches!(j.join_operator, JoinOperator::CrossJoin(_))
-            || match join_constraint(j) {
-                Some(JoinConstraint::None) => true,
-                Some(JoinConstraint::On(e)) => tautological_condition(e),
-                _ => false,
-            });
+        && match join_constraint(j) {
+            Some(JoinConstraint::None) => true,
+            Some(JoinConstraint::On(e)) => tautological_condition(e),
+            _ => false,
+        };
     if unconditional {
         out.cartesian.insert(j.to_string());
         // The relation's own span — the `JOIN` keyword stays outside it,

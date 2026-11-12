@@ -5626,6 +5626,34 @@ fn cartesian_join_flags_comma_from_and_tautological_conditions() {
 }
 
 #[test]
+fn cartesian_join_evaluates_a_cross_join_constraint() {
+    // MySQL parses a constraint on CROSS JOIN (its INNER JOIN spelling):
+    // a real ON is a conditioned join, not a product — a bare or
+    // never-rejecting one still is.
+    let m = manifest(
+        vec![
+            model_sql(
+                "cross_on",
+                "select * from a.t cross join b.u on a.t.id = b.u.id",
+            ),
+            model_sql("cross_bare", "select * from a.t cross join b.u"),
+            model_sql("cross_true", "select * from a.t cross join b.u on true"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = SqlParseResolver::new(None, SqlDialect::MySql);
+    let cfg = cfg_only(&[LintRule::CartesianJoin]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::CartesianJoin),
+        vec!["model.p.cross_bare", "model.p.cross_true"],
+        "CROSS JOIN with a real ON is MySQL's inner-join spelling — not a product"
+    );
+}
+
+#[test]
 fn warehouse_type_drift_compares_under_the_resolved_dialect() {
     // `bigint` declared vs an `INT64` catalog: a false positive under
     // Generic (no shared alias family), equivalent under BigQuery (its
