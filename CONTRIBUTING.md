@@ -98,12 +98,23 @@ tape on a pull request renders `demo.gif` as a run artifact, so you can review
 the new recording before merging. Each release attaches the rendered GIF to
 the release as `demo.gif`, which is what the README displays.
 
+## Docs site
+
+The documentation site lives in `site/`.
+
+- Write content as Markdown in `site/src/content/docs/`.
+- `site/src/nav.json` sets the sidebar order.
+- The reference pages are read from `docs/reference/`, which
+  `cargo xtask gen-docs` generates.
+- To preview locally, run `cd site && pnpm install && pnpm run dev`. To check
+  search as well, run `pnpm run build && pnpm run preview`.
+
 ## Reporting bugs
 
 Open an issue with the bug-report template — it asks for the `dbtl`
 version, platform, invocation, and what you expected versus what happened.
-The exit code table in the README helps tell a bad invocation (exit 2/3)
-from a real gate failure (exit 1).
+The [exit codes page](https://hytfjwr.github.io/dbtl/configuration/exit-codes/) helps tell
+a bad invocation (exit 2/3) from a real gate failure (exit 1).
 
 ## License
 

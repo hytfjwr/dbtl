@@ -14,7 +14,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   every non-zero code alike need no change; scripts that matched `1` for
   "anything went wrong" should match on non-zero instead, or use the new
   codes to distinguish a failed gate from a bad invocation. See
-  [the exit-code table](docs/ci.md#exit-codes).
+  [the exit-code table](https://hytfjwr.github.io/dbtl/configuration/exit-codes/).
 - **`--project-only` is deprecated.** It still parses for compatibility but
   is a no-op — the default scope already is the root project — prints a
   deprecation warning, and conflicts with `--include-packages`. Drop the
@@ -34,6 +34,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Documentation site at https://hytfjwr.github.io/dbtl/, with search, a
+  selector playground, and generated CLI, keybinding, lint-rule, and
+  configuration reference. The README is now a short overview that links to
+  the site.
 - `dbtl lint` subcommand: the static rule set on its own, with
   `--write-baseline`/`--no-baseline`, `--list-rules`, `--explain`, and the
   full report-format set.
