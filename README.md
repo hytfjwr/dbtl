@@ -34,7 +34,7 @@
 ╰──────────╯
 ```
 
-<img width="3835" height="2072" alt="dbtl running in a terminal: the model list on the left, the selected model's lineage on the right" src="https://github.com/user-attachments/assets/b5cded19-6019-4e1a-a5e7-18764f48bb81" />
+<img src="https://github.com/hytfjwr/dbtl/releases/latest/download/demo.gif" alt="dbtl demo: browsing a model's lineage in a terminal, cycling colour lenses, and opening the stats dashboard" width="100%" />
 
 ## Install
 
