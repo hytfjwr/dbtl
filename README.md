@@ -221,7 +221,7 @@ $ dbtl --select 'meta:domain=sales'             # meta:key / meta:key=value sele
 $ dbtl --include-packages
 
 # Pick a color theme (or set DBTL_THEME)
-$ dbtl --theme ayu-mirage
+$ dbtl --theme dusk
 $ dbtl --list-themes
 
 # Diff against a baseline: "what does my branch change?"
@@ -519,19 +519,19 @@ While a modal or menu is up the rest of the screen dims; the wheel scrolls its c
 
 ## Color themes
 
-Built-in presets: `default` (xterm-256, works everywhere), `ayu-dark`, `ayu-mirage`, `ayu-light`, and `gruvbox-dark` (truecolor). Choose one with `--theme <name>` or the `DBTL_THEME` environment variable, switch live with `Ctrl-t`, and list them all with `--list-themes`.
+Built-in presets: `default` (xterm-256, works everywhere), `dark`, `dusk`, `light`, and `warm` (truecolor). Choose one with `--theme <name>` or the `DBTL_THEME` environment variable, switch live with `Ctrl-t`, and list them all with `--list-themes`.
 
 To define your own theme, put a YAML file under `~/.config/dbtl/themes/` (or `$XDG_CONFIG_HOME/dbtl/themes/`). The file name becomes the theme name:
 
 ```yaml
-# ~/.config/dbtl/themes/my-ayu.yml
-base: ayu-mirage        # optional preset to start from (default: "default")
+# ~/.config/dbtl/themes/mine.yml
+base: dusk              # optional preset to start from (default: "default")
 colors:                 # override any role; the rest comes from the base
   accent: "#ffcc66"     # "#rrggbb" truecolor…
   class_table: 114      # …or an xterm-256 index
 ```
 
-Then run `dbtl --theme my-ayu`. An unknown role or an invalid color stops startup with an error that lists the valid values. If a palette makes a lens invisible (for example, a lens tint equal to a node color), `dbtl` still starts but prints a warning.
+Then run `dbtl --theme mine`. An unknown role or an invalid color stops startup with an error that lists the valid values. If a palette makes a lens invisible (for example, a lens tint equal to a node color), `dbtl` still starts but prints a warning.
 
 ## State and config
 
@@ -541,7 +541,7 @@ Defaults for a fresh project (or values a config can't express) come from `~/.co
 
 ```yaml
 # ~/.config/dbtl/config.yml — every field optional
-theme: ayu-mirage      # same names as --theme (CLI/env still wins)
+theme: dusk            # same names as --theme (CLI/env still wins)
 lens: coverage         # off|coverage|degree-heat|layer|layer-violation|lint|diff|run-status|run-time|column-impact|primary-key
 density: compact       # comfortable|compact
 sort: downstream       # layer|downstream|tests
