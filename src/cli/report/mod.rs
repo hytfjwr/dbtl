@@ -7,6 +7,7 @@
 //! never disagree about what the gates said.
 
 mod codeclimate;
+mod concise;
 mod github;
 mod json;
 mod junit;
@@ -16,6 +17,7 @@ mod text;
 
 use super::*;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 
@@ -133,6 +135,29 @@ pub struct ReportSummary {
     pub skipped: usize,
 }
 
+/// The lint-run tallies the `text`/`concise` summary lines need that the
+/// gate list alone can't express: findings `--diff` suppressed before
+/// counting, whether the `new` wording applies, the enabled-but-unrunnable
+/// rules, and a slot for the unparsable-SQL tally. Carried on
+/// [`Report::lint`] — never serialized; the json report's `summary` block
+/// keeps its own shape.
+#[derive(Debug, Clone, Default)]
+pub struct LintTally {
+    /// Findings `--diff` classified as already on the baseline side —
+    /// reported in the summary as "not counted", never gated on.
+    pub pre_existing: usize,
+    /// A `--diff` baseline was compared (drives the `new finding(s)`
+    /// wording on lint gate rows).
+    pub has_diff: bool,
+    /// Enabled lint rules `run_rules` skipped for a missing input, in
+    /// `LintRule::ALL` order.
+    pub skipped: Vec<dbtl::SkippedRule>,
+    /// Models whose SQL couldn't be parsed so the SQL rules skipped them —
+    /// the summary's third line; populated when the rules start reporting
+    /// parse failures (the field and line are in place, currently zero).
+    pub unparsed_models: usize,
+}
+
 /// The shared report the `check`/`lint` gates serialize into — the
 /// `dbtl.report/v1` document. Every field is data the run already computed:
 /// `gates` is the ordered gate outcomes, `info` the context lines the text
@@ -159,6 +184,12 @@ pub struct Report {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docs_drift: Option<DocsDrift>,
     pub summary: ReportSummary,
+    /// Lint-side tallies for the human formats' summary lines — `Some`
+    /// exactly when lint ran (`dbtl lint`, `check --lint`), so `check`
+    /// without lint keeps its plain gate list with no summary. Never
+    /// serialized.
+    #[serde(skip)]
+    pub lint: Option<LintTally>,
 }
 
 impl Report {
@@ -174,6 +205,7 @@ impl Report {
             impact: None,
             docs_drift: None,
             summary: ReportSummary::default(),
+            lint: None,
         }
     }
 
@@ -214,6 +246,7 @@ impl Report {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum ReportFormat {
     Text,
+    Concise,
     Markdown,
     Json,
     Github,
@@ -232,9 +265,16 @@ impl ReportFormat {
         )
     }
 
+    /// The human formats — the ones ANSI styling and source excerpts apply
+    /// to (`--color` and the excerpt map affect nothing else).
+    pub fn is_human(self) -> bool {
+        matches!(self, ReportFormat::Text | ReportFormat::Concise)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             ReportFormat::Text => "text",
+            ReportFormat::Concise => "concise",
             ReportFormat::Markdown => "markdown",
             ReportFormat::Json => "json",
             ReportFormat::Github => "github",
@@ -247,6 +287,7 @@ impl ReportFormat {
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "text" => ReportFormat::Text,
+            "concise" => ReportFormat::Concise,
             "markdown" => ReportFormat::Markdown,
             "json" => ReportFormat::Json,
             "github" => ReportFormat::Github,
@@ -259,8 +300,9 @@ impl ReportFormat {
 
     /// Every format `check`/`lint` accept — the `allowed` set their
     /// `--report` specs are validated against.
-    pub const ALL: [ReportFormat; 7] = [
+    pub const ALL: [ReportFormat; 8] = [
         ReportFormat::Text,
+        ReportFormat::Concise,
         ReportFormat::Markdown,
         ReportFormat::Json,
         ReportFormat::Github,
@@ -271,11 +313,35 @@ impl ReportFormat {
 }
 
 /// The context a renderer may need that isn't part of the document: the
-/// subcommand name (junit `classname`, the markdown title) and the
-/// `--path-prefix` for path-carrying formats.
+/// subcommand name (junit `classname`, the markdown title, which report
+/// shape `text`/`concise` take), the `--path-prefix` for path-carrying
+/// formats, and — for the human formats only — the run's dag, the excerpt
+/// texts, and whether ANSI styling goes in.
 pub struct RenderCtx<'a> {
     pub command: &'a str,
     pub path_prefix: Option<&'a str>,
+    /// The run's dag: `text`/`concise` resolve `related` node names for
+    /// `= note:` lines through it. `None` where no dag exists (render
+    /// unit tests).
+    pub dag: Option<&'a dbtl::Dag>,
+    /// The excerpt texts `text` annotates, keyed by `location.file` —
+    /// populated only for the human formats (see [`collect_sources`]).
+    pub sources: Option<&'a BTreeMap<String, String>>,
+    /// Emit ANSI styling — only ever true for stdout `text`/`concise`
+    /// (report files and the step summary always render plain).
+    pub styled: bool,
+}
+
+/// The run-side inputs the human formats need that the report doesn't
+/// carry: where to read source text and the dag for `related` lookups.
+/// Everything else the renderers need lives in the [`Report`] itself.
+pub struct RenderEnv<'a> {
+    /// The run's dag — `.sql` excerpts come from its `raw_code` (the exact
+    /// string positions were computed against).
+    pub dag: &'a dbtl::Dag,
+    /// The root `location.file` resolves under — `.yml` excerpts read from
+    /// disk here, the same resolution `fill_finding_lines` applies.
+    pub project_root: &'a Path,
 }
 
 /// Dispatch one format's renderer — each is a pure `Report -> String`
@@ -283,6 +349,7 @@ pub struct RenderCtx<'a> {
 pub fn render_report(format: ReportFormat, report: &Report, ctx: &RenderCtx<'_>) -> String {
     match format {
         ReportFormat::Text => text::render(report, ctx),
+        ReportFormat::Concise => concise::render(report, ctx),
         ReportFormat::Markdown => markdown::render(report, ctx),
         ReportFormat::Json => json::render(report, ctx),
         ReportFormat::Github => github::render(report, ctx),
@@ -292,11 +359,52 @@ pub fn render_report(format: ReportFormat, report: &Report, ctx: &RenderCtx<'_>)
     }
 }
 
+/// The excerpt texts `text`/`concise` annotate, keyed by `location.file`:
+/// `.yml` files read once under `env.project_root` (the same resolution
+/// `fill_finding_lines` applies), `.sql` taken from `Dag::raw_code` — the
+/// exact string positions were computed against. A file that can't be
+/// resolved stays absent; its findings render position-only.
+fn collect_sources(report: &Report, env: &RenderEnv<'_>) -> BTreeMap<String, String> {
+    let mut sources = BTreeMap::new();
+    for f in report.gates.iter().flat_map(|g| g.counted()) {
+        let Some(loc) = f.location.as_ref() else {
+            continue;
+        };
+        if sources.contains_key(&loc.file) {
+            continue;
+        }
+        let text = if loc.file.ends_with(".yml") || loc.file.ends_with(".yaml") {
+            std::fs::read_to_string(env.project_root.join(&loc.file)).ok()
+        } else {
+            env.dag.raw_code(&f.node_uid).map(str::to_string)
+        };
+        if let Some(text) = text {
+            sources.insert(loc.file.clone(), text);
+        }
+    }
+    sources
+}
+
+/// Write `body` to stdout through `anstream` — ANSI escapes pass through
+/// or strip per `choice` (`auto` follows the terminal/environment
+/// detection). A closed pipe (`dbtl lint | head`) is a normal end of
+/// output; any other write error surfaces to the caller.
+pub(crate) fn write_stdout(body: &str, choice: anstream::ColorChoice) -> Result<(), CliError> {
+    let mut out = anstream::AutoStream::new(std::io::stdout(), choice);
+    match out.write_all(body.as_bytes()).and_then(|()| out.flush()) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(e) => Err(CliError::new(e.into())),
+    }
+}
+
 /// A `file[:line[:column]]` anchor for a finding: the project-relative path
 /// plus the recorded position — unknown portions drop off rather than
-/// printing a guessed `:1`, with `--path-prefix` applied when the format
-/// carries paths. Findings without a file location fall back to the node's
-/// `unique_id` — a stable identifier, never blank.
+/// printing a guessed `:1`, with `--path-prefix` applied when the caller
+/// passes one (only the github/sarif/codeclimate formats do — `text` and
+/// `concise` keep the project-relative path). Findings without a file
+/// location fall back to the node's `unique_id` — a stable identifier,
+/// never blank.
 pub fn finding_anchor(f: &dbtl::Finding, path_prefix: Option<&str>) -> String {
     match &f.location {
         Some(loc) => {
@@ -383,6 +491,9 @@ pub fn parse_report_spec(
 pub struct OutputPlan {
     pub format: ReportFormat,
     pub quiet: bool,
+    /// `--color` for the stdout human formats — resolved to the
+    /// `anstream` choice that decides whether ANSI escapes pass through.
+    pub color: anstream::ColorChoice,
     pub reports: Vec<(ReportFormat, PathBuf)>,
     pub step_summary: bool,
     pub path_prefix: Option<String>,
@@ -396,6 +507,7 @@ impl OutputPlan {
     pub fn build(
         format: ReportFormat,
         quiet: bool,
+        color: ColorArg,
         report_args: &[String],
         step_summary: bool,
         path_prefix: Option<&str>,
@@ -423,6 +535,7 @@ impl OutputPlan {
         Ok(OutputPlan {
             format,
             quiet,
+            color: color.into(),
             reports,
             step_summary,
             path_prefix,
@@ -431,16 +544,36 @@ impl OutputPlan {
 
     /// Emit the report: stdout (unless `--quiet`), then each `--report` file
     /// (parents created, existing files overwritten — write failures are
-    /// input/output errors), then the step-summary append. Every render of a
-    /// file matches the bytes the same format would print on stdout.
-    pub fn emit(&self, report: &Report, command: &str) -> Result<(), CliError> {
+    /// input/output errors), then the step-summary append. A `--report`
+    /// file's bytes match what the same format would print on stdout apart
+    /// from color — files are always unstyled.
+    pub fn emit(
+        &self,
+        report: &Report,
+        command: &str,
+        env: &RenderEnv<'_>,
+    ) -> Result<(), CliError> {
+        // The excerpt texts the human formats annotate — gathered once and
+        // shared across every render, so a file is never re-read per format.
+        let needs_sources =
+            self.format.is_human() || self.reports.iter().any(|(f, _)| f.is_human());
+        let sources = needs_sources.then(|| collect_sources(report, env));
         let ctx = RenderCtx {
             command,
             path_prefix: self.path_prefix.as_deref(),
+            dag: Some(env.dag),
+            sources: sources.as_ref(),
+            styled: false,
         };
         if !self.quiet {
-            print!("{}", render_report(self.format, report, &ctx));
-            let _ = std::io::stdout().flush();
+            // Styling goes in only when the format uses it and the caller
+            // didn't disable color — `--color never` renders plain, and the
+            // stream strips whatever the environment disallows on `auto`.
+            let stdout_ctx = RenderCtx {
+                styled: self.format.is_human() && self.color != anstream::ColorChoice::Never,
+                ..ctx
+            };
+            write_stdout(&render_report(self.format, report, &stdout_ctx), self.color)?;
         }
         for (format, path) in &self.reports {
             write_report_file(path, &render_report(*format, report, &ctx))?;
@@ -730,6 +863,9 @@ pub(super) mod samples {
         RenderCtx {
             command: "check",
             path_prefix: prefix,
+            dag: None,
+            sources: None,
+            styled: false,
         }
     }
 }
@@ -779,6 +915,7 @@ mod tests {
         let plan = OutputPlan::build(
             ReportFormat::Github,
             false,
+            ColorArg::Auto,
             &[],
             false,
             Some("sub/dir/"),
@@ -793,6 +930,7 @@ mod tests {
             let plan = OutputPlan::build(
                 ReportFormat::Text,
                 false,
+                ColorArg::Auto,
                 &[],
                 false,
                 Some(prefix),
@@ -807,6 +945,7 @@ mod tests {
             OutputPlan::build(
                 ReportFormat::Text,
                 false,
+                ColorArg::Auto,
                 &[],
                 false,
                 Some("p"),
@@ -819,6 +958,7 @@ mod tests {
         let plan = OutputPlan::build(
             ReportFormat::Text,
             false,
+            ColorArg::Auto,
             &["sarif:r.sarif".to_string()],
             false,
             Some("p"),

@@ -304,6 +304,8 @@ pub struct LintArgs<'a> {
     pub fail_on: Option<dbtl::FailOn>,
     /// `--format` — the stdout report format.
     pub format: ReportFormat,
+    /// `--color` — when the stdout `text`/`concise` report may be styled.
+    pub color: ColorArg,
     /// `--write-baseline` — `Some(None)` = the flag with no PATH argument.
     pub write_baseline: Option<&'a Option<String>>,
     /// `--no-baseline` — never read the baseline file.
@@ -369,7 +371,7 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
         }
         let cfg = query_lint_config(src, args.rules)?;
         if args.list_rules {
-            print_rules_table(&cfg);
+            print_rules_table(&cfg)?;
         }
         if let Some(id) = args.explain {
             explain_rule(id, &cfg)?;
@@ -387,6 +389,7 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
     let plan = OutputPlan::build(
         args.format,
         args.quiet,
+        args.color,
         args.reports,
         args.step_summary,
         args.path_prefix,
@@ -438,7 +441,14 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
             .with_context(|| format!("failed to write lint baseline {}", path.display()))
             .input()?;
         if !args.quiet {
-            println!("wrote {} finding(s) to {}", baseline.len(), path.display());
+            write_stdout(
+                &format!(
+                    "wrote {} finding(s) to {}\n",
+                    baseline.len(),
+                    path.display()
+                ),
+                anstream::ColorChoice::Auto,
+            )?;
         }
         return Ok(());
     }
@@ -494,11 +504,8 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
     // Best-effort yml line numbers — the file-reading pass `run_rules`
     // stays free of. Unreadable files simply keep `line` unset. Filled
     // before the Report build so every format carries them.
-    dbtl::fill_finding_lines(
-        &mut outcome.findings,
-        &resolved.dag,
-        &lint_project_root(&candidates),
-    );
+    let project_root = lint_project_root(&candidates);
+    dbtl::fill_finding_lines(&mut outcome.findings, &resolved.dag, &project_root);
     // One gate per rule — the same `lint:*` gates `check --lint` reports,
     // rendered by the same formats.
     let mut report = Report::new(
@@ -507,7 +514,20 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
     );
     report.gates = lint_gates(&resolved.dag, &outcome);
     report.summary = Report::summarize(&report.gates);
-    plan.emit(&report, "lint")?;
+    report.lint = Some(LintTally {
+        pre_existing: outcome.rules.iter().map(|r| r.pre_existing).sum(),
+        has_diff: outcome.has_diff,
+        skipped: outcome.skipped.clone(),
+        unparsed_models: 0,
+    });
+    plan.emit(
+        &report,
+        "lint",
+        &RenderEnv {
+            dag: &resolved.dag,
+            project_root: &project_root,
+        },
+    )?;
     if outcome.failed {
         Err(CliError::gate(anyhow::anyhow!(
             "lint: {} finding(s) at or above fail-on '{}'",
@@ -521,8 +541,9 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
 
 /// The `--list-rules` table — every registry rule, one line each: id,
 /// category, effective severity (`off` when the config disables it), and
-/// the one-line summary. Columns align to the widest entry.
-fn print_rules_table(cfg: &dbtl::LintConfig) {
+/// the one-line summary. Columns align to the widest entry. Written
+/// through the same broken-pipe-safe stdout helper the report uses.
+fn print_rules_table(cfg: &dbtl::LintConfig) -> Result<(), CliError> {
     let id_w = dbtl::LintRule::ALL
         .iter()
         .map(|r| r.name().len())
@@ -535,8 +556,8 @@ fn print_rules_table(cfg: &dbtl::LintConfig) {
         .max()
         .unwrap_or(0)
         .max("CATEGORY".len());
-    println!(
-        "{:<id_w$}  {:<cat_w$}  {:<8}  SUMMARY",
+    let mut out = format!(
+        "{:<id_w$}  {:<cat_w$}  {:<8}  SUMMARY\n",
         "ID",
         "CATEGORY",
         "SEVERITY",
@@ -545,8 +566,8 @@ fn print_rules_table(cfg: &dbtl::LintConfig) {
     );
     for rule in dbtl::LintRule::ALL {
         let severity = cfg.severity(rule).map(|s| s.name()).unwrap_or("off");
-        println!(
-            "{:<id_w$}  {:<cat_w$}  {:<8}  {}",
+        out += &format!(
+            "{:<id_w$}  {:<cat_w$}  {:<8}  {}\n",
             rule.name(),
             rule.info().category.name(),
             severity,
@@ -555,6 +576,7 @@ fn print_rules_table(cfg: &dbtl::LintConfig) {
             cat_w = cat_w
         );
     }
+    write_stdout(&out, anstream::ColorChoice::Auto)
 }
 
 /// `--explain <ID>` — the full registry entry plus the effective severity
@@ -573,35 +595,27 @@ fn explain_rule(id: &str, cfg: &dbtl::LintConfig) -> Result<(), CliError> {
         )));
     };
     let info = rule.info();
-    println!("id: {}", info.id);
-    println!("category: {}", info.category.name());
-    println!(
-        "severity: {}",
+    let mut out = format!("id: {}\n", info.id);
+    out += &format!("category: {}\n", info.category.name());
+    out += &format!(
+        "severity: {}\n",
         cfg.severity(rule).map(|s| s.name()).unwrap_or("off")
     );
-    println!("requires: {}", requires_name(info.requires));
-    println!();
-    println!("{}", info.summary);
-    println!();
-    println!("Rationale:");
-    println!("{}", info.rationale);
-    println!();
-    println!("Example:");
-    println!("{}", info.example);
-    println!();
-    println!("Help:");
-    println!("{}", info.help);
-    println!();
-    println!("Params:");
+    out += &format!("requires: {}\n\n", requires_name(info.requires));
+    out += &format!("{}\n\n", info.summary);
+    out += &format!("Rationale:\n{}\n\n", info.rationale);
+    out += &format!("Example:\n{}\n\n", info.example);
+    out += &format!("Help:\n{}\n\n", info.help);
+    out += "Params:\n";
     if info.params.is_empty() {
-        println!("  (none)");
+        out += "  (none)\n";
     } else {
         for p in info.params {
             match p.kind {
                 dbtl::ParamKind::Int { min, default } => {
                     let current = cfg.int_param(rule, p.name).unwrap_or(default);
-                    println!(
-                        "  {}  integer  min {}, default {}, current {} — {}",
+                    out += &format!(
+                        "  {}  integer  min {}, default {}, current {} — {}\n",
                         p.name, min, default, current, p.description
                     );
                 }
@@ -611,8 +625,8 @@ fn explain_rule(id: &str, cfg: &dbtl::LintConfig) -> Result<(), CliError> {
                         .unwrap_or_else(|| default.iter().map(|s| s.to_string()).collect());
                     let allowed = allowed
                         .map_or_else(String::new, |a| format!(", allowed [{}]", a.join(", ")));
-                    println!(
-                        "  {}  string-list  default [{}], current [{}]{} — {}",
+                    out += &format!(
+                        "  {}  string-list  default [{}], current [{}]{} — {}\n",
                         p.name,
                         default.join(", "),
                         current.join(", "),
@@ -624,8 +638,8 @@ fn explain_rule(id: &str, cfg: &dbtl::LintConfig) -> Result<(), CliError> {
                     let current = cfg
                         .str_list_param(rule, p.name)
                         .unwrap_or_else(|| default.iter().map(|s| s.to_string()).collect());
-                    println!(
-                        "  {}  regex-list  default [{}], current [{}] — {}",
+                    out += &format!(
+                        "  {}  regex-list  default [{}], current [{}] — {}\n",
                         p.name,
                         default.join(", "),
                         current.join(", "),
@@ -635,10 +649,8 @@ fn explain_rule(id: &str, cfg: &dbtl::LintConfig) -> Result<(), CliError> {
             }
         }
     }
-    println!();
-    println!("Docs:");
-    println!("{}", rule.docs_url());
-    Ok(())
+    out += &format!("\nDocs:\n{}\n", rule.docs_url());
+    write_stdout(&out, anstream::ColorChoice::Auto)
 }
 
 /// The display name of a rule's data requirement.
