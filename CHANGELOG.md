@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Lint rule-set presets and category severities. `lint.preset: minimal|standard|strict` in `.dbtl.yml` (or `--preset` on `dbtl lint` and `dbtl check`) picks the base rule set a run starts from: `minimal` runs only the error-default rules, `standard` (the shipped default) runs every default-enabled rule, and `strict` runs the whole registry. `lint.categories: {<category>: error|warn|off}` pins a whole category above the preset and below `lint.rules.<id>`; `--rules` remains the authoritative selector above all of them. `--list-rules` shows the resolved severity/enablement under the active config alongside per-preset membership, and `--explain` reports the effective values.
 - `?` full-text search now matches compiled SQL in addition to raw SQL,
   descriptions, and column names, so a `ref()`/`source()` target that only
   exists after Jinja expansion (`db.schema.table`) is findable too.

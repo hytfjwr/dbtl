@@ -57,6 +57,7 @@ dbtl check --diff git:main --no-breaking                        # + breaking col
 dbtl check --lint                                               # + static lint (one gate per rule)
 dbtl check --lint --diff /path/to/main-checkout                 # lint gates on NEW violations only
 dbtl check --rules root_models,undocumented_models              # a subset of rules (implies --lint)
+dbtl check --preset minimal                                     # only the error-default lint rules (implies --lint)
 dbtl check --lint --format json                                 # the whole report as JSON
 dbtl check --column-coverage-min 50 --doc-coverage-min 80       # + column-test and description coverage
 dbtl check --diff git:main --max-blast-radius 10                # + a ceiling on the blast radius
@@ -71,6 +72,7 @@ Key flags:
 | `--max-blast-radius <N>` | Ceiling on the affected models. Needs `--diff`. |
 | `--no-breaking` | Fail on breaking column changes that downstream columns still reference. Needs `--diff`. |
 | `--lint`, `--rules <A,B>` | Add one gate per lint rule. `--rules` selects a subset and implies `--lint`. |
+| `--preset minimal\|standard\|strict` | The base lint rule set — overrides `.dbtl.yml`'s `lint.preset` and implies `--lint`. `lint.categories`/`lint.rules` layers still sit above it. |
 | `--gate <ID>=error\|warn\|off` | Override one gate's severity. Repeatable. |
 | `--fail-on error\|warn\|never` | The minimum severity that fails the run. With `never`, a tripped gate prints `WARN` and never counts. |
 | `--select <SELECTOR>` | Scope every gate to matching nodes. `docs_drift` is never scoped, because it compares whole doc sets. |

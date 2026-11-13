@@ -122,6 +122,9 @@ pub struct CheckArgs<'a> {
     pub no_breaking: bool,
     /// `--rules` — a lint rule list (implies `--lint`).
     pub rules: &'a [String],
+    /// `--preset` — the base lint rule set (implies `--lint`), overriding
+    /// `.dbtl.yml`'s `lint.preset`.
+    pub preset: Option<dbtl::LintPreset>,
     /// `--fail-on` — overrides `.dbtl.yml`'s `fail_on`.
     pub fail_on: Option<dbtl::FailOn>,
     /// `--format` — the stdout report format.
@@ -602,7 +605,7 @@ impl CheckRun<'_> {
     ) -> Result<(), CliError> {
         if self.lint_active {
             let mut cfg = self.pc.config.lint.clone();
-            apply_rules_overlay(&mut cfg, self.args.rules)?;
+            apply_preset_and_rules(&mut cfg, self.args.preset, self.args.rules)?;
             let candidates = dbtl::project_config_candidates(
                 self.config_args.0.as_deref(),
                 self.config_args.1.as_deref(),
@@ -704,7 +707,10 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
     // `.dbtl.yml` owner_meta_key > config.yml's > `owner` — the ONE
     // resolution `dbtl impact` and the TUI `D` modal share.
     let owner_key = owner_meta_key(pc.config.owner_meta_key.as_deref(), true);
-    let lint_active = args.lint || !args.rules.is_empty() || check_cfg.lint;
+    // `--rules`/`--preset` imply linting (a rule list or a rule set with
+    // nothing to run is a no-op flag, so honour the intent instead).
+    let lint_active =
+        args.lint || !args.rules.is_empty() || args.preset.is_some() || check_cfg.lint;
 
     // The baseline loads once and feeds EVERYTHING diff-aware — the diff
     // gates, the lint new-violation comparison, and `--select`'s `state:`

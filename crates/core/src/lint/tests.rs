@@ -2359,7 +2359,7 @@ fn unused_models_layers_param_retargets_the_check() {
     let mut cfg = config_from("lint:\n  rules:\n    unused_models:\n      layers: [marts]\n");
     for r in LintRule::ALL {
         if r != LintRule::UnusedModels {
-            cfg.severities.insert(r, None);
+            cfg.rules.insert(r, RuleEnabled::Off);
         }
     }
     let out = lint_outcome(&dag, &cfg, None, None);
@@ -5172,7 +5172,7 @@ fn cfg_only(rules: &[LintRule]) -> LintConfig {
     let mut cfg = LintConfig::default();
     for r in LintRule::ALL {
         if !rules.contains(&r) {
-            cfg.severities.insert(r, None);
+            cfg.rules.insert(r, RuleEnabled::Off);
         }
     }
     cfg
@@ -6851,7 +6851,7 @@ fn new_sql_rules_respect_exclude_and_meta_ignore() {
             r,
             LintRule::TrailingSemicolon | LintRule::DuplicateOutputColumns | LintRule::UnusedCte
         ) {
-            cfg.severities.insert(r, None);
+            cfg.rules.insert(r, RuleEnabled::Off);
         }
     }
     let out = lint_outcome(&dag, &cfg, Some(&res), None);
@@ -7143,12 +7143,135 @@ fn missing_inputs_report_skipped_rules_not_findings() {
 
     // Disabled rules never skip — off is not "skipped".
     let mut cfg = LintConfig::default();
-    cfg.severities.insert(LintRule::SelectStar, None);
+    cfg.rules.insert(LintRule::SelectStar, RuleEnabled::Off);
     let out = lint_outcome(&dag, &cfg, None, None);
     assert!(
         !out.skipped.iter().any(|s| s.rule == LintRule::SelectStar),
         "a disabled rule produces neither findings nor a skip"
     );
+
+    // …nor does a rule off via `categories` or the preset — an opt-out by
+    // any layer is never counted as a skip.
+    let mut cfg = LintConfig::default();
+    cfg.categories.insert(Category::Sql, None);
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert!(
+        out.skipped
+            .iter()
+            .all(|s| s.rule.info().category != Category::Sql),
+        "a category-off sql rule produces neither findings nor a skip"
+    );
+    let cfg = LintConfig {
+        preset: LintPreset::Minimal,
+        ..LintConfig::default()
+    };
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert!(
+        out.skipped
+            .iter()
+            .all(|s| { LintPreset::Minimal.enables(s.rule.info()) }),
+        "a preset-off rule produces neither findings nor a skip"
+    );
+}
+
+#[test]
+fn presets_define_the_base_rule_set() {
+    // minimal = exactly the error-default rules; standard = the registry's
+    // `default_enabled` set; strict = everything (they agree while every
+    // shipped rule is default-enabled — the distinction only matters when
+    // an opt-in rule ships).
+    let minimal: Vec<_> = LintRule::ALL
+        .iter()
+        .copied()
+        .filter(|r| LintPreset::Minimal.enables(r.info()))
+        .collect();
+    assert_eq!(
+        minimal,
+        LintRule::ALL
+            .iter()
+            .copied()
+            .filter(|r| r.info().default_severity == Severity::Error)
+            .collect::<Vec<_>>()
+    );
+    let standard: Vec<_> = LintRule::ALL
+        .iter()
+        .copied()
+        .filter(|r| LintPreset::Standard.enables(r.info()))
+        .collect();
+    assert_eq!(
+        standard,
+        LintRule::ALL
+            .iter()
+            .copied()
+            .filter(|r| r.info().default_enabled)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(standard.len(), LintRule::ALL.len());
+    assert!(LintRule::ALL
+        .iter()
+        .all(|r| LintPreset::Strict.enables(r.info())));
+    // …and an opt-in rule is off under minimal/standard, on under strict.
+    let mut opt_in = *LintRule::SelectStar.info();
+    opt_in.default_enabled = false;
+    assert!(!LintPreset::Minimal.enables(&opt_in));
+    assert!(!LintPreset::Standard.enables(&opt_in));
+    assert!(LintPreset::Strict.enables(&opt_in));
+    // The config layer reads the same predicates: `strict` runs it,
+    // `standard` doesn't.
+    let cfg = LintConfig {
+        preset: LintPreset::Strict,
+        ..LintConfig::default()
+    };
+    assert!(cfg.enabled(LintRule::SelectStar));
+    // A `minimal` config still runs the error-default rules at their
+    // registry severity.
+    let cfg = LintConfig {
+        preset: LintPreset::Minimal,
+        ..LintConfig::default()
+    };
+    assert_eq!(
+        cfg.severity(LintRule::MissingPrimaryKeyTests),
+        Some(Severity::Error)
+    );
+    assert_eq!(cfg.severity(LintRule::SelectStar), None);
+}
+
+#[test]
+fn category_settings_resolve_above_the_preset() {
+    // A category `error`/`warn` repins the whole category — preset-off
+    // rules included; `off` disables it.
+    let mut cfg = LintConfig {
+        preset: LintPreset::Minimal,
+        categories: [
+            (Category::Sql, Some(Severity::Warn)),
+            (Category::Testing, None),
+        ]
+        .into_iter()
+        .collect(),
+        ..LintConfig::default()
+    };
+    assert_eq!(
+        cfg.severity(LintRule::SelectStar),
+        Some(Severity::Warn),
+        "category severity lifts a preset-off rule"
+    );
+    assert_eq!(
+        cfg.severity(LintRule::MissingPrimaryKeyTests),
+        None,
+        "category off disables even the preset's rules"
+    );
+    // An `On(None)` per-rule entry defers its severity to the category —
+    // `true` only enables, it doesn't pin.
+    cfg.rules
+        .insert(LintRule::SelectStar, RuleEnabled::On(None));
+    assert_eq!(cfg.severity(LintRule::SelectStar), Some(Severity::Warn));
+    // …but a pinned per-rule severity ignores the category's repin.
+    cfg.rules
+        .insert(LintRule::SelectStar, RuleEnabled::On(Some(Severity::Error)));
+    assert_eq!(cfg.severity(LintRule::SelectStar), Some(Severity::Error));
+    // …and `Off` stays off.
+    cfg.rules.insert(LintRule::SelectStar, RuleEnabled::Off);
+    assert_eq!(cfg.severity(LintRule::SelectStar), None);
 }
 
 #[test]
@@ -7167,7 +7290,7 @@ fn disabled_sql_rules_never_parse() {
     let mut cfg = LintConfig::default();
     for r in LintRule::ALL {
         if r.info().requires == Requires::Sql {
-            cfg.severities.insert(r, None);
+            cfg.rules.insert(r, RuleEnabled::Off);
         }
     }
     let out = lint_outcome(&dag, &cfg, Some(&res), None);
@@ -7450,7 +7573,7 @@ fn forbidden_patterns_never_adds_to_unparsed() {
     let mut cfg = cfg;
     for r in LintRule::ALL {
         if r != LintRule::ForbiddenPatterns {
-            cfg.severities.insert(r, None);
+            cfg.rules.insert(r, RuleEnabled::Off);
         }
     }
     let out = lint_outcome(&dag, &cfg, Some(&res), None);
@@ -7785,7 +7908,7 @@ fn hard_coded_references_honours_ignore_globs_and_information_schema() {
     let mut cfg = cfg;
     for r in LintRule::ALL {
         if r != LintRule::HardCodedReferences {
-            cfg.severities.insert(r, None);
+            cfg.rules.insert(r, RuleEnabled::Off);
         }
     }
     let out = lint_outcome(&dag, &cfg, Some(&res), None);

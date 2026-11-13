@@ -814,6 +814,194 @@ fn explain_prints_the_registry_entry_and_effective_values() {
     );
 }
 
+// ---- --preset / lint.preset / lint.categories --------------------------------
+
+#[test]
+fn preset_flag_narrows_the_rule_set() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    // `minimal` runs only the error-default rules — the fixture's warn
+    // findings disappear, the error rules still fire.
+    let out = lint_on(&m, &["--preset", "minimal", "--format", "concise"]);
+    let body = stdout(&out);
+    assert!(
+        !body.contains("warning["),
+        "no warn findings under minimal: {body}"
+    );
+    assert!(
+        body.contains("error["),
+        "the error-default rules still run: {body}"
+    );
+    // `strict` is the full registry set — identical to the unflagged run
+    // while every shipped rule is default-enabled.
+    let strict = lint_on(&m, &["--preset", "strict", "--format", "concise"]);
+    let base = lint_on(&m, &["--format", "concise"]);
+    assert_eq!(stdout(&strict), stdout(&base), "strict == the full set");
+    // An unknown preset name is a usage error.
+    let out = lint_on(&m, &["--preset", "bogus"]);
+    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
+}
+
+#[test]
+fn preset_flag_beats_the_file_preset_and_rules_lift_through_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    std::fs::write(tmp.path().join(".dbtl.yml"), "lint:\n  preset: minimal\n").unwrap();
+    // The file's preset applies: only error findings.
+    let out = lint_on(&m, &["--format", "concise"]);
+    assert!(
+        !stdout(&out).contains("warning["),
+        "the file's minimal applies: {}",
+        stdout(&out)
+    );
+    // `--preset` overrides the file — the warn findings come back.
+    let out = lint_on(&m, &["--preset", "strict", "--format", "concise"]);
+    assert!(
+        stdout(&out).contains("warning["),
+        "--preset beats the file: {}",
+        stdout(&out)
+    );
+    // `--rules` lifts a preset-off rule: exactly the named rule's findings
+    // run — the error-default rules' go off with everything else.
+    let out = lint_on(&m, &["--rules", "source_fanout", "--format", "concise"]);
+    let body = stdout(&out);
+    assert!(
+        body.contains("warning[source_fanout]"),
+        "the named preset-off rule runs: {body}"
+    );
+    assert!(
+        !body.contains("error["),
+        "nothing else runs under --rules: {body}"
+    );
+}
+
+#[test]
+fn categories_config_enables_and_repins_a_whole_category() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    // Under `minimal` + `sql: error`: the sql rules run at error (above the
+    // preset), `select_star: false` stays off (per-rule above category).
+    std::fs::write(
+        tmp.path().join(".dbtl.yml"),
+        "lint:\n  preset: minimal\n  categories:\n    sql: error\n  rules:\n    select_star: false\n",
+    )
+    .unwrap();
+    let out = lint_on(&m, &["--format", "concise"]);
+    let body = stdout(&out);
+    assert!(
+        !body.contains("select_star"),
+        "the per-rule off beats the category enable: {body}"
+    );
+    assert!(
+        !body.contains("warning["),
+        "category error repins — no warns: {body}"
+    );
+}
+
+#[test]
+fn list_rules_shows_the_preset_columns_and_effective_state() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    std::fs::write(tmp.path().join(".dbtl.yml"), "lint:\n  preset: minimal\n").unwrap();
+    let out = lint_on(&m, &["--list-rules"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let table = stdout(&out);
+    for col in [
+        "DEFAULT", "SEVERITY", "ENABLED", "MINIMAL", "STANDARD", "STRICT",
+    ] {
+        assert!(
+            table.lines().next().unwrap().contains(col),
+            "header shows {col}: {table}"
+        );
+    }
+    // Under the file's `minimal`: an error-default rule's effective
+    // severity stays error; a warn-default rule resolves off.
+    let row = |name: &str| {
+        table
+            .lines()
+            .find(|l| l.starts_with(name))
+            .unwrap_or_else(|| panic!("{name} row: {table}"))
+    };
+    let pk = row("missing_primary_key_tests");
+    assert!(
+        pk.contains(" error ") || pk.contains(" error"),
+        "pk stays on: {pk}"
+    );
+    let roots = row("root_models");
+    assert!(
+        roots.contains(" off ") || roots.ends_with("off") || roots.contains("  off"),
+        "root_models is off under minimal: {roots}"
+    );
+    // The effective column still shows the off, the preset columns the
+    // static membership.
+    assert!(
+        row("root_models").contains("warn"),
+        "default col shows warn"
+    );
+}
+
+#[test]
+fn explain_shows_the_off_state_under_a_preset() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    let out = lint_on(&m, &["--preset", "minimal", "--explain", "root_models"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let body = stdout(&out);
+    assert!(
+        body.contains("severity: off"),
+        "the effective severity is off under minimal: {body}"
+    );
+}
+
+#[test]
+fn check_preset_implies_lint_and_uses_the_same_set() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    // `--preset` alone implies --lint — the gates are the minimal set only.
+    let out = run(&[
+        "check",
+        "--manifest",
+        m.to_str().unwrap(),
+        "--preset",
+        "minimal",
+        "--format",
+        "concise",
+    ]);
+    let body = stdout(&out);
+    assert!(
+        body.contains("missing_primary_key_tests"),
+        "the lint gates ran: {body}"
+    );
+    assert!(
+        !body.contains("warning["),
+        "only the error-default rules ran: {body}"
+    );
+    // The file's preset/categories apply through check too — minimal +
+    // sql at error, select_star off.
+    std::fs::write(
+        tmp.path().join(".dbtl.yml"),
+        "lint:\n  preset: minimal\n  categories:\n    sql: error\n  rules:\n    select_star: false\n",
+    )
+    .unwrap();
+    let out = run(&[
+        "check",
+        "--manifest",
+        m.to_str().unwrap(),
+        "--lint",
+        "--format",
+        "concise",
+    ]);
+    let body = stdout(&out);
+    assert!(
+        !body.contains("select_star"),
+        "the per-rule off holds: {body}"
+    );
+    assert!(
+        !body.contains("warning["),
+        "the sql category runs at error: {body}"
+    );
+}
+
 // ---- text / json output and --quiet -----------------------------------------
 
 #[test]
