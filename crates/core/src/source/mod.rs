@@ -131,7 +131,9 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
     synth.apply_schema_files(&parsed);
     synth.apply_tree_fallback();
     let manifest_docs = synth.manifest_docs();
-    Ok(synth.finish(parent_map, child_map, manifest_docs))
+    let (manifest, mut warnings) = synth.finish(parent_map, child_map, manifest_docs);
+    warnings.extend(crate::lint::meta_dbtl_warnings(&manifest));
+    Ok((manifest, warnings))
 }
 
 mod collect;

@@ -1297,6 +1297,21 @@ fn registry_params_are_the_declared_config_keys_with_matching_defaults() {
                         );
                     }
                 }
+                ParamKind::LayerList { default, builtins } => {
+                    assert_eq!(
+                        LintConfig::default().str_list_param(row.rule, p.name),
+                        Some(default.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
+                        "{}.{}",
+                        row.id,
+                        p.name
+                    );
+                    assert!(
+                        default.iter().all(|d| builtins.contains(d)),
+                        "{}.{}'s default sits outside its built-in layer set",
+                        row.id,
+                        p.name
+                    );
+                }
                 ParamKind::Bool { default } => {
                     assert_eq!(
                         LintConfig::default().bool_param(row.rule, p.name),
@@ -1758,6 +1773,148 @@ fn dbtl_meta_stringifies_identically_in_manifest_and_source_modes() {
     );
 }
 
+#[test]
+fn malformed_meta_dbtl_ignore_warns_once_per_node() {
+    // Every malformed `meta.dbtl.ignore` form — a scalar that isn't "all",
+    // a non-list value, a list with non-string items, unknown rule ids —
+    // lands ONE load warning per node (not per finding, not per id), while
+    // the value still suppresses nothing. The warnings ride the same
+    // loader channel every surface drains.
+    let mk = |name: &str, meta: serde_json::Value| {
+        (
+            format!("model.p.{name}"),
+            RawNode {
+                name: name.into(),
+                resource_type: "model".into(),
+                path: Some(format!("staging/{name}.sql")),
+                meta: meta.as_object().cloned().unwrap_or_default(),
+                ..Default::default()
+            },
+        )
+    };
+    let m = manifest(
+        vec![
+            mk("stg_a", serde_json::json!({"dbtl": {"ignore": "not_all"}})),
+            mk(
+                "stg_b",
+                serde_json::json!({"dbtl": {"ignore": {"root_models": true}}}),
+            ),
+            mk(
+                "stg_c",
+                serde_json::json!({"dbtl": {"ignore": [42, "root_models"]}}),
+            ),
+            mk(
+                "stg_d",
+                serde_json::json!({"dbtl": {"ignore": ["bogus_rule", "root_models"]}}),
+            ),
+            // Well-formed: "all", a known-id list, and a `dbtl` block with
+            // no `ignore` key — none of these warn.
+            mk("stg_e", serde_json::json!({"dbtl": {"ignore": "all"}})),
+            mk(
+                "stg_f",
+                serde_json::json!({"dbtl": {"ignore": ["root_models"]}}),
+            ),
+            mk("stg_g", serde_json::json!({"dbtl": {"docs": "hi"}})),
+            // `meta.dbtl` written as a JSON-encoded string: a malformed
+            // `ignore` inside still warns (the suppression reader
+            // re-parses the same stringified value) — and a plain
+            // non-JSON string carries no `ignore` at all.
+            mk(
+                "stg_h",
+                serde_json::json!({"dbtl": "{\"ignore\": {\"x\": 1}}"}),
+            ),
+            mk("stg_i", serde_json::json!({"dbtl": "just a note"})),
+        ],
+        vec![(
+            "source.p.raw.t".into(),
+            RawSource {
+                name: "raw".into(),
+                resource_type: "source".into(),
+                meta: serde_json::json!({"dbtl": {"ignore": 7}})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+                ..Default::default()
+            },
+        )],
+        &[],
+    );
+    // Manifest mode: the load warnings `load_dag_with_warnings` emits.
+    let (_dag, warnings) = crate::dag_from_manifest(&m);
+    let meta_warnings: Vec<&String> = warnings
+        .iter()
+        .filter(|w| w.contains("meta.dbtl.ignore"))
+        .collect();
+    assert_eq!(
+        meta_warnings.len(),
+        6,
+        "one warning per malformed node+source, none for the valid ones: {meta_warnings:?}"
+    );
+    for (uid, what) in [
+        ("model.p.stg_a", "must be"),
+        ("model.p.stg_b", "must be"),
+        ("model.p.stg_c", "must be"),
+        ("model.p.stg_d", "unknown lint rule id(s): bogus_rule"),
+        ("model.p.stg_h", "must be"),
+        ("source.p.raw.t", "must be"),
+    ] {
+        assert_eq!(
+            meta_warnings
+                .iter()
+                .filter(|w| w.starts_with(&format!("{uid}:")) && w.contains(what))
+                .count(),
+            1,
+            "{uid} warns exactly once ({what}): {meta_warnings:?}"
+        );
+    }
+    // …and the malformed values still suppress NOTHING — the warnings
+    // aren't a substitute for enforcement.
+    let dag = Dag::build(&m);
+    let f = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    let roots = flagged(&f, LintRule::RootModels);
+    for uid in ["model.p.stg_a", "model.p.stg_b", "model.p.stg_c"] {
+        assert!(
+            roots.contains(&uid),
+            "{uid}'s malformed ignore suppresses nothing"
+        );
+    }
+    // stg_d's VALID entries still apply — `root_models` was a known id in
+    // a list that also named an unknown one.
+    assert!(
+        !roots.contains(&"model.p.stg_d"),
+        "known ids in a partly-unknown list still suppress"
+    );
+}
+
+#[test]
+fn malformed_meta_dbtl_ignore_warns_in_source_mode() {
+    // The same warning through the source loader — `+meta:` on a model
+    // folder lands on the synthesized manifest and reports identically.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models/stg")).unwrap();
+    std::fs::write(
+        dir.path().join("dbt_project.yml"),
+        "name: p\nmodels:\n  p:\n    stg:\n      +meta:\n        dbtl:\n          ignore: [bogus_rule]\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("models/stg/stg_a.sql"), "select 1").unwrap();
+    let (_manifest, warnings) = crate::manifest_from_source_with_warnings(dir.path()).unwrap();
+    let meta_warnings: Vec<&String> = warnings
+        .iter()
+        .filter(|w| w.contains("meta.dbtl.ignore"))
+        .collect();
+    assert_eq!(
+        meta_warnings.len(),
+        1,
+        "one warning for the malformed node: {meta_warnings:?}"
+    );
+    assert!(
+        meta_warnings[0].contains("model.p.stg_a") && meta_warnings[0].contains("bogus_rule"),
+        "{}",
+        meta_warnings[0]
+    );
+}
+
 // ---- the baseline -------------------------------------------------------------
 
 #[test]
@@ -1805,18 +1962,18 @@ fn baseline_round_trips_and_flags_exact_keys() {
 
 #[test]
 fn baseline_requires_the_edge_endpoints_to_match() {
-    // Edge findings key on (rule, child, related): same node, different
-    // related set → NOT baselined.
+    // `layer_violation` findings key on (rule, child, related): same node,
+    // different related set → NOT baselined — the violation IS the edge.
     let edge = Finding::new(
-        LintRule::RejoiningUpstream,
+        LintRule::LayerViolation,
         "model.p.b",
-        vec!["model.p.a".into(), "model.p.c".into()],
+        vec!["model.p.a".into()],
         "",
     );
     let baseline = Baseline::from_findings(std::slice::from_ref(&edge));
     let mut got = vec![
         Finding::new(
-            LintRule::RejoiningUpstream,
+            LintRule::LayerViolation,
             "model.p.b",
             vec!["model.p.x".into()],
             "",
@@ -1826,22 +1983,27 @@ fn baseline_requires_the_edge_endpoints_to_match() {
     baseline.apply(&mut got);
     assert!(!got[0].baselined, "a different edge is a different finding");
     assert!(got[1].baselined);
-    // Node findings key on (rule, node) only — related changes still match.
-    let node_f = Finding::new(
-        LintRule::DirectJoinToSource,
-        "model.p.x",
-        vec!["source.p.s.t".into()],
+    // `rejoining_upstream` — and every non-edge rule — keys on
+    // (rule, node) only: `related` is context, so a rejoin that gained
+    // another bypassing parent stays the same frozen finding.
+    let rejoin = Finding::new(
+        LintRule::RejoiningUpstream,
+        "model.p.b",
+        vec!["model.p.c".into()],
         "",
     );
-    let nb = Baseline::from_findings(&[node_f]);
+    let nb = Baseline::from_findings(&[rejoin]);
     let mut nf = vec![Finding::new(
-        LintRule::DirectJoinToSource,
-        "model.p.x",
-        vec![],
+        LintRule::RejoiningUpstream,
+        "model.p.b",
+        vec!["model.p.a".into(), "model.p.c".into()],
         "",
     )];
     nb.apply(&mut nf);
-    assert!(nf[0].baselined);
+    assert!(
+        nf[0].baselined,
+        "a changed related set is still the same rejoin finding"
+    );
     // from_findings dedupes.
     let f = Finding::new(LintRule::RootModels, "model.p.x", vec![], "");
     assert_eq!(Baseline::from_findings(&[f.clone(), f]).len(), 1);
@@ -1855,21 +2017,21 @@ fn baseline_parse_normalizes_related() {
     let text = r#"{
   "schema": "dbtl.lint-baseline/v1",
   "findings": [
-    {"rule": "rejoining_upstream", "node": "model.p.b",
+    {"rule": "layer_violation", "node": "model.p.b",
      "related": ["model.p.c", "model.p.a", "model.p.c"]}
   ]
 }"#;
     let baseline = Baseline::from_json(text).unwrap();
     assert_eq!(baseline.len(), 1, "the duplicate collapses");
     let canonical = Baseline::from_findings(&[Finding::new(
-        LintRule::RejoiningUpstream,
+        LintRule::LayerViolation,
         "model.p.b",
         vec!["model.p.a".into(), "model.p.c".into()],
         "",
     )]);
     assert_eq!(baseline.to_json(), canonical.to_json());
     let mut got = vec![Finding::new(
-        LintRule::RejoiningUpstream,
+        LintRule::LayerViolation,
         "model.p.b",
         vec!["model.p.a".into(), "model.p.c".into()],
         "",
@@ -1879,6 +2041,102 @@ fn baseline_parse_normalizes_related() {
         got[0].baselined,
         "an unsorted baseline entry still matches the edge"
     );
+}
+
+#[test]
+fn baseline_accepts_the_old_rejoining_upstream_key() {
+    // A `rejoining_upstream` entry written before the rule went node-keyed
+    // carried the edge's related set — the finding it froze is the same
+    // finding, so the old row must still match (its `related` normalizes
+    // to `[]` at parse) while a rewrite emits the new shape.
+    let text = r#"{
+  "schema": "dbtl.lint-baseline/v1",
+  "findings": [
+    {"rule": "rejoining_upstream", "node": "model.p.b",
+     "related": ["model.p.c", "model.p.a"]}
+  ]
+}"#;
+    let baseline = Baseline::from_json(text).unwrap();
+    let mut got = vec![
+        Finding::new(
+            LintRule::RejoiningUpstream,
+            "model.p.b",
+            // A DIFFERENT related set — under the old key this finding
+            // would have read as new; under the node key it still matches.
+            vec!["model.p.a".into(), "model.p.c".into(), "model.p.x".into()],
+            "",
+        ),
+        Finding::new(
+            LintRule::RejoiningUpstream,
+            "model.p.other",
+            vec!["model.p.c".into()],
+            "",
+        ),
+    ];
+    baseline.apply(&mut got);
+    assert!(
+        got[0].baselined,
+        "the old related-bearing row still matches"
+    );
+    assert!(!got[1].baselined, "a different node is a different finding");
+    // Serializing the accepted old row emits the new node-keyed shape.
+    let canonical = Baseline::from_findings(std::slice::from_ref(&got[0]));
+    assert_eq!(baseline.to_json(), canonical.to_json());
+    assert!(canonical.to_json().contains(r#""related": []"#));
+}
+
+#[test]
+fn baseline_subset_rewrite_keeps_the_rules_that_did_not_run() {
+    // `--write-baseline --rules X` rewrites X's rows but must carry the
+    // rest: dropping them would silently un-freeze violations the run
+    // never evaluated.
+    let ran: std::collections::BTreeSet<LintRule> =
+        [LintRule::RejoiningUpstream].into_iter().collect();
+    let old = r#"{
+  "schema": "dbtl.lint-baseline/v1",
+  "findings": [
+    {"rule": "rejoining_upstream", "node": "model.p.b", "related": ["model.p.c"]},
+    {"rule": "root_models", "node": "model.p.lonely", "related": []},
+    {"rule": "cartesian_join", "node": "model.p.x", "related": []},
+    {"rule": "hand_written_rule", "node": "model.p.y", "related": []}
+  ]
+}"#;
+    let mut baseline = Baseline::from_json(old).unwrap();
+    // The subset run froze just the one rejoin finding it evaluated
+    // (rewritten under the new node key).
+    let fresh = Baseline::from_findings(&[Finding::new(
+        LintRule::RejoiningUpstream,
+        "model.p.b",
+        vec!["model.p.a".into(), "model.p.c".into()],
+        "",
+    )]);
+    baseline.replace_entries_for(&ran, fresh);
+    let written = baseline.to_json();
+    assert!(
+        written.contains(r#""rule": "rejoining_upstream""#)
+            && written.contains(r#""node": "model.p.b""#),
+        "the ran rule's row is rewritten: {written}"
+    );
+    assert!(
+        written.contains(r#""related": []"#),
+        "the rewrite emits the node key: {written}"
+    );
+    for kept in ["root_models", "cartesian_join", "hand_written_rule"] {
+        assert!(
+            written.contains(&format!(r#""rule": "{kept}""#)),
+            "{kept} survives the subset rewrite: {written}"
+        );
+    }
+    assert_eq!(baseline.len(), 4, "no row is lost or duplicated");
+    // A rule that ran freezes nothing → its old row goes away (the
+    // violation is fixed — rewriting it back would re-freeze a ghost).
+    let ran: std::collections::BTreeSet<LintRule> = [LintRule::RootModels].into_iter().collect();
+    baseline.replace_entries_for(&ran, Baseline::default());
+    assert!(
+        !baseline.to_json().contains("root_models"),
+        "a rule that ran clean drops its frozen rows"
+    );
+    assert_eq!(baseline.len(), 3);
 }
 
 #[test]
