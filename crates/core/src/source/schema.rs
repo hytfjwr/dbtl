@@ -61,6 +61,12 @@ pub(super) struct DbtProject {
     /// `+enabled`/`+event_time` are out of scope).
     #[serde(default)]
     pub(super) sources: serde_json::Value,
+    /// The `vars:` block, raw — `var('name')` calls in `config(enabled=)`
+    /// resolve against it (scoped `<name>:` entries shadowing the top
+    /// level). `+enabled` does NOT see it: `dbt_project.yml` renders
+    /// before `vars:` loads (see vars.rs for the two scopes).
+    #[serde(default)]
+    pub(super) vars: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize, Default)]

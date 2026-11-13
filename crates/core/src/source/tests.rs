@@ -1,21 +1,52 @@
 use super::*;
 
+/// `Vars` straight from maps — `file` models vars.yml's `vars:` map (the
+/// `+enabled` render table), `project` models dbt_project.yml's `vars:`
+/// map (the node-render table when no vars.yml exists); `proj` is the
+/// `name:` `vars: <proj>:` scopes under.
+fn test_vars(file: serde_json::Value, project: serde_json::Value, proj: &str) -> Vars {
+    Vars::from_maps(
+        file.as_object().cloned().unwrap_or_default(),
+        project.as_object().cloned().unwrap_or_default(),
+        proj,
+    )
+}
+
+/// No vars anywhere — every `var()` falls to its default or unresolvable.
+fn no_vars() -> Vars {
+    test_vars(serde_json::json!({}), serde_json::json!({}), "p")
+}
+
+/// `pat.disabled` with fresh warnings — returns the (disabled, warnings) pair.
+fn disabled(sql: &str, vars: &Vars) -> (bool, Vec<String>) {
+    let mut w = Vec::new();
+    let d = Patterns::new().disabled(sql, vars, &mut w, "models/m.sql");
+    (d, w)
+}
+
 #[test]
 fn config_extractors_scope_to_config_calls_in_any_arg_order() {
     let pat = Patterns::new();
+    let vars = no_vars();
+    let mut w = Vec::new();
     // The key matches even AFTER a prior argument inside the same call.
     assert_eq!(
         pat.materialized("{{ config(enabled=true, materialized='table') }}"),
         Some("table".to_string())
     );
-    assert!(pat.disabled("{{ config(materialized='view', enabled=false) }}"));
-    assert!(pat.disabled("{{ config(enabled=False) }}"));
+    assert!(pat.disabled(
+        "{{ config(materialized='view', enabled=false) }}",
+        &vars,
+        &mut w,
+        "m.sql"
+    ));
+    assert!(pat.disabled("{{ config(enabled=False) }}", &vars, &mut w, "m.sql"));
     // Outside a config() call the keys are inert (dbt only honours them
     // inside config()).
     assert_eq!(pat.materialized("-- materialized='ephemeral'"), None);
-    assert!(!pat.disabled("where enabled = false"));
-    assert!(!pat.disabled("-- note: enabled=false someday"));
-    assert!(!pat.disabled("{% set enabled=false %}"));
+    assert!(!pat.disabled("where enabled = false", &vars, &mut w, "m.sql"));
+    assert!(!pat.disabled("-- note: enabled=false someday", &vars, &mut w, "m.sql"));
+    assert!(!pat.disabled("{% set enabled=false %}", &vars, &mut w, "m.sql"));
 }
 
 #[test]
@@ -227,6 +258,8 @@ fn config_meta_merges_every_config_call_per_key() {
 #[test]
 fn last_config_call_wins_for_scalar_kwargs() {
     let pat = Patterns::new();
+    let vars = no_vars();
+    let mut w = Vec::new();
     // dbt applies config() calls in order, each call's kwargs overriding
     // the earlier ones per key (verified):
     //   config(materialized='view')  then config(materialized='table')
@@ -237,8 +270,18 @@ fn last_config_call_wins_for_scalar_kwargs() {
         pat.materialized("{{ config(materialized='view') }}\n{{ config(materialized='table') }}",),
         Some("table".to_string())
     );
-    assert!(!pat.disabled("{{ config(enabled=false) }}\n{{ config(enabled=true) }}"));
-    assert!(pat.disabled("{{ config(enabled=true) }}\n{{ config(enabled=false) }}"));
+    assert!(!pat.disabled(
+        "{{ config(enabled=false) }}\n{{ config(enabled=true) }}",
+        &vars,
+        &mut w,
+        "m.sql"
+    ));
+    assert!(pat.disabled(
+        "{{ config(enabled=true) }}\n{{ config(enabled=false) }}",
+        &vars,
+        &mut w,
+        "m.sql"
+    ));
     // An unresolvable later value can't override an earlier literal one.
     assert_eq!(
         pat.materialized("{{ config(materialized='view') }}\n{{ config(materialized=var('m')) }}"),
@@ -388,6 +431,7 @@ fn tree_config_meta_stringifies_keys_and_warns() {
         &["sample".to_string(), "staging".to_string()],
         "models".to_string(),
         &mut w,
+        Some(&no_vars()),
     );
     assert_eq!(cfg.meta["true"], serde_json::json!("v"));
     assert_eq!(cfg.meta["5"], serde_json::json!("five"));
@@ -506,6 +550,7 @@ fn tree_config_reads_unique_key_and_freshness() {
         &["sample".to_string(), "staging".to_string()],
         "sources".to_string(),
         &mut w,
+        Some(&no_vars()),
     );
     assert_eq!(cfg.unique_key, Some(serde_json::json!(["a", "b"])));
     assert_eq!(
@@ -523,6 +568,7 @@ fn tree_config_reads_unique_key_and_freshness() {
         &["sample".to_string()],
         "sources".to_string(),
         &mut w,
+        Some(&no_vars()),
     );
     assert!(cfg.freshness.is_none());
     assert_eq!(w.len(), 1, "{w:?}");
@@ -685,4 +731,307 @@ fn call_sites_find_config_calls_for_metadata_positions() {
         sites_of("{{ config(materialized='x' {{ ref('a') }}").len(),
         1
     );
+}
+
+// ---- var()-driven `enabled` (the shared vars.rs evaluator) ------------------
+
+#[test]
+fn tree_enabled_resolves_var_forms_like_dbt() {
+    // `+enabled` evaluates in dbt's project-render scope: vars.yml's
+    // top-level `vars:` ONLY — never `vars:` (the project file renders
+    // before it loads), never a `vars: <pkg>:` scope.
+    let vars = test_vars(
+        serde_json::json!({
+            "flag_true": true, "flag_false": false,
+            "s_True": "True", "s_False": "False", "s_lower": "false",
+            "p": {"scoped": false},
+        }),
+        serde_json::json!({"proj_flag": true}),
+        "p",
+    );
+    // `+enabled: <raw>` under `p:` → (resolved enabled, warnings).
+    let tree = |raw: &str| {
+        let mut w = Vec::new();
+        let tree = yaml_to_json(&format!("p:\n  +enabled: {raw}\n"), &mut w).unwrap();
+        let cfg = resolve_tree_config(
+            &tree,
+            &["p".to_string(), "m".to_string()],
+            "models".to_string(),
+            &mut w,
+            Some(&vars),
+        );
+        (cfg.enabled, w)
+    };
+    // Native bools and var-resolved bools.
+    assert_eq!(tree("true").0, Some(true));
+    assert_eq!(tree("false").0, Some(false));
+    assert_eq!(tree("\"{{ var('flag_true') }}\"").0, Some(true));
+    assert_eq!(tree("\"{{ var('flag_false') }}\"").0, Some(false));
+    // Missing vars take the literal default.
+    assert_eq!(tree("\"{{ var('missing', false) }}\"").0, Some(false));
+    assert_eq!(tree("\"{{ var('missing', true) }}\"").0, Some(true));
+    // `vars:` and `vars: <p>:` are INVISIBLE at this pass (verified: dbt
+    // renders dbt_project.yml before `vars:` loads, and scoped keys aren't
+    // in the flat table) — `proj_flag` (vars:) and `scoped` (under `p:`)
+    // both fall through to their defaults.
+    assert_eq!(tree("\"{{ var('proj_flag', false) }}\"").0, Some(false));
+    assert_eq!(tree("\"{{ var('scoped', true) }}\"").0, Some(true));
+    // Whitespace control and double quotes.
+    assert_eq!(tree("\"  {{- var('flag_false') -}}  \"").0, Some(false));
+    assert_eq!(tree("'{{ var(\"flag_false\") }}'").0, Some(false));
+    // Outer whitespace WITHOUT the matching `-` dash renders literally
+    // (" False ") and fails dbt's enabled validation → unresolvable.
+    for (enabled, w) in [
+        tree("\" {{ var('flag_false') }} \""),
+        tree("\" {{ var('flag_false') }}\""),
+        tree("\"{{ var('flag_false') }} \""),
+        tree("\" {{ var('flag_false') -}}\""),
+        tree("\"{{- var('flag_false') }} \""),
+    ] {
+        assert_eq!(enabled, None, "literal outer whitespace: {w:?}");
+        assert_eq!(w.len(), 1, "{w:?}");
+    }
+    // `| as_bool`: 'True'/'False' and bools resolve; 'false' does not
+    // (dbt literal_evals and demands a bool) → unresolvable → enabled +
+    // one warning naming the tree level.
+    assert_eq!(tree("\"{{ var('s_True') | as_bool }}\"").0, Some(true));
+    assert_eq!(tree("\"{{ var('s_False') | as_bool }}\"").0, Some(false));
+    assert_eq!(tree("\"{{ var('flag_false') | as_bool }}\"").0, Some(false));
+    let (enabled, w) = tree("\"{{ var('s_lower') | as_bool }}\"");
+    assert_eq!(enabled, None, "'false' fails as_bool → unresolvable");
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(w[0].contains("models.p"), "the level is named: {w:?}");
+    // Everything dbt's enabled validation would reject — a plain 'false'
+    // string, a number, another expression, an unresolvable var — keeps
+    // the node enabled with the same once-per-level warning.
+    for bad in [
+        "'false'",
+        "0",
+        "\"{{ env_var('X') }}\"",
+        "\"{{ not var('flag_true') }}\"",
+        "\"{{ var('missing') }}\"",
+    ] {
+        let (enabled, w) = tree(bad);
+        assert_eq!(enabled, None, "{bad}");
+        assert_eq!(w.len(), 1, "{bad}: {w:?}");
+    }
+    // An absent `+enabled` warns nothing.
+    let mut w = Vec::new();
+    resolve_tree_config(
+        &serde_json::json!({"p": {}}),
+        &["p".to_string()],
+        "models".to_string(),
+        &mut w,
+        Some(&vars),
+    );
+    assert!(w.is_empty(), "{w:?}");
+}
+
+#[test]
+fn disabled_resolves_var_forms_like_dbt() {
+    // `config(enabled=var(...))` evaluates in the NODE scope — vars.yml
+    // when declared (here), `vars: <proj>:` entries shadowing the top
+    // level (the project's own `vars:` is shadowed by the file).
+    let vars = test_vars(
+        serde_json::json!({"flag": false, "p": {"scoped": false}}),
+        serde_json::json!({"flag": true, "p": {"scoped": true}}),
+        "p",
+    );
+    assert!(disabled("{{ config(enabled=var('flag')) }}", &vars).0);
+    assert!(
+        disabled("{{ config(enabled=var('scoped', true)) }}", &vars).0,
+        "the scoped value (false) shadows the default"
+    );
+    assert!(!disabled("{{ config(enabled=var('missing', true)) }}", &vars).0);
+    assert!(disabled("{{ config(enabled=var('flag') | as_bool) }}", &vars).0);
+    // Last resolvable wins — a var-resolved value lands in the same order
+    // as a literal one.
+    assert!(
+        !disabled(
+            "{{ config(enabled=false) }}\n{{ config(enabled=var('missing', true)) }}",
+            &vars
+        )
+        .0
+    );
+    assert!(
+        disabled(
+            "{{ config(enabled=true) }}\n{{ config(enabled=var('flag')) }}",
+            &vars
+        )
+        .0
+    );
+
+    // With NO vars.yml the node scope is `vars:` — top-level and scoped.
+    let vars = test_vars(
+        serde_json::json!({}),
+        serde_json::json!({"flag": false, "p": {"scoped": false}}),
+        "p",
+    );
+    assert!(disabled("{{ config(enabled=var('flag')) }}", &vars).0);
+    assert!(disabled("{{ config(enabled=var('scoped', true)) }}", &vars).0);
+
+    // Unresolvable forms warn once (file + config named) and keep the
+    // node enabled — `var('missing')` no-default, a non-var expression,
+    // and the literal strings/numbers dbt's boolean validation rejects.
+    let vars = no_vars();
+    for sql in [
+        "{{ config(enabled=var('missing')) }}",
+        "{{ config(enabled=env_var('X')) }}",
+        "{{ config(enabled='false') }}",
+        "{{ config(enabled=0) }}",
+    ] {
+        let (d, w) = disabled(sql, &vars);
+        assert!(!d, "{sql} keeps the node enabled");
+        assert_eq!(w.len(), 1, "{sql}: {w:?}");
+        assert!(w[0].contains("models/m.sql"), "the file is named: {w:?}");
+        assert!(w[0].contains("enabled="), "the config is named: {w:?}");
+    }
+    // An unresolvable later value can't override an earlier `false`.
+    let (d, w) = disabled(
+        "{{ config(enabled=false) }}\n{{ config(enabled=var('missing')) }}",
+        &vars,
+    );
+    assert!(d);
+    assert_eq!(w.len(), 1, "{w:?}");
+}
+
+// ---- Vars::load + warning-path coverage -------------------------------------
+
+/// A `DbtProject` with just `name`/`vars` populated (the only fields
+/// [`Vars::load`] reads).
+fn test_project(vars: serde_json::Value) -> DbtProject {
+    serde_json::from_value(serde_json::json!({"name": "p", "vars": vars})).unwrap()
+}
+
+#[test]
+fn vars_load_warns_once_and_vars_yml_wins_when_both_declared() {
+    // vars.yml + a non-empty `vars:` is a combination dbt rejects —
+    // one warning, and the file's table wins in BOTH scopes.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("vars.yml"), "vars:\n  flag: false\n").unwrap();
+    let mut w = Vec::new();
+    let vars = Vars::load(
+        dir.path(),
+        &test_project(serde_json::json!({"flag": true})),
+        &mut w,
+    );
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(w[0].contains("both"), "{w:?}");
+    assert_eq!(
+        vars.tree_enabled(&serde_json::json!("{{ var('flag') }}")),
+        Some(false),
+        "vars.yml wins the project-file scope"
+    );
+    assert_eq!(
+        vars.node_enabled("var('flag')"),
+        Some(false),
+        "vars.yml wins the node scope"
+    );
+    // An EMPTY vars.yml vars: map isn't a "declaration" — no warning,
+    // and the node scope falls back to `vars:` like dbt.
+    std::fs::write(dir.path().join("vars.yml"), "vars: {}\n").unwrap();
+    let mut w = Vec::new();
+    let vars = Vars::load(
+        dir.path(),
+        &test_project(serde_json::json!({"flag": true})),
+        &mut w,
+    );
+    assert!(w.is_empty(), "{w:?}");
+    assert_eq!(vars.node_enabled("var('flag')"), Some(true));
+}
+
+#[test]
+fn vars_load_warns_on_malformed_vars_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    // A non-mapping `vars:` in dbt_project.yml → warning, vars ignored.
+    let mut w = Vec::new();
+    let vars = Vars::load(dir.path(), &test_project(serde_json::json!([1, 2])), &mut w);
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(
+        w[0].contains("vars:") && w[0].contains("not a mapping"),
+        "{w:?}"
+    );
+    assert_eq!(vars.node_enabled("var('flag', true)"), Some(true));
+    // An unparsable vars.yml → warning, contributes nothing.
+    std::fs::write(dir.path().join("vars.yml"), "vars: {a: [unclosed\n").unwrap();
+    let mut w = Vec::new();
+    let vars = Vars::load(
+        dir.path(),
+        &test_project(serde_json::json!({"flag": false})),
+        &mut w,
+    );
+    assert!(
+        w.iter()
+            .any(|s| s.contains("vars.yml") && s.contains("parse")),
+        "{w:?}"
+    );
+    assert_eq!(
+        vars.node_enabled("var('flag')"),
+        Some(false),
+        "vars: still backs the node scope"
+    );
+    // A non-mapping `vars:` inside vars.yml → the same ignored-vars warning.
+    std::fs::write(dir.path().join("vars.yml"), "vars: not-a-map\n").unwrap();
+    let mut w = Vec::new();
+    Vars::load(dir.path(), &test_project(serde_json::json!({})), &mut w);
+    assert!(
+        w.iter()
+            .any(|s| s.contains("vars.yml") && s.contains("not a mapping")),
+        "{w:?}"
+    );
+}
+
+#[test]
+fn manifest_dedups_a_shared_unresolvable_tree_enabled_warning() {
+    // Two models under one config level → the level's unresolvable
+    // `+enabled` warns ONCE (the identical strings collapse in the
+    // final dedup) and both nodes stay enabled.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models/grp")).unwrap();
+    std::fs::write(
+        dir.path().join("dbt_project.yml"),
+        "name: p\nmodel-paths: [models]\nmodels:\n  p:\n    grp:\n      +enabled: \"{{ var('missing') }}\"\n",
+    )
+    .unwrap();
+    for m in ["a", "b"] {
+        std::fs::write(dir.path().join(format!("models/grp/{m}.sql")), "select 1\n").unwrap();
+    }
+    let (manifest, w) = manifest_from_source_with_warnings(dir.path()).unwrap();
+    let enabled_warns: Vec<_> = w.iter().filter(|s| s.contains("'+enabled'")).collect();
+    assert_eq!(enabled_warns.len(), 1, "{w:?}");
+    assert!(enabled_warns[0].contains("models.p.grp"), "{w:?}");
+    for m in ["a", "b"] {
+        assert!(
+            manifest.nodes.keys().any(|k| k.ends_with(&format!(".{m}"))),
+            "{m} stays enabled"
+        );
+    }
+}
+
+#[test]
+fn sources_tree_walk_does_not_warn_on_enabled() {
+    // `+enabled` is not applied on `sources:` (meta-only walk) — passing
+    // no var scope keeps it a silent read: no warning noise on a key
+    // dbtl ignores, unresolvable or not.
+    let mut w = Vec::new();
+    let cfg = resolve_tree_config(
+        &serde_json::json!({"p": {"+enabled": "{{ var('flag') }}"}}),
+        &["p".to_string()],
+        "sources".to_string(),
+        &mut w,
+        None,
+    );
+    assert_eq!(cfg.enabled, None);
+    assert!(w.is_empty(), "{w:?}");
+    // A native bool still lands on the (unapplied) field — same as
+    // before the var evaluator existed.
+    let cfg = resolve_tree_config(
+        &serde_json::json!({"p": {"+enabled": false}}),
+        &["p".to_string()],
+        "sources".to_string(),
+        &mut w,
+        None,
+    );
+    assert_eq!(cfg.enabled, Some(false));
+    assert!(w.is_empty(), "{w:?}");
 }
