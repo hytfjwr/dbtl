@@ -113,9 +113,15 @@ done <"$listing"
 # created_at is ISO-8601 UTC — a lexical sort is chronological.
 sort -t $'\t' -k1,1 -k2,2r -k3,3 "$work" >"$sorted"
 
-declare -A count=()
+# Sorted rows keep one series' entries contiguous, so a scalar counter is
+# enough — this must run under the older bash macOS runners ship.
+prev_series=''
+n=0
 while IFS=$'\t' read -r series created id key; do
-    n=${count[$series]:-0}
+    if [ "$series" != "$prev_series" ]; then
+        prev_series=$series
+        n=0
+    fi
     lim=1
     case "$series" in
         other:*) lim=$keep_other ;;
@@ -125,7 +131,7 @@ while IFS=$'\t' read -r series created id key; do
     else
         printf '%s\t%s\n' "$id" "$key" >>"$kept"
     fi
-    count[$series]=$((n + 1))
+    n=$((n + 1))
 done <"$sorted"
 
 if [ -n "$entries_file" ]; then
