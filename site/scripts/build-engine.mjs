@@ -18,39 +18,14 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { engineDir, fail, repoRoot, SAMPLES, samplesDir } from "./shared.mjs";
 
-const siteRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const repoRoot = path.resolve(siteRoot, "..");
-const engineDir = path.join(siteRoot, "public", "engine");
-const samplesDir = path.join(siteRoot, "public", "samples");
-
-// The sample data the playground reads — the ONLY list of what gets
-// copied under public/samples/. `ymlFrom` is walked for `*.yml|*.yaml`
-// (deterministic order) because lint findings cite project-relative paths
-// like `models/marts/schema.yml`; those texts land in `files.json`.
-const SAMPLES = [
-  {
-    name: "jaffle_finance",
-    manifest: "tests/fixtures/manifest.json",
-    ymlFrom: null,
-  },
-  {
-    name: "sample",
-    manifest: "tests/fixtures/sample_manifest.json",
-    ymlFrom: "tests/fixtures/sample_project",
-  },
-];
-
-const fail = (msg) => {
-  console.error(`build-engine: ${msg}`);
-  process.exit(1);
-};
+const failBuild = fail("build-engine");
 
 const run = (cmd, args, opts = {}) => {
   const r = spawnSync(cmd, args, { encoding: "utf8", ...opts });
   if (r.error?.code === "ENOENT") return { missing: true, r };
-  if (r.error) fail(`${cmd} failed to start: ${r.error.message}`);
+  if (r.error) failBuild(`${cmd} failed to start: ${r.error.message}`);
   return { missing: false, r };
 };
 
@@ -59,7 +34,7 @@ const run = (cmd, args, opts = {}) => {
 function pinnedWasmBindgen() {
   const toml = fs.readFileSync(path.join(repoRoot, "crates", "wasm", "Cargo.toml"), "utf8");
   const m = /^wasm-bindgen\s*=\s*"=([0-9.]+)"/m.exec(toml);
-  if (!m) fail('no `wasm-bindgen = "=x.y.z"` pin found in crates/wasm/Cargo.toml');
+  if (!m) failBuild('no `wasm-bindgen = "=x.y.z"` pin found in crates/wasm/Cargo.toml');
   return m[1];
 }
 
@@ -157,7 +132,7 @@ const cargo = run(
 );
 if (cargo.r.status !== 0) {
   process.stderr.write(cargo.r.stderr);
-  fail("cargo build failed");
+  failBuild("cargo build failed");
 }
 
 fs.rmSync(engineDir, { recursive: true, force: true });
@@ -172,7 +147,7 @@ const wasm = path.join(
 const bind = run("wasm-bindgen", ["--target", "web", "--out-dir", engineDir, wasm]);
 if (bind.r.status !== 0) {
   process.stderr.write(bind.r.stderr);
-  fail("wasm-bindgen failed");
+  failBuild("wasm-bindgen failed");
 }
 
 stageSamples();

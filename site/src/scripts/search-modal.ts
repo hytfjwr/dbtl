@@ -5,7 +5,7 @@ import { search, SearchUnavailable, type SearchHit } from "./search.ts";
 
 let openImpl: (() => void) | undefined;
 
-const dialog = document.querySelector<HTMLDialogElement>("#search");
+const dialog = document.querySelector<HTMLDialogElement>("#search-modal");
 const input = document.querySelector<HTMLInputElement>("#s-input");
 const list = document.querySelector<HTMLUListElement>("#s-list");
 const bar = document.querySelector<HTMLElement>("#s-bar");
@@ -191,10 +191,21 @@ if (dialog && input && list && bar && count) {
   dialog.addEventListener("click", (event) => {
     if (event.target === dialog) dialog.close();
   });
+  // Esc fires `cancel` synchronously, before `close` is queued: blur now so the
+  // input is not left holding DOM focus during the gap.
+  dialog.addEventListener("cancel", () => {
+    if (document.activeElement instanceof HTMLElement && dialog.contains(document.activeElement)) {
+      document.activeElement.blur();
+    }
+  });
   // Esc and every other way of closing end up here: hand focus back to where it was.
   dialog.addEventListener("close", () => {
     input.setAttribute("aria-expanded", "false");
     if (opener instanceof HTMLElement) opener.focus();
+    // No focus may stay inside the closed dialog: a hidden input still reads as
+    // "typing" to the single-key shortcuts and would swallow them.
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && dialog.contains(active)) active.blur();
     opener = null;
   });
 

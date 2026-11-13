@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The docs site is easier to drive with a keyboard and assistive tech:
+  single-key shortcuts can be switched off from the status line, code blocks
+  are only tab stops while they actually scroll, and search results rank
+  titles and headings above body text.
+
 ### Fixed
 
 - Source mode now resolves `var('name'[, default])` (optionally

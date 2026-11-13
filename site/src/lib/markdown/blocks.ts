@@ -126,8 +126,6 @@ export function rehypeBlocks() {
 
       if (node.tagName === "pre") {
         const lang = languageOf(node);
-        node.properties ??= {};
-        node.properties.tabIndex = 0;
         const figure: Element = {
           type: "element",
           tagName: "figure",

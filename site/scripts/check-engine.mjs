@@ -13,54 +13,29 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { engineDir, fail, repoRoot, samplesDir, stagedSamples } from "./shared.mjs";
 
-const siteRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const repoRoot = path.resolve(siteRoot, "..");
-const engineDir = path.join(siteRoot, "public", "engine");
-const samplesDir = path.join(siteRoot, "public", "samples");
-
-// The samples build-engine.mjs staged — whatever directories hold a
-// manifest.json + files.json pair get checked, so the two scripts never
-// keep separate lists.
-function stagedSamples() {
-  if (!fs.existsSync(samplesDir)) return [];
-  return fs
-    .readdirSync(samplesDir, { withFileTypes: true })
-    .filter(
-      (e) =>
-        e.isDirectory() &&
-        fs.existsSync(path.join(samplesDir, e.name, "manifest.json")) &&
-        fs.existsSync(path.join(samplesDir, e.name, "files.json")),
-    )
-    .map((e) => e.name)
-    .sort();
-}
-
-const fail = (msg) => {
-  console.error(`check-engine: ${msg}`);
-  process.exit(1);
-};
+const failCheck = fail("check-engine");
 
 if (process.env.DBTL_SKIP_ENGINE === "1") {
   console.log("check-engine: skipped (DBTL_SKIP_ENGINE=1)");
   process.exit(0);
 }
 if (!fs.existsSync(path.join(engineDir, "dbtl_wasm.js"))) {
-  fail(`${engineDir} has no generated module — run scripts/build-engine.mjs first`);
+  failCheck(`${engineDir} has no generated module — run scripts/build-engine.mjs first`);
 }
 const SAMPLES = stagedSamples();
 if (SAMPLES.length === 0) {
-  fail(`${samplesDir} has no staged samples — run scripts/build-engine.mjs first`);
+  failCheck(`${samplesDir} has no staged samples — run scripts/build-engine.mjs first`);
 }
 
 // The staged directories must be exactly the projects the switcher offers —
-// pg-render.ts and build-engine.mjs keep no shared constant, so a drift
-// fails here instead of 404ing a fetch in the browser.
+// both read the one list in scripts/samples.ts, so this verifies the staging
+// step itself (a missing or extra directory fails here, not as a 404).
 const { SAMPLES: offered } = await import("../src/scripts/pg-render.ts");
 const want = [...offered].sort();
 if (SAMPLES.length !== want.length || SAMPLES.some((n, i) => n !== want[i])) {
-  fail(
+  failCheck(
     `staged samples [${SAMPLES.join(", ")}] do not match the switcher's ` +
       `SAMPLES [${want.join(", ")}] — update both lists together`,
   );
@@ -89,7 +64,7 @@ function expected(dir) {
     },
   );
   if (run.error || run.status !== 0) {
-    fail(`fixture_lint ${dir} failed: ${run.error?.message ?? run.stderr}`);
+    failCheck(`fixture_lint ${dir} failed: ${run.error?.message ?? run.stderr}`);
   }
   return JSON.parse(run.stdout);
 }
@@ -105,7 +80,7 @@ try {
     e &&
     (e.code === "ERR_UNKNOWN_FILE_EXTENSION" || e.code === "ERR_UNSUPPORTED_ESM_URL_SCHEME")
   ) {
-    fail(
+    failCheck(
       `importing src/engine/index.ts needs Node's TypeScript type stripping ` +
         `(Node ≥ 23.6 or ≥ 22.18); this Node is ${process.version}`,
     );
@@ -120,7 +95,7 @@ for (const name of SAMPLES) {
   const manifest = fs.readFileSync(path.join(dir, "manifest.json"), "utf8");
   const files = JSON.parse(fs.readFileSync(path.join(dir, "files.json"), "utf8"));
   const load = engine.load({ manifest, files });
-  if (load.nodes === 0) fail(`${name}: the engine loaded zero nodes`);
+  if (load.nodes === 0) failCheck(`${name}: the engine loaded zero nodes`);
   const out = engine.lint({});
   const want = expected(dir);
   for (const key of ["text", "json"]) {

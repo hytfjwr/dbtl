@@ -219,12 +219,30 @@
 }
 .chips {
   display: flex;
+  align-items: center;
   gap: var(--sp-4);
 }
-.chips span + span::before {
+.chips > * + *::before {
   content: "│";
   color: var(--line-strong);
   margin-right: var(--sp-4);
+}
+.chip-btn {
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+.chip-btn:hover {
+  color: var(--text);
+}
+.chip-btn[aria-pressed="false"] {
+  color: var(--text-faint);
+}
+html[data-keys="off"] .hints {
+  opacity: 0.45;
 }
 
 .wrap {

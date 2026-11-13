@@ -137,7 +137,12 @@ const lintNote = s.built ? "" : `the engine is not built — ${s.reason}`;
         id="pg-match-title"
         set:html={matchedTitle(s.total, s.matched.length)}
       />
-      <ol id="pg-match" set:html={matchedHtml(s.matched, { spec: s.spec, error: s.selectError })} />
+      <ol
+        id="pg-match"
+        tabindex="0"
+        aria-label="Matched nodes"
+        set:html={matchedHtml(s.matched, { spec: s.spec, error: s.selectError })}
+      />
     </div>
     <div class="pane pg-lin">
       <p class="pane-title" id="pg-lin-title" set:html={`lineage: <b>${esc(s.project)}</b>`} />

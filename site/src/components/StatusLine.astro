@@ -14,7 +14,7 @@ const path = Astro.url.pathname.startsWith(base)
 const where = `~${path.replace(/\/$/, "") || "/"}`;
 ---
 
-<div class="statusline">
+<div class="statusline" role="complementary" aria-label="Status line">
   <div class="hints" aria-label="Keyboard shortcuts">
     <button type="button" data-search-open data-key="/">
       <kbd>/</kbd>search
@@ -31,6 +31,15 @@ const where = `~${path.replace(/\/$/, "") || "/"}`;
   </div>
   <div class="chips">
     <span id="chip-path">{where}</span>
+    <button
+      type="button"
+      class="chip-btn"
+      data-keys-toggle
+      aria-pressed="true"
+      title="Single-key shortcuts — click to toggle"
+    >
+      keys:on
+    </button>
     <span id="chip-theme">theme:system</span>
     <span>v{VERSION}</span>
   </div>

@@ -13,7 +13,60 @@
   unicode-range: U+0020-007E, U+2190-2193, U+2500-257F, U+25B2, U+25B6, U+25BC, U+25C0;
 }
 
+/* Text faces, latin subsets, woff2 only — every engine the site supports reads it,
+   so no woff fallback is shipped. */
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-italic.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-600-normal.woff2") format("woff2");
+}
+
 :root {
+  color-scheme: light dark;
   --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-art: "Geist Mono", "IBM Plex Mono", ui-monospace, Menlo, monospace;
@@ -47,96 +100,49 @@
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-inout: cubic-bezier(0.6, 0, 0.2, 1);
 
-  --bg: #edeef0;
-  --surface: #f6f7f8;
-  --surface-hi: #ffffff;
-  --sunken: #e2e4e9;
-  --line: #c3c8d2;
-  --line-strong: #79808e;
-  --text: #1f2330;
-  --text-muted: #525a6c;
-  --text-faint: #5f6675;
+  /* palette — light-dark() reads the used color-scheme: the system preference,
+     or the one data-theme pins on <html>. Each value lives in exactly one place. */
+  --bg: light-dark(#edeef0, #12151d);
+  --surface: light-dark(#f6f7f8, #181c27);
+  --surface-hi: light-dark(#ffffff, #212636);
+  --sunken: light-dark(#e2e4e9, #0d1017);
+  --line: light-dark(#c3c8d2, #2e3547);
+  --line-strong: light-dark(#79808e, #68728c);
+  --text: light-dark(#1f2330, #dfe3ec);
+  --text-muted: light-dark(#525a6c, #9aa2b6);
+  --text-faint: light-dark(#5f6675, #848ea4);
   --band: #ffc857;
-  --band-ink: #1f2330;
-  --accent-text: #8a5a00;
-  --focus: #1f2330;
-  --c-view: #2a5cc0;
-  --c-table: #1c7340;
-  --c-incremental: #6a3dbd;
-  --c-ephemeral: #525a6c;
-  --c-source: #525a6c;
-  --c-seed: #8a5514;
-  --c-snapshot: #0c6f70;
-  --c-exposure: #a82c5c;
-  --ok: #1c7340;
-  --warn: #8a5a00;
-  --danger: #b3261e;
-  --info: #2a5cc0;
-  --dim: #7d8596;
-  --backdrop: rgba(31, 35, 48, 0.38);
+  --band-ink: light-dark(#1f2330, #161a23);
+  --accent-text: light-dark(#8a5a00, #ffc857);
+  --focus: light-dark(#1f2330, #ffc857);
+  --c-view: light-dark(#2a5cc0, #8db4ff);
+  --c-table: light-dark(#1c7340, #86d39c);
+  --c-incremental: light-dark(#6a3dbd, #c4a3ff);
+  --c-ephemeral: light-dark(#525a6c, #9aa2b6);
+  --c-source: light-dark(#525a6c, #9aa2b6);
+  --c-seed: light-dark(#8a5514, #e6b580);
+  --c-snapshot: light-dark(#0c6f70, #78d0d0);
+  --c-exposure: light-dark(#a82c5c, #f59ab4);
+  --ok: light-dark(#1c7340, #86d39c);
+  --warn: light-dark(#8a5a00, #ffc857);
+  --danger: light-dark(#b3261e, #ff8a80);
+  --info: light-dark(#2a5cc0, #8db4ff);
+  --dim: light-dark(#7d8596, #6b748b);
+  --backdrop: light-dark(rgba(31, 35, 48, 0.38), rgba(5, 7, 11, 0.62));
   --shadow: 0 18px 50px rgba(31, 35, 48, 0.18);
+}
+/* box-shadow is not a color, so it cannot join the light-dark() palette above;
+   the dark value still lives in exactly one place, behind this single alias. */
+:root {
+  --shadow-dark: 0 18px 60px rgba(0, 0, 0, 0.55);
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #12151d;
-    --surface: #181c27;
-    --surface-hi: #212636;
-    --sunken: #0d1017;
-    --line: #2e3547;
-    --line-strong: #68728c;
-    --text: #dfe3ec;
-    --text-muted: #9aa2b6;
-    --text-faint: #848ea4;
-    --band: #ffc857;
-    --band-ink: #161a23;
-    --accent-text: #ffc857;
-    --focus: #ffc857;
-    --c-view: #8db4ff;
-    --c-table: #86d39c;
-    --c-incremental: #c4a3ff;
-    --c-ephemeral: #9aa2b6;
-    --c-source: #9aa2b6;
-    --c-seed: #e6b580;
-    --c-snapshot: #78d0d0;
-    --c-exposure: #f59ab4;
-    --ok: #86d39c;
-    --warn: #ffc857;
-    --danger: #ff8a80;
-    --info: #8db4ff;
-    --dim: #6b748b;
-    --backdrop: rgba(5, 7, 11, 0.62);
-    --shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+    --shadow: var(--shadow-dark);
   }
 }
 :root[data-theme="dark"] {
-  --bg: #12151d;
-  --surface: #181c27;
-  --surface-hi: #212636;
-  --sunken: #0d1017;
-  --line: #2e3547;
-  --line-strong: #68728c;
-  --text: #dfe3ec;
-  --text-muted: #9aa2b6;
-  --text-faint: #848ea4;
-  --band: #ffc857;
-  --band-ink: #161a23;
-  --accent-text: #ffc857;
-  --focus: #ffc857;
-  --c-view: #8db4ff;
-  --c-table: #86d39c;
-  --c-incremental: #c4a3ff;
-  --c-ephemeral: #9aa2b6;
-  --c-source: #9aa2b6;
-  --c-seed: #e6b580;
-  --c-snapshot: #78d0d0;
-  --c-exposure: #f59ab4;
-  --ok: #86d39c;
-  --warn: #ffc857;
-  --danger: #ff8a80;
-  --info: #8db4ff;
-  --dim: #6b748b;
-  --backdrop: rgba(5, 7, 11, 0.62);
-  --shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+  --shadow: var(--shadow-dark);
 }
 :root[data-theme="light"] {
   color-scheme: light;
