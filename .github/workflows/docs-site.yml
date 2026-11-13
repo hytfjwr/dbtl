@@ -14,9 +14,16 @@ on:
       - "site/**"
       - "docs/reference/**"
       - "CHANGELOG.md"
+      # The engine is built from these crates, and the samples it runs on
+      # come from these fixtures — all change the built site.
+      - "crates/core/**"
+      - "crates/report/**"
+      - "crates/wasm/**"
       - "tests/fixtures/manifest.json"
       - "tests/fixtures/sample_manifest.json"
+      - "tests/fixtures/sample_project/**"
       - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/docs-site.yml"
   workflow_dispatch:
     inputs:
@@ -35,7 +42,9 @@ jobs:
   build:
     name: Build docs site
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Rust for the WebAssembly engine makes this slower than a pnpm-only
+    # build; measured ~2 min cold, so 15 leaves wide headroom.
+    timeout-minutes: 15
     permissions:
       contents: read
     env:
@@ -64,6 +73,33 @@ jobs:
           # The release tag on a manual run; the default ref on a pull request.
           ref: ${{ steps.tag.outputs.tag }}
           persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      # The CLI post-processes the .wasm, so it must emit the schema the
+      # crate was built with — same version as crates/wasm's pinned
+      # wasm-bindgen, fetched from the release assets and SHA-256-verified.
+      # Bump the archive SHA-256 and the crate pin together.
+      - name: Install wasm-bindgen-cli
+        env:
+          WASM_BINDGEN_CLI_SHA256: 82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e
+        run: |
+          version=$(sed -n 's/^wasm-bindgen[[:space:]]*=[[:space:]]*"=\([0-9.]*\)"$/\1/p' crates/wasm/Cargo.toml | head -n1)
+          if [ -z "$version" ]; then
+            echo "::error::no wasm-bindgen pin found in crates/wasm/Cargo.toml"
+            exit 1
+          fi
+          archive="wasm-bindgen-${version}-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSLO "https://github.com/rustwasm/wasm-bindgen/releases/download/${version}/${archive}"
+          echo "${WASM_BINDGEN_CLI_SHA256}  ${archive}" | sha256sum --check -
+          tar -xzf "$archive" --strip-components=1 -C "$HOME/.cargo/bin" \
+            "wasm-bindgen-${version}-x86_64-unknown-linux-musl/wasm-bindgen"
+          rm "$archive"
+          wasm-bindgen --version
 
       - name: Set up pnpm
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1

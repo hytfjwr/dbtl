@@ -25,6 +25,15 @@ lto = true
 codegen-units = 1
 strip = true
 
+# The wasm build for the docs site: size over speed, but symbols kept —
+# `release` strips the custom sections wasm-bindgen reads off the .wasm.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = "none"
+
 [workspace]
 members = ["crates/*", "xtask"]
 
@@ -81,6 +90,7 @@ dbtl-core = { path = "crates/core" }
 dbtl-tui = { path = "crates/tui" }
 dbtl-docs = { path = "crates/docs" }
 dbtl-report = { path = "crates/report" }
+dbtl-wasm = { path = "crates/wasm" }
 
 [dependencies]
 dbtl-core.workspace = true
@@ -102,6 +112,10 @@ anstream = "1"
 [dev-dependencies]
 # Temp dbt projects for the symlink-loop regression test (tests/source_fixture.rs).
 tempfile.workspace = true
+# The engine-side of the CLI↔engine parity suite (tests/engine_parity.rs) —
+# dbtl-wasm's pure `engine` module runs natively here; the wasm bindings
+# are what the docs site builds.
+dbtl-wasm.workspace = true
 # The benches' synth generator + perf tests share the implementation behind
 # `cargo xtask synth` — one deterministic generator, not three copies.
 xtask = { path = "xtask" }

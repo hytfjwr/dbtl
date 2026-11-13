@@ -186,6 +186,12 @@ jobs:
       - name: Check dbtl-report (wasm32)
         run: cargo check -p dbtl-report --target wasm32-unknown-unknown --locked
 
+      # dbtl-wasm is the crate the docs site actually compiles to wasm — a
+      # wasm32-only dependency or API use must fail here, not in the site
+      # build.
+      - name: Check dbtl-wasm (wasm32)
+        run: cargo check -p dbtl-wasm --target wasm32-unknown-unknown --locked
+
   docs-reference:
     name: Docs reference
     runs-on: ubuntu-latest
@@ -253,7 +259,7 @@ jobs:
             echo
             echo '| Crate | Lines covered | Coverage |'
             echo '|---|---|---|'
-            for pkg in dbtl dbtl-core dbtl-tui dbtl-docs dbtl-report xtask; do
+            for pkg in dbtl dbtl-core dbtl-tui dbtl-docs dbtl-report dbtl-wasm xtask; do
               cargo llvm-cov report -p "$pkg" --summary-only --json \
                 | jq -r --arg pkg "$pkg" \
                   '(.data[0].totals.lines // {covered:0,count:0,percent:0}) | "| \($pkg) | \(.covered)/\(.count) | \(.percent)%"'

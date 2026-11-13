@@ -16,5 +16,12 @@
       }
     }
   ],
-  "ignorePatterns": [".astro/**", "dist/**", "node_modules/**", "src/data/**"]
+  "ignorePatterns": [
+    ".astro/**",
+    "dist/**",
+    "node_modules/**",
+    "src/data/**",
+    "public/engine/**",
+    "public/samples/**"
+  ]
 }

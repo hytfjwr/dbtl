@@ -9,6 +9,8 @@
     "pnpm-lock.yaml",
     "src/content/docs/**/*.md",
     "src/data/graph.json",
-    "src/data/version.json"
+    "src/data/version.json",
+    "public/engine/**",
+    "public/samples/**"
   ]
 }
