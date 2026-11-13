@@ -48,6 +48,12 @@
   },
   {
     "group": "Reference",
-    "items": ["reference/cli", "reference/keybindings", "reference/lint-rules", "reference/config"]
+    "items": [
+      "reference/cli",
+      "reference/keybindings",
+      "reference/lint-rules",
+      "reference/config",
+      "changelog"
+    ]
   }
 ]

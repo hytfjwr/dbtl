@@ -13,6 +13,7 @@ on:
     paths:
       - "site/**"
       - "docs/reference/**"
+      - "CHANGELOG.md"
       # The engine is built from these crates, and the samples it runs on
       # come from these fixtures — all change the built site.
       - "crates/core/**"
