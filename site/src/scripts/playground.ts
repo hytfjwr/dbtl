@@ -246,7 +246,11 @@ if (ctl && input && linHost) {
     let lineage: LineageOutput | null = null;
     if (spec !== "") {
       try {
-        nodes = (await engine.select(spec)).nodes;
+        const out = await engine.select(spec);
+        nodes = out.nodes;
+        // Selector deprecation notes render through the same status line —
+        // an error path would have thrown before reaching here.
+        error = out.warnings.map((w) => `warning: ${w}`).join("\n");
         if (nodes.length > 0) {
           lineage = await engine.lineage({
             roots: nodes.map((n) => n.unique_id),

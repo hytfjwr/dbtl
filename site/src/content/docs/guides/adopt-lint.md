@@ -35,7 +35,7 @@ Linting a project that already breaks rules should not require a flag day. The p
      rules:
        model_fanout: {severity: warn, threshold: 5}
        select_star:
-         exclude: ["path:legacy"]
+         exclude: ["path:models/legacy"]
    ```
 
    A single node opts out through `meta.dbtl.ignore`. The full key list is in [project config](../configuration/project-config.md).

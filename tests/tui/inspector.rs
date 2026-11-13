@@ -344,10 +344,14 @@ pub(super) fn inspector_scroll_reveals_lower_sections() {
     assert!(pane_top.contains("Table"), "unscrolled shows the head");
 
     app.ui_state.set_inspector_scroll(usize::MAX); // the `G` intent
-    let bottom = render_app_with_inspector(&mut app, 160, 12);
+    let bottom = render_app_with_inspector(&mut app, 160, 14);
     let pane_bot = region_text(&bottom, inspector_rect(&bottom, &app));
+    // The lint verdict is the last section — a long finding fills the tail
+    // window past its header, so accept the `! rule:` summary line too.
     assert!(
-        pane_bot.contains("Lint") || pane_bot.contains("Impact"),
+        pane_bot.contains("Lint")
+            || pane_bot.contains("Impact")
+            || pane_bot.contains("rejoining_upstream"),
         "scrolled to the end reaches the trailing sections: {pane_bot}"
     );
     assert!(

@@ -263,6 +263,9 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
         std::fs::write(&path, baseline.to_json())
             .with_context(|| format!("failed to write lint baseline {}", path.display()))
             .input()?;
+        // `exclude:`/selector-param deprecation notes surface on this path
+        // too — the baseline branch returns before the shared warning block.
+        warn_each("", &outcome.warnings);
         if !args.quiet {
             let carried = if kept > 0 {
                 format!(" ({kept} kept for rules that did not run)")
@@ -305,10 +308,12 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
         Some((b, _)) if specs_use_state(args.select) => Some(selector_diff(src, &resolved, b)?),
         _ => None,
     };
+    let mut select_notes: Vec<String> = Vec::new();
     let selection = if args.select.is_empty() {
         None
     } else {
-        let sel = selector_set(&resolved.dag, diff.as_ref(), args.select);
+        let (sel, notes) = selector_set_report(&resolved.dag, diff.as_ref(), args.select);
+        select_notes = notes;
         if sel.is_empty() {
             eprintln!(
                 "warning: --select '{}' matched no nodes",
@@ -344,6 +349,12 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
             read_text: &read_text,
         },
     );
+    // `exclude:`/selector-param deprecation notes from the evaluation plus
+    // the `--select` notes — deduplicated: a spec shared between the two
+    // channels warns once.
+    let mut notes: std::collections::BTreeSet<String> = select_notes.into_iter().collect();
+    notes.extend(run.warnings.iter().cloned());
+    warn_each("", &notes.into_iter().collect::<Vec<_>>());
     plan.emit(
         &run.report,
         "lint",

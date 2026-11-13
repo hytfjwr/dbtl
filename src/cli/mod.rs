@@ -452,7 +452,7 @@ pub enum Commands {
     },
     /// List the nodes a dbt selector matches, one per line — the
     /// non-interactive answer to "what does this spec select?" (`dbtl ls
-    /// 'tag:nightly'`, `dbtl ls '2+fct_orders' --exclude path:staging`).
+    /// 'tag:nightly'`, `dbtl ls '2+fct_orders' --exclude path:models/staging`).
     /// `state:` selectors need `--diff`; note they are resolved by dbtl's
     /// own comparison (the SQL, config, column, and macro changes dbtl can
     /// read) — the set may not match dbt's `state:modified`.

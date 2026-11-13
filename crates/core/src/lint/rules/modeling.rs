@@ -195,10 +195,12 @@ pub(super) fn source_fanout(
 }
 
 /// `model_fanout`: a model directly feeds >= `model_fanout_threshold` leaf
-/// models (models with no children of their own — the same `direct_down == 0`
-/// leaf notion the orphan worklist uses, PLUS no package-severed children:
-/// a child only an installed package reads can't prove leaf-ness — the
-/// [`PrunedAdjacent`](crate::PrunedAdjacent) record — so it never counts).
+/// models. A leaf is a model with no DATA-RESOURCE children of its own —
+/// a model feeding only endpoint resources (an exposure, a semantic
+/// model, a metric, a saved query) is still a leaf, matching how dbt's
+/// fanout check reads the graph — PLUS no package-severed children: a
+/// child only an installed package reads can't prove leaf-ness (the
+/// [`PrunedAdjacent`](crate::PrunedAdjacent) record), so it never counts.
 pub(super) fn model_fanout(
     dag: &Dag,
     uids: &[&String],
@@ -220,7 +222,10 @@ pub(super) fn model_fanout(
             .filter(|c| {
                 dag.get(c).is_some_and(|n| {
                     n.resource_type == "model"
-                        && n.direct_down == 0
+                        && dag.direct_children(c).iter().all(|gc| {
+                            dag.get(gc)
+                                .is_none_or(|g| !is_data_resource(&g.resource_type))
+                        })
                         && dag.pruned_adjacent(c).is_none_or(|a| a.children == 0)
                 })
             })
@@ -298,7 +303,10 @@ pub(super) fn root_models(
 ///
 /// One finding per B — `related` is the sorted set `{C} ∪ {A₁, A₂, …}` and
 /// `message` names the offenders, so a B bypassed by several parents shows
-/// once in worklists.
+/// once in worklists. When B is also read by endpoint consumers (an
+/// exposure, a metric, a `semantic_models:` entry), the message names
+/// them — the verdict still holds because endpoints don't carry data
+/// downstream, but a naked "redundant hop" would read as "nothing reads B".
 ///
 /// `ignore_shared_parents` (selectors, default empty) exempts Bs whose
 /// shared parents ALL match — the dimensional shape where a fact's models
@@ -312,15 +320,20 @@ pub(super) fn rejoining_upstream(
     config: &LintConfig,
     sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
+    notes: &mut BTreeSet<String>,
 ) {
     // Resolve the ignore set once — the specs were selector-validated at
-    // config load, so each evaluates without error paths.
-    let ignored: BTreeSet<String> = config
+    // config load, so each evaluates without error paths. A spec written
+    // in the legacy `path:` form notes a deprecation for the outcome.
+    let mut ignored: BTreeSet<String> = BTreeSet::new();
+    for spec in config
         .str_list_param(LintRule::RejoiningUpstream, "ignore_shared_parents")
         .expect("the registry declares rejoining_upstream.ignore_shared_parents")
-        .iter()
-        .flat_map(|spec| select(dag, None, spec))
-        .collect();
+    {
+        let (set, spec_notes) = crate::select::select_report(dag, None, &spec);
+        ignored.extend(set);
+        notes.extend(spec_notes);
+    }
     for uid in uids {
         let Some(n) = dag.get(uid) else { continue };
         if !is_data_resource(&n.resource_type) || !in_scope(n) {
@@ -361,6 +374,39 @@ pub(super) fn rejoining_upstream(
         }
         a_uids.sort();
         a_uids.dedup();
+        // B's endpoint consumers — they read B but aren't "uses" (exposures,
+        // metrics, saved queries, and `semantic_models:` entries; the
+        // `semantic_dependents` channel names the last in BOTH modes —
+        // manifest mode also carries them as child nodes, so dedupe on the
+        // label). Name them so "redundant hop" doesn't read as "nothing
+        // reads B at all".
+        let mut consumers: BTreeSet<String> = dag
+            .direct_children(uid)
+            .iter()
+            .filter(|c| {
+                dag.get(c)
+                    .is_some_and(|c| !is_data_resource(&c.resource_type))
+            })
+            .map(|c| {
+                let cn = dag.get(c).expect("filtered above");
+                format!("{} {}", cn.resource_type, display_name(dag, c))
+            })
+            .collect();
+        if let Some(d) = dag.detail(uid) {
+            consumers.extend(
+                d.semantic_dependents
+                    .iter()
+                    .map(|n| format!("semantic_model {n}")),
+            );
+        }
+        let note = if consumers.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " (also read by {}; endpoint consumers do not count as uses)",
+                name_list(&consumers.into_iter().collect::<Vec<_>>())
+            )
+        };
         let cname = display_name(dag, &c_uid);
         let anames = name_list(&display_names(dag, &a_uids));
         let mut related = vec![c_uid];
@@ -372,7 +418,7 @@ pub(super) fn rejoining_upstream(
             (*uid).clone(),
             related,
             format!(
-                "{} is a redundant hop: {anames} already {} {cname} directly",
+                "{} is a redundant hop: {anames} already {} {cname} directly{note}",
                 display_name(dag, uid),
                 if a_uids.len() == 1 { "feeds" } else { "feed" },
             ),

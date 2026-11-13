@@ -46,7 +46,7 @@ fn ls_unions_within_and_across_specs() {
 #[test]
 fn ls_intersection_narrows_within_a_term() {
     // Comma factors intersect: marts-path AND materialized table.
-    let out = ls(&["config.materialized:table,path:marts"], &[]);
+    let out = ls(&["config.materialized:table,path:models/marts"], &[]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     assert_eq!(
         lines(&out),
@@ -122,10 +122,12 @@ fn ls_method_atoms_match_their_domains() {
         );
     }
 
-    // `path:` — a directory fragment matches sources' declaring yml too
-    // (the staging schema files declare all six sources; the duplicate
-    // pair shares the `payments` table name three ways).
-    let out = ls(&["path:staging"], &[]);
+    // `path:` — a project-root-relative dir matches the sources' declaring
+    // yml (the staging schema files ARE the sources' `original_file_path`
+    // and declare all six; the duplicate pair shares the `payments` table
+    // name three ways). The seeds those files patch don't join — dbt
+    // matches `patch_path` itself, never its ancestors.
+    let out = ls(&["path:models/staging"], &[]);
     assert_eq!(
         lines(&out),
         [
@@ -139,6 +141,40 @@ fn ls_method_atoms_match_their_domains() {
             "stg_orders",
             "stg_two_configs",
         ]
+    );
+}
+
+#[test]
+fn ls_legacy_path_form_warns_once_on_stderr() {
+    // `path:staging` is the pre-dbt-semantics spelling: it still selects
+    // the staging models via their resource-relative `path` (the sources
+    // drop — their `path` IS project-relative already), and one
+    // `warning:` line on stderr names the project-relative rewrite.
+    let out = ls(&["path:staging"], &[]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(
+        lines(&out),
+        ["stg_dup_probe", "stg_orders", "stg_two_configs"]
+    );
+    let err = stderr(&out);
+    let warnings: Vec<&str> = err.lines().filter(|l| l.starts_with("warning: ")).collect();
+    assert_eq!(
+        warnings,
+        ["warning: selector 'path:staging' uses the deprecated \
+         resource-relative path form — write it project-relative \
+         instead: 'path:models/staging'"],
+        "stderr: {err}"
+    );
+    // Two flags repeating the atom still warn exactly once.
+    let out = ls(&["path:staging", "path:staging"], &[]);
+    assert_eq!(
+        stderr(&out)
+            .lines()
+            .filter(|l| l.starts_with("warning: "))
+            .count(),
+        1,
+        "stderr: {}",
+        stderr(&out)
     );
 }
 

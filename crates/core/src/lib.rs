@@ -82,7 +82,7 @@ pub use project_config::{
     ProjectConfig, PROJECT_CONFIG_NAME,
 };
 pub use run_results::{default_run_results_path, RunResult, RunResults, RunStatus};
-pub use select::{select, selector_uses_state, validate_selector};
+pub use select::{select, select_report, selector_uses_state, validate_selector};
 pub use source::{
     load_dag_from_source, load_dag_from_source_with_warnings, manifest_from_source,
     manifest_from_source_with_warnings,
