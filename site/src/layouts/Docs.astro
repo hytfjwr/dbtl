@@ -28,9 +28,13 @@ const chips = reference && sections.length > 0 && sections.length <= CHIP_LIMIT;
 // The changelog's outline lists the releases; an Added/Fixed row per release
 // would drown them, so its `###` sections stay out of the outline.
 const items = changelog ? tocItems(headings).filter((i) => i.depth === 2) : tocItems(headings);
+// Handwritten pages carry their nav group in the title so same-named pages
+// stay distinct; the generated pages' titles already say what they are.
+const docTitle =
+  page.kind === "docs" ? `${page.title} - ${page.group} - dbtl docs` : `${page.title} - dbtl docs`;
 ---
 
-<Base title={`${page.title} - dbtl docs`} description={page.description} section="docs">
+<Base title={docTitle} description={page.description} section="docs">
   <div class="docs" data-page={chips ? "reference" : "docs"}>
     <div class="docbar">
       <button type="button" id="open-drawer" aria-controls="sidebar" aria-expanded="false">
