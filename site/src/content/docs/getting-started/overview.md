@@ -1,9 +1,9 @@
 ---
 title: Overview
-description: dbtl draws your dbt project's dependency graph in a terminal UI, from a compiled manifest or straight from project source, with no compile step and no browser.
+description: dbtl shows your dbt project's model lineage in the terminal, from a compiled manifest or straight from project source, with no compile step and no browser.
 ---
 
-`dbtl` draws your dbt project's dependency graph in a terminal UI. Pick a model in the list and its lineage appears beside it, so you can answer "what does this model depend on, and what does it affect?" without running `dbt compile` or opening a browser.
+`dbtl` shows a dbt project's model lineage in the terminal. Pick a model in the list and the graph of what it reads from and what depends on it appears beside it — no `dbt compile`, no browser.
 
 ```text
 ╭Seed────────────────────╮   ╭View───────────────────╮   ╭View────────────────────╮
@@ -15,66 +15,68 @@ description: dbtl draws your dbt project's dependency graph in a terminal UI, fr
 ╰──────────╯
 ```
 
+It builds that graph from `dbt_project.yml`, model `.sql` files (`ref()` and `source()`), and `schema.yml`, or from a compiled `manifest.json` when one exists — see [Choose the data source](../cli/overview.md#choose-the-data-source). `dbtl` is a single self-contained binary (the Linux musl builds are fully static) and runs entirely in the terminal, including over SSH.
+
 To install `dbtl` and open your first project, start with [Installation](installation.md) and the [quick start](quick-start.md).
 
 ## Feature tour
 
-### No compile, no browser
+### In the terminal
 
-`dbtl` builds lineage from `dbt_project.yml`, model `.sql` files (`ref()` and `source()`) and `schema.yml`. It is a single self-contained binary — the Linux musl builds are fully static — and runs entirely in the terminal, including over SSH. See the [quick start](quick-start.md) for the data sources it reads.
-
-### Navigate the graph
+#### Navigate the graph
 
 Move a cursor between lineage nodes and re-root on any model. Filter by direction and depth, step back and forward through your re-root history, and fold large sibling groups. See [Lineage](../tui/lineage.md).
 
-### Trace a path
+#### Trace a path
 
 The path from the root to the cursor lights up and everything else dims. Compact mode shrinks nodes to one row, and overview mode shows the whole DAG. See [Lineage](../tui/lineage.md).
 
-### Coverage and impact lenses
+#### Coverage and impact lenses
 
 Lenses tint the lineage by test coverage, downstream blast radius, layer, lint findings, `--diff` changes, last-run status, and more. See [Lenses](../tui/lenses.md).
 
-### Review a branch with `--diff`
-
-Compare against another manifest, a checkout, or a git revision. The `D` report lists changed nodes, blast radius, affected exposures and owners, and a ready-to-run `dbt build --select`. See [Diff](../tui/diff.md).
-
-### Exposures and the semantic layer
+#### Exposures and the semantic layer
 
 Exposures appear as end nodes at the right edge of the lineage. A compiled manifest adds semantic models, metrics, and saved queries. See [Exposures](../tui/exposures.md).
 
-### The last run and the warehouse
+#### The last run and the warehouse
 
 `dbtl` auto-detects `run_results.json` and `catalog.json` next to the data source. They add run-status and runtime lenses, real column types, row counts, and a drift check. See [Run results and catalog](../tui/run-results-and-catalog.md).
 
-### Search and select like dbt
+#### Review a branch with `--diff`
+
+Compare against another manifest, a checkout, or a git revision. The `D` report lists changed nodes, blast radius, affected exposures and owners, and a ready-to-run `dbt build --select`. See [Diff](../tui/diff.md).
+
+#### Search and select like dbt
 
 The `/` list search takes a `!`-prefixed dbt selector or a `?`-prefixed full-text query, and `Ctrl-p` opens a command palette. See [Search](../tui/search.md).
 
-### Tabs, a home page, and an inspector
+#### Tabs, a home page, and an inspector
 
 Work on several models at once in tabs, start from a home tab that shows project health, and keep an inspector pane open on the node under the cursor. See [Interface](../tui/interface.md).
 
-### Mouse support
+#### Mouse support
 
 Click to select, double-click to commit, right-click for an actions menu, and drag to pan or resize. See [Interface](../tui/interface.md#mouse).
 
-### Never lose a warning
+#### Never lose a warning
 
 Loader and config warnings show as toasts and also land in a notification log. See [Interface](../tui/interface.md#notifications).
 
-### Color themes
+#### Color themes
 
 Five built-in presets, live switching with `Ctrl-t`, and your own YAML theme files. See [Themes](../tui/themes.md).
 
-### One selector grammar everywhere
+### In CI and scripts
 
-The dbt selector language (`tag:`, `path:`, `config.materialized:`, `meta:`, `exposure:`, `state:`, hops, globs, unions, intersections) drives `dbtl ls`, the TUI's `!` search, and `--select` on `check`, `lint`, `impact`, and `docs` — `docs` and `ls` also take `--exclude`. A spec means the same set in every context. See [Selector syntax](../cli/selectors.md).
+#### Gates, lint, and CI
 
-### Docs that match the screen
+`dbtl check` gates coverage, layer violations, untested and breaking changes, and docs drift. `dbtl lint` runs a static best-practice rule set over the project graph. See [Lint](../cli/lint.md), [Check and impact](../cli/check-and-impact.md), and the [GitHub Action](../ci/github-action.md).
+
+#### Docs that match the screen
 
 `dbtl docs` writes a committable Markdown tree with a page per node. Regeneration is byte-deterministic, so CI can gate on it. See [dbtl docs](../cli/docs.md).
 
-### Gates, lint, and CI
+#### One selector grammar everywhere
 
-`dbtl check` gates coverage, layer violations, untested and breaking changes, and docs drift. `dbtl lint` runs a static best-practice rule set over the project graph. See [Lint](../cli/lint.md), [Check and impact](../cli/check-and-impact.md), and the [GitHub Action](../ci/github-action.md).
+The dbt selector language (`tag:`, `path:`, `config.materialized:`, `meta:`, `exposure:`, `state:`, hops, globs, unions, intersections) drives `dbtl ls`, the TUI's `!` search, and `--select` on `check`, `lint`, `impact`, and `docs` — `docs` and `ls` also take `--exclude`. A spec means the same set in every context. See [Selector syntax](../cli/selectors.md).

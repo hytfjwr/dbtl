@@ -102,4 +102,4 @@ The baseline is parsed from source, so the current side parses from source too, 
 
 ## Package scope
 
-Both sides of a diff load under the same package scope. A compiled-manifest baseline and a source-parsed current side compare cleanly by default. The scope shows in the `D` modal header. See the [quick start](../getting-started/quick-start.md#package-scope).
+Both sides of a diff load under the same package scope, so a compiled-manifest baseline and a source-parsed current side compare cleanly by default. The scope shows in the `D` modal header. See [Package scope](../cli/overview.md#package-scope).

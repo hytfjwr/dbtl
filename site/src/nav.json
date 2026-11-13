@@ -12,12 +12,14 @@
     "items": [
       "tui/interface",
       "tui/lineage",
+      "tui/structure-view",
       "tui/lenses",
       "tui/search",
       "tui/diff",
       "tui/run-results-and-catalog",
       "tui/exposures",
-      "tui/themes"
+      "tui/themes",
+      "tui/copy-and-export"
     ]
   },
   {

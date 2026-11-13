@@ -25,12 +25,7 @@ The `dbtl` screen has three panes, a tab strip, and a status line. This page cov
 
 ### Terminal size
 
-`dbtl` needs at least 50 columns by 12 rows. Below that it draws only a "terminal too small" notice, and `q` and `Ctrl-c` still work.
-
-- From 50 to 79 columns, the model list collapses into a drawer. `Ctrl-b` toggles it and `Tab` cycles focus.
-- At 160 columns or more, the inspector appears by itself. Below that, press `I` to show it.
-
-In a narrow tmux pane, resize or zoom the pane (`prefix z`) instead of disabling panes.
+The layout adapts to the terminal's width: the model list collapses into a drawer on narrow terminals and the inspector appears on its own on wide ones. Below a minimum size `dbtl` draws a "terminal too small" notice instead. The exact widths and workarounds are in [Troubleshooting](../configuration/troubleshooting.md#the-terminal-is-too-small-or-panes-disappeared).
 
 ## Model list
 
@@ -91,34 +86,11 @@ The inspector summarizes the node under the lineage cursor. It shows:
 - lint findings
 - diff status
 
-It shows the same data as the structure view, always on screen. `I` cycles auto, on, and off. In auto mode the inspector appears at 160 columns or more. Set the default with `inspector` in your [user config](../configuration/user-config.md).
+It shows the same data as the [structure view](structure-view.md), always on screen. `I` cycles auto, on, and off; in auto mode the inspector appears only on wide terminals (see [Terminal size](#terminal-size)). Set the default with `inspector` in your [user config](../configuration/user-config.md).
 
 ## Structure view
 
-`Enter` on the selected model opens the structure view: columns, tests, and description. It also shows governance fields (access, group, contract, version) and the `meta` dict when the model declares them. The dict is sorted, and nested values appear as compact JSON.
-
-Each column row carries test badges next to its one-hop column-edge counts.
-
-| Badge | Test |
-|---|---|
-| `NN` | `not_null` |
-| `U` | `unique` |
-| `R` | `relationships` |
-| `AV` | `accepted_values` |
-| `AR` | `accepted_range` |
-| `*` | any other test |
-
-| Key | Action |
-|---|---|
-| `h` `l` | Move the cursor across column rows |
-| `Tab` | Move the cursor between the column rows and the tests list |
-| `Enter` or `c` | Trace the cursored column in the lineage pane. See [Lineage](lineage.md#column-trace). |
-| `K` | Open the column-lineage modal for the cursored column |
-| `y` then `l` | Copy the cursored column's downstream lineage as Markdown |
-
-On the tests side, the cursor lands only on `relationships` rows. The resolved `to:` target shows as `-> model.column`, and `Enter` there re-roots the lineage to the target.
-
-With a `catalog.json` loaded, the structure view also shows warehouse column types, row counts, and drift. See [Run results and catalog](run-results-and-catalog.md).
+`Enter` opens a node's columns, tests, description, and governance fields. See [Structure view](structure-view.md).
 
 ## SQL preview and stats
 
@@ -143,19 +115,7 @@ Items act on the node the menu opened on. Over the structure view or the SQL pre
 
 ## Copy and export
 
-| Key | Action |
-|---|---|
-| `Y` | Copy the model name |
-| `C` | Copy the raw SQL |
-| `m` | Copy the lineage as Mermaid |
-| `x` | Copy the lineage as Graphviz DOT |
-| `c` | Copy the lineage as an ASCII diagram |
-| `i` | Copy a Markdown impact report |
-| `e` | Write the diagram to a file in the current directory: `<model>_lineage.txt` (`<project>_overview.txt` from the whole-graph overview) |
-| `!` | Copy the view as a runnable `dbt build --select` command |
-| `y` | Open the yank menu |
-
-The yank menu has one key per target: `y` copies the `unique_id`, `Y` the name, `m` Mermaid, `x` DOT, `c` ASCII, `C` raw SQL, `s` compiled SQL, `i` the impact report, `!` the selector, and `l` the column lineage of the structure view's selected column. The single keys above still work. Pressing `y` over a modal aims every yank at the modal's node, not the list selection.
+Single keys copy the lineage, SQL, and reports to the clipboard, and `e` writes the diagram to a file. See [Copy and export](copy-and-export.md).
 
 ## Reload and parse
 
@@ -216,8 +176,8 @@ While a modal or menu is open, the rest of the screen dims. The wheel scrolls it
 
 ## Saved view state
 
-`dbtl` saves your view for each project when you quit and restores it on the next run. The saved state includes bookmarks, open tabs, the active lens, density, list sort, pane widths and visibility, the theme, search history, and the last selected model. A tab's lineage cursor, re-root history, and scroll position are not saved. See [User config](../configuration/user-config.md) for the file location and precedence.
+`dbtl` saves your view for each project when you quit — bookmarks, open tabs, the active lens, and more — and restores it on the next run. The full list, the file location, and the precedence order are in [User config](../configuration/user-config.md#saved-state).
 
 ## Borders look wrong
 
-Some terminals draw Unicode box characters two cells wide. `dbtl` probes the terminal at startup and falls back to ASCII automatically. Force a mode with `--ascii` or `--unicode`. See [Troubleshooting](../configuration/troubleshooting.md).
+Some terminals draw Unicode box characters two cells wide, which doubles the borders. `dbtl` probes for this and falls back to ASCII; `--ascii` and `--unicode` force a mode. See [Troubleshooting](../configuration/troubleshooting.md#borders-look-doubled-or-misaligned).

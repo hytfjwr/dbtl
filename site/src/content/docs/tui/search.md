@@ -37,7 +37,7 @@ Start the query with `!` to use a dbt selector. The list narrows to the models t
 !state:modified+
 ```
 
-`state:` selectors need a `--diff` baseline. `meta:key` matches when the key exists, and `meta:key=value` matches the stringified value.
+`state:` selectors need a `--diff` baseline.
 
 The same grammar drives `dbtl ls`, `--select`, and `--exclude`. See [selector syntax](../cli/selectors.md) for the full list of atoms, hops, globs, unions, and intersections.
 
@@ -62,7 +62,7 @@ Start the query with `@` to search models instead of commands. `Enter` on a mode
 @fct_orders
 ```
 
-Recently run palette commands are saved with your view state. See [Saved view state](interface.md#saved-view-state).
+Recently run palette commands are saved with your view state. See [Saved state](../configuration/user-config.md#saved-state).
 
 ## Help filter
 

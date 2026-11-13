@@ -23,7 +23,7 @@ The `exposure:` selector atom picks exposures. See [selector syntax](../cli/sele
 
 dbt unit tests count toward the `tests:N` badge on a node.
 
-The structure view (`Enter`) shows governance fields when the model declares them: access, group, contract, and version. It also shows the `meta` dict, sorted, with nested values as compact JSON. See [Interface](interface.md#structure-view).
+The structure view (`Enter`) shows governance fields when the model declares them: access, group, contract, and version. It also shows the `meta` dict, sorted, with nested values as compact JSON. See [Structure view](structure-view.md).
 
 ## Generated docs
 

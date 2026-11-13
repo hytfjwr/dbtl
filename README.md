@@ -20,7 +20,7 @@
 
 ---
 
-`dbtl` draws your dbt project's dependency graph in a terminal UI. Pick a model in the list and its lineage appears beside it, with tabs and an inspector pane for the node under the cursor. You can see what a model depends on and what it affects without running `dbt compile` or opening a browser.
+`dbtl` shows a dbt project's model lineage in the terminal. Pick a model in the list and the graph of what it reads from and what depends on it appears beside it. It reads the project files directly or an existing `target/manifest.json`, so there is no compile step and no browser.
 
 ```
 ╭Seed────────────────────╮   ╭View───────────────────╮   ╭View────────────────────╮
@@ -31,6 +31,8 @@
 │ shoppers │────────────────╯
 ╰──────────╯
 ```
+
+Each box is a node. The tag in its top border is the resource type or materialization (`Seed`, `Source`, `View`, `Table`, and so on), and `tests:N` in the bottom border counts its tests.
 
 <img src="https://github.com/hytfjwr/dbtl/releases/latest/download/demo.gif" alt="dbtl demo: browsing a model's lineage in a terminal, cycling colour lenses, and opening the stats dashboard" width="100%" />
 
@@ -51,22 +53,29 @@ $ cd path/to/dbt_project
 $ dbtl
 ```
 
-If `target/manifest.json` exists, `dbtl` uses it. Otherwise it parses the project source directly. Press `P` inside the app to run `dbt parse` and switch to the generated manifest. Continue with [Quick start](https://hytfjwr.github.io/dbtl/getting-started/quick-start/).
+If `target/manifest.json` exists, `dbtl` uses it. Otherwise it parses the project source directly. Continue with [Quick start](https://hytfjwr.github.io/dbtl/getting-started/quick-start/).
 
 ## What it does
 
-- [Lineage without a compile step](https://hytfjwr.github.io/dbtl/getting-started/overview/): builds the graph from `dbt_project.yml`, model SQL, and `schema.yml`, or from `target/manifest.json`.
-- [Graph navigation](https://hytfjwr.github.io/dbtl/tui/lineage/): move a cursor between nodes, re-root on any model, filter by direction and depth, and light up the path from the root to the cursor.
-- [Lenses](https://hytfjwr.github.io/dbtl/tui/lenses/): tint the lineage by test coverage, downstream impact, layer, lint findings, or `--diff` changes.
+In CI, without a terminal:
+
+- [Gates and impact reports](https://hytfjwr.github.io/dbtl/cli/check-and-impact/): `dbtl check` fails a pull request on rules you set, such as coverage minimums or breaking column changes, and `dbtl impact` prints the blast radius — the models downstream of a change.
+- [Lint](https://hytfjwr.github.io/dbtl/cli/lint/): `dbtl lint` runs a static best-practice rule set over the project graph, with no warehouse connection and no `dbt run`.
+- [Docs generator](https://hytfjwr.github.io/dbtl/cli/docs/): `dbtl docs` writes a deterministic Markdown tree with a page per node, so a docs-drift gate can compare regenerated output.
+- [Selectors](https://hytfjwr.github.io/dbtl/cli/selectors/): `dbtl ls` prints the nodes a dbt selector spec matches, and `dbtl columns` prints column-level lineage.
+- CI recipes: a [GitHub Action](https://hytfjwr.github.io/dbtl/ci/github-action/) and a [pre-commit hook](https://hytfjwr.github.io/dbtl/ci/pre-commit/).
+
+In the terminal:
+
+- [Lineage without a compile step](https://hytfjwr.github.io/dbtl/getting-started/overview/): the graph comes from `dbt_project.yml`, model SQL, and `schema.yml`, or from `target/manifest.json`.
+- [Graph navigation](https://hytfjwr.github.io/dbtl/tui/lineage/): move a cursor between nodes, re-root (recenter) the graph on any model, filter by direction and depth, and light up the path between two nodes.
+- [Lenses](https://hytfjwr.github.io/dbtl/tui/lenses/): tint the lineage by one property at a time — test coverage, downstream impact, layer, lint findings, or `--diff` changes.
 - [Search](https://hytfjwr.github.io/dbtl/tui/search/): filter the list by name, full text, or a dbt selector.
-- [Diff review](https://hytfjwr.github.io/dbtl/tui/diff/): compare against another manifest, checkout, or `git:<rev>` and get a PR impact report.
-- [Run results and catalog](https://hytfjwr.github.io/dbtl/tui/run-results-and-catalog/): show last-run status, runtime, and warehouse column types and row counts.
-- [Exposures](https://hytfjwr.github.io/dbtl/tui/exposures/): show dashboards and other exposures as end nodes in the lineage.
+- [Diff review](https://hytfjwr.github.io/dbtl/tui/diff/): compare against another manifest, checkout, or `git:<rev>` and open the same impact report CI prints.
+- [Run results and catalog](https://hytfjwr.github.io/dbtl/tui/run-results-and-catalog/): last-run status, runtime, and warehouse column types and row counts.
+- [Exposures](https://hytfjwr.github.io/dbtl/tui/exposures/): dashboards and other exposures as end nodes in the lineage.
 - [Interface](https://hytfjwr.github.io/dbtl/tui/interface/): tabs, a home page, an inspector pane, and mouse support.
 - [Themes](https://hytfjwr.github.io/dbtl/tui/themes/): built-in palettes and user-defined color themes.
-- [Docs generator](https://hytfjwr.github.io/dbtl/cli/docs/): `dbtl docs` writes a deterministic Markdown tree with a page per node.
-- [Lint](https://hytfjwr.github.io/dbtl/cli/lint/): `dbtl lint` checks the project graph against a static rule set.
-- [CI gates](https://hytfjwr.github.io/dbtl/cli/check-and-impact/): `dbtl check` and `dbtl impact` gate a pull request, with a [GitHub Action](https://hytfjwr.github.io/dbtl/ci/github-action/) and a [pre-commit hook](https://hytfjwr.github.io/dbtl/ci/pre-commit/).
 
 ## Keybindings
 
@@ -111,13 +120,7 @@ Press `?` in the app for every key in the current mode, or read the [keybindings
 
 ## Documentation
 
-- [Getting started](https://hytfjwr.github.io/dbtl/getting-started/overview/)
-- [Using the TUI](https://hytfjwr.github.io/dbtl/tui/interface/)
-- [CLI](https://hytfjwr.github.io/dbtl/cli/overview/)
-- [CI integration](https://hytfjwr.github.io/dbtl/ci/github-action/)
-- [Configuration](https://hytfjwr.github.io/dbtl/configuration/project-config/)
-- [Reference](https://hytfjwr.github.io/dbtl/reference/cli/)
-- [Playground](https://hytfjwr.github.io/dbtl/playground/)
+The [documentation site](https://hytfjwr.github.io/dbtl/) covers the TUI page by page, the [CLI](https://hytfjwr.github.io/dbtl/cli/overview/), [CI setups](https://hytfjwr.github.io/dbtl/ci/github-action/), [configuration](https://hytfjwr.github.io/dbtl/configuration/project-config/), and generated [references](https://hytfjwr.github.io/dbtl/reference/cli/). The [playground](https://hytfjwr.github.io/dbtl/playground/) runs it in a browser on bundled sample projects.
 
 ## Contributing
 
