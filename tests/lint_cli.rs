@@ -496,6 +496,75 @@ fn baseline_entries_for_a_removed_rule_are_ignored_with_one_warning() {
     );
 }
 
+#[test]
+fn write_baseline_under_rules_merges_instead_of_overwriting() {
+    // `--write-baseline --rules X` freezes X's findings but must carry the
+    // rows for every rule the subset never evaluated — a plain overwrite
+    // would silently un-freeze violations nobody re-checked.
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    let baseline = tmp.path().join(".dbtl-baseline.json");
+
+    let out = lint_on(&m, &["--write-baseline"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let full: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&baseline).unwrap()).unwrap();
+    let all_rows = full["findings"].as_array().unwrap();
+    let all_rules: std::collections::BTreeSet<&str> = all_rows
+        .iter()
+        .map(|f| f["rule"].as_str().unwrap())
+        .collect();
+    assert!(
+        all_rules.contains("rejoining_upstream") && all_rules.len() > 1,
+        "the fixture produces a multi-rule baseline incl. rejoining: {all_rules:?}"
+    );
+
+    // A row for `root_models` — a rule that produces NO findings on this
+    // fixture — mimics a baseline the project curated by hand; it must
+    // survive the subset rewrite untouched.
+    let mut edited = full.clone();
+    edited["findings"].as_array_mut().unwrap().push(
+        serde_json::json!({"rule": "root_models", "node": "model.jaffle_finance.hand_kept", "related": []}),
+    );
+    std::fs::write(&baseline, serde_json::to_vec(&edited).unwrap()).unwrap();
+
+    let out = lint_on(&m, &["--rules", "rejoining_upstream", "--write-baseline"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let out_text = stdout(&out);
+    assert!(
+        out_text.contains("kept for rules that did not run"),
+        "the write reports the carried rows: {out_text}"
+    );
+
+    let merged: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&baseline).unwrap()).unwrap();
+    let rows = merged["findings"].as_array().unwrap();
+    // Every non-rejoining row from the first write + the hand row survive
+    // untouched — only rejoining_upstream's rows were rewritten.
+    let merged_rules: std::collections::BTreeSet<&str> =
+        rows.iter().map(|f| f["rule"].as_str().unwrap()).collect();
+    for rule in &all_rules {
+        assert!(
+            merged_rules.contains(rule),
+            "{rule}'s frozen rows survive the subset rewrite"
+        );
+    }
+    assert!(
+        rows.iter()
+            .any(|f| f["node"] == "model.jaffle_finance.hand_kept"),
+        "the curated row carried over"
+    );
+    // And the rewrite emits rejoining_upstream under its node-scoped key —
+    // `related` is context, not identity.
+    for f in rows.iter().filter(|f| f["rule"] == "rejoining_upstream") {
+        assert_eq!(
+            f["related"],
+            serde_json::json!([]),
+            "rejoining_upstream writes the node key: {f}"
+        );
+    }
+}
+
 // ---- --diff: only new violations count --------------------------------------
 
 #[test]

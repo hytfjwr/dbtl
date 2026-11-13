@@ -17,6 +17,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `deprecation_date`, and `constraints`. The `dbtl docs` node pages carry
   the same four fields as conditional heading bullets.
 
+### Changed
+
+- `rejoining_upstream` findings now key on `(rule, node)` — the bypassed
+  edge's endpoints were context, not identity, so a rejoin that gains
+  another shared parent stays the same frozen finding. The baseline,
+  `check --lint --diff`'s pre-existing comparison, and the SARIF / Code
+  Climate fingerprints all follow the new key; baseline files written
+  under the old related-bearing key still match on load, and rewrites
+  emit the new shape.
+
 ### Fixed
 
 - `dbtl --diff <base> --select 'state:modified'` resolves the selector
@@ -25,7 +35,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   selector whose first match is a non-model resource (an exposure caught
   by a `+` fan-out, say) now opens the first matching model instead of
   failing outright.
-
+- `dbtl lint --write-baseline --rules X` no longer discards the baseline's
+  other rows: a subset write merges into the file, rewriting only the
+  rules that actually ran — rules `--rules` narrowed out or skipped for a
+  missing input keep their frozen rows — instead of silently un-freezing
+  violations the run never evaluated. A write also refuses to clobber an
+  existing baseline it cannot read (unreadable or malformed file → input
+  error), matching the read path's never-silently-unfreeze rule.
+- `.dbtl.yml` reports better and validates tighter: a `lint.rules.<id>`
+  entry that isn't `true|false` or a settings table now names the key and
+  the accepted forms instead of a generic enum error; empty or whitespace
+  strings in `naming_prefixes` and list parameters are config errors
+  instead of match-everything values; `unused_models.layers` accepts
+  layers named in `lint.naming_prefixes`; and a malformed
+  `meta.dbtl.ignore` warns once per node while still suppressing nothing —
+  including a list that mixes valid ids with non-string items or a
+  `dbtl:` value written as a JSON-encoded string, both of which now fail
+  loudly instead of suppressing partially or silently.
 - Source-mode SQL parsing now renders Jinja the way the file lexes it —
   `{{ }}` inside string literals expands without the tag's own quotes
   closing the string early (`'{{ var('x') }}'` parses), backslash
