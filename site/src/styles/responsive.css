@@ -218,8 +218,15 @@
   .chips span + span::before {
     margin-right: var(--sp-2);
   }
+  .pg-ctl {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .pg-row > .lab {
     width: 100%;
+  }
+  .seg button {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .pg-lin {
     min-height: 320px;
