@@ -8,7 +8,7 @@ use std::collections::HashSet;
 
 use dbtl::{
     build_model_list, load_dag_from_source, load_dag_from_source_with_warnings,
-    manifest_from_source, run_rules, LintConfig, LintInput, LintRule, SortMode,
+    manifest_from_source, run_rules, LintConfig, LintInput, LintRule, SortMode, SqlParseResolver,
 };
 
 const MISSING: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/does_not_exist");
@@ -1448,4 +1448,78 @@ fn references_deprecated_model_evaluates_in_source_mode() {
     let loc = hits[0].location.as_ref().expect("a located finding");
     assert_eq!(loc.file, "models/fct_a.sql");
     assert_eq!(loc.line, Some(1));
+}
+
+// ---------------------------------------------------------------------------
+// Issue 43: Jinja branches must not fabricate lint findings
+// ---------------------------------------------------------------------------
+
+const BRANCH_PROJECT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/jinja_branch_project"
+);
+
+/// The repro project end to end: `stg_orders` reads either of two
+/// `source()` calls behind `{% if %}`/`{% else %}` (mutually exclusive,
+/// and the `,` between them is the render's branch union — not a written
+/// join), and `fct_orders` hands its `customers` CTE to a macro by string
+/// argument. None of the three former false positives may fire, while the
+/// graph's two source edges stay and `duplicate_sources` still flags the
+/// real declaration-level pair.
+#[test]
+fn jinja_branches_fabricate_no_lint_findings() {
+    let dag = load_dag_from_source(BRANCH_PROJECT).expect("project loads");
+    // Both branch calls are real graph parents — the edges carry both
+    // renders' lineage even though only one executes per render.
+    let mut parents = dag.direct_parents("model.branchproj.stg_orders").to_vec();
+    parents.sort();
+    assert_eq!(
+        parents,
+        vec![
+            "source.branchproj.prod_src.orders".to_string(),
+            "source.branchproj.stg_src.orders".to_string()
+        ],
+        "both mutually exclusive source() calls stay edges"
+    );
+
+    let res = SqlParseResolver::for_dag(None, &dag);
+    let findings =
+        run_rules(LintInput::new(&dag, &LintConfig::default()).with_sql(Some(&res))).findings;
+    let on = |rule: LintRule, uid: &str| {
+        findings
+            .iter()
+            .filter(|f| f.rule == rule && f.node_uid == uid)
+            .count()
+    };
+    // The `,` between the arms is the render's branch union — no
+    // `cartesian_join`; the arms never run together — no
+    // `multiple_sources_joined`.
+    assert_eq!(
+        on(LintRule::CartesianJoin, "model.branchproj.stg_orders"),
+        0
+    );
+    assert_eq!(
+        on(
+            LintRule::MultipleSourcesJoined,
+            "model.branchproj.stg_orders"
+        ),
+        0,
+        "two sources reachable only through exclusive arms are not 'joined'"
+    );
+    // `customers` reaches the join through the macro's string argument —
+    // not unread.
+    assert_eq!(on(LintRule::UnusedCte, "model.branchproj.fct_orders"), 0);
+    // …while the real findings stay: both sources declare raw.orders —
+    // `duplicate_sources` fires on both.
+    for uid in [
+        "source.branchproj.prod_src.orders",
+        "source.branchproj.stg_src.orders",
+    ] {
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule == LintRule::DuplicateSources && f.node_uid == uid),
+            "duplicate_sources must still flag {uid}"
+        );
+    }
 }

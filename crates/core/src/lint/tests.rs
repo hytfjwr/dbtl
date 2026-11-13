@@ -192,6 +192,55 @@ fn multiple_sources_joined_needs_two_sources() {
 }
 
 #[test]
+fn multiple_sources_joined_merges_mutually_exclusive_branch_sources() {
+    // `{% if %}`/`{% elif %}`/`{% else %}` arms never execute in one
+    // render — sources the graph reaches only through pairwise-exclusive
+    // arms count once (the edges still exist; only the "simultaneous"
+    // claim goes away). The same calls unconditionally still flag.
+    let m = manifest(
+        vec![
+            sited_model(
+                "branch",
+                "models/m/branch.sql",
+                "select *\nfrom {% if target.name == 'prod' %}{{ source('a', 't') }}{% else %}{{ source('b', 't') }}{% endif %}",
+            ),
+            sited_model(
+                "joined",
+                "models/m/joined.sql",
+                "select *\nfrom {{ source('a', 't') }} a\njoin {{ source('b', 't') }} b on a.id = b.id",
+            ),
+            // Nesting composes — a source one arm deeper still disagrees
+            // on the outer chain.
+            sited_model(
+                "nested",
+                "models/m/nested.sql",
+                "select *\nfrom {% if x %}{{ source('a', 't') }}{% else %}{% if y %}{{ source('b', 't') }}{% endif %}{% endif %}",
+            ),
+        ],
+        vec![source("a.t"), source("b.t")],
+        &[
+            ("source.p.a.t", "model.p.branch"),
+            ("source.p.b.t", "model.p.branch"),
+            ("source.p.a.t", "model.p.joined"),
+            ("source.p.b.t", "model.p.joined"),
+            ("source.p.a.t", "model.p.nested"),
+            ("source.p.b.t", "model.p.nested"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::MultipleSourcesJoined),
+        vec!["model.p.joined"],
+        "sources reachable only through exclusive if/else arms count once — nested too"
+    );
+    // The edges still exist — only the simultaneous-read claim was dropped.
+    let dag = Dag::build(&m);
+    for uid in ["model.p.branch", "model.p.nested"] {
+        assert_eq!(dag.direct_parents(uid).len(), 2, "{uid} keeps both edges");
+    }
+}
+
+#[test]
 fn source_fanout_flags_source_with_two_model_children() {
     let m = manifest(
         vec![
@@ -5691,6 +5740,41 @@ fn unused_cte_flags_only_unread_definitions() {
 }
 
 #[test]
+fn unused_cte_counts_a_name_a_macro_argument_carries() {
+    // `{{ join_customers('customers', …) }}` renders `NULL` — the parse
+    // can't see the join the macro emits — but the CTE name rides the
+    // string literal, so `customers` isn't provably unread. A literal
+    // naming a different CTE — or no literal at all — still flags.
+    let m = manifest(
+        vec![
+            model_sql(
+                "macro_arg",
+                "with orders as (select 1), customers as (select 2)\nselect * from orders {{ join_customers('customers', 'orders.customer_id') }}",
+            ),
+            model_sql(
+                "other_name",
+                "with orders as (select 1), customers as (select 2)\nselect * from orders {{ join_customers('orders', 'id') }}",
+            ),
+            model_sql(
+                "plain_unread",
+                "with orders as (select 1), customers as (select 2)\nselect * from orders",
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::UnusedCte]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::UnusedCte),
+        vec!["model.p.other_name", "model.p.plain_unread"],
+        "a CTE name a macro-call string literal carries counts as read — other literals don't"
+    );
+}
+
+#[test]
 fn unused_cte_lists_every_unread_name_in_one_finding() {
     let raw = "with a as (select 1),\n     b as (select 2)\nselect 3";
     let m = manifest(vec![model_sql_pos("m", raw)], vec![], &[]);
@@ -6769,6 +6853,42 @@ fn cartesian_join_flags_comma_from_and_tautological_conditions() {
             "model.p.on_true"
         ],
         "comma-FROM with no WHERE and never-rejecting ONs are cross products; a column self-comparison stays a condition"
+    );
+}
+
+#[test]
+fn cartesian_join_ignores_the_jinja_branch_union_comma() {
+    // A `{% elif %}`/`{% else %}` split between FROM items emits `,` —
+    // the render's branch union (the arms never reach one render), not
+    // a written comma product. A literal `,` — before the branch — is
+    // still one.
+    let m = manifest(
+        vec![
+            model_sql(
+                "branch",
+                "select *\nfrom {% if target.name == 'prod' %}a.t{% else %}b.u{% endif %}",
+            ),
+            model_sql(
+                "elif_branch",
+                "select *\nfrom {% if x %}a.t{% elif y %}b.u{% else %}c.v{% endif %}",
+            ),
+            model_sql(
+                "written",
+                "select *\nfrom a.t, {% if x %}b.u{% else %}c.v{% endif %}",
+            ),
+            model_sql("plain_comma", "select *\nfrom a.t, b.u"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::CartesianJoin]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::CartesianJoin),
+        vec!["model.p.plain_comma", "model.p.written"],
+        "the else-split ',' is a branch union, not a written product; a literal ',' still counts"
     );
 }
 

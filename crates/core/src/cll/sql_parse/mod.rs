@@ -510,9 +510,9 @@ impl SqlParseResolver {
             return None; // uid cycle — degrade the re-entered node
         }
         let out = (|| {
-            let sql = render_jinja(text);
+            let rendered = render_jinja_mapped(text, JinjaMark::Plain);
             let dialect = self.dialect.sqlparser();
-            let stmts = Parser::parse_sql(&*dialect, &sql).ok()?;
+            let stmts = Parser::parse_sql(&*dialect, &rendered.text).ok()?;
             let query = stmts.iter().find_map(|s| match s {
                 Statement::Query(q) => Some(&**q),
                 _ => None,
@@ -531,7 +531,7 @@ impl SqlParseResolver {
                 locals: &NO_LOCALS,
             };
             let (res, scope) = self.resolve_query_full(&ctx, env, query)?;
-            let scan = scan_statements(&stmts);
+            let scan = scan_statements(&stmts, Some(&rendered));
             let wildcards = query_wildcard_items(query);
             // The resolved output list IS the output-name truth: `*`/`t.*`
             // already expanded where bindings know their columns (an
@@ -567,13 +567,7 @@ impl SqlParseResolver {
                     .zip(dup_counts)
                     .filter(|(_, c)| *c > 1)
                     .collect(),
-                unused_ctes: scan
-                    .cte_defs
-                    .iter()
-                    .enumerate()
-                    .filter(|(id, _)| !scan.cte_uses.contains(id))
-                    .map(|(_, (name, _))| name.clone())
-                    .collect(),
+                unused_ctes: scan.unread_ctes().map(|(name, _)| name.clone()).collect(),
                 unlimited_order_by: outer_order_by_span(query).is_some(),
             }))
         })();

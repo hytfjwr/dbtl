@@ -814,3 +814,300 @@ pub fn call_sites_masked(masked: &str) -> Vec<CallSite> {
     static P: OnceLock<Patterns> = OnceLock::new();
     P.get_or_init(Patterns::new).call_sites_masked(masked)
 }
+
+// ---------------------------------------------------------------------------
+// Jinja branch structure — which call sites can execute in one render
+// ---------------------------------------------------------------------------
+
+/// One `{% if %}`/`{% for %}` arm in a template's branch structure:
+/// `chain` is the block's id (its open tag's source order — unique per
+/// block), `arm` the branch inside it — the `{% if %}`/`{% for %}` body is
+/// 0, each `{% elif %}`/`{% else %}` arm +1. Two call sites whose paths
+/// disagree on a shared chain sit in arms that never execute in one
+/// render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArmStep {
+    /// Which `{% if %}`/`{% for %}` block the arm belongs to.
+    pub chain: u32,
+    /// The branch inside it — `{% if %}`/`{% for %}` is 0, each
+    /// `{% elif %}`/`{% else %}` arm +1.
+    pub arm: u32,
+}
+
+/// Do the arm paths `a` and `b` disagree on a shared chain? Then the
+/// calls they position sit in mutually exclusive arms — `if`/`elif`/`else`
+/// alternatives, or a `{% for %}` body against its `{% else %}`. dbt
+/// renders exactly one arm per chain, so the calls never execute in one
+/// render. Paths sharing no chain — or agreeing on every chain — compose
+/// freely (an empty path is unconditional and exclusive with nothing).
+pub fn arms_exclusive(a: &[ArmStep], b: &[ArmStep]) -> bool {
+    a.iter()
+        .any(|x| b.iter().any(|y| y.chain == x.chain && y.arm != x.arm))
+}
+
+/// A Jinja template's `{% if %}`/`{% for %}` arm structure indexed by byte
+/// offset — [`jinja_branches`]'s output. [`JinjaBranches::arm_path`]
+/// answers the stack of enclosing arms a position sits in, outermost
+/// first; the positions it indexes are the same text
+/// [`call_sites_masked`] spans point into.
+#[derive(Debug, Default)]
+pub struct JinjaBranches {
+    /// `(offset, path)` cuts in ascending order — the path in effect from
+    /// `offset` until the next cut. Always non-empty (the empty path at
+    /// offset 0).
+    cuts: Vec<(usize, Vec<ArmStep>)>,
+}
+
+impl JinjaBranches {
+    /// The arm path `offset` sits inside — `[]` outside any
+    /// `{% if %}`/`{% for %}` (an unconditional position — and every
+    /// position, when the template's structure couldn't be read).
+    pub fn arm_path(&self, offset: usize) -> &[ArmStep] {
+        let i = self.cuts.partition_point(|(o, _)| *o <= offset);
+        self.cuts.get(i.wrapping_sub(1)).map_or(&[], |(_, p)| p)
+    }
+}
+
+/// Read a template's `{% if %}`/`{% elif %}`/`{% else %}`/`{% endif %}` and
+/// `{% for %}`/`{% else %}`/`{% endfor %}` structure into a per-offset arm
+/// index — the branch context a [`CallSite::span`] positions against.
+/// Built on the same `mask_jinja_comments` text the call scan reads, so a
+/// `{# #}`-commented `{% if %}` opens nothing (and would be skipped here
+/// anyway). Nested chains compose; a `{% raw %}` body is inert; every
+/// other paired tag (`{% macro %}`, `{% block %}`, `{% docs %}`…) nests
+/// transparently — arms inside it still index.
+///
+/// A malformed structure — an unclosed block, a stray `{% end… %}`, an
+/// `{% else %}`/`{% elif %}` outside `if`/`for` — yields a map where
+/// every offset is unconditional: Jinja rejects it too, so nothing is
+/// provably exclusive there. Mutually exclusive only ever claims what
+/// the structure itself proves — under-reporting is the safe direction.
+pub fn jinja_branches(text: &str) -> JinjaBranches {
+    /// An open `{% %}` block — `If`/`For` carry the arm bookkeeping the
+    /// signature reads; `Block` any other paired tag, holding only the
+    /// `{% end… %}` word it must close with.
+    enum Frame {
+        If {
+            chain: u32,
+            arm: u32,
+            else_seen: bool,
+        },
+        For {
+            chain: u32,
+            arm: u32,
+            else_seen: bool,
+        },
+        Block(&'static str),
+    }
+    /// `{% word %}…{% end<tail> %}` pairs other than `if`/`for`/`raw` —
+    /// their interior still composes arms; only the `end` word differs.
+    const BLOCK_TAGS: &[(&str, &str)] = &[
+        ("macro", "endmacro"),
+        ("block", "endblock"),
+        ("filter", "endfilter"),
+        ("call", "endcall"),
+        ("with", "endwith"),
+        ("trans", "endtrans"),
+        ("autoescape", "endautoescape"),
+        ("debug", "enddebug"),
+        ("docs", "enddocs"),
+        ("snapshot", "endsnapshot"),
+        ("test", "endtest"),
+        ("materialization", "endmaterialization"),
+        ("verification", "endverification"),
+        ("embed", "endembed"),
+    ];
+
+    let b = text.as_bytes();
+    let mut cuts: Vec<(usize, Vec<ArmStep>)> = vec![(0, Vec::new())];
+    let mut stack: Vec<Frame> = Vec::new();
+    let mut next_chain = 0u32;
+    let mut malformed = false;
+    let mut i = 0usize;
+    while i < b.len() && !malformed {
+        if b[i] != b'{' || !matches!(b.get(i + 1), Some(b'{') | Some(b'%') | Some(b'#')) {
+            i += 1;
+            continue;
+        }
+        let kind = b[i + 1];
+        let Some(e) = jinja_tag_close(b, i) else {
+            // An unterminated tag: the render copies the remainder
+            // verbatim — nothing after it can open an arm.
+            break;
+        };
+        if kind == b'%' {
+            let (word, rest) = tag_word(&text[i + 2..e]);
+            match word {
+                "if" => {
+                    stack.push(Frame::If {
+                        chain: next_chain,
+                        arm: 0,
+                        else_seen: false,
+                    });
+                    next_chain += 1;
+                }
+                "for" => {
+                    stack.push(Frame::For {
+                        chain: next_chain,
+                        arm: 0,
+                        else_seen: false,
+                    });
+                    next_chain += 1;
+                }
+                "elif" | "elseif" => match stack.last_mut() {
+                    Some(Frame::If { arm, else_seen, .. }) if !*else_seen => *arm += 1,
+                    // An `elif`/`elseif` anywhere else is malformed Jinja.
+                    _ => malformed = true,
+                },
+                "else" => match stack.last_mut() {
+                    Some(Frame::If { arm, else_seen, .. })
+                    | Some(Frame::For { arm, else_seen, .. })
+                        if !*else_seen =>
+                    {
+                        *arm += 1;
+                        *else_seen = true;
+                    }
+                    _ => malformed = true,
+                },
+                "raw" => {
+                    // `{% raw %}…{% endraw %}` — the body is inert text
+                    // (its `{…}`s are literal). Scan to the `{% endraw %}`
+                    // tag; no frame — calls inside keep the enclosing arm.
+                    let mut j = e + 2;
+                    i = loop {
+                        let Some(open) = find_subslice(b, j, b"{%") else {
+                            malformed = true;
+                            break b.len();
+                        };
+                        let Some(end) = jinja_tag_close(b, open) else {
+                            malformed = true;
+                            break b.len();
+                        };
+                        if tag_word(&text[open + 2..end]).0 == "endraw" {
+                            break end + 2;
+                        }
+                        j = end + 2;
+                    };
+                    continue;
+                }
+                "set" if !jinja_set_assigns(rest) => stack.push(Frame::Block("endset")),
+                _ => {
+                    if let Some((_, end)) = BLOCK_TAGS.iter().find(|(w, _)| *w == word) {
+                        stack.push(Frame::Block(end));
+                    } else if word.starts_with("end") {
+                        let expected = stack.last().map(|f| match f {
+                            Frame::If { .. } => "endif",
+                            Frame::For { .. } => "endfor",
+                            Frame::Block(end) => end,
+                        });
+                        match expected {
+                            Some(w) if w == word => {
+                                stack.pop();
+                            }
+                            _ => malformed = true,
+                        }
+                    }
+                    // Anything else (`do`, `include`, `import`, `print`, a
+                    // statement `{% set x = … %}`…) executes once — no frame.
+                }
+            }
+        }
+        // `{{ }}` expressions and `{# #}` comments carry no structure;
+        // `{% %}` tags record a cut whenever the arm stack changed.
+        let sig: Vec<ArmStep> = stack
+            .iter()
+            .filter_map(|f| match f {
+                Frame::If { chain, arm, .. } | Frame::For { chain, arm, .. } => Some(ArmStep {
+                    chain: *chain,
+                    arm: *arm,
+                }),
+                Frame::Block(_) => None,
+            })
+            .collect();
+        if cuts.last().is_none_or(|(_, s)| *s != sig) {
+            cuts.push((e + 2, sig));
+        }
+        i = e + 2;
+    }
+    if malformed || !stack.is_empty() {
+        // Jinja rejects the structure too — nothing is provably
+        // exclusive, so every offset reports unconditional.
+        return JinjaBranches::default();
+    }
+    JinjaBranches { cuts }
+}
+
+/// The close-pair offset of the Jinja tag opened at `b[i]` (`{{`/`{%`/`{#`)
+/// — `None` when unterminated. `{{ }}` tracks bracket depth like the
+/// render (a `}}` inside `{{ f({'x':1}) }}` doesn't close); `{% %}` and
+/// `{# #}` end at the first tag close.
+fn jinja_tag_close(b: &[u8], i: usize) -> Option<usize> {
+    let close: &[u8] = match b.get(i + 1)? {
+        b'{' => b"}}",
+        b'%' => b"%}",
+        _ => b"#}",
+    };
+    let tracked = close == b"}}";
+    let mut depth = 0usize;
+    let mut j = i + 2;
+    while j + 1 < b.len() {
+        if b[j] == close[0] && b[j + 1] == close[1] && (!tracked || depth == 0) {
+            return Some(j);
+        }
+        match b[j] {
+            b'(' | b'[' | b'{' if tracked => depth += 1,
+            b')' | b']' | b'}' if tracked => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        j += 1;
+    }
+    None
+}
+
+/// The leading word of a `{% %}` tag body — whitespace-control dashes
+/// and padding stripped (`{%- if x -%}` → `if`) — plus the remainder
+/// after the word. A body whose first token isn't an identifier yields
+/// `""`.
+fn tag_word(body: &str) -> (&str, &str) {
+    let body = body.trim_matches(|c: char| c.is_whitespace() || c == '-' || c == '+');
+    let end = body
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(body.len());
+    body.split_at(end)
+}
+
+/// Is `rest` (after `{% set %}`) the assignment form `name = expr`? The
+/// block form `{% set x %}…{% endset %}` has no `=` at bracket depth 0
+/// outside quotes.
+fn jinja_set_assigns(rest: &str) -> bool {
+    let b = rest.as_bytes();
+    let (mut depth, mut quote) = (0usize, 0u8);
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            q @ (b'\'' | b'"') if quote == 0 => quote = q,
+            _ if quote != 0 => {
+                if b[i] == b'\\' {
+                    i += 1;
+                } else if b[i] == quote {
+                    quote = 0;
+                }
+            }
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b'=' if depth == 0 => return true,
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+/// `needle`'s first offset in `hay[from..]` — the raw-tag body's
+/// `{%`-finder.
+fn find_subslice(hay: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+    hay.get(from.min(hay.len())..)?
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|p| from + p)
+}

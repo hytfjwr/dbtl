@@ -39,7 +39,7 @@ use sqlparser::ast::{
 use sqlparser::tokenizer::Span;
 
 use super::ast::{join_constraint, norm_ident, object_name_parts};
-use super::jinja::JINJA_MARK_PREFIX;
+use super::jinja::{RenderedSql, JINJA_MARK_PREFIX};
 
 /// The relation/join facts a query's FROM/JOIN clauses carry — see the
 /// module doc above. `hard_coded` is only meaningful on a
@@ -55,7 +55,7 @@ use super::jinja::JINJA_MARK_PREFIX;
 /// entry the walk declares (index = id) plus the ids a FROM-visible
 /// single-part name resolved to — the complement is the unread set.
 #[derive(Debug, Default)]
-pub(super) struct RelationScan {
+pub(super) struct RelationScan<'a> {
     /// Hand-written relation names (`sch.t` dotted), sorted.
     pub hard_coded: BTreeSet<String>,
     /// `JOIN`-arm display text with no join condition, sorted.
@@ -79,6 +79,14 @@ pub(super) struct RelationScan {
     pub cte_uses: BTreeSet<usize>,
     /// Whether `column_refs` fills — set by the positions scan only.
     collect_column_refs: bool,
+    /// The Jinja render map behind the parsed text — `None` when the
+    /// caller has none (a non-mapped walk can't read either of the two
+    /// render facts below). Traversal input, not output:
+    /// [`scan_select`] excuses `,`s a `{% elif %}`/`{% else %}` arm split
+    /// emitted (a branch union, never a written comma join), and
+    /// [`unread_ctes`] lets a `{{ }}` string literal carry a CTE read a
+    /// macro argument implies.
+    rendered: Option<&'a RenderedSql>,
     /// The CTE name→id frames visible at the current walk point, one per
     /// enclosing query's `WITH` — `find_map` from the innermost frame
     /// out resolves a reference to the CTE it binds. Traversal state,
@@ -86,23 +94,55 @@ pub(super) struct RelationScan {
     cte_frames: Vec<BTreeMap<String, usize>>,
 }
 
+impl RelationScan<'_> {
+    /// `unused_cte`'s input — `WITH` defs no FROM-visible reference
+    /// resolved to, minus names a `{{ }}` string literal carries: a
+    /// macro taking the CTE by argument
+    /// (`{{ join_customers('customers', …) }}`) can emit the join that
+    /// reads it, so the parse can't prove unread-ness. A literal folds
+    /// to lowercase like the unquoted-reference side of `record_name`'s
+    /// CTE check, so case handling matches the existing name comparison.
+    pub(super) fn unread_ctes(&self) -> impl Iterator<Item = &(String, Span)> {
+        let literals: BTreeSet<String> = self
+            .rendered
+            .map(|r| r.jinja_literals.iter().map(|s| s.to_lowercase()).collect())
+            .unwrap_or_default();
+        self.cte_defs
+            .iter()
+            .enumerate()
+            .filter(move |(id, (name, _))| !self.cte_uses.contains(id) && !literals.contains(name))
+            .map(|(_, def)| def)
+    }
+}
+
 /// Scan every statement `stmts` parsed into — models are single statements,
 /// but a multi-statement text scans each `Query` (other statement kinds
 /// aren't a model's SELECT — the resolver ignores them too).
-pub(super) fn scan_statements(stmts: &[Statement]) -> RelationScan {
-    scan_stmts(stmts, false)
+pub(super) fn scan_statements<'a>(
+    stmts: &[Statement],
+    rendered: Option<&'a RenderedSql>,
+) -> RelationScan<'a> {
+    scan_stmts(stmts, false, rendered)
 }
 
 /// [`scan_statements`] with column references collected — the lint
 /// positions pass; the facts path leaves them off (dense: one entry per
 /// identifier expression anywhere in the query).
-pub(super) fn scan_statements_positions(stmts: &[Statement]) -> RelationScan {
-    scan_stmts(stmts, true)
+pub(super) fn scan_statements_positions<'a>(
+    stmts: &[Statement],
+    rendered: Option<&'a RenderedSql>,
+) -> RelationScan<'a> {
+    scan_stmts(stmts, true, rendered)
 }
 
-fn scan_stmts(stmts: &[Statement], collect_column_refs: bool) -> RelationScan {
+fn scan_stmts<'a>(
+    stmts: &[Statement],
+    collect_column_refs: bool,
+    rendered: Option<&'a RenderedSql>,
+) -> RelationScan<'a> {
     let mut out = RelationScan {
         collect_column_refs,
+        rendered,
         ..RelationScan::default()
     };
     for s in stmts {
@@ -117,7 +157,7 @@ fn scan_stmts(stmts: &[Statement], collect_column_refs: bool) -> RelationScan {
 /// query below it (outer CTE names stay visible — the SQL standard), CTE
 /// bodies are scanned too (a CTE can read a hand-written table), and the
 /// ORDER/LIMIT/FETCH/pipe tail walks.
-fn scan_query(q: &Query, ctes: &BTreeSet<String>, out: &mut RelationScan) {
+fn scan_query(q: &Query, ctes: &BTreeSet<String>, out: &mut RelationScan<'_>) {
     // A CTE's own body sees the env's names plus the earlier ones — AND its
     // own name (a recursive CTE's self-reference is never a relation).
     // Insert BEFORE scanning the body, then the name stays visible for the
@@ -188,7 +228,7 @@ fn scan_query(q: &Query, ctes: &BTreeSet<String>, out: &mut RelationScan) {
     out.cte_frames.pop();
 }
 
-fn scan_set_expr(e: &SetExpr, scope: &BTreeSet<String>, out: &mut RelationScan) {
+fn scan_set_expr(e: &SetExpr, scope: &BTreeSet<String>, out: &mut RelationScan<'_>) {
     match e {
         SetExpr::Select(sel) => scan_select(sel, scope, out),
         SetExpr::Query(q) => scan_query(q, scope, out),
@@ -222,7 +262,7 @@ fn scan_set_expr(e: &SetExpr, scope: &BTreeSet<String>, out: &mut RelationScan) 
     }
 }
 
-fn scan_select(sel: &Select, scope: &BTreeSet<String>, out: &mut RelationScan) {
+fn scan_select(sel: &Select, scope: &BTreeSet<String>, out: &mut RelationScan<'_>) {
     for twj in &sel.from {
         scan_twj(twj, scope, out);
     }
@@ -234,11 +274,20 @@ fn scan_select(sel: &Select, scope: &BTreeSet<String>, out: &mut RelationScan) {
     // foot-gun shape the rule targets. Lateral/UNNEST factors are
     // per-row expansions, not products, same as the JOIN-arm rule.
     if sel.from.len() > 1 && sel.selection.is_none() {
-        for twj in sel.from.iter().skip(1) {
-            if !functionish_factor(&twj.relation) {
-                out.cartesian.insert(twj.relation.to_string());
-                out.cartesian_spans.push(twj.relation.span());
+        for (i, twj) in sel.from.iter().enumerate().skip(1) {
+            if functionish_factor(&twj.relation) {
+                continue;
             }
+            // A `,` a `{% elif %}`/`{% else %}` arm split emitted is the
+            // render's branch union — the arms never reach one FROM —
+            // not a written comma product. A literal `,` (or no render
+            // map at all) still counts.
+            let gap = Span::new(sel.from[i - 1].span().end, twj.span().start);
+            if out.rendered.is_some_and(|r| r.only_branch_commas(gap)) {
+                continue;
+            }
+            out.cartesian.insert(twj.relation.to_string());
+            out.cartesian_spans.push(twj.relation.span());
         }
     }
     for def in &sel.named_window {
@@ -312,7 +361,7 @@ fn scan_select(sel: &Select, scope: &BTreeSet<String>, out: &mut RelationScan) {
 
 /// Scan one `FROM`/`JOIN` item: the base relation, each join arm's relation
 /// + its (missing) condition, and any `ON`/ASOF expressions.
-fn scan_twj(twj: &TableWithJoins, scope: &BTreeSet<String>, out: &mut RelationScan) {
+fn scan_twj(twj: &TableWithJoins, scope: &BTreeSet<String>, out: &mut RelationScan<'_>) {
     scan_factor(&twj.relation, scope, out);
     for j in &twj.joins {
         scan_join(j, scope, out);
@@ -353,7 +402,7 @@ fn tautological_condition(e: &Expr) -> bool {
     }
 }
 
-fn scan_join(j: &Join, scope: &BTreeSet<String>, out: &mut RelationScan) {
+fn scan_join(j: &Join, scope: &BTreeSet<String>, out: &mut RelationScan<'_>) {
     scan_factor(&j.relation, scope, out);
     // A conditionless arm joins every row: `JoinConstraint::None` is a
     // cross product (`CROSS JOIN` spells it intentionally), and an `ON`
@@ -392,7 +441,7 @@ fn scan_join(j: &Join, scope: &BTreeSet<String>, out: &mut RelationScan) {
 
 /// Scan one table factor — the only place a hand-written relation name can
 /// appear — and every nested factor/query it carries.
-fn scan_factor(f: &TableFactor, scope: &BTreeSet<String>, out: &mut RelationScan) {
+fn scan_factor(f: &TableFactor, scope: &BTreeSet<String>, out: &mut RelationScan<'_>) {
     match f {
         TableFactor::Table {
             name,
@@ -519,7 +568,7 @@ fn scan_factor(f: &TableFactor, scope: &BTreeSet<String>, out: &mut RelationScan
 }
 
 /// `PIVOT … IN (…)` — a literal list or a subquery carrying relations.
-fn scan_pivot_source(vs: &PivotValueSource, scope: &BTreeSet<String>, out: &mut RelationScan) {
+fn scan_pivot_source(vs: &PivotValueSource, scope: &BTreeSet<String>, out: &mut RelationScan<'_>) {
     match vs {
         PivotValueSource::Any(order_by) => {
             for ob in order_by {
@@ -538,7 +587,11 @@ fn scan_pivot_source(vs: &PivotValueSource, scope: &BTreeSet<String>, out: &mut 
 /// The `|>` pipe tail — joins carry the same conditionless check as a
 /// `FROM` join arm; `|> UNION/INTERSECT/EXCEPT` queries and expression
 /// arguments all walk.
-fn scan_pipe(po: &sqlparser::ast::PipeOperator, scope: &BTreeSet<String>, out: &mut RelationScan) {
+fn scan_pipe(
+    po: &sqlparser::ast::PipeOperator,
+    scope: &BTreeSet<String>,
+    out: &mut RelationScan<'_>,
+) {
     use sqlparser::ast::PipeOperator as P;
     match po {
         P::Where { expr } => scan_expr(expr, scope, out),
@@ -610,7 +663,7 @@ fn scan_pipe(po: &sqlparser::ast::PipeOperator, scope: &BTreeSet<String>, out: &
 /// hand-written relation — inside any expression position. Walk every
 /// shape `expr_refs` walks so a NEW sqlparser variant doesn't silently
 //  under-scan.
-fn scan_expr(e: &Expr, scope: &BTreeSet<String>, out: &mut RelationScan) {
+fn scan_expr(e: &Expr, scope: &BTreeSet<String>, out: &mut RelationScan<'_>) {
     match e {
         Expr::Subquery(q) | Expr::Exists { subquery: q, .. } => scan_query(q, scope, out),
         Expr::In { expr, target, .. } => {
@@ -832,7 +885,7 @@ fn scan_expr(e: &Expr, scope: &BTreeSet<String>, out: &mut RelationScan) {
     }
 }
 
-fn scan_subscript(sub: &Subscript, scope: &BTreeSet<String>, out: &mut RelationScan) {
+fn scan_subscript(sub: &Subscript, scope: &BTreeSet<String>, out: &mut RelationScan<'_>) {
     match sub {
         Subscript::Index { index } => scan_expr(index, scope, out),
         Subscript::Slice {
@@ -850,7 +903,7 @@ fn scan_subscript(sub: &Subscript, scope: &BTreeSet<String>, out: &mut RelationS
 /// A `Function` call's walkable subquery positions — the shape
 /// `function_refs` walks (params + args + clauses + WITHIN GROUP + FILTER +
 /// window spec).
-fn scan_function(f: &Function, scope: &BTreeSet<String>, out: &mut RelationScan) {
+fn scan_function(f: &Function, scope: &BTreeSet<String>, out: &mut RelationScan<'_>) {
     for args in [&f.parameters, &f.args] {
         match args {
             FunctionArguments::List(l) => {
@@ -889,7 +942,7 @@ fn scan_function(f: &Function, scope: &BTreeSet<String>, out: &mut RelationScan)
     }
 }
 
-fn scan_window_spec(spec: &WindowSpec, scope: &BTreeSet<String>, out: &mut RelationScan) {
+fn scan_window_spec(spec: &WindowSpec, scope: &BTreeSet<String>, out: &mut RelationScan<'_>) {
     for e in &spec.partition_by {
         scan_expr(e, scope, out);
     }
@@ -898,7 +951,7 @@ fn scan_window_spec(spec: &WindowSpec, scope: &BTreeSet<String>, out: &mut Relat
     }
 }
 
-fn scan_function_arg(a: &FunctionArg, scope: &BTreeSet<String>, out: &mut RelationScan) {
+fn scan_function_arg(a: &FunctionArg, scope: &BTreeSet<String>, out: &mut RelationScan<'_>) {
     let e = match a {
         FunctionArg::Named { arg, .. }
         | FunctionArg::ExprNamed { arg, .. }
@@ -920,7 +973,7 @@ fn scan_function_arg(a: &FunctionArg, scope: &BTreeSet<String>, out: &mut Relati
 /// dependency — `db.information_schema.t` and `information_schema.t`
 /// alike). `span` is the recorded name's own AST span, kept in
 /// `hard_coded_spans` per occurrence.
-fn record_name(span: Span, parts: &[String], scope: &BTreeSet<String>, out: &mut RelationScan) {
+fn record_name(span: Span, parts: &[String], scope: &BTreeSet<String>, out: &mut RelationScan<'_>) {
     // A single-part name resolves against the visible CTE frames
     // innermost-first — a hit counts as that CTE's read (`unused_cte`),
     // independent of whether the same name is also a written relation.
