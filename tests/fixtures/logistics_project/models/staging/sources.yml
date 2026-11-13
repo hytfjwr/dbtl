@@ -1,0 +1,89 @@
+version: 2
+
+# Source `config:` coverage: dbt resolves a `config:` block as one more
+# precedence level ABOVE the same resource's top-level properties
+# (tree < source props < source config < table props < table config),
+# merges `meta` per key and `freshness` per threshold across all levels,
+# unions `tags` (config-channel tags first — source then table — then the
+# property-channel tags in the same order), and parks a table whose
+# effective `config.enabled` resolves false under `disabled`.
+sources:
+  - name: carrier_feed
+    description: "TMS feed landed by the nightly extract"
+    database: raw_tms
+    meta: {owner: logistics_it, tier: bronze}
+    tags: [nightly]
+    loaded_at_field: feed_ts
+    freshness:
+      warn_after: {count: 12, period: hour}
+    config:
+      meta: {tier: silver}
+      tags: [feed_cfg]
+      loaded_at_field: feed_loaded_at
+      # warn_after competes with the source's top-level `freshness.warn_after`
+      # — pinned against real dbt (config wins for freshness, unlike
+      # loaded_at_field where the top-level property wins).
+      freshness:
+        warn_after: {count: 36, period: hour}
+        error_after: {count: 24, period: hour}
+    tables:
+      # `lane_updates` is consumed by stg_lane_updates; its table-level
+      # `config:` beats both its own top-level keys and every source level.
+      - name: lane_updates
+        description: "Lane-level rate updates"
+        tags: [lane_tbl]
+        meta: {grain: lane}
+        loaded_at_field: lane_prop_ts
+        freshness:
+          warn_after: {count: 1, period: hour}
+          error_after: {count: 2, period: hour}
+        config:
+          tags: [lane_cfg]
+          meta: {tier: gold}
+          freshness:
+            warn_after: {count: 9, period: hour}
+            error_after: {count: 3, period: hour}
+      # `config.enabled: false` parks the table — like `+enabled: false` on
+      # a model, it never enters the graph (nor do its tests).
+      - name: retired_rates
+        description: "Superseded rate table"
+        config: {enabled: false}
+        columns:
+          - name: rate_id
+            tests:
+              - unique
+      # A table's top-level `enabled:` is silently ignored by dbt — the
+      # table stays in the graph. (Source-level `enabled:` is a dbt parse
+      # error and deliberately not exercised.)
+      - name: manual_overrides
+        enabled: false
+        description: "Hand-entered overrides"
+        # `config.loaded_at_field` outranks every SOURCE level — the wire
+        # value is `mo_cfg_ts` — but would still lose to the table's own
+        # top-level `loaded_at_field:` (props beat config within a level
+        # for this field, verified).
+        config: {loaded_at_field: mo_cfg_ts}
+      # `loaded_at_field` resolves PROPERTY-first within each level — the
+      # table's top-level value beats its own `config.loaded_at_field`
+      # (verified against real dbt). A table-level `freshness: null` clears
+      # the inherited value entirely — the walk stops at the explicit null,
+      # so the tree `+freshness` never lands here either.
+      - name: cleared_field
+        loaded_at_field: cleared_prop_ts
+        config: {loaded_at_field: cleared_cfg_ts}
+        freshness: null
+        description: "Append-only feed"
+  # A source-level `config.enabled: false` disables every table that does
+  # not re-enable itself — `revived_rates` does, so it stays.
+  # `database:` is declared so the value is deterministic: left undeclared
+  # dbt fills it from the PROFILE (the same profile-derived difference
+  # `NodeDetail.database` documents for models).
+  - name: archive
+    database: raw_archive
+    config: {enabled: false}
+    tables:
+      - name: legacy_rates
+        description: "Rates from the retired system"
+      - name: revived_rates
+        description: "Still-loaded slice of the archive"
+        config: {enabled: true}

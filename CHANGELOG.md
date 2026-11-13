@@ -43,6 +43,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `unknown_column_reference` no longer misreads date-part keywords in
   date functions, same-SELECT aliases in `WHERE`/`GROUP BY`/`HAVING`/
   `QUALIFY`/`ORDER BY`, or an `UNNEST`'s table alias as upstream columns.
+- Source mode now reads `config:` blocks on sources and source tables —
+  `enabled` (source-level disables every table; a table's `enabled: true`
+  re-enables it), `freshness`/`meta` in dbt's per-level config-over-
+  property precedence (table > source > `sources:` tree), `loaded_at_
+  field` property-over-config within each level (explicit `null` clears),
+  and union-accumulated `tags` — and honors `enabled: false` on generic
+  tests under either spelling, so disabled source tables and tests no
+  longer appear in the graph or inflate lint/test counts.
+- Source mode also accepts the `config({...})` positional-dict spelling of
+  `config()` kwargs (same ordered last-wins/merge semantics) and the
+  deprecated `data-paths` alias for `seed-paths` (declaring both warns).
 
 ## [0.6.4] - 2026-11-13
 

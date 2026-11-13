@@ -471,27 +471,63 @@ fn config_unique_key_keeps_the_declared_shape() {
     assert_eq!(config_unique_key("select 1"), None);
 }
 
+/// A `SchemaSourceTable`/`SchemaSource` with just the freshness fields
+/// populated — the [`effective_freshness`] inputs.
+fn freshness_table(
+    freshness: Option<Option<RawFreshness>>,
+    config_freshness: Option<Option<RawFreshness>>,
+) -> SchemaSourceTable {
+    SchemaSourceTable {
+        freshness,
+        config: SchemaSourceConfig {
+            freshness: config_freshness,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn freshness_source(
+    freshness: Option<Option<RawFreshness>>,
+    config_freshness: Option<Option<RawFreshness>>,
+) -> SchemaSource {
+    SchemaSource {
+        freshness,
+        config: SchemaSourceConfig {
+            freshness: config_freshness,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
 #[test]
 fn effective_freshness_merges_per_threshold() {
     let t = |count: i64| RawFreshnessThreshold {
         count: Some(count),
         period: Some("hour".to_string()),
     };
-    let src = Some(Some(RawFreshness {
-        warn_after: Some(t(12)),
-        error_after: Some(t(24)),
-    }));
+    let src = freshness_source(
+        Some(Some(RawFreshness {
+            warn_after: Some(t(12)),
+            error_after: Some(t(24)),
+        })),
+        None,
+    );
     // A table declaring only `error_after` keeps the inherited warn_after —
     // the per-threshold merge real dbt does (verified on 1.12.6).
-    let tbl = Some(Some(RawFreshness {
-        warn_after: None,
-        error_after: Some(t(6)),
-    }));
+    let tbl = freshness_table(
+        Some(Some(RawFreshness {
+            warn_after: None,
+            error_after: Some(t(6)),
+        })),
+        None,
+    );
     let out = effective_freshness(&tbl, &src, &None).expect("merged");
     assert_eq!(out.warn_after.and_then(|x| x.count), Some(12));
     assert_eq!(out.error_after.and_then(|x| x.count), Some(6));
     // An absent table level inherits the source wholesale.
-    let out = effective_freshness(&None, &src, &None).expect("inherited");
+    let out = effective_freshness(&freshness_table(None, None), &src, &None).expect("inherited");
     assert_eq!(out.warn_after.and_then(|x| x.count), Some(12));
     assert_eq!(out.error_after.and_then(|x| x.count), Some(24));
     // `freshness: null` on the table clears everything — the walk STOPS at
@@ -500,17 +536,71 @@ fn effective_freshness_merges_per_threshold() {
         warn_after: Some(t(48)),
         error_after: None,
     });
-    assert!(effective_freshness(&Some(None), &src, &tree).is_none());
+    assert!(effective_freshness(&freshness_table(Some(None), None), &src, &tree).is_none());
     // But a source-level `freshness: null` only stops the levels BELOW the
     // table: the table's own declared thresholds still count.
-    let out = effective_freshness(&tbl, &Some(None), &tree).expect("table wins");
+    let out =
+        effective_freshness(&tbl, &freshness_source(Some(None), None), &tree).expect("table wins");
     assert_eq!(out.error_after.and_then(|x| x.count), Some(6));
     assert!(out.warn_after.is_none(), "source null stops its warn");
     // The tree is the lowest level: absent schema levels pass through to it.
-    let out = effective_freshness(&None, &None, &tree).expect("tree lands");
+    let out = effective_freshness(
+        &freshness_table(None, None),
+        &freshness_source(None, None),
+        &tree,
+    )
+    .expect("tree lands");
     assert_eq!(out.warn_after.and_then(|x| x.count), Some(48));
     // Nothing declared anywhere → no freshness object at all.
-    assert!(effective_freshness(&None, &None, &None).is_none());
+    assert!(effective_freshness(
+        &freshness_table(None, None),
+        &freshness_source(None, None),
+        &None
+    )
+    .is_none());
+}
+
+#[test]
+fn config_blocks_join_the_freshness_chain_in_dbt_order() {
+    let t = |count: i64| RawFreshnessThreshold {
+        count: Some(count),
+        period: Some("hour".to_string()),
+    };
+    let f = |warn: Option<i64>, error: Option<i64>| {
+        Some(Some(RawFreshness {
+            warn_after: warn.map(t),
+            error_after: error.map(t),
+        }))
+    };
+    // Precedence high → low: table config > table props > source config >
+    // source props > `+freshness` (verified: a table's top-level
+    // `freshness:` beats the source's `config.freshness`).
+    let src = freshness_source(f(Some(1), Some(1)), f(Some(2), Some(2)));
+    let tbl = freshness_table(f(Some(3), Some(3)), f(Some(4), Some(4)));
+    let tree = Some(RawFreshness {
+        warn_after: Some(t(5)),
+        error_after: Some(t(5)),
+    });
+    let out = effective_freshness(&tbl, &src, &tree).expect("merged");
+    assert_eq!(out.warn_after.and_then(|x| x.count), Some(4));
+    assert_eq!(out.error_after.and_then(|x| x.count), Some(4));
+    // Drop the table config: the table's top-level props win next.
+    let tbl = freshness_table(f(Some(3), Some(3)), None);
+    let out = effective_freshness(&tbl, &src, &tree).expect("merged");
+    assert_eq!(out.error_after.and_then(|x| x.count), Some(3));
+    // Then the source config, then the source props.
+    let out = effective_freshness(&freshness_table(None, None), &src, &tree).expect("merged");
+    assert_eq!(out.error_after.and_then(|x| x.count), Some(2));
+    let src = freshness_source(f(Some(1), Some(1)), None);
+    let out = effective_freshness(&freshness_table(None, None), &src, &tree).expect("merged");
+    assert_eq!(out.error_after.and_then(|x| x.count), Some(1));
+    // A source-config `freshness: null` stops the walk below it — but the
+    // table's declared level still counts.
+    let src = freshness_source(f(Some(1), Some(1)), Some(None));
+    let tbl = freshness_table(f(None, Some(3)), None); // declares error only
+    let out = effective_freshness(&tbl, &src, &tree).expect("table wins");
+    assert_eq!(out.error_after.and_then(|x| x.count), Some(3));
+    assert!(out.warn_after.is_none(), "the null stops source-level warn");
 }
 
 #[test]
@@ -1128,4 +1218,340 @@ fn jinja_branches_malformed_structure_is_unconditional() {
     let sql = "{% raw %}{% if %}x{% endif %}{% endraw %}y";
     assert_eq!(path_at(sql, sql.find('x').unwrap()), vec![]);
     assert_eq!(path_at(sql, sql.find('y').unwrap()), vec![]);
+}
+
+// ---- config({...}) positional-dict spelling ---------------------------------
+
+#[test]
+fn config_dict_arg_reads_keys_like_kwargs() {
+    let pat = Patterns::new();
+    let vars = no_vars();
+    let mut w = Vec::new();
+    // The dict spelling is the same call's kwargs (verified: real dbt
+    // materializes `config({"materialized": "table"})` identically to the
+    // kwarg form).
+    assert_eq!(
+        pat.materialized(r#"{{ config({"materialized": "table"}) }}"#),
+        Some("table".to_string())
+    );
+    // Single-quoted keys and whitespace work the same.
+    assert_eq!(
+        pat.materialized("{{ config({ 'materialized' : 'ephemeral' }) }}"),
+        Some("ephemeral".to_string())
+    );
+    // `enabled`/`alias`/`unique_key`/`meta` and the governance readers all
+    // route through the same lookup.
+    assert!(pat.disabled(
+        r#"{{ config({"enabled": false}) }}"#,
+        &vars,
+        &mut w,
+        "m.sql"
+    ));
+    assert!(w.is_empty(), "{w:?}");
+    assert_eq!(
+        config_alias(r#"{{ config({"alias": "renamed"}) }}"#),
+        Some("renamed".to_string())
+    );
+    assert_eq!(
+        config_unique_key(r#"{{ config({"unique_key": ["a", "b"]}) }}"#),
+        Some(serde_json::json!(["a", "b"]))
+    );
+    let m = config_meta(r#"{{ config({"meta": {"owner": "alice"}}) }}"#).unwrap();
+    assert_eq!(m["owner"], serde_json::json!("alice"));
+    let gov = config_governance(r#"{{ config({"group": "g1", "access": "private"}) }}"#);
+    assert_eq!(gov.group.as_deref(), Some("g1"));
+    assert_eq!(gov.access.as_deref(), Some("private"));
+}
+
+#[test]
+fn config_dict_arg_joins_the_ordered_call_sequence() {
+    let pat = Patterns::new();
+    let vars = no_vars();
+    let mut w = Vec::new();
+    // The dict call is one step of the same last-wins chain the kwarg calls
+    // follow (verified: real dbt applies them in order).
+    assert_eq!(
+        pat.materialized(
+            "{{ config(materialized='view') }}\n{{ config({\"materialized\": \"table\"}) }}",
+        ),
+        Some("table".to_string())
+    );
+    assert_eq!(
+        pat.materialized(
+            "{{ config({\"materialized\": \"table\"}) }}\n{{ config(materialized='view') }}",
+        ),
+        Some("view".to_string())
+    );
+    assert!(pat.disabled(
+        "{{ config(enabled=true) }}\n{{ config({\"enabled\": false}) }}",
+        &vars,
+        &mut w,
+        "m.sql"
+    ));
+    // A later LITERAL entry overrides; an unresolvable VALUE inside a dict
+    // can't clear an earlier literal — the same stance unresolvable kwargs
+    // take. Literal keys around it still land.
+    assert_eq!(
+        pat.materialized(
+            "{{ config(materialized='view') }}\n{{ config({\"materialized\": var('m'), \"group\": \"g\"}) }}",
+        ),
+        Some("view".to_string())
+    );
+    let gov = config_governance("{{ config({\"materialized\": var('m'), \"group\": \"g\"}) }}");
+    assert_eq!(gov.group.as_deref(), Some("g"));
+    // Meta entries merge per key across the dict and kwarg spellings.
+    let m =
+        config_meta("{{ config(meta={'a': 1}) }}\n{{ config({\"meta\": {\"b\": 2}}) }}").unwrap();
+    assert_eq!(m["a"], serde_json::json!(1));
+    assert_eq!(m["b"], serde_json::json!(2));
+}
+
+#[test]
+fn config_dict_arg_shape_edges() {
+    let pat = Patterns::new();
+    // Only the FIRST positional arg is the dict spelling — a dict bound to
+    // a kwarg is a value, not a config dict.
+    assert_eq!(
+        pat.materialized("{{ config(meta={'materialized': 'table'}) }}"),
+        None,
+        "the kwarg's dict value is not the config dict"
+    );
+    // A non-string key can't name a config; a duplicate key yields the
+    // last entry (the Python-dict rule); non-literal keys are skipped.
+    assert_eq!(
+        pat.materialized("{{ config({1: 'x', 'materialized': 'table'}) }}"),
+        Some("table".to_string())
+    );
+    assert_eq!(
+        pat.materialized("{{ config({'materialized': 'view', 'materialized': 'table'}) }}",),
+        Some("table".to_string())
+    );
+    // A bare `config()` and a first arg that isn't a dict contribute nothing.
+    assert_eq!(pat.materialized("{{ config() }}"), None);
+    assert_eq!(pat.materialized("{{ config('materialized') }}"), None);
+}
+
+// ---- source/table `config:` blocks ------------------------------------------
+
+/// A scratch project with `config:` blocks at every level of a source —
+/// the shapes real dbt resolves into the wire source.
+fn write_source_config_project(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir.join("models")).unwrap();
+    std::fs::write(
+        dir.join("dbt_project.yml"),
+        "name: p\nmodel-paths: [models]\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("models/used.sql"), "select 1\n").unwrap();
+    std::fs::write(
+        dir.join("models/schema.yml"),
+        r#"version: 2
+sources:
+  - name: raw
+    meta: {src_meta: prop, share: src_prop}
+    loaded_at_field: src_prop_field
+    freshness: {warn_after: {count: 1, period: hour}, error_after: {count: 2, period: hour}}
+    tags: [src_prop_tag]
+    config:
+      meta: {src_meta: cfg, share: src_cfg}
+      loaded_at_field: src_cfg_field
+      freshness: {error_after: {count: 3, period: hour}}
+      tags: [src_cfg_tag]
+    tables:
+      - name: plain
+      - name: overridden
+        meta: {tbl_meta: prop, share: tbl_prop}
+        loaded_at_field: tbl_prop_field
+        freshness: {warn_after: {count: 4, period: hour}}
+        tags: [tbl_prop_tag]
+        config:
+          meta: {share: tbl_cfg}
+          loaded_at_field: tbl_cfg_field
+          freshness: {error_after: {count: 5, period: hour}}
+          tags: [tbl_cfg_tag]
+      - name: dropped
+        config: {enabled: false}
+      - name: top_enabled_ignored
+        enabled: false
+  - name: disabled_src
+    config: {enabled: false}
+    tables:
+      - name: under_disabled
+      - name: re_enabled
+        config: {enabled: true}
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn source_config_blocks_merge_in_dbt_order() {
+    let dir = tempfile::tempdir().unwrap();
+    write_source_config_project(dir.path());
+    let m = manifest_from_source(dir.path()).unwrap();
+    let src = |t: &str| {
+        m.sources
+            .get(&format!("source.p.raw.{t}"))
+            .unwrap_or_else(|| panic!("source.p.raw.{t} exists"))
+    };
+    // `plain`: everything inherits from the source levels — `meta`/
+    // `freshness` resolve config-first per level, but `loaded_at_field`
+    // resolves property-first (verified against real dbt).
+    let plain = src("plain");
+    assert_eq!(plain.loaded_at_field.as_deref(), Some("src_prop_field"));
+    let fr = plain.freshness.as_ref().expect("freshness");
+    assert_eq!(fr.warn_after.as_ref().and_then(|t| t.count), Some(1));
+    assert_eq!(fr.error_after.as_ref().and_then(|t| t.count), Some(3));
+    assert_eq!(plain.meta["share"], serde_json::json!("src_cfg"));
+    assert_eq!(plain.meta["src_meta"], serde_json::json!("cfg"));
+    assert_eq!(plain.tags, vec!["src_cfg_tag", "src_prop_tag"]);
+    // `overridden`: for `meta`/`freshness` the table's config wins
+    // outright and its top-level props still beat the source's config —
+    // the full chain order. For `loaded_at_field` the table's own
+    // top-level property is the highest rung.
+    let over = src("overridden");
+    assert_eq!(over.loaded_at_field.as_deref(), Some("tbl_prop_field"));
+    let fr = over.freshness.as_ref().expect("freshness");
+    assert_eq!(fr.warn_after.as_ref().and_then(|t| t.count), Some(4));
+    assert_eq!(fr.error_after.as_ref().and_then(|t| t.count), Some(5));
+    assert_eq!(over.meta["share"], serde_json::json!("tbl_cfg"));
+    assert_eq!(over.meta["tbl_meta"], serde_json::json!("prop"));
+    assert_eq!(over.meta["src_meta"], serde_json::json!("cfg"));
+    // Wire order: config channel (src→tbl) then property channel
+    // (tbl→src — the resource's own tags precede the inherited source's).
+    assert_eq!(
+        over.tags,
+        vec!["src_cfg_tag", "tbl_cfg_tag", "tbl_prop_tag", "src_prop_tag"]
+    );
+}
+
+#[test]
+fn source_config_enabled_parks_tables_like_dbt_disabled() {
+    let dir = tempfile::tempdir().unwrap();
+    write_source_config_project(dir.path());
+    let m = manifest_from_source(dir.path()).unwrap();
+    // `config: {enabled: false}` on the table drops it; on the source it
+    // drops every table that doesn't re-enable itself.
+    for uid in [
+        "source.p.raw.dropped",
+        "source.p.disabled_src.under_disabled",
+    ] {
+        assert!(!m.sources.contains_key(uid), "{uid} must be parked");
+    }
+    // A table's `config.enabled: true` re-enables under a disabled source.
+    assert!(
+        m.sources.contains_key("source.p.disabled_src.re_enabled"),
+        "table config.enabled: true wins over the source's false"
+    );
+    // A table's top-level `enabled:` is ignored by dbt — the table stays.
+    assert!(
+        m.sources.contains_key("source.p.raw.top_enabled_ignored"),
+        "top-level enabled: is not a source-table property"
+    );
+}
+
+#[test]
+fn disabled_generic_tests_are_never_synthesized() {
+    let dir = tempfile::tempdir().unwrap();
+    write_source_config_project(dir.path());
+    std::fs::write(
+        dir.path().join("models/more.yml"),
+        r#"version: 2
+models:
+  - name: used
+    columns:
+      - name: id
+        tests:
+          - unique
+          - unique: {config: {enabled: false}}
+          - not_null: {enabled: false}
+          - not_null
+          - not_null: {config: {severity: warn}, enabled: true, where: "id > 0"}
+"#,
+    )
+    .unwrap();
+    let m = manifest_from_source(dir.path()).unwrap();
+    // One enabled unique + one enabled not_null synthesize; the two
+    // `enabled: false` spellings park like dbt's `disabled`.
+    let mut kinds: Vec<&str> = m
+        .nodes
+        .keys()
+        .filter(|k| k.starts_with("test."))
+        .map(|k| {
+            m.nodes[k]
+                .test_metadata
+                .as_ref()
+                .and_then(|t| t.name.as_deref())
+                .unwrap_or("?")
+        })
+        .collect();
+    kinds.sort();
+    assert_eq!(kinds, ["not_null", "not_null", "unique"], "{kinds:?}");
+    // An enabled test's `config:`/`enabled:` keys never leak into kwargs —
+    // the real manifest records them under `config`, not test args. The
+    // map form proves the strip is real (a bare test has no keys to strip).
+    let t = m
+        .nodes
+        .values()
+        .find(|n| {
+            n.test_metadata.as_ref().and_then(|t| t.name.as_deref()) == Some("not_null")
+                && n.test_metadata
+                    .as_ref()
+                    .and_then(|t| t.kwargs.as_ref())
+                    .is_some_and(|k| !k.is_empty())
+        })
+        .unwrap();
+    let kwargs = t.test_metadata.as_ref().unwrap().kwargs.as_ref().unwrap();
+    assert!(!kwargs.contains_key("config") && !kwargs.contains_key("enabled"));
+    assert_eq!(kwargs.len(), 1, "only the real arg survives: {kwargs:?}");
+    assert_eq!(kwargs["where"], serde_json::json!("id > 0"));
+}
+
+// ---- data-paths (the pre-1.0 seed-paths alias) -------------------------------
+
+#[test]
+fn data_paths_alias_feeds_seed_discovery() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("data")).unwrap();
+    std::fs::write(
+        dir.path().join("dbt_project.yml"),
+        "name: p\ndata-paths: [data]\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("data/grains.csv"), "id\n1\n").unwrap();
+    let m = manifest_from_source(dir.path()).unwrap();
+    assert!(
+        m.nodes.contains_key("seed.p.grains"),
+        "the data-paths alias must locate the seed"
+    );
+    // The default `seeds/` dir does NOT kick in when data-paths redirects:
+    // a stray csv under seeds/ is outside the configured resource paths.
+    std::fs::create_dir_all(dir.path().join("seeds")).unwrap();
+    std::fs::write(dir.path().join("seeds/stray.csv"), "id\n1\n").unwrap();
+    let m = manifest_from_source(dir.path()).unwrap();
+    assert!(!m.nodes.contains_key("seed.p.stray"));
+}
+
+#[test]
+fn data_paths_and_seed_paths_both_declared_warns_and_prefers_seed_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("seeds")).unwrap();
+    std::fs::create_dir_all(dir.path().join("data")).unwrap();
+    std::fs::write(
+        dir.path().join("dbt_project.yml"),
+        "name: p\nseed-paths: [seeds]\ndata-paths: [data]\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("seeds/a.csv"), "id\n1\n").unwrap();
+    std::fs::write(dir.path().join("data/b.csv"), "id\n1\n").unwrap();
+    let (m, w) = manifest_from_source_with_warnings(dir.path()).unwrap();
+    // Declaring both is a dbt error — degraded to a warning here, with
+    // `seed-paths` winning.
+    assert!(
+        w.iter()
+            .any(|s| s.contains("data-paths") && s.contains("seed-paths")),
+        "{w:?}"
+    );
+    assert!(m.nodes.contains_key("seed.p.a"));
+    assert!(!m.nodes.contains_key("seed.p.b"));
 }
