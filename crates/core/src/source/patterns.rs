@@ -1125,6 +1125,13 @@ pub fn jinja_branches(text: &str) -> JinjaBranches {
 /// — `None` when unterminated. `{{ }}` tracks bracket depth like the
 /// render (a `}}` inside `{{ f({'x':1}) }}` doesn't close); `{% %}` and
 /// `{# #}` end at the first tag close.
+///
+/// Approximation (safe direction): `'…'`/`"…"` strings inside the tag
+/// body are not skipped, so a `%}`/`}}` inside one closes early —
+/// `{% if x == 'a%}' %}` reads as a closed `{% if %}` plus tail text.
+/// The arm index then goes malformed → every offset reports
+/// unconditional, and the collapse render keeps more text than one arm —
+/// both directions only ever under-suppress.
 pub(crate) fn jinja_tag_close(b: &[u8], i: usize) -> Option<usize> {
     let close: &[u8] = match b.get(i + 1)? {
         b'{' => b"}}",
