@@ -51,7 +51,7 @@ pub(super) fn warehouse_type_drift(
                 vec![],
                 format!(
                     "{} declares {} disagreeing with the warehouse: {}",
-                    n.name,
+                    display_name(dag, uid),
                     pluralize(drifted.len(), "column type"),
                     drifted.join(", ")
                 ),
@@ -91,7 +91,7 @@ pub(super) fn columns_missing_in_warehouse(
                 vec![],
                 format!(
                     "{} declares {} missing in the warehouse: {}",
-                    n.name,
+                    display_name(dag, uid),
                     pluralize(missing.len(), "column"),
                     missing.join(", ")
                 ),
@@ -137,7 +137,7 @@ pub(super) fn undeclared_warehouse_columns(
                 vec![],
                 format!(
                     "{} has {} undeclared warehouse {}: {}",
-                    n.name,
+                    display_name(dag, uid),
                     undeclared.len(),
                     pluralize(undeclared.len(), "column"),
                     undeclared.join(", ")

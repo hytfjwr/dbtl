@@ -312,13 +312,14 @@ fn layout_impl(
         match density {
             Density::Comfortable => {
                 let tests = tests_label_of(node);
+                let label = label_of(node);
                 draw_box(
                     &mut grid,
                     g,
                     mode,
                     rect,
                     &BoxBody {
-                        label: label_of(node),
+                        label: &label,
                         tag: tag_of(node),
                         tests: tests.as_deref(),
                         cols: col_rows(&node.unique_id),
@@ -327,7 +328,7 @@ fn layout_impl(
                     &mut col_cells,
                 );
             }
-            Density::Compact => draw_compact_box(&mut grid, g, rect, label_of(node), emph),
+            Density::Compact => draw_compact_box(&mut grid, g, rect, &label_of(node), emph),
         }
     }
 

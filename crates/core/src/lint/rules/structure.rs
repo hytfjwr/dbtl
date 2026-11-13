@@ -32,7 +32,7 @@ pub(super) fn naming_conventions(
             Vec::new(),
             format!(
                 "{layer} model {} doesn't match {}: {}",
-                n.name,
+                display_name(dag, uid),
                 pluralize(prefixes.len(), "prefix"),
                 prefixes.join(", ")
             ),
@@ -72,7 +72,7 @@ pub(super) fn model_directories(
             Vec::new(),
             format!(
                 "{} is named like a '{prefix_layer}' model but lives in the '{dir_layer}' directory",
-                n.name
+                display_name(dag, uid)
             ),
         ));
     }

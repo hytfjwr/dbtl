@@ -94,8 +94,15 @@ impl App {
             }
             *by_rt.entry(n.resource_type.clone()).or_default() += 1;
             let degree = n.direct_up + n.direct_down;
-            hubs.push((uid.clone(), n.name.clone(), degree));
-            transitive.push((uid.clone(), n.name.clone(), self.dag.downstream(uid).len()));
+            // `list_name` — a versioned model counts and NAMES per version
+            // (`fct_orders.v1`), never collapsing same-name versions into
+            // one indistinguishable row.
+            hubs.push((uid.clone(), crate::list_name(uid, &n.name), degree));
+            transitive.push((
+                uid.clone(),
+                crate::list_name(uid, &n.name),
+                self.dag.downstream(uid).len(),
+            ));
             if n.resource_type == "model" {
                 let mat = n.materialized.clone().unwrap_or_else(|| "(none)".into());
                 *by_mat.entry(mat).or_default() += 1;
@@ -103,7 +110,7 @@ impl App {
                     zero_down += 1;
                 }
                 if n.direct_up == 0 && n.direct_down == 0 {
-                    orphans.push(n.name.clone());
+                    orphans.push(crate::list_name(uid, &n.name));
                 }
                 let has_desc = self
                     .dag
@@ -135,8 +142,14 @@ impl App {
         let mut layer_violations: Vec<(String, String)> = crate::layer_violation_edges(&self.dag)
             .into_iter()
             .map(|(p, c)| {
-                let parent_name = self.dag.get(&p).map_or(p, |n| n.name.clone());
-                let child_name = self.dag.get(&c).map_or(c, |n| n.name.clone());
+                let parent_name = self
+                    .dag
+                    .get(&p)
+                    .map_or(p, |n| crate::list_name(&n.unique_id, &n.name));
+                let child_name = self
+                    .dag
+                    .get(&c)
+                    .map_or(c, |n| crate::list_name(&n.unique_id, &n.name));
                 (parent_name, child_name)
             })
             .collect();
@@ -157,9 +170,10 @@ impl App {
                     .filter(|f| f.rule == *rule)
                     .map(|f| {
                         severity = Some(f.severity);
-                        self.dag
-                            .get(&f.node_uid)
-                            .map_or_else(|| f.node_uid.clone(), |n| n.name.clone())
+                        self.dag.get(&f.node_uid).map_or_else(
+                            || f.node_uid.clone(),
+                            |n| crate::list_name(&f.node_uid, &n.name),
+                        )
                     })
                     .collect();
                 names.sort();
@@ -429,7 +443,7 @@ pub(super) fn weighted_chain(dag: &Dag, weight: impl Fn(&str) -> f64) -> (Vec<St
         }
         path.push(
             dag.get(uid)
-                .map_or_else(|| uid.to_string(), |n| n.name.clone()),
+                .map_or_else(|| uid.to_string(), |n| crate::list_name(uid, &n.name)),
         );
         cur = memo[uid].1;
     }

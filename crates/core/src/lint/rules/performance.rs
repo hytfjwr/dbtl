@@ -98,7 +98,7 @@ pub(super) fn chained_views(
             chain.clone(),
             format!(
                 "{} ends a chain of {len} consecutive {}: {}",
-                n.name,
+                display_name(dag, uid),
                 pluralize(len, "view/ephemeral model"),
                 name_list(&display_names(dag, &chain)),
             ),
@@ -140,7 +140,7 @@ pub(super) fn exposure_parents_materializations(
             parents.clone(),
             format!(
                 "exposure {} directly depends on source or view/ephemeral {}: {}",
-                n.name,
+                display_name(dag, uid),
                 pluralize(parents.len(), "parent"),
                 name_list(&display_names(dag, &parents)),
             ),

@@ -151,9 +151,12 @@ impl App {
         }
     }
 
-    /// The selected node's display name, if any.
+    /// The selected node's display name, if any (`list_name` — a
+    /// versioned model's `name.vseg`, so surfaces never collapse
+    /// same-name versions into one label).
     pub fn selected_name(&self) -> Option<String> {
-        self.selected_node().map(|n| n.name.clone())
+        self.selected_node()
+            .map(|n| crate::list_name(&n.unique_id, &n.name))
     }
 
     /// The density the lineage pipeline actually renders at: the overview
@@ -178,11 +181,12 @@ impl App {
     }
 
     /// A node's display name, falling back to the `unique_id` itself when the node
-    /// is unknown to the Dag — the repeated overlay-title idiom.
+    /// is unknown to the Dag — the repeated overlay-title idiom. `list_name`
+    /// carries the versioned-model `name.vseg` spelling the list shows.
     pub fn node_name_or_uid(&self, uid: &str) -> String {
         self.dag
             .get(uid)
-            .map(|n| n.name.clone())
+            .map(|n| crate::list_name(uid, &n.name))
             .unwrap_or_else(|| uid.to_string())
     }
 

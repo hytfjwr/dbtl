@@ -49,11 +49,16 @@ pub fn subgraph_mermaid_linked(sg: &Subgraph, link: impl Fn(&str) -> Option<Stri
         let kind = node_kind(n);
         let mark = if n.unique_id == sg.selected { " *" } else { "" };
         // The kind comes from the manifest too, so the WHOLE label text is
-        // escaped as one unit — not just the name.
+        // escaped as one unit — not just the name. `list_name` carries the
+        // versioned-model `name.vseg` spelling (the `ls`/TUI-list label) so
+        // same-name versions draw distinct boxes.
         out.push_str(&format!(
             "  {}[\"{}\"]\n",
             ids[n.unique_id.as_str()],
-            mermaid_label(&format!("{} ({kind}){mark}", n.name)),
+            mermaid_label(&format!(
+                "{} ({kind}){mark}",
+                crate::list_name(&n.unique_id, &n.name)
+            )),
         ));
     }
     for e in &sg.edges {

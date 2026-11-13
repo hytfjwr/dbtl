@@ -71,8 +71,8 @@ pub(crate) fn draw_lineage_pane(
     let chrome = super::chrome(glyphs);
     let sel_name = list
         .model_at(state.selected())
-        .map(|n| n.name.as_str())
-        .unwrap_or("-");
+        .map(|n| crate::list_name(&n.unique_id, &n.name))
+        .unwrap_or_else(|| "-".to_string());
     let caret = chrome.caret;
     // The title layout is the SAME shape `hit_target` consulted for the
     // title row (`title_layout` is the single composer, so the clickable
@@ -80,7 +80,7 @@ pub(crate) fn draw_lineage_pane(
     // span — when the pointer sits on one — draws underlined, the affordance
     // cue for a clickable title part.
     let title = title_layout(
-        sel_name,
+        &sel_name,
         search.map(|q| (q, search_pos)),
         view_label,
         breadcrumb,

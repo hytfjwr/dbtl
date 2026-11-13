@@ -80,11 +80,11 @@ impl App {
         let sel_name = self
             .active_list()
             .model_at(self.ui_state.selected())
-            .map(|n| n.name.as_str())
-            .unwrap_or("-");
+            .map(|n| crate::list_name(&n.unique_id, &n.name))
+            .unwrap_or_else(|| "-".to_string());
         let caret = crate::ui::chrome(self.glyph_mode).caret;
         crate::ui::title_layout(
-            sel_name,
+            &sel_name,
             search,
             view_label,
             breadcrumb,

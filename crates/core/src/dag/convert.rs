@@ -219,16 +219,36 @@ pub(super) fn detail_from_source(source: &RawSource) -> NodeDetail {
     }
 }
 
-/// Resolve a model NAME to its `model.<pkg>.<name>` uid — the fallback when a
-/// unit_test's uid doesn't carry the standard `unit_tests.<pkg>.<model>` shape.
-/// Returns the single match (a name colliding across packages can't be
-/// resolved reliably anyway).
-pub(super) fn model_uid_by_name(nodes: &HashMap<String, NodeInfo>, name: &str) -> Option<String> {
-    nodes
+/// Whether `uid` names version `version` of a model — the uid segment is
+/// `v` + the declared `v:` value, so `model.p.x.v2` answers to `2`, `v2`,
+/// and `V2` alike, `model.p.x.vbeta` to `beta` (see [`normalize_version`]).
+pub(super) fn uid_has_version(uid: &str, version: &str) -> bool {
+    versioned_model_segs(uid)
+        .is_some_and(|(_, seg)| normalize_version(seg) == normalize_version(version))
+}
+
+/// Resolve a model NAME to its `model.<pkg>.<name>[.<v>]` uid — the
+/// fallback when a unit_test's `depends_on` and uid shape don't name the
+/// target. `version` prefers the matching versioned uid when the name
+/// answers a version family; absent or unmatched, the smallest uid wins
+/// — sorted first so `HashMap` iteration order never leaks into the
+/// result (a name colliding across packages picks one deterministically,
+/// a guess either way).
+pub(super) fn model_uid_by_name(
+    nodes: &HashMap<String, NodeInfo>,
+    name: &str,
+    version: Option<&str>,
+) -> Option<String> {
+    let mut candidates: Vec<&str> = nodes
         .values()
         .filter(|n| n.resource_type == "model" && n.name == name)
-        .map(|n| n.unique_id.clone())
-        .next()
+        .map(|n| n.unique_id.as_str())
+        .collect();
+    candidates.sort_unstable();
+    version
+        .and_then(|v| candidates.iter().find(|u| uid_has_version(u, v)))
+        .or_else(|| candidates.first())
+        .map(|u| u.to_string())
 }
 
 /// Record a test node into the per-target tests map. The target is the test's

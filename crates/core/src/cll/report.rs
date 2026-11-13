@@ -73,9 +73,11 @@ pub fn closure_report(
     direction: ClosureDirection,
 ) -> ColumnReport {
     let lin = ColumnLineage::new(dag, resolver);
+    // `list_name` — a versioned model's column reads `fct_orders.v1.id`,
+    // not the bare `fct_orders.id` its sibling versions share.
     let name = |uid: &str| {
         dag.get(uid)
-            .map_or_else(|| uid.to_string(), |n| n.name.clone())
+            .map_or_else(|| uid.to_string(), |n| crate::list_name(uid, &n.name))
     };
     let addr = |c: &ColumnRef| format!("{}.{}", name(&c.node), c.column);
     let reached = match direction {

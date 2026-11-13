@@ -53,8 +53,10 @@ pub(super) fn node_markdown(
     let rt = node.resource_type.as_str();
     let mut s = String::new();
 
-    // Heading + the resource-type's metadata bullets.
-    s.push_str(&format!("# {}\n\n", node.name));
+    // Heading + the resource-type's metadata bullets. `list_name` — a
+    // versioned model titles `fct_orders.v1` (the `ls`/TUI spelling), so
+    // same-name versions get distinguishable pages.
+    s.push_str(&format!("# {}\n\n", list_name(uid, &node.name)));
     push_heading_bullets(&mut s, ctx, uid, node, detail);
 
     // Description.
@@ -515,8 +517,8 @@ fn upstream_label(ctx: &PageInputs, from: &ColumnRef, page_rel: &str) -> String 
     let name = ctx
         .dag
         .get(&from.node)
-        .map(|n| n.name.as_str())
-        .unwrap_or(&from.node);
+        .map(|n| list_name(&from.node, &n.name))
+        .unwrap_or_else(|| from.node.clone());
     let label = format!("{name}.{}", from.column);
     match ctx.files.get(&from.node) {
         Some(rel) => format!("[{}]({})", md_label(&label), page_link(page_rel, rel)),

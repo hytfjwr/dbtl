@@ -33,6 +33,7 @@ mod responsive;
 mod scroll;
 mod search_palette;
 mod toasts;
+mod versioned;
 mod width;
 
 use minimap::*;

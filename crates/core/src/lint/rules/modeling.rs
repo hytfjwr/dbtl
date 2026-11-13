@@ -54,7 +54,7 @@ pub(super) fn direct_join_to_source(
             related,
             format!(
                 "{} reads {} {} and {} {}",
-                n.name,
+                display_name(dag, uid),
                 pluralize(sources.len(), "source"),
                 name_list(&display_names(dag, &sources)),
                 pluralize(models.len(), "model"),
@@ -126,7 +126,7 @@ pub(super) fn multiple_sources_joined(
             sources.clone(),
             format!(
                 "{} reads {} {}",
-                n.name,
+                display_name(dag, uid),
                 pluralize(sources.len(), "source"),
                 name_list(&display_names(dag, &sources)),
             ),
@@ -149,7 +149,9 @@ pub(super) fn multiple_sources_joined(
 }
 
 /// `source_fanout`: a source directly feeds >= `source_fanout_threshold`
-/// models (default 2 — more than one direct consumer).
+/// models (default 2 — more than one direct consumer). Versions of one
+/// model are the SAME consumer — `fct_orders.v1`+`v2`+`vbeta` reading the
+/// source counts once ([`version_families`] folds by `(package, name)`).
 pub(super) fn source_fanout(
     dag: &Dag,
     uids: &[&String],
@@ -171,10 +173,12 @@ pub(super) fn source_fanout(
             .filter(|c| dag.get(c).is_some_and(|n| n.resource_type == "model"))
             .cloned()
             .collect();
-        if models.len() < threshold {
+        models.sort();
+        let families = version_families(&models);
+        if families.len() < threshold {
             continue;
         }
-        models.sort();
+        let names: Vec<String> = families.iter().map(|f| family_name(dag, f)).collect();
         out.push(Finding::new(
             LintRule::SourceFanout,
             (*uid).clone(),
@@ -182,9 +186,9 @@ pub(super) fn source_fanout(
             format!(
                 "source {} directly feeds {} {}: {}",
                 display_name(dag, uid),
-                models.len(),
-                pluralize(models.len(), "model"),
-                name_list(&display_names(dag, &models)),
+                families.len(),
+                pluralize(families.len(), "model"),
+                name_list(&names),
             ),
         ));
     }
@@ -222,20 +226,24 @@ pub(super) fn model_fanout(
             })
             .cloned()
             .collect();
-        if leaves.len() < threshold {
+        leaves.sort();
+        // Version spellings of one model are the same leaf — a hub
+        // feeding `x.v1`+`x.v2` feeds one consumer, not two.
+        let families = version_families(&leaves);
+        if families.len() < threshold {
             continue;
         }
-        leaves.sort();
+        let names: Vec<String> = families.iter().map(|f| family_name(dag, f)).collect();
         out.push(Finding::new(
             LintRule::ModelFanout,
             (*uid).clone(),
             leaves.clone(),
             format!(
                 "{} directly feeds {} {}: {}",
-                n.name,
-                leaves.len(),
-                pluralize(leaves.len(), "leaf model"),
-                name_list(&display_names(dag, &leaves)),
+                display_name(dag, uid),
+                families.len(),
+                pluralize(families.len(), "leaf model"),
+                name_list(&names),
             ),
         ));
     }
@@ -273,7 +281,7 @@ pub(super) fn root_models(
             LintRule::RootModels,
             (*uid).clone(),
             Vec::new(),
-            format!("{} has no parents", n.name),
+            format!("{} has no parents", display_name(dag, uid)),
         ));
     }
 }
@@ -365,7 +373,7 @@ pub(super) fn rejoining_upstream(
             related,
             format!(
                 "{} is a redundant hop: {anames} already {} {cname} directly",
-                n.name,
+                display_name(dag, uid),
                 if a_uids.len() == 1 { "feeds" } else { "feed" },
             ),
         );
@@ -423,7 +431,7 @@ pub(super) fn marts_depend_on_source(
             sources.clone(),
             format!(
                 "{layer} model {} reads {} {}",
-                n.name,
+                display_name(dag, uid),
                 pluralize(sources.len(), "source"),
                 name_list(&display_names(dag, &sources)),
             ),
@@ -631,7 +639,7 @@ pub(super) fn staging_depends_on_staging(
             parents.clone(),
             format!(
                 "staging model {} directly depends on {} {}",
-                n.name,
+                display_name(dag, uid),
                 pluralize(parents.len(), "staging model"),
                 name_list(&display_names(dag, &parents)),
             ),
@@ -658,7 +666,8 @@ pub(super) fn staging_depends_on_staging(
 /// `too_many_joins`: a model directly depends on >= `threshold` (default 7)
 /// data-resource parents ([`is_data_resource`] — endpoint resources like
 /// exposures never parent a model anyway, but the predicate is the shared
-/// one).
+/// one). Versions of one parent count once — joining `dim.v1` AND `dim.v2`
+/// is still reading `dim` ([`version_families`]).
 pub(super) fn too_many_joins(
     dag: &Dag,
     uids: &[&String],
@@ -684,20 +693,22 @@ pub(super) fn too_many_joins(
             })
             .cloned()
             .collect();
-        if parents.len() < threshold {
+        parents.sort();
+        let families = version_families(&parents);
+        if families.len() < threshold {
             continue;
         }
-        parents.sort();
+        let names: Vec<String> = families.iter().map(|f| family_name(dag, f)).collect();
         let mut f = Finding::new(
             LintRule::TooManyJoins,
             (*uid).clone(),
             parents.clone(),
             format!(
                 "{} directly depends on {} {}: {}",
-                n.name,
-                parents.len(),
-                pluralize(parents.len(), "data resource"),
-                name_list(&display_names(dag, &parents)),
+                display_name(dag, uid),
+                families.len(),
+                pluralize(families.len(), "data resource"),
+                name_list(&names),
             ),
         );
         // Primary on the first ref/source call; every other parent call is
@@ -760,9 +771,12 @@ pub(super) fn incremental_without_unique_key(
             match strategy {
                 Some(s) => format!(
                     "incremental model {} has no unique_key (incremental_strategy: {s})",
-                    n.name
+                    display_name(dag, uid)
                 ),
-                None => format!("incremental model {} has no unique_key", n.name),
+                None => format!(
+                    "incremental model {} has no unique_key",
+                    display_name(dag, uid)
+                ),
             },
         );
         // The position is the `config()` argument that declared
@@ -820,7 +834,7 @@ pub(super) fn unused_models(
             LintRule::UnusedModels,
             (*uid).clone(),
             Vec::new(),
-            format!("{layer} model {} has no downstream", n.name),
+            format!("{layer} model {} has no downstream", display_name(dag, uid)),
         ));
     }
 }

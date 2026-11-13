@@ -8,6 +8,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Manifests for `versions:`-ed models parse again: dbt writes `version` /
+  `latest_version` as a JSON number for `v: 1`-style declarations (and a
+  string for `v: beta`-style ones), which previously failed the whole
+  manifest load with `invalid type: integer '1', expected a string`.
+- Model versions are counted as one logical model and can be addressed by
+  versioned name: `source_fanout`, `model_fanout`, and `too_many_joins`
+  fold `fct_orders.v1`/`v2`/`vbeta` into a single `(package, name)` family
+  instead of inflating per-version, while `ls`, the TUI list and lineage
+  views, `columns`, generated docs, and the browser engine name each
+  version distinctly — `dbtl ls 'fct_orders.v1'` selects exactly that
+  spelling like real dbt — and a `versions: include:`-scoped unit test now
+  attaches to its declared version rather than an arbitrary same-named one.
 - `unknown_column_reference` no longer misreads date-part keywords in
   date functions, same-SELECT aliases in `WHERE`/`GROUP BY`/`HAVING`/
   `QUALIFY`/`ORDER BY`, or an `UNNEST`'s table alias as upstream columns.

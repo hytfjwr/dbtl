@@ -142,20 +142,71 @@ impl Dag {
         }
 
         // dbt ≥1.8 unit tests: excluded from the DAG like schema tests,
-        // recorded per-target model. A unit_test uid is
-        // `unit_tests.<pkg>.<model>.<name>` — the target is `model.<pkg>.<model>`;
-        // `model` (the bare name) is the fallback when the uid shape differs.
+        // recorded per-target model. Resolution prefers the manifest's own
+        // record: `depends_on.nodes` carries the tested model's
+        // `model.<pkg>.<name>[.<v>]` uid FIRST (any `given:` input `ref`s
+        // follow) — a version-scoped test (`versions: include:`) names ITS
+        // `.vN` there, which a name lookup can't pick (several versions
+        // share one name). `ut.version` picks the scoped member, the
+        // tested-model name separates it from input refs, and manifest
+        // order is the last tie-break — so no `HashMap` order ever leaks
+        // into the choice. The bare `unit_test.<pkg>.<model>.<test>` uid
+        // shape and the `model:` name are the fallbacks — every fallback
+        // is uid-sorted for the same determinism.
         for (uid, ut) in &manifest.unit_tests {
-            let target = match (uid_package(uid), uid.split('.').nth(2)) {
-                (Some(pkg), Some(model)) if !pkg.is_empty() => {
-                    let guess = format!("model.{pkg}.{model}");
-                    if nodes.contains_key(&guess) {
-                        Some(guess)
-                    } else {
-                        ut.model.as_ref().and_then(|m| model_uid_by_name(&nodes, m))
+            let version = ut.version.as_deref();
+            // The tested model's bare name — the uid shape's third
+            // segment first, the manifest's own `model:` field as backup.
+            let wanted_name = uid
+                .split('.')
+                .nth(2)
+                .filter(|s| !s.is_empty())
+                .or(ut.model.as_deref());
+            let deps: Vec<&str> = ut
+                .depends_on
+                .nodes
+                .iter()
+                .map(String::as_str)
+                .filter(|d| nodes.get(*d).is_some_and(|n| n.resource_type == "model"))
+                .collect();
+            let target = if !deps.is_empty() {
+                deps.iter()
+                    .find(|d| version.is_some_and(|v| uid_has_version(d, v)))
+                    .or_else(|| {
+                        wanted_name
+                            .and_then(|w| deps.iter().find(|d| d.split('.').nth(2) == Some(w)))
+                    })
+                    .or_else(|| deps.first())
+                    .map(|d| (*d).to_string())
+            } else {
+                match (uid_package(uid), wanted_name) {
+                    (Some(pkg), Some(model)) if !pkg.is_empty() => {
+                        // The same-package members of this model's family —
+                        // sorted so the pick is deterministic; the version
+                        // filter prefers the scoped one, the smallest uid
+                        // is the last resort.
+                        let mut cands: Vec<&str> = nodes
+                            .values()
+                            .filter(|n| {
+                                n.resource_type == "model"
+                                    && n.name == model
+                                    && uid_package(&n.unique_id) == Some(pkg)
+                            })
+                            .map(|n| n.unique_id.as_str())
+                            .collect();
+                        cands.sort_unstable();
+                        cands
+                            .iter()
+                            .find(|u| version.is_some_and(|v| uid_has_version(u, v)))
+                            .or_else(|| cands.first())
+                            .map(|u| (*u).to_string())
+                            .or_else(|| model_uid_by_name(&nodes, model, version))
                     }
+                    _ => ut
+                        .model
+                        .as_ref()
+                        .and_then(|m| model_uid_by_name(&nodes, m, version)),
                 }
-                _ => ut.model.as_ref().and_then(|m| model_uid_by_name(&nodes, m)),
             };
             if let Some(target) = target {
                 tests.entry(target).or_default().push(TestInfo {
