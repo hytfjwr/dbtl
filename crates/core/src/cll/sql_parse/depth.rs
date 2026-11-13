@@ -72,8 +72,10 @@ const MAX_DEPTH: usize = 512;
 /// Deliberately absent: `from`, `with`, `for` — each is also the
 /// continuation of a multi-word operator (`is distinct from`,
 /// `timestamp with time zone`, `next value for`) where cutting splits
-/// a real chain. An absent word only ever merges segments — the count
-/// errs toward depth, the safe direction.
+/// a real chain. `case`/`end` are absent too — they open and fold a
+/// nested level in their own arm, like `(`/`)`. An absent word only
+/// ever merges segments — the count errs toward depth, the safe
+/// direction.
 const SEGMENT_END: &[&[u8]] = &[
     b"action",
     b"alter",
@@ -114,7 +116,6 @@ const SEGMENT_END: &[&[u8]] = &[
     b"do",
     b"drop",
     b"else",
-    b"end",
     b"exec",
     b"execute",
     b"explain",
@@ -240,7 +241,6 @@ const OP_WORD: &[&[u8]] = &[
     b"any",
     b"at",
     b"between",
-    b"case",
     b"collate",
     b"div",
     b"escape",
@@ -299,7 +299,8 @@ fn word_in(w: &[u8], list: &[&[u8]]) -> bool {
     list.iter().any(|k| k.eq_ignore_ascii_case(w))
 }
 
-/// One parenthesis level's running counts.
+/// One nested level's running counts — a `( … )` group or a
+/// `case … end` expression.
 #[derive(Default)]
 struct Level {
     /// Operator units in the open segment.
@@ -308,10 +309,17 @@ struct Level {
     peak: usize,
     /// Set operators seen at this level.
     set: usize,
-    /// The deepest closed `( … )` operand — real depth adds the
-    /// operand's inner tree BELOW the level's own spine, so it counts
-    /// as `1 + inner` once per level, not once per group.
+    /// The deepest closed `( … )` or `case … end` operand — real
+    /// depth adds the operand's inner tree BELOW the level's own
+    /// spine, so it counts as `1 + inner` once per level, not once
+    /// per group.
     operand: usize,
+    /// Opened by `case` rather than `(` — `end` folds it back into the
+    /// parent the same way `)` does. CASE needs its own level because
+    /// its `when`/`then`/`else` arms are sibling segments — cutting on
+    /// `end` inside the parent's segment would split an `and` chain
+    /// that continues right past the CASE.
+    case: bool,
 }
 
 impl Level {
@@ -430,30 +438,53 @@ fn too_deep(sql: &str, dialect: SqlDialect) -> bool {
                     j += 1;
                 }
                 let w = &b[i..j];
-                let lv = &mut levels[l];
-                if prev_operand {
-                    // Infix position: an operator or boundary keyword
-                    // ends the operand; any other word is an alias,
-                    // which IS operand material — infix position holds.
-                    if word_in(w, SET_OP) {
-                        lv.cut();
-                        lv.set += 1;
-                        prev_operand = false;
-                    } else if word_in(w, SEGMENT_END) {
-                        lv.cut();
-                        prev_operand = false;
-                    } else if word_in(w, OP_WORD) {
-                        lv.seg += 1;
-                        prev_operand = false;
-                    }
-                } else {
-                    // Operand position: the parser reads even a reserved
-                    // word as an identifier, so it can only over-count —
-                    // charge one unit for a listed keyword, zero for a
-                    // plain name, then the token IS an operand.
-                    lv.seg += (word_in(w, OP_WORD) || word_in(w, SET_OP) || word_in(w, SEGMENT_END))
-                        as usize;
+                if w.eq_ignore_ascii_case(b"case") {
+                    // CASE nests like `(`: its arms are sibling
+                    // segments inside their own level, and the whole
+                    // expression is one operand on the parent's spine.
+                    levels.push(Level {
+                        case: true,
+                        ..Level::default()
+                    });
+                    prev_operand = false;
+                } else if prev_operand && w.eq_ignore_ascii_case(b"end") && levels[l].case {
+                    // `end` closes a CASE — fold the level back as one
+                    // operand exactly like `)`. An `end` outside a CASE
+                    // level can't be a close keyword, so it falls
+                    // through to the plain-word arms.
+                    levels[l].cut();
+                    let total = levels[l].peak + levels[l].set + levels[l].operand;
+                    bound = bound.max(l + total);
+                    levels.pop();
+                    levels[l - 1].operand = levels[l - 1].operand.max(1 + total);
                     prev_operand = true;
+                } else {
+                    let lv = &mut levels[l];
+                    if prev_operand {
+                        // Infix position: an operator or boundary keyword
+                        // ends the operand; any other word is an alias,
+                        // which IS operand material — infix position holds.
+                        if word_in(w, SET_OP) {
+                            lv.cut();
+                            lv.set += 1;
+                            prev_operand = false;
+                        } else if word_in(w, SEGMENT_END) {
+                            lv.cut();
+                            prev_operand = false;
+                        } else if word_in(w, OP_WORD) {
+                            lv.seg += 1;
+                            prev_operand = false;
+                        }
+                    } else {
+                        // Operand position: the parser reads even a reserved
+                        // word as an identifier, so it can only over-count —
+                        // charge one unit for a listed keyword, zero for a
+                        // plain name, then the token IS an operand.
+                        lv.seg += (word_in(w, OP_WORD)
+                            || word_in(w, SET_OP)
+                            || word_in(w, SEGMENT_END)) as usize;
+                        prev_operand = true;
+                    }
                 }
                 i = j;
             }
@@ -603,6 +634,26 @@ mod tests {
         assert!(deep(&sql));
         let sql = format!("select {}", vec!["a"; 600].join(" operator(pg.+) "));
         assert!(deep(&sql));
+    }
+
+    #[test]
+    fn chains_through_case_end_add_up() {
+        // `end` is operand material: the `and` spine runs THROUGH a
+        // closed CASE, so cutting there fragments the count while the
+        // real left-deep tree keeps growing.
+        let sql = format!(
+            "select a from t where {}",
+            vec!["a and case when b then 1 else 2 end"; 300].join(" and ")
+        );
+        assert!(deep(&sql));
+
+        // A plain CASE — even one with hundreds of arms — is shallow:
+        // its arms are sibling segments inside one nested level.
+        let arms = (0..600)
+            .map(|i| format!("when a = {i} then {i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(!deep(&format!("select case {arms} else 0 end from t")));
     }
 
     #[test]
