@@ -4,10 +4,10 @@
 //!
 //! Pure data + a pure function: [`compute_diff`] reads two `Dag`s and produces
 //! a [`DagDiff`] — no IO, no UI types — so it is unit-testable from synthetic
-//! manifests like `dag.rs` itself. The App owns the baseline and recomputes the
-//! diff on every reload (the baseline never changes after startup); the Diff
-//! lens, the `D` modal, and the status `diff` chip all read the SAME `DagDiff`,
-//! so the three readouts can never disagree.
+//! manifests like `crate::dag` itself. The App owns the baseline and
+//! recomputes the diff on every reload (the baseline never changes after
+//! startup); the Diff lens, the `D` modal, and the status `diff` chip all
+//! read the SAME `DagDiff`, so the three readouts can never disagree.
 //!
 //! Identity is the dbt `unique_id` (stable across runs: `model.<project>.<name>`),
 //! so a renamed model deliberately reads as removed + added — that is what a

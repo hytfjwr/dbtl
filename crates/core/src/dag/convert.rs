@@ -124,9 +124,7 @@ pub(super) fn freshness_threshold(t: &Option<RawFreshnessThreshold>) -> Option<F
 /// [`Dag::root_scoped`] and [`PackageScope::apply_with_warnings`] do the same
 /// instead of re-resolving per node.
 pub fn in_package(n: &NodeInfo, pkg: &str) -> bool {
-    n.unique_id
-        .split('.')
-        .nth(1)
+    uid_package(&n.unique_id)
         .filter(|s| !s.is_empty())
         .is_none_or(|seg| seg == pkg)
 }

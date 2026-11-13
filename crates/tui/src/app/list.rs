@@ -160,8 +160,10 @@ impl App {
     }
 
     /// Move the selection to the model with this NAME in the active list, if
-    /// present (dbt model names are project-unique). The `--select` startup
-    /// flag's primitive.
+    /// present (dbt model names are project-unique). Test-only: `--select`
+    /// resolves through `open_tab_by_name`, so nothing in production calls
+    /// this — the navigation suite keeps it for the name→uid lookup contract.
+    #[cfg(test)]
     pub fn select_by_name(&mut self, name: &str) -> bool {
         let uid = self
             .active_list()

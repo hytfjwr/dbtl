@@ -26,7 +26,7 @@ pub fn severity_fails(severity: Severity, fail_on: FailOn) -> bool {
 }
 
 /// The verdict for a gate that DID find violations of `severity`: `fail`
-/// when [`severity_fails`], else `warn` — reported, never counted.
+/// when `severity_fails`, else `warn` — reported, never counted.
 pub fn gate_status(severity: Severity, fail_on: FailOn) -> GateStatus {
     if severity_fails(severity, fail_on) {
         GateStatus::Fail
@@ -339,7 +339,7 @@ pub struct LintRunInputs<'a> {
     pub read_text: &'a dyn Fn(&str) -> Option<String>,
 }
 
-/// Evaluate lint for a run and package it: [`evaluate_lint`], fill the
+/// Evaluate lint for a run and package it: `evaluate_lint`, fill the
 /// findings' `.yml` positions through `read_text` (the same source
 /// [`crate::collect_sources`] excerpts from, so a position and its excerpt
 /// always come from the same text), and lift into gate rows + tallies.

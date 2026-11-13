@@ -181,9 +181,7 @@ pub(super) fn load_project_config(
             let pc = dbtl::ProjectConfig::load(p)
                 .with_context(|| format!("failed to read {}", p.display()))
                 .usage()?;
-            for w in &pc.warnings {
-                eprintln!("warning: {w}");
-            }
+            warn_each("", &pc.warnings);
             pc
         }
         None => dbtl::ProjectConfig::default(),

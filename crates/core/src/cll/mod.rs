@@ -381,7 +381,9 @@ impl<'a, R: ColumnResolver + ?Sized> ColumnLineage<'a, R> {
 
     /// The explicitly-eager answer for callers that genuinely need the whole
     /// graph (the full-lineage compute): resolve every node once,
-    /// concatenate in-edges, sort + dedup.
+    /// concatenate in-edges, sort + dedup. Test-only: every production caller
+    /// resolves lazily per node.
+    #[cfg(test)]
     pub fn resolve_all(&self) -> Vec<ColumnEdge> {
         let mut uids: Vec<&String> = self.dag.nodes().keys().collect();
         uids.sort();

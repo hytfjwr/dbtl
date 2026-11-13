@@ -33,8 +33,9 @@ impl App {
 
     /// Drain the pending notice's text (one-shot). The event loop calls
     /// [`take_notice_leveled`](App::take_notice_leveled) so the level drives
-    /// the toast TTL and the log entry; this text-only view stays for tests
-    /// and callers that don't care about severity.
+    /// the toast TTL and the log entry; this text-only view is the test
+    /// suites' drain — it stays `pub` because the external integration
+    /// suites (`tests/tui`) can't reach `#[cfg(test)]` items.
     pub fn take_notice(&mut self) -> Option<String> {
         self.take_notice_leveled().map(|(_, t)| t)
     }

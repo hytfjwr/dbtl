@@ -137,10 +137,18 @@ pub(super) fn source_path(
         return Some(SourcePath::Project(PathBuf::from(dir)));
     }
     let project = PathBuf::from(project);
-    if !git_diff && project.join("target").join("manifest.json").is_file() {
-        return Some(SourcePath::Manifest(
-            project.join("target").join("manifest.json"),
-        ));
+    // `<project>/target` resolves through the shared sibling-artifact rule
+    // (`dbtl::default_target_dir`) — the same root the run_results / catalog
+    // / compiled side maps read.
+    let compiled = if git_diff {
+        None
+    } else {
+        dbtl::default_target_dir(None, Some(&project))
+            .map(|target| target.join("manifest.json"))
+            .filter(|m| m.is_file())
+    };
+    if let Some(manifest) = compiled {
+        return Some(SourcePath::Manifest(manifest));
     }
     if project.join("dbt_project.yml").is_file() {
         return Some(SourcePath::Project(project));
@@ -204,9 +212,7 @@ pub fn resolve_source(
             (dag, warnings, dir.display().to_string(), true)
         }
     };
-    for w in &warnings {
-        eprintln!("warning: {w}");
-    }
+    warn_each("", &warnings);
     let (dag, scope_w) = apply_package_scope(dag, scope, is_source);
     warnings.extend(scope_w);
     Ok(ResolvedSource {
@@ -244,8 +250,8 @@ pub(super) fn apply_package_scope(
         collected.push(w);
     }
     let (dag, warnings) = scope.apply_with_warnings(dag);
+    warn_each(" (scope)", &warnings);
     for w in &warnings {
-        eprintln!("warning (scope): {w}");
         collected.push(format!("(scope) {w}"));
     }
     (dag, collected)
