@@ -1,0 +1,14 @@
+# The var table `var()` resolves against. A `+enabled` string inside
+# dbt_project.yml sees ONLY the top level of this file; a node's in-file
+# `config(enabled=var(...))` sees the same map with `<project>:` keys
+# shadowing the top-level entries.
+vars:
+  # Turns on every model under models/pilot/ (project-file scope).
+  enable_pilot: true
+  # Enables marts/fct_service_alerts (node scope, top-level hit).
+  alerts_enabled: true
+  # Top level: true — but the project-scoped entry below shadows it for
+  # in-file config(), so marts/fct_lane_pairs stays disabled.
+  lane_pairs_enabled: true
+  logistics:
+    lane_pairs_enabled: false

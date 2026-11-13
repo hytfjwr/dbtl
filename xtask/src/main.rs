@@ -1,5 +1,6 @@
 mod changelog_cmd;
 mod gen_docs_cmd;
+mod gen_manifest;
 mod perf_report_cmd;
 mod regen_sample_manifest;
 mod synth_cmd;
@@ -18,6 +19,9 @@ struct Cli {
 enum Command {
     /// Regenerate tests/fixtures/sample_manifest.json with real dbt (requires uv).
     RegenSampleManifest(regen_sample_manifest::Args),
+    /// Regenerate the manifest fixture for any project under tests/fixtures
+    /// with real dbt (requires uv; local packages only).
+    GenFixtureManifest(gen_manifest::GenArgs),
     /// Write a deterministic synthetic dbt project to disk (models/*.sql +
     /// schema.yml + target/manifest.json — the manifest and the source tree
     /// describe the same graph).
@@ -37,6 +41,7 @@ enum Command {
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::RegenSampleManifest(args) => regen_sample_manifest::run(args),
+        Command::GenFixtureManifest(args) => gen_manifest::run(args),
         Command::Synth(args) => synth_cmd::run(args),
         Command::PerfReport(args) => perf_report_cmd::run(args),
         Command::GenDocs(args) => gen_docs_cmd::run(args),

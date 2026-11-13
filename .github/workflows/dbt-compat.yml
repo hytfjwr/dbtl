@@ -16,16 +16,16 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # The source loader's contract with real dbt is executable: the committed
-  # sample manifest is produced by `cargo xtask regen-sample-manifest` (real
-  # `dbt compile` over tests/fixtures/sample_project). `fixture` re-runs that
-  # regeneration at the fixture's own dbt-core release — a failure there means
-  # the regeneration procedure itself broke. `latest` re-runs it against the
+  # The source loader's contract with real dbt is executable: each committed
+  # fixture manifest is produced by `cargo xtask gen-fixture-manifest` (real
+  # `dbt compile` over its project dir). `fixture` re-runs that regeneration
+  # at the fixture's own dbt-core release — a failure there means the
+  # regeneration procedure itself broke. `latest` re-runs it against the
   # newest dbt-core release — a failure there means dbt's semantics moved and
   # the source loader needs to catch up. The regenerated file stays in the
   # working tree for the test step and is never committed.
   dbt-compat:
-    name: dbt compat (${{ matrix.dbt }})
+    name: dbt compat (${{ matrix.project.name }}, ${{ matrix.dbt }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -34,6 +34,13 @@ jobs:
       fail-fast: false
       matrix:
         dbt: [latest, fixture]
+        project:
+          - name: sample
+            dir: tests/fixtures/sample_project
+            manifest: tests/fixtures/sample_manifest.json
+          - name: logistics
+            dir: tests/fixtures/logistics_project
+            manifest: tests/fixtures/logistics_manifest.json
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,17 +49,19 @@ jobs:
 
       # Read before regenerating: the regeneration overwrites this file.
       - name: Read the committed fixture versions
+        env:
+          FIXTURE_MANIFEST: ${{ matrix.project.manifest }}
         run: |
-          fixture_dbt=$(jq -e -r .metadata.dbt_version tests/fixtures/sample_manifest.json) || {
-            echo "::error::metadata.dbt_version is missing in tests/fixtures/sample_manifest.json" >&2
+          fixture_dbt=$(jq -e -r .metadata.dbt_version "$FIXTURE_MANIFEST") || {
+            echo "::error::metadata.dbt_version is missing in $FIXTURE_MANIFEST" >&2
             exit 1
           }
-          fixture_schema=$(jq -e -r .metadata.dbt_schema_version tests/fixtures/sample_manifest.json) || {
-            echo "::error::metadata.dbt_schema_version is missing in tests/fixtures/sample_manifest.json" >&2
+          fixture_schema=$(jq -e -r .metadata.dbt_schema_version "$FIXTURE_MANIFEST") || {
+            echo "::error::metadata.dbt_schema_version is missing in $FIXTURE_MANIFEST" >&2
             exit 1
           }
           if [ -z "$fixture_dbt" ] || [ -z "$fixture_schema" ]; then
-            echo "::error::metadata.dbt_version / .dbt_schema_version is empty in tests/fixtures/sample_manifest.json" >&2
+            echo "::error::metadata.dbt_version / .dbt_schema_version is empty in $FIXTURE_MANIFEST" >&2
             exit 1
           fi
           {
@@ -80,16 +89,18 @@ jobs:
           version: "0.13.7"
           enable-cache: false
 
-      - name: Regenerate the sample manifest
+      - name: Regenerate the ${{ matrix.project.name }} manifest
         id: regen
         env:
           DBT_VARIANT: ${{ matrix.dbt }}
           DBT_SEND_ANONYMOUS_USAGE_STATS: "false"
         run: |
           if [ "$DBT_VARIANT" = fixture ]; then
-            cargo xtask regen-sample-manifest --dbt-version "$FIXTURE_DBT_VERSION"
+            cargo xtask gen-fixture-manifest \
+              --project "${{ matrix.project.dir }}" \
+              --dbt-version "$FIXTURE_DBT_VERSION"
           else
-            cargo xtask regen-sample-manifest
+            cargo xtask gen-fixture-manifest --project "${{ matrix.project.dir }}"
           fi
 
       # Runs even when regeneration fails: the fixture versions and the
@@ -99,13 +110,14 @@ jobs:
         env:
           DBT_VARIANT: ${{ matrix.dbt }}
           REGEN_OUTCOME: ${{ steps.regen.outcome }}
+          FIXTURE_MANIFEST: ${{ matrix.project.manifest }}
         run: |
           {
-            echo "## dbt compat (${DBT_VARIANT})"
+            echo "## dbt compat (${{ matrix.project.name }}, ${DBT_VARIANT})"
             echo
             if [ "$REGEN_OUTCOME" = success ]; then
-              gen_dbt=$(jq -r .metadata.dbt_version tests/fixtures/sample_manifest.json)
-              gen_schema=$(jq -r .metadata.dbt_schema_version tests/fixtures/sample_manifest.json)
+              gen_dbt=$(jq -r .metadata.dbt_version "$FIXTURE_MANIFEST")
+              gen_schema=$(jq -r .metadata.dbt_schema_version "$FIXTURE_MANIFEST")
               echo "- generated dbt_version: \`${gen_dbt}\`"
               echo "- generated dbt_schema_version: \`${gen_schema}\`"
               if [ "$gen_dbt" = "$FIXTURE_DBT_VERSION" ]; then
@@ -124,7 +136,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Consistency and source-loader tests
-        run: cargo test --locked --test consistency --test source_fixture
+        run: cargo test --locked --test consistency --test source_fixture --test logistics_fixture
 
       - name: Show the regenerated working-tree diff
         if: always()
@@ -136,6 +148,6 @@ jobs:
         if: failure() && steps.regen.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: sample-manifest-${{ matrix.dbt }}
-          path: tests/fixtures/sample_manifest.json
+          name: ${{ matrix.project.name }}-manifest-${{ matrix.dbt }}
+          path: ${{ matrix.project.manifest }}
           if-no-files-found: ignore

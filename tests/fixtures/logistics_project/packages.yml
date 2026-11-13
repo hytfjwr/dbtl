@@ -1,0 +1,3 @@
+packages:
+  # Vendored in the repo — `dbt deps` resolves it with no network access.
+  - local: packages/shipkit

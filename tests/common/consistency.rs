@@ -1,0 +1,277 @@
+//! The manifest↔source consistency contract, shared by every fixture that
+//! pairs a real-dbt manifest with its project tree. `tests/consistency.rs`
+//! and `tests/logistics_fixture.rs` run the same checks against their own
+//! fixture pair; each `#[test]` lives in the consumer, these carry the
+//! assertions.
+//!
+//! Documented, deliberate differences (handled by the helpers, never
+//! silently):
+//! - `NodeDetail.database` / `.schema` for models/seeds/snapshots: dbt fills
+//!   them from the *profile* (connection), which source mode cannot know.
+//!   Source nodes compare fully — their schema/database come from schema.yml.
+//! - Seed `columns`: dbt only records them when documented in a schema file;
+//!   source mode additionally reads the CSV header (a strict superset of
+//!   information, surfaced in the structure modal).
+//! - Test *names*: dbt mints hashed unique names; tests are compared as
+//!   (kind, column) multisets per node, which is exactly what the UI shows.
+//! - Singular `.sql` tests: real dbt parks them in the manifest (registered
+//!   on every `depends_on` node); source mode never synthesizes them, so the
+//!   manifest-side `(singular, _)` entries and their `test_count`
+//!   contribution are subtracted before comparing.
+//! - `deprecation_date`: dbt stamps the declared date as a local-midnight
+//!   ISO timestamp (`2026-12-31T00:00:00+09:00`); source mode keeps the
+//!   declaration string — the manifest value must start with it.
+//! - Manifest-only edges (`manifest_only_edges` argument): a hook or config
+//!   channel real dbt resolves into `depends_on` but the source loader
+//!   cannot see — subtracted from the manifest adjacency for every
+//!   comparison that takes the list. Currently empty for both fixtures:
+//!   `ref()` inside pre/post-hook strings IS captured by the source
+//!   loader's `ref()` scan (see `tests/logistics_fixture.rs`).
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+
+use dbtl::{load_dag, load_dag_from_source, Dag, NodeInfo, TestInfo};
+
+/// No manifest-only edges — the fully-consistent case.
+pub const NO_DROPPED_EDGES: &[(&str, &str)] = &[];
+
+/// (manifest Dag, source Dag) of the same project, the manifest side
+/// pre-scoped to the root project — source mode never sees installed-package
+/// nodes, so the comparison always runs under root scope.
+pub fn dags(manifest: &str, project: &str, regen_hint: &str) -> (Dag, Dag) {
+    assert!(
+        Path::new(manifest).is_file(),
+        "fixture missing — run `{regen_hint}`"
+    );
+    let from_manifest = load_dag(manifest).expect("fixture manifest loads");
+    let from_source = load_dag_from_source(project).expect("fixture project parses");
+    (from_manifest.root_scoped(), from_source)
+}
+
+/// All node infos keyed by uid, in a deterministic map.
+pub fn node_map(dag: &Dag) -> BTreeMap<String, NodeInfo> {
+    dag.nodes()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+/// 1-hop (parents, children) adjacency with `manifest_only_edges` removed —
+/// the adjacency the source loader would have produced.
+pub fn adjacency(
+    dag: &Dag,
+    dropped: &[(&str, &str)],
+) -> (
+    BTreeMap<String, BTreeSet<String>>,
+    BTreeMap<String, BTreeSet<String>>,
+) {
+    let mut parents: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut children: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for uid in dag.nodes().keys() {
+        parents.insert(
+            uid.clone(),
+            dag.direct_parents(uid).iter().cloned().collect(),
+        );
+        children.insert(
+            uid.clone(),
+            dag.direct_children(uid).iter().cloned().collect(),
+        );
+    }
+    for (p, c) in dropped {
+        if let Some(set) = parents.get_mut(*c) {
+            set.remove(*p);
+        }
+        if let Some(set) = children.get_mut(*p) {
+            set.remove(*c);
+        }
+    }
+    (parents, children)
+}
+
+/// Transitive closure over an adjacency map (BFS, deterministic order).
+fn closure(adj: &BTreeMap<String, BTreeSet<String>>, start: &str) -> BTreeSet<String> {
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![start.to_string()];
+    while let Some(uid) = stack.pop() {
+        for next in adj.get(&uid).into_iter().flatten() {
+            if seen.insert(next.clone()) {
+                stack.push(next.clone());
+            }
+        }
+    }
+    seen
+}
+
+/// Nodes whose full-lineage subgraph contains at least one dropped edge —
+/// i.e. descendants-or-self of the edge's parent that are also
+/// ancestors-or-self of its child. Their renders legitimately differ across
+/// modes and are skipped by `assert_renders_identical_except`.
+pub fn affected_by_dropped_edges(dag: &Dag, dropped: &[(&str, &str)]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for (p, c) in dropped {
+        let down = dag.downstream(p);
+        let up = dag.upstream(c);
+        for uid in dag.nodes().keys() {
+            if (uid == p || down.contains(uid)) && (uid == c || up.contains(uid)) {
+                out.insert(uid.clone());
+            }
+        }
+    }
+    out
+}
+
+/// The strongest single check: node id sets and every NodeInfo field —
+/// unique_id, name, resource_type, path, materialized, direct_up/down (edge
+/// degrees), and test_count — after subtracting the documented manifest-only
+/// contributions (dropped edges, singular tests).
+pub fn assert_node_infos_identical(m: &Dag, s: &Dag, dropped: &[(&str, &str)]) {
+    let mm = node_map(m);
+    let sm = node_map(s);
+    let m_ids: BTreeSet<&String> = mm.keys().collect();
+    let s_ids: BTreeSet<&String> = sm.keys().collect();
+    assert_eq!(
+        m_ids, s_ids,
+        "node id sets diverge between manifest and source modes"
+    );
+    let (parents, children) = adjacency(m, dropped);
+    for (uid, mi) in &mm {
+        let mut expected = sm[uid].clone();
+        expected.direct_up = parents[uid].len();
+        expected.direct_down = children[uid].len();
+        expected.test_count += m.tests(uid).iter().filter(|t| t.kind == "singular").count();
+        assert_eq!(mi, &expected, "NodeInfo diverges for {uid}");
+    }
+}
+
+/// Same transitive upstream/downstream closure for every node — the pruned
+/// adjacency is the same graph, not merely the same degrees. The manifest
+/// side is compared through its `manifest_only_edges`-subtracted adjacency.
+pub fn assert_closures_identical(m: &Dag, s: &Dag, dropped: &[(&str, &str)]) {
+    let (parents, children) = adjacency(m, dropped);
+    for uid in node_map(m).keys() {
+        let m_up = closure(&parents, uid);
+        let s_up: BTreeSet<String> = s.upstream(uid).into_iter().collect();
+        assert_eq!(m_up, s_up, "upstream({uid}) diverges");
+        let m_down = closure(&children, uid);
+        let s_down: BTreeSet<String> = s.downstream(uid).into_iter().collect();
+        assert_eq!(m_down, s_down, "downstream({uid}) diverges");
+    }
+}
+
+/// `NodeDetail` equality for every node, modulo the documented exclusions
+/// (profile-derived database/schema, seed CSV columns, the deprecation_date
+/// stamp format).
+pub fn assert_details_identical(m: &Dag, s: &Dag) {
+    for (uid, info) in node_map(m) {
+        let md = m.detail(&uid).expect("manifest detail");
+        let sd = s.detail(&uid).expect("source detail");
+        assert_eq!(md.materialized, sd.materialized, "{uid} materialized");
+        assert_eq!(md.description, sd.description, "{uid} description");
+        assert_eq!(md.tags, sd.tags, "{uid} tags");
+        assert_eq!(md.unique_key, sd.unique_key, "{uid} unique_key");
+        // The declaring-yml provenance — the manifest's `pkg://path` scheme
+        // is stripped on ingest so both sides hold the project-relative path.
+        assert_eq!(md.patch_path, sd.patch_path, "{uid} patch_path");
+        assert_eq!(
+            md.original_file_path, sd.original_file_path,
+            "{uid} original_file_path"
+        );
+        // database/schema come from the PROFILE for non-sources (unknowable
+        // without a connection); sources carry them in schema.yml — compare.
+        // The source-only ingestion fields are declared/cascaded in
+        // schema.yml (+ the `sources:` tree for `+freshness`), so both modes
+        // must resolve them identically too.
+        if info.resource_type == "source" {
+            assert_eq!(md.schema, sd.schema, "{uid} schema");
+            assert_eq!(md.database, sd.database, "{uid} database");
+            assert_eq!(
+                md.loaded_at_field, sd.loaded_at_field,
+                "{uid} loaded_at_field"
+            );
+            assert_eq!(md.loader, sd.loader, "{uid} loader");
+            assert_eq!(
+                md.freshness_warn_after, sd.freshness_warn_after,
+                "{uid} freshness_warn_after"
+            );
+            assert_eq!(
+                md.freshness_error_after, sd.freshness_error_after,
+                "{uid} freshness_error_after"
+            );
+        }
+        // Seed columns: source mode reads the CSV header dbt doesn't record.
+        // Column ORDER normalizes to name order: dbt emits `columns` as a
+        // name-sorted object in the manifest while source mode preserves
+        // schema.yml declaration order — the SET is what carries semantics.
+        if info.resource_type != "seed" {
+            let by_name = |d: &dbtl::NodeDetail| {
+                let mut cols = d.columns.clone();
+                cols.sort_by(|a, b| a.name.cmp(&b.name));
+                cols
+            };
+            assert_eq!(by_name(md), by_name(sd), "{uid} columns");
+        }
+        // `meta` has no documented exclusion: the synthesized merge (project
+        // tree < schema.yml < in-file config; source → table cascade) must
+        // equal real dbt's for every node type.
+        assert_eq!(md.meta, sd.meta, "{uid} meta");
+        // The governance/config surface: model-only `access`
+        // (dbt defaults an undeclared model to `protected`), `group`,
+        // `contract.enforced`, `incremental_strategy`, `language`, and the
+        // model-level `constraints` — resolved through schema.yml
+        // `config:`/properties, in-file `config()`, and the `+`-tree in the
+        // same precedence order `materialized` follows.
+        assert_eq!(md.access, sd.access, "{uid} access");
+        assert_eq!(md.group, sd.group, "{uid} group");
+        assert_eq!(
+            md.contract_enforced, sd.contract_enforced,
+            "{uid} contract_enforced"
+        );
+        assert_eq!(
+            md.incremental_strategy, sd.incremental_strategy,
+            "{uid} incremental_strategy"
+        );
+        assert_eq!(md.language, sd.language, "{uid} language");
+        assert_eq!(md.constraints, sd.constraints, "{uid} constraints");
+        // `deprecation_date` is a property, not a config: the manifest
+        // carries the stamped ISO timestamp; source mode the declared
+        // date — the former must start with the latter.
+        match (&md.deprecation_date, &sd.deprecation_date) {
+            (Some(mv), Some(sv)) => assert!(
+                mv.starts_with(sv.as_str()),
+                "{uid} deprecation_date: manifest {mv} vs source {sv}"
+            ),
+            (mv, sv) => assert_eq!(mv, sv, "{uid} deprecation_date"),
+        }
+    }
+}
+
+/// Per-node (kind, column) test multisets — dbt mints hashed names, so the
+/// multiset is the contract. Singular `.sql` tests exist only on the
+/// manifest side (source mode never synthesizes them) and are dropped from
+/// the manifest multiset; package-namespaced kinds (`pkg.test_name`)
+/// compare namespace-stripped — dbt splits the qualifier into
+/// `test_metadata.namespace`, source mode keeps the spelled form.
+pub fn assert_tests_identical(m: &Dag, s: &Dag) {
+    // Namespaced generic tests (`shipkit.no_negative_amounts`): dbt strips
+    // the package namespace into `test_metadata.namespace` and keeps the
+    // bare name; source mode keeps the spelled form — compare bare kinds.
+    let bare = |kind: &str| kind.rsplit('.').next().unwrap_or(kind).to_string();
+    let key = |d: &Dag, uid: &str, drop_singular: bool| -> Vec<(String, Option<String>)> {
+        let mut v: Vec<_> = d
+            .tests(uid)
+            .iter()
+            .filter(|t: &&TestInfo| !drop_singular || t.kind != "singular")
+            .map(|t| (bare(&t.kind), t.column_name.clone()))
+            .collect();
+        v.sort();
+        v
+    };
+    for uid in node_map(m).keys() {
+        assert_eq!(
+            key(m, uid, true),
+            key(s, uid, false),
+            "tests diverge for {uid}"
+        );
+    }
+}

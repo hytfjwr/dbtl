@@ -1,0 +1,45 @@
+version: 2
+
+models:
+  - name: stg_shipments
+    description: "One row per shipment, typed and renamed from the seed"
+    columns:
+      - name: shipment_id
+        description: "TMS shipment number"
+        tests:
+          - unique
+          - not_null
+      - name: carrier_id
+        tests:
+          - relationships:
+              to: ref('stg_carriers')
+              field: carrier_id
+      - name: status
+  - name: stg_carriers
+    description: "Carrier dimension staged from seed"
+    columns:
+      - name: carrier_id
+        tests:
+          - unique
+          - not_null
+  - name: stg_facilities
+    description: "Warehouse and hub locations"
+    columns:
+      - name: facility_id
+        tests:
+          - unique
+          - not_null
+  - name: stg_customers
+    columns:
+      - name: customer_id
+        tests:
+          - unique
+          - not_null
+  - name: stg_orders
+    columns:
+      - name: shipment_id
+        tests:
+          - relationships:
+              to: ref('stg_shipments')
+              field: shipment_id
+  - name: stg_shipment_events

@@ -9,163 +9,46 @@
 //! precedence, the project config tree, disabled nodes, test capture), a
 //! comparison here breaks.
 //!
-//! Documented, deliberate differences (excluded from comparison):
-//! - `NodeDetail.database` / `.schema` for models/seeds/snapshots: dbt fills
-//!   them from the *profile* (connection), which source mode cannot know.
-//!   Source nodes compare fully — their schema/database come from schema.yml.
-//! - Seed `columns`: dbt only records them when documented in a schema file;
-//!   source mode additionally reads the CSV header (a strict superset of
-//!   information, surfaced in the structure modal).
-//! - Test *names*: dbt mints hashed unique names; tests are compared as
-//!   (kind, column) multisets per node, which is exactly what the UI shows.
-//! - `deprecation_date`: dbt stamps the declared date as a local-midnight
-//!   ISO timestamp (`2026-12-31T00:00:00+09:00`); source mode keeps the
-//!   declaration string — the manifest value must start with it.
+//! The comparison itself lives in `common::consistency` — shared with the
+//! logistics fixture — including its documented exclusions (profile-derived
+//! database/schema, seed CSV columns, hashed test names, singular tests,
+//! the deprecation_date stamp format, and manifest-only `ref()`-in-hook
+//! edges; the sample project exercises none of the last two).
 
 mod common;
+use common::consistency as cmp;
 use common::{SAMPLE_MANIFEST as MANIFEST, SAMPLE_PROJECT as PROJECT};
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::collections::BTreeMap;
 
-use dbtl::{
-    build_model_list, layout, load_dag, load_dag_from_source, run_rules, Dag, LintConfig,
-    LintInput, NodeInfo, SortMode,
-};
+use dbtl::{build_model_list, layout, run_rules, Dag, LintConfig, LintInput, NodeInfo, SortMode};
 
 /// (manifest-mode Dag, source-mode Dag) of the same project.
 fn dags() -> (Dag, Dag) {
-    assert!(
-        Path::new(MANIFEST).is_file(),
-        "fixture missing — run `cargo xtask regen-sample-manifest`"
-    );
-    let from_manifest = load_dag(MANIFEST).expect("sample manifest loads");
-    let from_source = load_dag_from_source(PROJECT).expect("sample project parses");
-    (from_manifest, from_source)
+    cmp::dags(MANIFEST, PROJECT, "cargo xtask regen-sample-manifest")
 }
 
-/// All node infos keyed by uid, in a deterministic map.
 fn node_map(dag: &Dag) -> BTreeMap<String, NodeInfo> {
-    dag.nodes()
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect()
+    cmp::node_map(dag)
 }
 
 #[test]
 fn node_sets_and_infos_are_identical() {
-    // The strongest single check: every NodeInfo field — unique_id, name,
-    // resource_type, path, materialized, direct_up/down (edge degrees), and
-    // test_count — must agree for every node. This covers the config
-    // precedence chain, the project tree, disabled-node dropping, and the
-    // comment semantics in one comparison.
+    // Covers the config precedence chain, the project tree, disabled-node
+    // dropping, and the comment semantics in one comparison.
     let (m, s) = dags();
-    let mm = node_map(&m);
-    let sm = node_map(&s);
-    let m_ids: BTreeSet<&String> = mm.keys().collect();
-    let s_ids: BTreeSet<&String> = sm.keys().collect();
-    assert_eq!(
-        m_ids, s_ids,
-        "node id sets diverge between manifest and source modes"
-    );
-    for (uid, mi) in &mm {
-        assert_eq!(
-            mi, &sm[uid],
-            "NodeInfo diverges for {uid} (manifest vs source)"
-        );
-    }
+    cmp::assert_node_infos_identical(&m, &s, cmp::NO_DROPPED_EDGES);
 }
 
 #[test]
 fn full_lineage_closures_are_identical() {
-    // Same transitive upstream/downstream closure for every node — i.e. the
-    // pruned adjacency is the same graph, not merely the same degrees.
     let (m, s) = dags();
-    for uid in node_map(&m).keys() {
-        assert_eq!(m.upstream(uid), s.upstream(uid), "upstream({uid}) diverges");
-        assert_eq!(
-            m.downstream(uid),
-            s.downstream(uid),
-            "downstream({uid}) diverges"
-        );
-    }
+    cmp::assert_closures_identical(&m, &s, cmp::NO_DROPPED_EDGES);
 }
 
 #[test]
 fn details_are_identical_modulo_profile_data() {
     let (m, s) = dags();
-    for (uid, info) in node_map(&m) {
-        let md = m.detail(&uid).expect("manifest detail");
-        let sd = s.detail(&uid).expect("source detail");
-        assert_eq!(md.materialized, sd.materialized, "{uid} materialized");
-        assert_eq!(md.description, sd.description, "{uid} description");
-        assert_eq!(md.tags, sd.tags, "{uid} tags");
-        assert_eq!(md.unique_key, sd.unique_key, "{uid} unique_key");
-        // The declaring-yml provenance — the manifest's `pkg://path` scheme
-        // is stripped on ingest so both sides hold the project-relative path.
-        assert_eq!(md.patch_path, sd.patch_path, "{uid} patch_path");
-        assert_eq!(
-            md.original_file_path, sd.original_file_path,
-            "{uid} original_file_path"
-        );
-        // database/schema come from the PROFILE for non-sources (unknowable
-        // without a connection); sources carry them in schema.yml — compare.
-        // The source-only ingestion fields are declared/cascaded in
-        // schema.yml (+ the `sources:` tree for `+freshness`), so both modes
-        // must resolve them identically too.
-        if info.resource_type == "source" {
-            assert_eq!(md.schema, sd.schema, "{uid} schema");
-            assert_eq!(md.database, sd.database, "{uid} database");
-            assert_eq!(
-                md.loaded_at_field, sd.loaded_at_field,
-                "{uid} loaded_at_field"
-            );
-            assert_eq!(md.loader, sd.loader, "{uid} loader");
-            assert_eq!(
-                md.freshness_warn_after, sd.freshness_warn_after,
-                "{uid} freshness_warn_after"
-            );
-            assert_eq!(
-                md.freshness_error_after, sd.freshness_error_after,
-                "{uid} freshness_error_after"
-            );
-        }
-        // Seed columns: source mode reads the CSV header dbt doesn't record.
-        if info.resource_type != "seed" {
-            assert_eq!(md.columns, sd.columns, "{uid} columns");
-        }
-        // `meta` has no documented exclusion: the synthesized merge (project
-        // tree < schema.yml < in-file config; source → table cascade) must
-        // equal real dbt's for every node type.
-        assert_eq!(md.meta, sd.meta, "{uid} meta");
-        // The governance/config surface: model-only `access`
-        // (dbt defaults an undeclared model to `protected`), `group`,
-        // `contract.enforced`, `incremental_strategy`, `language`, and the
-        // model-level `constraints` — resolved through schema.yml
-        // `config:`/properties, in-file `config()`, and the `+`-tree in the
-        // same precedence order `materialized` follows.
-        assert_eq!(md.access, sd.access, "{uid} access");
-        assert_eq!(md.group, sd.group, "{uid} group");
-        assert_eq!(
-            md.contract_enforced, sd.contract_enforced,
-            "{uid} contract_enforced"
-        );
-        assert_eq!(
-            md.incremental_strategy, sd.incremental_strategy,
-            "{uid} incremental_strategy"
-        );
-        assert_eq!(md.language, sd.language, "{uid} language");
-        assert_eq!(md.constraints, sd.constraints, "{uid} constraints");
-        // `deprecation_date` is a property, not a config: the manifest
-        // carries the stamped ISO timestamp; source mode the declared
-        // date — the former must start with the latter.
-        match (&md.deprecation_date, &sd.deprecation_date) {
-            (Some(mv), Some(sv)) => assert!(
-                mv.starts_with(sv.as_str()),
-                "{uid} deprecation_date: manifest {mv} vs source {sv}"
-            ),
-            (mv, sv) => assert_eq!(mv, sv, "{uid} deprecation_date"),
-        }
-    }
+    cmp::assert_details_identical(&m, &s);
 }
 
 #[test]
@@ -200,21 +83,8 @@ fn project_name_is_identical() {
 
 #[test]
 fn tests_are_identical_as_kind_column_multisets() {
-    // dbt mints hashed test NAMES; the UI shows kind+column, so that is the
-    // contract: per-node multisets of (kind, column_name) must match.
     let (m, s) = dags();
-    for uid in node_map(&m).keys() {
-        let key = |d: &Dag| -> Vec<(String, Option<String>)> {
-            let mut v: Vec<_> = d
-                .tests(uid)
-                .iter()
-                .map(|t| (t.kind.clone(), t.column_name.clone()))
-                .collect();
-            v.sort();
-            v
-        };
-        assert_eq!(key(&m), key(&s), "tests diverge for {uid}");
-    }
+    cmp::assert_tests_identical(&m, &s);
 }
 
 #[test]
