@@ -2,17 +2,16 @@
 // External URLs and the Pagefind output are not checked. Exit 1 on any problem.
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import config from "../astro.config.mjs";
+import { fail, siteRoot } from "./shared.mjs";
 
-const siteRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dist = path.join(siteRoot, "dist");
 const base = `${config.base.replace(/\/+$/, "")}/`;
 const ORIGIN = "http://internal.invalid";
+const failLinks = fail("check-links");
 
 if (!fs.existsSync(dist)) {
-  console.error("check-links: dist/ does not exist; run `astro build` first");
-  process.exit(1);
+  failLinks("dist/ does not exist; run `astro build` first");
 }
 
 function walk(dir) {

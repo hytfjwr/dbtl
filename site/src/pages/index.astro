@@ -4,12 +4,29 @@ import Demo from "../components/home/Demo.astro";
 import Features from "../components/home/Features.astro";
 import Hero from "../components/home/Hero.astro";
 import Base from "../layouts/Base.astro";
+import { REPO_URL, VERSION } from "../lib/site.ts";
+
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: "dbtl",
+  applicationCategory: "DeveloperApplication",
+  operatingSystem: "macOS, Linux, Windows",
+  softwareVersion: VERSION,
+  offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+  description:
+    "dbtl draws your dbt project's dependency graph in a terminal UI. See what a model depends on and what it affects without running dbt compile or opening a browser.",
+  url: new URL(Astro.url.pathname, Astro.site).href,
+  codeRepository: REPO_URL,
+  license: `${REPO_URL}/blob/main/LICENSE`,
+};
 ---
 
 <Base
   title="dbtl — a terminal UI for dbt model lineage"
   description="dbtl draws your dbt project's dependency graph in a terminal UI. See what a model depends on and what it affects without running dbt compile or opening a browser."
   section="home"
+  jsonLd={jsonLd}
 >
   <div class="wrap vt-page" data-pagefind-body data-pagefind-meta="section:Home">
     <Hero>

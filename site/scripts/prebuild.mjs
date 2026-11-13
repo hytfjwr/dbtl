@@ -6,10 +6,8 @@
 // Both inputs are read-only.
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { repoRoot, SAMPLES, siteRoot } from "./shared.mjs";
 
-const siteRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const repoRoot = path.resolve(siteRoot, "..");
 const outDir = path.join(siteRoot, "src", "data");
 
 function readVersion() {
@@ -28,11 +26,8 @@ function readVersion() {
   return found[1];
 }
 
-// The two sample projects the home demo and the playground run on.
-const SAMPLES = [
-  { name: "jaffle_finance", file: "manifest.json" },
-  { name: "sample", file: "sample_manifest.json" },
-];
+// The two sample projects the home demo and the playground run on — names
+// and manifest paths come from the shared list in samples.ts.
 
 // Short flags shown next to a column in the inspector, from the tests declared on it.
 const TEST_FLAGS = {
@@ -114,7 +109,7 @@ function buildGraph(file) {
 
 fs.mkdirSync(outDir, { recursive: true });
 const graph = Object.fromEntries(
-  SAMPLES.map(({ name, file }) => [name, { name, nodes: buildGraph(file) }]),
+  SAMPLES.map(({ name, manifest }) => [name, { name, nodes: buildGraph(path.basename(manifest)) }]),
 );
 const version = readVersion();
 fs.writeFileSync(path.join(outDir, "graph.json"), `${JSON.stringify(graph)}\n`);

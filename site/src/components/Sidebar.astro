@@ -19,7 +19,7 @@ const { nav, current } = Astro.props;
   </div>
   {nav.groups.map((g) => (
     <>
-      <h3>{g.group}</h3>
+      <p class="grp">{g.group}</p>
       <ul>
         {g.pages.map((p) => (
           <li>

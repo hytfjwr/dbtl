@@ -4,7 +4,7 @@ import PrevNext from "../components/PrevNext.astro";
 import Sidebar from "../components/Sidebar.astro";
 import Toc from "../components/Toc.astro";
 import { neighbours, type Nav, type NavPage } from "../lib/nav.ts";
-import { editUrl, REPO_URL, VERSION } from "../lib/site.ts";
+import { editUrl, REPO_URL, url, VERSION } from "../lib/site.ts";
 import { tocItems } from "../lib/toc.ts";
 import Base from "./Base.astro";
 
@@ -32,9 +32,27 @@ const items = changelog ? tocItems(headings).filter((i) => i.depth === 2) : tocI
 // stay distinct; the generated pages' titles already say what they are.
 const docTitle =
   page.kind === "docs" ? `${page.title} - ${page.group} - dbtl docs` : `${page.title} - dbtl docs`;
+
+// The crumb's group segment jumps to the group's first page; the trail ends at
+// the current page, which is shown but not linked.
+const groupHome = nav.groups.find((g) => g.group === page.group)?.pages[0];
+const crumbs = [
+  { name: page.group, item: url(`${groupHome ? groupHome.slug : page.slug}/`) },
+  { name: page.title, item: url(`${page.slug}/`) },
+];
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  itemListElement: crumbs.map((c, i) => ({
+    "@type": "ListItem",
+    position: i + 1,
+    name: c.name,
+    item: new URL(c.item, Astro.site).href,
+  })),
+};
 ---
 
-<Base title={docTitle} description={page.description} section="docs">
+<Base title={docTitle} description={page.description} section="docs" jsonLd={jsonLd}>
   <div class="docs" data-page={chips ? "reference" : "docs"}>
     <div class="docbar">
       <button type="button" id="open-drawer" aria-controls="sidebar" aria-expanded="false">
@@ -65,14 +83,15 @@ const docTitle =
         data-pagefind-body
         data-pagefind-meta={`section:${page.group}`}
       >
-        <div class="crumb" data-pagefind-ignore>
-          <span>{page.group}</span>
+        <nav class="crumb" aria-label="Breadcrumb" data-pagefind-ignore>
+          {groupHome && <a href={url(`${groupHome.slug}/`)}>{page.group}</a>}
+          {!groupHome && <span>{page.group}</span>}
           <span aria-hidden="true">/</span>
-          <span>{page.title}</span>
+          <span aria-current="page">{page.title}</span>
           <span class="badge">v{VERSION}</span>
           {generated && <span class="badge">generated</span>}
-        </div>
-        <h1>{page.title}</h1>
+        </nav>
+        <h1 data-pagefind-weight="10">{page.title}</h1>
         {!generated && <p class="lead">{page.description}</p>}
         {chips && (
           <nav class="jump" aria-label="On this page" data-pagefind-ignore>

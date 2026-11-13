@@ -42,13 +42,13 @@ const columns = [
 <footer class="site-foot">
   <div class="wrap cols">
     <div>
-      <h3>dbtl</h3>A terminal UI for dbt model lineage.
+      <p class="cols-h">dbtl</p>A terminal UI for dbt model lineage.
       <br />
       MIT license.
     </div>
     {columns.map((c) => (
       <div>
-        <h3>{c.title}</h3>
+        <p class="cols-h">{c.title}</p>
         <ul>
           {c.links.map((l) => (
             <li>

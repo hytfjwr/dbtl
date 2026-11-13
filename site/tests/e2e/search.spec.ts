@@ -5,7 +5,7 @@ test("search opens from the button and closes from its close control", async ({ 
   await page.goto("/dbtl/getting-started/overview/");
   await page.waitForLoadState("networkidle");
 
-  const dialog = page.locator("dialog#search");
+  const dialog = page.locator("dialog#search-modal");
   await page.locator(".search-btn").click();
   await expect(dialog).toHaveAttribute("open", "");
   await expect(dialog).toBeVisible();

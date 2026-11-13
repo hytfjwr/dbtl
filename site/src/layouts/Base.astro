@@ -1,11 +1,7 @@
 ---
-import "@fontsource/ibm-plex-mono/latin-400.css";
-import "@fontsource/ibm-plex-mono/latin-500.css";
-import "@fontsource/ibm-plex-mono/latin-600.css";
-import "@fontsource/ibm-plex-mono/latin-400-italic.css";
-import "@fontsource/ibm-plex-sans/latin-400.css";
-import "@fontsource/ibm-plex-sans/latin-500.css";
-import "@fontsource/ibm-plex-sans/latin-600.css";
+// The @font-face rules live in tokens.css and point straight at the woff2
+// files — importing the fontsource css bundles would also ship the woff
+// fallbacks, which no supported browser needs.
 import monoRegular from "@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2?url";
 import sansRegular from "@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-400-normal.woff2?url";
 import "../styles/tokens.css";
@@ -29,8 +25,10 @@ interface Props {
   section?: "home" | "docs" | "playground";
   /** Keep the page out of search indexes: robots noindex and no canonical/og:url. */
   noindex?: boolean;
+  /** Structured data emitted as application/ld+json. */
+  jsonLd?: Record<string, unknown> | Record<string, unknown>[];
 }
-const { title, description, section, noindex } = Astro.props;
+const { title, description, section, noindex, jsonLd } = Astro.props;
 
 const canonical = new URL(Astro.url.pathname, Astro.site).href;
 const ogImage = new URL(url("og.png"), Astro.site).href;
@@ -67,11 +65,14 @@ const tabs = [
     <link rel="apple-touch-icon" href={url("apple-touch-icon.png")} />
     <link rel="preload" href={sansRegular} as="font" type="font/woff2" crossorigin />
     <link rel="preload" href={monoRegular} as="font" type="font/woff2" crossorigin />
+    {jsonLd && <script is:inline type="application/ld+json" set:html={JSON.stringify(jsonLd)} />}
     <script is:inline>
       (function () {
         try {
           var t = localStorage.getItem("dbtl-theme");
           if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+          if (localStorage.getItem("dbtl-keys") === "off")
+            document.documentElement.setAttribute("data-keys", "off");
         } catch (e) {}
       })();
     </script>
@@ -113,7 +114,6 @@ const tabs = [
           class="search-btn"
           type="button"
           data-search-open
-          aria-label="Search docs"
           aria-keyshortcuts="Control+K Meta+K /"
         >
           <svg

@@ -1,5 +1,6 @@
 // Page chrome behaviour: keyboard shortcuts, the docs drawer on narrow screens,
 // wide-table scroll cues and the theme chip in the status line.
+import { initKeysToggle, shortcutsOn } from "./keys.ts";
 import { pulse } from "./motion.ts";
 import { closeSearch, isSearchOpen, openSearch } from "./search-modal.ts";
 import { cycleTheme, onThemeChange } from "./theme.ts";
@@ -103,10 +104,32 @@ if (stackable.length > 0) {
   apply();
 }
 
-/* ---- theme chip in the status line ---- */
+/* ---- theme chip and shortcuts toggle in the status line ---- */
 const chip = $("#chip-theme");
 if (chip) onThemeChange((choice) => (chip.textContent = `theme:${choice}`));
 for (const button of $$('.hints [data-act="theme"]')) button.addEventListener("click", cycleTheme);
+initKeysToggle();
+
+/* ---- scrollable <pre>: a code block is a tab stop only while it overflows ---- */
+const pres = $$("pre").filter((p) => !p.closest(".lin-stage"));
+if (pres.length > 0) {
+  const check = (pre: HTMLElement) => {
+    const scrolls =
+      pre.scrollWidth > pre.clientWidth + 1 || pre.scrollHeight > pre.clientHeight + 1;
+    if (scrolls) pre.tabIndex = 0;
+    else pre.removeAttribute("tabindex");
+  };
+  const run = () => pres.forEach(check);
+  if ("ResizeObserver" in window) {
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) check(entry.target as HTMLElement);
+    });
+    for (const pre of pres) observer.observe(pre);
+  }
+  window.addEventListener("resize", run);
+  run();
+  void document.fonts?.ready.then(run);
+}
 
 /* ---- keyboard: Cmd-K / Ctrl-K and "/" open search; a key shown in the status line runs that hint ---- */
 document.addEventListener("keydown", (event) => {
@@ -122,6 +145,7 @@ document.addEventListener("keydown", (event) => {
   }
   if (event.defaultPrevented || isSearchOpen() || event.metaKey || event.ctrlKey || event.altKey)
     return;
+  if (!shortcutsOn()) return;
   const el = event.target as HTMLElement | null;
   if (el && (["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName) || el.isContentEditable)) return;
   const hint = $$("[data-key]", $(".hints") ?? document).find((h) => h.dataset.key === event.key);

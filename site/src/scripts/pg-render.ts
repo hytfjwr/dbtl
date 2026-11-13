@@ -3,11 +3,12 @@
 // build time (SSR) and in the browser, so the static page and the live DOM can
 // never diverge. No DOM, no engine handle — just data in, HTML strings out.
 import type { ColumnsOutput, LineageOutput, LintOutput, SelectedNode } from "../engine/index.ts";
+import { SAMPLE_NAMES } from "../../scripts/samples.ts";
 import { esc } from "./html.ts";
 import { tagOf } from "./samples.ts";
 
 /** The bundled projects the switcher offers, in order. The first is open at start. */
-export const SAMPLES = ["jaffle_finance", "sample"] as const;
+export const SAMPLES = SAMPLE_NAMES;
 export type SampleName = (typeof SAMPLES)[number];
 
 /** Selector chips per project. The first one is the starting selector. */

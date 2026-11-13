@@ -572,7 +572,7 @@ dialog.search::backdrop {
   color: var(--text-faint);
   font-size: var(--fs-1);
 }
-.sidebar h3 {
+.sidebar .grp {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -583,7 +583,7 @@ dialog.search::backdrop {
   letter-spacing: 0;
   word-spacing: 0;
 }
-.sidebar h3::after {
+.sidebar .grp::after {
   content: "";
   flex: 1;
   border-top: 1px solid var(--line);
