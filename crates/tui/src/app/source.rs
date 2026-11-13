@@ -68,7 +68,9 @@ impl App {
         // between reloads, and the default `Root` scope must keep hiding them.
         let (dag, mut warnings) = match &self.source {
             DataSource::Manifest(path) => load_dag_with_warnings(path)?,
-            DataSource::Project(dir) => load_dag_from_source_with_warnings(dir)?,
+            DataSource::Project(dir) => {
+                load_dag_from_source_with_warnings(dir, self.cli_vars.as_ref())?
+            }
         };
         // The SAME scope application the CLI load path runs, warnings included:
         // an emptied or ambiguously-rooted re-load is reported exactly like a
@@ -171,12 +173,9 @@ impl App {
             }
         }
         self.resolve_owner_meta_key();
-        self.lint_findings = crate::run_rules(
-            crate::LintInput::new(&self.dag, &self.lint_config)
-                .with_catalog(self.catalog.as_deref())
-                .with_dialect(self.sql_dialect),
-        )
-        .findings;
+        let lint_outcome = self.lint_outcome();
+        warnings.extend(lint_outcome.warnings.iter().cloned());
+        self.lint_findings = lint_outcome.findings;
         self.filter = None;
         self.mode = self.idle_mode();
         // Any yank-menu context stashed against the OLD graph dies here too.

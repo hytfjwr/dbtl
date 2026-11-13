@@ -23,6 +23,11 @@ pub struct GenArgs {
     /// default uvx resolves the latest release.
     #[arg(long)]
     dbt_version: Option<String>,
+    /// Inline YAML/JSON var map passed to `dbt compile --vars` verbatim —
+    /// the manifest then records the same rendered values `dbtl --vars`
+    /// produces from source.
+    #[arg(long, value_name = "YAML|JSON")]
+    vars: Option<String>,
 }
 
 pub fn run(args: GenArgs) -> Result<()> {
@@ -37,6 +42,7 @@ pub fn run(args: GenArgs) -> Result<()> {
         &out,
         args.profile.as_deref(),
         args.dbt_version.as_deref(),
+        args.vars.as_deref(),
     )
 }
 
@@ -48,6 +54,7 @@ pub fn gen(
     out: &Path,
     profile: Option<&str>,
     dbt_version: Option<&str>,
+    vars: Option<&str>,
 ) -> Result<()> {
     check_uvx()?;
     if !project_dir.join("dbt_project.yml").is_file() {
@@ -72,11 +79,11 @@ pub fn gen(
 
     let result = (|| {
         if project_dir.join("packages.yml").is_file() {
-            run_dbt(project_dir, tmp.path(), dbt_version, "deps")?;
+            run_dbt(project_dir, tmp.path(), dbt_version, "deps", None)?;
         }
         // `dbt compile` (not `dbt parse`): only compile puts `compiled_code`
         // in the manifest, which the fixture carries and consumers prefer.
-        run_dbt(project_dir, tmp.path(), dbt_version, "compile")?;
+        run_dbt(project_dir, tmp.path(), dbt_version, "compile", vars)?;
         write_manifest(project_dir, out)
     })();
     cleanup(project_dir);
@@ -169,6 +176,7 @@ fn run_dbt(
     profiles_dir: &Path,
     dbt_version: Option<&str>,
     subcmd: &str,
+    vars: Option<&str>,
 ) -> Result<()> {
     let mut cmd = Command::new("uvx");
     cmd.arg("--with")
@@ -182,8 +190,11 @@ fn run_dbt(
         .arg(subcmd)
         .args(["--profiles-dir"])
         .arg(profiles_dir)
-        .args(["--project-dir", "."])
-        .current_dir(project_dir)
+        .args(["--project-dir", "."]);
+    if let Some(vars) = vars {
+        cmd.arg("--vars").arg(vars);
+    }
+    cmd.current_dir(project_dir)
         // dbt copies this into metadata.send_anonymous_usage_stats; pinning it
         // keeps the manifest identical no matter what the caller's shell
         // exports (CI's dbt-compat job sets the same value).

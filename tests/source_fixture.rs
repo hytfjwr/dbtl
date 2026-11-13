@@ -603,7 +603,7 @@ fn undefined_doc_ref_warns_and_keeps_raw_text() {
     )
     .unwrap();
 
-    let (dag, warnings) = load_dag_from_source_with_warnings(root).expect("project loads");
+    let (dag, warnings) = load_dag_from_source_with_warnings(root, None).expect("project loads");
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("ghost"), "{warnings:?}");
     assert_eq!(
@@ -642,7 +642,7 @@ fn unclosed_and_stray_docs_tags_warn() {
     )
     .unwrap();
 
-    let (dag, warnings) = load_dag_from_source_with_warnings(root).expect("project loads");
+    let (dag, warnings) = load_dag_from_source_with_warnings(root, None).expect("project loads");
     assert!(
         warnings
             .iter()
@@ -693,7 +693,7 @@ fn docs_paths_config_scans_only_listed_dirs() {
     )
     .unwrap();
 
-    let (dag, warnings) = load_dag_from_source_with_warnings(root).expect("project loads");
+    let (dag, warnings) = load_dag_from_source_with_warnings(root, None).expect("project loads");
     let detail = dag.detail("model.d.m").expect("m detail");
     assert_eq!(detail.description.as_deref(), Some("SHARED"));
     assert_eq!(
@@ -852,7 +852,7 @@ fn duplicate_stem_keeps_first_and_warns() {
     // `models/a/dup.sql` and `models/b/dup.sql` both produce the uid
     // `model.coll.dup`; path-sorted collection makes `a/dup.sql` the winner.
     let (dag, warnings) =
-        load_dag_from_source_with_warnings(COLLISION_PROJECT).expect("project loads");
+        load_dag_from_source_with_warnings(COLLISION_PROJECT, None).expect("project loads");
     assert_eq!(
         dag.upstream("model.coll.dup"),
         HashSet::from(["model.coll.parent_a".to_string()]),
@@ -960,7 +960,7 @@ fn schema_relationships_test_resolves_ref_and_source_targets() {
 #[test]
 fn invalid_yaml_emits_warning_but_project_loads() {
     let (dag, warnings) =
-        load_dag_from_source_with_warnings(COLLISION_PROJECT).expect("project loads");
+        load_dag_from_source_with_warnings(COLLISION_PROJECT, None).expect("project loads");
     assert!(
         warnings.iter().any(|w| w.contains("broken.yml")),
         "warnings: {warnings:?}"
@@ -1393,7 +1393,8 @@ fn semantic_models_entries_mark_the_consumed_models_dependents() {
              semantic_models:\n  - name: sm_a\n    model: \"ref('stg_a')\"\n  - name: sm_off\n    model: \"ref('stg_b')\"\n    enabled: false\n  - name: sm_cfg_off\n    model: \"ref('stg_c')\"\n    config:\n      enabled: false\n  - name: sm_ghost\n    model: \"ref('nope')\"\n",
         ),
     ]);
-    let (dag, _warnings) = load_dag_from_source_with_warnings(tmp.path()).expect("project loads");
+    let (dag, _warnings) =
+        load_dag_from_source_with_warnings(tmp.path(), None).expect("project loads");
     assert_eq!(
         dag.detail("model.d.stg_a").unwrap().semantic_dependents,
         vec!["sm_a".to_string()],

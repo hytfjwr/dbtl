@@ -479,6 +479,46 @@ fn model_fanout_folds_versioned_leaves_into_one_consumer() {
 }
 
 #[test]
+fn model_fanout_endpoint_children_dont_disqualify_a_leaf() {
+    // The issue's repro: hub feeds three reporting models and each reads
+    // leaf-shaped — an exposure on rpt_a and a `semantic_models:` consumer
+    // on rpt_b are ENDPOINTS, not data-resource children, so they don't
+    // take away leaf-ness. Threshold 3 still flags hub. The control
+    // int_ctrl's only child feeds a real model downstream — not a leaf —
+    // so it stays quiet.
+    let mut m = manifest(
+        vec![
+            model("int_hub", "intermediate/int_hub.sql"),
+            model("rpt_a", "marts/rpt_a.sql"),
+            model("rpt_b", "marts/rpt_b.sql"),
+            model("rpt_c", "marts/rpt_c.sql"),
+            model("int_ctrl", "intermediate/int_ctrl.sql"),
+            model("rpt_mid", "marts/rpt_mid.sql"),
+            model("fct_deep", "marts/fct_deep.sql"),
+        ],
+        vec![],
+        &[
+            ("model.p.int_hub", "model.p.rpt_a"),
+            ("model.p.int_hub", "model.p.rpt_b"),
+            ("model.p.int_hub", "model.p.rpt_c"),
+            ("model.p.rpt_a", "exposure.p.dash"),
+            ("model.p.int_ctrl", "model.p.rpt_mid"),
+            ("model.p.rpt_mid", "model.p.fct_deep"),
+        ],
+    );
+    m.exposures.extend([exposure("dash")]);
+    m.semantic_models
+        .extend([semantic_model("sm_rpt", "model.p.rpt_b")]);
+    let cfg = config_from("lint:\n  model_fanout_threshold: 3\n");
+    let f = findings_of(&m, &cfg);
+    assert_eq!(
+        flagged(&f, LintRule::ModelFanout),
+        vec!["model.p.int_hub"],
+        "exposure/semantic children keep rpt_a/rpt_b leaves — int_hub flags"
+    );
+}
+
+#[test]
 fn root_models_flags_parentless_models_only() {
     let m = manifest(
         vec![
@@ -636,6 +676,10 @@ fn rejoining_upstream_counts_only_data_node_children_and_endpoints() {
             ..Default::default()
         },
     );
+    // A `semantic_models:` consumer lands on `semantic_dependents` — the
+    // note reads both channels (manifest mode also carries the edge).
+    m.semantic_models
+        .extend([semantic_model("sm_b", "model.p.int_b")]);
     let findings = findings_of(&m, &LintConfig::default());
     let hits: Vec<&Finding> = findings
         .iter()
@@ -650,6 +694,16 @@ fn rejoining_upstream_counts_only_data_node_children_and_endpoints() {
             "model.p.stg_a".to_string(),
             "source.p.s.raw".to_string()
         ]
+    );
+    // The endpoints still read B — the message names them (the graph
+    // child exposure AND the `semantic_dependents` entry, deduped) so
+    // "redundant hop" can't be read as "nothing consumes int_b".
+    assert!(
+        hits[0].message.contains(
+            "(also read by exposure exp, semantic_model sm_b; endpoint consumers do not count as uses)"
+        ),
+        "endpoint consumers named in the note: {}",
+        hits[0].message
     );
 }
 
@@ -1519,19 +1573,21 @@ fn exclude_unions_glob_path_tag_and_exact_names() {
     // root_models flags every parentless model — five of them here.
     let mut tagged = model("stg_tagged", "staging/stg_tagged.sql");
     tagged.1.tags = vec!["wip".to_string()];
+    let mut kept = model("plain_kept", "marts/plain_kept.sql");
+    kept.1.original_file_path = Some("models/marts/plain_kept.sql".into());
     let m = manifest(
         vec![
             model("stg_legacy_a", "staging/stg_legacy_a.sql"),
             tagged,
             model("stg_exact", "staging/stg_exact.sql"),
-            model("plain_kept", "marts/plain_kept.sql"),
+            kept,
             model("fct_kept", "marts/fct_kept.sql"),
         ],
         vec![],
         &[],
     );
     let cfg = config_from(
-        "lint:\n  rules:\n    root_models:\n      exclude: [\"stg_legacy_*\", \"stg_exact\", \"path:marts/plain\", \"tag:wip\"]\n",
+        "lint:\n  rules:\n    root_models:\n      exclude: [\"stg_legacy_*\", \"stg_exact\", \"path:models/marts/plain*\", \"tag:wip\"]\n",
     );
     let f = findings_of(&m, &cfg);
     assert_eq!(
@@ -1543,6 +1599,34 @@ fn exclude_unions_glob_path_tag_and_exact_names() {
     assert!(
         flagged(&f, LintRule::UndocumentedModels).contains(&"model.p.stg_legacy_a"),
         "excluding root_models doesn't blind other rules"
+    );
+}
+
+#[test]
+fn exclude_with_a_legacy_path_spec_surfaces_a_deprecation_warning() {
+    // The resource-relative `path:` form still suppresses (compat) but the
+    // outcome carries the one-line deprecation note for the caller's
+    // warning channel — once, however many findings it suppressed.
+    let mut a = model("stg_a", "staging/stg_a.sql");
+    a.1.original_file_path = Some("models/staging/stg_a.sql".into());
+    let mut b = model("stg_b", "staging/stg_b.sql");
+    b.1.original_file_path = Some("models/staging/stg_b.sql".into());
+    let m = manifest(vec![a, b], vec![], &[]);
+    let cfg = config_from("lint:\n  rules:\n    root_models:\n      exclude: [\"path:staging\"]\n");
+    let dag = Dag::build(&m);
+    let out = run_rules(LintInput::new(&dag, &cfg));
+    assert!(
+        flagged(&out.findings, LintRule::RootModels).is_empty(),
+        "the legacy form still excludes"
+    );
+    assert_eq!(
+        out.warnings,
+        vec![
+            "selector 'path:staging' uses the deprecated resource-relative \
+             path form — write it project-relative instead: 'path:models/staging'"
+                .to_string()
+        ],
+        "one deduped warning for the legacy spec"
     );
 }
 
@@ -1899,7 +1983,8 @@ fn malformed_meta_dbtl_ignore_warns_in_source_mode() {
     )
     .unwrap();
     std::fs::write(dir.path().join("models/stg/stg_a.sql"), "select 1").unwrap();
-    let (_manifest, warnings) = crate::manifest_from_source_with_warnings(dir.path()).unwrap();
+    let (_manifest, warnings) =
+        crate::manifest_from_source_with_warnings(dir.path(), None).unwrap();
     let meta_warnings: Vec<&String> = warnings
         .iter()
         .filter(|w| w.contains("meta.dbtl.ignore"))
@@ -2961,6 +3046,67 @@ fn exposures_dependent_on_private_models_flags_non_public_parents() {
             "model.p.dim_prot".to_string()
         ],
         "private+protected flag; public and access-less don't"
+    );
+    // Each parent's declared access lands in the message.
+    assert!(
+        hits[0]
+            .message
+            .contains("dim_priv (access: private), dim_prot (access: protected)"),
+        "access values named: {}",
+        hits[0].message
+    );
+    assert!(
+        hits[0].message.contains("[public]"),
+        "the configured allow-list is named: {}",
+        hits[0].message
+    );
+}
+
+#[test]
+fn exposures_dependent_on_private_models_allowed_access_retargets_the_check() {
+    // `allowed_access: [public, protected]` — a project treating dbt's
+    // `protected` default as intended flags only `private` parents.
+    let mut priv_m = model("dim_priv", "marts/dim_priv.sql");
+    priv_m.1.access = Some("private".into());
+    let mut prot_m = model("dim_prot", "marts/dim_prot.sql");
+    prot_m.1.access = Some("protected".into());
+    let mut m = manifest(
+        vec![priv_m, prot_m],
+        vec![],
+        &[
+            ("model.p.dim_priv", "exposure.p.exp"),
+            ("model.p.dim_prot", "exposure.p.exp"),
+        ],
+    );
+    m.exposures.extend([exposure("exp")]);
+    let cfg = config_from(
+        "lint:\n  rules:\n    exposures_dependent_on_private_models: {allowed_access: [public, protected]}\n",
+    );
+    let f = findings_of(&m, &cfg);
+    let hits: Vec<&Finding> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::ExposuresDependentOnPrivateModels)
+        .collect();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(
+        hits[0].related,
+        vec!["model.p.dim_priv".to_string()],
+        "protected parents pass under the widened allow-list"
+    );
+    assert!(
+        hits[0].message.contains("[public, protected]"),
+        "the configured allow-list is named: {}",
+        hits[0].message
+    );
+
+    // An explicitly empty allow-list opts the judgment out entirely.
+    let cfg = config_from(
+        "lint:\n  rules:\n    exposures_dependent_on_private_models: {allowed_access: []}\n",
+    );
+    let f = findings_of(&m, &cfg);
+    assert!(
+        flagged(&f, LintRule::ExposuresDependentOnPrivateModels).is_empty(),
+        "allowed_access: [] disables the check"
     );
 }
 

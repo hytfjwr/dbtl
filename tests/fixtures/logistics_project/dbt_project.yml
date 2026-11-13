@@ -32,6 +32,11 @@ models:
     experimental:
       # No vars entry and a `false` default: the whole folder stays off.
       +enabled: "{{ var('enable_experimental', false) }}"
+    sandbox:
+      # `and`/`not`/`or`/`==` in one project-file `+enabled` render:
+      # vars.yml env=dev with lock/force unset-false → ON; `--vars
+      # '{env: prod}'` or `lock_sandbox: true` flips the folder OFF.
+      +enabled: "{{ var('env', 'dev') == 'dev' and not var('lock_sandbox', false) or var('force_sandbox', false) }}"
     utilities:
       +materialized: table
 

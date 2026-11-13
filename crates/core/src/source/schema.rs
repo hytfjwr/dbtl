@@ -149,8 +149,10 @@ pub(super) struct SchemaModel {
 pub(super) struct SchemaConfig {
     #[serde(default, deserialize_with = "de_opt_string")]
     pub(super) materialized: Option<String>,
-    #[serde(default)]
-    pub(super) enabled: Option<bool>,
+    /// `config.enabled:` — raw (a `{{ … }}` string must reach the
+    /// enabled-expression evaluator; see [`de_enabled`]).
+    #[serde(default, deserialize_with = "de_enabled")]
+    pub(super) enabled: Option<serde_json::Value>,
     /// `config: meta:` — merges over a top-level `meta:` per key.
     #[serde(default)]
     pub(super) meta: serde_json::Value,
@@ -239,17 +241,17 @@ pub(super) struct SchemaSemanticModel {
     #[serde(default, deserialize_with = "de_opt_string")]
     pub(super) model: Option<String>,
     /// Top-level `enabled:` — a semantic-model property (unlike models,
-    /// where `enabled` only lives under `config:`).
-    #[serde(default)]
-    pub(super) enabled: Option<bool>,
+    /// where `enabled` only lives under `config:`). Raw — see [`de_enabled`].
+    #[serde(default, deserialize_with = "de_enabled")]
+    pub(super) enabled: Option<serde_json::Value>,
     #[serde(default)]
     pub(super) config: SchemaSemanticModelConfig,
 }
 
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct SchemaSemanticModelConfig {
-    #[serde(default)]
-    pub(super) enabled: Option<bool>,
+    #[serde(default, deserialize_with = "de_enabled")]
+    pub(super) enabled: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -297,8 +299,10 @@ pub(super) struct SchemaSource {
 /// is read.
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct SchemaSourceConfig {
-    #[serde(default)]
-    pub(super) enabled: Option<bool>,
+    /// `config.enabled:` — the ONLY disable channel for a source table.
+    /// Raw — see [`de_enabled`].
+    #[serde(default, deserialize_with = "de_enabled")]
+    pub(super) enabled: Option<serde_json::Value>,
     /// `config.meta` — merges per key at its precedence level (a source
     /// `config.meta` sits below the table's top-level `meta:` — verified).
     #[serde(default)]

@@ -42,6 +42,7 @@ export interface SelectedNode {
 
 export interface SelectOutput {
   nodes: SelectedNode[];
+  warnings: string[];
 }
 
 export interface DetailOutput {

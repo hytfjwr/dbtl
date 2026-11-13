@@ -199,7 +199,7 @@ fn adopt_manifest_switches_the_source_and_reverts_on_error() {
         "/../../tests/fixtures/sample_manifest.json"
     );
     let dag = load_dag_from_source(project).expect("sample project loads");
-    let mut a = App::from_source(dag, PathBuf::from(project));
+    let mut a = App::from_source(dag, PathBuf::from(project), None);
     assert!(a.is_source_mode());
     assert_eq!(a.project_root(), Path::new(project));
 

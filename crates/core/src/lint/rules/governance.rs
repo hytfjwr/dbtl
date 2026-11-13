@@ -33,48 +33,65 @@ pub(super) fn public_models_without_contract(
 }
 
 /// `exposures_dependent_on_private_models`: an exposure whose direct model
-/// parents declare `access: private`/`protected`. `access: None` means
-/// "unknown" — reachable only on a manifest whose wire genuinely omits
-/// `access` (source mode fills dbt's `protected` model default) — so
-/// `None` is never judged.
+/// parents declare an `access` outside the configured `allowed_access`
+/// (default `[public]`). Note dbt defaults an undeclared model access to
+/// `protected`, so projects that never write `access:` flag until they
+/// widen the list to `[public, protected]` or disable the rule.
+/// `access: None` means "unknown" — reachable only on a manifest whose
+/// wire genuinely omits `access` (source mode fills dbt's `protected`
+/// model default) — so `None` is never judged.
 pub(super) fn exposures_dependent_on_private_models(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
+    config: &LintConfig,
     out: &mut Vec<Finding>,
 ) {
+    let allowed = config
+        .str_list_param(
+            LintRule::ExposuresDependentOnPrivateModels,
+            "allowed_access",
+        )
+        .expect("the registry declares exposures_dependent_on_private_models.allowed_access");
+    if allowed.is_empty() {
+        // An explicitly empty allow-list opts the judgment out entirely.
+        return;
+    }
     for uid in uids {
         let Some(n) = dag.get(uid) else { continue };
         if n.resource_type != "exposure" || !in_scope(n) {
             continue;
         }
-        let mut parents: Vec<String> = dag
+        let mut parents: Vec<(String, String)> = dag
             .direct_parents(uid)
             .iter()
-            .filter(|p| {
-                dag.get(p).is_some_and(|p| {
-                    p.resource_type == "model"
-                        && dag
-                            .detail(&p.unique_id)
-                            .and_then(|d| d.access.as_deref())
-                            .is_some_and(|a| a != "public")
-                })
+            .filter_map(|p| {
+                let parent = dag.get(p)?;
+                if parent.resource_type != "model" {
+                    return None;
+                }
+                let access = dag.detail(&parent.unique_id)?.access.clone()?;
+                (!allowed.contains(&access)).then(|| (p.clone(), access))
             })
-            .cloned()
             .collect();
         if parents.is_empty() {
             continue;
         }
         parents.sort();
+        let names: Vec<String> = parents
+            .iter()
+            .map(|(p, access)| format!("{} (access: {access})", display_name(dag, p)))
+            .collect();
         out.push(Finding::new(
             LintRule::ExposuresDependentOnPrivateModels,
             (*uid).clone(),
-            parents.clone(),
+            parents.iter().map(|(p, _)| p.clone()).collect(),
             format!(
-                "exposure {} directly depends on non-public {}: {}",
+                "exposure {} directly depends on {} outside the allowed access [{}]: {}",
                 display_name(dag, uid),
                 pluralize(parents.len(), "model"),
-                name_list(&display_names(dag, &parents)),
+                allowed.join(", "),
+                name_list(&names),
             ),
         ));
     }

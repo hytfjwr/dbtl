@@ -8,6 +8,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `--vars '<YAML|JSON>'` — a dbt-compatible variables map for source-mode
+  parsing, accepted as a global flag on either side of a subcommand. The
+  dict outranks `vars.yml` and `dbt_project.yml`'s `vars:` in every
+  `enabled` render scope (the project file's `+enabled` keys, in-file
+  `config()`, and schema files) and applies to every source-mode load
+  the run performs: the graph, source-parsed `--diff` baselines
+  (including `git:<rev>`), TUI reloads, and the `P` `dbt parse` handoff
+  (which forwards the same text verbatim). Manifest mode ignores it with
+  a warning.
+- Source mode evaluates the broader `enabled` expressions real dbt
+  accepts — `==`/`!=`/comparisons, `and`/`or`/`not` (with Python's
+  operand-returning semantics), `in` over literal lists, parentheses,
+  literals, `var('name'[, default])`, and `| as_bool` — through one
+  shared evaluator used by in-file `config(enabled=)`, `+enabled` tree
+  keys, schema `enabled:`/`config.enabled`, and generic-test `enabled`
+  alike.
 - Lint rule-set presets and category severities. `lint.preset: minimal|standard|strict` in `.dbtl.yml` (or `--preset` on `dbtl lint` and `dbtl check`) picks the base rule set a run starts from: `minimal` runs only the error-default rules, `standard` (the shipped default) runs every default-enabled rule, and `strict` runs the whole registry. `lint.categories: {<category>: error|warn|off}` pins a whole category above the preset and below `lint.rules.<id>`; `--rules` remains the authoritative selector above all of them. `--list-rules` shows the resolved severity/enablement under the active config alongside per-preset membership, and `--explain` reports the effective values.
 - `?` full-text search now matches compiled SQL in addition to raw SQL,
   descriptions, and column names, so a `ref()`/`source()` target that only
@@ -17,9 +33,42 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `language` (only when it is not `sql`), `incremental_strategy`,
   `deprecation_date`, and `constraints`. The `dbtl docs` node pages carry
   the same four fields as conditional heading bullets.
+- `exposures_dependent_on_private_models` accepts an `allowed_access`
+  list (`public`/`protected`/`private`, default `[public]`): only model
+  parents whose declared `access` sits outside the list flag. Projects
+  that never write `access:` — where dbt defaults every model to
+  `protected` — can widen it to `[public, protected]`, and an explicitly
+  empty list disables the judgment entirely.
 
 ### Changed
 
+- `path:` selectors now follow dbt's `PathSelectorMethod`: the value is a
+  project-root-relative path or glob matched against the node's
+  `original_file_path` or any ancestor directory of it, or against the
+  node's `patch_path` itself — so `path:models/marts` selects everything
+  under that directory (sources and exposures included, whose declaring
+  `.yml` IS their `original_file_path`), `path:models/**/schema.yml`
+  reaches the nodes a `.yml` patches, and `path:models/**/stg*` reaches
+  `stg*` files at any depth (`*`/`?`/classes never cross `/`). The old
+  substring read is gone (`path:marts` no longer matches
+  `stg_marts.sql`); the resource-relative form still matches for
+  compatibility but prints a one-time deprecation warning naming the
+  project-relative rewrite — on `ls`/`lint`/`docs`/`check`, `.dbtl.yml`
+  `exclude:` entries, and in the TUI's notice feed.
+- `exposures_dependent_on_private_models` findings now name each parent's
+  declared `access` value and the configured allow-list, since the rule
+  judges "outside `allowed_access`" rather than "private" — including
+  `protected` parents, which the dbt access default makes common.
+- `rejoining_upstream` findings name B's non-data consumers in the
+  message (`… (also read by exposure dash; endpoint consumers do not
+  count as uses)`) when an exposure, metric, saved query, or
+  `semantic_models:` entry also reads the bypassed hop — so "redundant
+  hop" can't be read as "nothing consumes it". The judgment itself is
+  unchanged: endpoints still don't count as data uses.
+- `model_directories`, `naming_conventions`, and `unused_models` document
+  that they classify a model prefix-first, then by directory, while
+  `layer_violation` classifies edges directory-only — the long-standing
+  semantics, now spelled out in `--explain`/docs instead of implied.
 - `cartesian_join` no longer flags an explicit `CROSS JOIN` — the
   intentional spelling of a Cartesian product. Only conditionless joins
   report now: a bare `JOIN`, a comma-separated `FROM a, b` with no
@@ -34,6 +83,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A schema file whose `enabled:`/`config.enabled:` value is a `{{ … }}`
+  Jinja string no longer drops the whole file: the raw value now
+  evaluates through the shared expression evaluator at the right stage,
+  so the file's other declarations (descriptions, columns, tests,
+  sources) survive, and a value that cannot be proven `false` keeps the
+  resource enabled with one warning — matching dbt's `disabled` parking
+  only on a proven `false`.
+- `model_fanout` no longer stops counting leaf children the moment one of
+  them feeds an endpoint resource: a leaf is now a model with no
+  data-resource children of its own, so a reporting model read only by an
+  exposure, metric, saved query, or `semantic_models:` entry still counts
+  toward the hub's fan-out.
+- Empty and whitespace-only `unique_key` values no longer count as
+  configured: a scalar `unique_key: ""`, a list of blanks, and the valid
+  entries in a mixed list now resolve the same way dbt treats them — the
+  first two read as unconfigured (so `incremental_without_unique_key`
+  still flags them), the third keeps only the real keys.
 - A model whose SQL nests deeper than a small stack can walk — tens of
   thousands of `AND`/`||` terms or `UNION ALL` arms — no longer aborts
   `dbtl lint` (and CLL) with a stack overflow: a lexical depth bound

@@ -84,7 +84,7 @@ Diagrams come from the same Mermaid core that the TUI's `m` yank uses, so a page
 `--select <SELECTOR>` and `--exclude <SELECTOR>` generate a partial tree. Both are repeatable and use the [selector grammar](selectors.md).
 
 ```sh
-dbtl docs --out docs/marts --select 'path:marts+'
+dbtl docs --out docs/marts --select 'path:models/marts+'
 dbtl docs --out docs/no-legacy --exclude 'tag:legacy'
 ```
 

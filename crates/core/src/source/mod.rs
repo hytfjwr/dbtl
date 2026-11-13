@@ -35,15 +35,21 @@
 //! - Property yml files are read ONLY from the configured model/seed/snapshot
 //!   paths — never `target/`, `dbt_packages/`, or stray yml elsewhere.
 //! - `config(enabled=false)` (in-file, either spelling) / `+enabled: false`
-//!   (project tree) / `config: enabled: false` (schema.yml, sources
-//!   included) drops the node, like dbt parking it under `disabled` — a
-//!   generic test's `enabled: false`/`config.enabled` likewise drops the
-//!   test. `var('name'[, default])` (`| as_bool` allowed) in
-//!   either `+enabled`/`config(enabled=)` position resolves through the same
-//!   var tables dbt renders it in — `vars.yml` for the project file's own
-//!   `+enabled` strings, `vars:` (project-scoped keys shadowing the top
-//!   level) for a node's `config()` calls; a value dbt's boolean validation
-//!   would reject keeps the node enabled with a warning.
+//!   (project tree) / `config: enabled: false`/`enabled:` (schema.yml,
+//!   sources included) drops the node, like dbt parking it under
+//!   `disabled` — a generic test's `enabled:`/`config.enabled` likewise
+//!   drops the test. Enabled values evaluate through ONE shared
+//!   expression evaluator (`vars`): literals, `var('name'[, default])`,
+//!   `==`/`!=`/`<=`-style comparisons, `and`/`or`/`not` with Python's
+//!   operand-returning semantics (a non-boolean result is unproven — the
+//!   resource stays enabled with a warning, since only a proven `false`
+//!   disables), `in` over literal lists, parentheses, and the `| as_bool`
+//!   filter. Vars resolve through dbt's own scopes — `vars.yml`'s top
+//!   level for the project file's `+enabled` strings; `vars:` (project-
+//!   scoped keys shadowing the top level) for node/schema renders; a
+//!   `--vars` map outranks both tables everywhere. Anything outside the
+//!   subset — `target.*`, arbitrary macro calls, unresolvable vars —
+//!   warns once and keeps the resource enabled rather than dropping it.
 //! - Source-table config resolves down dbt's chains (verified on 1.12.6):
 //!   `meta`/`freshness` walk table `config:` > table top-level > source
 //!   `config:` > source top-level > `sources:` tree — per meta key and per
@@ -103,16 +109,20 @@ use crate::{
 
 /// Parse a dbt project directory and build its [`Dag`] from source.
 pub fn load_dag_from_source<P: AsRef<Path>>(project_dir: P) -> Result<Dag> {
-    load_dag_from_source_with_warnings(project_dir).map(|(dag, _)| dag)
+    load_dag_from_source_with_warnings(project_dir, None).map(|(dag, _)| dag)
 }
 
 /// Like [`load_dag_from_source`], but also returns the recoverable warnings
-/// from [`manifest_from_source_with_warnings`] instead of discarding them.
+/// from [`manifest_from_source_with_warnings`] instead of discarding them,
+/// and takes the `--vars` override map [`manifest_from_source_with_warnings`]
+/// applies to every `var()` the enabled evaluator resolves (`None` = the
+/// project files alone decide).
 pub fn load_dag_from_source_with_warnings<P: AsRef<Path>>(
     project_dir: P,
+    vars: Option<&CliVars>,
 ) -> Result<(Dag, Vec<String>)> {
     let dir = project_dir.as_ref();
-    let (manifest, warnings) = manifest_from_source_with_warnings(dir)?;
+    let (manifest, warnings) = manifest_from_source_with_warnings(dir, vars)?;
     let mut dag = Dag::build(&manifest);
     // Same auto-detect as `load_dag`: a project the user already compiled
     // (`dbt compile`/`build`) has Jinja-expanded SQL under target/compiled/ —
@@ -128,7 +138,7 @@ pub fn load_dag_from_source_with_warnings<P: AsRef<Path>>(
 /// Exposed (not just `load_dag_from_source`) so the synthesis can be asserted
 /// directly in tests without building the whole DAG.
 pub fn manifest_from_source<P: AsRef<Path>>(project_dir: P) -> Result<RawManifest> {
-    manifest_from_source_with_warnings(project_dir).map(|(m, _)| m)
+    manifest_from_source_with_warnings(project_dir, None).map(|(m, _)| m)
 }
 
 /// Like [`manifest_from_source`], but also returns recoverable warnings (an
@@ -144,8 +154,9 @@ pub fn manifest_from_source<P: AsRef<Path>>(project_dir: P) -> Result<RawManifes
 /// `Synthesis::finish`.
 pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
     project_dir: P,
+    vars: Option<&CliVars>,
 ) -> Result<(RawManifest, Vec<String>)> {
-    let mut synth = Synthesis::load(project_dir.as_ref())?;
+    let mut synth = Synthesis::load(project_dir.as_ref(), vars)?;
     synth.collect_models();
     synth.collect_seeds();
     synth.collect_snapshots();
@@ -197,3 +208,4 @@ pub use patterns::{
 };
 pub(crate) use patterns::{config_arg, lit_value};
 pub(crate) use patterns::{find_subslice, jinja_set_assigns, jinja_tag_close, tag_word};
+pub use vars::CliVars;

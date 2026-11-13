@@ -1,14 +1,16 @@
 use super::*;
 
 /// The shared context [`synth_tests`] and [`apply_meta`] thread through every
-/// schema-file test pass: the running synth-key counter, the project name, and
-/// the `ref()`/`source()` extractors + name index a `relationships` test's
-/// `to:` resolves against (the same lookups the .sql scan uses).
+/// schema-file test pass: the running synth-key counter, the project name, the
+/// `ref()`/`source()` extractors + name index a `relationships` test's `to:`
+/// resolves against (the same lookups the .sql scan uses), and the var tables
+/// a `config.enabled:`/`enabled:` Jinja string evaluates against.
 pub(super) struct TestCtx<'a> {
     pub(super) seq: usize,
     pub(super) proj: &'a str,
     pub(super) pat: &'a Patterns,
     pub(super) name_index: &'a HashMap<String, String>,
+    pub(super) vars: &'a Vars,
 }
 
 /// Attach schema-file metadata (description / materialization / tags / columns)
@@ -30,10 +32,14 @@ pub(super) fn apply_meta(
 ) {
     for entry in entries {
         let uid = format!("{type_prefix}.{}.{}", ctx.proj, entry.name);
-        // Schema-level `config: enabled: false` parks the node like dbt's
-        // `disabled`: drop it (its edges are pruned by Dag::build's
-        // prune-first step) and record none of its docs/tests.
-        if entry.config.enabled == Some(false) {
+        // Schema-level `config.enabled:` parks the node like dbt's `disabled`
+        // when it evaluates false: drop it (its edges are pruned by
+        // Dag::build's prune-first step) and record none of its docs/tests.
+        if ctx.vars.schema_disabled(
+            entry.config.enabled.as_ref(),
+            &format!("{yml_path}: {type_prefix} '{}' config.enabled", entry.name),
+            warnings,
+        ) {
             nodes.remove(&uid);
             continue;
         }
@@ -125,10 +131,37 @@ pub(super) fn apply_meta(
             node.columns = columns_json(&entry.columns, docs, warnings);
         }
         // `node`'s borrow ends here; synth_tests re-borrows `nodes` mutably.
-        synth_tests(nodes, ctx, &uid, &entry.name, None, &entry.tests);
-        synth_tests(nodes, ctx, &uid, &entry.name, None, &entry.data_tests);
+        synth_tests(
+            nodes,
+            ctx,
+            &uid,
+            &entry.name,
+            None,
+            &entry.tests,
+            yml_path,
+            warnings,
+        );
+        synth_tests(
+            nodes,
+            ctx,
+            &uid,
+            &entry.name,
+            None,
+            &entry.data_tests,
+            yml_path,
+            warnings,
+        );
         for col in &entry.columns {
-            synth_tests(nodes, ctx, &uid, &entry.name, Some(&col.name), &col.tests);
+            synth_tests(
+                nodes,
+                ctx,
+                &uid,
+                &entry.name,
+                Some(&col.name),
+                &col.tests,
+                yml_path,
+                warnings,
+            );
             synth_tests(
                 nodes,
                 ctx,
@@ -136,6 +169,8 @@ pub(super) fn apply_meta(
                 &entry.name,
                 Some(&col.name),
                 &col.data_tests,
+                yml_path,
+                warnings,
             );
         }
     }
@@ -312,6 +347,7 @@ pub(super) fn effective_freshness(
 /// so `Dag::build` fills `TestInfo::ref_uid`/`ref_column` identically in both
 /// load modes. An unresolvable `to:` leaves only the attached dep — the test
 /// stays registered, just target-less.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn synth_tests(
     nodes: &mut HashMap<String, RawNode>,
     ctx: &mut TestCtx<'_>,
@@ -319,6 +355,8 @@ pub(super) fn synth_tests(
     target_name: &str,
     column: Option<&str>,
     tests: &[serde_json::Value],
+    yml: &str,
+    warnings: &mut Vec<String>,
 ) {
     for test in tests {
         let Some(kind) = test_kind(test) else {
@@ -330,18 +368,23 @@ pub(super) fn synth_tests(
             .as_object()
             .and_then(|m| m.get(&kind))
             .and_then(|v| v.as_object());
-        // `enabled: false` — under `config:` or the deprecated top-level
-        // spelling — parks the test under dbt's `disabled` (verified: both
-        // spellings land there; declaring the same key in both is a dbt
-        // error, resolved `config:`-first by convention). Non-bool shapes
-        // leave the test enabled.
-        let enabled = body.and_then(|b| {
+        // `enabled:` — under `config:` or the deprecated top-level spelling —
+        // parks the test under dbt's `disabled` when it evaluates false
+        // (verified: both spellings land there; declaring the same key in
+        // both is a dbt error, resolved `config:`-first by convention). A
+        // `{{ }}` string resolves through the shared evaluator; a value
+        // dbt's boolean validation would reject keeps the test enabled
+        // with a warning.
+        let declared = body.and_then(|b| {
             b.get("config")
                 .and_then(|c| c.get("enabled"))
-                .and_then(|v| v.as_bool())
-                .or_else(|| b.get("enabled").and_then(|v| v.as_bool()))
+                .or_else(|| b.get("enabled"))
         });
-        if enabled == Some(false) {
+        if ctx.vars.schema_disabled(
+            declared,
+            &format!("{yml}: {kind} test on '{target_name}' enabled"),
+            warnings,
+        ) {
             continue;
         }
         let key = format!("test.{}.{}", ctx.proj, ctx.seq);

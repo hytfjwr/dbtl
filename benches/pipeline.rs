@@ -198,7 +198,7 @@ fn bench_select(c: &mut Criterion) {
     let cases: [(&str, String); 5] = [
         ("hops", "+mar_02399+".to_string()),
         ("tag", "tag:nightly".to_string()),
-        ("path", "path:marts".to_string()),
+        ("path", "path:models/marts".to_string()),
         ("materialized", "config.materialized:table".to_string()),
         ("union", "+int_00100+ tag:hourly".to_string()),
     ];

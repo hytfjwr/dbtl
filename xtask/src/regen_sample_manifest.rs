@@ -14,6 +14,11 @@ pub struct Args {
     /// Write the manifest here instead of tests/fixtures/sample_manifest.json.
     #[arg(long)]
     out: Option<PathBuf>,
+    /// Inline YAML/JSON var map passed to `dbt compile --vars` verbatim —
+    /// the manifest then records the same rendered values `dbtl --vars`
+    /// produces from source.
+    #[arg(long, value_name = "YAML|JSON")]
+    vars: Option<String>,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -22,5 +27,11 @@ pub fn run(args: Args) -> Result<()> {
     let out = args
         .out
         .unwrap_or_else(|| root.join("tests/fixtures/sample_manifest.json"));
-    gen_manifest::gen(&project_dir, &out, None, args.dbt_version.as_deref())
+    gen_manifest::gen(
+        &project_dir,
+        &out,
+        None,
+        args.dbt_version.as_deref(),
+        args.vars.as_deref(),
+    )
 }
