@@ -1,0 +1,14 @@
+version: 2
+
+# Both sources declare the same warehouse relation (`raw.orders`) — the
+# `duplicate_sources` finding the test asserts is REAL, not a side effect
+# of the branch fix.
+sources:
+  - name: stg_src
+    schema: raw
+    tables:
+      - name: orders
+  - name: prod_src
+    schema: raw
+    tables:
+      - name: orders

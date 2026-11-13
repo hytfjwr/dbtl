@@ -15,7 +15,10 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use crate::dag::Dag;
-use crate::source::{call_sites_masked, kwarg, lit_value, mask_jinja_comments, CallKind, CallSite};
+use crate::source::{
+    arms_exclusive, call_sites_masked, jinja_branches, kwarg, lit_value, mask_jinja_comments,
+    ArmStep, CallKind, CallSite, JinjaBranches,
+};
 
 use super::{Finding, Label};
 
@@ -94,6 +97,10 @@ struct Sites<'a> {
     parents: &'a [String],
     masked: Cow<'a, str>,
     sites: Vec<CallSite>,
+    /// The `{% if %}`/`{% for %}` arm structure — which `sites` can never
+    /// execute in one render (`multiple_sources_joined` reads it through
+    /// [`CallSites::simultaneous_parents`]).
+    branches: JinjaBranches,
     /// Byte offset of each line start (index 0 = offset 0) — built on the
     /// first positioned label so `position` is a binary search + one
     /// line's char count instead of a full-text scan per label.
@@ -170,12 +177,14 @@ impl<'a> CallSiteResolver<'a> {
         // free when the file carries no `{#` comments.
         let masked = mask_jinja_comments(text);
         let sites = call_sites_masked(&masked);
+        let branches = jinja_branches(&masked);
         Some(Sites {
             file,
             text,
             parents: self.dag.direct_parents(uid), // &[String] — no clone
             masked,
             sites,
+            branches,
             lines: std::cell::OnceCell::new(),
         })
     }
@@ -264,6 +273,39 @@ impl<'a> CallSites<'a> {
             .collect();
         spans.sort_by_key(|r| r.start);
         spans
+    }
+
+    /// The fewest parents from `parents` that must execute in ONE render —
+    /// `multiple_sources_joined`'s count. Calls landing in mutually
+    /// exclusive `{% if %}`/`{% elif %}`/`{% else %}`/`{% for %}` arms of
+    /// the same chain never run together, so parents reachable only
+    /// through pairwise-exclusive arms count once (a parent with no
+    /// resolvable call site can't be arm-attributed — it counts as
+    /// unconditional, the under-reporting-safe side). `parents` should
+    /// already be deduped.
+    pub(crate) fn simultaneous_parents(&self, parents: &[String]) -> usize {
+        // Each group is a set of parents whose every arm path pair is
+        // mutually exclusive — the merge is greedy on the (uid-sorted)
+        // input, deterministic either way.
+        let mut groups: Vec<Vec<Vec<ArmStep>>> = Vec::new();
+        for parent in parents {
+            let mut sigs: Vec<Vec<ArmStep>> = self
+                .calls_to(parent)
+                .iter()
+                .map(|span| self.sites.branches.arm_path(span.start).to_vec())
+                .collect();
+            if sigs.is_empty() {
+                sigs.push(Vec::new()); // unattributed → unconditional
+            }
+            match groups.iter_mut().find(|g| {
+                g.iter()
+                    .all(|member| sigs.iter().all(|b| arms_exclusive(member, b)))
+            }) {
+                Some(g) => g.extend(sigs),
+                None => groups.push(sigs),
+            }
+        }
+        groups.len()
     }
 
     /// Does `call` resolve to the `parent` uid (`segs` = `parent`'s `.`

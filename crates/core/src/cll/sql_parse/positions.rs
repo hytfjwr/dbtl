@@ -95,7 +95,7 @@ pub(super) fn plain_positions(raw: &str, dialect: &dyn Dialect) -> Option<SqlPos
         }
         out.order_by = outer_order_by_span(q).and_then(|s| rendered.span_source(s));
     }
-    let scan = scan_statements_positions(&stmts);
+    let scan = scan_statements_positions(&stmts, Some(&rendered));
     for span in &scan.cartesian_spans {
         if let Some(r) = rendered.span_source(*span) {
             out.cartesian.push(r);
@@ -106,11 +106,9 @@ pub(super) fn plain_positions(raw: &str, dialect: &dyn Dialect) -> Option<SqlPos
             out.columns.push((name.clone(), r));
         }
     }
-    for (i, (name, span)) in scan.cte_defs.iter().enumerate() {
-        if !scan.cte_uses.contains(&i) {
-            if let Some(r) = rendered.span_source(*span) {
-                out.unused_ctes.push((name.clone(), r));
-            }
+    for (name, span) in scan.unread_ctes() {
+        if let Some(r) = rendered.span_source(*span) {
+            out.unused_ctes.push((name.clone(), r));
         }
     }
     Some(out)
@@ -121,7 +119,7 @@ pub(super) fn plain_positions(raw: &str, dialect: &dyn Dialect) -> Option<SqlPos
 pub(super) fn marked_relations(raw: &str, dialect: &dyn Dialect) -> Option<MarkedRelations> {
     let rendered = render_jinja_mapped(raw, JinjaMark::Marked);
     let stmts = Parser::parse_sql(dialect, &rendered.text).ok()?;
-    let scan = scan_statements(&stmts);
+    let scan = scan_statements(&stmts, Some(&rendered));
     let spans = scan
         .hard_coded_spans
         .iter()

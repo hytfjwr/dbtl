@@ -39,6 +39,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   head`, `dbtl docs … | head`) now exits cleanly instead of panicking on a
   broken pipe — every CLI stdout write goes through one writer that treats
   `EPIPE` as a normal end of output.
+- `dbtl lint` no longer reports false positives from Jinja structure it
+  can't see through: `cartesian_join` ignores the comma the SQL render
+  places between `{% if %}`/`{% elif %}`/`{% else %}` arms (a branch
+  union, not a written join — a literal `FROM a, b` still flags),
+  `multiple_sources_joined` counts `source()` calls in mutually exclusive
+  arms once (they never execute in one render; the graph's edges are
+  unchanged), and `unused_cte` treats a CTE name passed to a macro as a
+  string argument (`{{ join_x('cte_name') }}`) as read.
 
 ### Added
 

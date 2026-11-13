@@ -105,6 +105,21 @@ pub(super) fn multiple_sources_joined(
         if sources.len() < 2 {
             continue;
         }
+        // `{% if %}`/`{% elif %}`/`{% else %}`/`{% for %}` arms are
+        // mutually exclusive — dbt renders exactly one per chain, so
+        // sources reachable only through exclusive arms never appear in
+        // one render and count once. The graph still carries both
+        // edges (lineage unchanged); only the "simultaneously read"
+        // claim needs the arm structure — a call site it can't
+        // attribute counts unconditional, the under-reporting side.
+        let call_sites = sites.for_node(uid);
+        let simultaneous = call_sites
+            .as_ref()
+            .map(|cs| cs.simultaneous_parents(&sources))
+            .unwrap_or(sources.len());
+        if simultaneous < 2 {
+            continue;
+        }
         let mut f = Finding::new(
             LintRule::MultipleSourcesJoined,
             (*uid).clone(),
@@ -116,7 +131,7 @@ pub(super) fn multiple_sources_joined(
                 name_list(&display_names(dag, &sources)),
             ),
         );
-        if let Some(cs) = sites.for_node(uid) {
+        if let Some(cs) = call_sites {
             let mut spans: Vec<_> = sources.iter().flat_map(|s| cs.calls_to(s)).collect();
             spans.sort_by_key(|r| r.start);
             if let Some((first, rest)) = spans.split_first() {

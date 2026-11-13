@@ -1035,3 +1035,97 @@ fn sources_tree_walk_does_not_warn_on_enabled() {
     assert_eq!(cfg.enabled, Some(false));
     assert!(w.is_empty(), "{w:?}");
 }
+
+// -- Jinja branch structure --------------------------------------------------
+
+/// The arm path `text[offset]` sits inside — `jinja_branches` on the
+/// masked text, like [`CallSiteResolver`](crate::lint) reads it.
+fn path_at(text: &str, offset: usize) -> Vec<ArmStep> {
+    jinja_branches(&mask_jinja_comments(text))
+        .arm_path(offset)
+        .to_vec()
+}
+
+#[test]
+fn jinja_branches_index_if_elif_else_arms() {
+    let sql = "a{% if x %}b{% elif y %}c{% else %}d{% endif %}e";
+    let arm = |c: &str| path_at(sql, sql.find(c).unwrap());
+    assert_eq!(arm("a"), vec![]);
+    assert_eq!(arm("b"), vec![ArmStep { chain: 0, arm: 0 }]);
+    assert_eq!(arm("c"), vec![ArmStep { chain: 0, arm: 1 }]);
+    assert_eq!(arm("d"), vec![ArmStep { chain: 0, arm: 2 }]);
+    assert_eq!(path_at(sql, sql.rfind('e').unwrap()), vec![]);
+    // `{% if %}`/`{% elif %}`/`{% else %}` arms are mutually exclusive.
+    assert!(arms_exclusive(&arm("b"), &arm("c")));
+    assert!(arms_exclusive(&arm("b"), &arm("d")));
+    assert!(arms_exclusive(&arm("c"), &arm("d")));
+    // …an unconditional position and the same arm never are.
+    assert!(!arms_exclusive(&arm("a"), &arm("b")));
+    assert!(!arms_exclusive(&arm("b"), &arm("b")));
+}
+
+#[test]
+fn jinja_branches_nest_and_compose() {
+    // Chain 0's arms each hold their own chain — nesting composes, only
+    // same-chain arm disagreements are exclusive.
+    let sql = "{% if a %}{% if b %}x{% else %}y{% endif %}{% else %}z{% endif %}";
+    let arm = |c: &str| path_at(sql, sql.find(c).unwrap());
+    let (x, y, z) = (arm("x"), arm("y"), arm("z"));
+    assert_eq!(
+        x,
+        vec![ArmStep { chain: 0, arm: 0 }, ArmStep { chain: 1, arm: 0 }]
+    );
+    assert_eq!(
+        y,
+        vec![ArmStep { chain: 0, arm: 0 }, ArmStep { chain: 1, arm: 1 }]
+    );
+    assert_eq!(z, vec![ArmStep { chain: 0, arm: 1 }]);
+    // `x`/`y` share the outer arm but disagree inside it → exclusive;
+    // `x`/`z` disagree on the outer chain → exclusive too.
+    assert!(arms_exclusive(&x, &y));
+    assert!(arms_exclusive(&x, &z));
+}
+
+#[test]
+fn jinja_branches_for_else_and_macro_blocks() {
+    // A `{% for %}`'s `{% else %}` arm is exclusive with its body (the
+    // empty-iteration fallback dbt renders instead of it); a
+    // `{% macro %}` block nests transparently — the arms inside it still
+    // index under their own chain.
+    let sql =
+        "{% for i in xs %}a{% else %}b{% endfor %}{% macro m() %}{% if c %}z{% endif %}{% endmacro %}";
+    let arm = |c: &str| path_at(sql, sql.find(c).unwrap());
+    assert!(arms_exclusive(&arm("a"), &arm("b")));
+    assert_eq!(arm("z"), vec![ArmStep { chain: 1, arm: 0 }]);
+    // The `{% macro %}` block itself isn't an arm — `a` and `z` compose
+    // freely (different chains, no disagreement).
+    assert!(!arms_exclusive(&arm("a"), &arm("z")));
+}
+
+#[test]
+fn jinja_branches_malformed_structure_is_unconditional() {
+    for sql in [
+        "{% if %}x",                                  // unclosed
+        "{% if %}x{% endif %}{% else %}y",            // stray else
+        "{% if %}x{% else %}y{% elif %}z{% endif %}", // elif after else
+        "{% if %}x{% endfor %}",                      // mismatched end
+        "{% raw %}x",                                 // unclosed raw
+    ] {
+        let b = jinja_branches(&mask_jinja_comments(sql));
+        for off in [0, sql.len().saturating_sub(1)] {
+            assert_eq!(
+                b.arm_path(off),
+                &[],
+                "{sql:?} should read unconditionally at offset {off}"
+            );
+        }
+    }
+    // An unterminated `{% if %}` mid-file marks the REST text — nothing
+    // after it carries a path either.
+    let b = jinja_branches("ok\n{% if x %}never closed");
+    assert_eq!(b.arm_path(4), &[]);
+    // `{% raw %}` bodies are inert — a `{% if %}` inside opens nothing.
+    let sql = "{% raw %}{% if %}x{% endif %}{% endraw %}y";
+    assert_eq!(path_at(sql, sql.find('x').unwrap()), vec![]);
+    assert_eq!(path_at(sql, sql.find('y').unwrap()), vec![]);
+}

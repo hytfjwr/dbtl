@@ -569,6 +569,56 @@ fn render_map_maps_copies_11_and_tags_to_the_whole_tag() {
 }
 
 #[test]
+fn only_branch_commas_tells_an_arm_split_from_a_written_comma() {
+    use sqlparser::tokenizer::{Location, Span};
+    // `{% else %}` between FROM items emits `,` — the render's branch
+    // union (the arms never reach one render), not a written comma join.
+    let raw = "select *\nfrom {% if x %}a.t{% else %}b.u{% endif %}";
+    let rendered = render_jinja_mapped(raw, JinjaMark::Plain);
+    assert_eq!(rendered.text, "select *\nfrom  a.t,b.u ");
+    let line2 = rendered.text.find('\n').unwrap() + 1;
+    let loc = |off: usize| Location::new(2, (off - line2 + 1) as u64);
+    let comma = rendered.text.find(',').unwrap();
+    assert!(rendered.only_branch_commas(Span::new(loc(comma), loc(comma + 1))));
+    // A written `,` fails the check even when an arm split follows.
+    let raw = "select *\nfrom a.t, {% if x %}b.u{% else %}c.v{% endif %}";
+    let rendered = render_jinja_mapped(raw, JinjaMark::Plain);
+    assert_eq!(rendered.text, "select *\nfrom a.t,  b.u,c.v ");
+    let line2 = rendered.text.find('\n').unwrap() + 1;
+    let loc = |off: usize| Location::new(2, (off - line2 + 1) as u64);
+    let comma = rendered.text.find(',').unwrap();
+    assert!(!rendered.only_branch_commas(Span::new(loc(comma), loc(comma + 1))));
+    // …and a gap holding no comma at all is never a branch separator.
+    let a_t = rendered.text.find("a.t").unwrap();
+    assert!(!rendered.only_branch_commas(Span::new(loc(a_t), loc(a_t + 3))));
+}
+
+#[test]
+fn opaque_jinja_expressions_carry_their_string_literals() {
+    // `{{ join_customers('customers', …) }}` renders `NULL` but its args
+    // still name the CTE the macro joins — `unused_cte` reads them.
+    let rendered = render_jinja_mapped(
+        "select * from orders {{ join_customers('customers', \"orders.id\") }}",
+        JinjaMark::Plain,
+    );
+    assert_eq!(rendered.text, "select * from orders  NULL ");
+    assert_eq!(
+        rendered.jinja_literals,
+        vec!["customers".to_string(), "orders.id".to_string()]
+    );
+    // Classified calls and config emit none — `ref`/`source` resolve to
+    // relation names, `config` to nothing.
+    let rendered = render_jinja_mapped(
+        "select {{ ref('x') }}, {{ source('a','b') }} {{ config(alias='y') }}",
+        JinjaMark::Plain,
+    );
+    assert!(rendered.jinja_literals.is_empty());
+    // An unterminated literal is dropped — it was never a string.
+    let rendered = render_jinja_mapped("select {{ f('unclosed) }}", JinjaMark::Plain);
+    assert_eq!(rendered.jinja_literals, Vec::<String>::new());
+}
+
+#[test]
 fn plain_positions_extract_wildcard_join_and_column_spans() {
     let raw = "select a, o.*\nfrom {{ ref('o') }} o\njoin b.u\nwhere o.id = b.id";
     let pos = plain_positions(raw, &*SqlDialect::Generic.sqlparser()).unwrap();

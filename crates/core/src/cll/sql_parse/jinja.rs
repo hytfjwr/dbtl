@@ -2,6 +2,7 @@
 // Jinja render — compiled-level text from raw model SQL
 // ---------------------------------------------------------------------------
 
+use std::collections::BTreeSet;
 use std::ops::Range;
 
 use sqlparser::tokenizer::Span;
@@ -47,12 +48,25 @@ struct Seg {
 /// every byte range of `text` knows which raw range produced it — copied
 /// regions map 1:1, a rendered `{{ }}`/`{% %}`/`{# #}` maps to its whole
 /// tag. `text` is byte-identical to [`render_jinja_as`]'s output.
+#[derive(Debug)]
 pub(super) struct RenderedSql {
     /// The rendered text the parser reads.
     pub(super) text: String,
     /// Segments tiling `text` in emission order (the `src` ranges tile
     /// the input the same way).
     segs: Vec<Seg>,
+    /// `text` byte offsets where a `{% elif %}`/`{% else %}` arm split
+    /// emitted `,` — a comma no template line wrote. FROM items
+    /// separated only by these are a branch union (the arms never reach
+    /// one render), not a written comma join — `cartesian_join` reads
+    /// the distinction through [`RenderedSql::only_branch_commas`].
+    branch_commas: BTreeSet<usize>,
+    /// The decoded string literals inside `{{ }}` expressions the render
+    /// couldn't classify (a macro call's arguments —
+    /// `{{ join_customers('customers', …) }}`, `{{ var('t') }}`…). A
+    /// `WITH` CTE sharing a name with one may be read through the join
+    /// the parse can't see — `unused_cte` counts it as read.
+    pub(super) jinja_literals: Vec<String>,
 }
 
 impl RenderedSql {
@@ -95,6 +109,34 @@ impl RenderedSql {
         let start = position_offset(&self.text, span.start.line, span.start.column)?;
         let end = position_offset(&self.text, span.end.line, span.end.column)?;
         self.source_range(start..end)
+    }
+
+    /// Is EVERY `,` inside rendered-text `gap` one an arm split emitted —
+    /// i.e., no written `,` separates the two FROM items flanking it?
+    /// Then the items are `{% if %}`/`{% elif %}`/`{% else %}` arms of a
+    /// branch union (dbt renders exactly one per chain — they can never
+    /// form a product), not a written comma join. `false` when the gap
+    /// holds a literal `,` — or no comma at all.
+    pub(super) fn only_branch_commas(&self, gap: Span) -> bool {
+        let (Some(start), Some(end)) = (
+            position_offset(&self.text, gap.start.line, gap.start.column),
+            position_offset(&self.text, gap.end.line, gap.end.column),
+        ) else {
+            return false;
+        };
+        if start >= end {
+            return false;
+        }
+        let mut found = false;
+        for (i, c) in self.text.as_bytes()[start..end].iter().enumerate() {
+            if *c == b',' {
+                if !self.branch_commas.contains(&(start + i)) {
+                    return false;
+                }
+                found = true;
+            }
+        }
+        found
     }
 }
 
@@ -184,6 +226,8 @@ pub(super) fn render_jinja_mapped(sql: &str, mark: JinjaMark) -> RenderedSql {
     let b = sql.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(b.len() + 16);
     let mut segs: Vec<Seg> = Vec::new();
+    let mut branch_commas: BTreeSet<usize> = BTreeSet::new();
+    let mut jinja_literals: Vec<String> = Vec::new();
     let mut i = 0usize;
     while i < b.len() {
         match b[i] {
@@ -279,12 +323,9 @@ pub(super) fn render_jinja_mapped(sql: &str, mark: JinjaMark) -> RenderedSql {
                         match kind {
                             b'{' => {
                                 let inner = &sql[i + 2..e];
-                                emit_subst(
-                                    &mut out,
-                                    &mut segs,
-                                    i..e + 2,
-                                    render_jinja_expr(inner, mark).as_bytes(),
-                                );
+                                let (rendered, literals) = render_jinja_expr(inner, mark);
+                                jinja_literals.extend(literals);
+                                emit_subst(&mut out, &mut segs, i..e + 2, rendered.as_bytes());
                             }
                             // `{% … %}` tags and `{# … #}` comments drop
                             // entirely — the tag's body (if/for branches)
@@ -308,12 +349,14 @@ pub(super) fn render_jinja_mapped(sql: &str, mark: JinjaMark) -> RenderedSql {
                                         == Some(&b',')
                                         || b[e + 2..].iter().find(|c| !c.is_ascii_whitespace())
                                             == Some(&b','));
-                                emit_subst(
-                                    &mut out,
-                                    &mut segs,
-                                    i..e + 2,
-                                    &[if split && !literal_comma { b',' } else { b' ' }],
-                                );
+                                if split && !literal_comma {
+                                    // The offset is `out`'s current end —
+                                    // the byte `,` lands at.
+                                    branch_commas.insert(out.len());
+                                    emit_subst(&mut out, &mut segs, i..e + 2, b",");
+                                } else {
+                                    emit_subst(&mut out, &mut segs, i..e + 2, b" ");
+                                }
                             }
                             _ => emit_subst(&mut out, &mut segs, i..e + 2, b" "),
                         }
@@ -342,6 +385,8 @@ pub(super) fn render_jinja_mapped(sql: &str, mark: JinjaMark) -> RenderedSql {
     RenderedSql {
         text: String::from_utf8(out).unwrap_or_default(),
         segs,
+        branch_commas,
+        jinja_literals,
     }
 }
 
@@ -387,16 +432,19 @@ pub(super) fn dollar_quote_close(b: &[u8], from: usize, delim: &[u8]) -> Option<
         .map(|p| from + p)
 }
 
-/// What a `{{ … }}` expression renders to. `config(...)` disappears (it
-/// emits no SQL); `ref()`/`source()` emit their quoted relation name(s)
-/// ([`JinjaMark::Marked`]: `__dbtl_`-prefixed names instead); `this` a fake
-/// relation; everything else (`{{ var(...) }}`, macro calls, `{{ col }}`…)
-/// → `NULL` under `Plain`, a `__dbtl_jinja__` placeholder under `Marked` —
-/// an expression that yields no column refs either way, but that a lint
-/// scan can recognise as generated.
-pub(super) fn render_jinja_expr(inner: &str, mark: JinjaMark) -> String {
+/// What a `{{ … }}` expression renders to, plus — for an expression the
+/// render can't classify — the string literals it carries. `config(...)`
+/// disappears (it emits no SQL); `ref()`/`source()` emit their quoted
+/// relation name(s) ([`JinjaMark::Marked`]: `__dbtl_`-prefixed names
+/// instead); `this` a fake relation; everything else (`{{ var(...) }}`,
+/// macro calls, `{{ col }}`…) → `NULL` under `Plain`, a `__dbtl_jinja__`
+/// placeholder under `Marked` — an expression that yields no column refs
+/// either way, but that a lint scan can recognise as generated. The
+/// returned literals (`jinja_string_literals`) let `unused_cte` count a
+/// `WITH` CTE a macro takes by string argument as read.
+pub(super) fn render_jinja_expr(inner: &str, mark: JinjaMark) -> (String, Vec<String>) {
     if jinja_expr_emits_nothing(inner) {
-        return " ".to_string();
+        return (" ".to_string(), Vec::new());
     }
     let e = inner
         .trim()
@@ -407,36 +455,85 @@ pub(super) fn render_jinja_expr(inner: &str, mark: JinjaMark) -> String {
         // ref('model') / ref("pkg","model") — the LAST literal arg is the
         // model name (a two-arg ref's first arg is the package).
         if let Some(name) = args.last() {
-            return match mark {
-                JinjaMark::Plain => quoted_ident(name),
-                JinjaMark::Marked => quoted_ident(&format!("{JINJA_MARK_PREFIX}ref__{name}")),
-            };
+            return (
+                match mark {
+                    JinjaMark::Plain => quoted_ident(name),
+                    JinjaMark::Marked => quoted_ident(&format!("{JINJA_MARK_PREFIX}ref__{name}")),
+                },
+                Vec::new(),
+            );
         }
     }
     if let Some(args) = jinja_call_args(e, "source") {
         // source('src','tbl') → "src"."tbl" — the two-arg form dbt renders.
         if args.len() >= 2 {
             let (a, b) = (&args[args.len() - 2], &args[args.len() - 1]);
-            return match mark {
-                JinjaMark::Plain => format!("{}.{}", quoted_ident(a), quoted_ident(b)),
-                JinjaMark::Marked => format!(
-                    "{}.{}",
-                    quoted_ident(&format!("{JINJA_MARK_PREFIX}src__{a}")),
-                    quoted_ident(&format!("{JINJA_MARK_PREFIX}src__{b}"))
-                ),
-            };
+            return (
+                match mark {
+                    JinjaMark::Plain => format!("{}.{}", quoted_ident(a), quoted_ident(b)),
+                    JinjaMark::Marked => format!(
+                        "{}.{}",
+                        quoted_ident(&format!("{JINJA_MARK_PREFIX}src__{a}")),
+                        quoted_ident(&format!("{JINJA_MARK_PREFIX}src__{b}"))
+                    ),
+                },
+                Vec::new(),
+            );
         }
     }
     if e == "this" || e.starts_with("this.") {
-        return THIS_RELATION.to_string();
+        return (THIS_RELATION.to_string(), Vec::new());
     }
-    match mark {
-        JinjaMark::Plain => " NULL ".to_string(),
-        // A Jinja expression in a relation position (`FROM {{ var('t') }}`,
-        // `FROM {{ target.schema }}.t`) is unclassifiable — the marked token
-        // keeps the parse valid and tells the scan "generated, not written".
-        JinjaMark::Marked => quoted_ident(&format!("{JINJA_MARK_PREFIX}jinja__")),
+    (
+        match mark {
+            JinjaMark::Plain => " NULL ".to_string(),
+            // A Jinja expression in a relation position (`FROM {{ var('t') }}`,
+            // `FROM {{ target.schema }}.t`) is unclassifiable — the marked token
+            // keeps the parse valid and tells the scan "generated, not written".
+            JinjaMark::Marked => quoted_ident(&format!("{JINJA_MARK_PREFIX}jinja__")),
+        },
+        jinja_string_literals(inner),
+    )
+}
+
+/// The decoded `'…'`/`"…"` string literals in a `{{ }}` expression body —
+/// every quoted span, wherever it sits. `\` escape decoding follows
+/// Jinja: `\n`/`\t`/`\r` produce the control chars, any other escaped
+/// char lands verbatim. An unterminated literal is dropped — it was
+/// never a complete string.
+fn jinja_string_literals(inner: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut chars = inner.chars().peekable();
+    while let Some(q) = chars.next() {
+        if q != '\'' && q != '"' {
+            continue;
+        }
+        let mut lit = String::new();
+        let mut closed = false;
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => {
+                    if let Some(e) = chars.next() {
+                        lit.push(match e {
+                            'n' => '\n',
+                            't' => '\t',
+                            'r' => '\r',
+                            other => other,
+                        });
+                    }
+                }
+                _ if c == q => {
+                    closed = true;
+                    break;
+                }
+                _ => lit.push(c),
+            }
+        }
+        if closed {
+            out.push(lit);
+        }
     }
+    out
 }
 
 /// Does a `{{ … }}` body render to nothing? Only `config(…)` emits
