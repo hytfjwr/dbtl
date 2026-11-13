@@ -16,6 +16,11 @@ updates:
     commit-message:
       prefix: "chore"
       include: "scope"
+    ignore:
+      # The crate and its post-processing CLI (installed separately, SHA-
+      # verified, in the docs-site workflow) must move in lockstep, so
+      # wasm-bindgen only ever gets bumped by hand — see CONTRIBUTING.md.
+      - dependency-name: "wasm-bindgen"
     groups:
       cargo-minor-patch:
         update-types:
