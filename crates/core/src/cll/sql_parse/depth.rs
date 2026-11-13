@@ -19,7 +19,8 @@
 // opens a fresh level that `)` folds back into its parent as
 // `1 + inner` of operand depth, mirroring the `Nested`/`Subquery`
 // node it parses to. The peak `level + segment + set + operand`
-// upper-bounds real tree depth: every depth-adding construct (an
+// tracks real tree depth within a small constant (the uncounted leaf
+// and root nodes): every depth-adding construct (an
 // infix/prefix/postfix op, a nested group, a set-op arm) contributes
 // at least one counted unit while operands contribute none — so
 // over-limit text is handed back exactly like a parse error and lands
@@ -67,6 +68,12 @@ const MAX_DEPTH: usize = 512;
 /// either way the expression ended. In operand position the parser
 /// reads these same words as plain identifiers, so they count a unit
 /// like any operator keyword instead of cutting.
+///
+/// Deliberately absent: `from`, `with`, `for` — each is also the
+/// continuation of a multi-word operator (`is distinct from`,
+/// `timestamp with time zone`, `next value for`) where cutting splits
+/// a real chain. An absent word only ever merges segments — the count
+/// errs toward depth, the safe direction.
 const SEGMENT_END: &[&[u8]] = &[
     b"action",
     b"alter",
@@ -113,10 +120,8 @@ const SEGMENT_END: &[&[u8]] = &[
     b"explain",
     b"export",
     b"fetch",
-    b"for",
     b"foreign",
     b"format",
-    b"from",
     b"generated",
     b"grant",
     b"group",
@@ -215,7 +220,6 @@ const SEGMENT_END: &[&[u8]] = &[
     b"where",
     b"while",
     b"window",
-    b"with",
     b"work",
     b"write",
 ];
@@ -570,6 +574,24 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" + ")
         );
+        assert!(deep(&sql));
+    }
+
+    #[test]
+    fn multi_word_operator_chains_trip() {
+        // `is distinct from`, `with time zone`, `next value for` —
+        // clause-looking words mid-operator must not split the chain.
+        let sql = format!(
+            "select a from t where {}",
+            vec!["a is distinct from b"; 300].join(" and ")
+        );
+        assert!(deep(&sql));
+        let sql = format!(
+            "select {}",
+            vec!["timestamp with time zone 't'"; 600].join(" + ")
+        );
+        assert!(deep(&sql));
+        let sql = format!("select {}", vec!["next value for s"; 600].join(" + "));
         assert!(deep(&sql));
     }
 
