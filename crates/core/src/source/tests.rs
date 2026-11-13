@@ -1349,24 +1349,24 @@ fn write_source_config_project(dir: &std::path::Path) {
 sources:
   - name: raw
     meta: {src_meta: prop, share: src_prop}
-    loaded_at_field: src_prop_laf
+    loaded_at_field: src_prop_field
     freshness: {warn_after: {count: 1, period: hour}, error_after: {count: 2, period: hour}}
     tags: [src_prop_tag]
     config:
       meta: {src_meta: cfg, share: src_cfg}
-      loaded_at_field: src_cfg_laf
+      loaded_at_field: src_cfg_field
       freshness: {error_after: {count: 3, period: hour}}
       tags: [src_cfg_tag]
     tables:
       - name: plain
       - name: overridden
         meta: {tbl_meta: prop, share: tbl_prop}
-        loaded_at_field: tbl_prop_laf
+        loaded_at_field: tbl_prop_field
         freshness: {warn_after: {count: 4, period: hour}}
         tags: [tbl_prop_tag]
         config:
           meta: {share: tbl_cfg}
-          loaded_at_field: tbl_cfg_laf
+          loaded_at_field: tbl_cfg_field
           freshness: {error_after: {count: 5, period: hour}}
           tags: [tbl_cfg_tag]
       - name: dropped
@@ -1398,7 +1398,7 @@ fn source_config_blocks_merge_in_dbt_order() {
     // `freshness` resolve config-first per level, but `loaded_at_field`
     // resolves property-first (verified against real dbt).
     let plain = src("plain");
-    assert_eq!(plain.loaded_at_field.as_deref(), Some("src_prop_laf"));
+    assert_eq!(plain.loaded_at_field.as_deref(), Some("src_prop_field"));
     let fr = plain.freshness.as_ref().expect("freshness");
     assert_eq!(fr.warn_after.as_ref().and_then(|t| t.count), Some(1));
     assert_eq!(fr.error_after.as_ref().and_then(|t| t.count), Some(3));
@@ -1410,7 +1410,7 @@ fn source_config_blocks_merge_in_dbt_order() {
     // the full chain order. For `loaded_at_field` the table's own
     // top-level property is the highest rung.
     let over = src("overridden");
-    assert_eq!(over.loaded_at_field.as_deref(), Some("tbl_prop_laf"));
+    assert_eq!(over.loaded_at_field.as_deref(), Some("tbl_prop_field"));
     let fr = over.freshness.as_ref().expect("freshness");
     assert_eq!(fr.warn_after.as_ref().and_then(|t| t.count), Some(4));
     assert_eq!(fr.error_after.as_ref().and_then(|t| t.count), Some(5));
