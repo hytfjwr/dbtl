@@ -12,11 +12,12 @@
 #
 # Targets are enumerated, never listed by hand: every git-tracked *.sh plus
 # any tracked file whose shebang names a shell, so a new script is linted
-# without touching this file. The composite action's run: values are linted
-# too — a one-liner is extracted and checked as its own snippet, while a
-# multi-line block must move into a tracked script: a YAML block scalar
-# cannot be reconstructed faithfully in shell, and linting a fragment
-# would hide the problem the check exists to find.
+# without touching this file. Every tracked composite action file (the
+# root action.yml plus any .github/actions/<name>/action.y{a,}ml) has its
+# run: values linted too — a one-liner is extracted and checked as its own
+# snippet, while a multi-line block must move into a tracked script: a YAML
+# block scalar cannot be reconstructed faithfully in shell, and linting a
+# fragment would hide the problem the check exists to find.
 set -euo pipefail
 
 say_err() { printf '::error::%s\n' "$*" >&2; }
@@ -74,9 +75,28 @@ print_targets() {
 	done
 }
 
+# grep_matches <pat> <file>: print grep -nE matches; exit 1 means "no
+# matches" (prints nothing) while a real read error aborts — silently
+# skipping run: linting on an unreadable file is a fail-open.
+grep_matches() {
+	local out rc
+	set +e
+	out="$(grep -nE "$1" "$2" 2>/dev/null)"
+	rc=$?
+	set -e
+	if [ "$rc" -eq 0 ]; then
+		printf '%s\n' "$out"
+	elif [ "$rc" -gt 1 ]; then
+		say_err "cannot read $2 (grep exit $rc)"
+		exit 2
+	fi
+}
+
 # print_run_snippets <file>: "LINE<TAB>command" per single-line run: —
 # a multi-line form (block scalar, empty value, or a value ending in a
-# continuation operator) is an error, not a lint target.
+# continuation operator) is an error, not a lint target. The match is a
+# line-level heuristic: it does not parse YAML, so a `run :` spelling or
+# a `run:`-shaped line inside another key's block scalar is not handled.
 print_run_snippets() {
 	local file="${1:?file}"
 	[ -f "$file" ] || {
@@ -84,9 +104,9 @@ print_run_snippets() {
 		exit 2
 	}
 	local bad
-	bad="$(grep -nE '^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*([|>]|$)' "$file" || true)"
+	bad="$(grep_matches '^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*([|>]|$)' "$file")"
 	if [ -z "$bad" ]; then
-		bad="$(grep -nE '^[[:space:]]*(-[[:space:]]+)?run:.*(&&|\|\||\||\\)[[:space:]]*$' "$file" || true)"
+		bad="$(grep_matches '^[[:space:]]*(-[[:space:]]+)?run:.*(&&|\|\||\||\\)[[:space:]]*$' "$file")"
 	fi
 	if [ -n "$bad" ]; then
 		say_err "$file holds a multi-line run: block — move it into a tracked script (a *.sh under action/ is linted automatically):"
@@ -94,7 +114,7 @@ print_run_snippets() {
 		exit 2
 	fi
 	local lines line n text
-	lines="$(grep -nE '^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]+[^[:space:]]' "$file" || true)"
+	lines="$(grep_matches '^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]+[^[:space:]]' "$file")"
 	[ -n "$lines" ] || return 0
 	while IFS= read -r line; do
 		n="${line%%:*}"
@@ -153,7 +173,9 @@ trap 'rm -rf "$work"' EXIT
 # substitution (an unlintable multi-line run:, an unreadable file) exits
 # only that subshell — the direct call keeps the exit in this shell.
 print_targets "$root" >"$work/targets"
-print_run_snippets "$root/action.yml" >"$work/runs"
+# Every tracked composite action file — the root one plus any under
+# .github/actions/<name>/ — so a new action is linted without a list edit.
+git -C "$root" ls-files -z -- 'action.yml' 'action.yaml' '**/action.yml' '**/action.yaml' >"$work/actions"
 
 files=()
 while IFS= read -r -d '' f; do
@@ -162,16 +184,21 @@ done <"$work/targets"
 
 # Extracted run: snippets are linted as bash text — a .shellcheckrc next to
 # the temp files supplies the dialect (shellcheck reads it from each file's
-# own directory, not the cwd). The file name carries the action.yml line
-# number so a finding points back at its source.
+# own directory, not the cwd). The file name carries the action file and
+# its line number so a finding points back at its source.
 snips=()
 printf 'shell=bash\n' >"$work/.shellcheckrc"
-while IFS=$'\t' read -r n text; do
-	[ -n "$n" ] || continue
-	snip="$work/action-yml-run-${n}.sh"
-	printf '%s\n' "$text" >"$snip"
-	snips+=("$snip")
-done <"$work/runs"
+while IFS= read -r -d '' afile; do
+	[ -f "$root/$afile" ] || continue
+	print_run_snippets "$root/$afile" >"$work/runs"
+	slug="$(printf '%s' "$afile" | tr '/.' '__')"
+	while IFS=$'\t' read -r n text; do
+		[ -n "$n" ] || continue
+		snip="$work/${slug}-run-${n}.sh"
+		printf '%s\n' "$text" >"$snip"
+		snips+=("$snip")
+	done <"$work/runs"
+done <"$work/actions"
 
 total=$((${#files[@]} + ${#snips[@]}))
 echo "shellcheck: linting $total target(s)"

@@ -541,9 +541,10 @@ fn extract_runs_pulls_each_action_step_command() {
         .lines()
         .map(|l| l.split_once('\t').expect("LINE<TAB>command").1)
         .collect();
-    assert!(
-        snippets.len() >= 4,
-        "the action's script-calling steps must be extracted: {snippets:?}"
+    assert_eq!(
+        snippets.len(),
+        7,
+        "the action's script-calling steps must all be extracted: {snippets:?}"
     );
     for text in &snippets {
         assert!(!text.is_empty(), "an extracted run: must not be empty");
@@ -855,5 +856,71 @@ fn shellcheck_passes_on_the_ci_scripts() {
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+/// The happy path above proves a clean tree passes; this proves the
+/// inverse — a lint finding inside the repo makes the run exit non-zero,
+/// so a regression cannot land silently.
+#[test]
+fn shellcheck_fails_on_a_violating_script() {
+    if Command::new("shellcheck")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let repo = common::GitRepo::init();
+    // SC2162: `read` without -r mangles backslashes.
+    repo.write("bad.sh", "read x\n");
+    repo.commit(&["bad.sh"], "seed");
+    let out = Command::new("shellcheck")
+        .arg(repo.root.join("bad.sh"))
+        .output()
+        .expect("run shellcheck");
+    assert!(
+        !out.status.success(),
+        "shellcheck itself must flag the fixture — else this test proves nothing"
+    );
+    let out = Command::new("bash")
+        .arg(script("run-shellcheck.sh"))
+        .current_dir(&repo.root)
+        .output()
+        .expect("run run-shellcheck.sh");
+    assert!(
+        !out.status.success(),
+        "a lint violation must fail the run: {}",
+        stdout(&out)
+    );
+}
+
+/// Action discovery is enumeration, not a single hardcoded path: a
+/// composite action under `.github/actions/` joins the run: lint set.
+#[test]
+fn shellcheck_fails_on_a_nested_action_run() {
+    if Command::new("shellcheck")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let repo = common::GitRepo::init();
+    repo.write("clean.sh", "echo hi\n");
+    repo.write(
+        ".github/actions/x/action.yaml",
+        "runs:\n  steps:\n    - run: read x\n",
+    );
+    repo.commit(&["clean.sh", ".github/actions/x/action.yaml"], "seed");
+    let out = Command::new("bash")
+        .arg(script("run-shellcheck.sh"))
+        .current_dir(&repo.root)
+        .output()
+        .expect("run run-shellcheck.sh");
+    assert!(
+        !out.status.success(),
+        "a violating nested action run: must fail the run: {}",
+        stdout(&out)
     );
 }
