@@ -5,7 +5,7 @@
 //! source deliberately), and a fresh manifest stays quiet.
 //!
 //! mtimes are stamped explicitly: a CI checkout doesn't preserve them, and
-//! `fs::copy` sets the copy time — asserting against untoucched files would
+//! `fs::copy` sets the copy time — asserting against untouched files would
 //! flake on whichever side of the threshold the copy landed.
 
 mod common;
