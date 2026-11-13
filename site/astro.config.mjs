@@ -39,8 +39,7 @@ export default defineConfig({
   integrations: [
     sitemap({
       // The 404 page and the /docs/ redirect hop are not content.
-      filter: (page) =>
-        !page.includes("/404") && new URL(page).pathname !== `${BASE}/docs/`,
+      filter: (page) => !page.includes("/404") && new URL(page).pathname !== `${BASE}/docs/`,
     }),
   ],
   vite: {

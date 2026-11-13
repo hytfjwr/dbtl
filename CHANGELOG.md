@@ -12,6 +12,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   https://hytfjwr.github.io/dbtl/changelog/, rendered from this file at
   each release and linked from the footer and the docs menu.
 
+### Changed
+
+- The docs site now ships a sitemap and Open Graph/Twitter card
+  metadata (including a share image) so its pages preview correctly
+  when linked, page titles name their nav group, and muted text and
+  control borders meet contrast minimums in both themes.
+
 ### Fixed
 
 - The docs site on phones and narrow windows: the menu drawer scrolls to
