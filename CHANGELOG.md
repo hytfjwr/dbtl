@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Lint rule-set presets and category severities. `lint.preset: minimal|standard|strict` in `.dbtl.yml` (or `--preset` on `dbtl lint` and `dbtl check`) picks the base rule set a run starts from: `minimal` runs only the error-default rules, `standard` (the shipped default) runs every default-enabled rule, and `strict` runs the whole registry. `lint.categories: {<category>: error|warn|off}` pins a whole category above the preset and below `lint.rules.<id>`; `--rules` remains the authoritative selector above all of them. `--list-rules` shows the resolved severity/enablement under the active config alongside per-preset membership, and `--explain` reports the effective values.
 - `?` full-text search now matches compiled SQL in addition to raw SQL,
   descriptions, and column names, so a `ref()`/`source()` target that only
   exists after Jinja expansion (`db.schema.table`) is findable too.
@@ -19,6 +20,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- `cartesian_join` no longer flags an explicit `CROSS JOIN` — the
+  intentional spelling of a Cartesian product. Only conditionless joins
+  report now: a bare `JOIN`, a comma-separated `FROM a, b` with no
+  `WHERE`, or an `ON` that can never reject a row (`ON TRUE`, `ON 1=1`).
 - `rejoining_upstream` findings now key on `(rule, node)` — the bypassed
   edge's endpoints were context, not identity, so a rejoin that gains
   another shared parent stays the same frozen finding. The baseline,
@@ -29,6 +34,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A model whose SQL nests deeper than a small stack can walk — tens of
+  thousands of `AND`/`||` terms or `UNION ALL` arms — no longer aborts
+  `dbtl lint` (and CLL) with a stack overflow: a lexical depth bound
+  estimates the parsed tree's depth before it is built, and over-limit
+  models degrade to the unparsed/name-match path like any other
+  unparsable SQL.
 - `dbtl --diff <base> --select 'state:modified'` resolves the selector
   against the loaded diff: the `--diff` baseline now loads before
   `--select` is resolved, so `state:` atoms see real change state, and a
@@ -52,6 +63,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   including a list that mixes valid ids with non-string items or a
   `dbtl:` value written as a JSON-encoded string, both of which now fail
   loudly instead of suppressing partially or silently.
+- Source mode now follows `ref()`/`source()` calls made inside
+  project-local `{% macro %}` bodies — bound arguments, defaults, nested
+  calls, project-qualified invokes, and provable `adapter.dispatch()`
+  names produce the same graph edges real dbt records, so macro-carried
+  dependencies no longer trigger false `root_models`/`unused_sources`
+  findings (calls that can't be proven still suppress those claims
+  instead of faking edges).
 - Source-mode SQL parsing now renders Jinja the way the file lexes it —
   `{{ }}` inside string literals expands without the tag's own quotes
   closing the string early (`'{{ var('x') }}'` parses), backslash
@@ -103,6 +121,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   finding, and excerpts slice only the annotated lines. A finding's
   line lookup is also section-aware now, so a model and a source table
   sharing a name no longer resolve to the wrong `- name:` entry.
+- `duplicate_output_columns` no longer flags colliding names an un-aliased
+  expression merely derives (`sum(a), sum(b)` → `sum`/`sum`, `count(*)`,
+  `CASE`, `a::int` → `a`): only Postgres and Redshift actually assign such
+  names, so the repeats count solely under those dialects while written
+  aliases and identifier columns still flag everywhere.
+- `cartesian_join` and `hard_coded_references` no longer read
+  `FROM t, t.arr`-style correlated array factors as a second relation or a
+  written dependency, and `hard_coded_references` now also excuses `dual`,
+  `information_schema` at any qualification depth (including dots inside
+  one quoted name), and `FROM 'data/x.parquet'`-style file literals.
+  `cartesian_join` findings quote the raw SQL join arm when source
+  positions pair, and a model whose render produces no statements —
+  whitespace, comments, or an output-less `{{ config() }}` — is judged
+  empty instead of counted among the unparsable.
 
 ## [0.6.4] - 2026-11-13
 

@@ -304,6 +304,7 @@ fn list_empty_reason_names_the_persistent_filter_and_scope() {
     // A project with no models at all gets the scope hint.
     use std::collections::HashMap;
     let empty = Dag::build(&crate::RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes: HashMap::new(),
         sources: HashMap::new(),

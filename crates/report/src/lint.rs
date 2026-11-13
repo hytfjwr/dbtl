@@ -409,6 +409,7 @@ pub fn lint_report(project: &str, scope: &str, inputs: &LintRunInputs<'_>) -> Li
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbtl_core::RuleEnabled;
     use std::collections::HashMap;
 
     /// A model node literal — `path` carries the layer dir like a real
@@ -468,6 +469,7 @@ mod tests {
                 .push((*c).to_string());
         }
         dbtl_core::RawManifest {
+            unresolved_adjacent: Default::default(),
             metadata: Default::default(),
             nodes: nodes.into_iter().collect(),
             sources: sources.into_iter().collect(),
@@ -490,7 +492,7 @@ mod tests {
         let mut cfg = LintConfig::default();
         for r in LintRule::ALL {
             if !rules.contains(&r) {
-                cfg.severities.insert(r, None);
+                cfg.rules.insert(r, RuleEnabled::Off);
             }
         }
         cfg
@@ -597,8 +599,8 @@ mod tests {
     fn evaluate_honours_fail_on_for_warn_findings() {
         let dag = two_root_models();
         let mut cfg = cfg_only(&[LintRule::RootModels]);
-        cfg.severities
-            .insert(LintRule::RootModels, Some(Severity::Warn));
+        cfg.rules
+            .insert(LintRule::RootModels, RuleEnabled::On(Some(Severity::Warn)));
         // Warn findings under the default `error` threshold report but pass.
         let out = evaluate_lint(&dag, &cfg, None, None, FailOn::Error, no_aux(), None);
         assert_eq!(out.rules[0].counted.len(), 2);

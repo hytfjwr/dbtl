@@ -32,6 +32,7 @@ fn manifest(
             .push((*c).to_string());
     }
     RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes: nodes.into_iter().collect(),
         sources: sources.into_iter().collect(),
@@ -2358,7 +2359,7 @@ fn unused_models_layers_param_retargets_the_check() {
     let mut cfg = config_from("lint:\n  rules:\n    unused_models:\n      layers: [marts]\n");
     for r in LintRule::ALL {
         if r != LintRule::UnusedModels {
-            cfg.severities.insert(r, None);
+            cfg.rules.insert(r, RuleEnabled::Off);
         }
     }
     let out = lint_outcome(&dag, &cfg, None, None);
@@ -5396,7 +5397,7 @@ fn cfg_only(rules: &[LintRule]) -> LintConfig {
     let mut cfg = LintConfig::default();
     for r in LintRule::ALL {
         if !rules.contains(&r) {
-            cfg.severities.insert(r, None);
+            cfg.rules.insert(r, RuleEnabled::Off);
         }
     }
     cfg
@@ -5611,8 +5612,9 @@ fn cartesian_join_flags_conditionless_joins() {
     let out = lint_outcome(&dag, &cfg, Some(&res), None);
     assert_eq!(
         flagged(&out.findings, LintRule::CartesianJoin),
-        vec!["model.p.bare_join", "model.p.cross"],
-        "ON/USING/NATURAL/ASOF MATCH_CONDITION conditions and UNNEST joins must not flag"
+        vec!["model.p.bare_join"],
+        "an explicit CROSS JOIN never counts; ON/USING/NATURAL/ASOF \
+         MATCH_CONDITION conditions and UNNEST joins must not flag either"
     );
 }
 
@@ -6528,6 +6530,60 @@ fn duplicate_output_columns_positions_pair_the_single_raw_name() {
     );
 }
 
+#[test]
+fn duplicate_output_columns_derived_names_flag_only_on_postgres_family() {
+    // Un-aliased expressions take a name from their SHAPE — `sum(a)` →
+    // `sum`, `CASE…` → `case`, `a::int` → `a`. Only Postgres and
+    // Redshift really assign those names, so only there do the repeats
+    // collide; Generic (and every dialect naming outputs by position or
+    // expression text) sees no written-name collision. Written names —
+    // aliases, identifiers — flag under either dialect.
+    let m = manifest(
+        vec![
+            model_sql("sum_dup", "select sum(a), sum(b) from t"),
+            model_sql("count_dup", "select count(*), count(a) from t"),
+            model_sql(
+                "case_dup",
+                "select case when a > 0 then 1 end, case when b > 0 then 2 end from t",
+            ),
+            model_sql("cast_dup", "select a::int, a::varchar from t"),
+            model_sql("aliased_dup", "select sum(a) as x, sum(b) as x from t"),
+            model_sql("bare_dup", "select a, a from t"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let cfg = cfg_only(&[LintRule::DuplicateOutputColumns]);
+
+    // Generic: only the written-name collisions survive.
+    let res = sql_resolver(None);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::DuplicateOutputColumns),
+        vec!["model.p.aliased_dup", "model.p.bare_dup"],
+        "expression-shape names can't collide under Generic"
+    );
+
+    // Postgres + Redshift assign the derived names — every shape collides.
+    for dialect in [SqlDialect::Postgres, SqlDialect::Redshift] {
+        let res = SqlParseResolver::new(None, dialect);
+        let out = lint_outcome(&dag, &cfg, Some(&res), None);
+        assert_eq!(
+            flagged(&out.findings, LintRule::DuplicateOutputColumns),
+            vec![
+                "model.p.aliased_dup",
+                "model.p.bare_dup",
+                "model.p.case_dup",
+                "model.p.cast_dup",
+                "model.p.count_dup",
+                "model.p.sum_dup",
+            ],
+            "{dialect:?}: the derived output names collide for real"
+        );
+    }
+}
+
 // ---- unused_cte ---------------------------------------------------------------
 
 #[test]
@@ -7020,7 +7076,7 @@ fn new_sql_rules_respect_exclude_and_meta_ignore() {
             r,
             LintRule::TrailingSemicolon | LintRule::DuplicateOutputColumns | LintRule::UnusedCte
         ) {
-            cfg.severities.insert(r, None);
+            cfg.rules.insert(r, RuleEnabled::Off);
         }
     }
     let out = lint_outcome(&dag, &cfg, Some(&res), None);
@@ -7312,12 +7368,135 @@ fn missing_inputs_report_skipped_rules_not_findings() {
 
     // Disabled rules never skip — off is not "skipped".
     let mut cfg = LintConfig::default();
-    cfg.severities.insert(LintRule::SelectStar, None);
+    cfg.rules.insert(LintRule::SelectStar, RuleEnabled::Off);
     let out = lint_outcome(&dag, &cfg, None, None);
     assert!(
         !out.skipped.iter().any(|s| s.rule == LintRule::SelectStar),
         "a disabled rule produces neither findings nor a skip"
     );
+
+    // …nor does a rule off via `categories` or the preset — an opt-out by
+    // any layer is never counted as a skip.
+    let mut cfg = LintConfig::default();
+    cfg.categories.insert(Category::Sql, None);
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert!(
+        out.skipped
+            .iter()
+            .all(|s| s.rule.info().category != Category::Sql),
+        "a category-off sql rule produces neither findings nor a skip"
+    );
+    let cfg = LintConfig {
+        preset: LintPreset::Minimal,
+        ..LintConfig::default()
+    };
+    let out = lint_outcome(&dag, &cfg, None, None);
+    assert!(
+        out.skipped
+            .iter()
+            .all(|s| { LintPreset::Minimal.enables(s.rule.info()) }),
+        "a preset-off rule produces neither findings nor a skip"
+    );
+}
+
+#[test]
+fn presets_define_the_base_rule_set() {
+    // minimal = exactly the error-default rules; standard = the registry's
+    // `default_enabled` set; strict = everything (they agree while every
+    // shipped rule is default-enabled — the distinction only matters when
+    // an opt-in rule ships).
+    let minimal: Vec<_> = LintRule::ALL
+        .iter()
+        .copied()
+        .filter(|r| LintPreset::Minimal.enables(r.info()))
+        .collect();
+    assert_eq!(
+        minimal,
+        LintRule::ALL
+            .iter()
+            .copied()
+            .filter(|r| r.info().default_severity == Severity::Error)
+            .collect::<Vec<_>>()
+    );
+    let standard: Vec<_> = LintRule::ALL
+        .iter()
+        .copied()
+        .filter(|r| LintPreset::Standard.enables(r.info()))
+        .collect();
+    assert_eq!(
+        standard,
+        LintRule::ALL
+            .iter()
+            .copied()
+            .filter(|r| r.info().default_enabled)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(standard.len(), LintRule::ALL.len());
+    assert!(LintRule::ALL
+        .iter()
+        .all(|r| LintPreset::Strict.enables(r.info())));
+    // …and an opt-in rule is off under minimal/standard, on under strict.
+    let mut opt_in = *LintRule::SelectStar.info();
+    opt_in.default_enabled = false;
+    assert!(!LintPreset::Minimal.enables(&opt_in));
+    assert!(!LintPreset::Standard.enables(&opt_in));
+    assert!(LintPreset::Strict.enables(&opt_in));
+    // The config layer reads the same predicates: `strict` runs it,
+    // `standard` doesn't.
+    let cfg = LintConfig {
+        preset: LintPreset::Strict,
+        ..LintConfig::default()
+    };
+    assert!(cfg.enabled(LintRule::SelectStar));
+    // A `minimal` config still runs the error-default rules at their
+    // registry severity.
+    let cfg = LintConfig {
+        preset: LintPreset::Minimal,
+        ..LintConfig::default()
+    };
+    assert_eq!(
+        cfg.severity(LintRule::MissingPrimaryKeyTests),
+        Some(Severity::Error)
+    );
+    assert_eq!(cfg.severity(LintRule::SelectStar), None);
+}
+
+#[test]
+fn category_settings_resolve_above_the_preset() {
+    // A category `error`/`warn` repins the whole category — preset-off
+    // rules included; `off` disables it.
+    let mut cfg = LintConfig {
+        preset: LintPreset::Minimal,
+        categories: [
+            (Category::Sql, Some(Severity::Warn)),
+            (Category::Testing, None),
+        ]
+        .into_iter()
+        .collect(),
+        ..LintConfig::default()
+    };
+    assert_eq!(
+        cfg.severity(LintRule::SelectStar),
+        Some(Severity::Warn),
+        "category severity lifts a preset-off rule"
+    );
+    assert_eq!(
+        cfg.severity(LintRule::MissingPrimaryKeyTests),
+        None,
+        "category off disables even the preset's rules"
+    );
+    // An `On(None)` per-rule entry defers its severity to the category —
+    // `true` only enables, it doesn't pin.
+    cfg.rules
+        .insert(LintRule::SelectStar, RuleEnabled::On(None));
+    assert_eq!(cfg.severity(LintRule::SelectStar), Some(Severity::Warn));
+    // …but a pinned per-rule severity ignores the category's repin.
+    cfg.rules
+        .insert(LintRule::SelectStar, RuleEnabled::On(Some(Severity::Error)));
+    assert_eq!(cfg.severity(LintRule::SelectStar), Some(Severity::Error));
+    // …and `Off` stays off.
+    cfg.rules.insert(LintRule::SelectStar, RuleEnabled::Off);
+    assert_eq!(cfg.severity(LintRule::SelectStar), None);
 }
 
 #[test]
@@ -7336,7 +7515,7 @@ fn disabled_sql_rules_never_parse() {
     let mut cfg = LintConfig::default();
     for r in LintRule::ALL {
         if r.info().requires == Requires::Sql {
-            cfg.severities.insert(r, None);
+            cfg.rules.insert(r, RuleEnabled::Off);
         }
     }
     let out = lint_outcome(&dag, &cfg, Some(&res), None);
@@ -7480,6 +7659,129 @@ fn unparsed_counts_models_whose_sql_wont_parse_once() {
     );
 }
 
+// ---- pathological SQL depth ------------------------------------------------
+//
+// A flat infix/set-op chain (`x and …`, `x || …`, `union all …`) builds
+// a left-deep AST spine the parser writes iteratively but no resolver,
+// scan, or drop walk can recurse on the smallest stacks the binary
+// runs on — the model must degrade to `unparsed` instead of aborting.
+// Each test lints it on a 1 MiB thread: the run returning at all is
+// what the bound buys.
+
+/// Lint `sql` (one model named `deep`) with the seven parse-backed SQL
+/// rules on a 1 MiB-stack thread, returning the outcome.
+fn deep_sql_linted(sql: &str) -> LintOutcome {
+    let m = manifest(
+        vec![model_sql("deep", sql), model_sql("ok", "select a from t")],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn_scoped(s, || {
+                let res = sql_resolver(None);
+                let cfg = cfg_only(&[
+                    LintRule::SelectStar,
+                    LintRule::HardCodedReferences,
+                    LintRule::CartesianJoin,
+                    LintRule::UnknownColumnReference,
+                    LintRule::DuplicateOutputColumns,
+                    LintRule::UnusedCte,
+                    LintRule::OrderByWithoutLimit,
+                ]);
+                lint_outcome(&dag, &cfg, Some(&res), None)
+            })
+            .expect("spawn the lint thread")
+            .join()
+            .expect("lint on a 1 MiB stack must finish, not abort")
+    })
+}
+
+/// The deep model lands on `unparsed`; the plain one beside it still
+/// analyzes — the bound degrades per model.
+fn assert_deep_unparsed(out: &LintOutcome) {
+    assert!(
+        out.unparsed.iter().any(|u| u == "model.p.deep"),
+        "the over-depth model must read as unparsable"
+    );
+    assert!(
+        !out.unparsed.iter().any(|u| u == "model.p.ok"),
+        "an ordinary model still parses on the same run"
+    );
+}
+
+#[test]
+fn deep_and_chain_degrades_to_unparsed_on_a_small_stack() {
+    // ~20k `and` terms — the AND spine from the original report.
+    let sql = format!(
+        "select a from t where {}",
+        (0..20_000)
+            .map(|i| format!("a = {i}"))
+            .collect::<Vec<_>>()
+            .join(" and ")
+    );
+    assert_deep_unparsed(&deep_sql_linted(&sql));
+}
+
+#[test]
+fn deep_concat_chain_degrades_to_unparsed_on_a_small_stack() {
+    // ~20k `||` terms — the concat spine.
+    let sql = format!("select {}", vec!["a"; 20_000].join(" || 'x' || "));
+    assert_deep_unparsed(&deep_sql_linted(&sql));
+}
+
+#[test]
+fn deep_union_chain_degrades_to_unparsed_on_a_small_stack() {
+    // ~12k `union all` arms — the set-operation spine.
+    let sql = (0..12_000)
+        .map(|i| format!("select {i} as a"))
+        .collect::<Vec<_>>()
+        .join(" union all ");
+    assert_deep_unparsed(&deep_sql_linted(&sql));
+}
+
+#[test]
+fn statementless_rendered_sql_is_judged_not_unparsed() {
+    // A render producing no STATEMENTS — whitespace, comments, an
+    // output-less `{{ config() }}` — parses to zero statements: the
+    // analysis succeeds with empty facts, the model is judged (nothing
+    // to flag), and it never lands on `unparsed`. Only text that IS SQL
+    // but fails to parse counts.
+    let m = manifest(
+        vec![
+            model_sql("blank", "  \n\t\n"),
+            model_sql("comments", "-- just a comment\n/* a block */\n"),
+            model_sql("config_only", "{{ config(materialized='view') }}\n"),
+            model_sql("broken", "select from where or"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[
+        LintRule::SelectStar,
+        LintRule::HardCodedReferences,
+        LintRule::CartesianJoin,
+        LintRule::DuplicateOutputColumns,
+        LintRule::UnusedCte,
+        LintRule::OrderByWithoutLimit,
+    ]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert!(
+        out.findings.is_empty(),
+        "statementless models produce no findings: {:?}",
+        out.findings
+    );
+    assert_eq!(
+        out.unparsed.iter().collect::<Vec<_>>(),
+        vec!["model.p.broken"],
+        "whitespace/comments/config-only are judged empty — only real unparsable SQL counts"
+    );
+}
+
 #[test]
 fn forbidden_patterns_never_adds_to_unparsed() {
     // A raw-text rule: even against unparsable SQL it judges the text it
@@ -7496,7 +7798,7 @@ fn forbidden_patterns_never_adds_to_unparsed() {
     let mut cfg = cfg;
     for r in LintRule::ALL {
         if r != LintRule::ForbiddenPatterns {
-            cfg.severities.insert(r, None);
+            cfg.rules.insert(r, RuleEnabled::Off);
         }
     }
     let out = lint_outcome(&dag, &cfg, Some(&res), None);
@@ -7831,7 +8133,7 @@ fn hard_coded_references_honours_ignore_globs_and_information_schema() {
     let mut cfg = cfg;
     for r in LintRule::ALL {
         if r != LintRule::HardCodedReferences {
-            cfg.severities.insert(r, None);
+            cfg.rules.insert(r, RuleEnabled::Off);
         }
     }
     let out = lint_outcome(&dag, &cfg, Some(&res), None);
@@ -7918,10 +8220,10 @@ fn cartesian_join_ignores_the_jinja_branch_union_comma() {
 }
 
 #[test]
-fn cartesian_join_evaluates_a_cross_join_constraint() {
-    // MySQL parses a constraint on CROSS JOIN (its INNER JOIN spelling):
-    // a real ON is a conditioned join, not a product — a bare or
-    // never-rejecting one still is.
+fn cartesian_join_never_flags_an_explicit_cross_join() {
+    // `CROSS JOIN` is the intentional spelling of the product — the rule
+    // never reads its constraint. (MySQL parses `CROSS JOIN t ON cond`
+    // as its INNER JOIN spelling; even there the operator alone decides.)
     let m = manifest(
         vec![
             model_sql(
@@ -7940,8 +8242,152 @@ fn cartesian_join_evaluates_a_cross_join_constraint() {
     let out = lint_outcome(&dag, &cfg, Some(&res), None);
     assert_eq!(
         flagged(&out.findings, LintRule::CartesianJoin),
-        vec!["model.p.cross_bare", "model.p.cross_true"],
-        "CROSS JOIN with a real ON is MySQL's inner-join spelling — not a product"
+        Vec::<String>::new(),
+        "an explicit CROSS JOIN is the intentional product spelling — never a finding"
+    );
+}
+
+#[test]
+fn cartesian_join_skips_correlated_and_file_factors() {
+    // `t.arr` after `t` binds reads `t`'s array column — a per-row
+    // expansion of the SAME relation, not a second one — so neither the
+    // comma nor a JOIN arm carrying it is a product. A file literal is
+    // an explicit external read, likewise not a relation pair. A real
+    // second relation still flags, comma or `JOIN`.
+    let m = manifest(
+        vec![
+            model_sql("corr_comma", "select t.id, x from a.t t, t.arr as x"),
+            model_sql("corr_join", "select t.id from a.t t join t.arr on true"),
+            model_sql("corr_nested", "select * from a.t t, b.u, t.more"),
+            model_sql("file_comma", "select * from a.t, 'data/x.parquet'"),
+            model_sql("real_comma", "select * from a.t, b.u"),
+            model_sql("real_join", "select * from a.t join b.u"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::CartesianJoin]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::CartesianJoin),
+        vec![
+            "model.p.corr_nested",
+            "model.p.real_comma",
+            "model.p.real_join"
+        ],
+        "correlated array factors and file literals aren't products; `b.u` in corr_nested still is"
+    );
+}
+
+#[test]
+fn cartesian_join_message_uses_the_raw_join_text() {
+    // The judged text renders `{{ ref('up') }}` to the relation name —
+    // the message quotes the WRITTEN arm `{{ ref('up') }} b` when the
+    // raw render's arm count matches the judged count (positions pair).
+    let m = manifest(
+        vec![
+            model_sql("up", "select 1 as id"),
+            model_sql_pos(
+                "paired",
+                "select * from {{ ref('up') }} a, {{ ref('up') }} b",
+            ),
+        ],
+        vec![],
+        &[("model.p.up", "model.p.paired")],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::CartesianJoin]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    let f = finding_on(&out.findings, LintRule::CartesianJoin, "model.p.paired");
+    assert!(
+        f.message.contains("{{ ref('up') }} b"),
+        "the written join arm text, not the rendered name: {}",
+        f.message
+    );
+
+    // Without raw SQL there's nothing to slice — the judged text (the
+    // compiled relation name) is what the message falls back to.
+    let m = manifest(
+        vec![model_compiled_only(
+            "compiled_only",
+            "select * from up a, up b",
+        )],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    let f = finding_on(
+        &out.findings,
+        LintRule::CartesianJoin,
+        "model.p.compiled_only",
+    );
+    assert!(
+        f.message.contains("up b"),
+        "unpaired positions keep the judged text: {}",
+        f.message
+    );
+}
+
+#[test]
+fn hard_coded_references_skips_files_metadata_and_correlated_names() {
+    // `dual` is a row constructor; `information_schema` at any
+    // qualification depth (including a name whole-quoted so its dots
+    // live inside one identifier) is a metadata read; a `'file'`
+    // literal is an explicit external read; and `t.arr`/`t.sub` headed
+    // by a bound alias reads that relation's column, not a relation.
+    // Genuinely written names still flag.
+    let m = manifest(
+        vec![
+            model_sql("dual", "select 1 from dual"),
+            model_sql("is_deep", "select * from db.information_schema.columns"),
+            model_sql(
+                "is_quoted",
+                "select * from `proj.us.INFORMATION_SCHEMA.JOBS`",
+            ),
+            model_sql("file", "select * from 'data/x.parquet'"),
+            model_sql("corr", "select t.id, x from raw.orders t, t.arr as x"),
+            model_sql(
+                "corr_nested",
+                "select * from raw.orders t where exists (select 1 from t.sub)",
+            ),
+            model_sql("real", "select * from analytics.orders"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::HardCodedReferences]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::HardCodedReferences),
+        vec!["model.p.corr", "model.p.corr_nested", "model.p.real"],
+        "only the written relations flag — the correlated tails never name one"
+    );
+    let msg_of = |uid| {
+        out.findings
+            .iter()
+            .find(|f| f.node_uid == uid)
+            .unwrap()
+            .message
+            .clone()
+    };
+    assert_eq!(
+        msg_of("model.p.corr"),
+        "corr reads relation without ref()/source(): raw.orders"
+    );
+    assert_eq!(
+        msg_of("model.p.corr_nested"),
+        "corr_nested reads relation without ref()/source(): raw.orders"
+    );
+    assert_eq!(
+        msg_of("model.p.real"),
+        "real reads relation without ref()/source(): analytics.orders"
     );
 }
 

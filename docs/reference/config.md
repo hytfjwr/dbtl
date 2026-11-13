@@ -27,7 +27,7 @@ Looked up beside the data source: the project directory in source mode; in manif
 | Key | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
 | `fail_on` | `error` \| `warn` \| `never` | `error` | `error` \| `warn` \| `never` — the minimum severity at which findings fail a run. `--fail-on` overrides it. |
-| `lint` | object | — | `lint:` — per-rule enables, severities, parameters, excludes, naming prefixes, and the baseline path. |
+| `lint` | object | — | `lint:` — the rule-set preset, per-category severities, per-rule enables, severities, parameters, excludes, naming prefixes, and the baseline path. |
 | `check` | object | — | `check:` — gate severities/parameters and whether the lint gates fold into `dbtl check`. |
 | `docs` | object | — | `docs:` — generated-docs options. |
 | `owner_meta_key` | string | `owner` | The `meta:` key the affected-owners report reads (default `owner`; wins over `config.yml`'s `owner_meta_key`). |
@@ -42,11 +42,13 @@ Any other top-level key is allowed but ignored (it produces a warning).
 | `source_fanout_threshold` | integer ≥ 1 | `2` | Compat flat key — the same value `rules.source_fanout.threshold` sets; both spellings together are an error naming both keys. |
 | `naming_prefixes` | object: layer → list of strings | `intermediate: [int_]` `marts: [fct_, dim_, rpt_]` `staging: [stg_]` | layer dir → allowed prefixes; merges per-layer over the defaults. |
 | `baseline` | path | `.dbtl-baseline.json` | The frozen-violations file — resolved against this file's directory in `ProjectConfig::load`. |
+| `preset` | `minimal` \| `standard` \| `strict` | `standard` | base lint rule set: `minimal` (error-default rules only), `standard` (the shipped default), `strict` (every rule, opt-in included). `lint.categories`, `lint.rules.<id>`, and `--rules` sit above it. Unknown names are an error. |
+| `categories` | object: category → `error` \| `warn` \| `off` | — | category → `error` \| `warn` \| `off` — one severity (and enable/disable) for a whole category at once. Above `lint.preset`, below `lint.rules.<id>`. Unknown category names are an error. |
 | `rules` | object | — | rule id → `false` (off) \| `true` (the registry default) \| a settings object (`severity`, `exclude`, and the rule's declared parameters). Unknown rule names are an error. |
 
 #### `lint.rules.<rule-id>`
 
-`false` disables the rule, `true` runs it at the registry default, or a settings object sets severity/excludes/parameters:
+`false` disables the rule, `true` enables it (at the `lint.categories` severity when one is set, else the registry default), or a settings object sets severity/excludes/parameters. Per-rule entries resolve above `lint.categories`, which resolves above `lint.preset`.
 
 | Key | Type | Description |
 | --- | ---- | ----------- |

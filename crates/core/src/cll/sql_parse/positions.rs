@@ -14,9 +14,9 @@
 use std::ops::Range;
 
 use sqlparser::ast::{Spanned, Statement};
-use sqlparser::parser::Parser;
 
 use super::ast::query_wildcard_items;
+use super::depth::parse_statements;
 use super::dialect::SqlDialect;
 use super::facts::{outer_order_by_span, output_name_occurrences};
 use super::jinja::{render_jinja_mapped, JinjaMark};
@@ -66,8 +66,7 @@ pub struct MarkedRelations {
 /// text doesn't parse: a positionless finding, never a guessed one.
 pub(super) fn plain_positions(raw: &str, dialect: SqlDialect) -> Option<SqlPositions> {
     let rendered = render_jinja_mapped(raw, JinjaMark::Plain, dialect);
-    let parser_dialect = dialect.sqlparser();
-    let stmts = Parser::parse_sql(&*parser_dialect, &rendered.text).ok()?;
+    let stmts = parse_statements(dialect, &rendered.text)?;
     let mut out = SqlPositions::default();
     for s in &stmts {
         if let Statement::Query(q) = s {
@@ -119,8 +118,7 @@ pub(super) fn plain_positions(raw: &str, dialect: SqlDialect) -> Option<SqlPosit
 /// `None` like [`plain_positions`].
 pub(super) fn marked_relations(raw: &str, dialect: SqlDialect) -> Option<MarkedRelations> {
     let rendered = render_jinja_mapped(raw, JinjaMark::Marked, dialect);
-    let parser_dialect = dialect.sqlparser();
-    let stmts = Parser::parse_sql(&*parser_dialect, &rendered.text).ok()?;
+    let stmts = parse_statements(dialect, &rendered.text)?;
     let scan = scan_statements(&stmts, Some(&rendered));
     let spans = scan
         .hard_coded_spans

@@ -461,6 +461,7 @@ fn manifest_from_plan(params: &SynthParams, plan: &Plan, sql_bodies: bool) -> Ra
         .collect();
 
     RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: RawMetadata {
             project_name: Some(pkg.to_string()),
             ..Default::default()

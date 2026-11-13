@@ -279,9 +279,11 @@ pub(super) fn selector_diff(
 }
 
 /// Overlay `--rules` on a lint config: the flag is the authoritative rule
-/// SELECTOR — exactly the named rules run; a file-`off` named rule lifts to
-/// the registry default severity (a configured non-off severity stands, like
-/// the file's thresholds and prefixes do). An unknown name is a usage error
+/// SELECTOR — exactly the named rules run; a file-`off` (or preset- or
+/// category-`off`) named rule lifts to `On(None)` — its severity resolves
+/// to the category's `error`/`warn` if one is configured, else the
+/// registry default (a configured non-off severity stands, like the
+/// file's thresholds and prefixes do). An unknown name is a usage error
 /// listing the valid ids.
 pub(super) fn apply_rules_overlay(
     cfg: &mut dbtl::LintConfig,
@@ -293,11 +295,11 @@ pub(super) fn apply_rules_overlay(
     validate_rule_names(rules)?;
     for r in dbtl::LintRule::ALL {
         if rules.iter().any(|n| n == r.name()) {
-            if cfg.severities.get(&r) == Some(&None) {
-                cfg.severities.remove(&r);
+            if !matches!(cfg.rules.get(&r), Some(dbtl::RuleEnabled::On(_))) {
+                cfg.rules.insert(r, dbtl::RuleEnabled::On(None));
             }
         } else {
-            cfg.severities.insert(r, None);
+            cfg.rules.insert(r, dbtl::RuleEnabled::Off);
         }
     }
     Ok(())
@@ -312,6 +314,7 @@ mod tests {
     /// search treats the project dir itself as the root).
     fn resolved_at(dir: &std::path::Path) -> ResolvedSource {
         let manifest = dbtl::RawManifest {
+            unresolved_adjacent: Default::default(),
             metadata: Default::default(),
             nodes: HashMap::new(),
             sources: HashMap::new(),
@@ -384,6 +387,49 @@ mod tests {
             cfg.severity(dbtl::LintRule::SourceFanout),
             Some(dbtl::Severity::Warn)
         );
+    }
+
+    #[test]
+    fn rules_flag_lifts_preset_and_category_off_rules() {
+        // A named rule off via `preset` or `categories` lifts too — the
+        // flag is authoritative over EVERY off layer. Its severity
+        // resolves to the category's `error`/`warn` when one is set,
+        // else the registry default.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".dbtl.yml"),
+            "lint:\n  preset: minimal\n  categories:\n    modeling: off\n    sql: error\n",
+        )
+        .unwrap();
+        let resolved = resolved_at(dir.path());
+        let cfg = lint_cfg_for(
+            &resolved,
+            &["root_models".to_string(), "select_star".to_string()],
+        );
+        assert_eq!(
+            cfg.severity(dbtl::LintRule::RootModels),
+            Some(dbtl::Severity::Warn),
+            "a modeling:off + minimal-off rule lifts to the registry default"
+        );
+        assert_eq!(
+            cfg.severity(dbtl::LintRule::SelectStar),
+            Some(dbtl::Severity::Error),
+            "a minimal-off rule under `sql: error` lifts at the category severity"
+        );
+        assert!(
+            !cfg.enabled(dbtl::LintRule::MissingPrimaryKeyTests),
+            "unnamed rules go off even when the preset would run them"
+        );
+        // No --rules → the file's layers apply untouched: `modeling: off`
+        // holds, `sql: error` still enables select_star at error above the
+        // preset, and the minimal set's error-default rules run.
+        let cfg = lint_cfg_for(&resolved, &[]);
+        assert!(!cfg.enabled(dbtl::LintRule::RootModels));
+        assert_eq!(
+            cfg.severity(dbtl::LintRule::SelectStar),
+            Some(dbtl::Severity::Error)
+        );
+        assert!(cfg.enabled(dbtl::LintRule::MissingPrimaryKeyTests));
     }
 
     #[test]

@@ -814,6 +814,194 @@ fn explain_prints_the_registry_entry_and_effective_values() {
     );
 }
 
+// ---- --preset / lint.preset / lint.categories --------------------------------
+
+#[test]
+fn preset_flag_narrows_the_rule_set() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    // `minimal` runs only the error-default rules — the fixture's warn
+    // findings disappear, the error rules still fire.
+    let out = lint_on(&m, &["--preset", "minimal", "--format", "concise"]);
+    let body = stdout(&out);
+    assert!(
+        !body.contains("warning["),
+        "no warn findings under minimal: {body}"
+    );
+    assert!(
+        body.contains("error["),
+        "the error-default rules still run: {body}"
+    );
+    // `strict` is the full registry set — identical to the unflagged run
+    // while every shipped rule is default-enabled.
+    let strict = lint_on(&m, &["--preset", "strict", "--format", "concise"]);
+    let base = lint_on(&m, &["--format", "concise"]);
+    assert_eq!(stdout(&strict), stdout(&base), "strict == the full set");
+    // An unknown preset name is a usage error.
+    let out = lint_on(&m, &["--preset", "bogus"]);
+    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
+}
+
+#[test]
+fn preset_flag_beats_the_file_preset_and_rules_lift_through_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    std::fs::write(tmp.path().join(".dbtl.yml"), "lint:\n  preset: minimal\n").unwrap();
+    // The file's preset applies: only error findings.
+    let out = lint_on(&m, &["--format", "concise"]);
+    assert!(
+        !stdout(&out).contains("warning["),
+        "the file's minimal applies: {}",
+        stdout(&out)
+    );
+    // `--preset` overrides the file — the warn findings come back.
+    let out = lint_on(&m, &["--preset", "strict", "--format", "concise"]);
+    assert!(
+        stdout(&out).contains("warning["),
+        "--preset beats the file: {}",
+        stdout(&out)
+    );
+    // `--rules` lifts a preset-off rule: exactly the named rule's findings
+    // run — the error-default rules' go off with everything else.
+    let out = lint_on(&m, &["--rules", "source_fanout", "--format", "concise"]);
+    let body = stdout(&out);
+    assert!(
+        body.contains("warning[source_fanout]"),
+        "the named preset-off rule runs: {body}"
+    );
+    assert!(
+        !body.contains("error["),
+        "nothing else runs under --rules: {body}"
+    );
+}
+
+#[test]
+fn categories_config_enables_and_repins_a_whole_category() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    // Under `minimal` + `sql: error`: the sql rules run at error (above the
+    // preset), `select_star: false` stays off (per-rule above category).
+    std::fs::write(
+        tmp.path().join(".dbtl.yml"),
+        "lint:\n  preset: minimal\n  categories:\n    sql: error\n  rules:\n    select_star: false\n",
+    )
+    .unwrap();
+    let out = lint_on(&m, &["--format", "concise"]);
+    let body = stdout(&out);
+    assert!(
+        !body.contains("select_star"),
+        "the per-rule off beats the category enable: {body}"
+    );
+    assert!(
+        !body.contains("warning["),
+        "category error repins — no warns: {body}"
+    );
+}
+
+#[test]
+fn list_rules_shows_the_preset_columns_and_effective_state() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    std::fs::write(tmp.path().join(".dbtl.yml"), "lint:\n  preset: minimal\n").unwrap();
+    let out = lint_on(&m, &["--list-rules"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let table = stdout(&out);
+    for col in [
+        "DEFAULT", "SEVERITY", "ENABLED", "MINIMAL", "STANDARD", "STRICT",
+    ] {
+        assert!(
+            table.lines().next().unwrap().contains(col),
+            "header shows {col}: {table}"
+        );
+    }
+    // Under the file's `minimal`: an error-default rule's effective
+    // severity stays error; a warn-default rule resolves off.
+    let row = |name: &str| {
+        table
+            .lines()
+            .find(|l| l.starts_with(name))
+            .unwrap_or_else(|| panic!("{name} row: {table}"))
+    };
+    let pk = row("missing_primary_key_tests");
+    assert!(
+        pk.contains(" error ") || pk.contains(" error"),
+        "pk stays on: {pk}"
+    );
+    let roots = row("root_models");
+    assert!(
+        roots.contains(" off ") || roots.ends_with("off") || roots.contains("  off"),
+        "root_models is off under minimal: {roots}"
+    );
+    // The effective column still shows the off, the preset columns the
+    // static membership.
+    assert!(
+        row("root_models").contains("warn"),
+        "default col shows warn"
+    );
+}
+
+#[test]
+fn explain_shows_the_off_state_under_a_preset() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    let out = lint_on(&m, &["--preset", "minimal", "--explain", "root_models"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let body = stdout(&out);
+    assert!(
+        body.contains("severity: off"),
+        "the effective severity is off under minimal: {body}"
+    );
+}
+
+#[test]
+fn check_preset_implies_lint_and_uses_the_same_set() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    // `--preset` alone implies --lint — the gates are the minimal set only.
+    let out = run(&[
+        "check",
+        "--manifest",
+        m.to_str().unwrap(),
+        "--preset",
+        "minimal",
+        "--format",
+        "concise",
+    ]);
+    let body = stdout(&out);
+    assert!(
+        body.contains("missing_primary_key_tests"),
+        "the lint gates ran: {body}"
+    );
+    assert!(
+        !body.contains("warning["),
+        "only the error-default rules ran: {body}"
+    );
+    // The file's preset/categories apply through check too — minimal +
+    // sql at error, select_star off.
+    std::fs::write(
+        tmp.path().join(".dbtl.yml"),
+        "lint:\n  preset: minimal\n  categories:\n    sql: error\n  rules:\n    select_star: false\n",
+    )
+    .unwrap();
+    let out = run(&[
+        "check",
+        "--manifest",
+        m.to_str().unwrap(),
+        "--lint",
+        "--format",
+        "concise",
+    ]);
+    let body = stdout(&out);
+    assert!(
+        !body.contains("select_star"),
+        "the per-rule off holds: {body}"
+    );
+    assert!(
+        !body.contains("warning["),
+        "the sql category runs at error: {body}"
+    );
+}
+
 // ---- text / json output and --quiet -----------------------------------------
 
 #[test]
@@ -1425,6 +1613,108 @@ fn unknown_column_reference_skips_date_parts_aliases_and_unnest_names() {
         assert!(
             stdout.contains("m_missing.sql"),
             "{dialect}: the missing column's file shows:\n{stdout}"
+        );
+    }
+}
+
+// ---- the SQL rules' judged-but-clean shapes --------------------------------
+
+#[test]
+fn sql_rules_skip_non_relations_derived_names_and_statementless_models() {
+    // The false-positive classes the SQL rules decline, side by side
+    // with the violations that must still flag:
+    //  - un-aliased expressions sharing a shape-derived name (`sum`/`sum`)
+    //    collide only on Postgres-family dialects — Generic stays quiet,
+    //    an explicit `a as x, b as x` still flags;
+    //  - `CROSS JOIN` is the intentional product spelling, `t.arr` after
+    //    `t` binds is a correlated column read, `'file'` is an explicit
+    //    external read — none is a product, `from a, b` still is;
+    //  - `dual`, `information_schema` (dots inside one quoted name too),
+    //    a file literal, and `t.arr` name no relation — `raw.orders` does;
+    //  - `OFFSET` alone never bounds an `ORDER BY`;
+    //  - a `{{ config() }}`-only model parses to zero statements — judged
+    //    empty, not "unparsable".
+    let tmp = tempfile::tempdir().unwrap();
+    let root = common::write_project(
+        tmp.path(),
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            ("models/base.sql", "select 1 as id, 1 as a, 2 as b\n"),
+            (
+                "models/m_dup_exprs.sql",
+                "select id, sum(a), sum(b) from {{ ref('base') }} group by id\n",
+            ),
+            (
+                "models/m_dup_alias.sql",
+                "select a as x, b as x from {{ ref('base') }}\n",
+            ),
+            (
+                "models/m_cross.sql",
+                "select a.id as ax, b.id as bx from {{ ref('base') }} a cross join {{ ref('base') }} b\n",
+            ),
+            (
+                "models/m_comma.sql",
+                "select a.id as ax, b.id as bx from {{ ref('base') }} a, {{ ref('base') }} b\n",
+            ),
+            (
+                "models/m_corr.sql",
+                "select t.id, x from {{ ref('base') }} t, t.arr as x\n",
+            ),
+            (
+                "models/m_is.sql",
+                "select * from `proj.us.INFORMATION_SCHEMA.JOBS`\n",
+            ),
+            ("models/m_dual.sql", "select 1 from dual\n"),
+            ("models/m_file.sql", "select * from 'data/x.parquet'\n"),
+            ("models/m_real.sql", "select * from raw.orders\n"),
+            (
+                "models/m_offset.sql",
+                "select * from {{ ref('base') }} order by id offset 2\n",
+            ),
+            (
+                "models/m_config.sql",
+                "{{ config(materialized='view') }}\n",
+            ),
+            ("models/m_broken.sql", "select from where or\n"),
+        ],
+    );
+    let out = run(&[
+        "lint",
+        "--source",
+        root.to_str().unwrap(),
+        "--rules",
+        "duplicate_output_columns,cartesian_join,hard_coded_references,order_by_without_limit",
+        "--format",
+        "concise",
+    ]);
+    let stdout = stdout(&out);
+    for needle in [
+        // The real findings survive.
+        "m_dup_alias.sql",
+        "duplicate output column: x",
+        "m_comma joins without a join condition: {{ ref('base') }} b",
+        "m_real reads relation without ref()/source(): raw.orders",
+        "m_offset's final query has ORDER BY but no LIMIT",
+        // …and only truly unparsable SQL is reported as skipped.
+        "unparsable SQL): m_broken",
+    ] {
+        assert!(stdout.contains(needle), "expected {needle:?}:\n{stdout}");
+    }
+    for absent in [
+        "m_dup_exprs",
+        "m_cross",
+        "m_corr",
+        "m_is",
+        "m_dual",
+        "m_file",
+        "m_config",
+    ] {
+        assert!(
+            !stdout.contains(absent),
+            "{absent} must not appear:\n{stdout}"
         );
     }
 }

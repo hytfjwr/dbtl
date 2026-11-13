@@ -217,6 +217,7 @@ pub(super) fn inspector_omits_empty_sections() {
         },
     );
     let dag = Dag::build(&dbtl::RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),

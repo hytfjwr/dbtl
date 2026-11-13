@@ -252,6 +252,7 @@ impl SqlParseResolver {
                         bare: false,
                         sources: ColSources::new(),
                         synthetic: false,
+                        derived: false,
                     })
                     .collect();
                 Some(QueryRes { out, foj })
@@ -282,6 +283,7 @@ impl SqlParseResolver {
                                     bare: true,
                                     sources: BTreeSet::from([(p.uid.clone(), c.clone())]),
                                     synthetic: false,
+                                    derived: false,
                                 });
                             }
                         }
@@ -406,6 +408,7 @@ impl SqlParseResolver {
                             bare: self.projection_bare(ctx, refs, &ewa.expr.expr),
                             sources,
                             synthetic: false,
+                            derived: ewa.expr.alias.is_none() && derived_name(&ewa.expr.expr),
                         });
                     }
                     res.out = out;
@@ -419,6 +422,7 @@ impl SqlParseResolver {
                         if let Some((_, to)) = pairs.iter().find(|(from, _)| from == &o.name) {
                             o.name = to.clone();
                             o.synthetic = false;
+                            o.derived = false;
                         }
                     }
                 }
@@ -547,12 +551,14 @@ impl SqlParseResolver {
                         bare: false,
                         sources,
                         synthetic: false,
+                        derived: false,
                     });
                     res.out.push(OutCol {
                         name: norm_ident(name_column),
                         bare: false,
                         sources: ColSources::new(),
                         synthetic: false,
+                        derived: false,
                     });
                 }
                 P::TableSample { .. } => {
@@ -649,6 +655,7 @@ impl SqlParseResolver {
                         bare: false,
                         sources: lv_refs,
                         synthetic: true,
+                        derived: false,
                     }]
                 } else {
                     lv.lateral_col_alias
@@ -658,6 +665,7 @@ impl SqlParseResolver {
                             bare: false,
                             sources: lv_refs.clone(),
                             synthetic: false,
+                            derived: false,
                         })
                         .collect()
                 };
@@ -838,6 +846,7 @@ impl SqlParseResolver {
                     bare: self.projection_bare(ctx, refs, e),
                     sources,
                     synthetic: false,
+                    derived: derived_name(e),
                 });
             }
             SelectItem::ExprWithAlias { expr, alias } => {
@@ -847,6 +856,7 @@ impl SqlParseResolver {
                     bare: self.projection_bare(ctx, refs, expr),
                     sources,
                     synthetic: false,
+                    derived: false,
                 });
             }
             SelectItem::ExprWithAliases { expr, aliases } => {
@@ -857,6 +867,7 @@ impl SqlParseResolver {
                         bare: self.projection_bare(ctx, refs, expr),
                         sources: sources.clone(),
                         synthetic: false,
+                        derived: false,
                     });
                 }
             }
@@ -880,6 +891,7 @@ impl SqlParseResolver {
                         bare: false,
                         sources,
                         synthetic: false,
+                        derived: false,
                     });
                 }
             },

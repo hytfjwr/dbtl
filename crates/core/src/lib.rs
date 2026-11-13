@@ -61,24 +61,26 @@ pub use layout::{
 pub use lint::{
     byte_span_position, display_name, display_names, fill_finding_lines, fill_finding_lines_with,
     name_list, removed_rule, removed_rule_error, run_rules, yaml_name_line, yaml_name_span,
-    Baseline, Category, Finding, Label, LintConfig, LintInput, LintOutcome, LintRule, Location,
-    ParamKind, ParamSpec, RemovedRule, Requires, RuleInfo, Severity, SkippedRule, BASELINE_SCHEMA,
-    DEFAULT_BASELINE_NAME, LINT_RULE_DOCS_BASE, REGISTRY, REMOVED_RULES, YAML_ATTRIBUTE_RULE_IDS,
+    Baseline, Category, Finding, Label, LintConfig, LintInput, LintOutcome, LintPreset, LintRule,
+    Location, ParamKind, ParamSpec, RemovedRule, Requires, RuleEnabled, RuleInfo, Severity,
+    SkippedRule, BASELINE_SCHEMA, DEFAULT_BASELINE_NAME, LINT_RULE_DOCS_BASE, REGISTRY,
+    REMOVED_RULES, YAML_ATTRIBUTE_RULE_IDS,
 };
 pub use manifest::{
     load_manifest, parse_manifest, RawConfig, RawConstraint, RawContract, RawDependsOn, RawDoc,
     RawExposure, RawExposureOwner, RawFreshness, RawFreshnessThreshold, RawManifest, RawMetadata,
     RawNode, RawSemanticResource, RawSource, RawTestMetadata, RawUnitTest, RawUnitTestIo,
+    UnresolvedAdjacent,
 };
 pub use mermaid::{
     mermaid_ids, mermaid_label, node_kind, subgraph_mermaid, subgraph_mermaid_linked,
 };
+#[cfg(feature = "schema")]
+pub use project_config::{lint_preset_schema, project_config_schema, severity_setting_schema};
 pub use project_config::{
     project_config_candidates, project_config_path, DocsConfig, FailOn, LineageDepth,
     ProjectConfig, PROJECT_CONFIG_NAME,
 };
-#[cfg(feature = "schema")]
-pub use project_config::{project_config_schema, severity_setting_schema};
 pub use run_results::{default_run_results_path, RunResult, RunResults, RunStatus};
 pub use select::{select, selector_uses_state, validate_selector};
 pub use source::{
