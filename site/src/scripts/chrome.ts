@@ -147,7 +147,12 @@ document.addEventListener("keydown", (event) => {
     return;
   if (!shortcutsOn()) return;
   const el = event.target as HTMLElement | null;
-  if (el && (["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName) || el.isContentEditable)) return;
+  const typing =
+    el && (["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName) || el.isContentEditable);
+  // Focus can rest on an element that just became hidden (e.g. inside a closing
+  // dialog — the close event is queued, not synchronous): nothing can be typed
+  // there, so it must not swallow the keys.
+  if (typing && el!.getClientRects().length > 0) return;
   const hint = $$("[data-key]", $(".hints") ?? document).find((h) => h.dataset.key === event.key);
   if (!hint) return;
   event.preventDefault();
