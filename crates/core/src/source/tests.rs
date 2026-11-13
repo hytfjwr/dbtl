@@ -1722,6 +1722,35 @@ fn macro_defaults_and_branch_bodies_resolve() {
 }
 
 #[test]
+fn macro_param_defaults_bind_in_the_callee_frame() {
+    // `inner(a, b=a)`: the `b` default indexes inner's OWN parameters, so
+    // it must evaluate against inner's partially bound slots — not the
+    // caller's frame. `outer('customers')` calls `inner('orders')`: the
+    // caller's slot 0 holds 'customers', but `b` must land on 'orders'
+    // (evaluating the default in the caller frame would fabricate a
+    // shop.customers edge).
+    let dir = tempfile::tempdir().unwrap();
+    macro_project(
+        dir.path(),
+        &[("m1", "{{ outer('customers') }}")],
+        &[(
+            "macros",
+            concat!(
+                "{% macro inner(a, b=a) %}",
+                "select * from {{ source('shop', a) }} join {{ source('shop', b) }} on true",
+                "{% endmacro %}",
+                "{% macro outer(t) %}{{ inner('orders') }}{% endmacro %}",
+            ),
+        )],
+        Some(SHOP_SCHEMA),
+    );
+    let (m, _w) = manifest_from_source_with_warnings(dir.path()).unwrap();
+    let parents = |uid: &str| m.parent_map.get(uid).cloned().unwrap_or_default();
+    assert_eq!(parents("model.p.m1"), vec!["source.p.shop.orders"]);
+    assert!(m.unresolved_adjacent.is_empty());
+}
+
+#[test]
 fn unresolvable_macro_calls_count_as_unprovable_adjacency() {
     let dir = tempfile::tempdir().unwrap();
     macro_project(

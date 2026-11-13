@@ -407,9 +407,9 @@ impl Macros {
     /// Read every `.sql` under `macro_paths` once and reduce each
     /// `{% macro name(sig) %}…{% endmacro %}` to its parameters and the
     /// dependency-relevant calls in its body. A name defined twice keeps
-    /// the first file (dbt's own lookup is file-ordered too) with a
-    /// warning; `{% test %}`/`{% materialization %}` blocks aren't macro
-    /// calls — only the literal `macro` keyword counts.
+    /// the LAST definition (dbt's namespacing overwrites on re-parse too)
+    /// with a warning; `{% test %}`/`{% materialization %}` blocks aren't
+    /// macro calls — only the literal `macro` keyword counts.
     pub(super) fn load(dir: &Path, macro_paths: &[String], warnings: &mut Vec<String>) -> Self {
         let mut defs: BTreeMap<String, MacroDef> = BTreeMap::new();
         for (file, _) in collect_with_root(dir, macro_paths, "sql") {
@@ -417,7 +417,7 @@ impl Macros {
             for (name, def) in macro_defs(&masked) {
                 if defs.insert(name.clone(), def).is_some() {
                     warnings.push(format!(
-                        "duplicate macro '{name}' — keeping the first definition: {}",
+                        "duplicate macro '{name}' — keeping the last definition: {}",
                         rel_path(dir, &file)
                     ));
                 }
@@ -538,9 +538,14 @@ impl Macros {
                 bound[i] = eval(expr, frame);
             }
         }
+        // Defaults are evaluated inside the callee frame (Jinja semantics):
+        // a `b=a` default's `Param(i)` refers to this def's own parameters,
+        // so it must read `bound` — the slots already filled above — not
+        // the caller's frame, which would fabricate an edge from the wrong
+        // argument.
         for (i, p) in def.params.iter().enumerate() {
             if bound[i].is_none() {
-                bound[i] = p.default.as_ref().and_then(|d| eval(d, frame));
+                bound[i] = p.default.as_ref().and_then(|d| eval(d, &bound));
             }
         }
         bound
