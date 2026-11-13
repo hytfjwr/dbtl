@@ -10,6 +10,7 @@ dbtl lint                                   # auto-detect the data source
 dbtl lint --manifest target/manifest.json
 dbtl lint --select 'path:models/marts+'            # restrict findings to a selector
 dbtl lint --rules root_models,model_fanout  # a named subset
+dbtl lint --preset minimal                  # only the error-default rules
 dbtl lint --fail-on warn                    # fail on warnings too
 ```
 
@@ -71,13 +72,26 @@ One findings list feeds every surface, so the numbers cannot drift apart:
 
 The [lint rules reference](../reference/lint-rules.md) lists every rule with its category, default severity, inputs, rationale, fix guidance, and parameters. Rules in the `warehouse` category run against `catalog.json` and are skipped without one.
 
+### Presets
+
+A preset picks the base rule set a run starts from. `.dbtl.yml`'s `lint.preset` sets it per project and `--preset` overrides it per run:
+
+| Preset | Rules |
+| ------ | ----- |
+| `minimal` | Only the rules whose default severity is `error`. |
+| `standard` (default) | Every rule the registry enables by default. |
+| `strict` | Every rule, opt-in included. |
+
+Above the preset, `lint.categories` pins a whole category to `error`/`warn`/`off`, and `lint.rules.<id>` still wins for a single rule — a category or preset can disable a rule and a `rules:` entry enables it back. `--rules` stays the authoritative selector on top of everything: unnamed rules go off and a named rule runs even when a `rules:`, `categories:`, or `preset` layer turned it off. The [project config](../configuration/project-config.md#rule-set-resolution-order) page has the full resolution order.
+
 ### List and explain rules
 
 `--list-rules` and `--explain <ID>` are query modes. They read `.dbtl.yml` for severity and parameter overrides but never load a data source.
 
 ```sh
-dbtl lint --list-rules            # id, category, effective severity, summary
-dbtl lint --explain model_fanout  # rationale, example, fix guidance, params, docs link
+dbtl lint --list-rules            # id, category, default + effective severity, enabled
+dbtl lint --list-rules --preset minimal   # effective state under another preset
+dbtl lint --explain model_fanout  # rationale, effective severity, params, docs link
 ```
 
 ## Severities and fail_on
@@ -109,11 +123,14 @@ Rule policy lives in the project-local `.dbtl.yml`. It is deliberately not the u
 # .dbtl.yml. Every key is optional; absent rules stay enabled.
 fail_on: warn             # error (default) | warn | never
 lint:
+  preset: minimal         # the base rule set; --preset overrides it
+  categories:
+    sql: error            # one severity for a whole category
   rules:
     model_fanout: false   # disable a rule, or {severity: warn}, or {exclude: [<selectors>]}
 ```
 
-The [project config](../configuration/project-config.md) page covers every `lint:` key: per-rule severities, parameters, `exclude` selectors, naming prefixes, and the `meta.dbtl.ignore` opt-out on a single node.
+The [project config](../configuration/project-config.md) page covers every `lint:` key: presets, category severities, per-rule severities, parameters, `exclude` selectors, naming prefixes, and the `meta.dbtl.ignore` opt-out on a single node.
 
 ## Freeze existing violations
 

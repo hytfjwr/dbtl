@@ -206,7 +206,7 @@ fn linted_filter_keeps_finding_models_and_rebuilds_on_config() {
     // apply_list_filter rebuild empties the live view.
     let mut cfg = crate::LintConfig::default();
     for r in crate::LintRule::ALL {
-        cfg.severities.insert(r, None);
+        cfg.rules.insert(r, crate::RuleEnabled::Off);
     }
     a.set_lint_config(cfg);
     assert!(
@@ -337,7 +337,7 @@ fn gap_next_under_the_lint_lens_cycles_finding_models() {
     // No findings → a no-op under the lens, and the palette reason names it.
     let mut cfg = crate::LintConfig::default();
     for r in crate::LintRule::ALL {
-        cfg.severities.insert(r, None);
+        cfg.rules.insert(r, crate::RuleEnabled::Off);
     }
     a.set_lint_config(cfg);
     a.ui_state.set_selected(0);

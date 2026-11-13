@@ -150,6 +150,7 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
             lint,
             no_breaking,
             rules,
+            preset,
             fail_on,
             format,
             color,
@@ -171,6 +172,7 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
                     lint: *lint,
                     no_breaking: *no_breaking,
                     rules,
+                    preset: preset.map(Into::into),
                     fail_on: fail_on.map(Into::into),
                     format: (*format).into(),
                     color: *color,
@@ -185,6 +187,7 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
         }
         Some(Commands::Lint {
             rules,
+            preset,
             fail_on,
             format,
             color,
@@ -202,6 +205,7 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
                 &src,
                 &LintArgs {
                     rules,
+                    preset: preset.map(Into::into),
                     fail_on: fail_on.map(Into::into),
                     format: (*format).into(),
                     color: *color,

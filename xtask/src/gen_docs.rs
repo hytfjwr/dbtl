@@ -11,8 +11,8 @@
 use std::path::Path;
 
 use dbtl_core::{
-    project_config_schema, severity_setting_schema, CheckGate, GateParamKind, LineageDepth,
-    LintConfig, LintRule, ParamKind, REGISTRY,
+    lint_preset_schema, project_config_schema, severity_setting_schema, CheckGate, GateParamKind,
+    LineageDepth, LintConfig, LintPreset, LintRule, ParamKind, REGISTRY,
 };
 use dbtl_tui::{help_lines, ModeKind};
 use serde_json::{json, Map, Value};
@@ -268,16 +268,53 @@ fn lint_rules_markdown() -> String {
          validation, so all of them describe the same rule set.\n\n",
         REGISTRY.len()
     ));
-    out.push_str("| Rule | Category | Default severity | Inputs | Summary |\n");
-    out.push_str("| ---- | -------- | ---------------- | ------ | ------- |\n");
+    out.push_str(
+        "## Rule-set presets\n\n\
+         `lint.preset` (or `--preset`) picks the base rule set a run starts \
+         from — `lint.categories`, `lint.rules.<id>`, and `--rules` all \
+         resolve above it. `standard` is the shipped default, so a project \
+         that sets nothing runs the registry's own set.\n\n",
+    );
+    out.push_str("| Preset | Rules |\n| ------ | ----- |\n");
+    for preset in LintPreset::ALL {
+        let count = LintRule::ALL
+            .iter()
+            .filter(|r| preset.enables(r.info()))
+            .count();
+        let desc = match preset {
+            LintPreset::Minimal => "only the rules whose default severity is `error`",
+            LintPreset::Standard => "every rule the registry enables by default",
+            LintPreset::Strict => "every rule, opt-in included",
+        };
+        out.push_str(&format!(
+            "| `{}` | {} — {count} rules |\n",
+            preset.name(),
+            desc
+        ));
+    }
+    out.push('\n');
+    out.push_str(
+        "| Rule | Category | Default | `minimal` | `standard` | `strict` | Inputs | Summary |\n",
+    );
+    out.push_str(
+        "| ---- | -------- | ------- | --------- | ---------- | -------- | ------ | ------- |\n",
+    );
     for rule in LintRule::ALL {
         let i = rule.info();
+        let on_off = |on: bool| if on { "on" } else { "off" };
         out.push_str(&format!(
-            "| [`{}`](#{}) | {} | {} | {} | {} |\n",
+            "| [`{}`](#{}) | {} | {} | {} | {} | {} | {} | {} |\n",
             i.id,
             i.id,
             i.category.name(),
-            i.default_severity.name(),
+            if i.default_enabled {
+                i.default_severity.name().to_string()
+            } else {
+                "off (opt-in)".to_string()
+            },
+            on_off(LintPreset::Minimal.enables(i)),
+            on_off(LintPreset::Standard.enables(i)),
+            on_off(LintPreset::Strict.enables(i)),
             requires_label(i.requires),
             cell(i.summary)
         ));
@@ -286,10 +323,17 @@ fn lint_rules_markdown() -> String {
     for rule in LintRule::ALL {
         let i = rule.info();
         out.push_str(&format!("\n## `{}`\n\n", i.id));
+        let default_line = if i.default_enabled {
+            format!("Default severity: `{}`", i.default_severity.name())
+        } else {
+            format!(
+                "Default: `off` (opt-in — runs at `{}` when enabled)",
+                i.default_severity.name()
+            )
+        };
         out.push_str(&format!(
-            "Category: `{}` · Default severity: `{}` · Inputs: {}\n\n",
+            "Category: `{}` · {default_line} · Inputs: {}\n\n",
             i.category.name(),
-            i.default_severity.name(),
             requires_label(i.requires)
         ));
         out.push_str(&format!("{}.\n\n", sentence(i.summary)));
@@ -398,6 +442,35 @@ fn dbtl_yml_schema() -> Value {
         Some(Value::Object(p)) => p,
         _ => Map::new(),
     };
+
+    // lint.preset — the base rule set. The derive skips the raw Value
+    // field; the enum comes from the same `LintPreset` the parser
+    // validates.
+    *prop(&mut properties, &["lint", "properties", "preset"]) = json!({
+        "anyOf": [preset_enum(), {"type": "null"}],
+        "description": "base lint rule set: `minimal` (error-default rules only), `standard` (the shipped default), `strict` (every rule, opt-in included). `lint.categories`, `lint.rules.<id>`, and `--rules` sit above it. Unknown names are an error.",
+    });
+
+    // lint.categories — one `error|warn|off` per category, above `preset`
+    // and below `rules`; category names validated against the registry.
+    let categories_props: Map<String, Value> = dbtl_core::Category::ALL
+        .iter()
+        .map(|c| {
+            (
+                c.name().to_string(),
+                json!({
+                    "anyOf": [severity_enum(), {"type": "null"}],
+                    "description": format!("`off` disables the `{}` rules; `error`/`warn` enables them at that severity", c.name()),
+                }),
+            )
+        })
+        .collect();
+    *prop(&mut properties, &["lint", "properties", "categories"]) = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "description": "category → `error` | `warn` | `off` — one severity (and enable/disable) for a whole category at once. Above `lint.preset`, below `lint.rules.<id>`. Unknown category names are an error.",
+        "properties": categories_props,
+    });
 
     // lint.rules — every rule id, its bool toggle, and its object form
     // (severity + exclude + the declared params), all from REGISTRY.
@@ -524,6 +597,18 @@ fn dbtl_yml_schema() -> Value {
 /// the object forms).
 fn severity_enum() -> Value {
     let mut v = severity_setting_schema().to_value();
+    if let Value::Object(m) = &mut v {
+        m.shift_remove("$schema");
+        m.shift_remove("title");
+    }
+    v
+}
+
+/// The `minimal|standard|strict` preset schema — derived from the same
+/// enum `lint.preset` validates against (`null` folds to "unset" like
+/// every other key's explicit null).
+fn preset_enum() -> Value {
+    let mut v = lint_preset_schema().to_value();
     if let Value::Object(m) = &mut v {
         m.shift_remove("$schema");
         m.shift_remove("title");
@@ -749,8 +834,10 @@ fn config_markdown(dbtl_schema: &Value) -> String {
     // lint.rules.<id>
     out.push_str("\n#### `lint.rules.<rule-id>`\n\n");
     out.push_str(
-        "`false` disables the rule, `true` runs it at the registry default, \
-         or a settings object sets severity/excludes/parameters:\n\n",
+        "`false` disables the rule, `true` enables it (at the `lint.categories` \
+         severity when one is set, else the registry default), or a settings \
+         object sets severity/excludes/parameters. Per-rule entries resolve \
+         above `lint.categories`, which resolves above `lint.preset`.\n\n",
     );
     out.push_str("| Key | Type | Description |\n| --- | ---- | ----------- |\n");
     out.push_str("| `severity` | `error` \\| `warn` \\| `off` | The severity findings report at; `off` disables the rule. |\n");
@@ -889,6 +976,8 @@ fn top_type_label(key: &str, node: &Value) -> String {
 /// The readable type of a `lint:` key.
 fn lint_type(key: &str) -> String {
     match key {
+        "preset" => "`minimal` \\| `standard` \\| `strict`".to_string(),
+        "categories" => "object: category → `error` \\| `warn` \\| `off`".to_string(),
         "model_fanout_threshold" | "source_fanout_threshold" => "integer ≥ 1".to_string(),
         "naming_prefixes" => "object: layer → list of strings".to_string(),
         "baseline" => "path".to_string(),
@@ -927,6 +1016,7 @@ fn top_default(key: &str) -> String {
 fn lint_default(key: &str) -> String {
     let cfg = LintConfig::default();
     match key {
+        "preset" => format!("`{}`", cfg.preset.name()),
         "model_fanout_threshold" => int_param_default(LintRule::ModelFanout),
         "source_fanout_threshold" => int_param_default(LintRule::SourceFanout),
         "naming_prefixes" => cfg
@@ -1193,6 +1283,8 @@ mod tests {
         assert_eq!(
             get(&["lint"]),
             [
+                "preset",
+                "categories",
                 "rules",
                 "model_fanout_threshold",
                 "source_fanout_threshold",

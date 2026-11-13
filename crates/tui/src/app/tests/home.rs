@@ -293,11 +293,11 @@ fn home_health_splits_lint_by_severity_and_attention_tones_it() {
     let mut b = App::new(dag, PathBuf::from("/p/manifest.json"));
     let mut cfg = crate::LintConfig::default();
     for r in crate::LintRule::ALL {
-        cfg.severities.insert(r, None);
+        cfg.rules.insert(r, crate::RuleEnabled::Off);
     }
-    cfg.severities.insert(
+    cfg.rules.insert(
         crate::LintRule::StagingDependsOnStaging,
-        Some(crate::Severity::Warn),
+        crate::RuleEnabled::On(Some(crate::Severity::Warn)),
     );
     b.set_lint_config(cfg);
     b.enter_home();

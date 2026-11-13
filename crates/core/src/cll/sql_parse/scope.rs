@@ -31,6 +31,14 @@ pub(super) struct OutCol {
     /// surface in `columns()` or the FilterOrJoin fan — they're positional
     /// bookkeeping only — and they don't pair in `UNION BY NAME` merges.
     pub(super) synthetic: bool,
+    /// `true` when `name` was derived from the expression's shape — a
+    /// function's name, `case`, a cast's operand — not from a written
+    /// identifier or alias. Only the Postgres family (Postgres + Redshift)
+    /// assigns such names to un-aliased outputs (`sum(a)` → `sum`); every
+    /// other dialect invents a positional or expression-text name a second
+    /// same-shaped expression can't collide with. `duplicate_output_columns`
+    /// compares these names only under the dialects that produce them.
+    pub(super) derived: bool,
 }
 
 /// What a SELECT-level construct resolved to: positional output columns
@@ -112,8 +120,10 @@ pub(super) struct Parent {
 
 /// The result of analyzing one model's SQL: its top-level scope (for the
 /// declared-column fallback probe), its output columns, and its
-/// filter/join source set.
-#[derive(Debug)]
+/// filter/join source set. The `Default` is the judged-empty answer for a
+/// render producing no statements (a config-only or comment-only model —
+/// nothing to judge, but parsed).
+#[derive(Debug, Default)]
 pub(super) struct Analyzed {
     pub(super) scope: Vec<Binding>,
     pub(super) out: Vec<OutCol>,
@@ -129,7 +139,8 @@ pub(super) struct Analyzed {
     /// items positionally only when its raw-render count matches.
     pub(super) wildcard_count: usize,
     /// Display text of every JOIN arm carrying no join condition
-    /// (`CROSS JOIN`, or `JOIN`/`INNER`/`LEFT`/… with no ON/USING/NATURAL)
+    /// (`JOIN`/`INNER`/`LEFT`/… with no ON/USING/NATURAL — an explicit
+    /// `CROSS JOIN` is the intentional product spelling and never counts)
     /// — the `cartesian_join` lint input, collected by the same parse that
     /// produced the rest of `self` (the scan is join-blind to rendered
     /// relation names, so no marked re-parse is needed).
@@ -147,7 +158,8 @@ pub(super) struct Analyzed {
     /// `(normalized name, occurrence count)` of every output column name
     /// the output-defining SELECT emits more than once — the
     /// `duplicate_output_columns` lint input, from the same judged query
-    /// (`res.out` counts — wildcard-expanded where bindings resolve).
+    /// (`res.out` counts — wildcard-expanded where bindings resolve,
+    /// expression-derived names only where the dialect assigns them).
     pub(super) duplicate_outputs: Vec<(String, usize)>,
     /// Normalized names of `WITH` CTEs nothing reads — the `unused_cte`
     /// lint input, the complement of the relation scan's `cte_uses`

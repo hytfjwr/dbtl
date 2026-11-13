@@ -290,6 +290,13 @@ pub enum Commands {
         /// thresholds and naming prefixes.
         #[arg(long, value_delimiter = ',', num_args = 1..)]
         rules: Vec<String>,
+        /// The base lint rule set: `minimal` (error-default rules only),
+        /// `standard` (the registry default), `strict` (every rule, opt-in
+        /// ones included). Overrides `.dbtl.yml`'s `lint.preset`; implies
+        /// --lint. `lint.categories`, `lint.rules.<id>`, and `--rules`
+        /// still sit above it.
+        #[arg(long, value_enum, value_name = "PRESET")]
+        preset: Option<PresetArg>,
         /// Minimum finding severity that fails a check: `error` (default)
         /// fails on errors only, `warn` also fails on warnings, `never`
         /// only reports (a tripped gate prints WARN and never counts).
@@ -364,6 +371,13 @@ pub enum Commands {
         /// supplies thresholds and naming prefixes.
         #[arg(long, value_delimiter = ',', num_args = 1..)]
         rules: Vec<String>,
+        /// The base lint rule set: `minimal` (error-default rules only),
+        /// `standard` (the registry default), `strict` (every rule, opt-in
+        /// ones included). Overrides `.dbtl.yml`'s `lint.preset`;
+        /// `lint.categories`, `lint.rules.<id>`, and `--rules` still sit
+        /// above it.
+        #[arg(long, value_enum, value_name = "PRESET")]
+        preset: Option<PresetArg>,
         /// Minimum finding severity that fails the run: `error` (default)
         /// fails on errors only, `warn` also fails on warnings, `never`
         /// only reports. Overrides `.dbtl.yml`'s top-level `fail_on`.
@@ -412,8 +426,9 @@ pub enum Commands {
         /// Do not read the lint baseline file — every finding counts again.
         #[arg(long)]
         no_baseline: bool,
-        /// List every lint rule — id, category, effective severity, summary —
-        /// and exit. Reads `.dbtl.yml` when found; never loads a data source.
+        /// List every lint rule — id, category, default severity, effective
+        /// severity, enabled state, preset membership, summary — and exit.
+        /// Reads `.dbtl.yml` when found; never loads a data source.
         #[arg(long,
                conflicts_with_all = ["explain", "write_baseline", "quiet", "format", "color", "fail_on", "no_baseline", "report", "step_summary", "path_prefix"])]
         list_rules: bool,
@@ -588,6 +603,30 @@ impl From<FailOnArg> for dbtl::FailOn {
             FailOnArg::Error => dbtl::FailOn::Error,
             FailOnArg::Warn => dbtl::FailOn::Warn,
             FailOnArg::Never => dbtl::FailOn::Never,
+        }
+    }
+}
+
+/// The `--preset` argument `lint`/`check` accept: the base lint rule set —
+/// maps onto [`dbtl::LintPreset`] (kept separate because `dbtl-core` has
+/// no clap dependency). Variants map 1:1 onto the `lint.preset` config
+/// values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum PresetArg {
+    /// Only the rules that default to `error`.
+    Minimal,
+    /// Every rule the registry enables by default (the shipped set).
+    Standard,
+    /// Every rule, including the opt-in ones shipped off.
+    Strict,
+}
+
+impl From<PresetArg> for dbtl::LintPreset {
+    fn from(v: PresetArg) -> Self {
+        match v {
+            PresetArg::Minimal => dbtl::LintPreset::Minimal,
+            PresetArg::Standard => dbtl::LintPreset::Standard,
+            PresetArg::Strict => dbtl::LintPreset::Strict,
         }
     }
 }

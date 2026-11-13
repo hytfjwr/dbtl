@@ -391,11 +391,11 @@ fn lint_surfaces_are_all_ascii() {
     app.glyph_mode = GlyphMode::Ascii;
     let mut cfg = dbtl::LintConfig::default();
     for r in dbtl::LintRule::ALL {
-        cfg.severities.insert(r, None);
+        cfg.rules.insert(r, dbtl::RuleEnabled::Off);
     }
-    cfg.severities.insert(
+    cfg.rules.insert(
         dbtl::LintRule::StagingDependsOnStaging,
-        Some(dbtl::Severity::Warn),
+        dbtl::RuleEnabled::On(Some(dbtl::Severity::Warn)),
     );
     app.set_lint_config(cfg);
     app.select_by_unique_id("model.p.stg_b");
@@ -406,7 +406,7 @@ fn lint_surfaces_are_all_ascii() {
     apply_action(&mut app, Action::ToggleLintFilter);
     let mut cfg = dbtl::LintConfig::default();
     for r in dbtl::LintRule::ALL {
-        cfg.severities.insert(r, None);
+        cfg.rules.insert(r, dbtl::RuleEnabled::Off);
     }
     app.set_lint_config(cfg);
     app.ui_state.set_lens(dbtl::ui::LineageLens::Lint);

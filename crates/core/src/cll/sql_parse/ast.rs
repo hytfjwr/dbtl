@@ -105,6 +105,21 @@ pub(super) fn derive_name(e: &Expr) -> Option<String> {
     }
 }
 
+/// Is the name [`derive_name`] returns for `e` one the dialect invents
+/// rather than the author wrote — `sum(a)` → `sum`, `CASE…` → `case`,
+/// `a::int` → `a`? Transparent wrappers (parens, `COLLATE`, a prefix)
+/// unwrap to the inner expr's answer, matching `derive_name`'s walk.
+/// Only the Postgres family assigns such names to un-aliased outputs —
+/// see [`OutCol::derived`].
+pub(super) fn derived_name(e: &Expr) -> bool {
+    match e {
+        Expr::Nested(inner) | Expr::Collate { expr: inner, .. } => derived_name(inner),
+        Expr::Prefixed { value, .. } => derived_name(value),
+        Expr::Cast { .. } | Expr::Function(_) | Expr::Case { .. } => true,
+        _ => false,
+    }
+}
+
 /// The `ON`/`USING` of a join operator, when it has one.
 pub(super) fn join_constraint(j: &Join) -> Option<&JoinConstraint> {
     use JoinOperator::*;
@@ -244,6 +259,7 @@ pub(super) fn rename_outputs(mut res: QueryRes, cols: &[TableAliasColumnDef]) ->
         // `WITH c(a, b)` / `t(a, b)` gives the output a real name — a
         // positional placeholder it lands on becomes declared.
         o.synthetic = false;
+        o.derived = false;
     }
     res
 }
@@ -264,6 +280,7 @@ pub(super) fn union_out(a: &OutCol, b: &OutCol) -> OutCol {
         // The kept name is `a`'s — its synthetic flag answers "is this name
         // invented?" regardless of what the right arm called the column.
         synthetic: a.synthetic,
+        derived: a.derived,
     }
 }
 
@@ -282,6 +299,7 @@ pub(super) fn collapse_pipe_output(res: &QueryRes) -> OutCol {
         bare: false,
         sources,
         synthetic: true,
+        derived: false,
     }
 }
 

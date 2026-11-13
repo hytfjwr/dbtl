@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::gates::{CheckConfig, CheckGate, GateParamKind, GateSetting};
-use crate::lint::{LintConfig, LintRule, ParamKind, Severity};
+use crate::lint::{Category, LintConfig, LintPreset, LintRule, ParamKind, RuleEnabled, Severity};
 
 /// The conventional project-local config file name: `.dbtl.yml` next to
 /// `dbt_project.yml` (or at the project root above `target/` in manifest
@@ -197,6 +197,55 @@ impl ProjectConfig {
                 lint.naming_prefixes.insert(layer, p);
             }
         }
+        // `lint.preset` — the base rule set the `categories`/`rules`
+        // layers sit above. `preset: ~` is "unset" like every other key's
+        // explicit null.
+        if let Some(value) = &file.lint.preset {
+            if !value.is_null() {
+                let name = value
+                    .as_str()
+                    .ok_or("lint.preset must be one of minimal|standard|strict")?;
+                lint.preset = LintPreset::from_name(name).ok_or_else(|| {
+                    format!(
+                        "unknown lint preset '{name}' (valid presets: {})",
+                        LintPreset::ALL
+                            .iter()
+                            .map(|p| p.name())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })?;
+            }
+        }
+        // `lint.categories` — one `error|warn|off` per category, above the
+        // preset and below the per-rule `rules` entries. `<cat>: ~` is
+        // "unset" — the same as omitting the entry.
+        if let Some(value) = &file.lint.categories {
+            if !value.is_null() {
+                let map = value
+                    .as_mapping()
+                    .ok_or("lint.categories must be a table of <category>: error|warn|off")?;
+                for (k, v) in map {
+                    let key = k
+                        .as_str()
+                        .ok_or("lint.categories: category names must be strings")?;
+                    let category = Category::from_name(key).ok_or_else(|| {
+                        format!(
+                            "unknown lint category '{key}' (valid categories: {})",
+                            Category::ALL
+                                .iter()
+                                .map(|c| c.name())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    })?;
+                    if !v.is_null() {
+                        let setting = parse_severity(v, &format!("lint.categories.{key}"))?;
+                        lint.categories.insert(category, setting.as_effective());
+                    }
+                }
+            }
+        }
         for (name, value) in &file.lint.rules {
             let rule = LintRule::from_name(name).ok_or_else(|| {
                 crate::lint::removed_rule_error(name).unwrap_or_else(|| {
@@ -207,16 +256,30 @@ impl ProjectConfig {
                 })
             })?;
             match parse_rule_entry(name, value)? {
-                // `true` = enabled at the registry default — the same as an
-                // absent entry.
-                RuleSpec::Toggle(true) => {}
+                // `true` = enabled — an explicit per-rule entry, so it
+                // overrides a category's `off`. The severity stays
+                // unpinned: a category `error`/`warn` still applies, else
+                // the registry default.
+                RuleSpec::Toggle(true) => {
+                    lint.rules.insert(rule, RuleEnabled::On(None));
+                }
                 RuleSpec::Toggle(false) => {
-                    lint.severities.insert(rule, None);
+                    lint.rules.insert(rule, RuleEnabled::Off);
                 }
                 RuleSpec::Settings(settings) => {
-                    if let Some(sev) = settings.severity {
-                        lint.severities.insert(rule, sev.as_effective());
-                    }
+                    lint.rules.insert(
+                        rule,
+                        match settings.severity {
+                            // `severity: off` is the object-form disable.
+                            Some(sev) => match sev.as_effective() {
+                                Some(s) => RuleEnabled::On(Some(s)),
+                                None => RuleEnabled::Off,
+                            },
+                            // No `severity` (or `severity: ~`) — still an
+                            // explicit per-rule entry: enabled, unpinned.
+                            None => RuleEnabled::On(None),
+                        },
+                    );
                     if !settings.exclude.is_empty() {
                         // Exclude specs are selectors — validated through the
                         // ONE strict grammar the CLI `--select`/`--exclude`
@@ -569,8 +632,9 @@ struct ProjectFile {
     /// `error` | `warn` | `never` — the minimum severity at which findings
     /// fail a run. `--fail-on` overrides it.
     fail_on: Option<FailOn>,
-    /// `lint:` — per-rule enables, severities, parameters, excludes, naming
-    /// prefixes, and the baseline path.
+    /// `lint:` — the rule-set preset, per-category severities, per-rule
+    /// enables, severities, parameters, excludes, naming prefixes, and the
+    /// baseline path.
     lint: LintFile,
     /// `check:` — gate severities/parameters and whether the lint gates
     /// fold into `dbtl check`.
@@ -631,6 +695,17 @@ struct CheckFile {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 struct LintFile {
+    /// `minimal` | `standard` | `strict` — the base rule set, below
+    /// `categories` and `rules`. A raw [`serde_norway::Value`] (the same
+    /// per-entry error reporting as `rules`): `preset: ~` is "unset" and
+    /// an unknown name errors listing the valid set.
+    #[cfg_attr(feature = "schema", schemars(skip))]
+    preset: Option<serde_norway::Value>,
+    /// category name → `error` | `warn` | `off` — one setting for a whole
+    /// category, above `preset` and below `rules`. Raw values so each
+    /// entry errors naming the category.
+    #[cfg_attr(feature = "schema", schemars(skip))]
+    categories: Option<serde_norway::Value>,
     /// rule name → `bool` | settings object. Values stay raw
     /// [`serde_norway::Value`]s so each entry can produce a rule-named
     /// error — validated in [`parse_rule_entry`] (an untagged enum would
@@ -669,6 +744,14 @@ pub fn project_config_schema() -> schemars::Schema {
 #[cfg(feature = "schema")]
 pub fn severity_setting_schema() -> schemars::Schema {
     schemars::schema_for!(SeveritySetting)
+}
+
+/// The `minimal` | `standard` | `strict` enum as a schema — `lint.preset`
+/// embeds it; the generator wraps it in `anyOf [enum, null]` where null
+/// is accepted like every other unset key.
+#[cfg(feature = "schema")]
+pub fn lint_preset_schema() -> schemars::Schema {
+    schemars::schema_for!(LintPreset)
 }
 
 /// `rules.<id>` accepts the compat `bool` (`false` = off, `true` = the
@@ -1355,6 +1438,129 @@ mod tests {
             parse("lint:\n  rules:\n    root_models: {ignore_shared_parents: [\"dim_*\"]}\n")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn lint_preset_parses_the_three_names_and_standard_is_default() {
+        // `standard` is the shipped default — absent (and `~`) IS standard.
+        for (text, want) in [
+            ("", LintPreset::Standard),
+            ("lint: {}\n", LintPreset::Standard),
+            ("lint:\n  preset: ~\n", LintPreset::Standard),
+            ("lint:\n  preset: minimal\n", LintPreset::Minimal),
+            ("lint:\n  preset: standard\n", LintPreset::Standard),
+            ("lint:\n  preset: strict\n", LintPreset::Strict),
+        ] {
+            assert_eq!(parse(text).unwrap().lint.preset, want, "{text:?}");
+        }
+        // An unknown name errors listing the valid set — a typo'd preset
+        // must never silently run a different rule set.
+        let err = parse("lint:\n  preset: stric\n").unwrap_err();
+        assert!(
+            err.contains("unknown lint preset 'stric'")
+                && err.contains("minimal")
+                && err.contains("strict"),
+            "{err} names the value and the valid set"
+        );
+        // Non-string and wrong-case values are shape errors.
+        for bad in [
+            "lint:\n  preset: 3\n",
+            "lint:\n  preset: [minimal]\n",
+            "lint:\n  preset: {x: 1}\n",
+            "lint:\n  preset: Strict\n",
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?} must fail to parse");
+        }
+    }
+
+    #[test]
+    fn minimal_runs_only_the_error_default_rules() {
+        // `minimal` narrows the run set to the rules whose registry default
+        // severity is `error` — the broken-guarantee checks. Every other
+        // rule reports off (never a skip entry).
+        let pc = parse("lint:\n  preset: minimal\n").unwrap();
+        for rule in LintRule::ALL {
+            let want = if rule.info().default_severity == Severity::Error {
+                Some(Severity::Error)
+            } else {
+                None
+            };
+            assert_eq!(pc.lint.severity(rule), want, "{}", rule.name());
+        }
+    }
+
+    #[test]
+    fn the_resolution_layers_stack_preset_categories_rules() {
+        // weakest → strongest: preset < categories < rules.<id>.
+        let pc = parse(
+            "lint:\n  preset: minimal\n  categories:\n    sql: error\n    documentation: off\n  rules:\n    select_star: false\n    duplicate_output_columns: {severity: warn}\n    undocumented_models: true\n    model_fanout: {threshold: 2}\n",
+        )
+        .unwrap();
+        let l = &pc.lint;
+        // per-rule `false` beats a category `error`.
+        assert_eq!(l.severity(LintRule::SelectStar), None);
+        // A pinned per-rule severity beats the category's repin AND the
+        // preset — under `minimal` this rule would run at error, under the
+        // category at error, configured at warn.
+        assert_eq!(
+            l.severity(LintRule::DuplicateOutputColumns),
+            Some(Severity::Warn)
+        );
+        // `true` beats `documentation: off` (and the preset): enabled,
+        // severity unpinned — the category's `off` supplies no severity, so
+        // the registry default applies.
+        assert_eq!(
+            l.severity(LintRule::UndocumentedModels),
+            Some(Severity::Warn)
+        );
+        // A bare settings object is still an explicit enable: under
+        // `minimal` model_fanout would be off — here it runs at the
+        // registry default (the modeling category sets no severity).
+        assert_eq!(l.severity(LintRule::ModelFanout), Some(Severity::Warn));
+        // `sql: error` enables every sql rule at error — above the
+        // preset's `minimal` (which leaves warn-default rules off).
+        assert_eq!(l.severity(LintRule::CartesianJoin), Some(Severity::Error));
+        // `documentation: off` disables the category's remaining rules.
+        assert_eq!(l.severity(LintRule::UndocumentedSources), None);
+        // The preset still fills the bottom: testing's error-default rule
+        // runs, warn-default rules outside any configured layer stay off.
+        assert_eq!(
+            l.severity(LintRule::MissingPrimaryKeyTests),
+            Some(Severity::Error)
+        );
+        assert_eq!(l.severity(LintRule::NamingConventions), None);
+    }
+
+    #[test]
+    fn lint_categories_validate_names_and_the_severity_grammar() {
+        // Unknown category names error listing the valid set.
+        let err = parse("lint:\n  categories:\n    sqll: warn\n").unwrap_err();
+        assert!(
+            err.contains("unknown lint category 'sqll'") && err.contains("sql"),
+            "{err} names the key and the valid set"
+        );
+        // A non-severity value errors naming the key.
+        let err = parse("lint:\n  categories:\n    sql: quiet\n").unwrap_err();
+        assert!(
+            err.contains("lint.categories.sql must be one of error|warn|off"),
+            "{err}"
+        );
+        // The section must be a table — a scalar or a list is a shape error.
+        for bad in [
+            "lint:\n  categories: warn\n",
+            "lint:\n  categories: [sql]\n",
+            "lint:\n  categories: 3\n",
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?} must fail to parse");
+        }
+        // `<cat>: ~` is "unset" — the same as omitting the entry.
+        let pc = parse("lint:\n  categories:\n    sql: ~\n").unwrap();
+        assert!(pc.lint.categories.is_empty());
+        // Every real category name parses (also proving `deny_unknown_fields`
+        // never confuses `categories` keys with rule names).
+        for c in Category::ALL {
+            parse(&format!("lint:\n  categories:\n    {}: warn\n", c.name())).unwrap();
+        }
     }
 
     #[test]

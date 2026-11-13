@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use dbtl::{
     column_coverage_counts, has_pk_guarantee, load_manifest, run_rules, LintConfig, LintRule,
-    Severity,
+    RuleEnabled, Severity,
 };
 
 const INVALID: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/invalid.json");
@@ -187,7 +187,7 @@ fn gating_lint_config() -> LintConfig {
     let mut cfg = LintConfig::default();
     for rule in LintRule::ALL {
         if rule.info().default_severity != Severity::Error {
-            cfg.severities.insert(rule, None);
+            cfg.rules.insert(rule, RuleEnabled::Off);
         }
     }
     cfg
@@ -236,7 +236,7 @@ fn warn_severity_rules_match_frozen_fixture_counts() {
     let mut cfg = LintConfig::default();
     for rule in LintRule::ALL {
         if rule.info().default_severity == Severity::Error {
-            cfg.severities.insert(rule, None);
+            cfg.rules.insert(rule, RuleEnabled::Off);
         }
     }
     let outcome = run_rules(dbtl::LintInput::new(&dag, &cfg));
