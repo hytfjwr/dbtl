@@ -111,12 +111,6 @@ jobs:
         with:
           tool: cargo-nextest
 
-      # A release-only build break is caught on one OS as well as three;
-      # windows/macos run tests only.
-      - name: Build (release)
-        if: matrix.os == 'ubuntu-latest'
-        run: cargo build --release --locked
-
       - name: Test
         run: cargo nextest run --workspace --locked --profile ci
 

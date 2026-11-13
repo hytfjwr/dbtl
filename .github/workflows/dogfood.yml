@@ -43,9 +43,54 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: bash .github/scripts/changed-paths.sh "$EVENT_NAME" | tee -a "$GITHUB_OUTPUT"
 
+  # The one `cargo build --release --locked` of the pull request — the
+  # binary is shared with the jobs below as an artifact, so the release
+  # profile's LTO cost is paid once per run. The same job is the sole
+  # writer of the shared release cache the reusable release pipelines
+  # restore.
+  release-build:
+    name: Release build
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Shared release build — saved on pushes to main only; PR runs and the other release builders restore it.
+          shared-key: release
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Build dbtl (release)
+        run: cargo build --release --locked
+
+      - name: Upload the release binary
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dbtl-release
+          path: target/release/dbtl
+          if-no-files-found: error
+          # Same-run handoff only — kept long enough for a failed-job rerun.
+          retention-days: 7
+
   action-self-test:
     name: Action self-test
-    needs: changes
+    needs:
+      - changes
+      - release-build
     if: needs.changes.outputs.code != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -60,23 +105,16 @@ jobs:
           # request's base commit, so this exercises the action's
           # base-fetch path on every pull request run.
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+      - name: Download the release binary
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          toolchain: stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          # Restores the shared release build — Dogfood E2E runs the same command on the same runner and saves it; this job never saves.
-          shared-key: release
-          save-if: false
-
-      - name: Build dbtl (release)
-        run: cargo build --release --locked
+          name: dbtl-release
+          path: target/release
 
       - name: Put dbtl on PATH
-        run: echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
+        run: |
+          chmod +x target/release/dbtl
+          echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
 
       - name: Run the action (passing check)
         id: passing
@@ -150,7 +188,9 @@ jobs:
 
   dogfood-e2e:
     name: Dogfood E2E
-    needs: changes
+    needs:
+      - changes
+      - release-build
     if: needs.changes.outputs.code != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -162,23 +202,16 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+      - name: Download the release binary
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          toolchain: stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          # Shared release build — saved on pushes to main only; PR runs and the other release builders restore it.
-          shared-key: release
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-
-      - name: Build dbtl (release)
-        run: cargo build --release --locked
+          name: dbtl-release
+          path: target/release
 
       - name: Put dbtl on PATH
-        run: echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
+        run: |
+          chmod +x target/release/dbtl
+          echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
 
       # The committed jaffle_finance fixture trips the error-severity lint
       # rules that still gate by default (missing_primary_key_tests), so
@@ -425,6 +458,7 @@ jobs:
     name: Dogfood result
     needs:
       - changes
+      - release-build
       - action-self-test
       - dogfood-e2e
     if: always()
