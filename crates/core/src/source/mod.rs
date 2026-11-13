@@ -30,11 +30,17 @@
 //!   paths — never `target/`, `dbt_packages/`, or stray yml elsewhere.
 //! - `config(enabled=false)` (in-file) / `+enabled: false` (project tree) /
 //!   `config: enabled: false` (schema.yml) drops the node, like dbt parking it
-//!   under `disabled`.
+//!   under `disabled`. `var('name'[, default])` (`| as_bool` allowed) in
+//!   either `+enabled`/`config(enabled=)` position resolves through the same
+//!   var tables dbt renders it in — `vars.yml` for the project file's own
+//!   `+enabled` strings, `vars:` (project-scoped keys shadowing the top
+//!   level) for a node's `config()` calls; a value dbt's boolean validation
+//!   would reject keeps the node enabled with a warning.
 //!
 //! Scope: this covers the common project shape, not dbt's full resolver. NOT
 //! handled (a `ref` to one of these simply drops out, which `prune_adjacency`
-//! tolerates): cross-package `ref`, `{% if %}`/`var()`-gated refs, and
+//! tolerates): cross-package `ref`, `{% if %}`/`var()`-gated refs (only the
+//! `var()` in `enabled` positions resolves — see vars.rs), and
 //! singular (`.sql`) tests. A versioned ref resolves to the unversioned name
 //! (approximation — the `.vN` node a `versions:` block would define is not
 //! synthesized); YAML-defined snapshots (dbt 1.9+) ARE synthesized as nodes.
@@ -114,6 +120,11 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                 proj_path.display()
             )
         })?;
+
+    // `var('name')` scope for `+enabled` / `config(enabled=)` — the
+    // project-file render and a node's render consult different var
+    // tables (see vars.rs), so both are loaded once here.
+    let vars = Vars::load(dir, &project, &mut warnings);
 
     let proj = project.name;
     // `source-paths` is the pre-0.17 alias for `model-paths`. All three lists
@@ -218,10 +229,13 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             &tree_segments(&proj, &path),
             "models".to_string(),
             &mut warnings,
+            &vars,
         );
         // Disabled models never reach the manifest's `nodes` (dbt parks them
         // under `disabled`); drop them here too, edges included.
-        if pat.disabled(&masked) || tree.enabled == Some(false) {
+        if pat.disabled(&masked, &vars, &mut warnings, &rel_path(dir, &file))
+            || tree.enabled == Some(false)
+        {
             continue;
         }
         // `collect_with_root` sorts by path, so the first file to claim a
@@ -294,6 +308,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             &tree_segments(&proj, &path),
             "seeds".to_string(),
             &mut warnings,
+            &vars,
         );
         if tree.enabled == Some(false) {
             continue;
@@ -338,7 +353,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
         let path = rel_path(&root, &file);
         let ofp = rel_path(dir, &file);
         // An in-file `enabled=false` applies to every block in the file (rare).
-        if pat.disabled(&masked) {
+        if pat.disabled(&masked, &vars, &mut warnings, &ofp) {
             continue;
         }
         // Refs in a multi-block file are attributed to every block in it (rare).
@@ -357,6 +372,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                 &segments,
                 "snapshots".to_string(),
                 &mut warnings,
+                &vars,
             );
             if tree.enabled == Some(false) {
                 continue;
@@ -483,6 +499,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                 &segments,
                 "snapshots".to_string(),
                 &mut warnings,
+                &vars,
             );
             if tree.enabled == Some(false) {
                 continue;
@@ -603,6 +620,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                     &segments,
                     "sources".to_string(),
                     &mut warnings,
+                    &vars,
                 );
                 sources.insert(
                     uid.clone(),
@@ -915,6 +933,7 @@ mod schema;
 #[cfg(test)]
 mod tests;
 mod tests_synth;
+mod vars;
 mod yaml;
 
 use collect::*;
@@ -923,6 +942,7 @@ use docs::*;
 use patterns::*;
 use schema::*;
 use tests_synth::*;
+use vars::*;
 use yaml::*;
 
 // The span-carrying call extractors lint uses for finding positions — same

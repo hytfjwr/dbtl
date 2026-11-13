@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Source mode now resolves `var('name'[, default])` (optionally
+  `| as_bool`) in `+enabled` config-tree keys and in-file
+  `config(enabled=…)` calls, through the same var tables dbt renders
+  each in — `vars.yml` for `dbt_project.yml`'s own `+enabled` strings,
+  the var table a resource's `config()` sees (`vars:`, or `vars.yml`
+  when declared, with project-scoped keys shadowing the top level). A
+  `var()`-gated `enabled` no longer lists models dbt parks disabled; a
+  value dbt's boolean validation would reject keeps the node enabled
+  with a warning naming the file or tree level.
+
 ## [0.6.3] - 2026-11-13
 
 ### Added

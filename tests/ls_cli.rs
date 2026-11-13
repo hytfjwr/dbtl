@@ -406,6 +406,78 @@ fn ls_diff_without_state_is_a_usage_error() {
     );
 }
 
+// ---- source mode: var()-driven `enabled` -------------------------------------
+
+/// A tiny on-disk source project — `vars.yml` (optional), `dbt_project.yml`,
+/// one `.sql` per model.
+fn write_source_project(
+    root: &Path,
+    vars_yml: Option<&str>,
+    project_yml: &str,
+    models: &[(&str, &str)],
+) {
+    std::fs::create_dir_all(root.join("models")).unwrap();
+    if let Some(v) = vars_yml {
+        std::fs::write(root.join("vars.yml"), v).unwrap();
+    }
+    std::fs::write(root.join("dbt_project.yml"), project_yml).unwrap();
+    for (name, sql) in models {
+        std::fs::write(root.join("models").join(format!("{name}.sql")), sql).unwrap();
+    }
+}
+
+/// `+enabled: "{{ var(...) }}"` resolves in the scope real dbt renders
+/// `dbt_project.yml` in — vars.yml's TOP-LEVEL `vars:` only (the file's own
+/// `vars:` and `vars: <pkg>:` scoping are invisible there — verified on dbt
+/// 1.12.x). A var-gated tree leaf must not list what dbt parks disabled.
+#[test]
+fn ls_source_mode_tree_enabled_reads_vars_yml() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_source_project(
+        tmp.path(),
+        Some("vars:\n  file_flag: false\n  varproj:\n    scoped: false\n"),
+        "name: varproj\nversion: '1.0'\nmodel-paths: [\"models\"]\n\
+         models:\n  varproj:\n    tree_file_off:\n      +enabled: \"{{ var('file_flag', true) }}\"\n    tree_scoped_on:\n      +enabled: \"{{ var('scoped', true) }}\"\n    tree_default_off:\n      +enabled: \"{{ var('missing', false) }}\"\n",
+        &[
+            ("tree_file_off", "select 1 as id\n"),
+            ("tree_scoped_on", "select 1 as id\n"),
+            ("tree_default_off", "select 1 as id\n"),
+        ],
+    );
+    let out = run(&["ls", "*", "--project", tmp.path().to_str().unwrap()]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    // `scoped` resolves ONLY through the file's `varproj:` scope — invisible
+    // at the project render — so its default keeps tree_scoped_on; the
+    // others drop.
+    assert_eq!(lines(&out), ["tree_scoped_on"]);
+}
+
+/// `config(enabled=var(...))` resolves in the node scope — `vars:` (or
+/// vars.yml when declared), `<proj>:` keys shadowing the top level — while
+/// `vars:` stays invisible to `+enabled` exactly like real dbt.
+#[test]
+fn ls_source_mode_config_enabled_reads_scoped_vars() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_source_project(
+        tmp.path(),
+        None,
+        "name: varproj\nversion: '1.0'\nmodel-paths: [\"models\"]\n\
+         vars:\n  flag: true\n  tree_flag: true\n  varproj:\n    gated: false\n\n\
+         models:\n  varproj:\n    tree_flag_off:\n      +enabled: \"{{ var('tree_flag', false) }}\"\n",
+        &[
+            ("tree_flag_off", "select 1 as id\n"),
+            ("flag_on", "{{ config(enabled=var('flag')) }}\nselect 1 as id\n"),
+            ("scoped_off", "{{ config(enabled=var('gated', true)) }}\nselect 1 as id\n"),
+        ],
+    );
+    let out = run(&["ls", "*", "--project", tmp.path().to_str().unwrap()]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    // `vars:` gates the in-file config() (scoped `gated` wins over its
+    // default) but stays invisible to `+enabled` — tree_flag_off drops on
+    // its default like real dbt.
+    assert_eq!(lines(&out), ["flag_on"]);
+}
+
 // ---- state: against a git baseline ---------------------------------------------
 
 /// The sample project committed twice: the baseline verbatim, then a HEAD

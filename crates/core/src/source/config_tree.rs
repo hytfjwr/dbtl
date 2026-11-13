@@ -55,12 +55,17 @@ pub(super) fn tree_segments(proj: &str, rel: &str) -> Vec<String> {
 /// same [`meta_map`] conversion schema.yml uses — non-string keys stringify
 /// the same way and a non-mapping `+meta` warns once per tree level.
 /// `tree_path` names the walked path (`models`, `models.sample.staging`, …)
-/// so the warning says which level misdeclared it.
+/// so the warning says which level misdeclared it. `+enabled` resolves
+/// through [`Vars::tree_enabled`]: a native bool or a `{{ var(...) }}` the
+/// project-file render scope sees — anything dbt would reject (a plain
+/// `'false'` string, an unresolvable var) warns once per level and keeps
+/// the resource enabled.
 pub(super) fn resolve_tree_config(
     tree: &serde_json::Value,
     segments: &[String],
     tree_path: String,
     warnings: &mut Vec<String>,
+    vars: &Vars,
 ) -> TreeConfig {
     let mut out = TreeConfig::default();
     if !tree.is_object() {
@@ -69,8 +74,13 @@ pub(super) fn resolve_tree_config(
     if let Some(m) = tree["+materialized"].as_str() {
         out.materialized = Some(m.to_string());
     }
-    if let Some(e) = tree["+enabled"].as_bool() {
-        out.enabled = Some(e);
+    match vars.tree_enabled(&tree["+enabled"]) {
+        Some(e) => out.enabled = Some(e),
+        None if !tree["+enabled"].is_null() => warnings.push(format!(
+            "dbt_project.yml '+enabled' at '{tree_path}' could not be evaluated as a boolean ({}); the resource stays enabled",
+            serde_json::to_string(&tree["+enabled"]).unwrap_or_else(|_| "?".to_string())
+        )),
+        None => {}
     }
     out.meta.extend(meta_map(
         &tree["+meta"],
@@ -112,6 +122,7 @@ pub(super) fn resolve_tree_config(
             rest,
             format!("{tree_path}.{seg}"),
             warnings,
+            vars,
         );
         out.materialized = deeper.materialized.or(out.materialized);
         out.enabled = deeper.enabled.or(out.enabled);
