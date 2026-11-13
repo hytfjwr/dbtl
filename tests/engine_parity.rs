@@ -21,9 +21,7 @@
 
 mod common;
 
-use common::{
-    copy_tree, dbtl_cmd, manifest_path, sample_manifest_path, SAMPLE_PROJECT,
-};
+use common::{copy_tree, dbtl_cmd, manifest_path, sample_manifest_path, SAMPLE_PROJECT};
 use dbtl_wasm::engine::{ColumnsInput, Engine, LineageInput, LintOptions, LoadInput};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
