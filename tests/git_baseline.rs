@@ -7,7 +7,7 @@
 //! a `-`-leading rev, `git` absent from `PATH`).
 
 mod common;
-use common::{copy_tree, dbtl, run, stderr, stdout, GitRepo, SAMPLE_PROJECT};
+use common::{copy_tree, dbtl, run, spawn_and_wait, stderr, stdout, GitRepo, SAMPLE_PROJECT};
 use std::path::Path;
 
 /// A repo holding the sample project at `rel`, committed twice: the
@@ -451,12 +451,14 @@ fn state_selectors_resolve_against_git_revisions() {
 fn tui_select_state_selector_sees_the_loaded_diff() {
     // The startup ordering contract: `--select` resolves AFTER the `--diff`
     // baseline loads, so `state:` atoms read the real diff. `state:modified`
-    // hits the touched stg_orders → startup proceeds to terminal init —
-    // which errors on this piped (TTY-less) run: exit 3. Resolved before
-    // the baseline existed, the same selector would miss → exit 2.
+    // hits the touched stg_orders — a resolved --select never reaches the
+    // usage-error miss (exit 2): on a TTY-less host it dies at terminal
+    // init, on a host that still has a console (Windows CI) the event loop
+    // parks and the harness kills it — either way, no "not found". Resolved
+    // BEFORE the baseline existed, the same selector would miss → exit 2.
     let (repo, _base) = two_commit_repo(".");
     let root = repo.root.to_str().unwrap().to_string();
-    let out = run(&[
+    let out = spawn_and_wait(&[
         "--project",
         &root,
         "--diff",
@@ -464,15 +466,15 @@ fn tui_select_state_selector_sees_the_loaded_diff() {
         "--select",
         "state:modified",
     ]);
-    assert_eq!(
+    assert_ne!(
         out.status.code(),
-        Some(3),
-        "resolved --select reaches TTY init, stderr: {}",
+        Some(2),
+        "resolved --select must not hit the miss path, stderr: {}",
         stderr(&out)
     );
     assert!(
-        stderr(&out).contains("terminal"),
-        "the failure is terminal init, not the selector: {}",
+        !stderr(&out).contains("not found"),
+        "the state: selector resolved against the loaded diff: {}",
         stderr(&out)
     );
 }
