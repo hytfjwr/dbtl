@@ -51,19 +51,6 @@ impl<'a> SourceTexts<'a> {
     }
 }
 
-/// Write `body` to stdout through `anstream` — ANSI escapes pass through
-/// or strip per `choice` (`auto` follows the terminal/environment
-/// detection). A closed pipe (`dbtl lint | head`) is a normal end of
-/// output; any other write error surfaces to the caller.
-pub(crate) fn write_stdout(body: &str, choice: anstream::ColorChoice) -> Result<(), CliError> {
-    let mut out = anstream::AutoStream::new(std::io::stdout(), choice);
-    match out.write_all(body.as_bytes()).and_then(|()| out.flush()) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
-        Err(e) => Err(CliError::new(e.into())),
-    }
-}
-
 /// Parse one `--report <FMT>:<PATH>` spec. The split is the FIRST `:` only,
 /// so a Windows-style `C:\…` path survives in the right-hand side. Unknown
 /// formats and empty paths are usage errors — a mistyped destination must

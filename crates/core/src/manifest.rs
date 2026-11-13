@@ -1,6 +1,6 @@
 //! The dbt `manifest.json` wire types: the minimal subset of the manifest
 //! schema this tool reads, plus the disk loader. Both the real-manifest path
-//! (`load_manifest`) and the no-compile source loader (`source.rs`, which
+//! (`load_manifest`) and the no-compile source loader ([`crate::source`], which
 //! SYNTHESIZES a [`RawManifest`] of this exact shape) feed these types into
 //! [`Dag::build`](crate::Dag::build) — so nothing downstream knows which mode
 //! produced the data.

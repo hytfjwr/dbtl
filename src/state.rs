@@ -21,13 +21,21 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// The XDG config root: `$XDG_CONFIG_HOME`, else `~/.config` — the shared
+/// parent `config.yml` and the themes dir (`crate::themes`) live under, so
+/// a custom config home moves both together. `None` when neither env var
+/// resolves.
+pub(crate) fn config_home() -> Option<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(xdg));
+    }
+    home_dir().map(|home| home.join(".config"))
+}
+
 /// The user config file: `$XDG_CONFIG_HOME/dbtl/config.yml`, falling back to
 /// `~/.config/dbtl/config.yml`. `None` when neither env var resolves.
 fn config_path() -> Option<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(xdg).join("dbtl").join("config.yml"));
-    }
-    home_dir().map(|home| home.join(".config/dbtl/config.yml"))
+    config_home().map(|dir| dir.join("dbtl").join("config.yml"))
 }
 
 /// The per-project state directory: `$XDG_STATE_HOME/dbtl`, falling back to

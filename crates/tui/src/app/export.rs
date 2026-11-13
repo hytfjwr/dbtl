@@ -132,13 +132,6 @@ impl App {
             .map(str::to_string)
     }
 
-    /// A runnable `dbt build --select …` command for the current lineage view
-    /// — [`App::dbt_selector_command_for`] applied to the selection.
-    pub fn dbt_selector_command(&self) -> Option<String> {
-        self.selected_unique_id()
-            .and_then(|uid| self.dbt_selector_command_for(&uid))
-    }
-
     /// A runnable `dbt build --select …` command for `uid`'s lineage view:
     /// the rooted node expressed through dbt's graph operators, mirroring the
     /// pane exactly — the upstream toggle becomes a `+` prefix, the downstream
@@ -162,13 +155,6 @@ impl App {
             (true, Some(n)) => format!("+{n}"),
         };
         Some(format!("dbt build --select {prefix}{base}{suffix}"))
-    }
-
-    /// A Markdown blast-radius report for the selected node —
-    /// [`App::impact_report_for`] applied to the current selection.
-    pub fn impact_report(&self) -> Option<String> {
-        self.selected_unique_id()
-            .and_then(|uid| self.impact_report_for(&uid))
     }
 
     /// A Markdown blast-radius report for `uid`: direct + transitive up/down

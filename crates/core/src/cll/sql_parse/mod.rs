@@ -234,7 +234,9 @@ impl SqlParseResolver {
         self.fallbacks.borrow().len()
     }
 
-    /// The uids that fell back to name-match resolution (sorted).
+    /// The uids that fell back to name-match resolution (sorted). Test-only:
+    /// production reads [`Self::fallback_count`] and [`Self::is_fallback`].
+    #[cfg(test)]
     pub fn fallback_nodes(&self) -> Vec<String> {
         self.fallbacks.borrow().iter().cloned().collect()
     }

@@ -95,7 +95,7 @@ fn merge_excludes_test_and_operation() {
 #[test]
 fn analysis_nodes_are_excluded_like_tests() {
     // manifest mode is the only loader that ever sees `analysis` nodes
-    // (source.rs never parses `analyses/`); excluding them here keeps the
+    // (crate::source never parses `analyses/`); excluding them here keeps the
     // two load paths' graphs identical.
     let nodes = HashMap::from([
         (
@@ -581,7 +581,7 @@ fn primary_package_names_root_even_when_root_has_no_nodes() {
     let dag = Dag::build(&manifest);
     assert_eq!(dag.primary_package().as_deref(), Some("zzz_proj"));
     assert!(dag
-        .filtered(|n| n.unique_id.split('.').nth(1) == Some("zzz_proj"))
+        .filtered(|n| uid_package(&n.unique_id) == Some("zzz_proj"))
         .is_empty());
 }
 
@@ -591,7 +591,7 @@ fn filtered_keeps_the_root_project_name() {
     // still name itself `zzz_proj` (metadata is a property of the source
     // manifest, not of the surviving uid set).
     let dag = Dag::build(&multi_package_manifest(Some("zzz_proj")));
-    let f = dag.filtered(|n| n.unique_id.split('.').nth(1) == Some("zzz_proj"));
+    let f = dag.filtered(|n| uid_package(&n.unique_id) == Some("zzz_proj"));
     assert_eq!(f.len(), 1);
     assert_eq!(f.project_name(), Some("zzz_proj"));
     assert_eq!(f.primary_package().as_deref(), Some("zzz_proj"));
@@ -618,7 +618,7 @@ fn apply_with_warnings_flags_the_ambiguous_root_guess() {
         scoped
             .nodes()
             .keys()
-            .all(|u| u.split('.').nth(1) == Some("mmm_pkg")),
+            .all(|u| uid_package(u) == Some("mmm_pkg")),
         "the guessed package scopes the pruned graph"
     );
 

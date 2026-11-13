@@ -74,7 +74,7 @@ impl Dag {
         self.root_project.as_deref().or_else(|| {
             self.nodes
                 .keys()
-                .filter_map(|uid| uid.split('.').nth(1))
+                .filter_map(|uid| uid_package(uid))
                 .filter(|seg| !seg.is_empty())
                 .min()
         })
@@ -194,7 +194,7 @@ impl Dag {
     pub(super) fn package_histogram(&self) -> BTreeMap<&str, usize> {
         let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
         for uid in self.nodes.keys() {
-            if let Some(seg) = uid.split('.').nth(1).filter(|s| !s.is_empty()) {
+            if let Some(seg) = uid_package(uid).filter(|s| !s.is_empty()) {
                 *counts.entry(seg).or_default() += 1;
             }
         }

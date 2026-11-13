@@ -11,10 +11,7 @@ use dbtl::ui::theme::{self, Theme};
 /// `~/.config/dbtl/themes`. `None` when neither env var resolves (the built-in
 /// presets still work).
 fn user_theme_dir() -> Option<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(xdg).join("dbtl").join("themes"));
-    }
-    crate::state::home_dir().map(|home| home.join(".config").join("dbtl").join("themes"))
+    crate::state::config_home().map(|dir| dir.join("dbtl").join("themes"))
 }
 
 /// The `*.yml` / `*.yaml` files under `dir`, sorted by file name so the theme
@@ -139,26 +136,30 @@ pub fn load_themes(selected: Option<&str>) -> Result<(Vec<(String, Theme)>, usiz
 
 /// Print the `--list-themes` listing: the built-in presets, then the user theme
 /// dir's files (or where to put them).
-pub fn print_theme_list() {
-    println!("built-in presets:");
+pub fn print_theme_list() -> std::result::Result<(), crate::cli::CliError> {
+    let mut out = String::from("built-in presets:\n");
     for name in theme::preset_names() {
-        println!("  {name}");
+        out.push_str("  ");
+        out.push_str(name);
+        out.push('\n');
     }
-    let Some(dir) = user_theme_dir() else {
-        return;
-    };
-    let files = theme_files(&dir);
-    if files.is_empty() {
-        println!(
-            "\nuser themes: none (put YAML theme files under {})",
-            dir.display()
-        );
-        return;
-    }
-    println!("\nuser themes ({}):", dir.display());
-    for path in files {
-        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-            println!("  {stem}");
+    if let Some(dir) = user_theme_dir() {
+        let files = theme_files(&dir);
+        if files.is_empty() {
+            out.push_str(&format!(
+                "\nuser themes: none (put YAML theme files under {})\n",
+                dir.display()
+            ));
+        } else {
+            out.push_str(&format!("\nuser themes ({}):\n", dir.display()));
+            for path in files {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    out.push_str("  ");
+                    out.push_str(stem);
+                    out.push('\n');
+                }
+            }
         }
     }
+    crate::cli::write_stdout(&out, anstream::ColorChoice::Auto)
 }

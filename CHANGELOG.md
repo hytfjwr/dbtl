@@ -17,6 +17,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `var()`-gated `enabled` no longer lists models dbt parks disabled; a
   value dbt's boolean validation would reject keeps the node enabled
   with a warning naming the file or tree level.
+- Closing the stdout pipe early (`dbtl ls … | head -1`, `dbtl columns … |
+  head`, `dbtl docs … | head`) now exits cleanly instead of panicking on a
+  broken pipe — every CLI stdout write goes through one writer that treats
+  `EPIPE` as a normal end of output.
 
 ## [0.6.3] - 2026-11-13
 

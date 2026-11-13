@@ -146,8 +146,7 @@ impl Dag {
         // `unit_tests.<pkg>.<model>.<name>` — the target is `model.<pkg>.<model>`;
         // `model` (the bare name) is the fallback when the uid shape differs.
         for (uid, ut) in &manifest.unit_tests {
-            let mut segs = uid.split('.');
-            let target = match (segs.nth(1), segs.next()) {
+            let target = match (uid_package(uid), uid.split('.').nth(2)) {
                 (Some(pkg), Some(model)) if !pkg.is_empty() => {
                     let guess = format!("model.{pkg}.{model}");
                     if nodes.contains_key(&guess) {
@@ -396,7 +395,7 @@ impl Dag {
                 .package_name
                 .as_deref()
                 .filter(|p| !p.is_empty())
-                .or_else(|| uid.split('.').nth(1))
+                .or_else(|| uid_package(uid))
             else {
                 continue;
             };

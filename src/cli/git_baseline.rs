@@ -84,9 +84,7 @@ pub(super) fn load(
             Err(e) => warnings.push(format!("skipping '{}': {e}", entry.path)),
         }
     }
-    for w in &warnings {
-        eprintln!("warning (--diff baseline): {w}");
-    }
+    warn_each(" (--diff baseline)", &warnings);
     if !saw_project_yml {
         return Err(CliError::input(anyhow::anyhow!(
             "--diff: revision '{rev}' has no dbt project at '{}' (no dbt_project.yml — \
@@ -101,9 +99,7 @@ pub(super) fn load(
     let (dag, warnings) = load_dag_from_source_with_warnings(tmp.path())
         .with_context(|| format!("--diff: failed to parse revision '{rev}' as a dbt project"))
         .input()?;
-    for w in &warnings {
-        eprintln!("warning (--diff baseline): {w}");
-    }
+    warn_each(" (--diff baseline)", &warnings);
     Ok((
         apply_package_scope(dag, scope, true).0,
         format!("git:{rev}"),

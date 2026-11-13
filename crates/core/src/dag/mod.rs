@@ -41,14 +41,34 @@ pub struct NodeInfo {
     pub test_count: usize,
 }
 
-/// A node that SHOULD have tests but has none: a buildable resource
-/// (model / snapshot / seed) with `test_count == 0`. Sources are excluded
-/// (covered at the source-freshness layer, not via dbt tests here). Pure over
-/// [`NodeInfo`]'s `resource_type` + `test_count`, both of which the manifest↔source
-/// consistency suite asserts identical across load modes — so it is the single
-/// source of truth for the coverage lens, the list tint, and the coverage %.
+/// A node that CAN carry a test: a buildable resource (model / snapshot /
+/// seed) — the denominator every coverage readout shares ([`coverage_gap`]
+/// is its untested half, `coverage_counts`' total its size). Sources are
+/// excluded — covered at the source-freshness layer, not via dbt tests.
+/// Pure over [`NodeInfo`]'s `resource_type`, which the manifest↔source
+/// consistency suite asserts identical across load modes.
+pub(crate) fn testable(n: &NodeInfo) -> bool {
+    matches!(n.resource_type.as_str(), "model" | "snapshot" | "seed")
+}
+
+/// A node that SHOULD have tests but has none: a `testable` resource with
+/// `test_count == 0`. Pure over [`NodeInfo`]'s `resource_type` + `test_count`,
+/// both of which the manifest↔source consistency suite asserts identical
+/// across load modes — so it is the single source of truth for the coverage
+/// lens, the list tint, and the coverage %.
 pub fn coverage_gap(n: &NodeInfo) -> bool {
-    matches!(n.resource_type.as_str(), "model" | "snapshot" | "seed") && n.test_count == 0
+    testable(n) && n.test_count == 0
+}
+
+/// The package a `unique_id` declares itself under — its second segment
+/// (`model.<pkg>.<name>` → `pkg`; a source `source.<pkg>.<src>.<tbl>`
+/// resolves the same way). `None` when the uid has no second segment;
+/// callers that also reject an EMPTY segment filter on top (`in_package`
+/// and the histogram do). The ONE extractor the package histogram, the
+/// scope predicates, the project-name fallbacks, and the compiled-SQL
+/// lookup share.
+pub(crate) fn uid_package(uid: &str) -> Option<&str> {
+    uid.split('.').nth(1)
 }
 
 /// Whether a description string carries no real content — the whitespace-only
@@ -550,8 +570,8 @@ pub struct Dag {
     /// `depends_on.macros`), a side map like `sql`/`details`.
     node_macros: HashMap<String, Vec<String>>,
     /// The ROOT project's name as dbt recorded it (`manifest.metadata.
-    /// project_name`, present since dbt 1.6; `source.rs` synthesizes it from
-    /// `dbt_project.yml`'s `name`). `None` for old/hand-built manifests —
+    /// project_name`, present since dbt 1.6; `crate::source` synthesizes it
+    /// from `dbt_project.yml`'s `name`). `None` for old/hand-built manifests —
     /// `project_name`/`primary_package` then fall back to inferring it from
     /// node `unique_id`s. Not a side map: one scalar for the whole graph,
     /// propagated by [`filtered`](Dag::filtered) so a `--project-only` view
@@ -599,7 +619,7 @@ pub struct MacroInfo {
 ///
 /// - `test`: folded into the `tests` side map pre-prune.
 /// - `operation` / `analysis`: non-buildable; `analysis` is also dropped for
-///   the manifest↔source consistency contract (`source.rs` never parses
+///   the manifest↔source consistency contract (`crate::source` never parses
 ///   `analyses/`).
 /// - `check` (dbt Fusion's validation resource, `check.<pkg>.<name>`): the
 ///   same fate as `test` — a check declares a validation over models, not a

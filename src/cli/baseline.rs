@@ -30,20 +30,20 @@ pub fn load_baseline(
         let (dag, warnings) = load_dag_with_warnings(&p)
             .with_context(|| format!("--diff: failed to load {path}"))
             .input()?;
-        for w in &warnings {
-            eprintln!("warning (--diff baseline): {w}");
-        }
+        warn_each(" (--diff baseline)", &warnings);
         return Ok((apply_package_scope(dag, scope, false).0, path.to_string()));
     }
     if p.is_dir() {
-        let manifest = p.join("target").join("manifest.json");
-        if manifest.is_file() {
+        // `<project>/target/manifest.json` — `default_target_dir` names the
+        // `target` half so every auto-detect spells it the same way.
+        let manifest = dbtl::default_target_dir(None, Some(&p))
+            .map(|target| target.join("manifest.json"))
+            .filter(|m| m.is_file());
+        if let Some(manifest) = manifest {
             let (dag, warnings) = load_dag_with_warnings(&manifest)
                 .with_context(|| format!("--diff: failed to load {}", manifest.display()))
                 .input()?;
-            for w in &warnings {
-                eprintln!("warning (--diff baseline): {w}");
-            }
+            warn_each(" (--diff baseline)", &warnings);
             return Ok((
                 apply_package_scope(dag, scope, false).0,
                 manifest.display().to_string(),
@@ -53,9 +53,7 @@ pub fn load_baseline(
             let (dag, warnings) = load_dag_from_source_with_warnings(&p)
                 .with_context(|| format!("--diff: failed to parse project {path}"))
                 .input()?;
-            for w in &warnings {
-                eprintln!("warning (--diff baseline): {w}");
-            }
+            warn_each(" (--diff baseline)", &warnings);
             return Ok((apply_package_scope(dag, scope, true).0, path.to_string()));
         }
     }
