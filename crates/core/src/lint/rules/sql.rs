@@ -18,7 +18,7 @@
 use std::ops::Range;
 
 use super::*;
-use crate::SqlParseResolver;
+use crate::{SqlDialect, SqlParseResolver};
 
 /// One raw-SQL occurrence a finding can point at: the byte range inside
 /// the model's `raw_code` and the note the position carries (the primary
@@ -452,6 +452,7 @@ pub(super) fn trailing_semicolon(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
+    dialect: SqlDialect,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -469,7 +470,7 @@ pub(super) fn trailing_semicolon(
         let Some(raw) = dag.raw_code(uid) else {
             continue;
         };
-        let Some(semi) = crate::cll::trailing_semicolon(raw) else {
+        let Some(semi) = crate::cll::trailing_semicolon(raw, dialect) else {
             continue;
         };
         let mut f = Finding::new(

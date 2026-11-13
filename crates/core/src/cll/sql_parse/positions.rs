@@ -14,10 +14,10 @@
 use std::ops::Range;
 
 use sqlparser::ast::{Spanned, Statement};
-use sqlparser::dialect::Dialect;
 use sqlparser::parser::Parser;
 
 use super::ast::query_wildcard_items;
+use super::dialect::SqlDialect;
 use super::facts::{outer_order_by_span, output_name_occurrences};
 use super::jinja::{render_jinja_mapped, JinjaMark};
 use super::scan::{scan_statements, scan_statements_positions};
@@ -64,9 +64,10 @@ pub struct MarkedRelations {
 
 /// Render `raw` (`Plain`) and extract the positions — `None` when the
 /// text doesn't parse: a positionless finding, never a guessed one.
-pub(super) fn plain_positions(raw: &str, dialect: &dyn Dialect) -> Option<SqlPositions> {
-    let rendered = render_jinja_mapped(raw, JinjaMark::Plain);
-    let stmts = Parser::parse_sql(dialect, &rendered.text).ok()?;
+pub(super) fn plain_positions(raw: &str, dialect: SqlDialect) -> Option<SqlPositions> {
+    let rendered = render_jinja_mapped(raw, JinjaMark::Plain, dialect);
+    let parser_dialect = dialect.sqlparser();
+    let stmts = Parser::parse_sql(&*parser_dialect, &rendered.text).ok()?;
     let mut out = SqlPositions::default();
     for s in &stmts {
         if let Statement::Query(q) = s {
@@ -116,9 +117,10 @@ pub(super) fn plain_positions(raw: &str, dialect: &dyn Dialect) -> Option<SqlPos
 
 /// Render `raw` (`Marked`) and return the hand-coded relation scan —
 /// `None` like [`plain_positions`].
-pub(super) fn marked_relations(raw: &str, dialect: &dyn Dialect) -> Option<MarkedRelations> {
-    let rendered = render_jinja_mapped(raw, JinjaMark::Marked);
-    let stmts = Parser::parse_sql(dialect, &rendered.text).ok()?;
+pub(super) fn marked_relations(raw: &str, dialect: SqlDialect) -> Option<MarkedRelations> {
+    let rendered = render_jinja_mapped(raw, JinjaMark::Marked, dialect);
+    let parser_dialect = dialect.sqlparser();
+    let stmts = Parser::parse_sql(&*parser_dialect, &rendered.text).ok()?;
     let scan = scan_statements(&stmts, Some(&rendered));
     let spans = scan
         .hard_coded_spans
