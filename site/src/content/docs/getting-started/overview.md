@@ -17,7 +17,7 @@ description: dbtl shows your dbt project's model lineage in the terminal, from a
 
 It builds that graph from `dbt_project.yml`, model `.sql` files (`ref()` and `source()`), and `schema.yml`, or from a compiled `manifest.json` when one exists — see [Choose the data source](../cli/overview.md#choose-the-data-source). `dbtl` is a single self-contained binary (the Linux musl builds are fully static) and runs entirely in the terminal, including over SSH.
 
-To install `dbtl` and open your first project, start with [Installation](installation.md) and the [quick start](quick-start.md).
+To install `dbtl` and open your first project, start with [Installation](installation.md) and the [quick start](quick-start.md). To try it first, the [playground](/dbtl/playground/) runs the same engine in the browser on bundled sample projects — nothing is uploaded.
 
 ## Feature tour
 

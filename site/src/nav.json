@@ -4,8 +4,13 @@
     "items": [
       "getting-started/overview",
       "getting-started/installation",
-      "getting-started/quick-start"
+      "getting-started/quick-start",
+      "getting-started/faq"
     ]
+  },
+  {
+    "group": "Guides",
+    "items": ["guides/adopt-lint", "guides/review-a-pr", "guides/explore-a-large-project"]
   },
   {
     "group": "Using the TUI",

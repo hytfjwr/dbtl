@@ -60,6 +60,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `tests/doc_links.rs` now scans `site/src/content/docs/**` too — `dbtl`
   invocations in fenced blocks and inline code are checked against the
   flags each subcommand actually accepts.
+- Docs site: a Guides section with walkthroughs for adopting lint on an
+  existing project, reviewing a pull request, and exploring a large
+  project; an FAQ covering the verified dbt versions; and direct links
+  to the playground from the home page, footer, and getting-started
+  pages.
 
 ## [0.6.3] - 2026-11-13
 

@@ -5,6 +5,9 @@ description: Run dbtl at the root of a dbt project, choose between a compiled ma
 
 Run `dbtl` at the root of any dbt project.
 
+> [!TIP]
+> Not installed yet? The [playground](/dbtl/playground/) runs the same engine in your browser on bundled sample projects — a way to try the workflow below before installing.
+
 ```sh
 dbtl
 ```
