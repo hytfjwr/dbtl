@@ -12,6 +12,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use serde::Serialize;
 
+use crate::dag::testable;
 use crate::layer::{first_dir, layer_rank, VIOLATION_LAYERS};
 use crate::{
     coverage_gap, in_package, is_exposure, ColumnChange, ColumnChangeClass, ColumnChangeKind,
@@ -224,9 +225,7 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, opts: &ImpactOpt
         .chain(diff.modified.keys())
         .filter(|uid| {
             opts.selection.is_none_or(|s| s.contains(uid.as_str()))
-                && dag.get(uid).is_some_and(|n| {
-                    matches!(n.resource_type.as_str(), "model" | "seed" | "snapshot")
-                })
+                && dag.get(uid).is_some_and(testable)
         })
         .cloned()
         .collect();
@@ -504,9 +503,11 @@ pub fn coverage_counts(dag: &Dag, within: Option<&BTreeSet<String>>) -> (usize, 
         if within.is_some_and(|s| !s.contains(&n.unique_id)) {
             continue;
         }
-        if matches!(n.resource_type.as_str(), "model" | "snapshot" | "seed") {
+        // `testable` is the counted universe; `coverage_gap` its untested
+        // half — the same predicates the Coverage lens reads.
+        if testable(n) {
             total += 1;
-            if n.test_count > 0 {
+            if !coverage_gap(n) {
                 tested += 1;
             }
         }
@@ -543,7 +544,7 @@ pub fn column_coverage_counts(dag: &Dag, within: Option<&BTreeSet<String>>) -> (
         if within.is_some_and(|s| !s.contains(&n.unique_id)) {
             continue;
         }
-        if !matches!(n.resource_type.as_str(), "model" | "snapshot" | "seed") {
+        if !testable(n) {
             continue;
         }
         let Some(d) = dag.detail(&n.unique_id) else {

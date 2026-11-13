@@ -411,7 +411,7 @@ impl ProjectConfig {
 ///   project root.
 /// - **Manifest mode**: when the manifest sits at the standard
 ///   `<root>/target/manifest.json` layout (same heuristic
-///   [`dag.rs`](crate::dag) uses for the staleness project-root), the
+///   [`dag`](crate::dag) module uses for the staleness project-root), the
 ///   PROJECT ROOT wins first, then `target/` itself as an escape hatch. A
 ///   manifest anywhere else (`--manifest /tmp/x/manifest.json`) gets ONLY its
 ///   own directory — climbing to an unrelated parent's `.dbtl.yml` would lint

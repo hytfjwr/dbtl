@@ -120,8 +120,10 @@ impl ModelList {
     }
 
     /// The model selection index at display-row `row`, or `None` if that row is a
-    /// header or out of range. The inverse of [`row_of_model`](ModelList::row_of_model),
-    /// used to turn a list-pane mouse click into a selection.
+    /// header or out of range. The inverse of [`row_of_model`](ModelList::row_of_model).
+    /// Test-only: the mouse click path matches `DisplayRow` inside `hit_test`
+    /// instead.
+    #[cfg(test)]
     pub fn model_at_row(&self, row: usize) -> Option<usize> {
         match self.rows.get(row) {
             Some(DisplayRow::Model { model_index, .. }) => Some(*model_index),

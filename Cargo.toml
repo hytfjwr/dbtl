@@ -3,6 +3,9 @@ name = "dbtl"
 version.workspace = true
 rust-version.workspace = true
 edition = "2021"
+# Nothing in this workspace ships to crates.io — the member crates already
+# carry `publish = false`; the root package now matches them.
+publish = false
 description = "A terminal UI for exploring dbt model lineage as ASCII art"
 license = "MIT"
 repository = "https://github.com/hytfjwr/dbtl"
@@ -50,7 +53,13 @@ repository = "https://github.com/hytfjwr/dbtl"
 anyhow = "1"
 # `env` lets --theme default from DBTL_THEME.
 clap = { version = "4", features = ["derive", "env"] }
-ratatui = "0.30.1"
+# Default features off: `all-widgets` (calendar/charts we never draw) and
+# `macros` (`frame!`) stay out — the rest is what the app actually uses.
+ratatui = { version = "0.30.1", default-features = false, features = [
+    "crossterm",
+    "underline-color",
+    "layout-cache",
+] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 # preserve_order keeps column definition order from the manifest (its `Map`
@@ -71,9 +80,9 @@ serde_norway = "0.9"
 # `yes` (PyYAML: bool) from a quoted `"yes"` (PyYAML: string) — serde_yaml-
 # family `Value` types erase that distinction before we can see it.
 yaml-rust2 = "0.13"
-# Status-bar segment width measurement (src/ui/render.rs) AND the ascii_guard test
-# (data cells that are unambiguously WIDE render fine everywhere; only
-# ambiguous-width chrome is banned). A normal dependency so `src/` can use it.
+# Status-bar segment width measurement (crates/tui/src/ui/render.rs) AND the
+# root integration tests (ascii_guard: data cells that are unambiguously
+# WIDE render fine everywhere; only ambiguous-width chrome is banned).
 unicode-width = "0.2"
 # The real SQL parser behind column-level lineage v1 (CLL): dialect-aware
 # AST + hand-rolled scope resolution in dbtl-core. Default features — the

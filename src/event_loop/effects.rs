@@ -98,14 +98,20 @@ pub(super) fn run_dbt_parse(terminal: &mut DefaultTerminal, app: &mut App) -> Re
             return Ok(());
         }
     }
-    let manifest = root.join("target").join("manifest.json");
-    if !manifest.is_file() {
-        app.set_notice_level(
-            dbtl::NoticeLevel::Warning,
-            "dbt parse wrote no target/manifest.json",
-        );
-        return Ok(());
-    }
+    // `<root>/target/manifest.json` — `default_target_dir` names the `target`
+    // half so every auto-detect spells it the same way.
+    let manifest = match dbtl::default_target_dir(None, Some(&root))
+        .map(|target| target.join("manifest.json"))
+    {
+        Some(m) if m.is_file() => m,
+        _ => {
+            app.set_notice_level(
+                dbtl::NoticeLevel::Warning,
+                "dbt parse wrote no target/manifest.json",
+            );
+            return Ok(());
+        }
+    };
     // On a load error `adopt_manifest` restores the previous source, so the
     // app keeps running on the pre-parse data. Load warnings (unhandled
     // resource_types, scope warnings) ride the toast like a manual reload.

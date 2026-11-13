@@ -54,6 +54,7 @@ pub fn run_ls(
     for uid in selector_set(dag, diff.as_ref(), exclude) {
         selected.remove(&uid);
     }
+    let mut out = String::new();
     match output {
         LsFormat::Names => {
             // (name, unique_id) rows — same-name nodes both print, in a
@@ -64,12 +65,14 @@ pub fn run_ls(
                 .collect();
             rows.sort();
             for (name, _) in rows {
-                println!("{name}");
+                out.push_str(name);
+                out.push('\n');
             }
         }
         LsFormat::Uids => {
             for uid in &selected {
-                println!("{uid}");
+                out.push_str(uid);
+                out.push('\n');
             }
         }
         LsFormat::Selector => {
@@ -82,7 +85,8 @@ pub fn run_ls(
                 .map(|n| n.name.as_str())
                 .collect();
             if !names.is_empty() {
-                println!("{}", names.into_iter().collect::<Vec<_>>().join(" "));
+                out.push_str(&names.into_iter().collect::<Vec<_>>().join(" "));
+                out.push('\n');
             }
         }
         LsFormat::Json => {
@@ -101,11 +105,9 @@ pub fn run_ls(
                     })
                 })
                 .collect();
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&rows).unwrap_or_else(|_| "[]".to_string())
-            );
+            out.push_str(&serde_json::to_string_pretty(&rows).unwrap_or_else(|_| "[]".to_string()));
+            out.push('\n');
         }
     }
-    Ok(())
+    write_stdout(&out, anstream::ColorChoice::Auto)
 }

@@ -2,8 +2,8 @@
 //! lint`: one [`Report`] model (`dbtl.report/v1`) describing the run — the
 //! gates that evaluated, their findings, the diff/docs payloads — rendered
 //! by one pure function per output format. The lint half of the model is
-//! assembled here too: [`evaluate_lint`] classifies `run_rules` findings
-//! into counted / baselined / pre-existing, [`lint_gates`] lifts them into
+//! assembled here too: `evaluate_lint` classifies `run_rules` findings
+//! into counted / baselined / pre-existing, `lint_gates` lifts them into
 //! gate rows, and [`lint_report`] packages the whole lint run into a
 //! [`Report`] — so the CLI's stdout, the CI annotations, the uploaded
 //! files, and any in-memory caller can never disagree about what the gates
@@ -23,11 +23,16 @@ mod markdown;
 mod sarif;
 mod text;
 
-pub mod lint;
+mod lint;
 
+// The public lint seam: callers hand a `LintRunInputs`/`LintAux` in and get
+// `LintAssembly`/`LintRun` data back — those two stay re-exported because a
+// `pub fn`'s return type can't be less reachable than the fn itself. The
+// intermediate evaluation internals (`evaluate_lint`, `lint_gates`,
+// `severity_fails`, `LintGateOutcome`, `RuleOutcome`) stay inside the
+// private `lint` module so they never become API.
 pub use lint::{
-    evaluate_lint, gate_status, lint_assembly, lint_gates, lint_report, severity_fails,
-    LintAssembly, LintAux, LintGateOutcome, LintRun, LintRunInputs, RuleOutcome,
+    gate_status, lint_assembly, lint_report, LintAssembly, LintAux, LintRun, LintRunInputs,
 };
 
 use dbtl_core::{Dag, DiffReport, Finding, Severity, SkippedRule};
@@ -392,7 +397,7 @@ pub struct RenderCtx<'a> {
 /// the position it annotates. Everything else the renderers need lives in
 /// the [`Report`] itself.
 ///
-/// [`lint_assembly`]: crate::lint::lint_assembly
+/// [`lint_assembly`]: crate::lint_assembly
 pub struct RenderEnv<'a> {
     /// The run's dag — `.sql` excerpts come from its `raw_code` (the exact
     /// string positions were computed against).

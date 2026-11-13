@@ -649,6 +649,7 @@ mod gates;
 mod git_baseline;
 mod lint;
 mod ls;
+mod out;
 mod reference;
 mod report;
 mod resolve;
@@ -667,6 +668,8 @@ pub use gates::{run_check, run_impact, CheckArgs};
 use lint::*;
 pub use lint::{run_lint, LintArgs};
 pub use ls::run_ls;
+// `themes`' `--list-themes` writes through the same stdout tap.
+pub(crate) use out::*;
 pub use reference::run_cli_reference;
 use report::*;
 use resolve::*;
