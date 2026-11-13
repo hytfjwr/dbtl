@@ -286,15 +286,15 @@ impl Patterns {
             .next_back()
     }
 
-    /// Whether the file's config() calls leave it disabled — the LAST
-    /// resolvable `enabled=` decides, matching dbt's ordered config()
+    /// Whether the file's `{{ config() }}` calls leave it disabled — the
+    /// LAST `enabled=` decides, matching dbt's ordered config()
     /// application (verified: `config(enabled=false)` then
-    /// `config(enabled=true)` leaves the node enabled). Resolvable means a
-    /// bool literal or a `var('name'[, default])` (`| as_bool` allowed)
-    /// the node's var scope resolves to a bool — every other `enabled=`
-    /// value fails dbt's boolean validation; it's reported once per site
-    /// (`ctx` names the file) and can't change the outcome, so the node
-    /// stays enabled unless another value decides.
+    /// `config(enabled=true)` leaves the node enabled). The value goes
+    /// through the shared expression evaluator (`Vars::node_enabled`) —
+    /// literals, `var()`, comparisons, `and`/`or`/`not`, `in`, `is` tests,
+    /// parens, `| as_bool`. An unresolvable value is a boolean-validation
+    /// error in dbt — reported once (`ctx` names the file) and the node
+    /// stays enabled; it can't fall back to an earlier `enabled=`.
     pub(super) fn disabled(
         &self,
         sql: &str,
@@ -302,18 +302,40 @@ impl Patterns {
         warnings: &mut Vec<String>,
         ctx: &str,
     ) -> bool {
-        config_kwarg_exprs(sql, "enabled")
-            .into_iter()
-            .filter_map(|expr| {
-                vars.node_enabled(expr).or_else(|| {
+        // `config()` only exists inside `{{ }}` — a bare `config(...)` in
+        // SQL text or a `--`/`/* */` comment is SQL to dbt, never a call
+        // (`{{ }}` inside a `--` comment DOES execute: Jinja renders first).
+        // The LAST `enabled=` decides: dbt applies config() calls in order,
+        // so a later unresolvable value is a boolean-validation error —
+        // reported once and the node stays enabled; it can't fall back to
+        // an earlier proven `false`.
+        let b = sql.as_bytes();
+        let mut i = 0usize;
+        let mut last: Option<&str> = None;
+        while i + 1 < b.len() {
+            if b[i] == b'{' && b[i + 1] == b'{' {
+                if let Some(end) = jinja_tag_close(b, i) {
+                    if let Some(e) = config_kwarg_exprs(&sql[i + 2..end], "enabled").last() {
+                        last = Some(e);
+                    }
+                    i = end + 2;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        match last {
+            Some(expr) => match vars.node_enabled(expr) {
+                Some(v) => v == serde_json::Value::Bool(false),
+                None => {
                     warnings.push(format!(
                         "{ctx}: config(enabled={expr}) could not be evaluated as a boolean; the resource stays enabled"
                     ));
-                    None
-                })
-            })
-            .next_back()
-            == Some(false)
+                    false
+                }
+            },
+            None => false,
+        }
     }
 }
 

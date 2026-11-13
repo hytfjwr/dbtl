@@ -820,17 +820,18 @@ impl Synthesis {
                     segments.pop();
                     segments.push(src.name.clone());
                     segments.push(tbl.name.clone());
-                    // `+enabled` is not applied on `sources:` (the walk is
-                    // for `+meta` only) — passing no var scope keeps it the
-                    // silent bool read instead of warning on a key dbtl
-                    // ignores.
                     let tree = resolve_tree_config(
                         &self.project.sources,
                         &segments,
                         "sources".to_string(),
                         &mut self.warnings,
-                        None,
+                        Some(&self.vars),
                     );
+                    // `sources:` `+enabled` parks the table like the other
+                    // resource trees (dbt disables `source.p.s.t` by fqn).
+                    if tree.enabled == Some(false) {
+                        continue;
+                    }
                     self.sources.insert(
                         uid.clone(),
                         RawSource {

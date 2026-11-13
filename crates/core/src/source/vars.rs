@@ -338,11 +338,15 @@ impl<'a> EnabledExpr<'a, '_> {
             if !self.eat_kw("or") {
                 return Some(l);
             }
+            // A short-circuit only excuses the rhs being UNPROVABLE when
+            // trailing input remains — a tail that consumed to EOF failed
+            // to parse (e.g. `false and (`), which is a syntax error in
+            // dbt, not a value. Any `None` rhs makes the whole expression
+            // unprovable → warn + enabled, never a silent disable.
             match self.parse_and() {
                 Some(r) if !truthy(&l) => l = r,
                 Some(_) => {}
-                None if !truthy(&l) => return None,
-                None => {}
+                None => return None,
             }
         }
     }
@@ -356,11 +360,11 @@ impl<'a> EnabledExpr<'a, '_> {
             if !self.eat_kw("and") {
                 return Some(l);
             }
+            // Same rule as `parse_or` — see the note there.
             match self.parse_not() {
                 Some(r) if truthy(&l) => l = r,
                 Some(_) => {}
-                None if truthy(&l) => return None,
-                None => {}
+                None => return None,
             }
         }
     }
@@ -416,9 +420,17 @@ impl<'a> EnabledExpr<'a, '_> {
                 return Some(op);
             }
         }
+        // `not` only means a comparison when `in` follows — rewind if it
+        // doesn't, so a trailing `not` counts as unparseable input rather
+        // than vanishing into a result.
+        let save = self.p.i;
         if self.eat_kw("not") {
             self.p.ws();
-            return self.eat_kw("in").then_some(Cmp::NotIn).or(None);
+            if self.eat_kw("in") {
+                return Some(Cmp::NotIn);
+            }
+            self.p.i = save;
+            return None;
         }
         self.eat_kw("in").then_some(Cmp::In)
     }
@@ -461,6 +473,36 @@ impl<'a> EnabledExpr<'a, '_> {
                     }
                 }
                 Some('.') | Some('[') | Some('(') => return None,
+                // Jinja `is` tests — the same operand-postfix slot `|`
+                // filters occupy. `Null` stands in for Undefined, so
+                // `is defined`/`is none` read off it directly; arg-taking
+                // tests (`sameas`, `equalto`, …) are unprovable.
+                _ if self.eat_kw("is") => {
+                    self.p.ws();
+                    let neg = self.eat_kw("not");
+                    self.p.ws();
+                    let t = self.ident()?;
+                    self.p.ws();
+                    if self.p.peek() == Some('(') {
+                        return None;
+                    }
+                    let n = v.as_f64();
+                    let r = match t {
+                        "defined" => v != serde_json::Value::Null,
+                        "undefined" | "none" => v == serde_json::Value::Null,
+                        "string" => v.is_string(),
+                        "number" => v.is_number(),
+                        "boolean" => v.is_boolean(),
+                        "mapping" => v.is_object(),
+                        "sequence" | "iterable" => v.is_array(),
+                        "true" => v == true,
+                        "false" => v == false,
+                        "even" => n.is_some_and(|x| x % 2.0 == 0.0),
+                        "odd" => n.is_some_and(|x| x % 2.0 != 0.0),
+                        _ => return None,
+                    };
+                    v = (r != neg).into();
+                }
                 _ => return Some(v),
             }
         }

@@ -1004,13 +1004,22 @@ fn disabled_resolves_var_forms_like_dbt() {
         assert!(w[0].contains("models/m.sql"), "the file is named: {w:?}");
         assert!(w[0].contains("enabled="), "the config is named: {w:?}");
     }
-    // An unresolvable later value can't override an earlier `false`.
+    // The LAST `enabled=` decides: an unresolvable later value is a
+    // boolean-validation error in dbt — it can't fall back to an earlier
+    // proven `false`, so the node stays enabled with a warning.
     let (d, w) = disabled(
         "{{ config(enabled=false) }}\n{{ config(enabled=var('missing')) }}",
         &vars,
     );
-    assert!(d);
+    assert!(!d);
     assert_eq!(w.len(), 1, "{w:?}");
+    // A bare `config(` outside `{{ }}` is SQL text to dbt — never a call.
+    let (d, w) = disabled("select 1 -- config(enabled=false)", &vars);
+    assert!(!d);
+    assert!(w.is_empty(), "{w:?}");
+    // …but `{{ }}` inside a `--` comment still executes (Jinja first).
+    let (d, _) = disabled("select 1 -- {{ config(enabled=false) }}", &vars);
+    assert!(d);
 }
 
 // ---- enabled expression evaluator (comparisons, logic, membership) ----------
@@ -1358,31 +1367,86 @@ fn manifest_dedups_a_shared_unresolvable_tree_enabled_warning() {
 }
 
 #[test]
-fn sources_tree_walk_does_not_warn_on_enabled() {
-    // `+enabled` is not applied on `sources:` (meta-only walk) — passing
-    // no var scope keeps it a silent read: no warning noise on a key
-    // dbtl ignores, unresolvable or not.
+fn sources_tree_enabled_disables_like_the_other_trees() {
+    // `sources:` `+enabled` is applied (dbt disables `source.p.s.t` by
+    // fqn) — the same var-scoped evaluation as `models:`/`seeds:`.
+    let vars = test_vars(
+        serde_json::json!({"flag": true}),
+        serde_json::json!({}),
+        "p",
+    );
     let mut w = Vec::new();
     let cfg = resolve_tree_config(
         &serde_json::json!({"p": {"+enabled": "{{ var('flag') }}"}}),
         &["p".to_string()],
         "sources".to_string(),
         &mut w,
-        None,
+        Some(&vars),
     );
-    assert_eq!(cfg.enabled, None);
+    assert_eq!(cfg.enabled, Some(true));
     assert!(w.is_empty(), "{w:?}");
-    // A native bool still lands on the (unapplied) field — same as
-    // before the var evaluator existed.
     let cfg = resolve_tree_config(
         &serde_json::json!({"p": {"+enabled": false}}),
         &["p".to_string()],
         "sources".to_string(),
         &mut w,
-        None,
+        Some(&vars),
     );
     assert_eq!(cfg.enabled, Some(false));
     assert!(w.is_empty(), "{w:?}");
+    // Unresolvable → warn once, stays enabled (never a silent disable).
+    let cfg = resolve_tree_config(
+        &serde_json::json!({"p": {"+enabled": "{{ var('missing') }}"}}),
+        &["p".to_string()],
+        "sources".to_string(),
+        &mut w,
+        Some(&vars),
+    );
+    assert_eq!(cfg.enabled, None);
+    assert_eq!(w.len(), 1, "{w:?}");
+}
+
+#[test]
+fn malformed_enabled_tails_warn_instead_of_disabling() {
+    // A `and`/`or` rhs that fails to parse is a syntax error in dbt — the
+    // expression is unprovable, so the node stays enabled with a warning
+    // rather than silently dropping.
+    let vars = test_vars(serde_json::json!({"x": false}), serde_json::json!({}), "p");
+    for expr in [
+        "var('x') and",
+        "var('x') and var('y'",
+        "var('x') or",
+        "var('x') not",
+    ] {
+        assert_eq!(enabled_expr(expr, &vars), None, "{expr}");
+    }
+    // `()` is a legal empty tuple — `False and ()` short-circuits to
+    // `False` in Python too.
+    assert_eq!(enabled_expr("var('x') and ()", &vars), Some(false));
+    // `is` tests: a missing var is Undefined → `is defined` is `False`,
+    // `is not defined`/`is none` are `True`; a present var flips them.
+    assert_eq!(
+        enabled_expr("var('missing') is defined", &vars),
+        Some(false)
+    );
+    assert_eq!(
+        enabled_expr("var('missing') is not defined", &vars),
+        Some(true)
+    );
+    assert_eq!(enabled_expr("var('missing') is none", &vars), Some(true));
+    assert_eq!(enabled_expr("var('x') is defined", &vars), Some(true));
+    assert_eq!(enabled_expr("var('x') is none", &vars), Some(false));
+    assert_eq!(enabled_expr("var('x') is boolean", &vars), Some(true));
+    assert_eq!(enabled_expr("var('x') is number", &vars), Some(false));
+    assert_eq!(enabled_expr("not var('x') is defined", &vars), Some(false));
+    // A rhs that can't be resolved to a value (`env_var`/`target` calls)
+    // makes the whole expression unprovable — enabled + warning, never a
+    // silent disable.
+    assert_eq!(
+        enabled_expr("var('x') and env_var('Y') == '1'", &vars),
+        None
+    );
+    assert_eq!(enabled_expr("var('x') and target.name == 'p'", &vars), None);
 }
 
 // -- Jinja branch structure --------------------------------------------------
