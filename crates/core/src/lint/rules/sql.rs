@@ -145,10 +145,14 @@ pub(super) fn select_star(
 /// `raw_code` is judged — a compiled-only model's rendered names can't be
 /// told apart from written ones — and anything the marked render can't
 /// parse is not judged (it counts on `unparsed` instead, when raw SQL
-/// exists). `information_schema` reads never reach the scan; the `ignore`
-/// parameter's globs drop additional named relations — a pattern matches
-/// when it covers the recorded name OR any trailing suffix of it, so
-/// `orders` ignores `analytics.orders` too.
+/// exists). These never count: `{{ }}` Jinja renders, CTE names,
+/// `dual`, `information_schema` at any qualification depth (parts split
+/// on `.`, including inside quotes), a file literal (`FROM
+/// 'data/x.parquet'`), and a name headed by an earlier-bound FROM alias
+/// (`FROM t, t.arr` reads `t`'s array column). The `ignore` parameter's
+/// globs drop additional named relations — a pattern matches when it
+/// covers the recorded name OR any trailing suffix of it, so `orders`
+/// ignores `analytics.orders` too.
 pub(super) fn hard_coded_references(
     dag: &Dag,
     uids: &[&String],
@@ -224,13 +228,14 @@ pub(super) fn hard_coded_references(
     }
 }
 
-/// `cartesian_join`: a JOIN arm carries no condition — `CROSS JOIN` with
-/// no constraint (MySQL lets one carry `ON` — a real condition there is a
-/// join, not a product), a conditional operator (`JOIN`/`INNER`/`LEFT`/…)
-/// with no ON/USING/NATURAL, an `ON` that can never reject a row
-/// (`ON TRUE`, `ON 1 = 1`), or a comma-separated `FROM a, b` with no
-/// `WHERE`. Lateral applies, ASOF matches and UNNEST don't count (a
-/// condition or a per-row explode, not a product).
+/// `cartesian_join`: a JOIN arm carries no condition — a conditional
+/// operator (`JOIN`/`INNER`/`LEFT`/…) with no ON/USING/NATURAL, an `ON`
+/// that can never reject a row (`ON TRUE`, `ON 1 = 1`), or a
+/// comma-separated `FROM a, b` with no `WHERE`. An explicit `CROSS JOIN`
+/// is the intentional spelling of the product and never counts. Lateral
+/// applies, ASOF matches and UNNEST don't count either (a condition or a
+/// per-row explode, not a product), and neither does a name headed by an
+/// earlier-bound alias (`FROM t, t.arr` reads `t`'s array column).
 pub(super) fn cartesian_join(
     dag: &Dag,
     uids: &[&String],
@@ -251,6 +256,32 @@ pub(super) fn cartesian_join(
         if facts.cartesian.is_empty() {
             continue;
         }
+        // Positional pairing: the raw render must see the same number of
+        // conditionless joins the facts were computed on — a macro-added
+        // arm can't misalign i↔i. When it does, the raw source's own
+        // spans give both the underline and the message's offender text:
+        // `from {{ ref('x') }} x, b` names `b` — the written join arm —
+        // where the render-substituted judgment text would show the
+        // compiled name instead. Without pairing, positions and message
+        // both keep the judged text (a file-scoped finding).
+        let anchor = sql_anchor(dag, uid);
+        let pos = anchor
+            .as_ref()
+            .and_then(|_| sql.sql_positions(dag, uid))
+            .filter(|p| p.cartesian.len() == facts.cartesian_count);
+        let offenders: Vec<String> = match (&anchor, &pos) {
+            (Some((_, raw)), Some(p)) => {
+                let mut v: Vec<String> = Vec::new();
+                for r in &p.cartesian {
+                    let s = raw[r.clone()].to_string();
+                    if !v.contains(&s) {
+                        v.push(s);
+                    }
+                }
+                v
+            }
+            _ => facts.cartesian.clone(),
+        };
         let mut f = Finding::new(
             LintRule::CartesianJoin,
             (*uid).clone(),
@@ -258,23 +289,16 @@ pub(super) fn cartesian_join(
             format!(
                 "{} joins without a join condition: {}",
                 display_name(dag, uid),
-                facts.cartesian.join(", ")
+                offenders.join(", ")
             ),
         );
-        if let Some((file, raw)) = sql_anchor(dag, uid) {
-            if let Some(pos) = sql.sql_positions(dag, uid) {
-                // Positional pairing: attach only when the raw render sees
-                // the same number of conditionless joins the facts were
-                // computed on — a macro-added arm can't misalign i↔i.
-                if pos.cartesian.len() == facts.cartesian_count {
-                    let mut spans: Vec<SpanNote> = pos
-                        .cartesian
-                        .iter()
-                        .map(|r| (r.clone(), "no join condition".to_string()))
-                        .collect();
-                    f = with_positions(f, &file, raw, &mut spans);
-                }
-            }
+        if let (Some((file, raw)), Some(p)) = (&anchor, &pos) {
+            let mut spans: Vec<SpanNote> = p
+                .cartesian
+                .iter()
+                .map(|r| (r.clone(), "no join condition".to_string()))
+                .collect();
+            f = with_positions(f, file, raw, &mut spans);
         }
         out.push(f);
     }
@@ -495,7 +519,12 @@ pub(super) fn trailing_semicolon(
 /// name twice. The resolved output list decides, so an expandable `*`/
 /// `t.*` counts its carried names while an unknown wildcard stays out
 /// (explicit names still compare). Unquoted identifiers fold case,
-/// quoted ones keep it: `A`/`a` collide, `"A"`/`a` don't.
+/// quoted ones keep it: `A`/`a` collide, `"A"`/`a` don't. Names an
+/// un-aliased expression takes from its own shape — `sum(a)` → `sum`,
+/// `CASE…` → `case`, `a::int` → `a` — collide only under Postgres and
+/// Redshift (the dialects that really assign them); everywhere else the
+/// warehouse names such outputs by position or expression text, so a
+/// repeat is never a written-name collision.
 pub(super) fn duplicate_output_columns(
     dag: &Dag,
     uids: &[&String],
@@ -685,9 +714,11 @@ pub(super) fn unused_cte(
 /// `order_by_without_limit`: the model's outermost query sorts rows
 /// nothing bounds — `ORDER BY` with no `LIMIT`/`FETCH`/`TOP` on or above
 /// its level (a `LIMIT` wrapping `… order by …` makes the sort
-/// meaningful). A table or view can't honour row order downstream, so the
-/// sort only costs; CTE-internal, subquery and window-function ORDER BYs
-/// are never the finding — only the final ordering is.
+/// meaningful). `OFFSET` alone is NOT a bound — it shifts the window,
+/// never caps the row count, so `ORDER BY … OFFSET n` still flags. A
+/// table or view can't honour row order downstream, so the sort only
+/// costs; CTE-internal, subquery and window-function ORDER BYs are never
+/// the finding — only the final ordering is.
 pub(super) fn order_by_without_limit(
     dag: &Dag,
     uids: &[&String],

@@ -1429,6 +1429,108 @@ fn unknown_column_reference_skips_date_parts_aliases_and_unnest_names() {
     }
 }
 
+// ---- the SQL rules' judged-but-clean shapes --------------------------------
+
+#[test]
+fn sql_rules_skip_non_relations_derived_names_and_statementless_models() {
+    // The false-positive classes the SQL rules decline, side by side
+    // with the violations that must still flag:
+    //  - un-aliased expressions sharing a shape-derived name (`sum`/`sum`)
+    //    collide only on Postgres-family dialects — Generic stays quiet,
+    //    an explicit `a as x, b as x` still flags;
+    //  - `CROSS JOIN` is the intentional product spelling, `t.arr` after
+    //    `t` binds is a correlated column read, `'file'` is an explicit
+    //    external read — none is a product, `from a, b` still is;
+    //  - `dual`, `information_schema` (dots inside one quoted name too),
+    //    a file literal, and `t.arr` name no relation — `raw.orders` does;
+    //  - `OFFSET` alone never bounds an `ORDER BY`;
+    //  - a `{{ config() }}`-only model parses to zero statements — judged
+    //    empty, not "unparsable".
+    let tmp = tempfile::tempdir().unwrap();
+    let root = common::write_project(
+        tmp.path(),
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            ("models/base.sql", "select 1 as id, 1 as a, 2 as b\n"),
+            (
+                "models/m_dup_exprs.sql",
+                "select id, sum(a), sum(b) from {{ ref('base') }} group by id\n",
+            ),
+            (
+                "models/m_dup_alias.sql",
+                "select a as x, b as x from {{ ref('base') }}\n",
+            ),
+            (
+                "models/m_cross.sql",
+                "select a.id as ax, b.id as bx from {{ ref('base') }} a cross join {{ ref('base') }} b\n",
+            ),
+            (
+                "models/m_comma.sql",
+                "select a.id as ax, b.id as bx from {{ ref('base') }} a, {{ ref('base') }} b\n",
+            ),
+            (
+                "models/m_corr.sql",
+                "select t.id, x from {{ ref('base') }} t, t.arr as x\n",
+            ),
+            (
+                "models/m_is.sql",
+                "select * from `proj.us.INFORMATION_SCHEMA.JOBS`\n",
+            ),
+            ("models/m_dual.sql", "select 1 from dual\n"),
+            ("models/m_file.sql", "select * from 'data/x.parquet'\n"),
+            ("models/m_real.sql", "select * from raw.orders\n"),
+            (
+                "models/m_offset.sql",
+                "select * from {{ ref('base') }} order by id offset 2\n",
+            ),
+            (
+                "models/m_config.sql",
+                "{{ config(materialized='view') }}\n",
+            ),
+            ("models/m_broken.sql", "select from where or\n"),
+        ],
+    );
+    let out = run(&[
+        "lint",
+        "--source",
+        root.to_str().unwrap(),
+        "--rules",
+        "duplicate_output_columns,cartesian_join,hard_coded_references,order_by_without_limit",
+        "--format",
+        "concise",
+    ]);
+    let stdout = stdout(&out);
+    for needle in [
+        // The real findings survive.
+        "m_dup_alias.sql",
+        "duplicate output column: x",
+        "m_comma joins without a join condition: {{ ref('base') }} b",
+        "m_real reads relation without ref()/source(): raw.orders",
+        "m_offset's final query has ORDER BY but no LIMIT",
+        // …and only truly unparsable SQL is reported as skipped.
+        "unparsable SQL): m_broken",
+    ] {
+        assert!(stdout.contains(needle), "expected {needle:?}:\n{stdout}");
+    }
+    for absent in [
+        "m_dup_exprs",
+        "m_cross",
+        "m_corr",
+        "m_is",
+        "m_dual",
+        "m_file",
+        "m_config",
+    ] {
+        assert!(
+            !stdout.contains(absent),
+            "{absent} must not appear:\n{stdout}"
+        );
+    }
+}
+
 // ---- --select: findings restricted to the selected nodes ---------------------
 
 #[test]

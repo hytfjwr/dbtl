@@ -676,6 +676,163 @@ fn marked_relations_carry_name_spans() {
     assert!(marked_relations("select from where or", SqlDialect::Generic).is_none());
 }
 
+#[test]
+fn marked_relations_skips_files_metadata_and_correlated_names() {
+    // `dual` is a row constructor; `information_schema` at ANY depth —
+    // including inside one quoted identifier's dots — is a metadata
+    // read; a `'…'`-literal factor is a file read, not a relation; and
+    // `t.arr`/`t.sub` headed by a bound FROM name reads that relation's
+    // column. None land in `names`; the written `raw.orders` still does.
+    for sql in [
+        "select 1 from dual",
+        "select * from db.information_schema.columns",
+        "select * from `proj.us.INFORMATION_SCHEMA.JOBS`",
+        "select * from 'data/x.parquet'",
+    ] {
+        assert!(
+            marked_relations(sql, SqlDialect::Generic)
+                .unwrap()
+                .names
+                .is_empty(),
+            "{sql} names no relation"
+        );
+    }
+    // Correlation at the same FROM level — `t` binds first, `t.arr`
+    // reads its array column.
+    let rel = marked_relations(
+        "select t.id, x from raw.orders t, t.arr as x",
+        SqlDialect::Generic,
+    )
+    .unwrap();
+    assert_eq!(rel.names, vec!["raw.orders".to_string()]);
+    // …and inside a nested query — the subquery's `t.sub` correlates
+    // the outer `t`.
+    let rel = marked_relations(
+        "select * from raw.orders t where exists (select 1 from t.sub)",
+        SqlDialect::Generic,
+    )
+    .unwrap();
+    assert_eq!(rel.names, vec!["raw.orders".to_string()]);
+}
+
+#[test]
+fn sql_facts_skips_cross_correlated_and_file_factors() {
+    // The judged side sees the same exclusions the marked scan does: an
+    // explicit `CROSS JOIN`, a factor headed by a bound name (`t.arr`),
+    // a `'file'` literal, and the one-row `dual` are never products —
+    // `b.u` and the qualified `sys.dual` still are.
+    let dag = Dag::build(&manifest(
+        vec![
+            raw_model("model.t.cross", "select * from a.t cross join b.u", &[]),
+            raw_model("model.t.corr", "select t.id from a.t t, t.arr", &[]),
+            raw_model("model.t.file", "select * from a.t, 'f.csv'", &[]),
+            raw_model("model.t.dual", "select * from a.t, dual", &[]),
+            raw_model("model.t.comma", "select * from a.t, b.u", &[]),
+            raw_model("model.t.qdual", "select * from a.t, sys.dual", &[]),
+        ],
+        &[],
+    ));
+    let r = resolver();
+    for uid in [
+        "model.t.cross",
+        "model.t.corr",
+        "model.t.file",
+        "model.t.dual",
+    ] {
+        let f = r.sql_facts(&dag, uid).unwrap();
+        assert!(
+            f.cartesian.is_empty() && f.cartesian_count == 0,
+            "{uid} carries no product: {:?}",
+            f.cartesian
+        );
+    }
+    let f = r.sql_facts(&dag, "model.t.comma").unwrap();
+    assert_eq!(f.cartesian_count, 1);
+    assert_eq!(f.cartesian, vec!["b.u".to_string()]);
+    // A qualified `sys.dual` names a real relation — still a product.
+    let f = r.sql_facts(&dag, "model.t.qdual").unwrap();
+    assert_eq!(f.cartesian_count, 1);
+    assert_eq!(f.cartesian, vec!["sys.dual".to_string()]);
+}
+
+#[test]
+fn derived_output_names_dup_only_on_the_postgres_family() {
+    // `sum(a)`/`sum(b)` → `sum`/`sum`, `a::int`/`a::text` → `a`/`a`:
+    // Postgres + Redshift really assign those names (a repeat fails on
+    // the warehouse); every other dialect invents a name no second
+    // expression shares. Aliased repeats flag under either.
+    let dag = Dag::build(&manifest(
+        vec![raw_model(
+            "model.t.m",
+            "select sum(a), sum(b), a::int, a::text, x as c, y as c from t",
+            &[],
+        )],
+        &[],
+    ));
+    let generic = resolver();
+    assert_eq!(
+        generic
+            .sql_facts(&dag, "model.t.m")
+            .unwrap()
+            .duplicate_outputs,
+        vec![("c".to_string(), 2)],
+        "only the written alias collides under Generic"
+    );
+    for dialect in [SqlDialect::Postgres, SqlDialect::Redshift] {
+        let r = SqlParseResolver::new(None, dialect);
+        assert_eq!(
+            r.sql_facts(&dag, "model.t.m").unwrap().duplicate_outputs,
+            vec![
+                ("sum".to_string(), 2),
+                ("a".to_string(), 2),
+                ("c".to_string(), 2),
+            ],
+            "{dialect:?}: the assigned names collide too"
+        );
+    }
+}
+
+#[test]
+fn statementless_renders_analyze_to_empty_facts() {
+    // A render producing no statements — comments only, or an
+    // output-less `{{ config() }}` — is parsed-and-empty, not
+    // unparsable: `sql_facts` returns Some with nothing inside, and the
+    // model never counts as a fallback.
+    let dag = Dag::build(&manifest(
+        vec![
+            raw_model("model.t.cmt", "-- just a comment\n", &[]),
+            raw_model("model.t.cfg", "{{ config(materialized='view') }}\n", &[]),
+            raw_model("model.t.bad", "select from where or", &[]),
+        ],
+        &[],
+    ));
+    let r = resolver();
+    for uid in ["model.t.cmt", "model.t.cfg"] {
+        let f = r
+            .sql_facts(&dag, uid)
+            .unwrap_or_else(|| panic!("{uid} is judged, not unparsable"));
+        assert!(
+            f.cartesian.is_empty()
+                && f.duplicate_outputs.is_empty()
+                && f.unused_ctes.is_empty()
+                && !f.unbounded_wildcard
+                && !f.unlimited_order_by,
+            "{uid} is judged empty"
+        );
+        assert!(!r.is_fallback(uid), "{uid} never fell back");
+    }
+    assert!(
+        r.sql_facts(&dag, "model.t.bad").is_none(),
+        "real SQL that won't parse still yields None"
+    );
+    // …and the column path marks it a name-match fallback, where the
+    // statementless models stayed analyzed-and-empty.
+    let _ = r.columns(&dag, "model.t.bad");
+    assert!(r.is_fallback("model.t.bad"));
+    let _ = r.columns(&dag, "model.t.cmt");
+    assert!(!r.is_fallback("model.t.cmt"));
+}
+
 // -- dialect ---------------------------------------------------------------
 
 #[test]
