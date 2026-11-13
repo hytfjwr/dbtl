@@ -1523,3 +1523,66 @@ fn jinja_branches_fabricate_no_lint_findings() {
         );
     }
 }
+
+/// End to end: `{% set %}`/`{% macro %}`/`{% call %}` bodies, the
+/// loop-trailing-separator idiom, and `{% if %}`/`{% else %}` splits
+/// outside the select list — the models parse instead of degrading,
+/// and no fact is formed by combining mutually exclusive arms.
+#[test]
+fn jinja_blocks_loops_and_clause_branches_parse_cleanly() {
+    let dag = load_dag_from_source(BRANCH_PROJECT).expect("project loads");
+    let res = SqlParseResolver::for_dag(None, &dag);
+    for uid in [
+        "model.branchproj.tpl_blocks",
+        "model.branchproj.loop_union",
+        "model.branchproj.where_branch",
+        "model.branchproj.dup_alias",
+        "model.branchproj.from_kw",
+    ] {
+        eprintln!(
+            "{uid}: raw={:?} facts={:?} fallback={}",
+            dag.raw_code(uid).map(|r| r.len()),
+            res.sql_facts(&dag, uid).is_some(),
+            res.is_fallback(uid)
+        );
+        assert!(
+            res.sql_facts(&dag, uid).is_some(),
+            "{uid} parses — template bodies, dangling separators, and \
+             exclusive arms can't make it unparsable"
+        );
+    }
+    let findings =
+        run_rules(LintInput::new(&dag, &LintConfig::default()).with_sql(Some(&res))).findings;
+    let on = |rule: LintRule, uid: &str| {
+        findings
+            .iter()
+            .filter(|f| f.rule == rule && f.node_uid == uid)
+            .count()
+    };
+    // One `order_total` per arm is one column, not a duplicate.
+    assert_eq!(
+        on(
+            LintRule::DuplicateOutputColumns,
+            "model.branchproj.dup_alias"
+        ),
+        0
+    );
+    // The `{% else %}from …` union emits a branch comma, not a written
+    // comma join — and `from` never poses as a relation.
+    assert_eq!(on(LintRule::CartesianJoin, "model.branchproj.from_kw"), 0);
+    assert_eq!(
+        on(LintRule::HardCodedReferences, "model.branchproj.from_kw"),
+        0
+    );
+    // Both exclusive `source()` alternatives stay graph parents.
+    let mut parents = dag.direct_parents("model.branchproj.from_kw").to_vec();
+    parents.sort();
+    assert_eq!(
+        parents,
+        vec![
+            "source.branchproj.prod_src.orders".to_string(),
+            "source.branchproj.stg_src.orders".to_string()
+        ],
+        "both branch alternatives keep their source edges"
+    );
+}
