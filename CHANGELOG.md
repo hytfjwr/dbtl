@@ -29,6 +29,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A model whose SQL nests deeper than a small stack can walk — tens of
+  thousands of `AND`/`||` terms or `UNION ALL` arms — no longer aborts
+  `dbtl lint` (and CLL) with a stack overflow: a lexical depth bound
+  estimates the parsed tree's depth before it is built, and over-limit
+  models degrade to the unparsed/name-match path like any other
+  unparsable SQL.
 - `dbtl --diff <base> --select 'state:modified'` resolves the selector
   against the loaded diff: the `--diff` baseline now loads before
   `--select` is resolved, so `state:` atoms see real change state, and a

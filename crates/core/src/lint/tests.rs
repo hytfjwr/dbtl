@@ -7256,6 +7256,89 @@ fn unparsed_counts_models_whose_sql_wont_parse_once() {
     );
 }
 
+// ---- pathological SQL depth ------------------------------------------------
+//
+// A flat infix/set-op chain (`x and …`, `x || …`, `union all …`) builds
+// a left-deep AST spine the parser writes iteratively but no resolver,
+// scan, or drop walk can recurse on the smallest stacks the binary
+// runs on — the model must degrade to `unparsed` instead of aborting.
+// Each test lints it on a 1 MiB thread: the run returning at all is
+// what the bound buys.
+
+/// Lint `sql` (one model named `deep`) with the seven parse-backed SQL
+/// rules on a 1 MiB-stack thread, returning the outcome.
+fn deep_sql_linted(sql: &str) -> LintOutcome {
+    let m = manifest(
+        vec![model_sql("deep", sql), model_sql("ok", "select a from t")],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn_scoped(s, || {
+                let res = sql_resolver(None);
+                let cfg = cfg_only(&[
+                    LintRule::SelectStar,
+                    LintRule::HardCodedReferences,
+                    LintRule::CartesianJoin,
+                    LintRule::UnknownColumnReference,
+                    LintRule::DuplicateOutputColumns,
+                    LintRule::UnusedCte,
+                    LintRule::OrderByWithoutLimit,
+                ]);
+                lint_outcome(&dag, &cfg, Some(&res), None)
+            })
+            .expect("spawn the lint thread")
+            .join()
+            .expect("lint on a 1 MiB stack must finish, not abort")
+    })
+}
+
+/// The deep model lands on `unparsed`; the plain one beside it still
+/// analyzes — the bound degrades per model.
+fn assert_deep_unparsed(out: &LintOutcome) {
+    assert!(
+        out.unparsed.iter().any(|u| u == "model.p.deep"),
+        "the over-depth model must read as unparsable"
+    );
+    assert!(
+        !out.unparsed.iter().any(|u| u == "model.p.ok"),
+        "an ordinary model still parses on the same run"
+    );
+}
+
+#[test]
+fn deep_and_chain_degrades_to_unparsed_on_a_small_stack() {
+    // ~20k `and` terms — the AND spine from the original report.
+    let sql = format!(
+        "select a from t where {}",
+        (0..20_000)
+            .map(|i| format!("a = {i}"))
+            .collect::<Vec<_>>()
+            .join(" and ")
+    );
+    assert_deep_unparsed(&deep_sql_linted(&sql));
+}
+
+#[test]
+fn deep_concat_chain_degrades_to_unparsed_on_a_small_stack() {
+    // ~20k `||` terms — the concat spine.
+    let sql = format!("select {}", vec!["a"; 20_000].join(" || 'x' || "));
+    assert_deep_unparsed(&deep_sql_linted(&sql));
+}
+
+#[test]
+fn deep_union_chain_degrades_to_unparsed_on_a_small_stack() {
+    // ~12k `union all` arms — the set-operation spine.
+    let sql = (0..12_000)
+        .map(|i| format!("select {i} as a"))
+        .collect::<Vec<_>>()
+        .join(" union all ");
+    assert_deep_unparsed(&deep_sql_linted(&sql));
+}
+
 #[test]
 fn forbidden_patterns_never_adds_to_unparsed() {
     // A raw-text rule: even against unparsable SQL it judges the text it
