@@ -879,6 +879,7 @@ impl SqlParseResolver {
                                 bare: true,
                                 sources: BTreeSet::from([(uid.clone(), c.clone())]),
                                 synthetic: false,
+                                derived: false,
                             });
                         }
                     }
@@ -925,6 +926,7 @@ impl SqlParseResolver {
                     // An explicit rename names the output — no longer a
                     // positional placeholder.
                     o.synthetic = false;
+                    o.derived = false;
                 }
             }
         }

@@ -17,6 +17,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `deprecation_date`, and `constraints`. The `dbtl docs` node pages carry
   the same four fields as conditional heading bullets.
 
+### Changed
+
+- `cartesian_join` no longer flags an explicit `CROSS JOIN` — the
+  intentional spelling of a Cartesian product. Only conditionless joins
+  report now: a bare `JOIN`, a comma-separated `FROM a, b` with no
+  `WHERE`, or an `ON` that can never reject a row (`ON TRUE`, `ON 1=1`).
+
 ### Fixed
 
 - `dbtl --diff <base> --select 'state:modified'` resolves the selector
@@ -72,6 +79,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Source mode also accepts the `config({...})` positional-dict spelling of
   `config()` kwargs (same ordered last-wins/merge semantics) and the
   deprecated `data-paths` alias for `seed-paths` (declaring both warns).
+- `duplicate_output_columns` no longer flags colliding names an un-aliased
+  expression merely derives (`sum(a), sum(b)` → `sum`/`sum`, `count(*)`,
+  `CASE`, `a::int` → `a`): only Postgres and Redshift actually assign such
+  names, so the repeats count solely under those dialects while written
+  aliases and identifier columns still flag everywhere.
+- `cartesian_join` and `hard_coded_references` no longer read
+  `FROM t, t.arr`-style correlated array factors as a second relation or a
+  written dependency, and `hard_coded_references` now also excuses `dual`,
+  `information_schema` at any qualification depth (including dots inside
+  one quoted name), and `FROM 'data/x.parquet'`-style file literals.
+  `cartesian_join` findings quote the raw SQL join arm when source
+  positions pair, and a model whose render produces no statements —
+  whitespace, comments, or an output-less `{{ config() }}` — is judged
+  empty instead of counted among the unparsable.
 
 ## [0.6.4] - 2026-11-13
 

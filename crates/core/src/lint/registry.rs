@@ -543,7 +543,12 @@ pub static REGISTRY: &[RuleInfo] = &[
                     dbt can't see — it misses the DAG (no ref edge), builds \
                     out of order, and reads the wrong table when the schema \
                     or target changes. ref()/source() is how a model \
-                    declares what it needs.",
+                    declares what it needs. Not counted: names Jinja \
+                    renders, CTE names, `dual`, `information_schema` reads \
+                    at any qualification depth, file literals \
+                    (`from 'data/x.parquet'`), and names headed by an \
+                    earlier-bound FROM alias (`from t, t.arr` reads `t`'s \
+                    array column, not a relation).",
         example: "stg_events selects from prod.raw_events instead of \
                   source('prod', 'raw_events'). Fix: declare the relation \
                   with ref()/source() so it joins the lineage and gets \
@@ -566,12 +571,14 @@ pub static REGISTRY: &[RuleInfo] = &[
         rationale: "A conditionless join multiplies every row of one side by \
                     every row of the other — usually a missing ON clause, and \
                     always a row explosion nobody asked for. `cross join` is \
-                    the same shape spelled intentionally and is just as \
-                    dangerous in a model.",
+                    the intentional spelling, so the rule leaves it alone — \
+                    the flag is for the join that FORGOT its condition: a \
+                    comma-separated `from a, b` with no WHERE, or an `ON` \
+                    that can never reject a row (`on true`, `on 1 = 1`).",
         example: "fct_events writes `join dim_users` with no ON. Fix: add \
-                  the join predicate (`on e.user_id = u.id`) — or use \
-                  `cross join` only when the product is truly intended.",
-        help: "add an ON or USING join condition",
+                  the join predicate (`on e.user_id = u.id`) — or spell it \
+                  `cross join` when the product really is intended.",
+        help: "add an ON or USING join condition (or spell it `cross join`)",
         params: &[],
         requires: Requires::Sql,
     },
@@ -737,7 +744,12 @@ pub static REGISTRY: &[RuleInfo] = &[
         rationale: "Two outputs sharing one name leave readers no way to say \
                     which column they mean — downstream refs resolve to one of \
                     them silently (or the warehouse rejects the model), and \
-                    column order becomes the only thing telling them apart.",
+                    column order becomes the only thing telling them apart. \
+                    Names an un-aliased expression takes from its own shape \
+                    (`sum(a)` → `sum`) collide only under Postgres and \
+                    Redshift, which really assign them — every other \
+                    dialect names such outputs by position or expression \
+                    text, so a repeat is never a written-name collision.",
         example: "fct_orders selects `unit_price, unit_price` — the second was \
                   meant to be discounted_price. Fix: alias one of them so every \
                   output name is unique.",
@@ -771,7 +783,9 @@ pub static REGISTRY: &[RuleInfo] = &[
         rationale: "A table or view doesn't promise row order — the outer \
                     ORDER BY's cost is paid every build while no reader can \
                     rely on the result. The consumer that wants sorted rows \
-                    should sort them at read time.",
+                    should sort them at read time. (OFFSET alone isn't a \
+                    bound — it shifts the window but never caps the row \
+                    count, so `order by … offset n` still flags.)",
         example: "fct_orders ends `select * from items order by created_at` \
                   with no limit. Fix: drop the ORDER BY and let the query \
                   reading the model sort instead.",
