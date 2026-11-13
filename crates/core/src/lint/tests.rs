@@ -91,6 +91,24 @@ fn test_on(target: &str, kind: &str, column: &str) -> (String, RawNode) {
     )
 }
 
+/// A versioned-model literal — `model.p.<name>.<vseg>`, the uid shape a
+/// real `versions:`-ed model compiles to (several nodes sharing one
+/// declared `name`). `version`/`latest_version` carry the declared values
+/// like the manifest does.
+fn versioned_model(name: &str, vseg: &str, path: &str) -> (String, RawNode) {
+    (
+        format!("model.p.{name}.{vseg}"),
+        RawNode {
+            name: name.into(),
+            resource_type: "model".into(),
+            path: Some(path.into()),
+            version: Some(vseg.trim_start_matches(['v', 'V']).into()),
+            latest_version: Some("2".into()),
+            ..Default::default()
+        },
+    )
+}
+
 /// The uids flagged by `rule` in `findings`, sorted for comparison.
 fn flagged(findings: &[Finding], rule: LintRule) -> Vec<&str> {
     let mut uids: Vec<&str> = findings
@@ -259,6 +277,79 @@ fn source_fanout_flags_source_with_two_model_children() {
 }
 
 #[test]
+fn source_fanout_folds_model_versions_into_one_consumer() {
+    // raw feeds fct_orders.v1+v2+vbeta — three DAG children but ONE model
+    // family: a naive count trips the default threshold (2) on versions
+    // alone, which is exactly the version-inflation the fold prevents.
+    let versioned = || {
+        vec![
+            versioned_model("fct_orders", "v1", "marts/fct_orders_v1.sql"),
+            versioned_model("fct_orders", "v2", "marts/fct_orders_v2.sql"),
+            versioned_model("fct_orders", "vbeta", "marts/fct_orders_vbeta.sql"),
+        ]
+    };
+    let m = manifest(
+        versioned(),
+        vec![source("raw.orders")],
+        &[
+            ("source.p.raw.orders", "model.p.fct_orders.v1"),
+            ("source.p.raw.orders", "model.p.fct_orders.v2"),
+            ("source.p.raw.orders", "model.p.fct_orders.vbeta"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert!(
+        flagged(&f, LintRule::SourceFanout).is_empty(),
+        "3 versions of one model are ONE consumer — no fanout finding"
+    );
+
+    // Control: a second DISTINCT consumer crosses the threshold — and the
+    // message counts families (2, not 4), naming the multi-version family
+    // by its bare model name while keeping every member uid in `related`.
+    let mut nodes = versioned();
+    nodes.push(model("stg_other", "staging/stg_other.sql"));
+    let m2 = manifest(
+        nodes,
+        vec![source("raw.orders")],
+        &[
+            ("source.p.raw.orders", "model.p.fct_orders.v1"),
+            ("source.p.raw.orders", "model.p.fct_orders.v2"),
+            ("source.p.raw.orders", "model.p.fct_orders.vbeta"),
+            ("source.p.raw.orders", "model.p.stg_other"),
+        ],
+    );
+    let f2 = findings_of(&m2, &LintConfig::default());
+    let hits: Vec<&Finding> = f2
+        .iter()
+        .filter(|f| f.rule == LintRule::SourceFanout)
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "findings: {:?}",
+        flagged(&f2, LintRule::SourceFanout)
+    );
+    let hit = hits[0];
+    assert!(
+        hit.message.contains("directly feeds 2 models"),
+        "family count, not node count: {}",
+        hit.message
+    );
+    assert!(
+        hit.message.contains("fct_orders,") || hit.message.contains("fct_orders "),
+        "the folded family names bare: {}",
+        hit.message
+    );
+    assert!(!hit.message.contains("fct_orders.v"), "{:?}", hit.message);
+    assert!(hit.message.contains("stg_other"), "{}", hit.message);
+    assert_eq!(
+        hit.related.len(),
+        4,
+        "related keeps the version-specific member uids"
+    );
+}
+
+#[test]
 fn model_fanout_flags_leaf_children_at_threshold() {
     // hub feeds 2 leaf models; default threshold is 5 → no finding. With a
     // config of 2 the same graph flags hub. int_* keeps the names legal.
@@ -327,6 +418,62 @@ fn model_fanout_skips_leaves_only_packages_consume() {
             parents: 0,
             children: 1
         })
+    );
+}
+
+#[test]
+fn model_fanout_folds_versioned_leaves_into_one_consumer() {
+    // int_hub's only leaf children are fct_x.v1 + fct_x.v2 — one leaf
+    // FAMILY feeding one logical consumer. At threshold 2 the per-node
+    // count flags, the fold must not; a second distinct leaf does flag.
+    let m = manifest(
+        vec![
+            model("int_hub", "intermediate/int_hub.sql"),
+            versioned_model("fct_x", "v1", "marts/fct_x_v1.sql"),
+            versioned_model("fct_x", "v2", "marts/fct_x_v2.sql"),
+        ],
+        vec![],
+        &[
+            ("model.p.int_hub", "model.p.fct_x.v1"),
+            ("model.p.int_hub", "model.p.fct_x.v2"),
+        ],
+    );
+    let cfg = config_from("lint:\n  model_fanout_threshold: 2\n");
+    let f = findings_of(&m, &cfg);
+    assert!(
+        flagged(&f, LintRule::ModelFanout).is_empty(),
+        "two versions of one leaf = one consumer — no fanout finding"
+    );
+
+    let m2 = manifest(
+        vec![
+            model("int_hub", "intermediate/int_hub.sql"),
+            versioned_model("fct_x", "v1", "marts/fct_x_v1.sql"),
+            versioned_model("fct_x", "v2", "marts/fct_x_v2.sql"),
+            model("fct_other", "marts/fct_other.sql"),
+        ],
+        vec![],
+        &[
+            ("model.p.int_hub", "model.p.fct_x.v1"),
+            ("model.p.int_hub", "model.p.fct_x.v2"),
+            ("model.p.int_hub", "model.p.fct_other"),
+        ],
+    );
+    let f2 = findings_of(&m2, &cfg);
+    let hits: Vec<&Finding> = f2
+        .iter()
+        .filter(|f| f.rule == LintRule::ModelFanout)
+        .collect();
+    assert_eq!(hits.len(), 1);
+    assert!(
+        hits[0].message.contains("directly feeds 2 leaf models"),
+        "family count, not node count: {}",
+        hits[0].message
+    );
+    assert!(
+        hits[0].message.contains("fct_x") && !hits[0].message.contains("fct_x.v"),
+        "folded family named bare once: {}",
+        hits[0].message
     );
 }
 
@@ -2159,6 +2306,70 @@ fn too_many_joins_flags_at_the_configured_threshold() {
     // A higher threshold un-flags the same graph.
     let cfg = config_from("lint:\n  rules:\n    too_many_joins: {threshold: 8}\n");
     assert!(flagged(&findings_of(&m, &cfg), LintRule::TooManyJoins).is_empty());
+}
+
+#[test]
+fn too_many_joins_folds_versioned_parents_into_one_resource() {
+    // fct_join reads dim.v1 + dim.v2 + int_a: three parent nodes, two
+    // data-resource FAMILIES — joining two spellings of `dim` is still
+    // reading `dim`. At threshold 3 the naive count flags, the fold must not.
+    let m = manifest(
+        vec![
+            model("fct_join", "marts/fct_join.sql"),
+            versioned_model("dim", "v1", "marts/dim_v1.sql"),
+            versioned_model("dim", "v2", "marts/dim_v2.sql"),
+            model("int_a", "intermediate/int_a.sql"),
+        ],
+        vec![],
+        &[
+            ("model.p.dim.v1", "model.p.fct_join"),
+            ("model.p.dim.v2", "model.p.fct_join"),
+            ("model.p.int_a", "model.p.fct_join"),
+        ],
+    );
+    let cfg = config_from("lint:\n  rules:\n    too_many_joins: {threshold: 3}\n");
+    let f = findings_of(&m, &cfg);
+    assert!(
+        flagged(&f, LintRule::TooManyJoins).is_empty(),
+        "v1+v2 of one model count once — 2 families < 3"
+    );
+
+    // Control: a third DISTINCT parent crosses it — the message counts 3
+    // families and names the folded `dim` family bare once.
+    let m2 = manifest(
+        vec![
+            model("fct_join", "marts/fct_join.sql"),
+            versioned_model("dim", "v1", "marts/dim_v1.sql"),
+            versioned_model("dim", "v2", "marts/dim_v2.sql"),
+            model("int_a", "intermediate/int_a.sql"),
+            model("int_b", "intermediate/int_b.sql"),
+        ],
+        vec![],
+        &[
+            ("model.p.dim.v1", "model.p.fct_join"),
+            ("model.p.dim.v2", "model.p.fct_join"),
+            ("model.p.int_a", "model.p.fct_join"),
+            ("model.p.int_b", "model.p.fct_join"),
+        ],
+    );
+    let f2 = findings_of(&m2, &cfg);
+    let hits: Vec<&Finding> = f2
+        .iter()
+        .filter(|f| f.rule == LintRule::TooManyJoins)
+        .collect();
+    assert_eq!(hits.len(), 1);
+    assert!(
+        hits[0]
+            .message
+            .contains("directly depends on 3 data resources"),
+        "family count, not node count: {}",
+        hits[0].message
+    );
+    assert!(
+        hits[0].message.contains("dim,") && !hits[0].message.contains("dim.v"),
+        "folded family named bare once: {}",
+        hits[0].message
+    );
 }
 
 // ---- chained_views -------------------------------------------------------------
@@ -5933,6 +6144,175 @@ fn unused_cte_counts_a_name_a_macro_argument_carries() {
         flagged(&out.findings, LintRule::UnusedCte),
         vec!["model.p.other_name", "model.p.plain_unread"],
         "a CTE name a macro-call string literal carries counts as read — other literals don't"
+    );
+}
+
+// ---- Jinja rendering inside literals, identifiers and item lists ------
+// The shapes that used to go `unparsable` (or flag artifacts of the
+// `NULL` placeholder render): a `{{ }}` inside a string literal, tags
+// glued into identifier text, `{{ }}` in relation positions, and
+// select-list macro lines.
+
+#[test]
+fn jinja_inside_literals_and_identifiers_still_parses() {
+    // Every one of these shapes used to fail the parse. They now render
+    // to parseable SQL, so nothing lands on `unparsed` — and none of the
+    // generated placeholders produces a finding (`rel_frag`'s
+    // `__dbtl_…_raw.tbl` is no written relation, `macro_cols`'s
+    // `, __dbtl_…` item is no comma product).
+    let m = manifest(
+        vec![
+            model_sql(
+                "lit",
+                "select id, '{{ var('x', 'a') }}' as tag\nfrom {{ ref('base') }}",
+            ),
+            model_sql(
+                "cast_lit",
+                "select cast('{{ var('last_run') }}' as timestamp) as t\nfrom {{ ref('base') }}",
+            ),
+            model_sql(
+                "glued",
+                "select {{ c }}_sum as s, total_{{ c }} as t\nfrom {{ ref('base') }}",
+            ),
+            model_sql("rel_frag", "select id\nfrom {{ var('s') }}_raw.tbl"),
+            model_sql(
+                "macro_cols",
+                "select o.id as other\n{{ select_cols('o') }}\nfrom {{ ref('base') }} o",
+            ),
+            // An apostrophe inside a `{# #}` comment is comment text —
+            // the comment still closes at `#}` and the model parses.
+            model_sql(
+                "cmt",
+                "select a {# don't run this #} , b\nfrom {{ ref('base') }}",
+            ),
+            // A subquery's `select`/`from` stay inside the parens — the
+            // trailing `{{ }}` is a new select item, not a `NULL` alias.
+            model_sql(
+                "subq",
+                "select a, (select y from {{ var('t') }}) {{ m() }}\nfrom {{ ref('base') }}",
+            ),
+            // `{{ ref('events') }}_2024` — a glued ref renders a marked
+            // generated name: parses AND reads no same-named relation.
+            model_sql("ref_glued", "select id\nfrom {{ ref('events') }}_2024"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[
+        LintRule::HardCodedReferences,
+        LintRule::CartesianJoin,
+        LintRule::DuplicateOutputColumns,
+    ]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert!(
+        out.unparsed.is_empty(),
+        "every jinja-heavy shape reaches the rules: {:?}",
+        out.unparsed
+    );
+    assert!(
+        out.findings.is_empty(),
+        "no generated placeholder may produce a finding: {:?}",
+        out.findings
+    );
+}
+
+#[test]
+fn jinja_placeholders_never_fold_into_a_duplicate_column() {
+    // `select {{ a() }}, {{ b() }}` used to render `NULL, NULL` — a fake
+    // `duplicate output column: null`. Each tag emits a unique generated
+    // identifier, so the items stay distinct; a real duplicate still
+    // flags.
+    let m = manifest(
+        vec![
+            model_sql(
+                "two_vars",
+                "select {{ a() }}, {{ b() }}\nfrom {{ ref('base') }}",
+            ),
+            model_sql("real_dup", "select x as a, y as a\nfrom {{ ref('base') }}"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::DuplicateOutputColumns]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert!(
+        out.unparsed.is_empty(),
+        "the placeholder items parse: {:?}",
+        out.unparsed
+    );
+    assert_eq!(
+        flagged(&out.findings, LintRule::DuplicateOutputColumns),
+        vec!["model.p.real_dup"],
+        "generated names never collide — only the written duplicate flags"
+    );
+}
+
+#[test]
+fn a_ref_named_like_a_cte_does_not_read_it() {
+    // `{{ ref('stg_x') }}` renders `"stg_x"` — byte-identical to the
+    // in-file CTE it isn't — but the rendered span is generated, so it
+    // isn't a read and `stg_x` still flags unread. A WRITTEN `from
+    // stg_x` does read the CTE.
+    let m = manifest(
+        vec![
+            model_sql(
+                "via_ref",
+                "with stg_x as (select 1 as id)\nselect o.id\nfrom {{ ref('stg_x') }} o",
+            ),
+            model_sql(
+                "written",
+                "with stg_x as (select 1 as id)\nselect stg_x.id\nfrom stg_x",
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::UnusedCte]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::UnusedCte),
+        vec!["model.p.via_ref"],
+        "the generated ref() name isn't a read of the same-named CTE"
+    );
+    let f = finding_on(&out.findings, LintRule::UnusedCte, "model.p.via_ref");
+    assert!(
+        f.message.ends_with(": stg_x"),
+        "the unread CTE is named: {}",
+        f.message
+    );
+}
+
+#[test]
+fn jinja_generated_columns_never_report_as_unknown() {
+    // A `{{ }}` expression against a contract-known parent renders a
+    // generated identifier — the unknown-column rule must not flag the
+    // marker name. A real missing column still flags.
+    let m = manifest(
+        vec![
+            model_sql_cols("stg", "select 1", &[("id", None), ("amount", None)], true),
+            model_sql("gen_col", "select id, {{ metric() }} from stg"),
+            model_sql("typo", "select id, nope from stg"),
+        ],
+        vec![],
+        &[
+            ("model.p.stg", "model.p.gen_col"),
+            ("model.p.stg", "model.p.typo"),
+        ],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::UnknownColumnReference]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::UnknownColumnReference),
+        vec!["model.p.typo"],
+        "the generated `__dbtl_` name is no unknown column — `nope` is"
     );
 }
 

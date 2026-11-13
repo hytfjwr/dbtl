@@ -237,16 +237,23 @@ impl App {
         let stats = self.compute_stats_view();
         // name→uid for the stats-name lists; uid-sorted insertion keeps the
         // winner deterministic when `--include-packages` carries same-named
-        // models (`HashMap` iteration order is randomized).
-        let mut name_pairs: Vec<(&str, &str)> = self
+        // models (`HashMap` iteration order is randomized). Keys are the
+        // `list_name` spelling — the stats lists name their rows the same
+        // way, so a versioned model's `fct_orders.v1` resolves to ITS uid.
+        let mut name_pairs: Vec<(&str, String)> = self
             .dag
             .nodes()
             .values()
             .filter(|n| n.resource_type == "model")
-            .map(|n| (n.unique_id.as_str(), n.name.as_str()))
+            .map(|n| {
+                (
+                    n.unique_id.as_str(),
+                    crate::list_name(&n.unique_id, &n.name),
+                )
+            })
             .collect();
         name_pairs.sort();
-        let name_to_uid: HashMap<&str, &str> = name_pairs
+        let name_to_uid: HashMap<String, &str> = name_pairs
             .into_iter()
             .map(|(uid, name)| (name, uid))
             .collect();
@@ -473,7 +480,7 @@ impl App {
             item: HomeItem::Model {
                 uid: uid.to_string(),
             },
-            label: n.name.clone(),
+            label: crate::list_name(uid, &n.name),
             detail: detail.to_string(),
             tone,
         })
@@ -490,7 +497,7 @@ impl App {
     fn attention_rows(
         &self,
         stats: &crate::StatsView,
-        name_to_uid: &HashMap<&str, &str>,
+        name_to_uid: &HashMap<String, &str>,
     ) -> (Vec<HomeRow>, Option<usize>) {
         let mut rows: Vec<(u8, HomeRow)> = Vec::new();
         let mut seen: Vec<&str> = Vec::new();
@@ -504,18 +511,22 @@ impl App {
         };
         // 0 — failed last run (run_results.json present); name-sorted.
         if let Some(rr) = self.run_results() {
-            let mut fails: Vec<(&str, &str, &RunStatus)> = self
+            let mut fails: Vec<(String, &str, &RunStatus)> = self
                 .dag
                 .nodes()
                 .values()
                 .filter(|n| n.resource_type == "model")
                 .filter_map(|n| {
-                    rr.status(&n.unique_id)
-                        .filter(|s| s.is_failure())
-                        .map(|s| (n.name.as_str(), n.unique_id.as_str(), s))
+                    rr.status(&n.unique_id).filter(|s| s.is_failure()).map(|s| {
+                        (
+                            crate::list_name(&n.unique_id, &n.name),
+                            n.unique_id.as_str(),
+                            s,
+                        )
+                    })
                 })
                 .collect();
-            fails.sort_by(|a, b| a.0.cmp(b.0).then(a.1.cmp(b.1)));
+            fails.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(b.1)));
             for (name, uid, status) in fails {
                 seen.push(uid);
                 let status = match status {
@@ -525,14 +536,14 @@ impl App {
                 };
                 rows.push((
                     0,
-                    model_row(uid, name, format!("run {status}"), HomeTone::Bad),
+                    model_row(uid, &name, format!("run {status}"), HomeTone::Bad),
                 ));
             }
         }
         // 1 — models with no tests, most-depended-on first (the second
         // class): `coverage_gap` is the same predicate the Coverage lens
         // and the stats gauge read. Ties break on the name.
-        let mut untested: Vec<(&str, &str, usize)> = self
+        let mut untested: Vec<(String, &str, usize)> = self
             .dag
             .nodes()
             .values()
@@ -543,20 +554,20 @@ impl App {
             })
             .map(|n| {
                 (
-                    n.name.as_str(),
+                    crate::list_name(&n.unique_id, &n.name),
                     n.unique_id.as_str(),
                     self.dag.downstream(&n.unique_id).len(),
                 )
             })
             .collect();
-        untested.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(b.0)).then(a.1.cmp(b.1)));
+        untested.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)).then(a.1.cmp(b.1)));
         for (name, uid, down) in untested {
             seen.push(uid);
             rows.push((
                 1,
                 model_row(
                     uid,
-                    name,
+                    &name,
                     format!("untested ({down} downstream)"),
                     HomeTone::Warn,
                 ),
@@ -663,7 +674,10 @@ impl App {
         } else {
             base.models
                 .iter()
-                .filter(|m| q.is_empty() || !match_indices(&m.name, q).is_empty())
+                .filter(|m| {
+                    q.is_empty()
+                        || !match_indices(&crate::list_name(&m.unique_id, &m.name), q).is_empty()
+                })
                 .collect()
         };
         matched
@@ -672,7 +686,7 @@ impl App {
                 item: HomeItem::Model {
                     uid: m.unique_id.clone(),
                 },
-                label: m.name.clone(),
+                label: crate::list_name(&m.unique_id, &m.name),
                 detail: String::new(),
                 tone: HomeTone::Normal,
             })

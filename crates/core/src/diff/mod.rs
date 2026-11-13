@@ -25,7 +25,7 @@ use crate::cll::{
 };
 use crate::impact::exposure_note;
 use crate::layer::first_dir;
-use crate::{in_package, is_exposure, Dag, NodeDetail, NodeInfo};
+use crate::{in_package, is_exposure, list_name, Dag, NodeDetail, NodeInfo};
 
 /// How a CURRENT-dag node relates to the baseline (the per-node readout the
 /// Diff lens tints by). Removed nodes have no current-dag home, so they appear
@@ -274,7 +274,7 @@ pub fn compute_diff_with(
         .nodes()
         .values()
         .filter(|n| current.get(&n.unique_id).is_none())
-        .map(|n| (n.name.clone(), n.resource_type.clone()))
+        .map(|n| (list_name(&n.unique_id, &n.name), n.resource_type.clone()))
         .collect();
     removed.sort();
 
@@ -284,7 +284,7 @@ pub fn compute_diff_with(
     let current_edges: BTreeSet<(String, String)> = current.edges().into_iter().collect();
     let name_in = |dag: &Dag, uid: &str| {
         dag.get(uid)
-            .map(|n| n.name.clone())
+            .map(|n| list_name(&n.unique_id, &n.name))
             .unwrap_or_else(|| uid.to_string())
     };
     let mut edges_added: Vec<(String, String)> = current_edges

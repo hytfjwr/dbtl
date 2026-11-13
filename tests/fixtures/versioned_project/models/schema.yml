@@ -1,0 +1,30 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: raw_data
+    tables:
+      - name: orders
+
+models:
+  - name: fct_orders
+    description: order facts, versioned
+    latest_version: 2
+    versions:
+      - v: 1
+        description: first cut of the order facts
+      - v: 2
+      - v: beta
+
+unit_tests:
+  - name: fct_orders_v2_keeps_rows
+    model: fct_orders
+    versions:
+      include: [2]
+    given:
+      - input: source('raw', 'orders')
+        rows:
+          - {id: 1, placed_at: "2026-01-01", status: shipped}
+    expect:
+      rows:
+        - {id: 1, placed_at: "2026-01-01", status: shipped}

@@ -34,8 +34,13 @@ fn detail_head_lines(dv: &DetailView, t: &theme::Theme) -> Vec<Line<'static>> {
     if d.contract_enforced {
         out.push(Line::from("contract: enforced".to_string()));
     }
+    // `v`/`latest` compare prefix-free (`normalize_version`) — a node
+    // declared `v: "v2"` IS `latest_version: 2`, so the `(latest …)`
+    // parenthetical only shows when they genuinely differ.
     match (&d.version, &d.latest_version) {
-        (Some(v), Some(latest)) if v != latest => {
+        (Some(v), Some(latest))
+            if crate::normalize_version(v) != crate::normalize_version(latest) =>
+        {
             out.push(Line::from(format!("version: {v} (latest {latest})")));
         }
         (Some(v), _) => out.push(Line::from(format!("version: {v}"))),

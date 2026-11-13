@@ -45,6 +45,9 @@ jobs:
           - name: logistics
             dir: tests/fixtures/logistics_project
             manifest: tests/fixtures/logistics_manifest.json
+          - name: versioned
+            dir: tests/fixtures/versioned_project
+            manifest: tests/fixtures/versioned_manifest.json
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

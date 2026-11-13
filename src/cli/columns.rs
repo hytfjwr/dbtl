@@ -26,14 +26,16 @@ pub fn run_columns(
 
     // The model segment: an exact unique_id first, else the unique node NAME
     // (dbt names are project-unique; two matches → ambiguous, so bail and
-    // tell the caller to pass the uid).
+    // tell the caller to pass the uid). The `list_name` spelling matches
+    // too — `columns fct_orders.v1.id` addresses that one version, while
+    // `fct_orders` still reports the family as ambiguous.
     let uid = if dag.contains(model) {
         model.to_string()
     } else {
         let mut hits: Vec<&str> = dag
             .nodes()
             .values()
-            .filter(|n| n.name == model)
+            .filter(|n| n.name == model || dbtl::list_name(&n.unique_id, &n.name) == model)
             .map(|n| n.unique_id.as_str())
             .collect();
         hits.sort();

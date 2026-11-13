@@ -40,6 +40,26 @@ pub struct RawDependsOn {
     pub macros: Vec<String>,
 }
 
+/// dbt writes a version as the declared `v:` value VERBATIM — a JSON number
+/// for `v: 1` (`"version": 1`), a JSON string for `v: beta`
+/// (`"version": "beta"`). Both spellings land here as the version's display
+/// string (`serde_json`'s `Number::to_string` keeps the declared form —
+/// `1` stays `1`, `1.5` stays `1.5`). Any other shape reads as absent — a
+/// malformed version field can't fail a whole manifest parse (exclusion is
+/// never a parse failure).
+fn de_version<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(
+        Option::<serde_json::Value>::deserialize(deserializer)?.and_then(|v| match v {
+            serde_json::Value::String(s) => Some(s),
+            serde_json::Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        }),
+    )
+}
+
 /// `test_metadata` sub-object of a generic test node (`name` is the test kind:
 /// `unique`, `not_null`, `relationships`, …). Absent for singular tests.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -145,11 +165,13 @@ pub struct RawNode {
     #[serde(default)]
     pub constraints: Vec<RawConstraint>,
     /// The version this node IS (for `versions:`-ed models) — `v1`, `2`, …
-    /// (the wire type is a JSON string).
-    #[serde(default)]
+    /// The wire type is the declared `v:` value: a JSON number for `v: 1`,
+    /// a JSON string for `v: beta` (deserialized by `de_version`).
+    #[serde(default, deserialize_with = "de_version")]
     pub version: Option<String>,
-    /// The newest version's name when this node is versioned.
-    #[serde(default)]
+    /// The newest version's name when this node is versioned — the same
+    /// number-or-string wire shape as [`version`](RawNode::version).
+    #[serde(default, deserialize_with = "de_version")]
     pub latest_version: Option<String>,
     /// The node's `meta` dictionary (owner / domain / arbitrary key-values).
     /// Real manifests mirror the merged result at the node top level (it equals
@@ -362,6 +384,16 @@ pub struct RawUnitTest {
     /// The model name this unit test is declared on.
     #[serde(default)]
     pub model: Option<String>,
+    /// The exact model uid the test runs against — `model.<pkg>.<name>[.v<N>]`.
+    /// A version-filtered test (`versions: include:`) names ITS versioned uid
+    /// here, which pins the target better than the `model:` name alone when
+    /// several versions of the model exist.
+    #[serde(default)]
+    pub depends_on: RawDependsOn,
+    /// The version this test targets (from the `versions: include:` filter) —
+    /// the same number-or-string wire shape as [`RawNode::version`].
+    #[serde(default, deserialize_with = "de_version")]
+    pub version: Option<String>,
     /// The `given:` inputs (each a `ref`/`source` table plus its rows) — the
     /// count and inline row counts are surfaced in the structure modal.
     #[serde(default)]
@@ -520,4 +552,73 @@ pub fn load_manifest<P: AsRef<Path>>(path: P) -> Result<RawManifest> {
 /// match the expected manifest shape.
 pub fn parse_manifest(contents: &str) -> Result<RawManifest> {
     serde_json::from_str(contents).context(PARSE_MANIFEST_ERR)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_fields_take_the_declared_value_verbatim() {
+        // The real dbt 1.12 wire shapes: `v: 1` lands as a JSON NUMBER —
+        // the parse failure that motivated [`de_version`] — `v: beta` as a
+        // string, and `latest_version` carries whichever type its `v:`
+        // declared (`2` here while a `beta` sibling exists).
+        let n: RawNode = serde_json::from_str(
+            r#"{"name":"m","resource_type":"model","version":1,"latest_version":2}"#,
+        )
+        .unwrap();
+        assert_eq!(n.version.as_deref(), Some("1"));
+        assert_eq!(n.latest_version.as_deref(), Some("2"));
+
+        let n: RawNode = serde_json::from_str(
+            r#"{"name":"m","resource_type":"model","version":"beta","latest_version":2}"#,
+        )
+        .unwrap();
+        assert_eq!(n.version.as_deref(), Some("beta"));
+        assert_eq!(n.latest_version.as_deref(), Some("2"));
+
+        // `Number::to_string` keeps the declared form — dbt can't pair a
+        // `v: 1.5` to a file today, but the field must survive if a future
+        // dbt (or a hand-built manifest) writes it.
+        let n: RawNode =
+            serde_json::from_str(r#"{"name":"m","resource_type":"model","version":1.5}"#).unwrap();
+        assert_eq!(n.version.as_deref(), Some("1.5"));
+    }
+
+    #[test]
+    fn version_fields_absent_null_or_odd_read_as_none() {
+        for json in [
+            // Missing entirely, explicit null, and non-scalar shapes — none
+            // may fail the whole node parse.
+            r#"{"name":"m","resource_type":"model"}"#,
+            r#"{"name":"m","resource_type":"model","version":null}"#,
+            r#"{"name":"m","resource_type":"model","version":true,"latest_version":{"x":1}}"#,
+        ] {
+            let n: RawNode = serde_json::from_str(json).unwrap();
+            assert_eq!(n.version, None, "{json}");
+            assert_eq!(n.latest_version, None, "{json}");
+        }
+    }
+
+    #[test]
+    fn unit_test_carries_depends_on_and_a_typed_version() {
+        // The real dbt 1.12 unit_test wire shape — `depends_on.nodes` names
+        // the exact versioned uid the test targets, `version` is the
+        // numeric `versions: include:` filter.
+        let ut: RawUnitTest = serde_json::from_str(
+            r#"{
+                "name": "fct_orders_v2_keeps_rows",
+                "model": "fct_orders",
+                "depends_on": {"nodes": ["model.p.fct_orders.v2"]},
+                "version": 2
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            ut.depends_on.nodes,
+            vec!["model.p.fct_orders.v2".to_string()]
+        );
+        assert_eq!(ut.version.as_deref(), Some("2"));
+    }
 }

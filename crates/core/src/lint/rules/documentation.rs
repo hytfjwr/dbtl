@@ -29,7 +29,7 @@ pub(super) fn undocumented_models(
             LintRule::UndocumentedModels,
             (*uid).clone(),
             Vec::new(),
-            format!("{} has no description", n.name),
+            format!("{} has no description", display_name(dag, uid)),
         ));
     }
 }

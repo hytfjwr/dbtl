@@ -527,19 +527,19 @@ fn this_relation_produces_no_parent_edges() {
 fn render_map_is_byte_identical_to_render_jinja() {
     let raw = "-- a\r\n{{ config(materialized='table') }}\nselect {% if t %}a,{% endif %}* from {{ ref('x') }}\n";
     assert_eq!(
-        render_jinja_mapped(raw, JinjaMark::Plain).text,
-        render_jinja_as(raw, JinjaMark::Plain)
+        render_jinja_mapped(raw, JinjaMark::Plain, SqlDialect::Generic).text,
+        render_jinja_as(raw, JinjaMark::Plain, SqlDialect::Generic)
     );
     assert_eq!(
-        render_jinja_mapped(raw, JinjaMark::Marked).text,
-        render_jinja_as(raw, JinjaMark::Marked)
+        render_jinja_mapped(raw, JinjaMark::Marked, SqlDialect::Generic).text,
+        render_jinja_as(raw, JinjaMark::Marked, SqlDialect::Generic)
     );
 }
 
 #[test]
 fn render_map_maps_copies_11_and_tags_to_the_whole_tag() {
     let raw = "select a\nfrom {{ ref('up') }} u\n";
-    let rendered = render_jinja_mapped(raw, JinjaMark::Plain);
+    let rendered = render_jinja_mapped(raw, JinjaMark::Plain, SqlDialect::Generic);
     // A copied stretch maps byte-for-byte: `select a` → itself.
     let s = raw.find("select a").unwrap();
     assert_eq!(
@@ -574,7 +574,7 @@ fn only_branch_commas_tells_an_arm_split_from_a_written_comma() {
     // `{% else %}` between FROM items emits `,` — the render's branch
     // union (the arms never reach one render), not a written comma join.
     let raw = "select *\nfrom {% if x %}a.t{% else %}b.u{% endif %}";
-    let rendered = render_jinja_mapped(raw, JinjaMark::Plain);
+    let rendered = render_jinja_mapped(raw, JinjaMark::Plain, SqlDialect::Generic);
     assert_eq!(rendered.text, "select *\nfrom  a.t,b.u ");
     let line2 = rendered.text.find('\n').unwrap() + 1;
     let loc = |off: usize| Location::new(2, (off - line2 + 1) as u64);
@@ -582,7 +582,7 @@ fn only_branch_commas_tells_an_arm_split_from_a_written_comma() {
     assert!(rendered.only_branch_commas(Span::new(loc(comma), loc(comma + 1))));
     // A written `,` fails the check even when an arm split follows.
     let raw = "select *\nfrom a.t, {% if x %}b.u{% else %}c.v{% endif %}";
-    let rendered = render_jinja_mapped(raw, JinjaMark::Plain);
+    let rendered = render_jinja_mapped(raw, JinjaMark::Plain, SqlDialect::Generic);
     assert_eq!(rendered.text, "select *\nfrom a.t,  b.u,c.v ");
     let line2 = rendered.text.find('\n').unwrap() + 1;
     let loc = |off: usize| Location::new(2, (off - line2 + 1) as u64);
@@ -600,6 +600,7 @@ fn opaque_jinja_expressions_carry_their_string_literals() {
     let rendered = render_jinja_mapped(
         "select * from orders {{ join_customers('customers', \"orders.id\") }}",
         JinjaMark::Plain,
+        SqlDialect::Generic,
     );
     assert_eq!(rendered.text, "select * from orders  NULL ");
     assert_eq!(
@@ -611,17 +612,22 @@ fn opaque_jinja_expressions_carry_their_string_literals() {
     let rendered = render_jinja_mapped(
         "select {{ ref('x') }}, {{ source('a','b') }} {{ config(alias='y') }}",
         JinjaMark::Plain,
+        SqlDialect::Generic,
     );
     assert!(rendered.jinja_literals.is_empty());
     // An unterminated literal is dropped — it was never a string.
-    let rendered = render_jinja_mapped("select {{ f('unclosed) }}", JinjaMark::Plain);
+    let rendered = render_jinja_mapped(
+        "select {{ f('unclosed) }}",
+        JinjaMark::Plain,
+        SqlDialect::Generic,
+    );
     assert_eq!(rendered.jinja_literals, Vec::<String>::new());
 }
 
 #[test]
 fn plain_positions_extract_wildcard_join_and_column_spans() {
     let raw = "select a, o.*\nfrom {{ ref('o') }} o\njoin b.u\nwhere o.id = b.id";
-    let pos = plain_positions(raw, &*SqlDialect::Generic.sqlparser()).unwrap();
+    let pos = plain_positions(raw, SqlDialect::Generic).unwrap();
     // `o.*` — the qualified wildcard underlines itself.
     assert_eq!(
         pos.wildcards,
@@ -650,13 +656,13 @@ fn plain_positions_extract_wildcard_join_and_column_spans() {
         ]
     );
     // An unparsable text is `None` — never a position to guess.
-    assert!(plain_positions("select from where or", &*SqlDialect::Generic.sqlparser()).is_none());
+    assert!(plain_positions("select from where or", SqlDialect::Generic).is_none());
 }
 
 #[test]
 fn marked_relations_carry_name_spans() {
     let raw = "select *\nfrom analytics.orders\njoin {{ ref('u') }} u on 1 = 1";
-    let rel = marked_relations(raw, &*SqlDialect::Generic.sqlparser()).unwrap();
+    let rel = marked_relations(raw, SqlDialect::Generic).unwrap();
     assert_eq!(rel.names, vec!["analytics.orders".to_string()]);
     assert_eq!(rel.spans.len(), 1);
     assert_eq!(
@@ -666,7 +672,7 @@ fn marked_relations_carry_name_spans() {
         "the written name underlines itself"
     );
     // An unparsable text is `None` — never a position to guess.
-    assert!(marked_relations("select from where or", &*SqlDialect::Generic.sqlparser()).is_none());
+    assert!(marked_relations("select from where or", SqlDialect::Generic).is_none());
 }
 
 // -- dialect ---------------------------------------------------------------
@@ -1186,13 +1192,15 @@ fn jinja_markers_inside_literals_and_comments_do_not_pair() {
     ));
     let r = resolver();
     let got = edge_set(&dag, &r, "model.t.m");
-    // The `{{`/`}}` in separate string literals never pair — the SQL
-    // parses instead of being eaten, so it must NOT fall back.
+    // A `{{` inside a literal pairs with the NEXT `}}` — Jinja doesn't
+    // know SQL literals (dbt itself syntax-errors on this input) — so the
+    // render eats the stretch through `… 'jinja }}` and `u.t` contributes
+    // no edge. What still parses must NOT fall back, and the marker
+    // inside the `--` comment never pairs either way.
     assert!(!r.is_fallback("model.t.m"));
     let want: BTreeSet<_> = [
         e("model.t.up.id", "id", ColumnEdgeKind::Passthrough),
         e("model.t.up.s", "id", ColumnEdgeKind::FilterOrJoin),
-        e("model.t.up.t", "id", ColumnEdgeKind::FilterOrJoin),
     ]
     .into_iter()
     .collect();
@@ -1220,6 +1228,555 @@ fn malformed_unterminated_jinja_falls_back_not_truncates() {
     assert!(r.is_fallback("model.t.m"));
     assert_eq!(r.fallback_nodes(), vec!["model.t.m".to_string()]);
     assert!(edges.iter().all(|e| e.confidence == Confidence::NameMatch));
+}
+
+// -- Jinja rendering: dialect-aware literals and position-shaped `{{ }}` ------
+//
+// The shapes the render rewrite targets: Jinja inside SQL string
+// literals, the dialect's `\'`/`#`/prefix rules, tags glued into
+// identifiers, `NULL`-placeholder alias collisions, select-item
+// continuations, relation-position tags, and `ref()` names standing
+// next to same-named CTEs.
+
+#[test]
+fn jinja_inside_a_string_literal_renders() {
+    // `{{ var('x', 'a') }}` inside `'…'` — Jinja substitutes inside
+    // strings, so the literal becomes `' NULL '` — not two literals, and
+    // the tag's interior quotes never confuse the close-scan.
+    assert_eq!(
+        render_jinja(
+            "select '{{ var('x', 'a') }}' as tag, \
+             cast('{{ var('last_run') }}' as timestamp) as t",
+            SqlDialect::Generic,
+        ),
+        "select ' NULL ' as tag, cast(' NULL ' as timestamp) as t"
+    );
+    // `ref`/`source` inside a literal keep their name — the literal's own
+    // quote delimits it (`'"x"'` would mangle the text).
+    assert_eq!(
+        render_jinja("select '{{ ref('x') }}' as t", SqlDialect::Generic),
+        "select 'x' as t"
+    );
+    // Jinja inside a quoted identifier stays a single identifier — the
+    // fragment glues where a `'`/`$$` literal gets `NULL` instead.
+    assert_eq!(
+        render_jinja("select \"{{ c }}_sum\" as s", SqlDialect::Generic),
+        "select \"__dbtl_jinja_0___sum\" as s"
+    );
+    // An unterminated-in-literal tag leaves the bytes verbatim — the
+    // render degrades to the raw text, never a shorter fabrication.
+    let raw = "select '{{ f('unclosed) }}' as t";
+    assert_eq!(render_jinja(raw, SqlDialect::Generic), raw);
+}
+
+#[test]
+fn dialect_decides_backslash_escapes_and_hash_comments() {
+    // `\'` escapes ONLY where the dialect says so: Snowflake keeps the
+    // literal open (the tag lands inside it), Generic closes the literal
+    // at `\'` — matching what sqlparser itself does with the same text.
+    let raw = "select 'it\\'s {{ var('x') }}' as s";
+    assert_eq!(
+        render_jinja(raw, SqlDialect::Snowflake),
+        "select 'it\\'s  NULL ' as s"
+    );
+    // Under Generic the `'` after `\` really closes the literal — the
+    // `{{ }}` sits at top level between `s ` and a second (unterminated)
+    // `'` — a different render for a different tokenizer.
+    assert_eq!(
+        render_jinja(raw, SqlDialect::Generic),
+        "select 'it\\'s , __dbtl_jinja_0__' as s"
+    );
+    // `#` opens a line comment only under hash-comment dialects —
+    // Snowflake/BigQuery leave the tag inside it as comment text, while
+    // Generic keeps `#` as an ordinary byte (and the `'` inside `don't`
+    // still swallows the tail).
+    let raw = "select id # {{ x }}\nfrom base";
+    assert_eq!(render_jinja(raw, SqlDialect::Snowflake), raw);
+    assert_eq!(render_jinja(raw, SqlDialect::BigQuery), raw);
+    assert_eq!(
+        render_jinja(raw, SqlDialect::Generic),
+        "select id # __dbtl_jinja_0__\nfrom base"
+    );
+}
+
+#[test]
+fn jinja_inside_literals_and_after_hash_comments_parse() {
+    let mk = |uid: &str, sql: &str| {
+        Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["id"]),
+                raw_model(uid, sql, &[]),
+            ],
+            &[("model.t.up", uid)],
+        ))
+    };
+    // `\'` escaping and `#` comments are the dialect's call — Snowflake
+    // parses what Generic can't.
+    let dag = mk(
+        "model.t.m",
+        "select 'it\\'s' as s, u.id from {{ ref('up') }} u",
+    );
+    let r = resolver();
+    let _ = r.columns(&dag, "model.t.m");
+    assert!(r.is_fallback("model.t.m"));
+    let snow = SqlParseResolver::new(None, SqlDialect::Snowflake);
+    let _ = snow.columns(&dag, "model.t.m");
+    assert!(!snow.is_fallback("model.t.m"));
+    let dag = mk("model.t.m2", "select u.id # don't\nfrom {{ ref('up') }} u");
+    let _ = r.columns(&dag, "model.t.m2");
+    assert!(r.is_fallback("model.t.m2"));
+    let snow = SqlParseResolver::new(None, SqlDialect::Snowflake);
+    let _ = snow.columns(&dag, "model.t.m2");
+    assert!(!snow.is_fallback("model.t.m2"));
+    // The literal-nested tag parses in every dialect.
+    let dag = mk(
+        "model.t.m3",
+        "select u.id, '{{ var('x', 'a') }}' as tag from {{ ref('up') }} u",
+    );
+    assert!(!r.is_fallback("model.t.m3"));
+    assert_eq!(
+        r.columns(&dag, "model.t.m3"),
+        vec!["id".to_string(), "tag".to_string()]
+    );
+}
+
+#[test]
+fn jinja_glued_into_identifiers_stays_one_name() {
+    // `{{ c }}_sum`, `total_{{ c }}`, `{{ var('s') }}_raw.tbl` — a tag
+    // glued to identifier text is a name PART; the render concatenates
+    // the marked fragment the way real Jinja concatenates the value.
+    assert_eq!(
+        render_jinja("select sum(a) as {{ c }}_sum from t", SqlDialect::Generic),
+        "select sum(a) as __dbtl_jinja_0___sum from t"
+    );
+    assert_eq!(
+        render_jinja("select a as total_{{ c }} from t", SqlDialect::Generic),
+        "select a as total___dbtl_jinja_0__ from t"
+    );
+    assert_eq!(
+        render_jinja("select a from {{ var('s') }}_raw.tbl", SqlDialect::Generic),
+        "select a from __dbtl_jinja_0___raw.tbl"
+    );
+    let dag = Dag::build(&manifest(
+        vec![
+            raw_model(
+                "model.t.m4",
+                "select sum(a) as {{ c }}_sum from t group by a",
+                &[],
+            ),
+            raw_model("model.t.m4b", "select a as total_{{ c }} from t", &[]),
+            raw_model("model.t.m4c", "select a from {{ var('s') }}_raw.tbl", &[]),
+        ],
+        &[],
+    ));
+    let r = resolver();
+    for uid in ["model.t.m4", "model.t.m4b", "model.t.m4c"] {
+        let _ = r.columns(&dag, uid);
+        assert!(!r.is_fallback(uid), "{uid} must parse");
+    }
+    assert_eq!(
+        r.columns(&dag, "model.t.m4"),
+        vec!["__dbtl_jinja_0___sum".to_string()]
+    );
+    assert_eq!(
+        r.columns(&dag, "model.t.m4b"),
+        vec!["total___dbtl_jinja_0__".to_string()]
+    );
+}
+
+#[test]
+fn jinja_aliases_and_select_items_stay_distinct_items() {
+    // `a as {{ var('x1') }}, a as {{ var('x2') }}` — each alias is a
+    // UNIQUE generated name; the `null`/`null` collapse that faked a
+    // `duplicate_output_columns` hit can't form.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.up", "select 1", &["a"]),
+            raw_model(
+                "model.t.m5",
+                "select a as {{ var('x1') }}, a as {{ var('x2') }} from {{ ref('up') }}",
+                &[],
+            ),
+            raw_model(
+                "model.t.m6",
+                "select o.id, o.a, o.id as other\n    \
+                 {{ extension_columns(ref('up'), alias='o') }}\n    , o.id as third\n\
+                 from {{ ref('up') }} o",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m5"), ("model.t.up", "model.t.m6")],
+    ));
+    let r = resolver();
+    assert!(!r.is_fallback("model.t.m5"));
+    assert!(!r.is_fallback("model.t.m6"));
+    assert_eq!(
+        r.columns(&dag, "model.t.m5"),
+        vec![
+            "__dbtl_jinja_0__".to_string(),
+            "__dbtl_jinja_1__".to_string()
+        ]
+    );
+    // The bare `{{ macro(...) }}` line is a NEW item — `other , x , o.id
+    // as third` — never `other AS x` swallowing the macro's columns.
+    assert_eq!(
+        r.columns(&dag, "model.t.m6"),
+        vec![
+            "id".to_string(),
+            "a".to_string(),
+            "other".to_string(),
+            "__dbtl_jinja_0__".to_string(),
+            "third".to_string(),
+        ]
+    );
+    // `sql_facts` sees no duplicate outputs on either model.
+    assert!(r
+        .sql_facts(&dag, "model.t.m5")
+        .is_some_and(|f| f.duplicate_outputs.is_empty()));
+    assert!(r
+        .sql_facts(&dag, "model.t.m6")
+        .is_some_and(|f| f.duplicate_outputs.is_empty()));
+}
+
+#[test]
+fn jinja_in_relation_position_parses_as_a_relation() {
+    // `from {{ var('t') }}` / `from {{ target.schema }}.tbl` — a relation
+    // name, never `NULL` (`FROM NULL` fails on Snowflake); a glued
+    // qualifier stays one qualified name.
+    let dag = Dag::build(&manifest(
+        vec![
+            raw_model("model.t.m7", "select id from {{ var('t') }}", &[]),
+            raw_model("model.t.m7b", "select id from {{ target.schema }}.tbl", &[]),
+        ],
+        &[],
+    ));
+    let r = resolver();
+    assert_eq!(
+        render_jinja("select id from {{ var('t') }}", SqlDialect::Generic),
+        "select id from __dbtl_jinja_0__"
+    );
+    assert_eq!(
+        render_jinja(
+            "select id from {{ target.schema }}.tbl",
+            SqlDialect::Generic
+        ),
+        "select id from __dbtl_jinja_0__.tbl"
+    );
+    let _ = r.columns(&dag, "model.t.m7");
+    let _ = r.columns(&dag, "model.t.m7b");
+    assert!(!r.is_fallback("model.t.m7"));
+    assert!(!r.is_fallback("model.t.m7b"));
+    // The marked render parses the same shapes — and the generated names
+    // still aren't relations (hard_coded_relations stays empty).
+    let rel = marked_relations("select id from {{ var('t') }}", SqlDialect::Generic).unwrap();
+    assert!(rel.names.is_empty());
+    // A glued qualifier's mark is buried mid-name — `record_name`'s
+    // `contains` check still catches it.
+    let rel = marked_relations(
+        "select id from {{ target.schema }}.tbl",
+        SqlDialect::Generic,
+    )
+    .unwrap();
+    assert!(rel.names.is_empty());
+    // `{{ target.col }}` marks the column — the provable-miss bookkeeping
+    // never records a generated name.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.up", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "select {{ target.col }} from {{ ref('up') }} u",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m")],
+    ));
+    assert!(r
+        .sql_facts(&dag, "model.t.m")
+        .is_some_and(|f| { !f.unresolved.iter().any(|(_, col)| col.contains("__dbtl_")) }));
+}
+
+#[test]
+fn ref_rendered_next_to_same_named_cte_does_not_read_it() {
+    // `with stg_x as (…), j as (select * from {{ ref('stg_x') }})` — the
+    // `ref` resolves to the MODEL `stg_x`, not the in-file CTE: the
+    // generated render sits in a non-copy segment, so `record_name`
+    // never counts it as a CTE read and `stg_x` stays unused.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.stg_x", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "with stg_x as (select 1 as id), \
+                 j as (select * from {{ ref('stg_x') }}) \
+                 select id from j",
+                &[],
+            ),
+            // …but a WRITTEN `from stg_x` still reads it.
+            raw_model(
+                "model.t.m8b",
+                "with stg_x as (select 1 as id), \
+                 j as (select * from {{ ref('stg_x') }}) \
+                 select id from j union all select id from stg_x",
+                &[],
+            ),
+        ],
+        &[
+            ("model.t.stg_x", "model.t.m"),
+            ("model.t.stg_x", "model.t.m8b"),
+        ],
+    ));
+    let r = resolver();
+    let facts = r.sql_facts(&dag, "model.t.m").unwrap();
+    assert_eq!(facts.unused_ctes, vec!["stg_x".to_string()]);
+    let facts = r.sql_facts(&dag, "model.t.m8b").unwrap();
+    assert!(facts.unused_ctes.is_empty());
+}
+
+#[test]
+fn jinja_comment_never_treats_its_quotes_as_strings() {
+    // `{# don't #}` — a `'` inside a Jinja comment is comment text, not
+    // a string opener: the comment still closes at `#}`. (Skipping a
+    // quoted span once hunted a closing quote to EOF — `tag_close`
+    // returned `None`, the `{#` leaked into the render, and the model
+    // fell back unparsable.)
+    assert_eq!(
+        render_jinja("select a {# don't #} from t", SqlDialect::Generic),
+        "select a   from t"
+    );
+    // A second comment's `#}` is the SECOND comment's close — the SQL
+    // between them isn't eaten as comment text.
+    assert_eq!(
+        render_jinja(
+            "select a {# don't #} , b {# isn't #} from t",
+            SqlDialect::Generic
+        ),
+        "select a   , b   from t"
+    );
+    // And the file still parses.
+    let dag = Dag::build(&manifest(
+        vec![raw_model(
+            "model.t.m",
+            "select a {# don't run this #} , b from t",
+            &[],
+        )],
+        &[],
+    ));
+    let r = resolver();
+    let _ = r.columns(&dag, "model.t.m");
+    assert!(!r.is_fallback("model.t.m"));
+    // `{{`/`{%` DO hold Jinja strings — a quoted `}}`/`%}` still can't
+    // fake their close.
+    assert_eq!(
+        render_jinja("select {{ f('}') }} from t", SqlDialect::Generic),
+        "select __dbtl_jinja_0__ from t"
+    );
+}
+
+#[test]
+fn inner_subquery_keywords_do_not_leak_into_the_outer_context() {
+    // `select a, (select y from t) {{ m() }}` — the inner `from` is the
+    // SUBQUERY's: it must not close the outer item list and render the
+    // tag as ` NULL ` (the `)` restores `select`, and `)` itself ends an
+    // expression → `, <name>`).
+    assert_eq!(
+        render_jinja("select a, (select y from t) {{ m() }}", SqlDialect::Generic),
+        "select a, (select y from t) , __dbtl_jinja_0__"
+    );
+    // `where exists (select 1) {{ m() }}` — the inner `select` is the
+    // subquery's: it must not flip the outer context into a select list
+    // and drop `, __dbtl_…` into a WHERE expression — a value render
+    // (` NULL `) is what the position means.
+    assert_eq!(
+        render_jinja(
+            "select a from t where exists (select 1) {{ m() }}",
+            SqlDialect::Generic
+        ),
+        "select a from t where exists (select 1)  NULL "
+    );
+    // The select-item case parses to a real item.
+    let dag = Dag::build(&manifest(
+        vec![raw_model(
+            "model.t.m",
+            "select a, (select y from t) {{ m() }} from t",
+            &[],
+        )],
+        &[],
+    ));
+    let r = resolver();
+    assert!(!r.is_fallback("model.t.m"));
+    // `(select …)` is an unnamed (synthetic) output — `columns()` never
+    // invents it — leaving the written `a` and the generated item.
+    assert_eq!(
+        r.columns(&dag, "model.t.m"),
+        vec!["a".to_string(), "__dbtl_jinja_0__".to_string()]
+    );
+}
+
+#[test]
+fn glued_ref_source_this_render_as_generated_names() {
+    // `{{ ref('events') }}_2024` — the real-world partitioned-table
+    // idiom: the glued identifier can't hold `"events"` (doesn't parse)
+    // or the bare `events` (would bind a same-named CTE/relation the tag
+    // never read) — a marked generated name stays one identifier AND
+    // keeps the generated-name protections.
+    assert_eq!(
+        render_jinja(
+            "select * from {{ ref('events') }}_2024",
+            SqlDialect::Generic
+        ),
+        "select * from __dbtl_jinja_0___2024"
+    );
+    assert_eq!(
+        render_jinja(
+            "select * from {{ source('raw', 'events') }}_v2",
+            SqlDialect::Generic
+        ),
+        "select * from __dbtl_jinja_0___v2"
+    );
+    assert_eq!(
+        render_jinja("select * from {{ this }}_stg", SqlDialect::Generic),
+        "select * from __dbtl_jinja_0___stg"
+    );
+    // A qualified-in tag (`o.{{ ref('x') }}`) glues the same way —
+    // `o."x"` can't form inside a dotted name.
+    assert_eq!(
+        render_jinja("select o.{{ ref('x') }} from t o", SqlDialect::Generic),
+        "select o.__dbtl_jinja_0__ from t o"
+    );
+    // A NON-glued ref still renders its quoted relation name.
+    assert_eq!(
+        render_jinja("select * from {{ ref('events') }}", SqlDialect::Generic),
+        "select * from \"events\""
+    );
+    // The glued shapes parse — and never surface as written relations.
+    let dag = Dag::build(&manifest(
+        vec![
+            raw_model("model.t.m", "select * from {{ ref('events') }}_2024", &[]),
+            raw_model(
+                "model.t.m2",
+                "select * from {{ source('raw', 'events') }}_v2",
+                &[],
+            ),
+        ],
+        &[],
+    ));
+    let r = resolver();
+    let _ = r.columns(&dag, "model.t.m");
+    let _ = r.columns(&dag, "model.t.m2");
+    assert!(!r.is_fallback("model.t.m"));
+    assert!(!r.is_fallback("model.t.m2"));
+    assert!(marked_relations(
+        "select * from {{ ref('events') }}_2024",
+        SqlDialect::Generic
+    )
+    .unwrap()
+    .names
+    .is_empty());
+}
+
+#[test]
+fn generated_columns_never_invent_parent_columns() {
+    // `u.{{ m() }}` → `u.__dbtl_jinja_0__` — against a parent whose
+    // column list is UNKNOWN (an unparsable model declares none), the
+    // qualified ref must not be trusted into `(up, __dbtl_jinja_0__)`:
+    // the generated name exists in no column list, so crediting it would
+    // fabricate an edge. A written `u.id` still trusts the unknown list.
+    let dag = Dag::build(&manifest(
+        vec![
+            raw_model("model.t.up", "select from", &[]),
+            raw_model(
+                "model.t.m",
+                "select u.id, u.{{ m() }}, {{ m2() }} from {{ ref('up') }} u",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m")],
+    ));
+    let r = resolver();
+    let got = edge_set(&dag, &r, "model.t.m");
+    let want: BTreeSet<_> = [e("model.t.up.id", "id", ColumnEdgeKind::Passthrough)]
+        .into_iter()
+        .collect();
+    assert_eq!(got, want);
+    // The generated outputs exist (positions keep them) but carry no
+    // invented sources.
+    assert_eq!(
+        r.columns(&dag, "model.t.m"),
+        vec![
+            "id".to_string(),
+            "__dbtl_jinja_0__".to_string(),
+            "__dbtl_jinja_1__".to_string()
+        ]
+    );
+}
+
+#[test]
+fn dialect_decides_line_comments_nested_blocks_and_string_prefixes() {
+    // `//` is a line comment only under Snowflake — elsewhere the `{{`
+    // after it is live code.
+    let raw = "select a // {{ x }}\nfrom t";
+    assert_eq!(render_jinja(raw, SqlDialect::Snowflake), raw);
+    assert_eq!(
+        render_jinja(raw, SqlDialect::Generic),
+        "select a // __dbtl_jinja_0__\nfrom t"
+    );
+    // `--` needs whitespace only where the dialect asks (MySQL): `--x`
+    // is an expression, so the `{{` on the line stays live; `-- x` is a
+    // comment there too.
+    let raw = "select a --x {{ y }}\nfrom t";
+    assert_eq!(render_jinja(raw, SqlDialect::Generic), raw);
+    assert_eq!(
+        render_jinja(raw, SqlDialect::MySql),
+        "select a --x , __dbtl_jinja_0__\nfrom t"
+    );
+    let raw = "select a -- {{ y }}\nfrom t";
+    assert_eq!(render_jinja(raw, SqlDialect::MySql), raw);
+    // `/*` nests only where the dialect says — Postgres closes the
+    // comment at the OUTER `*/` (the `{{` stays comment text); MySQL's
+    // flat scan ends at the first `*/`, leaving the `{{` live.
+    let raw = "select a /* x /* y */ {{ z }} */ from t";
+    assert_eq!(render_jinja(raw, SqlDialect::Postgres), raw);
+    assert_eq!(
+        render_jinja(raw, SqlDialect::MySql),
+        "select a /* x /* y */ , __dbtl_jinja_0__ */ from t"
+    );
+    // `$$` is a dollar-quoted string everywhere except SQLite, where
+    // `$…$` is a placeholder — the `{{` between the `$$`s is a literal
+    // interior under Postgres but live code under SQLite.
+    let raw = "select $$ {{ x }} $$";
+    assert_eq!(
+        render_jinja(raw, SqlDialect::Postgres),
+        "select $$  NULL  $$"
+    );
+    assert_eq!(
+        render_jinja(raw, SqlDialect::Sqlite),
+        "select $$ , __dbtl_jinja_0__ $$"
+    );
+    // `q'[x]'`/`nq'[x]'` — Oracle/Generic — hold an interior `'` inside
+    // the literal; elsewhere `q` is an identifier and `'` opens a plain
+    // literal that `don't`'s apostrophe closes.
+    let raw = "select q'[don't {{ x }}]' from t";
+    assert_eq!(
+        render_jinja(raw, SqlDialect::Oracle),
+        "select q'[don't  NULL ]' from t"
+    );
+    assert_eq!(
+        render_jinja(raw, SqlDialect::Postgres),
+        "select q'[don't , __dbtl_jinja_0__]' from t"
+    );
+    // `u&'…'` — Postgres/Generic — `\` begins a codepoint escape (a
+    // `\'` can't close); elsewhere `u` `&` are ordinary and the `'`
+    // literal follows the dialect's own escape rule.
+    let raw = "select u&'a\\' {{ x }} b'";
+    assert_eq!(
+        render_jinja(raw, SqlDialect::Postgres),
+        "select u&'a\\'  NULL  b'"
+    );
+    assert_eq!(
+        render_jinja(raw, SqlDialect::Sqlite),
+        "select u&'a\\' , __dbtl_jinja_0__ b'"
+    );
 }
 
 // -- synthetic `__colN` outputs never leak -----------------------------------

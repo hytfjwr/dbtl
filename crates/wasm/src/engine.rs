@@ -449,7 +449,10 @@ impl Engine {
         let detail = self.dag.detail(unique_id);
         Ok(DetailOutput {
             unique_id: unique_id.to_string(),
-            name: n.name.clone(),
+            // `list_name` — the header shows `fct_orders.v1` for a
+            // versioned model (same-name versions must not read
+            // identically), the plain name elsewhere.
+            name: dbtl_core::list_name(unique_id, &n.name),
             resource_type: n.resource_type.clone(),
             materialized: n.materialized.clone(),
             path: detail.and_then(|d| d.original_file_path.clone()),
@@ -752,7 +755,9 @@ impl Engine {
 
     /// The `<model>` half of `dbtl columns`'s `<model>.<column>`: an exact
     /// unique_id, else the single node of that name — the CLI's own
-    /// wording for unknown and ambiguous names.
+    /// wording for unknown and ambiguous names. The `list_name` spelling
+    /// matches too: `fct_orders.v1` addresses that one version while
+    /// `fct_orders` still reports the family as ambiguous.
     fn model_uid(&self, model: &str) -> Result<String, EngineError> {
         if self.dag.contains(model) {
             return Ok(model.to_string());
@@ -761,7 +766,7 @@ impl Engine {
             .dag
             .nodes()
             .values()
-            .filter(|n| n.name == model)
+            .filter(|n| n.name == model || dbtl_core::list_name(&n.unique_id, &n.name) == model)
             .map(|n| n.unique_id.as_str())
             .collect();
         hits.sort();

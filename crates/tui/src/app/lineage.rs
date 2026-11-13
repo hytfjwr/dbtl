@@ -266,7 +266,7 @@ impl App {
     pub fn tooltip_view(&self, uid: &str, at: (u16, u16)) -> Option<crate::ui::TooltipView> {
         let n = self.dag.get(uid)?;
         Some(crate::ui::TooltipView {
-            name: n.name.clone(),
+            name: crate::list_name(uid, &n.name),
             tag: crate::MaterializationClass::classify(&n.resource_type, n.materialized.as_deref())
                 .tag()
                 .to_string(),
@@ -593,7 +593,7 @@ impl App {
         self.subgraph_rc()
             .nodes
             .iter()
-            .filter(|n| crate::name_matches_query(&n.name, query))
+            .filter(|n| crate::name_matches_query(&crate::list_name(&n.unique_id, &n.name), query))
             .map(|n| n.unique_id.clone())
             .collect()
     }
@@ -790,9 +790,13 @@ impl App {
             .rev()
             .take(3)
             .rev()
-            .filter_map(|uid| self.dag.get(uid).map(|n| n.name.clone()))
+            .filter_map(|uid| self.dag.get(uid).map(|n| crate::list_name(uid, &n.name)))
             .collect();
-        entries.push(self.dag.get(&root).map_or(root, |n| n.name.clone()));
+        entries.push(
+            self.dag
+                .get(&root)
+                .map_or_else(|| root.clone(), |n| crate::list_name(&root, &n.name)),
+        );
 
         let join = |parts: &[String]| parts.join(" > ");
         let full = join(&entries);

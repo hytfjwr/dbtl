@@ -24,7 +24,10 @@ pub(super) fn public_models_without_contract(
             LintRule::PublicModelsWithoutContract,
             (*uid).clone(),
             Vec::new(),
-            format!("{} is access: public without an enforced contract", n.name),
+            format!(
+                "{} is access: public without an enforced contract",
+                display_name(dag, uid)
+            ),
         ));
     }
 }
@@ -69,7 +72,7 @@ pub(super) fn exposures_dependent_on_private_models(
             parents.clone(),
             format!(
                 "exposure {} directly depends on non-public {}: {}",
-                n.name,
+                display_name(dag, uid),
                 pluralize(parents.len(), "model"),
                 name_list(&display_names(dag, &parents)),
             ),
@@ -114,7 +117,7 @@ pub(super) fn required_meta_keys(
             Vec::new(),
             format!(
                 "{} is missing required meta {}: {}",
-                n.name,
+                display_name(dag, uid),
                 pluralize(missing.len(), "key"),
                 missing.join(", ")
             ),
@@ -155,7 +158,7 @@ pub(super) fn contract_columns_without_type(
             Vec::new(),
             format!(
                 "contract-enforced {} has declared {} without data_type: {}",
-                n.name,
+                display_name(dag, uid),
                 pluralize(columns.len(), "column"),
                 columns.join(", ")
             ),
@@ -221,7 +224,11 @@ pub(super) fn references_deprecated_model(
             LintRule::ReferencesDeprecatedModel,
             (*uid).clone(),
             parents.clone(),
-            format!("{} depends on {}", n.name, name_list(&names)),
+            format!(
+                "{} depends on {}",
+                display_name(dag, uid),
+                name_list(&names)
+            ),
         );
         // Primary on the first ref to a deprecated parent; every other
         // deprecated-parent call is a label naming what it reads.

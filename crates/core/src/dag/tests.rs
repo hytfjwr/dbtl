@@ -893,6 +893,7 @@ fn unit_tests_carry_their_shape() {
                 input: None,
                 rows: Some(serde_json::json!([{"id": 1}])),
             }),
+            ..Default::default()
         },
     );
     let dag = Dag::build(&manifest);
@@ -906,6 +907,175 @@ fn unit_tests_carry_their_shape() {
     assert_eq!(shape.inputs, 2);
     assert_eq!(shape.given_rows, Some(3));
     assert_eq!(shape.expect_rows, Some(1));
+}
+
+#[test]
+fn normalize_version_strips_the_v_prefix() {
+    assert_eq!(normalize_version("v1"), "1");
+    assert_eq!(normalize_version("V2"), "2");
+    assert_eq!(normalize_version("1"), "1");
+    assert_eq!(normalize_version("beta"), "beta");
+    // `v: 'v3'` declares a version literally named `v3` — the uid is
+    // `.vv3` and the wire value `"v3"`. Exactly one leading `v` strips, so
+    // the two stay distinct under comparison: the `"v3"` wire value and
+    // the `vv3` uid segment both normalize to `v3`, while `v: 3`/`v3`
+    // normalize to `3`.
+    assert_eq!(normalize_version("vv3"), "v3");
+    assert_eq!(normalize_version("v3"), "3");
+}
+
+#[test]
+fn versioned_model_segs_accepts_only_the_exact_shape() {
+    assert_eq!(
+        versioned_model_segs("model.p.fct_orders.v1"),
+        Some(("fct_orders", "v1"))
+    );
+    assert_eq!(
+        versioned_model_segs("model.p.fct_orders.vbeta"),
+        Some(("fct_orders", "vbeta"))
+    );
+    for uid in [
+        "model.p.fct_orders",          // unversioned model
+        "model.p.fct_orders.v1.extra", // too many segments
+        "model.p.v1",                  // too few
+        "seed.p.fct_orders.v1",        // a seed can't be versioned
+        "snapshot.p.fct_orders.v1",    // nor a snapshot
+        "unit_test.p.fct_orders.v1.t", // a unit-test uid
+    ] {
+        assert_eq!(versioned_model_segs(uid), None, "{uid}");
+    }
+}
+
+#[test]
+fn list_name_qualifies_versioned_models_only() {
+    assert_eq!(
+        list_name("model.p.fct_orders.v1", "fct_orders"),
+        "fct_orders.v1"
+    );
+    assert_eq!(
+        list_name("model.p.fct_orders.vbeta", "fct_orders"),
+        "fct_orders.vbeta"
+    );
+    // Everything else keeps the declared name — the unversioned output
+    // contract is byte-identical.
+    assert_eq!(list_name("model.p.fct_orders", "fct_orders"), "fct_orders");
+    assert_eq!(list_name("source.p.raw.orders", "orders"), "orders");
+    assert_eq!(list_name("seed.p.m.v1", "m"), "m");
+}
+
+/// `model.p.m` in `v1`+`v2` spellings — the nodes a real `versions:`-ed
+/// model produces in `nodes`.
+fn versioned_manifest() -> RawManifest {
+    let mut manifest = sample_manifest();
+    for v in ["1", "2"] {
+        manifest.nodes.insert(
+            format!("model.p.m.v{v}"),
+            RawNode {
+                name: "m".into(),
+                resource_type: "model".into(),
+                version: Some(v.into()),
+                latest_version: Some("2".into()),
+                ..Default::default()
+            },
+        );
+    }
+    manifest
+}
+
+/// uids carrying a `unit`-kind test, sorted.
+fn unit_tested(dag: &Dag) -> Vec<String> {
+    let mut uids: Vec<String> = dag
+        .nodes()
+        .keys()
+        .filter(|u| dag.tests(u).iter().any(|t| t.kind == "unit"))
+        .cloned()
+        .collect();
+    uids.sort_unstable();
+    uids
+}
+
+#[test]
+fn unit_test_depends_on_names_the_exact_version() {
+    // The real dbt 1.12 shape: a `versions: include: [2]` test records the
+    // v2 uid in `depends_on.nodes` — the target must be that uid, never an
+    // arbitrary same-named sibling (the old name-shape guess picked
+    // whichever version the HashMap handed back first).
+    let mut manifest = versioned_manifest();
+    manifest.unit_tests.insert(
+        "unit_test.p.m.m_v2_keeps_rows".to_string(),
+        crate::RawUnitTest {
+            name: "m_v2_keeps_rows".into(),
+            model: Some("m".into()),
+            depends_on: crate::RawDependsOn {
+                nodes: vec!["model.p.m.v2".into()],
+                ..Default::default()
+            },
+            version: Some("2".into()),
+            ..Default::default()
+        },
+    );
+    let dag = Dag::build(&manifest);
+    assert_eq!(
+        unit_tested(&dag),
+        vec!["model.p.m.v2".to_string()],
+        "the v2 test attaches to v2 exactly"
+    );
+}
+
+#[test]
+fn unit_test_version_disambiguates_the_name_fallback() {
+    // No `depends_on` — the fields are `#[serde(default)]`, so a partial
+    // manifest may omit them. The uid-shape guess (`model.p.m.v2`) still
+    // lands on the declared version.
+    let mut manifest = versioned_manifest();
+    manifest.unit_tests.insert(
+        "unit_test.p.m.m_v2_keeps_rows".to_string(),
+        crate::RawUnitTest {
+            name: "m_v2_keeps_rows".into(),
+            model: Some("m".into()),
+            version: Some("2".into()),
+            ..Default::default()
+        },
+    );
+    let dag = Dag::build(&manifest);
+    assert_eq!(unit_tested(&dag), vec!["model.p.m.v2".to_string()]);
+
+    // A package the uid-shape guess can't resolve falls through to the
+    // name lookup — which prefers the versioned candidate, not the
+    // sorted-minimum one.
+    let mut manifest = versioned_manifest();
+    manifest.unit_tests.insert(
+        "unit_test.q.m.m_v2_keeps_rows".to_string(),
+        crate::RawUnitTest {
+            name: "m_v2_keeps_rows".into(),
+            model: Some("m".into()),
+            version: Some("2".into()),
+            ..Default::default()
+        },
+    );
+    let dag = Dag::build(&manifest);
+    assert_eq!(
+        unit_tested(&dag),
+        vec!["model.p.m.v2".to_string()],
+        "version '2' picks .v2 over the lexicographically-smaller .v1"
+    );
+}
+
+#[test]
+fn unit_test_without_version_falls_back_deterministically() {
+    // Nothing to disambiguate on: the candidates sort, and the smallest uid
+    // wins every run — never a HashMap-iteration coin toss.
+    let mut manifest = versioned_manifest();
+    manifest.unit_tests.insert(
+        "unit_test.p.m.keeps_rows".to_string(),
+        crate::RawUnitTest {
+            name: "keeps_rows".into(),
+            model: Some("m".into()),
+            ..Default::default()
+        },
+    );
+    let dag = Dag::build(&manifest);
+    assert_eq!(unit_tested(&dag), vec!["model.p.m.v1".to_string()]);
 }
 
 #[test]

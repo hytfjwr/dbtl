@@ -15,7 +15,8 @@ use crate::SqlDialect;
 use crate::{Catalog, SqlParseResolver};
 
 pub(super) use crate::lint::call_sites::{
-    display_name, display_names, name_list, pluralize, CallSiteResolver,
+    display_name, display_names, family_name, name_list, pluralize, version_families,
+    CallSiteResolver,
 };
 
 mod documentation;
@@ -332,7 +333,9 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 catalog.expect("gated"),
                 &mut out,
             ),
-            LintRule::TrailingSemicolon => sql::trailing_semicolon(dag, &uids, &in_scope, &mut out),
+            LintRule::TrailingSemicolon => {
+                sql::trailing_semicolon(dag, &uids, &in_scope, dialect, &mut out)
+            }
             LintRule::DuplicateOutputColumns => sql::duplicate_output_columns(
                 dag,
                 &uids,

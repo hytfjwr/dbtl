@@ -8,6 +8,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Source-mode SQL parsing now renders Jinja the way the file lexes it —
+  `{{ }}` inside string literals expands without the tag's own quotes
+  closing the string early (`'{{ var('x') }}'` parses), backslash
+  escapes, `#`/`//` line comments, `--` comment spacing, nested `/* */`
+  blocks, and `E'…'`/`x'…'`/`r'…'`/`b'…'`/`u&'…'`/`q'[x]'` string
+  prefixes follow the selected dialect (Snowflake, BigQuery, MySQL and
+  friends escape `\`; Generic does not), and tags glued into identifiers
+  or sitting in name positions (`{{ c }}_sum`, `total_{{ c }}`,
+  `{{ var('s') }}_raw.tbl`, `FROM {{ var('t') }}`) render as identifiers
+  instead of splitting the name or producing `FROM NULL`. Unclassified
+  `{{ }}` expressions emit a unique generated name rather than `NULL`,
+  so two placeholder items no longer fold into a fake
+  `duplicate_output_columns` hit, a select-list macro line can't pose as
+  the previous column's alias, a `{{ ref('events') }}_2024` suffix keeps
+  the glued identifier instead of a broken `"events"_2024`, and
+  generated names never surface as hard-coded relations, CTE reads, or
+  unknown columns — including a `ref('x')` that happens to share a name
+  with an in-file CTE, which now correctly leaves the CTE flagged
+  unread. Lint findings from rendered SQL keep mapping back to the raw
+  source positions.
+- Manifests for `versions:`-ed models parse again: dbt writes `version` /
+  `latest_version` as a JSON number for `v: 1`-style declarations (and a
+  string for `v: beta`-style ones), which previously failed the whole
+  manifest load with `invalid type: integer '1', expected a string`.
+- Model versions are counted as one logical model and can be addressed by
+  versioned name: `source_fanout`, `model_fanout`, and `too_many_joins`
+  fold `fct_orders.v1`/`v2`/`vbeta` into a single `(package, name)` family
+  instead of inflating per-version, while `ls`, the TUI list and lineage
+  views, `columns`, generated docs, and the browser engine name each
+  version distinctly — `dbtl ls 'fct_orders.v1'` selects exactly that
+  spelling like real dbt — and a `versions: include:`-scoped unit test now
+  attaches to its declared version rather than an arbitrary same-named one.
 - `unknown_column_reference` no longer misreads date-part keywords in
   date functions, same-SELECT aliases in `WHERE`/`GROUP BY`/`HAVING`/
   `QUALIFY`/`ORDER BY`, or an `UNNEST`'s table alias as upstream columns.

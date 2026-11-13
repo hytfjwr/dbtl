@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 
 use super::pr::pr_impact;
-use crate::{ColumnChange, Dag, DagDiff, PackageScope};
+use crate::{list_name, ColumnChange, Dag, DagDiff, PackageScope};
 
 /// A changed node whose transitive downstream (buildable) closure is at least
 /// this large is flagged as a "hub" risk in the PR impact pack — changing it
@@ -143,7 +143,7 @@ pub fn diff_report(
 ) -> DiffReport {
     let pair = |uid: &str| {
         dag.get(uid)
-            .map(|n| (n.name.clone(), n.resource_type.clone()))
+            .map(|n| (list_name(&n.unique_id, &n.name), n.resource_type.clone()))
             .unwrap_or_else(|| (uid.to_string(), String::new()))
     };
     // The current-dag listings intersect the selection; `removed` and the
