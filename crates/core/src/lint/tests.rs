@@ -32,6 +32,7 @@ fn manifest(
             .push((*c).to_string());
     }
     RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes: nodes.into_iter().collect(),
         sources: sources.into_iter().collect(),

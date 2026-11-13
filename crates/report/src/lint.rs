@@ -468,6 +468,7 @@ mod tests {
                 .push((*c).to_string());
         }
         dbtl_core::RawManifest {
+            unresolved_adjacent: Default::default(),
             metadata: Default::default(),
             nodes: nodes.into_iter().collect(),
             sources: sources.into_iter().collect(),

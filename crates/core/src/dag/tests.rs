@@ -65,6 +65,7 @@ fn sample_manifest() -> RawManifest {
         ("model.p.b".to_string(), vec!["test.p.t".to_string()]),
     ]);
     RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes,
         sources,
@@ -118,6 +119,7 @@ fn analysis_nodes_are_excluded_like_tests() {
     let parent_map = HashMap::from([("analysis.p.x".to_string(), vec!["model.p.a".to_string()])]);
     let child_map = HashMap::from([("model.p.a".to_string(), vec!["analysis.p.x".to_string()])]);
     let dag = Dag::build(&RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
@@ -219,6 +221,7 @@ fn closure_is_cycle_safe() {
         ("model.p.b".to_string(), vec!["model.p.a".to_string()]),
     ]);
     let manifest = RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
@@ -513,6 +516,7 @@ fn multi_package_manifest(root_project: Option<&str>) -> RawManifest {
         model(&format!("model.mmm_pkg.pkg_{i}"), &format!("mmm_{i}"));
     }
     RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: crate::manifest::RawMetadata {
             project_name: root_project.map(str::to_string),
             ..Default::default()
@@ -1187,6 +1191,7 @@ fn unique_key_normalizes_string_list_and_absent_forms() {
         ),
     ]);
     let manifest = RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
@@ -1234,6 +1239,7 @@ fn patch_path_strips_the_package_scheme() {
         ),
     ]);
     let manifest = RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
@@ -1319,6 +1325,7 @@ fn source_freshness_loader_and_loaded_at_normalize() {
         ),
     ]);
     let manifest = RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes: HashMap::new(),
         sources,
@@ -1389,6 +1396,7 @@ fn overview_manifest(entries: &[(&str, RawDoc)]) -> RawManifest {
         .map(|(uid, d)| (uid.to_string(), d.clone()))
         .collect();
     RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: crate::manifest::RawMetadata {
             project_name: Some("p".into()),
             ..Default::default()

@@ -491,6 +491,7 @@ mod tests {
             ),
         ]);
         Dag::build(&RawManifest {
+            unresolved_adjacent: Default::default(),
             metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
@@ -546,6 +547,7 @@ mod tests {
             );
         }
         Dag::build(&RawManifest {
+            unresolved_adjacent: Default::default(),
             metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
@@ -680,6 +682,7 @@ mod tests {
             mk("model.plain", "plain", serde_json::json!({})),
         ]);
         Dag::build(&RawManifest {
+            unresolved_adjacent: Default::default(),
             metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
@@ -723,6 +726,7 @@ mod tests {
     fn state_modified_uses_the_diff() {
         // current: fct's SQL changed → modified.
         let mut changed = RawManifest {
+            unresolved_adjacent: Default::default(),
             metadata: Default::default(),
             nodes: HashMap::new(),
             sources: HashMap::new(),

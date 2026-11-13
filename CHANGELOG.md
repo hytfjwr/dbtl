@@ -8,6 +8,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Source mode now follows `ref()`/`source()` calls made inside
+  project-local `{% macro %}` bodies — bound arguments, defaults, nested
+  calls, project-qualified invokes, and provable `adapter.dispatch()`
+  names produce the same graph edges real dbt records, so macro-carried
+  dependencies no longer trigger false `root_models`/`unused_sources`
+  findings (calls that can't be proven still suppress those claims
+  instead of faking edges).
 - Source-mode SQL parsing now renders Jinja the way the file lexes it —
   `{{ }}` inside string literals expands without the tag's own quotes
   closing the string early (`'{{ var('x') }}'` parses), backslash

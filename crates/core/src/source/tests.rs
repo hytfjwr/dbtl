@@ -1555,3 +1555,285 @@ fn data_paths_and_seed_paths_both_declared_warns_and_prefers_seed_paths() {
     assert!(m.nodes.contains_key("seed.p.a"));
     assert!(!m.nodes.contains_key("seed.p.b"));
 }
+
+// ---- macro-derived edges (`{% macro %}` bodies' ref/source calls) ----------
+
+/// Write a minimal project: `dbt_project.yml` (name `p`), `models/` SQL
+/// bodies, `macros/` SQL bodies, and an optional `models/schema.yml`.
+fn macro_project(
+    dir: &std::path::Path,
+    models: &[(&str, &str)],
+    macros: &[(&str, &str)],
+    schema: Option<&str>,
+) {
+    std::fs::create_dir_all(dir.join("models")).unwrap();
+    std::fs::create_dir_all(dir.join("macros")).unwrap();
+    std::fs::write(dir.join("dbt_project.yml"), "name: p\n").unwrap();
+    if let Some(schema) = schema {
+        std::fs::write(dir.join("models/schema.yml"), schema).unwrap();
+    }
+    for (name, body) in models {
+        std::fs::write(dir.join(format!("models/{name}.sql")), body).unwrap();
+    }
+    for (name, body) in macros {
+        std::fs::write(dir.join(format!("macros/{name}.sql")), body).unwrap();
+    }
+}
+
+const SHOP_SCHEMA: &str = "version: 2\nsources:\n  - name: shop\n    schema: raw\n    tables:\n      - name: orders\n      - name: customers\n      - name: unused_tbl\n";
+
+#[test]
+fn jinja_calls_finds_invocations_in_expression_and_statement_tags() {
+    let sql = concat!(
+        "{{ m1('a') }}",
+        "{% set x = m2('b') %}",
+        "{% call(y) m3() %}z{% endcall %}",
+        "{% if m4() %}q{% elif m5() %}r{% else %}s{% endif %}",
+        "{% for i in m6() %}w{% endfor %}",
+        "{% do m7() %}",
+        "{%- if m8() -%}",
+        "{% macro decl(a) %}{% endmacro %}",
+        "{% filter upper %}t{% endfilter %}",
+        "{# comment m9() #}",
+        "plain m10() text",
+    );
+    let masked = mask_jinja_comments(sql);
+    let names: Vec<&str> = jinja_calls(&masked).iter().map(|c| c.name).collect();
+    assert_eq!(names, ["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8"]);
+}
+
+#[test]
+fn jinja_calls_captures_namespaced_callees_and_skips_unterminated() {
+    let masked = mask_jinja_comments("{{ shipkit.audited_select('t') }}{{ unclosed(");
+    let calls = jinja_calls(&masked);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].name, "shipkit.audited_select");
+    assert_eq!(calls[0].args, "'t'");
+}
+
+#[test]
+fn macro_invocations_add_ref_and_source_edges() {
+    let dir = tempfile::tempdir().unwrap();
+    macro_project(
+        dir.path(),
+        &[
+            // Literal positional arg.
+            ("m1", "{{ union_raw('orders') }}"),
+            // Project-name-qualified invocation.
+            ("m2", "{{ p.union_raw('customers') }}"),
+            // Nested project macro — the dep one level down resolves too.
+            ("m3", "{{ chain('orders') }}"),
+            // Keyword-bound arg.
+            ("m4", "{{ union_raw(table_name='orders') }}"),
+            // Call inside `{% %}`-wrapped shapes.
+            (
+                "m5",
+                "{% set t = 1 %}{{ union_raw('orders') }}{% if true %}select 2{% endif %}",
+            ),
+            ("m6", "{% call union_raw('orders') %}{% endcall %}"),
+            // `ref` inside a macro body → a model edge.
+            ("m7", "{{ ref_wrap('m1') }}"),
+            // A model that also refs directly.
+            ("m8", "select * from {{ ref('m7') }}"),
+        ],
+        &[(
+            "macros",
+            concat!(
+                "{% macro union_raw(table_name) %}",
+                "select * from {{ source('shop', table_name) }}",
+                "{% endmacro %}",
+                "{% macro chain(table_name) %}{{ union_raw(table_name) }}{% endmacro %}",
+                "{% macro ref_wrap(name) %}select * from {{ ref(name) }}{% endmacro %}",
+            ),
+        )],
+        Some(SHOP_SCHEMA),
+    );
+    let (m, _w) = manifest_from_source_with_warnings(dir.path()).unwrap();
+    let parents = |uid: &str| m.parent_map.get(uid).cloned().unwrap_or_default();
+    assert_eq!(parents("model.p.m1"), vec!["source.p.shop.orders"]);
+    assert_eq!(parents("model.p.m2"), vec!["source.p.shop.customers"]);
+    assert_eq!(parents("model.p.m3"), vec!["source.p.shop.orders"]);
+    assert_eq!(parents("model.p.m4"), vec!["source.p.shop.orders"]);
+    assert_eq!(parents("model.p.m5"), vec!["source.p.shop.orders"]);
+    assert_eq!(parents("model.p.m6"), vec!["source.p.shop.orders"]);
+    assert_eq!(parents("model.p.m7"), vec!["model.p.m1"]);
+    assert_eq!(parents("model.p.m8"), vec!["model.p.m7"]);
+    // `depends_on.macros` records only the DIRECTLY invoked macro — dbt
+    // writes the nested callee on the callee's own `depends_on.macros`
+    // (verified against the logistics fixture's real-dbt manifest:
+    // `stg_sensor_pings` carries `feeder_chain`, never `carrier_feed`).
+    assert_eq!(
+        m.nodes["model.p.m1"].depends_on.macros,
+        vec!["macro.p.union_raw"]
+    );
+    assert_eq!(
+        m.nodes["model.p.m3"].depends_on.macros,
+        vec!["macro.p.chain"]
+    );
+    // The manifest's `macros` map carries the project table and the
+    // macro→macro call graph.
+    assert!(m.macros.contains_key("macro.p.union_raw"));
+    assert_eq!(
+        m.macros["macro.p.chain"].depends_on.macros,
+        vec!["macro.p.union_raw"]
+    );
+    // Nothing here was unresolvable — the side table stays empty.
+    assert!(
+        m.unresolved_adjacent.is_empty(),
+        "{:?}",
+        m.unresolved_adjacent
+    );
+}
+
+#[test]
+fn macro_defaults_and_branch_bodies_resolve() {
+    let dir = tempfile::tempdir().unwrap();
+    macro_project(
+        dir.path(),
+        &[
+            // The default fills the unbound parameter.
+            ("m1", "{{ union_raw() }}"),
+            // `{% if %}` arms all resolve (over-cover — the source parser
+            // can't evaluate the guard, and a missing edge is worse).
+            ("m2", "{{ branchy('orders') }}"),
+        ],
+        &[(
+            "macros",
+            concat!(
+                "{% macro union_raw(table_name='orders') %}",
+                "select * from {{ source('shop', table_name) }}",
+                "{% endmacro %}",
+                "{% macro branchy(t) %}",
+                "{% if t == 'x' %}select * from {{ source('shop', 'orders') }}",
+                "{% else %}select * from {{ ref('m1') }}{% endif %}",
+                "{% endmacro %}",
+            ),
+        )],
+        Some(SHOP_SCHEMA),
+    );
+    let m = manifest_from_source(dir.path()).unwrap();
+    let parents = |uid: &str| m.parent_map.get(uid).cloned().unwrap_or_default();
+    assert_eq!(parents("model.p.m1"), vec!["source.p.shop.orders"]);
+    assert_eq!(
+        parents("model.p.m2"),
+        vec!["model.p.m1", "source.p.shop.orders"]
+    );
+    assert!(m.unresolved_adjacent.is_empty());
+}
+
+#[test]
+fn unresolvable_macro_calls_count_as_unprovable_adjacency() {
+    let dir = tempfile::tempdir().unwrap();
+    macro_project(
+        dir.path(),
+        &[
+            // A package-macro call: the callee's reach can't be proven —
+            // counted as a possible parent, its literal arg kept as a
+            // source-table candidate.
+            ("m1", "{{ pkg_thing.wrap('orders') }}"),
+            // Builtins and a no-dep project macro are NOT counted.
+            (
+                "m2",
+                "{{ is_incremental() }}{{ env_var('X') }}{{ log('x') }}{{ local_noop() }}{{ adapter.dispatch('local_noop') }}",
+            ),
+            // A project macro whose bound arg stayed non-literal →
+            // `incomplete` — counted, no literal candidates.
+            ("m3", "{{ union_raw(var('t')) }}"),
+            // Fully resolved — not counted.
+            ("m4", "{{ union_raw('customers') }}"),
+        ],
+        &[(
+            "macros",
+            concat!(
+                "{% macro union_raw(table_name) %}select * from {{ source('shop', table_name) }}{% endmacro %}",
+                "{% macro local_noop() %}select 1{% endmacro %}",
+            ),
+        )],
+        Some(SHOP_SCHEMA),
+    );
+    let m = manifest_from_source(dir.path()).unwrap();
+    let ua = &m.unresolved_adjacent;
+    assert_eq!(ua["model.p.m1"].parents, 1);
+    assert_eq!(ua["model.p.m3"].parents, 1);
+    assert!(
+        !ua.contains_key("model.p.m2"),
+        "builtins and no-dep macros must not count: {ua:?}"
+    );
+    assert!(!ua.contains_key("model.p.m4"), "{ua:?}");
+    // 'orders' (the counted call's literal arg) names a declared source
+    // table → a possible hidden child. 'customers' came through a
+    // RESOLVED call — no unprovable side to record.
+    assert_eq!(ua["source.p.shop.orders"].children, 1);
+    assert!(!ua.contains_key("source.p.shop.customers"), "{ua:?}");
+    // The resolvable call still emitted its edge.
+    assert_eq!(m.parent_map["model.p.m4"], vec!["source.p.shop.customers"]);
+}
+
+#[test]
+fn unresolved_macro_calls_suppress_root_models_and_unused_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    macro_project(
+        dir.path(),
+        &[
+            // Only "parent" is a package macro's hidden source() — without
+            // the unprovable-adjacency record, root_models would flag it.
+            ("m1", "{{ pkg_thing.wrap('orders') }}"),
+            // An unresolved bound-arg call — same suppression shape.
+            ("m3", "{{ union_raw(var('t')) }}"),
+            // The control: a genuinely parentless model MUST still flag.
+            ("ctl", "select 1"),
+        ],
+        &[(
+            "macros",
+            "{% macro union_raw(table_name) %}select * from {{ source('shop', table_name) }}{% endmacro %}",
+        )],
+        Some(SHOP_SCHEMA),
+    );
+    let m = manifest_from_source(dir.path()).unwrap();
+    let dag = Dag::build(&m);
+    let findings =
+        crate::run_rules(crate::LintInput::new(&dag, &crate::LintConfig::default())).findings;
+    let flagged: Vec<&str> = findings
+        .iter()
+        .filter(|f| f.rule == crate::LintRule::RootModels)
+        .map(|f| f.node_uid.as_str())
+        .collect();
+    assert!(flagged.contains(&"model.p.ctl"), "{flagged:?}");
+    assert!(
+        !flagged.contains(&"model.p.m1") && !flagged.contains(&"model.p.m3"),
+        "a call whose reach can't be proven must not read as 'no parents': {flagged:?}"
+    );
+    let unused: Vec<&str> = findings
+        .iter()
+        .filter(|f| f.rule == crate::LintRule::UnusedSources)
+        .map(|f| f.node_uid.as_str())
+        .collect();
+    assert!(unused.contains(&"source.p.shop.unused_tbl"), "{unused:?}");
+    assert!(
+        unused.contains(&"source.p.shop.customers"),
+        "a source no call even NAMES still flags: {unused:?}"
+    );
+    assert!(
+        !unused.contains(&"source.p.shop.orders"),
+        "a counted call's literal arg suppresses its source only: {unused:?}"
+    );
+}
+
+#[test]
+fn macro_calls_in_jinja_comments_are_inert() {
+    let dir = tempfile::tempdir().unwrap();
+    macro_project(
+        dir.path(),
+        &[("m1", "{# {{ union_raw('orders') }} #}select 1")],
+        &[(
+            "macros",
+            "{% macro union_raw(t) %}select * from {{ source('shop', t) }}{% endmacro %}",
+        )],
+        Some(SHOP_SCHEMA),
+    );
+    let m = manifest_from_source(dir.path()).unwrap();
+    assert!(!m.parent_map.contains_key("model.p.m1"));
+    // A commented-out call is still a call-shape we can classify — it is
+    // masked before the scan, so it neither edges nor counts.
+    assert!(m.unresolved_adjacent.is_empty());
+}

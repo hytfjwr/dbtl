@@ -604,11 +604,14 @@ pub struct Dag {
     /// have an entry.
     exposures: HashMap<String, ExposureInfo>,
     /// The manifest's macros, keyed by macro `unique_id`
-    /// (`macro.<project>.<name>`). Empty for synthesized source-mode manifests
-    /// (which never parse macros) — macro-diff detection keys off this.
+    /// (`macro.<project>.<name>`). Synthesized source-mode manifests carry
+    /// only the project's own `macro-paths` definitions (installed
+    /// packages are never read) — macro-diff detection keys off this.
     macros: BTreeMap<String, MacroInfo>,
-    /// The macro `unique_id`s each kept node's compiled SQL calls (the node's
-    /// `depends_on.macros`), a side map like `sql`/`details`.
+    /// The macro `unique_id`s each kept node invokes (the node's
+    /// `depends_on.macros` — compiled-SQL calls in manifest mode,
+    /// project-macro invocations the Jinja scan resolved in source mode),
+    /// a side map like `sql`/`details`.
     node_macros: HashMap<String, Vec<String>>,
     /// The ROOT project's name as dbt recorded it (`manifest.metadata.
     /// project_name`, present since dbt 1.6; `crate::source` synthesizes it

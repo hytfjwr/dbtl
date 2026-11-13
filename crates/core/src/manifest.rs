@@ -40,6 +40,19 @@ pub struct RawDependsOn {
     pub macros: Vec<String>,
 }
 
+/// The per-node counts [`RawManifest::unresolved_adjacent`] carries —
+/// adjacency a synthesized source-mode graph cannot prove.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UnresolvedAdjacent {
+    /// Parents the node may have beyond what `parent_map` shows — an
+    /// unresolved macro call that could have produced them.
+    pub parents: usize,
+    /// Children the node may have beyond what `child_map` shows — an
+    /// unresolved macro call whose literal argument names this source
+    /// table.
+    pub children: usize,
+}
+
 /// dbt writes a version as the declared `v:` value VERBATIM — a JSON number
 /// for `v: 1` (`"version": 1`), a JSON string for `v: beta`
 /// (`"version": "beta"`). Both spellings land here as the version's display
@@ -523,6 +536,20 @@ pub struct RawManifest {
     pub docs: HashMap<String, RawDoc>,
     pub parent_map: HashMap<String, Vec<String>>,
     pub child_map: HashMap<String, Vec<String>>,
+    /// SOURCE-MODE ONLY: per-node counts of adjacency the synthesized
+    /// graph cannot prove — a `ref()`/`source()` inside a project macro
+    /// whose arguments didn't reduce to literals, a `pkg.macro()` call
+    /// (installed `dbt_packages/` SQL is deliberately never read), or an
+    /// `adapter.dispatch` of an unresolvable name. A real manifest never
+    /// carries it — dbt executes those calls at parse and writes
+    /// `depends_on` — so `#[serde(skip)]` keeps it off the wire entirely
+    /// (absent-on-read, never serialized). `Dag::build` folds it into
+    /// `pruned_adjacent`, the same "unprovable adjacency" record a
+    /// package-scope prune writes, so the degree-judging lint rules
+    /// under-report identically whether the gap came from a package
+    /// prune or an unseen macro.
+    #[serde(skip)]
+    pub unresolved_adjacent: HashMap<String, UnresolvedAdjacent>,
 }
 
 /// The JSON-parse failure wording both manifest loaders share: the file
