@@ -65,7 +65,13 @@ const tabs = [
     <link rel="apple-touch-icon" href={url("apple-touch-icon.png")} />
     <link rel="preload" href={sansRegular} as="font" type="font/woff2" crossorigin />
     <link rel="preload" href={monoRegular} as="font" type="font/woff2" crossorigin />
-    {jsonLd && <script is:inline type="application/ld+json" set:html={JSON.stringify(jsonLd)} />}
+    {jsonLd && (
+      <script
+        is:inline
+        type="application/ld+json"
+        set:html={JSON.stringify(jsonLd).replace(/</g, "\\u003c")}
+      />
+    )}
     <script is:inline>
       (function () {
         try {

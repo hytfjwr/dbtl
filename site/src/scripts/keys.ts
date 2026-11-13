@@ -23,11 +23,27 @@ export function setShortcuts(on: boolean): void {
   sync();
 }
 
+// The full aria-keyshortcuts list, kept so it can be restored — while keys
+// are off only the one-character tokens drop, the modifier combos still work.
+const fullShortcuts = new WeakMap<Element, string>();
+
 function sync(): void {
   const on = shortcutsOn();
   for (const button of document.querySelectorAll<HTMLButtonElement>("[data-keys-toggle]")) {
     button.setAttribute("aria-pressed", String(on));
     button.textContent = `keys:${on ? "on" : "off"}`;
+  }
+  for (const el of document.querySelectorAll("[aria-keyshortcuts]")) {
+    if (!fullShortcuts.has(el)) fullShortcuts.set(el, el.getAttribute("aria-keyshortcuts")!);
+    const full = fullShortcuts.get(el)!;
+    const kept = on
+      ? full
+      : full
+          .split(/\s+/)
+          .filter((key) => key.length > 1)
+          .join(" ");
+    if (kept) el.setAttribute("aria-keyshortcuts", kept);
+    else el.removeAttribute("aria-keyshortcuts");
   }
 }
 
