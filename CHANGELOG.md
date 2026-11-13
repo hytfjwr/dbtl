@@ -11,6 +11,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The docs site gained a changelog page at
   https://hytfjwr.github.io/dbtl/changelog/, rendered from this file at
   each release and linked from the footer and the docs menu.
+- The playground now runs the real `dbtl` engine — the Rust code compiled
+  to WebAssembly — inside a Web Worker in the browser. Selector matching,
+  lineage, `lint` output (positions, excerpts, help/docs links, exit
+  codes), and column-level lineage are the engine's own output, with a
+  server-rendered snapshot of the default run shipped in the initial
+  HTML. Model SQL and `.dbtl.yml` can be edited and re-linted in place,
+  and a local `manifest.json` can be dropped onto the page — nothing is
+  uploaded anywhere.
 
 ### Changed
 
