@@ -108,6 +108,7 @@ fn export_labels_neutralize_untrusted_kind() {
     // `"]` must not close the Mermaid `["..."]` label (or the DOT quoted
     // label) and inject extra nodes/edges into the yanked diagram.
     let manifest = RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes: HashMap::from([(
             "model.p.evil".to_string(),
@@ -374,6 +375,7 @@ fn export_sanitizes_untrusted_node_names_into_a_safe_relative_path() {
         },
     );
     let dag = Dag::build(&RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),

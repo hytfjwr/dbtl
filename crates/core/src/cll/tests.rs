@@ -49,6 +49,7 @@ fn manifest(specs: &[(&str, &str, &[&str])], edges: &[(&str, &str)]) -> RawManif
             .push(c.to_string());
     }
     RawManifest {
+        unresolved_adjacent: Default::default(),
         nodes,
         sources: HashMap::new(),
         exposures: HashMap::new(),

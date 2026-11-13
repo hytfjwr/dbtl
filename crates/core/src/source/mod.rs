@@ -11,7 +11,10 @@
 //! under the configured resource paths (sources — incl. their `config:`
 //! blocks — columns, descriptions, tests) +
 //! the `.md` files under `docs-paths` (`{% docs %}` blocks, so `{{ doc() }}`
-//! refs in descriptions expand the way dbt renders them), synthesize a
+//! refs in descriptions expand the way dbt renders them) + the `.sql` files
+//! under `macro-paths` (project `{% macro %}` bodies — collected once so a
+//! `ref()`/`source()` a macro carries becomes a real edge, not a dropped
+//! Jinja call), synthesize a
 //! [`RawManifest`] of the exact shape [`Dag::build`] already consumes, then
 //! hand it off. Everything downstream (layout, list, modal, lineage) is
 //! unchanged.
@@ -49,14 +52,35 @@
 //!   `null` clears either way); `tags` union in dbt's
 //!   config-channels-then-properties order; `config.enabled` is the only
 //!   disable channel (a table's top-level `enabled:` is ignored).
+//! - A `ref()`/`source()` a project-local macro carries resolves the way
+//!   dbt's parse-time expansion resolves it: the invocation's literal
+//!   positional/keyword arguments bind to the `{% macro %}` parameters
+//!   (defaults filling what the call omits), `<project>.name` qualifies to
+//!   the same table, nested project-macro calls recurse under a depth
+//!   cap, and `adapter.dispatch('name')` resolves when `name` is a literal
+//!   project macro. The invoked macro lands in `depends_on.macros` — the
+//!   direct call only, since the callee's own `depends_on.macros` carries
+//!   the nested call the way dbt writes it. `{% if %}` guards can't be
+//!   evaluated, so both arms' dep calls land (dbt records only the arm it
+//!   executes — a possible edge beats a missing one). What can't resolve —
+//!   a package `ns.name()` (`dbt_packages/` is never read), an unknown
+//!   name, a dispatch or bound argument that stayed non-literal — adds no
+//!   edges but DOES count into `unresolved_adjacent`, the source-mode-only
+//!   record `Dag::build` merges into `pruned_adjacent`: `root_models`
+//!   can't claim "no parents" on a node whose hidden parents live inside
+//!   an unexpanded call, and `unused_sources` can't claim "no consumers"
+//!   on a source table such a call literally named.
 //!
 //! Scope: this covers the common project shape, not dbt's full resolver. NOT
 //! handled (a `ref` to one of these simply drops out, which `prune_adjacency`
-//! tolerates): cross-package `ref`, `{% if %}`/`var()`-gated refs (only the
-//! `var()` in `enabled` positions resolves — see vars.rs), and
-//! singular (`.sql`) tests. A versioned ref resolves to the unversioned name
-//! (approximation — the `.vN` node a `versions:` block would define is not
-//! synthesized); YAML-defined snapshots (dbt 1.9+) ARE synthesized as nodes.
+//! tolerates): cross-package `ref`, `var()`-gated refs (only the
+//! `var()` in `enabled` positions resolves — see vars.rs), the bodies of
+//! installed-package macros (their invocations count into
+//! `unresolved_adjacent` rather than resolving — `dbt_packages/` is never
+//! read), and singular (`.sql`) tests. A versioned ref resolves to the
+//! unversioned name (approximation — the `.vN` node a `versions:` block
+//! would define is not synthesized); YAML-defined snapshots (dbt 1.9+) ARE
+//! synthesized as nodes.
 //! Recoverable oddities (an unparsable schema.yml, a duplicate resource name)
 //! are reported as warnings, not errors.
 
@@ -127,11 +151,15 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
     synth.collect_snapshots();
     let parsed = synth.parse_schema_files();
     synth.synthesize_yaml_snapshots(&parsed);
-    let (parent_map, child_map) = synth.resolve_edges();
+    let ResolvedEdges {
+        parent_map,
+        child_map,
+        extras,
+    } = synth.resolve_edges();
     synth.apply_schema_files(&parsed);
     synth.apply_tree_fallback();
     let manifest_docs = synth.manifest_docs();
-    let (manifest, mut warnings) = synth.finish(parent_map, child_map, manifest_docs);
+    let (manifest, mut warnings) = synth.finish(parent_map, child_map, manifest_docs, extras);
     warnings.extend(crate::lint::meta_dbtl_warnings(&manifest));
     Ok((manifest, warnings))
 }
@@ -139,6 +167,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
 mod collect;
 mod config_tree;
 mod docs;
+mod macros;
 mod patterns;
 mod schema;
 mod synth;
@@ -151,6 +180,7 @@ mod yaml;
 use collect::*;
 use config_tree::*;
 use docs::*;
+use macros::*;
 use patterns::*;
 use schema::*;
 use synth::*;

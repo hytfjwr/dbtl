@@ -480,6 +480,7 @@ fn longest_chain_terminates_on_a_cyclic_manifest() {
         ("model.p.c".to_string(), vec!["model.p.b".to_string()]),
     ]);
     let dag = Dag::build(&RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),

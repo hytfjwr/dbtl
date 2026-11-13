@@ -1104,7 +1104,7 @@ pub fn jinja_branches(text: &str) -> JinjaBranches {
 /// — `None` when unterminated. `{{ }}` tracks bracket depth like the
 /// render (a `}}` inside `{{ f({'x':1}) }}` doesn't close); `{% %}` and
 /// `{# #}` end at the first tag close.
-fn jinja_tag_close(b: &[u8], i: usize) -> Option<usize> {
+pub(super) fn jinja_tag_close(b: &[u8], i: usize) -> Option<usize> {
     let close: &[u8] = match b.get(i + 1)? {
         b'{' => b"}}",
         b'%' => b"%}",
@@ -1131,7 +1131,7 @@ fn jinja_tag_close(b: &[u8], i: usize) -> Option<usize> {
 /// and padding stripped (`{%- if x -%}` → `if`) — plus the remainder
 /// after the word. A body whose first token isn't an identifier yields
 /// `""`.
-fn tag_word(body: &str) -> (&str, &str) {
+pub(super) fn tag_word(body: &str) -> (&str, &str) {
     let body = body.trim_matches(|c: char| c.is_whitespace() || c == '-' || c == '+');
     let end = body
         .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
@@ -1168,9 +1168,129 @@ fn jinja_set_assigns(rest: &str) -> bool {
 
 /// `needle`'s first offset in `hay[from..]` — the raw-tag body's
 /// `{%`-finder.
-fn find_subslice(hay: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+pub(super) fn find_subslice(hay: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     hay.get(from.min(hay.len())..)?
         .windows(needle.len())
         .position(|w| w == needle)
         .map(|p| from + p)
+}
+
+// ---------------------------------------------------------------------------
+// Jinja call sites — `name(...)`/`ns.name(...)` invocations inside tags
+// ---------------------------------------------------------------------------
+
+/// `{% %}` words whose remainder is NOT an expression to scan for calls:
+/// the declaration tags (`{% macro name(sig) %}`'s `name(sig)` is a
+/// signature, `{% test %}`/`{% docs %}`/`{% snapshot %}`/`{% block %}`/
+/// `{% embed %}`/`{% materialization %}`/`{% verification %}` name their
+/// resource), the raw-payload tags (`{% filter name %}` applies a Jinja
+/// filter — not a macro — and `{% import %}`/`{% from %}`/`{% include %}`/
+/// `{% extends %}` take paths), `{% raw %}`, and `{% else %}` (no
+/// payload). Every `end*` close is skipped by prefix, not listed.
+const NO_CALL_TAGS: &[&str] = &[
+    "block",
+    "docs",
+    "else",
+    "embed",
+    "extends",
+    "filter",
+    "from",
+    "import",
+    "include",
+    "macro",
+    "materialization",
+    "raw",
+    "snapshot",
+    "test",
+    "verification",
+];
+
+/// Any `name(...)`/`ns.name(...)` callee — [`jinja_calls`]'s per-tag pass.
+/// Unlike `site_head_re` there is no `\b` needed: the leading character
+/// class can only match at an identifier's start, so a longer identifier
+/// always wins the leftmost match (`xunion_raw(` captures `xunion_raw`).
+fn call_head_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*\(").unwrap()
+    })
+}
+
+/// One `name(...)`/`ns.name(...)` call inside a Jinja `{{ }}`/`{% %}` tag —
+/// the shape macro invocations take. `name` is the callee as spelled
+/// (`union_raw`, `shipkit.audited_select`); `args` is the text between the
+/// parens.
+#[derive(Debug, Clone)]
+pub(super) struct JinjaCall<'a> {
+    pub name: &'a str,
+    pub args: &'a str,
+}
+
+/// The ordered `name(...)`/`ns.name(...)` calls inside `text`'s Jinja tags —
+/// the scan that sees macro invocations. `{{ }}` bodies scan whole;
+/// `{% %}` bodies scan after the tag word, so `{% set x = f() %}`,
+/// `{% call f() %}`, `{% if f() %}`, `{% do f() %}` and `{% for x in f() %}`
+/// all see `f` — except the [`NO_CALL_TAGS`] words and every `end*` close,
+/// whose payloads are not calls. `ref`/`source`/`config` heads land in the
+/// output like any other name — which callees a consumer accepts is its
+/// business (the edge pass filters to macro names; the macro-body pass
+/// turns `ref`/`source` into dependency calls).
+///
+/// `text` should be [`mask_jinja_comments`] output — a call inside a
+/// `{# #}` comment is not a call. Only tag bodies are scanned, so plain
+/// SQL text never produces a call; a head inside a Jinja string literal
+/// (`'{{ m() }}'`-shaped text) still matches, the same simplification
+/// [`call_sites_masked`] makes.
+pub(super) fn jinja_calls(text: &str) -> Vec<JinjaCall<'_>> {
+    let bytes = text.as_bytes();
+    let mut calls = Vec::new();
+    let mut i = 0usize;
+    while i + 1 < bytes.len() {
+        let tag = match (bytes[i], bytes[i + 1]) {
+            (b'{', b'{') => b'{',
+            (b'{', b'%') => b'%',
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        let Some(close) = jinja_tag_close(bytes, i) else {
+            // An unterminated tag has no body to scan — keep walking so a
+            // stray `{{` in a string can't hide the calls after it.
+            i += 1;
+            continue;
+        };
+        let body = &text[i + 2..close];
+        // The byte offset inside `body` the call scan starts at: `{{ }}`
+        // scans from 0; `{% %}` skips the tag word (and whole no-call tags).
+        let scan_at = if tag == b'{' {
+            Some(0usize)
+        } else {
+            let (word, _) = tag_word(body);
+            // The scan starts after the tag word — measured in `body`'s
+            // ORIGINAL coordinates (`tag_word` trims both ends, so `rest`
+            // can't be used to derive the offset): left-pad width + the
+            // word itself.
+            let lead = body.len()
+                - body
+                    .trim_start_matches(|c: char| c.is_whitespace() || c == '-' || c == '+')
+                    .len();
+            (!word.is_empty() && !word.starts_with("end") && !NO_CALL_TAGS.contains(&word))
+                .then_some(lead + word.len())
+        };
+        if let Some(off) = scan_at {
+            let scan = &text[i + 2 + off..close];
+            for m in call_head_re().find_iter(scan) {
+                let Some((args, _)) = scan_call_args(text, i + 2 + off + m.end()) else {
+                    continue;
+                };
+                calls.push(JinjaCall {
+                    name: m.as_str().trim_end_matches('(').trim_end(),
+                    args,
+                });
+            }
+        }
+        i = close + 2;
+    }
+    calls
 }

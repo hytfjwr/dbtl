@@ -92,6 +92,7 @@ pub(super) fn empty_list_stamps_the_scope_reason_and_ascii_dash() {
     use dbtl::app::App;
     use std::collections::HashMap;
     let empty = Dag::build(&dbtl::RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes: HashMap::new(),
         sources: HashMap::new(),
