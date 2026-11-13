@@ -23,11 +23,14 @@ permissions: {}
 jobs:
   prepare:
     name: Resolve release tag
-    # For pull_request events, only merged release/* PRs start a release.
+    # For pull_request events, only a merged release/* PR authored by
+    # github-actions[bot] from this repository (never a fork) starts a release.
     if: >-
       github.event_name != 'pull_request' ||
       (github.event.pull_request.merged == true &&
-       startsWith(github.event.pull_request.head.ref, 'release/'))
+       startsWith(github.event.pull_request.head.ref, 'release/') &&
+       github.event.pull_request.user.login == 'github-actions[bot]' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -159,10 +162,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      # gh release download (the tap push uses TAP_GITHUB_TOKEN instead).
+      # gh release download (the tap push authenticates over SSH instead).
       contents: read
     env:
-      TAP_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+      TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
       TAP_REPO: hytfjwr/homebrew-tap
       TAG: ${{ needs.prepare.outputs.tag }}
     steps:
@@ -170,22 +173,48 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -z "$TAP_TOKEN" ]; then
-            echo "::notice::RELEASE_GITHUB_TOKEN is not set — skipping the Homebrew tap update. Add a fine-grained PAT with contents:write on ${TAP_REPO} to enable it (see RELEASING.md)."
+          if [ -z "$TAP_DEPLOY_KEY" ]; then
+            echo "::notice::HOMEBREW_TAP_DEPLOY_KEY is not set — skipping the Homebrew tap update. Store the private half of the tap's deploy key as this repository's HOMEBREW_TAP_DEPLOY_KEY secret to enable it (see RELEASING.md)."
             exit 0
           fi
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern checksums.txt
 
-      - name: Update formula
+      - name: Push formula to the tap
+        env:
+          # github.com's published ed25519 host key — pinned so the
+          # connection never trusts whatever the network presents.
+          GITHUB_HOST_KEY: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
         run: |
-          if [ -z "$TAP_TOKEN" ]; then
+          if [ -z "$TAP_DEPLOY_KEY" ]; then
             exit 0
           fi
+          # Load the deploy key into an agent (it never touches disk or the
+          # log) and pin github.com's host key for the SSH connection.
+          mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+          printf 'github.com %s\n' "$GITHUB_HOST_KEY" > "$HOME/.ssh/known_hosts"
+          eval "$(ssh-agent -s)" >/dev/null
+          trap 'ssh-agent -k >/dev/null 2>&1' EXIT
+          printf '%s\n' "$TAP_DEPLOY_KEY" | ssh-add - >/dev/null
+          export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+          # Fail loudly when the presented key differs from the pin: verify
+          # the new fingerprint against GitHub's published SSH key
+          # fingerprints, then update GITHUB_HOST_KEY — never trust a
+          # changed key blindly.
+          live=$(ssh-keyscan -t ed25519 github.com 2>/dev/null | awk '$2 == "ssh-ed25519" { print $3; exit }')
+          if [ -z "$live" ]; then
+            echo "::error::ssh-keyscan could not reach github.com — cannot verify the host key."
+            exit 1
+          fi
+          if [ "$live" != "${GITHUB_HOST_KEY#ssh-ed25519 }" ]; then
+            echo "::error::github.com's ed25519 host key does not match this workflow's pinned key. Verify the new fingerprint against GitHub's published SSH key fingerprints, then update GITHUB_HOST_KEY."
+            exit 1
+          fi
+          git clone "git@github.com:${TAP_REPO}.git" tap
           sha_for() {
             awk -v f="dbtl-${TAG}-$1.tar.gz" '$2 == f { print $1 }' checksums.txt
           }
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
-          cat > dbtl.rb <<EOF
+          cat > tap/Formula/dbtl.rb <<EOF
           class Dbtl < Formula
             desc "Terminal UI for exploring dbt model lineage as ASCII art"
             homepage "https://github.com/${GITHUB_REPOSITORY}"
@@ -227,16 +256,19 @@ jobs:
           end
           EOF
           # Every sha256 line must have a value; an empty one means a missing asset.
-          if grep -q 'sha256 ""' dbtl.rb; then
+          if grep -q 'sha256 ""' tap/Formula/dbtl.rb; then
             echo "::error::Missing checksum for one of the targets"
             exit 1
           fi
-          GH_TOKEN="$TAP_TOKEN" gh api "repos/${TAP_REPO}/contents/Formula/dbtl.rb" --jq .sha > old_sha 2>/dev/null || true
-          args=(-f message="dbtl ${TAG}" -f content="$(base64 -w0 dbtl.rb)")
-          if [ -s old_sha ]; then
-            args+=(-f sha="$(cat old_sha)")
+          git -C tap config user.name "github-actions[bot]"
+          git -C tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C tap add Formula/dbtl.rb
+          if git -C tap diff --cached --quiet; then
+            echo "Formula already up to date."
+          else
+            git -C tap commit -m "dbtl ${TAG}"
+            git -C tap push origin HEAD
           fi
-          GH_TOKEN="$TAP_TOKEN" gh api -X PUT "repos/${TAP_REPO}/contents/Formula/dbtl.rb" "${args[@]}"
 
   # Renders the demo tape at the release tag and attaches demo.gif to the
   # release — a convenience asset, not a shipped artifact: nothing depends
