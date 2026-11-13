@@ -426,8 +426,9 @@ pub enum Commands {
         /// Do not read the lint baseline file — every finding counts again.
         #[arg(long)]
         no_baseline: bool,
-        /// List every lint rule — id, category, effective severity, summary —
-        /// and exit. Reads `.dbtl.yml` when found; never loads a data source.
+        /// List every lint rule — id, category, default severity, effective
+        /// severity, enabled state, preset membership, summary — and exit.
+        /// Reads `.dbtl.yml` when found; never loads a data source.
         #[arg(long,
                conflicts_with_all = ["explain", "write_baseline", "quiet", "format", "color", "fail_on", "no_baseline", "report", "step_summary", "path_prefix"])]
         list_rules: bool,

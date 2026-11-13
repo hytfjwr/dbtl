@@ -993,7 +993,7 @@ impl LintPreset {
     /// `default_severity` (the severity layers above can still repin it).
     pub fn enables(self, info: &RuleInfo) -> bool {
         match self {
-            LintPreset::Minimal => info.default_severity == Severity::Error,
+            LintPreset::Minimal => info.default_enabled && info.default_severity == Severity::Error,
             LintPreset::Standard => info.default_enabled,
             LintPreset::Strict => true,
         }

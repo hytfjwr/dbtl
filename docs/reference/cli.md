@@ -132,7 +132,7 @@ Usage: dbtl lint [OPTIONS]
 | `--path-prefix` | `<PREFIX>` | — | — | Prefix prepended to the file paths the `github`, `sarif`, and `codeclimate` formats emit — for a project living in a repository subdirectory. A usage error when none of those formats is selected via `--format` or `--report` |
 | `--write-baseline` | `[<PATH>]` | — | — | Freeze every current finding into a lint baseline file and exit (PATH defaults to `lint.baseline`, else `.dbtl-baseline.json` at the project root). Writes always exit 0 and cannot combine with `--diff` |
 | `--no-baseline` | — | — | `false` | Do not read the lint baseline file — every finding counts again |
-| `--list-rules` | — | — | `false` | List every lint rule — id, category, effective severity, summary — and exit. Reads `.dbtl.yml` when found; never loads a data source |
+| `--list-rules` | — | — | `false` | List every lint rule — id, category, default severity, effective severity, enabled state, preset membership, summary — and exit. Reads `.dbtl.yml` when found; never loads a data source |
 | `--explain` | `<ID>` | — | — | Show one rule's full registry entry (rationale, example, params, fix guidance, docs link) and exit — no data load |
 | `--select` | `<SELECTOR>` (repeatable) | — | — | Restrict findings to nodes matching a dbt selector — the grammar of `dbtl ls` (`tag:x`, `path:y`, `+name+`, `state:modified`, …), NOT the TUI's `--select`, which opens one model's tab. `state:` atoms need `--diff`. Repeatable — specs union. Cannot combine with `--write-baseline` (a partial finding set must never overwrite the frozen file) |
 | `--quiet` | — | — | `false` | Suppress the report on stdout; only the exit code matters |

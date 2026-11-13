@@ -27,7 +27,7 @@ Looked up beside the data source: the project directory in source mode; in manif
 | Key | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
 | `fail_on` | `error` \| `warn` \| `never` | `error` | `error` \| `warn` \| `never` — the minimum severity at which findings fail a run. `--fail-on` overrides it. |
-| `lint` | object | — | `lint:` — per-rule enables, severities, parameters, excludes, naming prefixes, and the baseline path. |
+| `lint` | object | — | `lint:` — the rule-set preset, per-category severities, per-rule enables, severities, parameters, excludes, naming prefixes, and the baseline path. |
 | `check` | object | — | `check:` — gate severities/parameters and whether the lint gates fold into `dbtl check`. |
 | `docs` | object | — | `docs:` — generated-docs options. |
 | `owner_meta_key` | string | `owner` | The `meta:` key the affected-owners report reads (default `owner`; wins over `config.yml`'s `owner_meta_key`). |

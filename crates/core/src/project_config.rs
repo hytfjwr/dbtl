@@ -632,8 +632,9 @@ struct ProjectFile {
     /// `error` | `warn` | `never` — the minimum severity at which findings
     /// fail a run. `--fail-on` overrides it.
     fail_on: Option<FailOn>,
-    /// `lint:` — per-rule enables, severities, parameters, excludes, naming
-    /// prefixes, and the baseline path.
+    /// `lint:` — the rule-set preset, per-category severities, per-rule
+    /// enables, severities, parameters, excludes, naming prefixes, and the
+    /// baseline path.
     lint: LintFile,
     /// `check:` — gate severities/parameters and whether the lint gates
     /// fold into `dbtl check`.

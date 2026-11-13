@@ -1852,7 +1852,7 @@
           }
         }
       },
-      "description": "`lint:` — per-rule enables, severities, parameters, excludes, naming\nprefixes, and the baseline path."
+      "description": "`lint:` — the rule-set preset, per-category severities, per-rule\nenables, severities, parameters, excludes, naming prefixes, and the\nbaseline path."
     },
     "check": {
       "type": "object",
