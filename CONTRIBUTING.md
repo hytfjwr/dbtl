@@ -119,6 +119,10 @@ The documentation site lives in `site/`.
 - Sources are formatted and linted: run `pnpm run format` to fix formatting,
   `pnpm run format:check` and `pnpm run lint` to check, and `pnpm run check`
   for the type check. All of them run in CI.
+- Browser tests (Chromium) cover the docs drawer, horizontal overflow and the
+  search dialog. To run them locally, install the browser once with
+  `pnpm exec playwright install chromium`, then `pnpm run build` and
+  `pnpm run test:e2e`. They run in CI on pull requests only.
 - The site is published only when a release is cut. A pull request builds it
   to check it, and nothing is deployed.
 - In examples, write the release version as `@DBTL_TAG@` (for example `v1.2.3`) or
