@@ -683,9 +683,11 @@ impl SqlParseResolver {
         // same surface.
         let mut out: Vec<OutCol> = Vec::new();
         for item in &sel.projection {
-            // Nothing declared yet — the alias level can't contribute,
-            // so resolve straight against FROM and skip the clones.
-            if out.is_empty() {
+            // Nothing nameable declared yet — the alias level can't
+            // contribute (a leading literal or other unnameable output
+            // never aliases), so resolve straight against FROM and skip
+            // the clones.
+            if out.iter().all(|o| o.name.is_empty()) {
                 let refs = ref_scope(env, &scope);
                 self.resolve_select_item(ctx, refs, &scope, item, &mut out)?;
                 continue;
