@@ -8,6 +8,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `dbtl lint --fix` / `--fix-dry-run` — safe automatic repairs for the
+  rules whose findings pin a determined edit (today `trailing_semicolon`
+  and `unused_cte`; `--list-rules`'s `FIX` column and `--explain`'s
+  `auto-fix:` line mark them). Fixes apply the planned byte deletions,
+  re-lint to a fixpoint in the same run, and report what remains — a
+  deletion that makes another CTE unread is cleaned up too. Edits refuse
+  Jinja-covered or split template constructs, overlapping ranges,
+  unparseable results, stale manifest/disk drift, and anything that
+  would introduce a new finding under another rule; writes are atomic
+  and preserve LF/CRLF and the final-newline state. `--fix-dry-run`
+  prints a unified diff per file (stdout for the human formats, stderr
+  for the machine ones) and writes nothing.
 - Lint suppressions now carry a reason, and reports surface them.
   `meta.dbtl.ignore` accepts a map form — `ignore: {root_models: "pk
   enforced upstream", all: "imported model"}` — recording a reason per

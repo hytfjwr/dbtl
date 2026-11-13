@@ -2074,3 +2074,409 @@ fn dbtl_yml_exclude_legacy_path_form_warns_once() {
         "stderr: {err}"
     );
 }
+
+// ---------------- dbtl lint --fix / --fix-dry-run ----------------
+
+/// A two-model scratch project: `stg_base` feeds `m`, whose `dead` CTE is
+/// unread and whose statement carries a trailing `;` — one fixable finding
+/// of each rule. `stg` keeps the naming so `unused_models` can orphan it.
+fn fix_project(dir: &Path) -> PathBuf {
+    common::write_project(
+        dir,
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            ("models/stg_base.sql", "select 1 as id\n"),
+            (
+                "models/m.sql",
+                "with dead as (\n    select * from {{ ref('stg_base') }}\n)\nselect 2 as x;\n",
+            ),
+        ],
+    )
+}
+
+/// `lint --source <root>` with the caller's extras.
+fn lint_src(root: &Path, extra: &[&str]) -> std::process::Output {
+    let mut args: Vec<&str> = vec!["lint", "--source", root.to_str().unwrap()];
+    args.extend_from_slice(extra);
+    run(&args)
+}
+
+#[test]
+fn lint_fix_rewrites_and_repeats_to_fixpoint() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = fix_project(tmp.path());
+    let m = root.join("models/m.sql");
+
+    // Both findings fixed → post-fix lint reports nothing → pass.
+    let out = lint_src(
+        &root,
+        &["--rules", "trailing_semicolon,unused_cte", "--fix"],
+    );
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("2 findings auto-fixed in 1 file"),
+        "the fixed tally line: {text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&m).unwrap(),
+        "select 2 as x\n",
+        "the CTE and the `;` both go"
+    );
+
+    // A second run has nothing left — idempotent, no fixed line.
+    let out = lint_src(
+        &root,
+        &["--rules", "trailing_semicolon,unused_cte", "--fix"],
+    );
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    assert!(
+        !stdout(&out).contains("auto-fixed"),
+        "nothing left to fix: {}",
+        stdout(&out)
+    );
+
+    // Plain lint on the fixed file agrees — the write is real.
+    let out = lint_src(&root, &["--rules", "trailing_semicolon,unused_cte"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+}
+
+#[test]
+fn lint_fix_cascade_deletes_newly_unread_ctes() {
+    // `b` reads `a`; the main statement reads neither — deleting `b`
+    // leaves `a` unread, which the SAME run's next round then removes.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = common::write_project(
+        tmp.path(),
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            ("models/stg_base.sql", "select 1 as id\n"),
+            (
+                "models/m.sql",
+                "with a as (\n    select * from {{ ref('stg_base') }}\n),\nb as (\n    select * from a\n)\nselect 1\n",
+            ),
+        ],
+    );
+    let out = lint_src(&root, &["--rules", "unused_cte", "--fix"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    assert_eq!(
+        std::fs::read_to_string(root.join("models/m.sql")).unwrap(),
+        "select 1\n",
+        "the with-clause goes entirely once `b`'s delete orphans `a`"
+    );
+}
+
+#[test]
+fn lint_fix_dry_run_prints_diff_and_writes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = fix_project(tmp.path());
+    let m = root.join("models/m.sql");
+    let before = std::fs::read_to_string(&m).unwrap();
+
+    let out = lint_src(
+        &root,
+        &["--rules", "trailing_semicolon,unused_cte", "--fix-dry-run"],
+    );
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("--- a/models/m.sql") && text.contains("+++ b/models/m.sql"),
+        "the unified-diff header: {text}"
+    );
+    assert!(text.contains("@@"), "a hunk body: {text}");
+    assert!(
+        text.contains("2 findings auto-fixable in 1 file (dry run"),
+        "the dry-run tally: {text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&m).unwrap(),
+        before,
+        "dry run never writes"
+    );
+}
+
+#[test]
+fn lint_fix_dry_run_keeps_machine_stdout_clean() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = fix_project(tmp.path());
+    let out = lint_src(
+        &root,
+        &[
+            "--rules",
+            "trailing_semicolon,unused_cte",
+            "--fix-dry-run",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    serde_json::from_str::<serde_json::Value>(&text)
+        .expect("json stdout stays parseable — the diff went to stderr");
+    assert!(
+        stderr(&out).contains("--- a/models/m.sql"),
+        "the diff preview still prints, on stderr"
+    );
+}
+
+#[test]
+fn lint_fix_preserves_crlf_and_final_newline_style() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = common::write_project(
+        tmp.path(),
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            ("models/crlf.sql", "select 1 as x;\r\n"),
+            ("models/nonl.sql", "select 2 as x;"),
+        ],
+    );
+    let out = lint_src(&root, &["--rules", "trailing_semicolon", "--fix"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    assert_eq!(
+        std::fs::read_to_string(root.join("models/crlf.sql")).unwrap(),
+        "select 1 as x\r\n",
+        "the CRLF survives the edit"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("models/nonl.sql")).unwrap(),
+        "select 2 as x",
+        "no newline materializes at EOF"
+    );
+}
+
+#[test]
+fn lint_fix_jinja_arm_semicolon_is_never_touched() {
+    // The `;` lives only inside a `{% if %}` arm — deleting it would
+    // change what one render branch says, so the rule finding can't
+    // map to a literal source byte.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = common::write_project(
+        tmp.path(),
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            (
+                "models/m.sql",
+                "{% if true %}\nselect 1;\n{% else %}\nselect 1;\n{% endif %}\n",
+            ),
+        ],
+    );
+    let before = std::fs::read_to_string(root.join("models/m.sql")).unwrap();
+    let out = lint_src(&root, &["--rules", "trailing_semicolon", "--fix"]);
+    let text = stdout(&out);
+    assert!(!text.contains("auto-fixed"), "no fix applied: {text}");
+    assert_eq!(
+        std::fs::read_to_string(root.join("models/m.sql")).unwrap(),
+        before,
+        "the Jinja-arm `;` stays"
+    );
+}
+
+#[test]
+fn lint_fix_refuses_a_delete_that_orphans_a_model() {
+    // `dead` is stg_base's ONLY reader — removing it would introduce an
+    // `unused_models` finding on a different node, so the CTE delete is
+    // reverted while the independent `;` fix still lands.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = fix_project(tmp.path());
+    let out = lint_src(
+        &root,
+        &[
+            "--rules",
+            "trailing_semicolon,unused_cte,unused_models",
+            "--fix",
+        ],
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("would introduce a new unused_models finding"),
+        "the guard warns: {err}"
+    );
+    let after = std::fs::read_to_string(root.join("models/m.sql")).unwrap();
+    assert!(
+        after.contains("dead as"),
+        "the unsafe delete reverts: {after}"
+    );
+    assert!(!after.contains("x;"), "the safe `;` fix is kept: {after}");
+}
+
+#[test]
+fn lint_fix_stale_manifest_is_warned_not_patched() {
+    // Manifest under <project>/target/ — the root resolves, but the
+    // file on disk drifted from `raw_code` → never patched.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = common::write_project(
+        tmp.path(),
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            ("models/m.sql", "select 999 as x;\n"),
+        ],
+    );
+    std::fs::create_dir_all(root.join("target")).unwrap();
+    std::fs::write(
+        root.join("target/manifest.json"),
+        r#"{"metadata": {"project_name": "v"},
+ "nodes": {
+  "model.v.m": {
+   "name": "m", "resource_type": "model", "package_name": "v",
+   "path": "m.sql", "original_file_path": "models/m.sql",
+   "raw_code": "select 1 as x;\n"
+  }
+ },
+ "sources": {}, "parent_map": {}, "child_map": {}}"#,
+    )
+    .unwrap();
+    let manifest = root.join("target/manifest.json");
+    let out = run(&[
+        "lint",
+        "--manifest",
+        manifest.to_str().unwrap(),
+        "--rules",
+        "trailing_semicolon",
+        "--fix",
+    ]);
+    // The finding stands (file skipped) → the error still gates.
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains("differs from the manifest's raw_code"),
+        "the drift warning: {}",
+        stderr(&out)
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("models/m.sql")).unwrap(),
+        "select 999 as x;\n",
+        "a drifted file is never written"
+    );
+}
+
+#[test]
+fn lint_fix_manifest_under_target_writes_the_file() {
+    // A manifest at <project>/target/manifest.json anchors the root —
+    // `original_file_path` resolves against it and `raw_code` matches
+    // the file → the fix applies like source mode.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = common::write_project(
+        tmp.path(),
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            ("models/m.sql", "select 1 as x;\n"),
+        ],
+    );
+    std::fs::create_dir_all(root.join("target")).unwrap();
+    std::fs::write(
+        root.join("target/manifest.json"),
+        r#"{"metadata": {"project_name": "v"},
+ "nodes": {
+  "model.v.m": {
+   "name": "m", "resource_type": "model", "package_name": "v",
+   "path": "m.sql", "original_file_path": "models/m.sql",
+   "raw_code": "select 1 as x;\n"
+  }
+ },
+ "sources": {}, "parent_map": {}, "child_map": {}}"#,
+    )
+    .unwrap();
+    let manifest = root.join("target/manifest.json");
+    let out = run(&[
+        "lint",
+        "--manifest",
+        manifest.to_str().unwrap(),
+        "--rules",
+        "trailing_semicolon",
+        "--fix",
+    ]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    assert_eq!(
+        std::fs::read_to_string(root.join("models/m.sql")).unwrap(),
+        "select 1 as x\n",
+        "manifest-mode fixing writes the resolved file"
+    );
+}
+
+#[test]
+fn lint_fix_manifest_outside_target_is_a_usage_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    let out = run(&["lint", "--manifest", m.to_str().unwrap(), "--fix"]);
+    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains("project root"),
+        "the usage message explains: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn lint_fix_rules_and_select_narrow_the_fixes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = fix_project(tmp.path());
+    // `--rules trailing_semicolon` — the CTE finding isn't even
+    // evaluated, so only the `;` goes.
+    let out = lint_src(&root, &["--rules", "trailing_semicolon", "--fix"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let after = std::fs::read_to_string(root.join("models/m.sql")).unwrap();
+    assert!(after.contains("dead as"), "the CTE stays: {after}");
+    assert!(!after.contains("x;"), "the `;` fix lands: {after}");
+
+    // Revert, then `--select` the other model — `m` is untouched.
+    std::fs::write(
+        root.join("models/m.sql"),
+        "with dead as (\n    select * from {{ ref('stg_base') }}\n)\nselect 2 as x;\n",
+    )
+    .unwrap();
+    let out = lint_src(
+        &root,
+        &[
+            "--rules",
+            "trailing_semicolon,unused_cte",
+            "--select",
+            "stg_base",
+            "--fix",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let after = std::fs::read_to_string(root.join("models/m.sql")).unwrap();
+    assert!(
+        after.contains("x;"),
+        "m is out of the selection — untouched: {after}"
+    );
+}
+
+#[test]
+fn lint_fix_flag_conflicts_are_usage_errors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = fix_project(tmp.path());
+    for extra in [
+        vec!["--fix", "--fix-dry-run"],
+        vec!["--fix", "--write-baseline"],
+        vec!["--fix-dry-run", "--write-baseline"],
+        vec!["--fix", "--list-rules"],
+        vec!["--fix", "--explain", "unused_cte"],
+        vec!["--fix-dry-run", "--quiet"],
+    ] {
+        let out = lint_src(&root, &extra);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{extra:?} conflicts — stderr: {}",
+            stderr(&out)
+        );
+    }
+}

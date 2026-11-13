@@ -201,6 +201,8 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
             list_rules,
             explain,
             select,
+            fix,
+            fix_dry_run,
             show_suppressed,
             quiet,
         }) => {
@@ -222,6 +224,8 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
                     path_prefix: path_prefix.as_deref(),
                     select,
                     show_suppressed: *show_suppressed,
+                    fix: *fix,
+                    fix_dry_run: *fix_dry_run,
                 },
             );
         }

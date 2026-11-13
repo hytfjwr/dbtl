@@ -117,6 +117,11 @@ pub struct LintArgs<'a> {
     /// `--show-suppressed` — list the suppressed findings (with reasons)
     /// in the human/json outputs.
     pub show_suppressed: bool,
+    /// `--fix` — apply the safe auto-fixes to source files.
+    pub fix: bool,
+    /// `--fix-dry-run` — the same fix computation, printed as diffs
+    /// instead of written.
+    pub fix_dry_run: bool,
 }
 
 /// The lint config the query modes (`--list-rules`, `--explain`) print:
@@ -337,19 +342,77 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
     let project_root = lint_project_root(&candidates);
     let sources = SourceTexts::new(&project_root);
     let read_text = sources.read_text();
+    // `--fix`/`--fix-dry-run`: plan the safe edits, apply them to an
+    // in-memory overlay, re-lint to a fixpoint, then write (or, for
+    // `--fix-dry-run`, print the would-be diffs). The report below lints
+    // the post-fix dag — its findings are exactly what the user still
+    // owns, and `summary.fixed` carries the resolved count.
+    let mut fixed: Option<FixedSummary> = None;
+    let mut fix_dag: Option<dbtl::Dag> = None;
+    let mut fix_resolver: Option<dbtl::SqlParseResolver> = None;
+    if args.fix || args.fix_dry_run {
+        let outcome = fix::run_fixes(&fix::FixRequest {
+            src,
+            resolved: &resolved,
+            cfg: &cfg,
+            base: base.as_ref().map(|(b, _)| b),
+            baseline: baseline.as_ref(),
+            fail_on,
+            catalog: &catalog,
+            base_sql: base_resolver.as_ref(),
+            selection: selection.as_ref(),
+            dialect: sql_resolver.dialect(),
+        })?;
+        warn_each("", &outcome.warnings);
+        if args.fix_dry_run {
+            // The diff is part of the human report; under the machine
+            // formats it would corrupt stdout's payload — stderr keeps
+            // `--format json` (etc.) byte-clean while still showing it.
+            for f in &outcome.files {
+                let diff = fix::unified_diff(&f.ofp, &f.before, &f.after);
+                if args.format.is_human() {
+                    write_stdout(&diff, anstream::ColorChoice::Auto)?;
+                } else {
+                    eprint!("{diff}");
+                }
+            }
+        } else {
+            let skipped = fix::write_fixed(&outcome.files)?;
+            warn_each("", &skipped);
+        }
+        if !outcome.files.is_empty() {
+            fixed = Some(FixedSummary {
+                findings: outcome.fixed_findings,
+                files: outcome.files.len(),
+                dry_run: args.fix_dry_run,
+            });
+            // The rebuilt dag replaces `resolved.dag` for the report —
+            // only when a fix landed; an untouched run keeps the
+            // original graph byte for byte.
+            fix_dag = Some(outcome.dag);
+            // The aux resolver's per-uid memos hold pre-edit parses —
+            // the report needs a fresh one over the post-fix dag.
+            fix_resolver = Some(dbtl::SqlParseResolver::new(
+                catalog.clone(),
+                sql_resolver.dialect(),
+            ));
+        }
+    }
+    let dag = fix_dag.as_ref().unwrap_or(&resolved.dag);
+    let sql_for_report = fix_resolver.as_ref().unwrap_or(&sql_resolver);
     // One gate per rule — the same `lint:*` gates `check --lint` reports,
     // through the shared `dbtl_report` evaluation path.
-    let run = lint_report(
-        resolved.dag.project_name().unwrap_or("dbt"),
+    let mut run = lint_report(
+        dag.project_name().unwrap_or("dbt"),
         src.scope.describe(),
         &LintRunInputs {
-            dag: &resolved.dag,
+            dag,
             cfg: &cfg,
             base: base.as_ref().map(|(b, _)| b),
             baseline: baseline.as_ref(),
             fail_on,
             aux: LintAux {
-                sql: Some(&sql_resolver),
+                sql: Some(sql_for_report),
                 catalog: catalog.as_deref(),
                 base_sql: base_resolver.as_ref(),
             },
@@ -358,6 +421,12 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
             read_text: &read_text,
         },
     );
+    if let Some(f) = fixed {
+        if let Some(lint) = &mut run.report.lint {
+            lint.fixed = Some(f);
+            run.report.lift_lint_summary();
+        }
+    }
     // `exclude:`/selector-param deprecation notes from the evaluation plus
     // the `--select` notes — deduplicated: a spec shared between the two
     // channels warns once.
@@ -368,7 +437,7 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
         &run.report,
         "lint",
         &RenderEnv {
-            dag: &resolved.dag,
+            dag,
             read_text: &read_text,
         },
     )?;
@@ -403,7 +472,7 @@ fn print_rules_table(cfg: &dbtl::LintConfig) -> Result<(), CliError> {
         .unwrap_or(0)
         .max("CATEGORY".len());
     let mut out = format!(
-        "{:<id_w$}  {:<cat_w$}  {:<7}  {:<8}  {:<7}  {:<7}  {:<8}  {:<6}  SUMMARY\n",
+        "{:<id_w$}  {:<cat_w$}  {:<7}  {:<8}  {:<7}  {:<7}  {:<8}  {:<6}  {:<4}  SUMMARY\n",
         "ID",
         "CATEGORY",
         "DEFAULT",
@@ -412,6 +481,7 @@ fn print_rules_table(cfg: &dbtl::LintConfig) -> Result<(), CliError> {
         "MINIMAL",
         "STANDARD",
         "STRICT",
+        "FIX",
         id_w = id_w,
         cat_w = cat_w
     );
@@ -425,7 +495,7 @@ fn print_rules_table(cfg: &dbtl::LintConfig) -> Result<(), CliError> {
             "off"
         };
         out += &format!(
-            "{:<id_w$}  {:<cat_w$}  {:<7}  {:<8}  {:<7}  {:<7}  {:<8}  {:<6}  {}\n",
+            "{:<id_w$}  {:<cat_w$}  {:<7}  {:<8}  {:<7}  {:<7}  {:<8}  {:<6}  {:<4}  {}\n",
             rule.name(),
             info.category.name(),
             default,
@@ -434,6 +504,7 @@ fn print_rules_table(cfg: &dbtl::LintConfig) -> Result<(), CliError> {
             on_off(dbtl::LintPreset::Minimal.enables(info)),
             on_off(dbtl::LintPreset::Standard.enables(info)),
             on_off(dbtl::LintPreset::Strict.enables(info)),
+            if info.fixable() { "auto" } else { "-" },
             info.summary,
             id_w = id_w,
             cat_w = cat_w
@@ -482,7 +553,16 @@ fn explain_rule(id: &str, cfg: &dbtl::LintConfig) -> Result<(), CliError> {
             info.id
         );
     }
-    out += &format!("requires: {}\n\n", requires_name(info.requires));
+    out += &format!("requires: {}\n", requires_name(info.requires));
+    out += &format!(
+        "auto-fix: {}\n\n",
+        if info.fixable() {
+            "yes — `dbtl lint --fix` deletes the flagged source text \
+             (`--fix-dry-run` previews the diff)"
+        } else {
+            "no"
+        }
+    );
     out += &format!("{}\n\n", info.summary);
     out += &format!("Rationale:\n{}\n\n", info.rationale);
     out += &format!("Example:\n{}\n\n", info.example);

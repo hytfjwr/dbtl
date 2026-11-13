@@ -423,6 +423,9 @@ pub fn lint_assembly(inputs: &LintRunInputs<'_>) -> LintAssembly {
             .map(|u| dbtl_core::display_name(inputs.dag, u))
             .collect(),
         suppressed,
+        // `--fix` fills this in after the fact — report assembly can't
+        // see file edits.
+        fixed: None,
     };
     LintAssembly {
         gates,

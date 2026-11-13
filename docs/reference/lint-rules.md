@@ -14,52 +14,52 @@
 | `standard` | every rule the registry enables by default — 40 rules |
 | `strict` | every rule, opt-in included — 40 rules |
 
-| Rule | Category | Default | `minimal` | `standard` | `strict` | Inputs | Summary |
-| ---- | -------- | ------- | --------- | ---------- | -------- | ------ | ------- |
-| [`direct_join_to_source`](#direct_join_to_source) | modeling | warn | off | on | on | graph | a model directly depends on both a source and a model |
-| [`multiple_sources_joined`](#multiple_sources_joined) | modeling | warn | off | on | on | graph | a model directly depends on 2+ sources |
-| [`source_fanout`](#source_fanout) | modeling | warn | off | on | on | graph | a source directly feeds too many models |
-| [`model_fanout`](#model_fanout) | modeling | warn | off | on | on | graph | a model directly feeds too many leaf models |
-| [`root_models`](#root_models) | modeling | warn | off | on | on | graph | a model has no parents |
-| [`rejoining_upstream`](#rejoining_upstream) | modeling | warn | off | on | on | graph | a redundant hop: A->B->C while A->C already exists |
-| [`marts_depend_on_source`](#marts_depend_on_source) | modeling | warn | off | on | on | graph | a marts/intermediate model directly depends on a source |
-| [`missing_primary_key_tests`](#missing_primary_key_tests) | testing | error | on | on | on | graph | a model lacks a primary-key test (unique+not_null on one column, or unique_combination_of_columns) |
-| [`public_models_without_contract`](#public_models_without_contract) | governance | error | on | on | on | graph | access: public without contract: enforced |
-| [`undocumented_models`](#undocumented_models) | documentation | warn | off | on | on | graph | a model has no description |
-| [`naming_conventions`](#naming_conventions) | structure | warn | off | on | on | graph | a model's name misses its layer's prefix |
-| [`layer_violation`](#layer_violation) | modeling | warn | off | on | on | graph | a backward edge between logical layers |
-| [`unused_sources`](#unused_sources) | modeling | warn | off | on | on | graph | a source is declared but never referenced |
-| [`duplicate_sources`](#duplicate_sources) | modeling | warn | off | on | on | graph | two or more sources point at the same warehouse relation |
-| [`staging_depends_on_staging`](#staging_depends_on_staging) | modeling | warn | off | on | on | graph | a staging model directly depends on another staging model |
-| [`too_many_joins`](#too_many_joins) | modeling | warn | off | on | on | graph | a model directly depends on too many data resources |
-| [`chained_views`](#chained_views) | performance | warn | off | on | on | graph | a chain of consecutive view/ephemeral models is too long |
-| [`exposure_parents_materializations`](#exposure_parents_materializations) | performance | warn | off | on | on | graph | an exposure directly depends on a source or a view/ephemeral model |
-| [`exposures_dependent_on_private_models`](#exposures_dependent_on_private_models) | governance | warn | off | on | on | graph | an exposure depends on a model outside the allowed access levels |
-| [`undocumented_sources`](#undocumented_sources) | documentation | warn | off | on | on | graph | a source has no description |
-| [`undocumented_columns`](#undocumented_columns) | documentation | warn | off | on | on | graph | a model has declared columns without descriptions |
-| [`model_directories`](#model_directories) | structure | warn | off | on | on | graph | a model's name prefix and directory point at different layers |
-| [`required_meta_keys`](#required_meta_keys) | governance | warn | off | on | on | graph | a model is missing a required meta key |
-| [`contract_columns_without_type`](#contract_columns_without_type) | governance | warn | off | on | on | graph | a contract-enforced model has declared columns without data_type |
-| [`incremental_without_unique_key`](#incremental_without_unique_key) | modeling | warn | off | on | on | graph | an incremental model has no unique_key |
-| [`sources_without_freshness`](#sources_without_freshness) | testing | warn | off | on | on | graph | a source has no freshness configured |
-| [`select_star`](#select_star) | sql | warn | off | on | on | graph + parsed SQL | a model's final SELECT reads * or t.* |
-| [`hard_coded_references`](#hard_coded_references) | sql | warn | off | on | on | graph + parsed SQL | a model names a relation literally instead of ref()/source() |
-| [`cartesian_join`](#cartesian_join) | sql | warn | off | on | on | graph + parsed SQL | a JOIN carries no join condition |
-| [`unknown_column_reference`](#unknown_column_reference) | sql | error | on | on | on | graph + parsed SQL | a model names a column a trusted upstream doesn't emit |
-| [`forbidden_patterns`](#forbidden_patterns) | sql | warn | off | on | on | graph + parsed SQL | a model's raw SQL matches a configured forbidden pattern |
-| [`warehouse_type_drift`](#warehouse_type_drift) | warehouse | warn | off | on | on | graph + catalog | a declared column's data_type disagrees with the warehouse |
-| [`columns_missing_in_warehouse`](#columns_missing_in_warehouse) | warehouse | warn | off | on | on | graph + catalog | a declared column doesn't exist in the warehouse |
-| [`unused_models`](#unused_models) | modeling | warn | off | on | on | graph | a model in a checked layer has no downstream |
-| [`references_deprecated_model`](#references_deprecated_model) | governance | warn | off | on | on | graph | a node directly depends on a model with a deprecation_date |
-| [`undeclared_warehouse_columns`](#undeclared_warehouse_columns) | warehouse | warn | off | on | on | graph + catalog | a warehouse column the node doesn't declare |
-| [`trailing_semicolon`](#trailing_semicolon) | sql | error | on | on | on | graph | a model's SQL ends with a semicolon |
-| [`duplicate_output_columns`](#duplicate_output_columns) | sql | error | on | on | on | graph + parsed SQL | a model's final SELECT emits the same output column name twice |
-| [`unused_cte`](#unused_cte) | sql | warn | off | on | on | graph + parsed SQL | a CTE is defined but never read |
-| [`order_by_without_limit`](#order_by_without_limit) | sql | warn | off | on | on | graph + parsed SQL | a model's final query has ORDER BY without LIMIT |
+| Rule | Category | Default | `minimal` | `standard` | `strict` | Inputs | Fix | Summary |
+| ---- | -------- | ------- | --------- | ---------- | -------- | ------ | --- | ------- |
+| [`direct_join_to_source`](#direct_join_to_source) | modeling | warn | off | on | on | graph | - | a model directly depends on both a source and a model |
+| [`multiple_sources_joined`](#multiple_sources_joined) | modeling | warn | off | on | on | graph | - | a model directly depends on 2+ sources |
+| [`source_fanout`](#source_fanout) | modeling | warn | off | on | on | graph | - | a source directly feeds too many models |
+| [`model_fanout`](#model_fanout) | modeling | warn | off | on | on | graph | - | a model directly feeds too many leaf models |
+| [`root_models`](#root_models) | modeling | warn | off | on | on | graph | - | a model has no parents |
+| [`rejoining_upstream`](#rejoining_upstream) | modeling | warn | off | on | on | graph | - | a redundant hop: A->B->C while A->C already exists |
+| [`marts_depend_on_source`](#marts_depend_on_source) | modeling | warn | off | on | on | graph | - | a marts/intermediate model directly depends on a source |
+| [`missing_primary_key_tests`](#missing_primary_key_tests) | testing | error | on | on | on | graph | - | a model lacks a primary-key test (unique+not_null on one column, or unique_combination_of_columns) |
+| [`public_models_without_contract`](#public_models_without_contract) | governance | error | on | on | on | graph | - | access: public without contract: enforced |
+| [`undocumented_models`](#undocumented_models) | documentation | warn | off | on | on | graph | - | a model has no description |
+| [`naming_conventions`](#naming_conventions) | structure | warn | off | on | on | graph | - | a model's name misses its layer's prefix |
+| [`layer_violation`](#layer_violation) | modeling | warn | off | on | on | graph | - | a backward edge between logical layers |
+| [`unused_sources`](#unused_sources) | modeling | warn | off | on | on | graph | - | a source is declared but never referenced |
+| [`duplicate_sources`](#duplicate_sources) | modeling | warn | off | on | on | graph | - | two or more sources point at the same warehouse relation |
+| [`staging_depends_on_staging`](#staging_depends_on_staging) | modeling | warn | off | on | on | graph | - | a staging model directly depends on another staging model |
+| [`too_many_joins`](#too_many_joins) | modeling | warn | off | on | on | graph | - | a model directly depends on too many data resources |
+| [`chained_views`](#chained_views) | performance | warn | off | on | on | graph | - | a chain of consecutive view/ephemeral models is too long |
+| [`exposure_parents_materializations`](#exposure_parents_materializations) | performance | warn | off | on | on | graph | - | an exposure directly depends on a source or a view/ephemeral model |
+| [`exposures_dependent_on_private_models`](#exposures_dependent_on_private_models) | governance | warn | off | on | on | graph | - | an exposure depends on a model outside the allowed access levels |
+| [`undocumented_sources`](#undocumented_sources) | documentation | warn | off | on | on | graph | - | a source has no description |
+| [`undocumented_columns`](#undocumented_columns) | documentation | warn | off | on | on | graph | - | a model has declared columns without descriptions |
+| [`model_directories`](#model_directories) | structure | warn | off | on | on | graph | - | a model's name prefix and directory point at different layers |
+| [`required_meta_keys`](#required_meta_keys) | governance | warn | off | on | on | graph | - | a model is missing a required meta key |
+| [`contract_columns_without_type`](#contract_columns_without_type) | governance | warn | off | on | on | graph | - | a contract-enforced model has declared columns without data_type |
+| [`incremental_without_unique_key`](#incremental_without_unique_key) | modeling | warn | off | on | on | graph | - | an incremental model has no unique_key |
+| [`sources_without_freshness`](#sources_without_freshness) | testing | warn | off | on | on | graph | - | a source has no freshness configured |
+| [`select_star`](#select_star) | sql | warn | off | on | on | graph + parsed SQL | - | a model's final SELECT reads * or t.* |
+| [`hard_coded_references`](#hard_coded_references) | sql | warn | off | on | on | graph + parsed SQL | - | a model names a relation literally instead of ref()/source() |
+| [`cartesian_join`](#cartesian_join) | sql | warn | off | on | on | graph + parsed SQL | - | a JOIN carries no join condition |
+| [`unknown_column_reference`](#unknown_column_reference) | sql | error | on | on | on | graph + parsed SQL | - | a model names a column a trusted upstream doesn't emit |
+| [`forbidden_patterns`](#forbidden_patterns) | sql | warn | off | on | on | graph + parsed SQL | - | a model's raw SQL matches a configured forbidden pattern |
+| [`warehouse_type_drift`](#warehouse_type_drift) | warehouse | warn | off | on | on | graph + catalog | - | a declared column's data_type disagrees with the warehouse |
+| [`columns_missing_in_warehouse`](#columns_missing_in_warehouse) | warehouse | warn | off | on | on | graph + catalog | - | a declared column doesn't exist in the warehouse |
+| [`unused_models`](#unused_models) | modeling | warn | off | on | on | graph | - | a model in a checked layer has no downstream |
+| [`references_deprecated_model`](#references_deprecated_model) | governance | warn | off | on | on | graph | - | a node directly depends on a model with a deprecation_date |
+| [`undeclared_warehouse_columns`](#undeclared_warehouse_columns) | warehouse | warn | off | on | on | graph + catalog | - | a warehouse column the node doesn't declare |
+| [`trailing_semicolon`](#trailing_semicolon) | sql | error | on | on | on | graph | auto | a model's SQL ends with a semicolon |
+| [`duplicate_output_columns`](#duplicate_output_columns) | sql | error | on | on | on | graph + parsed SQL | - | a model's final SELECT emits the same output column name twice |
+| [`unused_cte`](#unused_cte) | sql | warn | off | on | on | graph + parsed SQL | auto | a CTE is defined but never read |
+| [`order_by_without_limit`](#order_by_without_limit) | sql | warn | off | on | on | graph + parsed SQL | - | a model's final query has ORDER BY without LIMIT |
 
 ## `direct_join_to_source`
 
-Category: `modeling` · Default severity: `warn` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A model directly depends on both a source and a model.
 
@@ -73,7 +73,7 @@ A model directly depends on both a source and a model.
 
 ## `multiple_sources_joined`
 
-Category: `modeling` · Default severity: `warn` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A model directly depends on 2+ sources.
 
@@ -87,7 +87,7 @@ A model directly depends on 2+ sources.
 
 ## `source_fanout`
 
-Category: `modeling` · Default severity: `warn` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A source directly feeds too many models.
 
@@ -105,7 +105,7 @@ A source directly feeds too many models.
 
 ## `model_fanout`
 
-Category: `modeling` · Default severity: `warn` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A model directly feeds too many leaf models.
 
@@ -123,7 +123,7 @@ A model directly feeds too many leaf models.
 
 ## `root_models`
 
-Category: `modeling` · Default severity: `warn` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A model has no parents.
 
@@ -137,7 +137,7 @@ A model has no parents.
 
 ## `rejoining_upstream`
 
-Category: `modeling` · Default severity: `warn` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A redundant hop: A->B->C while A->C already exists.
 
@@ -155,7 +155,7 @@ A redundant hop: A->B->C while A->C already exists.
 
 ## `marts_depend_on_source`
 
-Category: `modeling` · Default severity: `warn` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A marts/intermediate model directly depends on a source.
 
@@ -169,7 +169,7 @@ A marts/intermediate model directly depends on a source.
 
 ## `missing_primary_key_tests`
 
-Category: `testing` · Default severity: `error` · Inputs: graph
+Category: `testing` · Default severity: `error` · Inputs: graph · Auto-fix: no
 
 A model lacks a primary-key test (unique+not_null on one column, or unique_combination_of_columns).
 
@@ -188,7 +188,7 @@ A model lacks a primary-key test (unique+not_null on one column, or unique_combi
 
 ## `public_models_without_contract`
 
-Category: `governance` · Default severity: `error` · Inputs: graph
+Category: `governance` · Default severity: `error` · Inputs: graph · Auto-fix: no
 
 Access: public without contract: enforced.
 
@@ -202,7 +202,7 @@ Access: public without contract: enforced.
 
 ## `undocumented_models`
 
-Category: `documentation` · Default severity: `warn` · Inputs: graph
+Category: `documentation` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A model has no description.
 
@@ -220,7 +220,7 @@ A model has no description.
 
 ## `naming_conventions`
 
-Category: `structure` · Default severity: `warn` · Inputs: graph
+Category: `structure` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A model's name misses its layer's prefix.
 
@@ -234,7 +234,7 @@ A model's name misses its layer's prefix.
 
 ## `layer_violation`
 
-Category: `modeling` · Default severity: `warn` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A backward edge between logical layers.
 
@@ -248,7 +248,7 @@ A backward edge between logical layers.
 
 ## `unused_sources`
 
-Category: `modeling` · Default severity: `warn` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A source is declared but never referenced.
 
@@ -262,7 +262,7 @@ A source is declared but never referenced.
 
 ## `duplicate_sources`
 
-Category: `modeling` · Default severity: `warn` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 Two or more sources point at the same warehouse relation.
 
@@ -276,7 +276,7 @@ Two or more sources point at the same warehouse relation.
 
 ## `staging_depends_on_staging`
 
-Category: `modeling` · Default severity: `warn` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A staging model directly depends on another staging model.
 
@@ -290,7 +290,7 @@ A staging model directly depends on another staging model.
 
 ## `too_many_joins`
 
-Category: `modeling` · Default severity: `warn` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A model directly depends on too many data resources.
 
@@ -308,7 +308,7 @@ A model directly depends on too many data resources.
 
 ## `chained_views`
 
-Category: `performance` · Default severity: `warn` · Inputs: graph
+Category: `performance` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A chain of consecutive view/ephemeral models is too long.
 
@@ -326,7 +326,7 @@ A chain of consecutive view/ephemeral models is too long.
 
 ## `exposure_parents_materializations`
 
-Category: `performance` · Default severity: `warn` · Inputs: graph
+Category: `performance` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 An exposure directly depends on a source or a view/ephemeral model.
 
@@ -340,7 +340,7 @@ An exposure directly depends on a source or a view/ephemeral model.
 
 ## `exposures_dependent_on_private_models`
 
-Category: `governance` · Default severity: `warn` · Inputs: graph
+Category: `governance` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 An exposure depends on a model outside the allowed access levels.
 
@@ -358,7 +358,7 @@ An exposure depends on a model outside the allowed access levels.
 
 ## `undocumented_sources`
 
-Category: `documentation` · Default severity: `warn` · Inputs: graph
+Category: `documentation` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A source has no description.
 
@@ -372,7 +372,7 @@ A source has no description.
 
 ## `undocumented_columns`
 
-Category: `documentation` · Default severity: `warn` · Inputs: graph
+Category: `documentation` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A model has declared columns without descriptions.
 
@@ -390,7 +390,7 @@ A model has declared columns without descriptions.
 
 ## `model_directories`
 
-Category: `structure` · Default severity: `warn` · Inputs: graph
+Category: `structure` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A model's name prefix and directory point at different layers.
 
@@ -404,7 +404,7 @@ A model's name prefix and directory point at different layers.
 
 ## `required_meta_keys`
 
-Category: `governance` · Default severity: `warn` · Inputs: graph
+Category: `governance` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A model is missing a required meta key.
 
@@ -422,7 +422,7 @@ A model is missing a required meta key.
 
 ## `contract_columns_without_type`
 
-Category: `governance` · Default severity: `warn` · Inputs: graph
+Category: `governance` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A contract-enforced model has declared columns without data_type.
 
@@ -436,7 +436,7 @@ A contract-enforced model has declared columns without data_type.
 
 ## `incremental_without_unique_key`
 
-Category: `modeling` · Default severity: `warn` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 An incremental model has no unique_key.
 
@@ -450,7 +450,7 @@ An incremental model has no unique_key.
 
 ## `sources_without_freshness`
 
-Category: `testing` · Default severity: `warn` · Inputs: graph
+Category: `testing` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A source has no freshness configured.
 
@@ -464,7 +464,7 @@ A source has no freshness configured.
 
 ## `select_star`
 
-Category: `sql` · Default severity: `warn` · Inputs: graph + parsed SQL
+Category: `sql` · Default severity: `warn` · Inputs: graph + parsed SQL · Auto-fix: no
 
 A model's final SELECT reads * or t.*.
 
@@ -482,7 +482,7 @@ A model's final SELECT reads * or t.*.
 
 ## `hard_coded_references`
 
-Category: `sql` · Default severity: `warn` · Inputs: graph + parsed SQL
+Category: `sql` · Default severity: `warn` · Inputs: graph + parsed SQL · Auto-fix: no
 
 A model names a relation literally instead of ref()/source().
 
@@ -500,7 +500,7 @@ A model names a relation literally instead of ref()/source().
 
 ## `cartesian_join`
 
-Category: `sql` · Default severity: `warn` · Inputs: graph + parsed SQL
+Category: `sql` · Default severity: `warn` · Inputs: graph + parsed SQL · Auto-fix: no
 
 A JOIN carries no join condition.
 
@@ -514,7 +514,7 @@ A JOIN carries no join condition.
 
 ## `unknown_column_reference`
 
-Category: `sql` · Default severity: `error` · Inputs: graph + parsed SQL
+Category: `sql` · Default severity: `error` · Inputs: graph + parsed SQL · Auto-fix: no
 
 A model names a column a trusted upstream doesn't emit.
 
@@ -528,7 +528,7 @@ A model names a column a trusted upstream doesn't emit.
 
 ## `forbidden_patterns`
 
-Category: `sql` · Default severity: `warn` · Inputs: graph + parsed SQL
+Category: `sql` · Default severity: `warn` · Inputs: graph + parsed SQL · Auto-fix: no
 
 A model's raw SQL matches a configured forbidden pattern.
 
@@ -546,7 +546,7 @@ A model's raw SQL matches a configured forbidden pattern.
 
 ## `warehouse_type_drift`
 
-Category: `warehouse` · Default severity: `warn` · Inputs: graph + catalog
+Category: `warehouse` · Default severity: `warn` · Inputs: graph + catalog · Auto-fix: no
 
 A declared column's data_type disagrees with the warehouse.
 
@@ -560,7 +560,7 @@ A declared column's data_type disagrees with the warehouse.
 
 ## `columns_missing_in_warehouse`
 
-Category: `warehouse` · Default severity: `warn` · Inputs: graph + catalog
+Category: `warehouse` · Default severity: `warn` · Inputs: graph + catalog · Auto-fix: no
 
 A declared column doesn't exist in the warehouse.
 
@@ -574,7 +574,7 @@ A declared column doesn't exist in the warehouse.
 
 ## `unused_models`
 
-Category: `modeling` · Default severity: `warn` · Inputs: graph
+Category: `modeling` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A model in a checked layer has no downstream.
 
@@ -592,7 +592,7 @@ A model in a checked layer has no downstream.
 
 ## `references_deprecated_model`
 
-Category: `governance` · Default severity: `warn` · Inputs: graph
+Category: `governance` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
 A node directly depends on a model with a deprecation_date.
 
@@ -606,7 +606,7 @@ A node directly depends on a model with a deprecation_date.
 
 ## `undeclared_warehouse_columns`
 
-Category: `warehouse` · Default severity: `warn` · Inputs: graph + catalog
+Category: `warehouse` · Default severity: `warn` · Inputs: graph + catalog · Auto-fix: no
 
 A warehouse column the node doesn't declare.
 
@@ -620,7 +620,7 @@ A warehouse column the node doesn't declare.
 
 ## `trailing_semicolon`
 
-Category: `sql` · Default severity: `error` · Inputs: graph
+Category: `sql` · Default severity: `error` · Inputs: graph · Auto-fix: `dbtl lint --fix`
 
 A model's SQL ends with a semicolon.
 
@@ -634,7 +634,7 @@ A model's SQL ends with a semicolon.
 
 ## `duplicate_output_columns`
 
-Category: `sql` · Default severity: `error` · Inputs: graph + parsed SQL
+Category: `sql` · Default severity: `error` · Inputs: graph + parsed SQL · Auto-fix: no
 
 A model's final SELECT emits the same output column name twice.
 
@@ -648,7 +648,7 @@ A model's final SELECT emits the same output column name twice.
 
 ## `unused_cte`
 
-Category: `sql` · Default severity: `warn` · Inputs: graph + parsed SQL
+Category: `sql` · Default severity: `warn` · Inputs: graph + parsed SQL · Auto-fix: `dbtl lint --fix`
 
 A CTE is defined but never read.
 
@@ -662,7 +662,7 @@ A CTE is defined but never read.
 
 ## `order_by_without_limit`
 
-Category: `sql` · Default severity: `warn` · Inputs: graph + parsed SQL
+Category: `sql` · Default severity: `warn` · Inputs: graph + parsed SQL · Auto-fix: no
 
 A model's final query has ORDER BY without LIMIT.
 

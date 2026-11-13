@@ -242,6 +242,23 @@ pub(crate) fn summary_lines(report: &Report, lint: &LintTally, styled: bool) -> 
         }
         lines.push(line);
     }
+    if let Some(fixed) = &lint.fixed {
+        // `--fix` counts what it wrote; `--fix-dry-run` writes nothing —
+        // the wording has to say which happened.
+        if fixed.dry_run {
+            lines.push(format!(
+                "{} auto-fixable in {} (dry run — no files written)",
+                counted(fixed.findings, "finding", "findings"),
+                counted(fixed.files, "file", "files")
+            ));
+        } else {
+            lines.push(format!(
+                "{} auto-fixed in {}",
+                counted(fixed.findings, "finding", "findings"),
+                counted(fixed.files, "file", "files")
+            ));
+        }
+    }
     lines.join("\n")
 }
 
@@ -570,6 +587,7 @@ mod tests {
             skipped: Vec::new(),
             unparsed_models: Vec::new(),
             suppressed: SuppressedSummary::default(),
+            fixed: None,
         });
         let yml = "- name: fct_orders\n  columns:\n    - name: order_id\n";
         let sql = "select a,\n       b.*\nfrom t\n";
