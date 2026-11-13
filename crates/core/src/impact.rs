@@ -225,9 +225,7 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, opts: &ImpactOpt
         .chain(diff.modified.keys())
         .filter(|uid| {
             opts.selection.is_none_or(|s| s.contains(uid.as_str()))
-                && dag.get(uid).is_some_and(|n| {
-                    matches!(n.resource_type.as_str(), "model" | "seed" | "snapshot")
-                })
+                && dag.get(uid).is_some_and(testable)
         })
         .cloned()
         .collect();
