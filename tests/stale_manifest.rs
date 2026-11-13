@@ -88,7 +88,9 @@ fn auto_detected_manifest_warns_when_sources_are_newer() {
         "uids",
     ]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
-    let err = stderr(&out);
+    // The warning prints `display()` paths — `\` separators on Windows —
+    // so assert on the normalized shape.
+    let err = stderr(&out).replace('\\', "/");
     assert!(
         err.contains("target/manifest.json is older than 1 project file"),
         "expected the stale warning, got: {err}"
