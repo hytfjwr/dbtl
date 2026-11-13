@@ -952,7 +952,7 @@ fn vars_load_warns_on_malformed_vars_sources() {
         "{w:?}"
     );
     assert_eq!(vars.node_enabled("var('flag', true)"), Some(true));
-    // An unparseable vars.yml → warning, contributes nothing.
+    // An unparsable vars.yml → warning, contributes nothing.
     std::fs::write(dir.path().join("vars.yml"), "vars: {a: [unclosed\n").unwrap();
     let mut w = Vec::new();
     let vars = Vars::load(
