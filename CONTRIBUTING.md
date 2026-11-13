@@ -90,8 +90,8 @@ each job runs only when its scope changed:
   `Cargo.*`, `tests/`, `crates/`, `xtask/`, `benches/`, `action/`, `demo/`,
   `.github/` except a `docs-site.yml`-only change, config files). Runs
   everything: `Lint`, `Build & Test` on Linux/Windows/macOS, `MSRV`,
-  `Hygiene`, `Docs reference`, `Coverage (report)`, `TUI E2E`, the Action
-  self-test, and Dogfood E2E.
+  `Hygiene`, `Docs reference`, `Coverage (report)`, `TUI E2E`, the shared
+  `Release build` the Action self-test and Dogfood E2E run against.
 - **docs** — repository prose: top-level `*.md`, one level of `.github/*.md`,
   `docs/**`, `schema/**` (site content docs also set `site`). Runs
   `Markdown tests` (the suites that read repository Markdown), the spell

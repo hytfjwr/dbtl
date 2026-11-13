@@ -11,6 +11,11 @@ on:
       - "xtask/**"
       # The workflow's own changes exercise `Perf (report)` on the PR.
       - ".github/workflows/perf.yml"
+      # A test-only edit cannot change the binaries a measurement covers;
+      # the negations must come after every positive pattern.
+      - "!tests/**"
+      - "!**/tests.rs"
+      - "!**/tests/**"
   push:
     branches: [main]
     paths:
@@ -23,6 +28,9 @@ on:
       - "Cargo.lock"
       - "xtask/**"
       - ".github/workflows/perf.yml"
+      - "!tests/**"
+      - "!**/tests.rs"
+      - "!**/tests/**"
   # Daily — release-mode perf tests plus the ignored `perf_*` suite.
   schedule:
     - cron: "41 2 * * *"
@@ -36,11 +44,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Build-affecting paths: the trigger list minus this workflow file —
-  # keep it in sync with the paths above. The prebuilt-binaries key
-  # derives from the last commit that touched them, so commits that
-  # cannot change the binaries keep the same key.
-  PERF_INPUT_PATHS: crates src benches Cargo.toml Cargo.lock xtask
+  # Build-affecting pathspecs for `git log`: the trigger list minus this
+  # workflow file — keep it in sync with the paths above, including the
+  # `:(glob,exclude)` entries that mirror the negated trigger patterns.
+  # The prebuilt-binaries key derives from the last commit that touched
+  # them, so commits that cannot change the binaries keep the same key.
+  PERF_INPUT_PATHS: crates src benches Cargo.toml Cargo.lock xtask :(glob,exclude)tests/** :(glob,exclude)**/tests.rs :(glob,exclude)**/tests/**
 
 jobs:
   # Report-only base-vs-head comparison: short Criterion runs on both sides
@@ -50,7 +59,9 @@ jobs:
   # workflow definition itself.
   perf-report:
     name: Perf (report)
-    if: github.event_name == 'pull_request'
+    # A release branch only carries the version bump and changelog — the
+    # measured inputs are unchanged, so a run would report noise.
+    if: github.event_name == 'pull_request' && !startsWith(github.event.pull_request.head.ref, 'release/')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -320,7 +331,7 @@ jobs:
   perf-comment:
     name: Perf (comment)
     needs: perf-report
-    if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.event.pull_request.head.ref, 'release/')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

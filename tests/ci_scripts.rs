@@ -481,12 +481,20 @@ fn scoped_jobs_skip_on_the_right_scope() {
     );
 
     let dogfood = workflow("dogfood.yml");
-    for id in ["action-self-test", "dogfood-e2e"] {
+    for id in ["release-build", "action-self-test", "dogfood-e2e"] {
         assert!(
             needs(&dogfood, id).contains("changes"),
             "{id} needs changes"
         );
         assert_eq!(job(&dogfood, id)["if"].as_str(), Some(code_only), "{id}");
+    }
+    // The shared release binary fans out: both consumers must wait on the
+    // job that produces it.
+    for id in ["action-self-test", "dogfood-e2e"] {
+        assert!(
+            needs(&dogfood, id).contains("release-build"),
+            "{id} must wait on the shared release build"
+        );
     }
 }
 
