@@ -697,3 +697,55 @@ fn overlay_scroll_acts_only_inside_an_overlay() {
         _ => panic!("expected Help mode"),
     }
 }
+
+#[test]
+fn detail_modal_snapshots_the_nodes_lint_findings() {
+    // The Enter modal carries the SAME finding set the inspector pane shows
+    // — `detail_view_for` filters the shared `lint_findings()` producer by
+    // node, so the two surfaces can never disagree about a node's verdicts.
+    let mut a = app();
+    let uid = a
+        .lint_findings()
+        .first()
+        .map(|f| f.node_uid.clone())
+        .expect("the fixture's default lint config finds violations");
+    let want: Vec<crate::InspectorLintFinding> = a
+        .lint_findings()
+        .iter()
+        .filter(|f| f.node_uid == uid)
+        .map(|f| crate::InspectorLintFinding {
+            severity: f.severity,
+            rule: f.rule.name().to_string(),
+            summary: f.rule.description().to_string(),
+            message: f.message.clone(),
+        })
+        .collect();
+    assert!(!want.is_empty());
+    let dv = open_detail(&mut a, &uid);
+    assert_eq!(
+        dv.lint, want,
+        "the modal's lint snapshot mirrors the pane's"
+    );
+}
+
+#[test]
+fn detail_modal_lint_is_empty_on_a_clean_node() {
+    // A lint-clean node snapshots an empty list — the modal then omits the
+    // whole section (unlike the pane's always-drawn "all checks pass").
+    let mut a = app();
+    let linted: std::collections::HashSet<&str> = a
+        .lint_findings()
+        .iter()
+        .map(|f| f.node_uid.as_str())
+        .collect();
+    let clean = a
+        .dag
+        .nodes()
+        .values()
+        .find(|n| n.resource_type == "model" && !linted.contains(n.unique_id.as_str()))
+        .expect("fixture has a lint-clean model")
+        .unique_id
+        .clone();
+    let dv = open_detail(&mut a, &clean);
+    assert!(dv.lint.is_empty(), "{clean} carries no findings");
+}

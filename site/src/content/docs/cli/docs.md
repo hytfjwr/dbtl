@@ -55,7 +55,7 @@ The owner, tag, and group index pages sit beside it. Owners come from the `owner
 
 Each node page carries:
 
-- a bullet list with resource type, materialization, database and schema, tags, `unique_id`, and source file
+- a bullet list with resource type, materialization, database and schema, tags, `unique_id`, and source file — plus the declared governance bullets `language` (only a non-`sql` build), `incremental_strategy`, `deprecation_date`, and `constraints`
 - the description
 - a columns table
 - tests

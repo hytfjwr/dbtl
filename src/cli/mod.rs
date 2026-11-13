@@ -77,9 +77,9 @@ pub struct Cli {
     #[arg(long, conflicts_with = "ascii")]
     pub unicode: bool,
     /// Start the TUI on a model's tab: a model name (e.g. `stg_orders`), or
-    /// a dbt selector spec — its first match opens in a tab, and it
-    /// must be a model. `state:` atoms can't match: the `--diff` baseline
-    /// loads after this flag resolves.
+    /// a dbt selector spec — the first matching model opens in a tab.
+    /// `state:` atoms resolve against the `--diff` baseline, which loads
+    /// before this flag.
     #[arg(long)]
     pub select: Option<String>,
     /// Auto-reload when the data source changes on disk (the manifest file, or

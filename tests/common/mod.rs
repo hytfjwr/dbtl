@@ -101,6 +101,29 @@ pub fn run(args: &[&str]) -> std::process::Output {
     dbtl(args).output().expect("run dbtl")
 }
 
+/// Spawn `dbtl <args>`, poll `try_wait`, and kill a child that parks —
+/// TUI-startup paths park on hosts that still have a console (Windows CI
+/// has one even with piped stdio) instead of failing terminal init, and a
+/// console-having local shell parks them too.
+pub fn spawn_and_wait(args: &[&str]) -> std::process::Output {
+    let mut child = dbtl(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn dbtl");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if child.try_wait().expect("poll child").is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if child.try_wait().expect("poll child").is_none() {
+        child.kill().expect("kill parked child");
+    }
+    child.wait_with_output().expect("collect child output")
+}
+
 /// [`run`] with extra env vars scoped to the child — the only safe way to
 /// point e.g. `XDG_CONFIG_HOME` at a fixture dir.
 pub fn run_env(args: &[&str], envs: &[(&str, &std::path::Path)]) -> std::process::Output {

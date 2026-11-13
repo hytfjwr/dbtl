@@ -175,13 +175,13 @@ pub fn inspector_lines(
     // section uses), head and message both wrapped on the indented lines.
     out.push(Line::from(""));
     out.push(Line::styled("Lint", section));
-    if view.lint.is_empty() {
+    if view.detail.lint.is_empty() {
         out.push(Line::styled(
             format!("  {} all checks pass", chr.run_ok),
             Style::default().fg(t.ok),
         ));
     } else {
-        for finding in &view.lint {
+        for finding in &view.detail.lint {
             let (mark, style) = match finding.severity {
                 crate::Severity::Error => (chr.run_fail, Style::default().fg(t.danger)),
                 crate::Severity::Warn => (chr.run_warn, Style::default().fg(t.warn)),
