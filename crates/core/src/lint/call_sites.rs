@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use crate::dag::Dag;
 use crate::source::{
-    arms_exclusive, call_sites_masked, jinja_branches, kwarg, lit_value, mask_jinja_comments,
+    arms_exclusive, call_sites_masked, config_arg, jinja_branches, lit_value, mask_jinja_comments,
     ArmStep, CallKind, CallSite, JinjaBranches,
 };
 
@@ -402,7 +402,7 @@ impl<'a> CallSites<'a> {
             let (CallKind::Config, Some(args)) = (&site.kind, &site.args) else {
                 continue;
             };
-            let Some(expr) = kwarg(&self.sites.masked[args.clone()], "materialized") else {
+            let Some(expr) = config_arg(&self.sites.masked[args.clone()], "materialized") else {
                 continue;
             };
             let expr = expr.trim();

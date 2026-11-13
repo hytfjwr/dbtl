@@ -251,6 +251,13 @@ pub struct RawSource {
     /// already-resolved effective one).
     #[serde(default)]
     pub loaded_at_field: Option<String>,
+    /// `tags` — dbt accumulates every tag channel rather than overriding:
+    /// the `config.tags` of the source then the table, then the top-level
+    /// `tags:` of the TABLE then the source (verified on 1.12.6 — a table's
+    /// own tags precede the inherited source tags on the wire). The wire
+    /// value is the resolved union, in that order.
+    #[serde(default)]
+    pub tags: Vec<String>,
     /// The tool that loads this table (`loader:` — source-level only; dbt
     /// ignores it on tables and in `dbt_project.yml`). dbt writes `""` when
     /// unconfigured.

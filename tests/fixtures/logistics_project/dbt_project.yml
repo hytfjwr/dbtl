@@ -4,7 +4,10 @@ config-version: 2
 profile: logistics
 
 model-paths: ["models"]
-seed-paths: ["seeds"]
+# `data-paths` is the pre-1.0 spelling of `seed-paths` — dbt accepts it with
+# a deprecation warning. Declared here (instead of the modern key) so the
+# fixture pins the alias end-to-end against real dbt.
+data-paths: ["seeds"]
 analysis-paths: ["analyses"]
 test-paths: ["tests"]
 macro-paths: ["macros"]
@@ -47,3 +50,17 @@ analyses:
   logistics:
     deep_audit_probe:
       +enabled: "{{ var('probe_enabled', false) }}"
+
+# `sources:` is the lowest rung of the source config chain (below the
+# schema.yml properties): the `+meta`/`+freshness` here must lose to every
+# declaration in models/staging/sources.yml — including a `null` that
+# clears it.
+sources:
+  logistics:
+    staging:
+      carrier_feed:
+        +meta:
+          program: tms
+        +freshness:
+          warn_after: {count: 48, period: hour}
+          error_after: {count: 72, period: hour}

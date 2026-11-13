@@ -98,8 +98,9 @@ impl Synthesis {
         let vars = Vars::load(dir, &project, &mut warnings);
 
         let proj = project.name.clone();
-        // `source-paths` is the pre-0.17 alias for `model-paths`. All three lists
-        // are filtered through `contained_resource_paths`: every later join site
+        // `source-paths` is the pre-0.17 alias for `model-paths`, `data-paths`
+        // the pre-1.0 alias for `seed-paths`. All three lists are filtered
+        // through `contained_resource_paths`: every later join site
         // (the .sql/.csv collectors AND the schema.yml scan) trusts them to stay
         // under the project root.
         let model_paths = contained_resource_paths(
@@ -109,10 +110,19 @@ impl Synthesis {
                 .or(project.source_paths.clone())
                 .unwrap_or_else(|| vec!["models".to_string()]),
         );
+        // Declaring both spellings is a dbt error — degraded to a warning
+        // here like every other recoverable oddity, `seed-paths` winning.
+        if project.seed_paths.is_some() && project.data_paths.is_some() {
+            warnings.push(
+                "dbt_project.yml declares both 'seed-paths' and 'data-paths' (a dbt error); 'seed-paths' wins"
+                    .to_string(),
+            );
+        }
         let seed_paths = contained_resource_paths(
             project
                 .seed_paths
                 .clone()
+                .or(project.data_paths.clone())
                 .unwrap_or_else(|| vec!["seeds".to_string()]),
         );
         let snapshot_paths = contained_resource_paths(
@@ -625,6 +635,17 @@ impl Synthesis {
             let yml_path = rel_path(&self.dir, file);
             for src in &schema.sources {
                 for tbl in &src.tables {
+                    // `config.enabled` is the ONLY disable channel for source
+                    // tables (a table's top-level `enabled:` is ignored by
+                    // dbt; the source's is a parse error). The chain is the
+                    // usual precedence: the table's `config.enabled` beats the
+                    // source's — `enabled: true` under a disabled source
+                    // re-enables the table (verified). A `false` outcome
+                    // parks the table under `disabled` like dbt, tests and
+                    // all.
+                    if tbl.config.enabled.or(src.config.enabled) == Some(false) {
+                        continue;
+                    }
                     let uid = format!("source.{}.{}.{}", self.proj, src.name, tbl.name);
                     // The `sources:` tree keys by the source fqn: the project
                     // name, the declaring yml's directories relative to the
@@ -673,32 +694,32 @@ impl Synthesis {
                             // project only — no foreign package can appear, so
                             // package identity is vacuous here.
                             package_name: None,
-                            // meta merge: `sources:` tree `+meta` < source-level
-                            // `meta:` (cascades to tables) < table-level `meta:`
-                            // — each overrides the previous per key (dbt's
-                            // shallow merge, verified).
+                            // meta merge: `sources:` tree `+meta` < source
+                            // `meta:` < source `config.meta` < table `meta:` <
+                            // table `config.meta` — each overrides the
+                            // previous per key (dbt's shallow merge, verified).
                             meta: source_meta(tree.meta, src, tbl, &mut self.warnings),
                             // Source-level only: dbt cascades it to every table
                             // and ignores table-level/`+loader` declarations
                             // (verified on 1.12.6).
                             loader: src.loader.clone(),
-                            // Table-level `loaded_at_field:` overrides the
-                            // source's; the table's explicit `null` clears the
-                            // inherited value (`+loaded_at_field` is one dbt
-                            // ignores — deliberately not resolved).
-                            loaded_at_field: match &tbl.loaded_at_field {
-                                Some(v) => v.clone(),
-                                None => src.loaded_at_field.clone(),
-                            },
-                            // `freshness:` merges PER THRESHOLD down
-                            // table > source > `+freshness` — a table's
-                            // `error_after` keeps the inherited `warn_after`
-                            // (verified); `freshness: null` clears it all.
-                            freshness: effective_freshness(
-                                &tbl.freshness,
-                                &src.freshness,
-                                &tree.freshness,
-                            ),
+                            // `loaded_at_field` resolves down table `config:` >
+                            // table top-level > source `config:` > source
+                            // top-level; an explicit `null` at any level clears
+                            // the inherited value (`+loaded_at_field` is one
+                            // dbt ignores — deliberately not resolved).
+                            loaded_at_field: source_loaded_at_field(src, tbl),
+                            // `freshness:` merges PER THRESHOLD down table
+                            // `config:` > table > source `config:` > source >
+                            // `+freshness` — a table's `error_after` keeps the
+                            // inherited `warn_after` (verified); `freshness:
+                            // null` clears it all.
+                            freshness: effective_freshness(tbl, src, &tree.freshness),
+                            // `tags` accumulate — config channel (source then
+                            // table) then property channel (TABLE then
+                            // source — verified: the table's own `tags:`
+                            // precede the inherited source's on the wire).
+                            tags: source_tags(src, tbl),
                         },
                     );
                     synth_tests(

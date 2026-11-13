@@ -185,10 +185,12 @@ pub(super) fn meta_map(
     }
 }
 
-/// A source table's merged `meta`: the `sources:` tree `+meta` (lowest
-/// precedence), then the source-level `meta:` (cascades to every table),
-/// then the table-level `meta:` — each level overrides the previous per
-/// top-level key (dbt's shallow merge, verified).
+/// A source table's merged `meta`: each level overrides the previous per
+/// top-level key (dbt's shallow merge). Precedence low → high, verified:
+/// `sources:` tree `+meta` < source `meta:` < source `config.meta` < table
+/// `meta:` < table `config.meta` — a table's top-level `meta:` beats the
+/// source's `config.meta`, so the level order is props, then config, then
+/// the next level down.
 pub(super) fn source_meta(
     tree: serde_json::Map<String, serde_json::Value>,
     src: &SchemaSource,
@@ -196,36 +198,88 @@ pub(super) fn source_meta(
     warnings: &mut Vec<String>,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut out = tree;
-    out.extend(meta_map(
-        &src.meta,
-        warnings,
-        &format!("source '{}'", src.name),
-    ));
-    out.extend(meta_map(
-        &tbl.meta,
-        warnings,
-        &format!("source '{}' table '{}'", src.name, tbl.name),
-    ));
+    for (v, what) in [
+        (&src.meta, format!("source '{}'", src.name)),
+        (&src.config.meta, format!("source '{}' config", src.name)),
+        (
+            &tbl.meta,
+            format!("source '{}' table '{}'", src.name, tbl.name),
+        ),
+        (
+            &tbl.config.meta,
+            format!("source '{}' table '{}' config", src.name, tbl.name),
+        ),
+    ] {
+        out.extend(meta_map(v, warnings, &what));
+    }
     out
 }
 
+/// A source table's `tags`: dbt accumulates every tag channel instead of
+/// overriding — the `config.tags` of the source then the table, then the
+/// top-level `tags:` of the TABLE then the source (verified on 1.12.6:
+/// source config `feed_cfg`, table config `lane_cfg`, table props
+/// `lane_tbl`, source props `nightly` lands as
+/// `['feed_cfg','lane_cfg','lane_tbl','nightly']`) — deduplicated in that
+/// order.
+pub(super) fn source_tags(src: &SchemaSource, tbl: &SchemaSourceTable) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tags in [&src.config.tags, &tbl.config.tags, &tbl.tags, &src.tags] {
+        push_unique(&mut out, tags);
+    }
+    out
+}
+
+/// Append the tags `out` doesn't already carry, preserving `new_tags`
+/// order (dbt's tag union is ordered, first occurrence keeps its slot).
+fn push_unique(tags: &mut Vec<String>, new_tags: &[String]) {
+    for tag in new_tags {
+        if !tags.contains(tag) {
+            tags.push(tag.clone());
+        }
+    }
+}
+
+/// A source table's `loaded_at_field` — resolved down table top-level >
+/// table `config:` > source top-level > source `config:`, each level
+/// three-state (absent inherits, `null` clears, a value overrides).
+/// UNLIKE `meta:`/`freshness:`, the top-level spelling beats `config:`
+/// within each level (verified on 1.12.6: a table's `loaded_at_field:`
+/// wins over its own `config.loaded_at_field`, and the source's top-level
+/// value beats the source's `config.loaded_at_field`; the table's config
+/// still outranks every source level). `+loaded_at_field` on the
+/// `sources:` tree is a key dbt ignores — deliberately not resolved.
+pub(super) fn source_loaded_at_field(
+    src: &SchemaSource,
+    tbl: &SchemaSourceTable,
+) -> Option<String> {
+    tbl.loaded_at_field
+        .clone()
+        .or_else(|| tbl.config.loaded_at_field.clone())
+        .or_else(|| src.loaded_at_field.clone().map(Some))
+        .or_else(|| src.config.loaded_at_field.clone())
+        .flatten()
+}
+
 /// The source table's effective `freshness` — each threshold (`warn_after`,
-/// `error_after`) resolves down table > source > `dbt_project.yml`
-/// `+freshness` independently. Verified against real dbt: a table's
-/// `error_after` keeps the inherited `warn_after` (a per-threshold merge,
-/// not a wholesale replace). An explicit `freshness: null` STOPS the
-/// inheritance walk at that level — a table's own declared thresholds above
-/// it still count.
+/// `error_after`) resolves down the levels independently: table `config:` >
+/// table top-level > source `config:` > source top-level > `dbt_project.yml`
+/// `+freshness`. Verified against real dbt: a table's `error_after` keeps
+/// the inherited `warn_after` (a per-threshold merge, not a wholesale
+/// replace). An explicit `freshness: null` STOPS the inheritance walk at
+/// that level — a table's own declared thresholds above it still count.
 pub(super) fn effective_freshness(
-    table: &Option<Option<RawFreshness>>,
-    source: &Option<Option<RawFreshness>>,
+    table: &SchemaSourceTable,
+    source: &SchemaSource,
     tree: &Option<RawFreshness>,
 ) -> Option<RawFreshness> {
     // Declared levels in precedence order — `Some(None)` is an explicit
     // `freshness: null` (stops the walk); `None` levels pass through.
     let chain = [
-        table.as_ref().map(Option::as_ref),
-        source.as_ref().map(Option::as_ref),
+        table.config.freshness.as_ref().map(Option::as_ref),
+        table.freshness.as_ref().map(Option::as_ref),
+        source.config.freshness.as_ref().map(Option::as_ref),
+        source.freshness.as_ref().map(Option::as_ref),
         Some(tree.as_ref()),
     ];
     let mut warn_after: Option<RawFreshnessThreshold> = None;
@@ -270,6 +324,26 @@ pub(super) fn synth_tests(
         let Some(kind) = test_kind(test) else {
             continue;
         };
+        // The declared body under `{kind: {...}}` — a `relationships` test's
+        // `to:`/`field:` live there; a bare-string test has none.
+        let body = test
+            .as_object()
+            .and_then(|m| m.get(&kind))
+            .and_then(|v| v.as_object());
+        // `enabled: false` — under `config:` or the deprecated top-level
+        // spelling — parks the test under dbt's `disabled` (verified: both
+        // spellings land there; declaring the same key in both is a dbt
+        // error, resolved `config:`-first by convention). Non-bool shapes
+        // leave the test enabled.
+        let enabled = body.and_then(|b| {
+            b.get("config")
+                .and_then(|c| c.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .or_else(|| b.get("enabled").and_then(|v| v.as_bool()))
+        });
+        if enabled == Some(false) {
+            continue;
+        }
         let key = format!("test.{}.{}", ctx.proj, ctx.seq);
         ctx.seq += 1;
         let name = match column {
@@ -277,15 +351,14 @@ pub(super) fn synth_tests(
             None => format!("{kind}_{target_name}"),
         };
         // The config map under `{kind: {...}}` — a `relationships` test's
-        // `to:`/`field:` live there; a bare-string test has none.
-        let mut kwargs: serde_json::Map<String, serde_json::Value> = match test {
-            serde_json::Value::Object(m) => m
-                .get(&kind)
-                .and_then(|v| v.as_object())
-                .cloned()
-                .unwrap_or_default(),
-            _ => Default::default(),
-        };
+        // `to:`/`field:` live there; a bare-string test has none. `config:`
+        // and top-level `enabled:` are dbt's config keys (recorded under
+        // `config`, never in `kwargs`) — strip them so the synthesized
+        // kwargs carry the same shape a real manifest records.
+        let mut kwargs: serde_json::Map<String, serde_json::Value> =
+            body.cloned().unwrap_or_default();
+        kwargs.remove("config");
+        kwargs.remove("enabled");
         // dbt >=1.10's `arguments:` key is the canonical test-args home —
         // the manifest records it FLATTENED into kwargs (verified on
         // 1.12.6: `arguments: {column_name: id}` lands as
