@@ -10,7 +10,7 @@ use clap::{Arg, ArgAction, Command, CommandFactory};
 
 use super::exit::ExitKind;
 use super::flags::GLOBAL_FLAG_COMMANDS;
-use super::{exit_code, Cli, CliError};
+use super::{exit_code, write_stdout, Cli, CliError};
 
 /// The generated-file banner every `gen-docs` output carries.
 pub const GENERATED_MARKER: &str =
@@ -18,7 +18,7 @@ pub const GENERATED_MARKER: &str =
 
 /// Print the generated CLI reference (Markdown) to stdout.
 pub fn run_cli_reference() -> Result<(), CliError> {
-    super::write_stdout(&cli_reference_markdown(), anstream::ColorChoice::Auto)
+    write_stdout(&cli_reference_markdown(), anstream::ColorChoice::Auto)
 }
 
 /// Render the whole reference document.

@@ -7,7 +7,7 @@
 use anyhow::Context;
 use clap::CommandFactory;
 
-use super::{Cli, CliError};
+use super::{write_stdout, Cli, CliError};
 
 /// Write the completion script for `shell` to stdout.
 pub fn run_completions(shell: clap_complete::Shell) -> Result<(), CliError> {
@@ -15,7 +15,7 @@ pub fn run_completions(shell: clap_complete::Shell) -> Result<(), CliError> {
     let mut buf = Vec::new();
     clap_complete::generate(shell, &mut cmd, "dbtl", &mut buf);
     let script = String::from_utf8(buf).context("the generated completion script is not UTF-8")?;
-    super::write_stdout(&script, anstream::ColorChoice::Auto)
+    write_stdout(&script, anstream::ColorChoice::Auto)
 }
 
 /// Write the man page (roff) for the top-level `dbtl` command to stdout.
@@ -27,5 +27,5 @@ pub fn run_man() -> Result<(), CliError> {
     man.render(&mut buf)
         .context("failed to render the man page")?;
     let page = String::from_utf8(buf).context("the rendered man page is not UTF-8")?;
-    super::write_stdout(&page, anstream::ColorChoice::Auto)
+    write_stdout(&page, anstream::ColorChoice::Auto)
 }
