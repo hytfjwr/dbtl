@@ -13,7 +13,11 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
+  # Same `test`-key env set as the CI jobs that write the shared cache —
+  # the key's env hash folds every CARGO_* variable in.
   CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 jobs:
   # The source loader's contract with real dbt is executable: each committed

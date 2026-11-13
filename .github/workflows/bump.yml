@@ -23,6 +23,13 @@ on:
 
 permissions: {}
 
+env:
+  # The `test` shared key's env hash folds every CARGO_* variable in — this
+  # read-only restore must export the same set the CI jobs build with.
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+
 jobs:
   bump:
     name: Bump version and open PR

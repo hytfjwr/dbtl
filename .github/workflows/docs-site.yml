@@ -49,6 +49,9 @@ jobs:
       contents: read
     env:
       ASTRO_TELEMETRY_DISABLED: "1"
+      # Same `wasm`-key env set as the job that writes it on main — the
+      # key's env hash folds every CARGO_* variable in.
+      CARGO_TERM_COLOR: always
     steps:
       - name: Resolve release tag
         id: tag
@@ -79,6 +82,14 @@ jobs:
         with:
           toolchain: stable
           targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Restores the wasm-engine dependencies main's writer job saves;
+          # only the workspace crates still compile here. Never saves.
+          shared-key: wasm
+          save-if: false
 
       # The CLI post-processes the .wasm, so it must emit the schema the
       # crate was built with — same version as crates/wasm's pinned

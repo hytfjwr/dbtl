@@ -1,0 +1,91 @@
+name: Wasm cache
+
+# Warms the cargo cache the docs site's engine build restores. The engine
+# crates compile under a fat LTO profile on every site build; the cache
+# carries their dependencies so a pull request's build only recompiles the
+# workspace crates.
+#
+# This lives in its own file because Docs site serializes main-ref runs in
+# one concurrency group — the publishing run release.yml dispatches after a
+# release must never queue behind, or be displaced by, cache upkeep.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/core/**"
+      - "crates/report/**"
+      - "crates/wasm/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      # Build flags could move here; re-warm if cargo configuration changes.
+      - ".cargo/config.toml"
+      - ".github/workflows/wasm-cache.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  # Same `wasm`-key env set as the site build that restores it — the key's
+  # env hash folds every CARGO_* variable in.
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The same cargo command the site's engine build runs — matching flags
+  # keep the dependency fingerprints identical, so the saved artifacts are
+  # fresh for the reader.
+  engine-build:
+    name: Build the wasm engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Shared wasm-engine dependencies — saved on pushes to main only;
+          # the site build restores it and never saves.
+          shared-key: wasm
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Build the engine for wasm32
+        run: cargo build -p dbtl-wasm --target wasm32-unknown-unknown --profile wasm-release --locked
+
+  # Housekeeping, never a gate: once the writer has saved its fresh
+  # generation on a main push, drop every older generation of the `wasm`
+  # series so the Actions cache stays inside its budget.
+  cache-prune:
+    name: Prune old cache generations
+    needs: engine-build
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # Deleting cache entries needs the actions scope.
+      actions: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prune old generations of this workflow's caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/prune-caches.sh v0-rust-wasm-

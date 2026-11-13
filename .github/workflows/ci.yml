@@ -84,6 +84,13 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      # Debug info trimmed to line tables — panic backtraces keep line
+      # numbers while the shared `test` artifacts shrink. Every job that
+      # writes or restores that key exports the same CARGO_* set: the key's
+      # env hash folds them in, so the writer and the readers must agree.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     strategy:
       fail-fast: false
       matrix:
@@ -242,6 +249,10 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+    env:
+      # Same `test`-key env set as the writer — see Build & Test.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -283,11 +294,8 @@ jobs:
           toolchain: stable
           components: llvm-tools-preview
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          # llvm-cov's instrumented artifacts help no other job; this report-only job restores a matching entry but never saves.
-          save-if: false
+      # No cargo cache: llvm-cov's instrumented artifacts help no other job,
+      # and no writer ever saves this key — the restore could never hit.
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
@@ -327,6 +335,10 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+    env:
+      # Same `test`-key env set as the writer — see Build & Test.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     strategy:
       fail-fast: false
       matrix:
@@ -367,6 +379,10 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      # Same `test`-key env set as the writer — see Build & Test.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -396,6 +412,36 @@ jobs:
         run: |
           cargo nextest run --locked --profile ci -p dbtl --test doc_links --test changelog
           cargo nextest run --locked --profile ci -p dbtl-tui -E 'test(readme_keybindings_resolve_against_bindings)'
+
+  # Housekeeping, never a gate: once this workflow's writers have saved
+  # their fresh generations on a main push, drop every older generation of
+  # the same series so the Actions cache stays inside its budget. Readers
+  # restore the newest entry, so pruning cannot break a later restore.
+  cache-prune:
+    name: Prune old cache generations
+    needs:
+      - changes
+      - lint
+      - build-test
+      - msrv
+      - hygiene
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # Deleting cache entries needs the actions scope.
+      actions: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prune old generations of this workflow's caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/prune-caches.sh v0-rust-test- v0-rust-lint- v0-rust-msrv- v0-rust-hygiene-
 
   # The single required check for this workflow: fails when any needed job
   # failed or was cancelled; change-scoped skips pass.

@@ -121,11 +121,9 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          # Per-target artifacts land under target/<target>/ and share nothing with other jobs; never saves.
-          save-if: false
+      # No cargo cache: per-target artifacts land under target/<target>/
+      # and share nothing with other jobs, and no writer ever saves this
+      # key — the restore could never hit.
 
       # psm's build script compiles a C file, and musl binaries must link
       # against musl libc — musl-gcc serves both (the cc-rs fallback search

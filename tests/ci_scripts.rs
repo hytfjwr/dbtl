@@ -1,7 +1,8 @@
-//! The CI merge-gate plumbing: the changed-path classifier and the
-//! needs-aggregator in `.github/scripts/`, plus the workflows' contract
-//! that every gating job is reachable through an aggregate's `needs` list
-//! (a job added without `needs` coverage can never slip through).
+//! The CI merge-gate plumbing: the changed-path classifier, the
+//! needs-aggregator, and the cache pruner in `.github/scripts/`, plus the
+//! workflows' contract that every gating job is reachable through an
+//! aggregate's `needs` list (a job added without `needs` coverage can
+//! never slip through).
 //!
 //! Unix-only: the scripts target bash, like the action's helpers.
 
@@ -326,6 +327,130 @@ fn missing_or_empty_results_fail_closed() {
     }
 }
 
+// ---- prune-caches.sh -------------------------------------------------------
+
+/// One cache-listing row the pruner reads: id, key, created_at, ref.
+fn entry(id: u32, key: &str, created: &str) -> String {
+    format!("{id}\t{key}\t{created}\trefs/heads/main\n")
+}
+
+/// Run the pruner over an explicit cache listing (the `--entries` seam)
+/// and return the `(id, key)` pairs it would delete.
+fn prune(entries: &str, prefixes: &[&str], keep_other: u32) -> Vec<(u32, String)> {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("entries.tsv");
+    std::fs::write(&file, entries).unwrap();
+    let out = Command::new("bash")
+        .arg(script("prune-caches.sh"))
+        .arg("--entries")
+        .arg(&file)
+        .args(prefixes)
+        .env("KEEP_OTHER", keep_other.to_string())
+        .output()
+        .expect("run prune-caches.sh");
+    assert!(out.status.success(), "prune-caches: {}", stderr(&out));
+    stdout(&out)
+        .lines()
+        .filter_map(|l| {
+            let (id, key) = l.split_once('\t')?;
+            Some((id.parse().unwrap(), key.to_string()))
+        })
+        .collect()
+}
+
+#[test]
+fn prune_keeps_only_the_newest_per_series() {
+    let entries = concat!(
+        "1\tv0-rust-test-Linux-x64-2fd77104-ed522558\t2026-11-12T20:23:17Z\trefs/heads/main\n",
+        "2\tv0-rust-test-Linux-x64-2fd77104-0bdeb884\t2026-11-13T07:45:43Z\trefs/heads/main\n",
+        "3\tv0-rust-test-Linux-x64-2fd77104-5845f4ce\t2026-11-13T03:08:20Z\trefs/heads/main\n",
+    );
+    let victims = prune(entries, &["v0-rust-test-"], 1);
+    assert_eq!(
+        victims,
+        vec![
+            (3, "v0-rust-test-Linux-x64-2fd77104-5845f4ce".to_string()),
+            (1, "v0-rust-test-Linux-x64-2fd77104-ed522558".to_string()),
+        ],
+        "every generation but the newest must be pruned — id 2 is the generation main last wrote"
+    );
+}
+
+#[test]
+fn prune_folds_changed_env_hashes_into_one_series() {
+    // A changed CARGO_*/RUST* set rewrites the env-hash segment, but the
+    // entries still form one series — the stale-env generation retires.
+    let entries = concat!(
+        "4\tv0-rust-test-Windows_NT-x64-e70cdc14-ed522558\t2026-11-12T11:16:44Z\trefs/heads/main\n",
+        "5\tv0-rust-test-Windows_NT-x64-ea627442-0bdeb884\t2026-11-13T07:46:30Z\trefs/heads/main\n",
+    );
+    let victims = prune(entries, &["v0-rust-test-"], 1);
+    assert_eq!(
+        victims,
+        vec![(
+            4,
+            "v0-rust-test-Windows_NT-x64-e70cdc14-ed522558".to_string()
+        )]
+    );
+}
+
+#[test]
+fn prune_never_touches_unmatched_keys_or_other_refs() {
+    let mut entries = String::new();
+    entries.push_str(&entry(
+        1,
+        "actionlint-Linux-v1.7.12",
+        "2026-11-09T09:30:31Z",
+    ));
+    entries.push_str(&entry(2, "pinact-Linux-v4.1.0", "2026-11-09T09:30:43Z"));
+    // A different series than the ones being pruned.
+    entries.push_str(&entry(
+        3,
+        "v0-rust-perf-Linux-x64-2fd77104-5e3c6036",
+        "2026-11-13T01:31:12Z",
+    ));
+    // Same series as a pruned one, but on a branch ref — never a main
+    // generation.
+    entries.push_str(
+        "4\tv0-rust-test-Linux-x64-2fd77104-aaaaaaa\t2026-11-12T00:00:00Z\trefs/heads/side\n",
+    );
+    entries.push_str(&entry(
+        5,
+        "v0-rust-test-Linux-x64-2fd77104-0bdeb884",
+        "2026-11-13T07:45:43Z",
+    ));
+    let victims = prune(&entries, &["v0-rust-test-"], 1);
+    assert!(
+        victims.is_empty(),
+        "only main-ref entries under the given prefixes may be pruned: {victims:?}"
+    );
+}
+
+#[test]
+fn prune_content_keyed_entries_keep_the_newest_n() {
+    // perf-bin-* bundles are keyed by the input SHA — every entry is a
+    // distinct merge base, so the group keeps several recent entries.
+    let mut entries = String::new();
+    for i in 0..12 {
+        entries.push_str(&entry(
+            i,
+            &format!("perf-bin-Linux-56625f11cb9e645f-{i:040x}"),
+            &format!("2026-11-{day:02}T00:00:00Z", day = i + 1),
+        ));
+    }
+    let victims = prune(&entries, &["perf-bin-"], 10);
+    assert_eq!(victims.len(), 2, "the oldest two must go, newest ten stay");
+    // Victims come out newest-first within the group: day 2, then day 1.
+    assert_eq!(victims[0].0, 1);
+    assert_eq!(victims[1].0, 0);
+}
+
+#[test]
+fn prune_empty_listing_is_a_no_op() {
+    let victims = prune("", &["v0-rust-test-"], 1);
+    assert!(victims.is_empty());
+}
+
 // ---- workflow contract -----------------------------------------------------
 
 fn workflow(name: &str) -> serde_norway::Value {
@@ -382,15 +507,16 @@ fn assert_needs_cover(wf: &serde_norway::Value, aggregate: &str, report_only: &[
 #[test]
 fn ci_result_covers_every_gating_job() {
     let wf = workflow("ci.yml");
-    // Coverage and TUI E2E report without gating — everything else a merge
-    // waits on must be inside the aggregate's needs.
-    assert_needs_cover(&wf, "ci-result", &["coverage", "tui-e2e"]);
+    // Coverage, TUI E2E, and cache housekeeping report without gating —
+    // everything else a merge waits on must be inside the aggregate's
+    // needs.
+    assert_needs_cover(&wf, "ci-result", &["coverage", "tui-e2e", "cache-prune"]);
 }
 
 #[test]
 fn dogfood_result_covers_every_job() {
     let wf = workflow("dogfood.yml");
-    assert_needs_cover(&wf, "dogfood-result", &[]);
+    assert_needs_cover(&wf, "dogfood-result", &["cache-prune"]);
 }
 
 #[test]
@@ -514,6 +640,40 @@ fn every_downstream_job_needs_changes() {
     }
 }
 
+/// The cache-prune jobs run only after their own workflow's writers on a
+/// main push — a pruned series must always keep the generation main last
+/// wrote, and the delete scope needs `actions: write` on that job alone.
+#[test]
+fn cache_prune_jobs_wait_for_their_writers() {
+    for (wf_name, writers) in [
+        (
+            "ci.yml",
+            &["changes", "lint", "build-test", "msrv", "hygiene"][..],
+        ),
+        ("dogfood.yml", &["changes", "release-build"][..]),
+        ("perf.yml", &["perf-prebuild"][..]),
+        ("wasm-cache.yml", &["engine-build"][..]),
+    ] {
+        let wf = workflow(wf_name);
+        let prune = job(&wf, "cache-prune");
+        assert_eq!(
+            needs(&wf, "cache-prune"),
+            writers.iter().map(|s| s.to_string()).collect(),
+            "{wf_name}:cache-prune must wait on exactly its workflow's writers"
+        );
+        assert_eq!(
+            prune["if"].as_str(),
+            Some("always() && github.event_name == 'push' && github.ref == 'refs/heads/main'"),
+            "{wf_name}:cache-prune runs only after a main push"
+        );
+        assert_eq!(
+            prune["permissions"]["actions"].as_str(),
+            Some("write"),
+            "{wf_name}:cache-prune needs actions: write to delete cache entries"
+        );
+    }
+}
+
 #[test]
 fn hygiene_runs_only_the_spell_check_without_code() {
     let wf = workflow("ci.yml");
@@ -556,7 +716,11 @@ fn shellcheck_passes_on_the_ci_scripts() {
     {
         return;
     }
-    for name in ["changed-paths.sh", "aggregate-results.sh"] {
+    for name in [
+        "changed-paths.sh",
+        "aggregate-results.sh",
+        "prune-caches.sh",
+    ] {
         let out = Command::new("shellcheck")
             .arg(script(name))
             .output()
