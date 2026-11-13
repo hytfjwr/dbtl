@@ -24,6 +24,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   shared evaluator used by in-file `config(enabled=)`, `+enabled` tree
   keys, schema `enabled:`/`config.enabled`, and generic-test `enabled`
   alike.
+- Lint rule-set presets and category severities. `lint.preset: minimal|standard|strict` in `.dbtl.yml` (or `--preset` on `dbtl lint` and `dbtl check`) picks the base rule set a run starts from: `minimal` runs only the error-default rules, `standard` (the shipped default) runs every default-enabled rule, and `strict` runs the whole registry. `lint.categories: {<category>: error|warn|off}` pins a whole category above the preset and below `lint.rules.<id>`; `--rules` remains the authoritative selector above all of them. `--list-rules` shows the resolved severity/enablement under the active config alongside per-preset membership, and `--explain` reports the effective values.
 - `?` full-text search now matches compiled SQL in addition to raw SQL,
   descriptions, and column names, so a `ref()`/`source()` target that only
   exists after Jinja expansion (`db.schema.table`) is findable too.
@@ -35,6 +36,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- `cartesian_join` no longer flags an explicit `CROSS JOIN` — the
+  intentional spelling of a Cartesian product. Only conditionless joins
+  report now: a bare `JOIN`, a comma-separated `FROM a, b` with no
+  `WHERE`, or an `ON` that can never reject a row (`ON TRUE`, `ON 1=1`).
 - `rejoining_upstream` findings now key on `(rule, node)` — the bypassed
   edge's endpoints were context, not identity, so a rejoin that gains
   another shared parent stays the same frozen finding. The baseline,
@@ -134,6 +139,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Source mode also accepts the `config({...})` positional-dict spelling of
   `config()` kwargs (same ordered last-wins/merge semantics) and the
   deprecated `data-paths` alias for `seed-paths` (declaring both warns).
+- `duplicate_output_columns` no longer flags colliding names an un-aliased
+  expression merely derives (`sum(a), sum(b)` → `sum`/`sum`, `count(*)`,
+  `CASE`, `a::int` → `a`): only Postgres and Redshift actually assign such
+  names, so the repeats count solely under those dialects while written
+  aliases and identifier columns still flag everywhere.
+- `cartesian_join` and `hard_coded_references` no longer read
+  `FROM t, t.arr`-style correlated array factors as a second relation or a
+  written dependency, and `hard_coded_references` now also excuses `dual`,
+  `information_schema` at any qualification depth (including dots inside
+  one quoted name), and `FROM 'data/x.parquet'`-style file literals.
+  `cartesian_join` findings quote the raw SQL join arm when source
+  positions pair, and a model whose render produces no statements —
+  whitespace, comments, or an output-less `{{ config() }}` — is judged
+  empty instead of counted among the unparsable.
 
 ## [0.6.4] - 2026-11-13
 

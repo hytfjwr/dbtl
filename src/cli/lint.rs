@@ -87,6 +87,9 @@ pub(super) fn lint_project_root(candidates: &[PathBuf]) -> PathBuf {
 pub struct LintArgs<'a> {
     /// `--rules` — the authoritative rule selector (empty = the config's set).
     pub rules: &'a [String],
+    /// `--preset` — the base rule set, overriding `.dbtl.yml`'s
+    /// `lint.preset`.
+    pub preset: Option<dbtl::LintPreset>,
     /// `--fail-on` — overrides `.dbtl.yml`'s `fail_on`.
     pub fail_on: Option<dbtl::FailOn>,
     /// `--format` — the stdout report format.
@@ -117,7 +120,11 @@ pub struct LintArgs<'a> {
 /// `.dbtl.yml` is probed from the data-path DECISION alone ([`source_path`])
 /// — never a data load. A source that can't be determined yields the
 /// shipped defaults instead of a data-source error.
-fn query_lint_config(src: &DataSourceArgs, rules: &[String]) -> Result<dbtl::LintConfig, CliError> {
+fn query_lint_config(
+    src: &DataSourceArgs,
+    rules: &[String],
+    preset: Option<dbtl::LintPreset>,
+) -> Result<dbtl::LintConfig, CliError> {
     let (manifest_arg, project_arg) =
         match source_path(src.manifest, src.source, src.project, src.diff) {
             Some(SourcePath::Manifest(path)) => (Some(path), None),
@@ -127,8 +134,23 @@ fn query_lint_config(src: &DataSourceArgs, rules: &[String]) -> Result<dbtl::Lin
     let mut cfg = load_project_config(manifest_arg.as_deref(), project_arg.as_deref())?
         .config
         .lint;
-    apply_rules_overlay(&mut cfg, rules)?;
+    apply_preset_and_rules(&mut cfg, preset, rules)?;
     Ok(cfg)
+}
+
+/// Apply the CLI lint layers on top of the file config: `--preset`
+/// replaces `lint.preset` (the categories and per-rule `rules` entries
+/// still sit above it), then `--rules` resolves to the authoritative
+/// per-rule set. Both are `None`-safe no-ops.
+pub(super) fn apply_preset_and_rules(
+    cfg: &mut dbtl::LintConfig,
+    preset: Option<dbtl::LintPreset>,
+    rules: &[String],
+) -> Result<(), CliError> {
+    if let Some(p) = preset {
+        cfg.preset = p;
+    }
+    apply_rules_overlay(cfg, rules)
 }
 
 /// Run the `lint` subcommand: `--list-rules`/`--explain` answer from the
@@ -156,7 +178,7 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
                 )));
             }
         }
-        let cfg = query_lint_config(src, args.rules)?;
+        let cfg = query_lint_config(src, args.rules, args.preset)?;
         if args.list_rules {
             print_rules_table(&cfg)?;
         }
@@ -196,7 +218,7 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
     let baseline_explicit = pc.config.baseline_explicit;
     let config_found = pc.path.is_some();
     let mut cfg = pc.config.lint;
-    apply_rules_overlay(&mut cfg, args.rules)?;
+    apply_preset_and_rules(&mut cfg, args.preset, args.rules)?;
     let candidates =
         dbtl::project_config_candidates(manifest_arg.as_deref(), project_arg.as_deref());
     // The auxiliary inputs every evaluation path below shares — the lazy
@@ -347,9 +369,11 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
 }
 
 /// The `--list-rules` table — every registry rule, one line each: id,
-/// category, effective severity (`off` when the config disables it), and
-/// the one-line summary. Columns align to the widest entry. Written
-/// through the same broken-pipe-safe stdout helper the report uses.
+/// category, the shipped default (`off` for an opt-in rule), the
+/// EFFECTIVE severity under the resolved config, whether the registry
+/// enables the rule by default, its on/off under each preset, and the
+/// one-line summary. Columns align to the widest entry. Written through
+/// the same broken-pipe-safe stdout helper the report uses.
 fn print_rules_table(cfg: &dbtl::LintConfig) -> Result<(), CliError> {
     let id_w = dbtl::LintRule::ALL
         .iter()
@@ -364,21 +388,38 @@ fn print_rules_table(cfg: &dbtl::LintConfig) -> Result<(), CliError> {
         .unwrap_or(0)
         .max("CATEGORY".len());
     let mut out = format!(
-        "{:<id_w$}  {:<cat_w$}  {:<8}  SUMMARY\n",
+        "{:<id_w$}  {:<cat_w$}  {:<7}  {:<8}  {:<7}  {:<7}  {:<8}  {:<6}  SUMMARY\n",
         "ID",
         "CATEGORY",
+        "DEFAULT",
         "SEVERITY",
+        "ENABLED",
+        "MINIMAL",
+        "STANDARD",
+        "STRICT",
         id_w = id_w,
         cat_w = cat_w
     );
     for rule in dbtl::LintRule::ALL {
+        let info = rule.info();
+        let on_off = |on: bool| if on { "on" } else { "off" };
         let severity = cfg.severity(rule).map(|s| s.name()).unwrap_or("off");
+        let default = if info.default_enabled {
+            info.default_severity.name()
+        } else {
+            "off"
+        };
         out += &format!(
-            "{:<id_w$}  {:<cat_w$}  {:<8}  {}\n",
+            "{:<id_w$}  {:<cat_w$}  {:<7}  {:<8}  {:<7}  {:<7}  {:<8}  {:<6}  {}\n",
             rule.name(),
-            rule.info().category.name(),
+            info.category.name(),
+            default,
             severity,
-            rule.info().summary,
+            on_off(info.default_enabled),
+            on_off(dbtl::LintPreset::Minimal.enables(info)),
+            on_off(dbtl::LintPreset::Standard.enables(info)),
+            on_off(dbtl::LintPreset::Strict.enables(info)),
+            info.summary,
             id_w = id_w,
             cat_w = cat_w
         );
@@ -411,6 +452,21 @@ fn explain_rule(id: &str, cfg: &dbtl::LintConfig) -> Result<(), CliError> {
         "severity: {}\n",
         cfg.severity(rule).map(|s| s.name()).unwrap_or("off")
     );
+    if info.default_enabled {
+        out += &format!(
+            "default: {} (enabled by default)\n",
+            info.default_severity.name()
+        );
+    } else {
+        out += &format!(
+            "default: off (opt-in) — enable with `lint.preset: strict`, \
+             `lint.categories.{}: error|warn`, `lint.rules.{}: true`, \
+             or `--rules {}`\n",
+            info.category.name(),
+            info.id,
+            info.id
+        );
+    }
     out += &format!("requires: {}\n\n", requires_name(info.requires));
     out += &format!("{}\n\n", info.summary);
     out += &format!("Rationale:\n{}\n\n", info.rationale);

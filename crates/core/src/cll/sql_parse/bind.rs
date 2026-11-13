@@ -103,6 +103,7 @@ impl SqlParseResolver {
                                 bare: true,
                                 sources: BTreeSet::from([(p.uid.clone(), c.clone())]),
                                 synthetic: false,
+                                derived: false,
                             })
                             .collect();
                         TableSrc::Derived(Rc::new(rename_outputs(
@@ -135,6 +136,7 @@ impl SqlParseResolver {
                                 bare: false,
                                 sources: table_arg_sources.clone(),
                                 synthetic: false,
+                                derived: false,
                             })
                             .collect(),
                         foj: ColSources::new(),
@@ -242,6 +244,7 @@ impl SqlParseResolver {
                             bare: false,
                             sources: elem_sources.clone(),
                             synthetic: false,
+                            derived: false,
                         })
                         .collect()
                 };
@@ -256,6 +259,7 @@ impl SqlParseResolver {
                         bare: false,
                         sources: ColSources::new(),
                         synthetic: false,
+                        derived: false,
                     });
                 }
                 scope.bindings.push(Binding {
@@ -334,6 +338,7 @@ impl SqlParseResolver {
                     bare: false,
                     sources: sources.clone(),
                     synthetic: false,
+                    derived: false,
                 }];
                 if let Some(a) = attribute_alias {
                     out.push(OutCol {
@@ -341,6 +346,7 @@ impl SqlParseResolver {
                         bare: false,
                         sources,
                         synthetic: false,
+                        derived: false,
                     });
                 }
                 scope.bindings.push(Binding {
@@ -384,6 +390,7 @@ impl SqlParseResolver {
                         bare: false,
                         sources: doc.clone(),
                         synthetic: false,
+                        derived: false,
                     })
                     .collect();
                 scope.bindings.push(Binding {
@@ -413,6 +420,7 @@ impl SqlParseResolver {
                         bare: false,
                         sources: doc.clone(),
                         synthetic: false,
+                        derived: false,
                     })
                     .collect();
                 scope.bindings.push(Binding {
@@ -508,6 +516,7 @@ impl SqlParseResolver {
                         bare: false,
                         sources: doc.clone(),
                         synthetic: false,
+                        derived: false,
                     })
                     .collect();
                 scope.bindings.push(Binding {

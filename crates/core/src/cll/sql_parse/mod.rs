@@ -123,8 +123,8 @@ pub struct SqlFacts {
     /// can't then shift the underline onto a different arm.
     pub wildcard_count: usize,
     /// Display text of every JOIN arm with no join condition
-    /// (`CROSS JOIN`, or a conditional operator with no ON/USING/NATURAL),
-    /// sorted — `cartesian_join`'s input.
+    /// (a conditional operator with no ON/USING/NATURAL — an explicit
+    /// `CROSS JOIN` never counts), sorted — `cartesian_join`'s input.
     pub cartesian: Vec<String>,
     /// Occurrence count behind `cartesian` (the list dedups display text —
     /// a model can hit the same conditionless join twice). The positions
@@ -138,8 +138,10 @@ pub struct SqlFacts {
     pub unresolved: Vec<(String, String)>,
     /// `(normalized name, occurrence count)` of every output column name
     /// the output-defining SELECT emits more than once, first-occurrence
-    /// order — `duplicate_output_columns`. The positions pass pairs a
-    /// judged name only when the raw render counted it exactly once or
+    /// order — `duplicate_output_columns`. Expression-shape names
+    /// (`sum`/`case`/a cast's operand) count only under Postgres +
+    /// Redshift, the dialects that assign them. The positions pass pairs
+    /// a judged name only when the raw render counted it exactly once or
     /// the same number of times — the shared name/count key.
     pub duplicate_outputs: Vec<(String, usize)>,
     /// Normalized names of `WITH` CTEs no FROM-visible reference reads,
@@ -520,6 +522,13 @@ impl SqlParseResolver {
         let out = (|| {
             let rendered = render_jinja_mapped(text, JinjaMark::Plain, self.dialect);
             let stmts = parse_statements(self.dialect, &rendered.text)?;
+            // A render producing no statements — whitespace, comments, or
+            // config-only (`{{ config() }}` renders to whitespace) — is
+            // judged-and-empty, not unparsable: the SQL rules find nothing,
+            // the model doesn't land on `unparsed`.
+            if stmts.is_empty() {
+                return Some(Rc::new(Analyzed::default()));
+            }
             let query = stmts.iter().find_map(|s| match s {
                 Statement::Query(q) => Some(&**q),
                 _ => None,
@@ -545,11 +554,16 @@ impl SqlParseResolver {
             // unexpandable wildcard contributes nothing, so only the
             // explicit names compare — the documented "can't establish"
             // direction). Synthetic `__colN` placeholders aren't written
-            // names and can't collide.
+            // names and can't collide. Neither can expression-shape names
+            // (`sum`/`case`/`a::int`'s `a`) outside the Postgres family —
+            // Postgres + Redshift really do assign them and then fail on a
+            // collision; every other dialect invents a positional or
+            // expression-text name no second expression shares.
+            let names_exprs = matches!(self.dialect, SqlDialect::Postgres | SqlDialect::Redshift);
             let mut dup_order: Vec<String> = Vec::new();
             let mut dup_counts: Vec<usize> = Vec::new();
             for o in &res.out {
-                if o.synthetic {
+                if o.synthetic || (o.derived && !names_exprs) {
                     continue;
                 }
                 match dup_order.iter().position(|n| *n == o.name) {
