@@ -647,8 +647,8 @@ impl App {
     /// all models (palette `@`'s contract). The syntax IS the list `/`'s
     /// (the same syntax as the list `/`): `!spec` routes through
     /// `select::select`'s dbt selectors, `?needle` through the full-text
-    /// match (descriptions, columns, raw SQL), anything else through fuzzy
-    /// name matching.
+    /// match (descriptions, columns, raw + compiled SQL), anything else
+    /// through fuzzy name matching.
     fn home_search_rows(&self, query: &str) -> Vec<HomeRow> {
         let q = query.trim();
         let base = &self.model_list;

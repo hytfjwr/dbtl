@@ -14,6 +14,11 @@ pub(super) struct DbtProject {
     pub(super) model_paths: Option<Vec<String>>,
     #[serde(rename = "seed-paths", default, deserialize_with = "de_opt_string_vec")]
     pub(super) seed_paths: Option<Vec<String>>,
+    /// `data-paths` — the pre-1.0 alias for `seed-paths` (dbt still accepts
+    /// it with a deprecation warning). Declaring both is a dbt error;
+    /// `seed-paths` wins here.
+    #[serde(rename = "data-paths", default, deserialize_with = "de_opt_string_vec")]
+    pub(super) data_paths: Option<Vec<String>>,
     #[serde(
         rename = "snapshot-paths",
         default,
@@ -259,6 +264,10 @@ pub(super) struct SchemaSource {
     /// `meta:` overrides it per key, verified against real dbt).
     #[serde(default)]
     pub(super) meta: serde_json::Value,
+    /// `tags:` at the source level — accumulates with `config.tags` and the
+    /// table-level tags (dbt unions them; it does not override).
+    #[serde(default, deserialize_with = "de_string_vec")]
+    pub(super) tags: Vec<String>,
     /// `loader:` — the tool loading these tables; cascades to every table
     /// (dbt ignores it on the table level and in `dbt_project.yml`).
     #[serde(default, deserialize_with = "de_opt_string")]
@@ -272,8 +281,39 @@ pub(super) struct SchemaSource {
     /// `+freshness` instead of passing it through.
     #[serde(default, deserialize_with = "de_opt_some")]
     pub(super) freshness: Option<Option<RawFreshness>>,
+    /// The source-level `config:` block — its keys sit ABOVE the source's
+    /// top-level properties and below the table's (source props < source
+    /// `config:` < table props < table `config:`, verified).
+    #[serde(default)]
+    pub(super) config: SchemaSourceConfig,
     #[serde(default)]
     pub(super) tables: Vec<SchemaSourceTable>,
+}
+
+/// The `config:` block of a source or a source table — where dbt moved
+/// `freshness`/`loaded_at_field`/`meta`/`enabled`/`tags` (the top-level
+/// spellings still work). `enabled` lives ONLY here: a table's top-level
+/// `enabled:` is ignored by dbt and a source's is a parse error — neither
+/// is read.
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct SchemaSourceConfig {
+    #[serde(default)]
+    pub(super) enabled: Option<bool>,
+    /// `config.meta` — merges per key at its precedence level (a source
+    /// `config.meta` sits below the table's top-level `meta:` — verified).
+    #[serde(default)]
+    pub(super) meta: serde_json::Value,
+    /// `config.loaded_at_field` — three-state like the top-level spelling:
+    /// absent inherits, `null` clears the inherited value.
+    #[serde(default, deserialize_with = "de_opt_opt_string")]
+    pub(super) loaded_at_field: Option<Option<String>>,
+    /// `config.freshness` — merges per threshold at its precedence level;
+    /// `null` stops the inheritance walk like the top-level spelling.
+    #[serde(default, deserialize_with = "de_opt_some")]
+    pub(super) freshness: Option<Option<RawFreshness>>,
+    /// `config.tags` — unions with the other tag channels, not a replace.
+    #[serde(default, deserialize_with = "de_string_vec")]
+    pub(super) tags: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -289,6 +329,10 @@ pub(super) struct SchemaSourceTable {
     /// `meta:` at the table level — overrides the source's `meta:` per key.
     #[serde(default)]
     pub(super) meta: serde_json::Value,
+    /// `tags:` at the table level — accumulates with `config.tags` and the
+    /// source-level tags (dbt unions them; it does not override).
+    #[serde(default, deserialize_with = "de_string_vec")]
+    pub(super) tags: Vec<String>,
     /// `loaded_at_field:` at the table level — three-state: absent inherits
     /// the source's, explicit `null` clears it, a value overrides it.
     #[serde(default, deserialize_with = "de_opt_opt_string")]
@@ -298,6 +342,11 @@ pub(super) struct SchemaSourceTable {
     /// `warn_after`); an explicit `null` clears both.
     #[serde(default, deserialize_with = "de_opt_some")]
     pub(super) freshness: Option<Option<RawFreshness>>,
+    /// The table-level `config:` block — the highest precedence level of
+    /// the source-table config chain (and the ONLY place `enabled` is
+    /// honored for a source table).
+    #[serde(default)]
+    pub(super) config: SchemaSourceConfig,
     #[serde(default)]
     pub(super) columns: Vec<SchemaColumn>,
     #[serde(default)]

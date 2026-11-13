@@ -2,11 +2,14 @@
 //! no `manifest.json`.
 //!
 //! The strategy is deliberately thin: scan `dbt_project.yml` (project name,
-//! resource paths, and the `models:`/`seeds:`/`snapshots:`/`sources:` config
+//! resource paths — incl. the `data-paths`/`source-paths` legacy aliases —
+//! and the `models:`/`seeds:`/`snapshots:`/`sources:` config
 //! trees) + the
 //! model `.sql` files (extracting `ref()`/`source()` and the `config(…)`
-//! kwargs `materialized`/`enabled`/`meta`) + the `schema.yml` files under
-//! the configured resource paths (sources, columns, descriptions, tests) +
+//! kwargs `materialized`/`enabled`/`meta`, plus the `config({…})`
+//! positional-dict spelling of the same kwargs) + the `schema.yml` files
+//! under the configured resource paths (sources — incl. their `config:`
+//! blocks — columns, descriptions, tests) +
 //! the `.md` files under `docs-paths` (`{% docs %}` blocks, so `{{ doc() }}`
 //! refs in descriptions expand the way dbt renders them), synthesize a
 //! [`RawManifest`] of the exact shape [`Dag::build`] already consumes, then
@@ -28,14 +31,24 @@
 //!   intake. `language` is `"sql"` for `.sql`-defined models and snapshots.
 //! - Property yml files are read ONLY from the configured model/seed/snapshot
 //!   paths — never `target/`, `dbt_packages/`, or stray yml elsewhere.
-//! - `config(enabled=false)` (in-file) / `+enabled: false` (project tree) /
-//!   `config: enabled: false` (schema.yml) drops the node, like dbt parking it
-//!   under `disabled`. `var('name'[, default])` (`| as_bool` allowed) in
+//! - `config(enabled=false)` (in-file, either spelling) / `+enabled: false`
+//!   (project tree) / `config: enabled: false` (schema.yml, sources
+//!   included) drops the node, like dbt parking it under `disabled` — a
+//!   generic test's `enabled: false`/`config.enabled` likewise drops the
+//!   test. `var('name'[, default])` (`| as_bool` allowed) in
 //!   either `+enabled`/`config(enabled=)` position resolves through the same
 //!   var tables dbt renders it in — `vars.yml` for the project file's own
 //!   `+enabled` strings, `vars:` (project-scoped keys shadowing the top
 //!   level) for a node's `config()` calls; a value dbt's boolean validation
 //!   would reject keeps the node enabled with a warning.
+//! - Source-table config resolves down dbt's chains (verified on 1.12.6):
+//!   `meta`/`freshness` walk table `config:` > table top-level > source
+//!   `config:` > source top-level > `sources:` tree — per meta key and per
+//!   freshness threshold; `loaded_at_field` walks table > source with the
+//!   TOP-LEVEL spelling beating `config:` within each level (explicit
+//!   `null` clears either way); `tags` union in dbt's
+//!   config-channels-then-properties order; `config.enabled` is the only
+//!   disable channel (a table's top-level `enabled:` is ignored).
 //!
 //! Scope: this covers the common project shape, not dbt's full resolver. NOT
 //! handled (a `ref` to one of these simply drops out, which `prune_adjacency`
@@ -151,4 +164,4 @@ pub use collect::mask_jinja_comments;
 pub use patterns::{
     arms_exclusive, call_sites_masked, jinja_branches, ArmStep, CallKind, CallSite, JinjaBranches,
 };
-pub(crate) use patterns::{kwarg, lit_value};
+pub(crate) use patterns::{config_arg, lit_value};

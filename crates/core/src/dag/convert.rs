@@ -193,7 +193,7 @@ pub(super) fn detail_from_source(source: &RawSource) -> NodeDetail {
         materialized: None,
         database: source.database.clone(),
         schema: source.schema.clone(),
-        tags: Vec::new(),
+        tags: source.tags.clone(),
         description: clean_desc(&source.description),
         columns: columns_from(&source.columns),
         original_file_path: source.original_file_path.clone(),

@@ -35,6 +35,10 @@ models:
         tests:
           - unique
           - not_null
+          # Both disabled spellings park the test under `disabled` — it
+          # never registers a graph node or inflates the tests:N badge.
+          - unique: {enabled: false}
+          - not_null: {config: {enabled: false}}
   - name: stg_orders
     columns:
       - name: shipment_id
@@ -42,4 +46,8 @@ models:
           - relationships:
               to: ref('stg_shipments')
               field: shipment_id
+  - name: stg_lane_updates
+    description: "Lane rate updates staged from the TMS feed"
+    columns:
+      - name: lane_id
   - name: stg_shipment_events

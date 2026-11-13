@@ -115,6 +115,40 @@ fn var_disabled_nodes_are_absent_in_both_modes() {
 }
 
 #[test]
+fn source_config_enabled_drops_tables_in_both_modes() {
+    // `config.enabled` is the ONLY `enabled` channel dbt honors for source
+    // tables: `retired_rates` (table `config.enabled: false`) and
+    // `legacy_rates` (source-level `config.enabled: false`) park under
+    // `disabled`, while `revived_rates`' table-level `enabled: true`
+    // re-enables it under the disabled source and `manual_overrides`'s
+    // top-level `enabled: false` (a table property dbt ignores) stays in.
+    let (m, s) = dags();
+    for uid in [
+        "source.logistics.carrier_feed.retired_rates",
+        "source.logistics.archive.legacy_rates",
+    ] {
+        assert!(!m.contains(uid), "manifest mode keeps {uid}");
+        assert!(!s.contains(uid), "source mode keeps {uid}");
+    }
+    for uid in [
+        "source.logistics.archive.revived_rates",
+        "source.logistics.carrier_feed.manual_overrides",
+    ] {
+        assert!(m.contains(uid), "manifest mode drops {uid}");
+        assert!(s.contains(uid), "source mode drops {uid}");
+    }
+    // The disabled table's column test registers nothing either — dbt
+    // warns that `unique` on retired_rates.rate_id depends on a disabled
+    // source and leaves it unattached; source mode never synthesizes it.
+    for (mode, dag) in [("manifest", &m), ("source", &s)] {
+        assert!(
+            dag.nodes().keys().all(|uid| !uid.contains("retired_rates")),
+            "{mode} mode kept a node for the disabled table"
+        );
+    }
+}
+
+#[test]
 fn hook_ref_is_an_edge_in_both_modes() {
     // `ref('ops_run_log')` inside `fct_shipments`' pre/post-hook SQL is a real
     // `depends_on` edge in the manifest — and the source loader's `ref()`
@@ -206,7 +240,10 @@ fn lint_rule_counts_are_pinned_in_both_modes() {
     // Every rule's count is pinned absolutely per mode; the only
     // manifest↔source difference is the two SQL rules that legitimately see
     // only manifest-mode compiled SQL (the shipkit macro expansion):
-    // `unused_cte` and `order_by_without_limit`.
+    // `unused_cte` and `order_by_without_limit`. The source `config:` shapes
+    // are inside the parity boundary too — the disabled tables (`retired_
+    // rates`, `legacy_rates`) and their tests register nothing, while
+    // `sources_without_freshness`/`unused_sources` see the same kept set.
     let (m, s) = dags();
     let expected = |pairs: &[(&str, usize)]| -> BTreeMap<String, usize> {
         pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
@@ -214,24 +251,32 @@ fn lint_rule_counts_are_pinned_in_both_modes() {
     assert_eq!(
         rule_counts(&m),
         expected(&[
-            ("missing_primary_key_tests", 14),
+            ("missing_primary_key_tests", 15),
             ("model_fanout", 1),
             ("order_by_without_limit", 1),
             ("root_models", 1),
-            ("undocumented_columns", 7),
+            ("select_star", 1),
+            ("sources_without_freshness", 2),
+            ("undocumented_columns", 8),
             ("undocumented_models", 14),
             ("unused_cte", 1),
+            ("unused_models", 1),
+            ("unused_sources", 3),
         ]),
         "manifest-mode rule counts drifted"
     );
     assert_eq!(
         rule_counts(&s),
         expected(&[
-            ("missing_primary_key_tests", 14),
+            ("missing_primary_key_tests", 15),
             ("model_fanout", 1),
             ("root_models", 1),
-            ("undocumented_columns", 7),
+            ("select_star", 1),
+            ("sources_without_freshness", 2),
+            ("undocumented_columns", 8),
             ("undocumented_models", 14),
+            ("unused_models", 1),
+            ("unused_sources", 3),
         ]),
         "source-mode rule counts drifted"
     );

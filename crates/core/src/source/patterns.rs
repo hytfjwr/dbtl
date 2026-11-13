@@ -387,11 +387,11 @@ pub(super) fn config_governance(sql: &str) -> FileConfig {
             ("group", &mut out.group),
             ("incremental_strategy", &mut out.incremental_strategy),
         ] {
-            if let Some(serde_json::Value::String(s)) = kwarg(args, name).and_then(lit_value) {
+            if let Some(serde_json::Value::String(s)) = config_arg(args, name).and_then(lit_value) {
                 *slot = Some(s);
             }
         }
-        if let Some(c) = kwarg(args, "contract")
+        if let Some(c) = config_arg(args, "contract")
             .and_then(lit_value)
             .and_then(|v| contract_value(&v))
         {
@@ -478,12 +478,75 @@ pub(super) fn scan_call_args(sql: &str, start: usize) -> Option<(&str, usize)> {
 
 /// The expression bound to kwarg `name` in EVERY `config(…)` call in `sql`,
 /// in call order — the input to last-wins scalar kwargs (`materialized`,
-/// `enabled`) and per-key-merged dict kwargs (`meta`).
+/// `enabled`) and per-key-merged dict kwargs (`meta`). Each call's binding
+/// comes from [`config_arg`], so a positional-dict call's `"name": v`
+/// entries take part in the same ordered sequence as the `name=v` kwargs.
 pub(super) fn config_kwarg_exprs<'a>(sql: &'a str, name: &str) -> Vec<&'a str> {
     config_call_args_list(sql)
         .into_iter()
-        .filter_map(|args| kwarg(args, name))
+        .filter_map(|args| config_arg(args, name))
         .collect()
+}
+
+/// The expression bound to `name` in ONE `config(…)` call's argument list:
+/// the `name=` kwarg, else the `"name":` entry of a positional dict arg —
+/// `config({…})` is dbt's dict spelling of the same kwargs (verified:
+/// `{"materialized": "table"}` materializes the model, `{"enabled": false}`
+/// disables it, and the dict joins the ordered per-key last-wins/merge
+/// sequence like a kwargs call). dbt rejects a single call mixing a dict
+/// with kwargs — a shape resolved kwargs-first here by convention.
+pub(crate) fn config_arg<'a>(args: &'a str, name: &str) -> Option<&'a str> {
+    kwarg(args, name).or_else(|| dict_arg(args, name))
+}
+
+/// The value text bound to `"name":` in the call's positional DICT arg —
+/// only a FIRST top-level argument that is itself a `{…}` literal counts
+/// (`config({…})`); a dict in any other position is a kwarg value, not the
+/// dict spelling. Entries are read leniently: a key that isn't a string
+/// literal, or an entry whose `:` can't be read, is skipped rather than
+/// failing the dict — the same per-key stance the kwarg readers take on
+/// unresolvable expressions. A duplicate key yields its LAST entry, the
+/// Python-dict rule.
+fn dict_arg<'a>(args: &'a str, name: &str) -> Option<&'a str> {
+    let first = top_level_segments(args).first()?.trim();
+    let inner = first.strip_prefix('{')?.strip_suffix('}')?;
+    let mut found = None;
+    for seg in top_level_segments(inner) {
+        let Some((key, value)) = dict_entry(seg) else {
+            continue;
+        };
+        if lit_value(key).is_some_and(|k| k.as_str() == Some(name)) {
+            found = Some(value);
+        }
+    }
+    found
+}
+
+/// Split one positional-dict entry at its `key: value` colon — the FIRST
+/// `:` at bracket-depth 0 outside quotes. An entry without a top-level
+/// colon (a set member like `{1, 2}`, or a `**merge` spread) yields `None`.
+fn dict_entry(seg: &str) -> Option<(&str, &str)> {
+    let mut depth = 0usize;
+    let mut chars = seg.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            '\'' | '"' => {
+                let it = chars.by_ref();
+                while let Some((_, d)) = it.next() {
+                    if d == '\\' {
+                        it.next();
+                    } else if d == c {
+                        break;
+                    }
+                }
+            }
+            ':' if depth == 0 => return Some((seg[..i].trim(), seg[i + 1..].trim())),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Parse `expr` as a complete literal: the whole text must be a single

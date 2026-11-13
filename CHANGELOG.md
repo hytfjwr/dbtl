@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `?` full-text search now matches compiled SQL in addition to raw SQL,
+  descriptions, and column names, so a `ref()`/`source()` target that only
+  exists after Jinja expansion (`db.schema.table`) is findable too.
+- The structure modal (Enter) shows the node's lint findings — the same
+  findings the inspector pane lists — and the governance fields
+  `language` (only when it is not `sql`), `incremental_strategy`,
+  `deprecation_date`, and `constraints`. The `dbtl docs` node pages carry
+  the same four fields as conditional heading bullets.
+
 ### Changed
 
 - `rejoining_upstream` findings now key on `(rule, node)` — the bypassed
@@ -18,6 +29,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `dbtl --diff <base> --select 'state:modified'` resolves the selector
+  against the loaded diff: the `--diff` baseline now loads before
+  `--select` is resolved, so `state:` atoms see real change state, and a
+  selector whose first match is a non-model resource (an exposure caught
+  by a `+` fan-out, say) now opens the first matching model instead of
+  failing outright.
 - `dbtl lint --write-baseline --rules X` no longer discards the baseline's
   other rows: a subset write merges into the file, rewriting only the
   rules that actually ran — rules `--rules` narrowed out or skipped for a
@@ -70,6 +87,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `unknown_column_reference` no longer misreads date-part keywords in
   date functions, same-SELECT aliases in `WHERE`/`GROUP BY`/`HAVING`/
   `QUALIFY`/`ORDER BY`, or an `UNNEST`'s table alias as upstream columns.
+- Source mode now reads `config:` blocks on sources and source tables —
+  `enabled` (source-level disables every table; a table's `enabled: true`
+  re-enables it), `freshness`/`meta` in dbt's per-level config-over-
+  property precedence (table > source > `sources:` tree), `loaded_at_
+  field` property-over-config within each level (explicit `null` clears),
+  and union-accumulated `tags` — and honors `enabled: false` on generic
+  tests under either spelling, so disabled source tables and tests no
+  longer appear in the graph or inflate lint/test counts.
+- Source mode also accepts the `config({...})` positional-dict spelling of
+  `config()` kwargs (same ordered last-wins/merge semantics) and the
+  deprecated `data-paths` alias for `seed-paths` (declaring both warns).
 
 ## [0.6.4] - 2026-11-13
 

@@ -318,6 +318,34 @@ pub struct ConstraintInfo {
     pub columns: Vec<String>,
 }
 
+impl ConstraintInfo {
+    /// The constraint's compact one-line display form — the SINGLE spelling
+    /// the structure modal's `constraints` block and the docs node's bullet
+    /// both render, so the two surfaces can never spell one differently:
+    /// `type (cols) name: expression -> to (to_cols)`, each absent part
+    /// omitted. Newlines in `expression` flatten to spaces (a multi-line
+    /// `check` can't tear a bullet row).
+    pub fn label(&self) -> String {
+        let mut s = self.constraint_type.clone();
+        if !self.columns.is_empty() {
+            s.push_str(&format!(" ({})", self.columns.join(", ")));
+        }
+        if let Some(name) = &self.name {
+            s.push_str(&format!(" {name}"));
+        }
+        if let Some(expr) = &self.expression {
+            s.push_str(&format!(": {}", expr.replace(['\n', '\r'], " ")));
+        }
+        if let Some(to) = &self.to {
+            s.push_str(&format!(" -> {to}"));
+        }
+        if !self.to_columns.is_empty() {
+            s.push_str(&format!(" ({})", self.to_columns.join(", ")));
+        }
+        s
+    }
+}
+
 /// A test attached to a node, captured *pre-prune* (tests are excluded from the
 /// DAG, so this is the only place they survive). `kind` is the generic test
 /// name (`unique`, `not_null`, `relationships`, …) or `"singular"`.

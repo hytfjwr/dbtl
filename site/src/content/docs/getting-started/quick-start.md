@@ -53,7 +53,7 @@ A manifest, including one written by dbt Fusion, can carry resource types that `
 
 ## Start on a model
 
-`--select` opens a model at startup: `dbtl` resolves the selector and opens its first match, which must be a model, in a tab. `state:` selectors are not available here — the selection resolves before `--diff` loads.
+`--select` opens a model at startup: `dbtl` resolves the selector and opens its first matching model in a tab, skipping non-model matches like exposures. `state:` selectors work when `--diff` provides a baseline.
 
 ```sh
 dbtl --select stg_orders

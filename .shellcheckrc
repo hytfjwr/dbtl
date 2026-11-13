@@ -1,0 +1,10 @@
+# Every tracked script in this repository is bash — each executable
+# script's shebang and the composite action's `shell: bash` steps agree.
+# The default matters for shell text that carries no shebang, such as the
+# `run:` snippets extracted from action.yml.
+shell=bash
+
+# Honour `# shellcheck source=` directives and follow literal `source`
+# paths relative to the invocation directory (CI lints from the repo
+# root).
+external-sources=true

@@ -7,32 +7,10 @@
 mod common;
 
 use common::{
-    dbtl, dbtl_cmd, manifest_path as fixture_manifest, run,
-    sample_manifest_path as sample_manifest, stderr, stdout, SAMPLE_PROJECT,
+    dbtl_cmd, manifest_path as fixture_manifest, run, sample_manifest_path as sample_manifest,
+    spawn_and_wait, stderr, stdout, SAMPLE_PROJECT,
 };
 use std::path::{Path, PathBuf};
-
-/// Spawn + poll `try_wait`, killing a child that parks (the pattern
-/// `package_scope.rs` uses for TUI-startup paths — a console-having host
-/// could otherwise block forever on the interactive event loop).
-fn spawn_and_wait(args: &[&str]) -> std::process::Output {
-    let mut child = dbtl(args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("failed to spawn dbtl");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while std::time::Instant::now() < deadline {
-        if child.try_wait().expect("poll child").is_some() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    if child.try_wait().expect("poll child").is_none() {
-        child.kill().expect("kill parked child");
-    }
-    child.wait_with_output().expect("collect child output")
-}
 
 // ---- exit code 0 / 1: success and gate failures -------------------------
 
@@ -895,6 +873,49 @@ fn tui_start_with_an_unmatched_select_exits_two() {
     assert!(
         stderr(&out).contains("not found"),
         "the select miss message: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn tui_start_select_selector_skips_a_non_model_first_match() {
+    // `fct_orders+` selector-matches `exposure.sample.orders_dashboard`
+    // FIRST (unique_id order), then the models — resolution must skip the
+    // exposure and open the first MODEL match rather than failing the
+    // whole flag. A resolved --select never reaches the usage-error miss
+    // (exit 2): on a TTY-less host it dies at terminal init, on a host
+    // that still has a console (Windows CI) the event loop parks and the
+    // harness kills it — either way, no "not found" on stderr.
+    let m = sample_manifest();
+    let out = spawn_and_wait(&["--manifest", m.to_str().unwrap(), "--select", "fct_orders+"]);
+    assert_ne!(
+        out.status.code(),
+        Some(2),
+        "a selector hit on a later model still resolves: {}",
+        stderr(&out)
+    );
+    assert!(
+        !stderr(&out).contains("not found"),
+        "the selector resolved, no miss error: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn tui_start_state_select_without_a_diff_still_misses() {
+    // The unchanged floor for the --diff ordering fix: `state:` atoms see
+    // no baseline, so they match nothing and --select reports a miss.
+    let m = sample_manifest();
+    let out = spawn_and_wait(&[
+        "--manifest",
+        m.to_str().unwrap(),
+        "--select",
+        "state:modified",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "state:modified without --diff finds nothing: {}",
         stderr(&out)
     );
 }
