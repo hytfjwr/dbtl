@@ -421,7 +421,7 @@ impl<'a> EnabledExpr<'a, '_> {
             }
         }
         // `not` only means a comparison when `in` follows — rewind if it
-        // doesn't, so a trailing `not` counts as unparseable input rather
+        // doesn't, so a trailing `not` counts as unparsable input rather
         // than vanishing into a result.
         let save = self.p.i;
         if self.eat_kw("not") {
