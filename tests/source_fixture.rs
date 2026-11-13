@@ -1451,7 +1451,7 @@ fn references_deprecated_model_evaluates_in_source_mode() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue 43: Jinja branches must not fabricate lint findings
+// Jinja branches must not fabricate lint findings
 // ---------------------------------------------------------------------------
 
 const BRANCH_PROJECT: &str = concat!(
