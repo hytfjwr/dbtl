@@ -1,0 +1,28 @@
+version: 2
+
+models:
+  - name: fct_shipments
+    description: "Shipment facts with event rollup and order linkage"
+    columns:
+      - name: shipment_id
+        tests:
+          - unique
+          - not_null
+      - name: weight_kg
+        description: "Total weight in kilograms"
+        tests:
+          - shipkit.no_negative_amounts
+      - name: carrier_id
+        tests:
+          - relationships:
+              to: ref('dim_carriers')
+              field: carrier_id
+  - name: fct_carrier_performance
+    description: "{{ doc('carrier_perf_doc') }}"
+  - name: dim_carriers
+    description: "Carrier dimension"
+    columns:
+      - name: carrier_id
+        tests:
+          - unique
+          - not_null

@@ -1,0 +1,13 @@
+version: 2
+
+seeds:
+  - name: shipments
+    description: "Raw shipment records exported from the TMS"
+    columns:
+      - name: shipment_id
+        tests:
+          - unique
+          - not_null
+      - name: weight_kg
+  - name: carriers
+    description: "Carrier master data"

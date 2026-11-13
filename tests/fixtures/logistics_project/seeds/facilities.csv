@@ -1,0 +1,6 @@
+facility_id,facility_name,city,region
+F01,Portland DC,Portland OR,West
+F02,Reno Hub,Reno NV,West
+F03,Columbus DC,Columbus OH,Midwest
+F04,Memphis Hub,Memphis TN,South
+F05,Harrisburg DC,Harrisburg PA,East

@@ -1,0 +1,6 @@
+carrier_id,carrier_name,mode,scac_code
+C001,Kestrel Freight,FTL,KFRT
+C002,Harborline Logistics,LTL,HBRL
+C003,Copper Canyon Haulage,FTL,CCHL
+C004,Sagebrush Carriers,DRAY,SGBR
+C005,Tidewater Transport,LTL,TDWT

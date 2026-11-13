@@ -1,0 +1,49 @@
+name: logistics
+version: "1.0.0"
+config-version: 2
+profile: logistics
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+
+# A run hook is part of the project shape: real dbt records it on the
+# manifest run, source mode simply never reads it.
+on-run-start:
+  - "create table if not exists {{ target.schema }}.ops_run_log (hook varchar, ran_at timestamp)"
+
+models:
+  logistics:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: ephemeral
+    marts:
+      +materialized: table
+    pilot:
+      # `vars.yml`'s top-level `vars:` is the only var table this render
+      # pass consults — `enable_pilot: true` there turns the folder on.
+      +enabled: "{{ var('enable_pilot', false) }}"
+    experimental:
+      # No vars entry and a `false` default: the whole folder stays off.
+      +enabled: "{{ var('enable_experimental', false) }}"
+    utilities:
+      +materialized: table
+
+seeds:
+  logistics:
+    shipments:
+      # The column type branches on the adapter: the project file's own
+      # render evaluates `target.type` (duckdb in the generated fixture).
+      +column_types:
+        weight_kg: "{{ 'double' if target.type == 'duckdb' else 'numeric' }}"
+    shipment_events:
+      +column_types:
+        event_id: integer
+
+analyses:
+  logistics:
+    deep_audit_probe:
+      +enabled: "{{ var('probe_enabled', false) }}"

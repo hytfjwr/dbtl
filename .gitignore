@@ -4,10 +4,17 @@
 /logs/
 .harness/
 
-# dbt artifacts under the committed sample_project fixture (make regen-sample-manifest)
+# dbt artifacts under the committed fixture projects (cargo xtask regen-*)
 tests/fixtures/sample_project/target/
 tests/fixtures/sample_project/logs/
+tests/fixtures/sample_project/dbt_packages/
 tests/fixtures/sample_project/.user.yml
+tests/fixtures/sample_project/package-lock.yml
+tests/fixtures/logistics_project/target/
+tests/fixtures/logistics_project/logs/
+tests/fixtures/logistics_project/dbt_packages/
+tests/fixtures/logistics_project/.user.yml
+tests/fixtures/logistics_project/package-lock.yml
 
 # rendered demo (produced by vhs — the Demo workflow uploads it as an artifact)
 demo/demo.gif

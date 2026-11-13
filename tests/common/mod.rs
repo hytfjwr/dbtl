@@ -10,6 +10,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+pub mod consistency;
+
 /// The committed jaffle_finance manifest (schema v12) most suites load.
 pub const FIXTURE_MANIFEST: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifest.json");
@@ -23,6 +25,20 @@ pub const SAMPLE_MANIFEST: &str = concat!(
 /// The `dbt_source`-mode project dir matching `SAMPLE_MANIFEST`.
 pub const SAMPLE_PROJECT: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample_project");
+
+/// The real-dbt manifest generated from `LOGISTICS_PROJECT`
+/// (`cargo xtask gen-fixture-manifest --project tests/fixtures/logistics_project`).
+pub const LOGISTICS_MANIFEST: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/logistics_manifest.json"
+);
+
+/// The `dbt_source`-mode project dir matching `LOGISTICS_MANIFEST` — a
+/// seed-fed logistics project with var-controlled nodes and a local package.
+pub const LOGISTICS_PROJECT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/logistics_project"
+);
 
 /// Absolute path to a file under `tests/fixtures/`.
 pub fn fixture_path(rel: &str) -> PathBuf {

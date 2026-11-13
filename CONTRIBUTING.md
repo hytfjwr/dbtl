@@ -52,6 +52,14 @@ Useful `xtask` tasks:
   synthetic dbt project (source + `target/manifest.json`) for manual runs.
 - `cargo xtask regen-sample-manifest` — regenerate
   `tests/fixtures/sample_manifest.json` with real `dbt` (needs `uv`).
+- `cargo xtask gen-fixture-manifest --project tests/fixtures/logistics_project`
+  — regenerate `tests/fixtures/logistics_manifest.json` the same way. This
+  is the general form: `--project` picks any fixture project dir,
+  `--out`/`--profile` override the defaults, and `--dbt-version X.Y.Z` pins
+  a release (otherwise `uvx` resolves the latest). Projects with a
+  `packages.yml` may only declare `local:` packages. Both commands are
+  deterministic: rerunning the same project and dbt version is
+  byte-identical — see `tests/fixtures/README.md`.
 - `cargo xtask gen-docs` — regenerate `docs/reference/` and `schema/` from
   the CLI/config definitions. These files are generated; edit the
   generators, not the output. `gen-docs --check` runs in CI and fails on
