@@ -27,7 +27,8 @@
 //!   layout → styles) and impact counts; pure-function results only, so
 //!   determinism is unaffected.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 
@@ -163,6 +164,12 @@ pub struct AppStats {
     pub snapshots: usize,
     pub exposures: usize,
 }
+
+/// The `?` search's per-uid lowered compiled SQL, generation-keyed:
+/// `(generation, uid → lowered text or None when the node has none)`.
+/// `Option` (not just present uids) so a node without compiled SQL is
+/// memoized as a miss instead of re-probing the side map per keystroke.
+type SearchTextMemo = (u64, BTreeMap<String, Option<Rc<str>>>);
 
 /// The whole application state. Owns the domain (`dag`, lists) and the UI
 /// (`ui_state`, `mode`) together — the single place that knows both, which is
@@ -325,6 +332,13 @@ pub struct App {
     /// The computed baseline↔current diff. Derived state: recomputed by
     /// [`set_diff_base`](App::set_diff_base) and every `reload` — never edited.
     diff: Option<DagDiff>,
+    /// The `?` full-text search's lowered compiled-SQL texts, per uid.
+    /// Lowering each node's largest text blob once keeps a keystroke's
+    /// marginal cost a `contains` over an `Rc`, not a fresh
+    /// `to_lowercase()` of the whole project. Key-compared on
+    /// `generation` like the [`cache`] slots: a `reload`/`set_diff_base`
+    /// bump retires every entry.
+    search_text: RefCell<SearchTextMemo>,
     /// The loaded colour themes, in Ctrl-t cycle order: the built-in presets by
     /// default; `main` replaces the list (presets + user theme files) and the
     /// start index via [`set_themes`](App::set_themes) (`--theme`). Never empty.
@@ -582,6 +596,7 @@ impl App {
             diff_cll: None,
             diff_label: String::new(),
             diff: None,
+            search_text: RefCell::new((0, BTreeMap::new())),
             caches: LineageCaches::default(),
             themes: theme::presets()
                 .iter()

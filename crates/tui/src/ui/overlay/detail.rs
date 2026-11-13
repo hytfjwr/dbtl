@@ -3,9 +3,10 @@ use super::*;
 // ---- structure (detail) modal --------------------------------------------
 
 /// The structure modal's lines BEFORE the columns section: type / location /
-/// tags / description, ending with the blank separator. The section split
-/// exists so [`detail_columns_line0`] and the renderer agree on where the
-/// cursor-addressable rows sit.
+/// governance (access / contract / language / strategy / deprecation /
+/// constraints) / tags / description, ending with the blank separator. The
+/// section split exists so [`detail_columns_line0`] and the renderer agree
+/// on where the cursor-addressable rows sit.
 fn detail_head_lines(dv: &DetailView, t: &theme::Theme) -> Vec<Line<'static>> {
     let d = &dv.detail;
     let mut out: Vec<Line> = Vec::new();
@@ -45,6 +46,28 @@ fn detail_head_lines(dv: &DetailView, t: &theme::Theme) -> Vec<Line<'static>> {
         }
         (Some(v), _) => out.push(Line::from(format!("version: {v}"))),
         _ => {}
+    }
+    // The rest of the governance-adjacent fields, declared values only:
+    // `language` only when it isn't the default `sql` (a python model
+    // changes what every other section can assume), `constraints` as a
+    // one-row-per-entry block like `meta`.
+    if let Some(lang) = d.language.as_deref().filter(|l| *l != "sql") {
+        out.push(Line::from(format!("language: {lang}")));
+    }
+    if let Some(strategy) = &d.incremental_strategy {
+        out.push(Line::from(format!("incremental_strategy: {strategy}")));
+    }
+    if let Some(date) = &d.deprecation_date {
+        out.push(Line::from(format!("deprecation_date: {date}")));
+    }
+    if !d.constraints.is_empty() {
+        out.push(Line::styled(
+            format!("constraints ({}):", d.constraints.len()),
+            header_style(t),
+        ));
+        for c in &d.constraints {
+            out.push(Line::from(format!("  {}", c.label())));
+        }
     }
     if let Some(p) = &d.original_file_path {
         out.push(Line::from(format!("path:   {p}")));
@@ -294,6 +317,37 @@ fn detail_test_lines(dv: &DetailView, t: &theme::Theme) -> Vec<Line<'static>> {
     out
 }
 
+/// The lint findings section: `lint (N):` + one `mark rule: summary` /
+/// indented message pair per finding — the same `x`/`!` run glyphs and
+/// severity colours the inspector's Lint section uses. Unlike the pane's
+/// always-rendered verdict, the section is omitted entirely when the node
+/// is clean (an empty modal section would be dead chrome, not a verdict).
+fn detail_lint_lines(
+    dv: &DetailView,
+    glyphs: crate::GlyphMode,
+    t: &theme::Theme,
+) -> Vec<Line<'static>> {
+    let chrome = super::chrome(glyphs);
+    let mut out = vec![Line::styled(
+        format!("lint ({}):", dv.lint.len()),
+        header_style(t),
+    )];
+    for finding in &dv.lint {
+        let (mark, style) = match finding.severity {
+            crate::Severity::Error => (chrome.run_fail, Style::default().fg(t.danger)),
+            crate::Severity::Warn => (chrome.run_warn, Style::default().fg(t.warn)),
+        };
+        out.push(Line::styled(
+            format!("  {mark} {}: {}", finding.rule, finding.summary),
+            style,
+        ));
+        for m in finding.message.lines() {
+            out.push(Line::styled(format!("    {m}"), style));
+        }
+    }
+    out
+}
+
 /// The line index of the FIRST column row inside the modal body (head + the
 /// `columns (N):` header) — the base the cursor's ensure-visible math needs.
 /// Line-count only, so the theme/glyph args don't matter. `pub(crate)`:
@@ -310,9 +364,10 @@ pub(crate) fn detail_tests_line0(dv: &DetailView) -> usize {
     detail_columns_line0(dv) + detail_column_rows(dv).0.len() + 2
 }
 
-/// The structure modal content as display lines: type / location / tags /
-/// description / columns table / tests list. Built once and shared by the clamp
-/// and the renderer so scroll bounds match the content.
+/// The structure modal content as display lines: the head block (type /
+/// location / governance / tags / description) / columns table / tests list /
+/// lint findings. Built once and shared by the clamp and the renderer so
+/// scroll bounds match the content.
 fn detail_display_lines(
     dv: &DetailView,
     glyphs: crate::GlyphMode,
@@ -323,6 +378,11 @@ fn detail_display_lines(
 
     out.push(Line::from(""));
     out.extend(detail_test_lines(dv, t));
+
+    if !dv.lint.is_empty() {
+        out.push(Line::from(""));
+        out.extend(detail_lint_lines(dv, glyphs, t));
+    }
 
     out
 }
@@ -427,6 +487,7 @@ mod tests {
             col_counts: Default::default(),
             stale: false,
             name_match: false,
+            lint: vec![],
             scroll: 0,
         };
         let lines = detail_display_lines(&dv, crate::GlyphMode::Unicode, &theme::DEFAULT);
@@ -484,6 +545,7 @@ mod tests {
             col_counts: Default::default(),
             stale: false,
             name_match: false,
+            lint: vec![],
             scroll: 0,
         };
         let lines = detail_display_lines(&dv, crate::GlyphMode::Unicode, &theme::DEFAULT);
@@ -502,6 +564,126 @@ mod tests {
                 "  équipe: x".to_string(),
             ],
             "char-width padding + newline flattening"
+        );
+    }
+
+    /// A minimal `DetailView` — the governance/lint tests vary only
+    /// `detail` and `lint`.
+    fn bare_dv() -> DetailView {
+        DetailView {
+            model_id: "model.p.m".into(),
+            name: "m".into(),
+            detail: Box::new(crate::NodeDetail::default()),
+            tests: vec![],
+            downstream_count: 0,
+            upstream_count: 0,
+            catalog: vec![],
+            col_names: vec![],
+            col_index: usize::MAX,
+            test_index: usize::MAX,
+            col_counts: Default::default(),
+            stale: false,
+            name_match: false,
+            lint: vec![],
+            scroll: 0,
+        }
+    }
+
+    /// The display lines' text, one String per line.
+    fn line_texts(dv: &DetailView) -> Vec<String> {
+        detail_display_lines(dv, crate::GlyphMode::Unicode, &theme::DEFAULT)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn detail_head_shows_the_governance_fields_that_carry_news() {
+        // `language` reports only a non-`sql` build; the other fields show
+        // whenever declared. The constraints block lists one `label()` row
+        // per entry — the same spelling the docs page's bullet uses.
+        let mut dv = bare_dv();
+        dv.detail.language = Some("python".into());
+        dv.detail.incremental_strategy = Some("merge".into());
+        dv.detail.deprecation_date = Some("2026-12-31T00:00:00+09:00".into());
+        dv.detail.constraints = vec![
+            crate::ConstraintInfo {
+                constraint_type: "primary_key".into(),
+                columns: vec!["id".into()],
+                ..Default::default()
+            },
+            crate::ConstraintInfo {
+                constraint_type: "check".into(),
+                expression: Some("id > 0".into()),
+                ..Default::default()
+            },
+        ];
+        let text = line_texts(&dv);
+        for needle in [
+            "language: python",
+            "incremental_strategy: merge",
+            "deprecation_date: 2026-12-31T00:00:00+09:00",
+            "constraints (2):",
+            "  primary_key (id)",
+            "  check: id > 0",
+        ] {
+            assert!(text.iter().any(|l| l == needle), "missing {needle:?}");
+        }
+    }
+
+    #[test]
+    fn detail_head_omits_sql_language_and_undeclared_governance() {
+        // `language: sql` is the default build — reporting it adds noise,
+        // not news. Undeclared fields emit no line at all.
+        let mut dv = bare_dv();
+        dv.detail.language = Some("sql".into());
+        let text = line_texts(&dv);
+        for needle in [
+            "language:",
+            "incremental_strategy:",
+            "deprecation_date:",
+            "constraints",
+        ] {
+            assert!(
+                text.iter().all(|l| !l.starts_with(needle)),
+                "{needle:?} must not render, got: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn detail_lint_section_lists_findings_and_omits_when_clean() {
+        // Findings render `lint (N):` + `mark rule: summary` + the indented
+        // message — the pane's vocabulary — only while the snapshot is
+        // non-empty.
+        let mut dv = bare_dv();
+        dv.lint = vec![
+            crate::InspectorLintFinding {
+                severity: crate::Severity::Error,
+                rule: "unknown_column_reference".into(),
+                summary: "references a column no upstream provides".into(),
+                message: "reads `oops`".into(),
+            },
+            crate::InspectorLintFinding {
+                severity: crate::Severity::Warn,
+                rule: "model_fanout".into(),
+                summary: "too many direct parents".into(),
+                message: "12 parents".into(),
+            },
+        ];
+        let text = line_texts(&dv);
+        let at = text
+            .iter()
+            .position(|l| l == "lint (2):")
+            .expect("the lint header");
+        assert!(text[at + 1].contains("unknown_column_reference: references a column"));
+        assert_eq!(text[at + 2], "    reads `oops`", "the message indents");
+        assert!(text.iter().any(|l| l.contains("model_fanout: too many")));
+        // A clean node: no `lint` line anywhere in the modal.
+        let clean = line_texts(&bare_dv());
+        assert!(
+            clean.iter().all(|l| !l.starts_with("lint")),
+            "a clean node draws no lint section: {clean:?}"
         );
     }
 }

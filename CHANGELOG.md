@@ -6,7 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `?` full-text search now matches compiled SQL in addition to raw SQL,
+  descriptions, and column names, so a `ref()`/`source()` target that only
+  exists after Jinja expansion (`db.schema.table`) is findable too.
+- The structure modal (Enter) shows the node's lint findings — the same
+  findings the inspector pane lists — and the governance fields
+  `language` (only when it is not `sql`), `incremental_strategy`,
+  `deprecation_date`, and `constraints`. The `dbtl docs` node pages carry
+  the same four fields as conditional heading bullets.
+
 ### Fixed
+
+- `dbtl --diff <base> --select 'state:modified'` resolves the selector
+  against the loaded diff: the `--diff` baseline now loads before
+  `--select` is resolved, so `state:` atoms see real change state, and a
+  selector whose first match is a non-model resource (an exposure caught
+  by a `+` fan-out, say) now opens the first matching model instead of
+  failing outright.
 
 - Source-mode SQL parsing now renders Jinja the way the file lexes it —
   `{{ }}` inside string literals expands without the tag's own quotes

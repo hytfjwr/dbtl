@@ -134,9 +134,12 @@ fn inspector_view_collects_run_lint_and_diff() {
             message: f.message.clone(),
         })
         .collect();
-    assert_eq!(view.lint, want, "the node's own findings, in finding order");
+    assert_eq!(
+        view.detail.lint, want,
+        "the node's own findings, in finding order"
+    );
     assert!(
-        view.lint.iter().all(|f| !f.summary.is_empty()),
+        view.detail.lint.iter().all(|f| !f.summary.is_empty()),
         "every snapshot carries the registry summary"
     );
     // A lint-clean node reports an empty list (the pane then draws the
@@ -156,7 +159,11 @@ fn inspector_view_collects_run_lint_and_diff() {
         .clone();
     a.select_by_unique_id(&clean);
     assert!(
-        a.inspector_view().expect("inspect clean").lint.is_empty(),
+        a.inspector_view()
+            .expect("inspect clean")
+            .detail
+            .lint
+            .is_empty(),
         "{clean} carries no findings"
     );
 

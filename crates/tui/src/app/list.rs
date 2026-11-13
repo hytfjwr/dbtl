@@ -200,7 +200,8 @@ impl App {
         // `!`-prefixed queries are dbt selectors, not fuzzy name matches:
         // `!tag:nightly`, `!+fct_orders`, `!state:modified+` (with --diff).
         // `?`-prefixed queries are FULL-TEXT: match description, column names,
-        // and raw SQL — "who references this table/column" (`/?raw_events`).
+        // raw SQL, and compiled SQL — "who references this table/column"
+        // (`/?raw_events`).
         // The search base is FOLD-FREE (`unfolded_base`): a folded group's
         // members still match and render while the search runs — folds are
         // ignored mid-search — and `close_search` lands back on the
@@ -245,9 +246,11 @@ impl App {
     }
 
     /// Full-text predicate behind `/<query>`: case-insensitive substring over
-    /// the node's description, column names, and raw (uncompiled) SQL — the
+    /// the node's description, column names, raw SQL, and compiled SQL — the
     /// surfaces the name-only fuzzy match can't reach ("who selects from
-    /// `raw_events`", "who writes `customer_id`").
+    /// `raw_events`", "who writes `customer_id`"). Compiled text is what
+    /// carries the EXPANDED relation names (`db.schema.table` a `ref()`
+    /// hides), so "who reads raw.events" must see it too.
     pub(super) fn full_text_match(&self, uid: &str, needle: &str) -> bool {
         let hit = |s: &str| s.to_lowercase().contains(needle);
         if let Some(d) = self.dag.detail(uid) {
@@ -259,6 +262,30 @@ impl App {
             }
         }
         self.dag.raw_code(uid).is_some_and(hit)
+            || self
+                .compiled_search_text(uid)
+                .is_some_and(|c| c.contains(needle))
+    }
+
+    /// `uid`'s compiled SQL, lowered ONCE per dag generation and memoized —
+    /// `?` search re-lowers the raw side per keystroke (its existing cost)
+    /// but a compiled blob can be much larger than raw (macro expansion),
+    /// so its lowercased form is cached. The map is keyed by generation:
+    /// a `reload`/`set_diff_base` bump clears it the next time it's read.
+    fn compiled_search_text(&self, uid: &str) -> Option<Rc<str>> {
+        let mut memo = self.search_text.borrow_mut();
+        if memo.0 != self.generation {
+            memo.0 = self.generation;
+            memo.1.clear();
+        }
+        memo.1
+            .entry(uid.to_string())
+            .or_insert_with(|| {
+                self.dag
+                    .compiled_code(uid)
+                    .map(|code| Rc::from(code.to_lowercase()))
+            })
+            .clone()
     }
 
     /// Leave search mode, dropping the filter and restoring the folded

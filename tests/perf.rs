@@ -58,6 +58,61 @@ fn perf_source_load_scales() {
     );
 }
 
+/// `?` full-text search over a 10k-model project where EVERY model carries
+/// compiled SQL — the compiled-search worst case. Per-keystroke cost must
+/// stay under 2x the compiled-free run (the pre-feature cost): the lowered
+/// compiled text is memoized per uid, so a keystroke adds one `contains`
+/// scan per node, not a fresh lowering pass.
+#[test]
+#[ignore]
+fn perf_fulltext_search_keystroke_scales() {
+    use dbtl::app::{apply_action, App};
+    use dbtl::Action;
+
+    let mut manifest = synth_manifest(&SynthParams {
+        models: 10_000,
+        sql: true,
+        ..SynthParams::default()
+    });
+    // Give every model a compiled blob the size of its raw SQL — the
+    // largest per-node payload the compiled path can see.
+    for n in manifest.nodes.values_mut() {
+        n.compiled_code = n.raw_code.clone();
+    }
+    let with_compiled = Dag::build(&manifest);
+    for n in manifest.nodes.values_mut() {
+        n.compiled_code = None;
+    }
+    let without_compiled = Dag::build(&manifest);
+
+    // Type `?zzz_nomatch` — every keystroke refilters the whole list and
+    // misses on every model, so each pass walks all four match surfaces.
+    let per_keystroke = |dag: Dag| -> Vec<std::time::Duration> {
+        let mut app = App::new(dag, std::path::PathBuf::from("synth"));
+        apply_action(&mut app, Action::SearchOpen);
+        let mut timings = Vec::new();
+        for c in "?zzz_nomatch".chars() {
+            let t = Instant::now();
+            apply_action(&mut app, Action::SearchType(c));
+            timings.push(t.elapsed());
+        }
+        timings
+    };
+    let before = per_keystroke(without_compiled);
+    let after = per_keystroke(with_compiled);
+    eprintln!("raw-only keystrokes:    {before:?}");
+    eprintln!("raw+compiled keystrokes: {after:?}");
+    // Skip the first keystroke — it pays the one-time lowering of all
+    // compiled blobs, amortized across every later keystroke.
+    let steady = |v: &[std::time::Duration]| v[3..].iter().sum::<std::time::Duration>();
+    let (b, a) = (steady(&before), steady(&after));
+    eprintln!("steady-state: raw-only {b:?} vs raw+compiled {a:?}");
+    assert!(
+        a <= b * 2,
+        "compiled-SQL search costs {a:?} vs the raw-only {b:?} — over 2x"
+    );
+}
+
 /// `dbtl docs` generation over 4000 models — the file set the `docs`
 /// subcommand writes.
 #[test]

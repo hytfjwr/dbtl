@@ -1530,3 +1530,109 @@ fn dag_from_manifest_json_parse_error_uses_the_shared_wording() {
     let err = dag_from_manifest_json("{ not json").unwrap_err();
     assert_eq!(err.to_string(), "failed to parse manifest JSON");
 }
+
+// ---- the governance display label -------------------------------------------
+
+#[test]
+fn constraint_label_spells_each_optional_part_once() {
+    use crate::ConstraintInfo;
+    // The full shape: `type (cols) name: expression -> to (to_cols)` — the
+    // one spelling the structure modal's constraints block and the docs
+    // node's `constraints:` bullet share.
+    let fk = ConstraintInfo {
+        constraint_type: "foreign_key".into(),
+        name: Some("fk_orders_customer".into()),
+        expression: None,
+        to: Some("dim_customers".into()),
+        to_columns: vec!["id".into()],
+        columns: vec!["customer_id".into()],
+    };
+    assert_eq!(
+        fk.label(),
+        "foreign_key (customer_id) fk_orders_customer -> dim_customers (id)"
+    );
+    // A bare type-only entry stays a single word; a `check` carries its
+    // expression after the colon — and its newlines flatten so a multi-line
+    // check can't tear a one-row-per-entry layout.
+    let pk = ConstraintInfo {
+        constraint_type: "primary_key".into(),
+        columns: vec!["id".into()],
+        ..Default::default()
+    };
+    assert_eq!(pk.label(), "primary_key (id)");
+    let check = ConstraintInfo {
+        constraint_type: "check".into(),
+        expression: Some("amount > 0\nand amount < 1000000".into()),
+        ..Default::default()
+    };
+    assert_eq!(check.label(), "check: amount > 0 and amount < 1000000");
+    let bare = ConstraintInfo::default();
+    assert_eq!(bare.label(), "");
+}
+
+#[test]
+fn detail_maps_the_model_config_governance_fields() {
+    // `config.incremental_strategy`, `language`, `deprecation_date`, and the
+    // model-level `constraints:` all land on NodeDetail — the values the
+    // structure modal and `dbtl docs` pages render.
+    use crate::manifest::RawConstraint;
+    let nodes = HashMap::from([(
+        "model.p.m".to_string(),
+        RawNode {
+            name: "m".into(),
+            resource_type: "model".into(),
+            language: Some("python".into()),
+            deprecation_date: Some("2026-12-31T00:00:00+09:00".into()),
+            constraints: vec![
+                RawConstraint {
+                    constraint_type: Some("primary_key".into()),
+                    columns: Some(vec!["id".into()]),
+                    ..Default::default()
+                },
+                RawConstraint {
+                    constraint_type: Some("foreign_key".into()),
+                    to: Some("ref('dim_customers')".into()),
+                    to_columns: Some(vec!["id".into()]),
+                    columns: Some(vec!["customer_id".into()]),
+                    ..Default::default()
+                },
+            ],
+            config: RawConfig {
+                materialized: Some("incremental".into()),
+                incremental_strategy: Some("merge".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )]);
+    let manifest = RawManifest {
+        metadata: Default::default(),
+        nodes,
+        sources: HashMap::new(),
+        exposures: HashMap::new(),
+        macros: HashMap::new(),
+        semantic_models: HashMap::new(),
+        metrics: HashMap::new(),
+        saved_queries: HashMap::new(),
+        unit_tests: HashMap::new(),
+        functions: HashMap::new(),
+        parent_map: HashMap::new(),
+        child_map: HashMap::new(),
+        docs: Default::default(),
+    };
+    let dag = Dag::build(&manifest);
+    let d = dag.detail("model.p.m").expect("the model's detail");
+    assert_eq!(d.language.as_deref(), Some("python"));
+    assert_eq!(d.incremental_strategy.as_deref(), Some("merge"));
+    assert_eq!(
+        d.deprecation_date.as_deref(),
+        Some("2026-12-31T00:00:00+09:00")
+    );
+    assert_eq!(
+        d.constraints.iter().map(|c| c.label()).collect::<Vec<_>>(),
+        vec![
+            "primary_key (id)".to_string(),
+            "foreign_key (customer_id) -> ref('dim_customers') (id)".to_string(),
+        ]
+    );
+}

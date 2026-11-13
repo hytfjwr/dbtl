@@ -496,6 +496,105 @@ pub(super) fn detail_modal_renders_column_badges_and_relationship_targets() {
 }
 
 #[test]
+pub(super) fn detail_modal_renders_lint_findings() {
+    // The Enter modal shows the node's lint findings — the same producer the
+    // inspector pane reads — as a `lint (N):` section. The fixture's default
+    // lint config flags several models; the first finding's node is enough.
+    use dbtl::app::{apply_action, App};
+    use dbtl::Action;
+    let mut app = App::new(fixture_dag(), std::path::PathBuf::from(FIXTURE));
+    let uid = app
+        .lint_findings()
+        .first()
+        .map(|f| f.node_uid.clone())
+        .expect("the fixture's default lint config finds violations");
+    app.select_by_unique_id(&uid);
+    apply_action(&mut app, Action::DetailOpen);
+
+    let text = buffer_to_string(&render_app(&app, 140, 50));
+    assert!(
+        text.contains("lint ("),
+        "the modal carries a lint section: {text}"
+    );
+    let rule = app
+        .lint_findings()
+        .iter()
+        .find(|f| f.node_uid == uid)
+        .map(|f| f.rule.name().to_string())
+        .expect("a finding on the opened node");
+    assert!(
+        text.contains(&rule),
+        "the finding's rule name renders: {text}"
+    );
+
+    // A lint-clean node draws NO lint section (unlike the inspector pane's
+    // always-rendered verdict, the modal omits empty sections).
+    let linted: std::collections::HashSet<&str> = app
+        .lint_findings()
+        .iter()
+        .map(|f| f.node_uid.as_str())
+        .collect();
+    let clean = app
+        .dag
+        .nodes()
+        .values()
+        .find(|n| n.resource_type == "model" && !linted.contains(n.unique_id.as_str()))
+        .expect("fixture has a lint-clean model")
+        .unique_id
+        .clone();
+    app.select_by_unique_id(&clean);
+    apply_action(&mut app, Action::DetailOpen);
+    let text = buffer_to_string(&render_app(&app, 140, 50));
+    assert!(
+        !text.contains("lint ("),
+        "a clean node draws no lint section: {text}"
+    );
+}
+
+#[test]
+pub(super) fn detail_modal_renders_governance_fields() {
+    // The sample fixture carries the governance surface: `fct_public_api`
+    // declares a deprecation_date, `fct_contracted` two model-level
+    // constraints — both render in the structure modal's head block.
+    use dbtl::app::{apply_action, App};
+    use dbtl::Action;
+    const SAMPLE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sample_manifest.json"
+    );
+    let mut app = App::new(
+        load_dag(SAMPLE).expect("sample manifest loads"),
+        std::path::PathBuf::from(SAMPLE),
+    );
+
+    app.select_by_unique_id("model.sample.fct_public_api");
+    apply_action(&mut app, Action::DetailOpen);
+    let text = buffer_to_string(&render_app(&app, 140, 50));
+    assert!(
+        text.contains("deprecation_date: 2026-12-31"),
+        "the deprecation date renders: {text}"
+    );
+
+    app.select_by_unique_id("model.sample.fct_contracted");
+    apply_action(&mut app, Action::DetailOpen);
+    let text = buffer_to_string(&render_app(&app, 140, 50));
+    assert!(
+        text.contains("constraints (2):"),
+        "the constraints section header: {text}"
+    );
+    assert!(
+        text.contains("primary_key (id)") && text.contains("check: id > 0"),
+        "one label row per constraint: {text}"
+    );
+    // Every sample model is `language: sql` — the default build carries no
+    // `language:` line (it only reports a non-sql model).
+    assert!(
+        !text.contains("language:"),
+        "sql-language models show no language line: {text}"
+    );
+}
+
+#[test]
 pub(super) fn stats_modal_renders_column_coverage() {
     // the column-coverage gauge line reaches the buffer — the same
     // numbers the docs README quotes.

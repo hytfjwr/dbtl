@@ -288,19 +288,31 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
     if !state::state_file_exists(app.project_root()) {
         app.enter_home();
     }
+    // Load the --diff baseline (a second Dag) and open on the Diff lens so the
+    // differences are visible immediately. A bad baseline fails as plain text
+    // pre-TTY, like every other load error. The baseline is pruned under the
+    // same package scope as the current graph, so both sides agree.
+    // Resolved BEFORE --select below: `state:` selector atoms read
+    // `app.diff()`, so the diff must be computed by the time they evaluate.
+    if let Some(base) = &cli.diff {
+        let (dag, label) = load_baseline(base, cli.package_scope(), &src.project_dir())?;
+        app.set_diff_base(dag, label);
+        app.ui_state.set_lens(LineageLens::Diff);
+    }
+
     if let Some(name) = &cli.select {
         // Fail as plain text before the terminal is touched, like a load error.
         // Plain model name first; on a miss, try it as a dbt selector spec —
-        // only the first match by unique_id is tried, and it must be a model
-        // (a non-model first hit fails; it does not skip to the next match).
-        // `state:` atoms can't match: `app.diff()` is still `None` — the
-        // `--diff` baseline loads below.
+        // the selector's matches are tried in unique_id order until a MODEL
+        // accepts (a non-model hit — an exposure a `+` fan-out caught — is
+        // skipped, not an immediate failure). `state:` atoms see the diff
+        // because the `--diff` baseline loaded above.
         // `--select` starts on the model's TAB — activating it when
         // it is already open, appending one when it is not.
         let found = app.open_tab_by_name(name)
             || dbtl::select(&app.dag, app.diff(), name)
                 .iter()
-                .next()
+                .find(|uid| app.dag.get(uid).is_some_and(|n| n.resource_type == "model"))
                 .is_some_and(|uid| app.open_node_as_tab(uid));
         // A miss under the default scope might just be a pruned installed
         // package — name the escape hatch instead of leaving the user guessing
@@ -317,16 +329,6 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
                 "--select: model '{name}' not found{hint}"
             )));
         }
-    }
-
-    // Load the --diff baseline (a second Dag) and open on the Diff lens so the
-    // differences are visible immediately. A bad baseline fails as plain text
-    // pre-TTY, like every other load error. The baseline is pruned under the
-    // same package scope as the current graph, so both sides agree.
-    if let Some(base) = &cli.diff {
-        let (dag, label) = load_baseline(base, cli.package_scope(), &src.project_dir())?;
-        app.set_diff_base(dag, label);
-        app.ui_state.set_lens(LineageLens::Diff);
     }
 
     // Resolve the colour themes (presets + user files) and the start index.
