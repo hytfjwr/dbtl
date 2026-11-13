@@ -30,7 +30,7 @@ Both config files have a generated JSON Schema. Point yaml-language-server at it
 | Key | Meaning |
 | --- | ------- |
 | `fail_on` | `error` (default), `warn`, or `never`. The minimum severity at which findings fail a run. `--fail-on` overrides it. |
-| `lint` | Per-rule enables, severities, parameters, excludes, naming prefixes, and the baseline path. |
+| `lint` | The rule-set preset, per-category severities, per-rule enables/severities/parameters, excludes, naming prefixes, and the baseline path. |
 | `check` | Gate severities and parameters, and whether the lint gates fold into `dbtl check`. |
 | `docs` | Options for [`dbtl docs`](../cli/docs.md). |
 | `owner_meta_key` | The `meta` key the affected-owners report reads. Default: `owner`. It wins over the `owner_meta_key` in `config.yml`. |
@@ -43,6 +43,10 @@ fail_on: warn                # error | warn | never
 owner_meta_key: owner        # meta key for the affected-owners report
 
 lint:
+  preset: minimal             # minimal | standard (default) | strict
+  categories:                 # one severity per rule category, above the preset
+    sql: error                #   and below per-rule `rules:` entries
+    documentation: off
   baseline: .dbtl-baseline.json   # the freeze file (default shown)
   rules:
     root_models: false            # bool: off, or on at default severity
@@ -85,7 +89,9 @@ The `lint:` section configures the [lint rules](../cli/lint.md).
 
 | Key | Meaning |
 | --- | ------- |
-| `rules` | Maps a rule id to `false` (off), `true` (the default), or a settings object. Unknown rule names are an error. |
+| `preset` | `minimal`, `standard` (the default), or `strict`. The base rule set a run starts from: `minimal` enables only the rules whose default severity is `error`, `standard` enables every rule the registry enables by default, and `strict` enables every rule, opt-in included. Unknown names are an error. |
+| `categories` | Maps a rule category to `error`, `warn`, or `off` — one severity (and enable/disable) for a whole category at once. `off` disables the category; `error`/`warn` enable its rules at that severity. It sits above `preset` and below `rules.<id>`. Unknown category names are an error. |
+| `rules` | Maps a rule id to `false` (off), `true` (on — at the `categories` severity when one is set, else the registry default), or a settings object. Unknown rule names are an error. |
 | `baseline` | The frozen-violations file. Default: `.dbtl-baseline.json`. It resolves against the directory of `.dbtl.yml`. |
 | `naming_prefixes` | Maps a layer directory to its allowed prefixes. It merges per layer over the defaults: `intermediate: [int_]`, `marts: [fct_, dim_, rpt_]`, `staging: [stg_]`. |
 | `model_fanout_threshold`, `source_fanout_threshold` | Flat keys for the fanout thresholds. Defaults: 5 and 2. They set the same values as `rules.<id>.threshold`. Using both spellings together is an error that names both keys. |
@@ -99,6 +105,17 @@ A rule entry can set:
 | rule parameters | Declared per rule. An undeclared name is an error. |
 
 Parameters are listed per rule in the [lint rules reference](../reference/lint-rules.md).
+
+### Rule-set resolution order
+
+A rule's enablement and severity resolve in this order — highest first:
+
+1. An explicit `rules.<id>` entry.
+2. Its category's `categories.<category>` setting.
+3. The `preset` set (or `--preset`).
+4. The rule's registry default.
+
+`--rules` is different: it is an authoritative selector above all of these — every rule not named goes off, and a named rule runs even when a `rules.<id>`, `categories`, or `preset` entry turned it off.
 
 ### Shared dimensions
 
@@ -151,7 +168,7 @@ The `docs:` section configures [`dbtl docs`](../cli/docs.md).
 
 ## Precedence
 
-Command-line flags win over `.dbtl.yml`. For the failure threshold the order is `--fail-on`, then `fail_on` in `.dbtl.yml`, then `error`. For gates, `--gate` and the parameter flags such as `--coverage-min` override `check.gates`.
+Command-line flags win over `.dbtl.yml`. For the failure threshold the order is `--fail-on`, then `fail_on` in `.dbtl.yml`, then `error`. For the lint rule set, `--preset` overrides `lint.preset`, and `--rules` selects the final rule list above every `lint` layer. For gates, `--gate` and the parameter flags such as `--coverage-min` override `check.gates`.
 
 ## Full reference
 

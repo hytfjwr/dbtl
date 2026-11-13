@@ -262,6 +262,56 @@ fn lint_matches_the_cli_under_a_selector_and_fail_on() {
     );
 }
 
+/// `lint.preset`/`lint.categories` resolve through the same
+/// `ProjectConfig::from_yaml` on both sides — the engine's `config` string
+/// is the `.dbtl.yml` the CLI reads, so preset/category semantics can
+/// never diverge. `--preset` has no engine twin (it's a CLI overlay, not
+/// a config shape).
+#[test]
+fn lint_preset_and_categories_config_matches_the_cli() {
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = sample_project_dir(&tmp);
+    let config = "lint:\n  preset: minimal\n  categories:\n    sql: error\n    documentation: off\n  rules:\n    select_star: false\n    undocumented_models: {severity: warn}\n";
+    std::fs::write(proj.join(".dbtl.yml"), config).unwrap();
+    let engine = sample_engine();
+    assert_lint_parity(
+        &proj.join("target/manifest.json"),
+        &engine,
+        &LintOptions {
+            config: Some(config.to_string()),
+            ..LintOptions::default()
+        },
+        &[],
+    );
+    // A malformed preset/category errors identically on both paths.
+    for bad in [
+        "lint:\n  preset: bogus\n",
+        "lint:\n  categories:\n    bogus: warn\n",
+        "lint:\n  categories:\n    sql: bogus\n",
+    ] {
+        std::fs::write(proj.join(".dbtl.yml"), bad).unwrap();
+        let cli = run(&[
+            "lint",
+            "--manifest",
+            proj.join("target/manifest.json").to_str().unwrap(),
+        ]);
+        let err = engine
+            .lint(&LintOptions {
+                config: Some(bad.to_string()),
+                ..LintOptions::default()
+            })
+            .expect_err("a bad preset/category errors");
+        assert_eq!(cli.status.code(), Some(2), "{bad}");
+        // The CLI wraps the parse error in `failed to read <path>: …` —
+        // the engine's message is the same `from_yaml` text at its tail.
+        assert!(
+            stderr(&cli).trim().ends_with(&err.to_string()),
+            "the engine's config error is the CLI's: {bad}\nstderr: {}",
+            stderr(&cli)
+        );
+    }
+}
+
 // ---- column-lineage parity: `dbtl columns` ----------------------------
 
 /// `dbtl columns <m> <target> [--upstream] [--format json]` against the

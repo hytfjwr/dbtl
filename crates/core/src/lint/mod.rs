@@ -27,8 +27,8 @@ pub use baseline::{Baseline, BASELINE_SCHEMA, DEFAULT_BASELINE_NAME};
 
 mod registry;
 pub use registry::{
-    removed_rule, removed_rule_error, Category, ParamKind, ParamSpec, RemovedRule, Requires,
-    RuleInfo, Severity, REGISTRY, REMOVED_RULES,
+    removed_rule, removed_rule_error, Category, LintPreset, ParamKind, ParamSpec, RemovedRule,
+    Requires, RuleInfo, Severity, REGISTRY, REMOVED_RULES,
 };
 
 mod call_sites;
@@ -463,19 +463,50 @@ impl Serialize for Finding {
     }
 }
 
+/// One per-rule switch — the resolved form of a `lint.rules.<id>` entry
+/// (and of `--rules`' re-enable). `Off` silences the rule outright;
+/// `On(sev)` runs it — `Some(sev)` pins the severity, `None` leaves the
+/// severity to the category layer's `error`/`warn`, else the registry
+/// `default_severity`. A rule with NO `rules` entry resolves below the
+/// categories — see [`LintConfig::severity`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleEnabled {
+    Off,
+    On(Option<Severity>),
+}
+
 /// `.dbtl.yml`'s `lint:` section, resolved over the shipped defaults. The
 /// file schema lives in `crate::project_config` — this is the in-memory
-/// shape [`run_rules`] consumes: per-rule severities (an absent entry =
-/// the registry default, `None` = off), per-rule `exclude:` selectors, the
-/// validated integer/string-list parameters (regex lists included — the
-/// loader validated them), and the naming-prefix map a project merges
-/// per-layer over the defaults.
+/// shape [`run_rules`] consumes. Rule resolution is layered, weakest
+/// first (see `severity()`):
+///
+/// 1. `preset` — the base set (`strict` runs the opt-in rules,
+///    `minimal` only the error-default ones);
+/// 2. `categories` — one `error`/`warn`/`off` for a whole category;
+/// 3. `rules` — a `RuleEnabled` per rule (the `lint.rules.<id>` map);
+/// 4. `--rules` — the CLI's explicit subset, resolved into `rules` before
+///    the run (see `apply_rules_overlay` in the `dbtl` crate).
+///
+/// Plus per-rule `exclude:` selectors, the validated integer/string-list
+/// parameters (regex lists included — the loader validated them), and the
+/// naming-prefix map a project merges per-layer over the defaults — all
+/// orthogonal to which rules run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LintConfig {
-    /// rule → `Some(severity)` pinned severity, `None` off. Absent = the
-    /// registry's `default_severity`. `.dbtl.yml`'s `false` and
-    /// `{severity: off}` both land as `None` here.
-    pub severities: BTreeMap<LintRule, Option<Severity>>,
+    /// `lint.preset` — the base rule set, overridable by `--preset`.
+    /// `Standard` (the registry's `default_enabled` set) reproduces the
+    /// pre-preset behavior when nothing configures a rule.
+    pub preset: LintPreset,
+    /// `lint.categories`: category → `Some(severity)` enables the whole
+    /// category at that severity, `None` (`<cat>: off`) disables it.
+    /// Above the preset, below the per-rule `rules` entries.
+    pub categories: BTreeMap<Category, Option<Severity>>,
+    /// rule → `RuleEnabled` — `Off` for `.dbtl.yml`'s `false` /
+    /// `{severity: off}`; `On(Some(sev))` for a pinned severity;
+    /// `On(None)` for `true` / a bare settings object. An absent key
+    /// resolves below the `categories` map, then the `preset` — see
+    /// `severity()`.
+    pub rules: BTreeMap<LintRule, RuleEnabled>,
     /// rule → `exclude:` selector strings; findings whose `node_uid`
     /// matches the union are dropped.
     pub exclude: BTreeMap<LintRule, Vec<String>>,
@@ -505,12 +536,15 @@ pub struct LintConfig {
 }
 
 impl Default for LintConfig {
-    /// The shipped defaults: every rule at its registry severity, no
+    /// The shipped defaults: the `standard` set (every rule the registry
+    /// enables by default), no category or per-rule overrides, no
     /// excludes, the conventional layer naming prefixes, and the default
     /// baseline path.
     fn default() -> Self {
         LintConfig {
-            severities: BTreeMap::new(),
+            preset: LintPreset::default(),
+            categories: BTreeMap::new(),
+            rules: BTreeMap::new(),
             exclude: BTreeMap::new(),
             params: BTreeMap::new(),
             list_params: BTreeMap::new(),
@@ -529,14 +563,37 @@ impl Default for LintConfig {
 }
 
 impl LintConfig {
-    /// The severity `rule` runs at, or `None` when the config turns it off
-    /// (`false` / `severity: off`). Absent entries fall back to the
-    /// registry's `default_severity`.
+    /// The severity `rule` runs at, or `None` when the config turns it
+    /// off. Resolution is layered — a per-rule `rules` entry beats
+    /// `categories`, which beats `preset`:
+    ///
+    /// - `rules.<id>: Off` (`false` / `severity: off`) ⇒ off;
+    ///   `On(Some(sev))` ⇒ runs at `sev`; `On(None)` (`<id>: true` / a
+    ///   bare settings object) ⇒ runs — the category's `error`/`warn`
+    ///   still applies, else the registry `default_severity`;
+    /// - no per-rule entry ⇒ `categories.<category>` decides (`off`
+    ///   disables; `error`/`warn` enables at that severity);
+    /// - neither ⇒ the `preset` set — enabled rules report at their
+    ///   registry `default_severity`.
     pub fn severity(&self, rule: LintRule) -> Option<Severity> {
-        self.severities
-            .get(&rule)
-            .copied()
-            .unwrap_or_else(|| Some(rule.info().default_severity))
+        match self.rules.get(&rule) {
+            Some(RuleEnabled::Off) => None,
+            Some(RuleEnabled::On(Some(sev))) => Some(*sev),
+            Some(RuleEnabled::On(None)) => Some(
+                self.categories
+                    .get(&rule.info().category)
+                    .copied()
+                    .flatten()
+                    .unwrap_or_else(|| rule.info().default_severity),
+            ),
+            None => match self.categories.get(&rule.info().category) {
+                Some(&setting) => setting,
+                None => self
+                    .preset
+                    .enables(rule.info())
+                    .then_some(rule.info().default_severity),
+            },
+        }
     }
 
     /// Whether `rule` runs under this config — i.e. its effective severity

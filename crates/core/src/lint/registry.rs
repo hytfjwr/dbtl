@@ -16,6 +16,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "direct_join_to_source",
         category: Category::Modeling,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a model directly depends on both a source and a model",
         rationale: "Mixing a raw source with modeled data in one query hides \
                     where the model's real inputs come from. A layer that reads \
@@ -34,6 +35,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "multiple_sources_joined",
         category: Category::Modeling,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a model directly depends on 2+ sources",
         rationale: "Joining several raw sources in one model buries the \
                     integration logic where nobody can test or reuse it. Each \
@@ -51,6 +53,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "source_fanout",
         category: Category::Modeling,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a source directly feeds too many models",
         rationale: "When one raw source feeds many downstream models, every \
                     one of them re-derives the same cleanup and they drift \
@@ -68,6 +71,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "model_fanout",
         category: Category::Modeling,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a model directly feeds too many leaf models",
         rationale: "A hub model that feeds many leaf models concentrates risk: \
                     one bad change fans out to every downstream report, and the \
@@ -91,6 +95,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "root_models",
         category: Category::Modeling,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a model has no parents",
         rationale: "A model that refs nothing upstream is either a hand-maintained \
                     table — data nobody can trace or rebuild — or a forgotten \
@@ -108,6 +113,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "rejoining_upstream",
         category: Category::Modeling,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a redundant hop: A->B->C while A->C already exists",
         rationale: "Re-reading an upstream model when a direct edge already \
                     exists means the intermediate node adds nothing — it just \
@@ -130,6 +136,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "marts_depend_on_source",
         category: Category::Modeling,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a marts/intermediate model directly depends on a source",
         rationale: "Marts and intermediate models are supposed to consume \
                     staged data. Reading a raw source directly bypasses the \
@@ -146,6 +153,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "missing_primary_key_tests",
         category: Category::Testing,
         default_severity: Severity::Error,
+        default_enabled: true,
         summary: "a model lacks a primary-key test (unique+not_null on one column, or unique_combination_of_columns)",
         rationale: "Joins and fanout checks assume every model has a stable \
                     grain. Without a uniqueness test, a duplicated key turns a \
@@ -179,6 +187,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "public_models_without_contract",
         category: Category::Governance,
         default_severity: Severity::Error,
+        default_enabled: true,
         summary: "access: public without contract: enforced",
         rationale: "Declaring a model public advertises it as a stable \
                     interface, but without an enforced contract dbt won't \
@@ -196,6 +205,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "undocumented_models",
         category: Category::Documentation,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a model has no description",
         rationale: "A model with no description forces every reader to \
                     reverse-engineer intent from SQL. Descriptions are the \
@@ -219,6 +229,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "naming_conventions",
         category: Category::Structure,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a model's name misses its layer's prefix",
         rationale: "Layer prefixes let a reader know a model's role before \
                     opening it — and let rules like marts_depend_on_source \
@@ -236,6 +247,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "layer_violation",
         category: Category::Modeling,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a backward edge between logical layers",
         rationale: "Layers exist so data flows one way: staging cleans, \
                     intermediate composes, marts serve. An edge that jumps \
@@ -253,6 +265,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "unused_sources",
         category: Category::Modeling,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a source is declared but never referenced",
         rationale: "A source declaration is a promise that a table matters to \
                     the project. When nothing refs it, the entry is dead \
@@ -271,6 +284,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "duplicate_sources",
         category: Category::Modeling,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "two or more sources point at the same warehouse relation",
         rationale: "Declaring the same relation under two source names splits \
                     its tests, docs and freshness into competing records, and a \
@@ -288,6 +302,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "staging_depends_on_staging",
         category: Category::Modeling,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a staging model directly depends on another staging model",
         rationale: "Staging models own raw-source cleanup — renaming, typing, \
                     light dedup. Chaining staging into staging hides the fact \
@@ -305,6 +320,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "too_many_joins",
         category: Category::Modeling,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a model directly depends on too many data resources",
         rationale: "A model that reads many parents at once is a join hub: the \
                     SQL is doing the work of several intermediate models, and \
@@ -327,6 +343,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "chained_views",
         category: Category::Performance,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a chain of consecutive view/ephemeral models is too long",
         rationale: "Views and ephemeral models persist nothing — every one in \
                     the chain is re-planned at query time. A long chain \
@@ -349,6 +366,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "exposure_parents_materializations",
         category: Category::Performance,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "an exposure directly depends on a source or a view/ephemeral model",
         rationale: "An exposure is what a dashboard actually reads. Pointing it \
                     at a source or an unmaterialized view means every refresh \
@@ -367,6 +385,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "exposures_dependent_on_private_models",
         category: Category::Governance,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "an exposure depends on a private/protected model",
         rationale: "Private and protected access levels mark a model as \
                     internal — ref-able only inside its group or project. \
@@ -385,6 +404,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "undocumented_sources",
         category: Category::Documentation,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a source has no description",
         rationale: "Sources are the edge where external data enters the \
                     project — the place readers most need provenance notes. An \
@@ -402,6 +422,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "undocumented_columns",
         category: Category::Documentation,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a model has declared columns without descriptions",
         rationale: "Declaring a column without describing it documents the \
                     schema's shape but not its meaning — the generated docs \
@@ -425,6 +446,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "model_directories",
         category: Category::Structure,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a model's name prefix and directory point at different layers",
         rationale: "Layer conventions only work when the file location and the \
                     name tell the same story. A marts-prefixed model inside \
@@ -442,6 +464,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "required_meta_keys",
         category: Category::Governance,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a model is missing a required meta key",
         rationale: "Projects that rely on meta for ownership, cost centers or \
                     data-domain tagging only get value when every model carries \
@@ -463,6 +486,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "contract_columns_without_type",
         category: Category::Governance,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a contract-enforced model has declared columns without data_type",
         rationale: "An enforced contract promises the warehouse will check the \
                     declared schema — but a column without data_type \
@@ -479,6 +503,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "incremental_without_unique_key",
         category: Category::Modeling,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "an incremental model has no unique_key",
         rationale: "An incremental run merges new rows into the existing \
                     table; without a unique_key dbt cannot match incoming \
@@ -498,6 +523,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "sources_without_freshness",
         category: Category::Testing,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a source has no freshness configured",
         rationale: "Freshness is the only contract a raw feed offers: \
                     without warn_after/error_after thresholds \
@@ -516,6 +542,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "select_star",
         category: Category::Sql,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a model's final SELECT reads * or t.*",
         rationale: "A wildcard projection inherits whatever the upstream \
                     happens to emit today — new columns ride through \
@@ -538,6 +565,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "hard_coded_references",
         category: Category::Sql,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a model names a relation literally instead of ref()/source()",
         rationale: "A hand-written `from analytics.orders` is a dependency \
                     dbt can't see — it misses the DAG (no ref edge), builds \
@@ -562,6 +590,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "cartesian_join",
         category: Category::Sql,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a JOIN carries no join condition",
         rationale: "A conditionless join multiplies every row of one side by \
                     every row of the other — usually a missing ON clause, and \
@@ -580,6 +609,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "unknown_column_reference",
         category: Category::Sql,
         default_severity: Severity::Error,
+        default_enabled: true,
         summary: "a model names a column a trusted upstream doesn't emit",
         rationale: "A column that doesn't exist in the parent is either a \
                     typo that fails at run time or a leftover name from a \
@@ -598,6 +628,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "forbidden_patterns",
         category: Category::Sql,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a model's raw SQL matches a configured forbidden pattern",
         rationale: "Some constructs are banned by project policy — unsafe \
                     functions, non-deterministic calls, debug leftovers. A \
@@ -619,6 +650,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "warehouse_type_drift",
         category: Category::Warehouse,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a declared column's data_type disagrees with the warehouse",
         rationale: "schema.yml says one type, the warehouse reports another — \
                     the docs lie about the model's real shape, and a reader \
@@ -636,6 +668,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "columns_missing_in_warehouse",
         category: Category::Warehouse,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a declared column doesn't exist in the warehouse",
         rationale: "Documenting a column the warehouse doesn't have means \
                     the model's docs promise a field its build never \
@@ -653,6 +686,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "unused_models",
         category: Category::Modeling,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a model in a checked layer has no downstream",
         rationale: "A model nothing reads is dead weight: it still builds on \
                     every run, still sits in the lineage, and its name keeps \
@@ -678,6 +712,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "references_deprecated_model",
         category: Category::Governance,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a node directly depends on a model with a deprecation_date",
         rationale: "A deprecation_date is the upstream's promise that the \
                     model is going away. Every dependent that hasn't migrated \
@@ -697,6 +732,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "undeclared_warehouse_columns",
         category: Category::Warehouse,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a warehouse column the node doesn't declare",
         rationale: "The catalog reports columns schema.yml never mentions — \
                     the declared schema is incomplete. Undeclared columns hide \
@@ -715,6 +751,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "trailing_semicolon",
         category: Category::Sql,
         default_severity: Severity::Error,
+        default_enabled: true,
         summary: "a model's SQL ends with a semicolon",
         rationale: "dbt wraps a model's SELECT in `create … as (…)` or an \
                     incremental merge — a statement terminator at the end of \
@@ -733,6 +770,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "duplicate_output_columns",
         category: Category::Sql,
         default_severity: Severity::Error,
+        default_enabled: true,
         summary: "a model's final SELECT emits the same output column name twice",
         rationale: "Two outputs sharing one name leave readers no way to say \
                     which column they mean — downstream refs resolve to one of \
@@ -750,6 +788,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "unused_cte",
         category: Category::Sql,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a CTE is defined but never read",
         rationale: "A WITH clause the query never reads is dead code reviewers \
                     still parse — usually the sign a refactor dropped the \
@@ -767,6 +806,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         id: "order_by_without_limit",
         category: Category::Sql,
         default_severity: Severity::Warn,
+        default_enabled: true,
         summary: "a model's final query has ORDER BY without LIMIT",
         rationale: "A table or view doesn't promise row order — the outer \
                     ORDER BY's cost is paid every build while no reader can \
@@ -843,6 +883,19 @@ pub enum Category {
 }
 
 impl Category {
+    /// Every category, in declaration order — the `lint.categories` key
+    /// set: schema generation and the unknown-key error both read it.
+    pub const ALL: [Category; 8] = [
+        Category::Modeling,
+        Category::Testing,
+        Category::Documentation,
+        Category::Structure,
+        Category::Performance,
+        Category::Governance,
+        Category::Sql,
+        Category::Warehouse,
+    ];
+
     /// The stable lowercase tag (same as the serde form).
     pub fn name(self) -> &'static str {
         match self {
@@ -855,6 +908,13 @@ impl Category {
             Category::Sql => "sql",
             Category::Warehouse => "warehouse",
         }
+    }
+
+    /// The inverse of [`name`](Category::name) — `.dbtl.yml`'s
+    /// `lint.categories` validation. `None` for unknown names (the caller
+    /// lists [`ALL`](Category::ALL) in its error).
+    pub fn from_name(name: &str) -> Option<Category> {
+        Self::ALL.iter().find(|c| c.name() == name).copied()
     }
 }
 
@@ -875,6 +935,67 @@ impl Severity {
         match self {
             Severity::Warn => "warn",
             Severity::Error => "error",
+        }
+    }
+}
+
+/// The rule set a run starts from — `.dbtl.yml`'s `lint.preset` and the
+/// CLI's `--preset`. Presets only decide whether each unconfigured rule
+/// runs; `lint.categories`, `lint.rules.<id>`, and `--rules` sit above them
+/// (see `LintConfig::severity`), so a preset never overrides a setting the
+/// project wrote explicitly.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(rename_all = "lowercase"))]
+pub enum LintPreset {
+    /// Only the rules whose registry `default_severity` is `Error` — the
+    /// broken-guarantee and build-failure checks.
+    Minimal,
+    /// Every rule the registry enables by default (`default_enabled`) —
+    /// the set a run uses when no preset is configured.
+    #[default]
+    Standard,
+    /// Every rule, including the opt-in ones shipped with
+    /// `default_enabled: false`.
+    Strict,
+}
+
+impl LintPreset {
+    /// Every preset, in widening order — `--list-rules`' columns and the
+    /// unknown-name error read it.
+    pub const ALL: [LintPreset; 3] = [
+        LintPreset::Minimal,
+        LintPreset::Standard,
+        LintPreset::Strict,
+    ];
+
+    /// The stable lowercase tag — `.dbtl.yml`'s `lint.preset` value and
+    /// `--preset`'s argument.
+    pub fn name(self) -> &'static str {
+        match self {
+            LintPreset::Minimal => "minimal",
+            LintPreset::Standard => "standard",
+            LintPreset::Strict => "strict",
+        }
+    }
+
+    /// The inverse of [`name`](LintPreset::name) — `lint.preset`'s
+    /// validation. `None` for unknown names (the caller lists
+    /// [`ALL`](LintPreset::ALL) in its error).
+    pub fn from_name(name: &str) -> Option<LintPreset> {
+        Self::ALL.iter().find(|p| p.name() == name).copied()
+    }
+
+    /// Whether `rule` runs under this preset alone — the layer below
+    /// `lint.categories` and the per-rule settings. `minimal` runs the
+    /// error-default rules, `standard` the registry-default set, and
+    /// `strict` everything; the enabled rules report at the registry
+    /// `default_severity` (the severity layers above can still repin it).
+    pub fn enables(self, info: &RuleInfo) -> bool {
+        match self {
+            LintPreset::Minimal => info.default_severity == Severity::Error,
+            LintPreset::Standard => info.default_enabled,
+            LintPreset::Strict => true,
         }
     }
 }
@@ -1045,6 +1166,12 @@ pub struct RuleInfo {
     /// to `Error`; every other rule ships `Warn` so it reports without
     /// silently gating a project that never opted in.
     pub default_severity: Severity,
+    /// Whether the rule runs when nothing configures it — the `standard`
+    /// preset's set. `false` marks an opt-in rule: it stays off under
+    /// `minimal`/`standard` and comes on under `strict`, a
+    /// `lint.categories` entry, a `lint.rules.<id>` entry, or `--rules` —
+    /// so new rules can ship without changing existing projects' output.
+    pub default_enabled: bool,
     /// A single line — what the rule flags (the old `description()` text).
     pub summary: &'static str,
     /// Why the rule exists — what goes wrong when the pattern is ignored.

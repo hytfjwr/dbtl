@@ -479,11 +479,11 @@ fn lint_lens_warn_only_nodes_tint_warn_and_error_wins() {
     // lose all findings → untinted (disabled rules never tint).
     let mut cfg = crate::LintConfig::default();
     for r in crate::LintRule::ALL {
-        cfg.severities.insert(r, None);
+        cfg.rules.insert(r, crate::RuleEnabled::Off);
     }
-    cfg.severities.insert(
+    cfg.rules.insert(
         crate::LintRule::StagingDependsOnStaging,
-        Some(crate::Severity::Warn),
+        crate::RuleEnabled::On(Some(crate::Severity::Warn)),
     );
     a.set_lint_config(cfg);
     assert_eq!(
@@ -505,7 +505,7 @@ fn lint_lens_is_skipped_in_the_cycle_when_no_findings_exist() {
     let mut a = app();
     let mut cfg = crate::LintConfig::default();
     for r in crate::LintRule::ALL {
-        cfg.severities.insert(r, None);
+        cfg.rules.insert(r, crate::RuleEnabled::Off);
     }
     a.set_lint_config(cfg);
     assert!(a.lint_findings().is_empty(), "all rules off → no findings");
@@ -521,9 +521,9 @@ fn lint_lens_is_skipped_in_the_cycle_when_no_findings_exist() {
     // recomputes — the seam `reload` rides too).
     let mut on = crate::LintConfig::default();
     for r in crate::LintRule::ALL {
-        on.severities.insert(r, None);
+        on.rules.insert(r, crate::RuleEnabled::Off);
     }
-    on.severities.remove(&crate::LintRule::UndocumentedModels);
+    on.rules.remove(&crate::LintRule::UndocumentedModels);
     a.set_lint_config(on);
     assert!(
         a.lint_findings().is_empty(),

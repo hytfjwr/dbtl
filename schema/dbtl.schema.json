@@ -69,6 +69,177 @@
           "description": "The frozen-violations file — resolved against this file's directory\nin `ProjectConfig::load`.",
           "default": null
         },
+        "preset": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "const": "minimal",
+                  "description": "Only the rules whose registry `default_severity` is `Error` — the\nbroken-guarantee and build-failure checks."
+                },
+                {
+                  "type": "string",
+                  "const": "standard",
+                  "description": "Every rule the registry enables by default (`default_enabled`) —\nthe set a run uses when no preset is configured."
+                },
+                {
+                  "type": "string",
+                  "const": "strict",
+                  "description": "Every rule, including the opt-in ones shipped with\n`default_enabled: false`."
+                }
+              ],
+              "description": "The rule set a run starts from — `.dbtl.yml`'s `lint.preset` and the\nCLI's `--preset`. Presets only decide whether each unconfigured rule\nruns; `lint.categories`, `lint.rules.<id>`, and `--rules` sit above them\n(see `LintConfig::severity`), so a preset never overrides a setting the\nproject wrote explicitly."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "base lint rule set: `minimal` (error-default rules only), `standard` (the shipped default), `strict` (every rule, opt-in included). `lint.categories`, `lint.rules.<id>`, and `--rules` sit above it. Unknown names are an error."
+        },
+        "categories": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "category → `error` | `warn` | `off` — one severity (and enable/disable) for a whole category at once. Above `lint.preset`, below `lint.rules.<id>`. Unknown category names are an error.",
+          "properties": {
+            "modeling": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warn",
+                    "off"
+                  ],
+                  "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`off` disables the `modeling` rules; `error`/`warn` enables them at that severity"
+            },
+            "testing": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warn",
+                    "off"
+                  ],
+                  "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`off` disables the `testing` rules; `error`/`warn` enables them at that severity"
+            },
+            "documentation": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warn",
+                    "off"
+                  ],
+                  "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`off` disables the `documentation` rules; `error`/`warn` enables them at that severity"
+            },
+            "structure": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warn",
+                    "off"
+                  ],
+                  "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`off` disables the `structure` rules; `error`/`warn` enables them at that severity"
+            },
+            "performance": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warn",
+                    "off"
+                  ],
+                  "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`off` disables the `performance` rules; `error`/`warn` enables them at that severity"
+            },
+            "governance": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warn",
+                    "off"
+                  ],
+                  "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`off` disables the `governance` rules; `error`/`warn` enables them at that severity"
+            },
+            "sql": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warn",
+                    "off"
+                  ],
+                  "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`off` disables the `sql` rules; `error`/`warn` enables them at that severity"
+            },
+            "warehouse": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warn",
+                    "off"
+                  ],
+                  "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`off` disables the `warehouse` rules; `error`/`warn` enables them at that severity"
+            }
+          }
+        },
         "rules": {
           "type": "object",
           "additionalProperties": false,
