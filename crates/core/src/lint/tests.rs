@@ -1899,7 +1899,8 @@ fn malformed_meta_dbtl_ignore_warns_in_source_mode() {
     )
     .unwrap();
     std::fs::write(dir.path().join("models/stg/stg_a.sql"), "select 1").unwrap();
-    let (_manifest, warnings) = crate::manifest_from_source_with_warnings(dir.path()).unwrap();
+    let (_manifest, warnings) =
+        crate::manifest_from_source_with_warnings(dir.path(), None).unwrap();
     let meta_warnings: Vec<&String> = warnings
         .iter()
         .filter(|w| w.contains("meta.dbtl.ignore"))

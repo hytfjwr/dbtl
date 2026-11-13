@@ -38,6 +38,12 @@ pub const GLOBAL_FLAG_COMMANDS: &[(&str, &[&str])] = &[
     // `docs`/`ls` take `--diff` ONLY to feed `state:` selectors — each
     // command rejects the flag when no `state:` atom is present.
     ("diff", &["docs", "impact", "check", "lint", "ls"]),
+    // `--vars` goes wherever a source-mode load (current or baseline) can
+    // happen — the same set `--source`/`--diff` reach.
+    (
+        "vars",
+        &["docs", "impact", "check", "columns", "lint", "ls"],
+    ),
     // `--run-results` feeds the TUI and `docs` — every other subcommand
     // rejects it (an empty list would mean TUI-only).
     ("run_results", &["docs"]),

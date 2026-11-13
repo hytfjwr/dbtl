@@ -8,6 +8,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `--vars '<YAML|JSON>'` — a dbt-compatible variables map for source-mode
+  parsing, accepted as a global flag on either side of a subcommand. The
+  dict outranks `vars.yml` and `dbt_project.yml`'s `vars:` in every
+  `enabled` render scope (the project file's `+enabled` keys, in-file
+  `config()`, and schema files) and applies to every source-mode load
+  the run performs: the graph, source-parsed `--diff` baselines
+  (including `git:<rev>`), TUI reloads, and the `P` `dbt parse` handoff
+  (which forwards the same text verbatim). Manifest mode ignores it with
+  a warning.
+- Source mode evaluates the broader `enabled` expressions real dbt
+  accepts — `==`/`!=`/comparisons, `and`/`or`/`not` (with Python's
+  operand-returning semantics), `in` over literal lists, parentheses,
+  literals, `var('name'[, default])`, and `| as_bool` — through one
+  shared evaluator used by in-file `config(enabled=)`, `+enabled` tree
+  keys, schema `enabled:`/`config.enabled`, and generic-test `enabled`
+  alike.
 - `?` full-text search now matches compiled SQL in addition to raw SQL,
   descriptions, and column names, so a `ref()`/`source()` target that only
   exists after Jinja expansion (`db.schema.table`) is findable too.
@@ -29,6 +45,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A schema file whose `enabled:`/`config.enabled:` value is a `{{ … }}`
+  Jinja string no longer drops the whole file: the raw value now
+  evaluates through the shared expression evaluator at the right stage,
+  so the file's other declarations (descriptions, columns, tests,
+  sources) survive, and a value that cannot be proven `false` keeps the
+  resource enabled with one warning — matching dbt's `disabled` parking
+  only on a proven `false`.
 - A model whose SQL nests deeper than a small stack can walk — tens of
   thousands of `AND`/`||` terms or `UNION ALL` arms — no longer aborts
   `dbtl lint` (and CLL) with a stack overflow: a lexical depth bound

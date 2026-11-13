@@ -654,8 +654,8 @@ pub(crate) fn kwarg<'a>(args: &'a str, name: &str) -> Option<&'a str> {
 /// `False` / `None`, and numbers. Anything else — `var('x')`, an identifier,
 /// a Jinja expression — is unresolvable from source and returns `None`.
 pub(super) struct LitParser<'a> {
-    s: &'a str,
-    i: usize,
+    pub(super) s: &'a str,
+    pub(super) i: usize,
 }
 
 impl LitParser<'_> {

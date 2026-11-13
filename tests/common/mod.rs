@@ -40,6 +40,26 @@ pub const LOGISTICS_PROJECT: &str = concat!(
     "/tests/fixtures/logistics_project"
 );
 
+/// The real-dbt manifest generated from `LOGISTICS_PROJECT` with the
+/// [`LOGISTICS_VARS`] map on dbt's own `--vars` — paired with a source
+/// load under [`dbtl::CliVars`] parsed from the same text.
+pub const LOGISTICS_VARS_MANIFEST: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/logistics_vars_manifest.json"
+);
+
+/// The `--vars` map `LOGISTICS_VARS_MANIFEST` was generated with — kept as
+/// one literal so the regen hint and the source-load parse stay in step.
+/// Flips every `enabled` channel: the project-file `+enabled` tree,
+/// in-file `config(enabled=)` precedence, schema `config.enabled`/`enabled`
+/// Jinja strings, a source table's `| as_bool`, and a generic test's
+/// `config.enabled`.
+pub const LOGISTICS_VARS: &str = concat!(
+    "{env: prod, enable_experimental: true, lane_pairs_enabled: true, ",
+    "fleet_flag: true, telematics_flag: \"True\", alerts_enabled: false, ",
+    "strict_event_check: true, probe_enabled: true}"
+);
+
 /// Absolute path to a file under `tests/fixtures/`.
 pub fn fixture_path(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

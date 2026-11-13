@@ -68,7 +68,9 @@ impl App {
         // between reloads, and the default `Root` scope must keep hiding them.
         let (dag, mut warnings) = match &self.source {
             DataSource::Manifest(path) => load_dag_with_warnings(path)?,
-            DataSource::Project(dir) => load_dag_from_source_with_warnings(dir)?,
+            DataSource::Project(dir) => {
+                load_dag_from_source_with_warnings(dir, self.cli_vars.as_ref())?
+            }
         };
         // The SAME scope application the CLI load path runs, warnings included:
         // an emptied or ambiguously-rooted re-load is reported exactly like a

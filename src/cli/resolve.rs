@@ -30,6 +30,8 @@ pub struct DataSourceArgs<'a> {
     pub project: &'a str,
     /// `--diff` — the baseline, for the commands that compare.
     pub diff: Option<&'a str>,
+    /// `--vars` — the source-mode var override map.
+    pub vars: Option<&'a str>,
     /// `--catalog` — an explicit catalog.json override.
     pub catalog: Option<&'a str>,
     /// `--run-results` — an explicit run_results.json (TUI + `docs`).
@@ -48,6 +50,7 @@ impl<'a> DataSourceArgs<'a> {
             source: &cli.source,
             project: &cli.project,
             diff: cli.diff.as_deref(),
+            vars: cli.vars.as_deref(),
             catalog: cli.catalog.as_deref(),
             run_results: cli.run_results.as_deref(),
             scope: cli.package_scope(),
@@ -55,14 +58,25 @@ impl<'a> DataSourceArgs<'a> {
         }
     }
 
+    /// The parsed `--vars` map (`None` when the flag was not given) — one
+    /// parse shared by every source-mode load the command performs.
+    pub fn cli_vars(&self) -> Result<Option<dbtl::CliVars>, CliError> {
+        self.vars
+            .map(dbtl::CliVars::parse)
+            .transpose()
+            .map_err(|e| CliError::input(e.context("--vars")))
+    }
+
     /// Load the graph through the shared [`resolve_source`] rule.
     pub fn resolve(&self) -> Result<ResolvedSource, CliError> {
+        let vars = self.cli_vars()?;
         resolve_source(
             self.manifest,
             self.source,
             self.project,
             self.scope,
             self.diff,
+            vars.as_ref(),
         )
     }
 
@@ -173,6 +187,7 @@ pub fn resolve_source(
     project: &str,
     scope: dbtl::PackageScope,
     diff: Option<&str>,
+    vars: Option<&dbtl::CliVars>,
 ) -> Result<ResolvedSource, CliError> {
     // An explicit --manifest overrides the symmetric-source rule — say so:
     // manifest-vs-source loader differences can read as changes.
@@ -208,10 +223,17 @@ pub fn resolve_source(
             (dag, warnings, path.display().to_string(), false)
         }
         SourcePath::Project(dir) => {
-            let (dag, warnings) = load_dag_from_source_with_warnings(dir).input()?;
+            let (dag, warnings) = load_dag_from_source_with_warnings(dir, vars).input()?;
             (dag, warnings, dir.display().to_string(), true)
         }
     };
+    // The manifest already carries dbt's rendered `enabled` values — the
+    // vars that produced them live in dbt's invocation, not the file, so
+    // the flag can only be a no-op in manifest mode (warned once, like
+    // every ignored flag).
+    if !is_source && vars.is_some() {
+        warnings.push(vars_ignored_warning());
+    }
     // The auto-detected manifest gets a staleness probe — an explicit
     // `--manifest`/`--source` already named the data source deliberately,
     // but the silent `<project>/target/manifest.json` pick can hide
@@ -233,6 +255,14 @@ pub fn resolve_source(
         is_source,
         warnings,
     })
+}
+
+/// The one warning text `--vars` produces in manifest mode — shared by the
+/// current-source resolve and every `--diff` baseline that loads a manifest.
+pub(super) fn vars_ignored_warning() -> String {
+    "--vars has no effect in manifest mode (the manifest already carries \
+     dbt's rendered values); ignoring"
+        .to_string()
 }
 
 /// The "auto-detected manifest may be stale" warning — `Some(message)` when
@@ -310,12 +340,19 @@ pub(super) fn apply_package_scope(
 /// recorded on the App so `reload` re-scopes the same way.
 pub fn build_app(cli: &Cli) -> Result<App, CliError> {
     let scope = cli.package_scope();
+    let vars = cli
+        .vars
+        .as_deref()
+        .map(dbtl::CliVars::parse)
+        .transpose()
+        .map_err(|e| CliError::input(e.context("--vars")))?;
     let resolved = resolve_source(
         &cli.manifest,
         &cli.source,
         &cli.project,
         scope,
         cli.diff.as_deref(),
+        vars.as_ref(),
     )?;
     let ResolvedSource {
         dag,
@@ -324,7 +361,9 @@ pub fn build_app(cli: &Cli) -> Result<App, CliError> {
         warnings,
     } = resolved;
     let mut app = if is_source {
-        App::from_source(dag, PathBuf::from(label))
+        // The same `--vars` drives TUI reloads and the `P` dbt-parse
+        // effect — `DataSource` carries it for the app's whole life.
+        App::from_source(dag, PathBuf::from(label), vars)
     } else {
         App::new(dag, PathBuf::from(label))
     };

@@ -30,7 +30,12 @@ pub fn run_impact(
     validate_selector_specs(select, "--select")?;
     let scope = src.scope;
     let resolved = src.resolve()?;
-    let (base, label) = load_baseline(diff_path, scope, &src.project_dir())?;
+    let (base, label) = load_baseline(
+        diff_path,
+        scope,
+        &src.project_dir(),
+        src.cli_vars()?.as_ref(),
+    )?;
     // `.dbtl.yml` (resolved next to the input, the same probe `check` uses)
     // supplies `owner_meta_key` and the changed-hubs threshold — so `dbtl
     // impact` and `dbtl check`'s hub gate can't disagree.
@@ -711,7 +716,12 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
     // atoms — and the DagDiff is computed once through the same resolver
     // pair `dbtl impact` uses, so all three see the identical change set.
     let base_ctx = match src.diff {
-        Some(d) => Some(load_baseline(d, scope, &src.project_dir())?),
+        Some(d) => Some(load_baseline(
+            d,
+            scope,
+            &src.project_dir(),
+            src.cli_vars()?.as_ref(),
+        )?),
         None => None,
     };
     let diff = match &base_ctx {

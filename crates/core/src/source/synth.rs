@@ -104,7 +104,7 @@ impl Synthesis {
     /// Read `dbt_project.yml`, load the `var()` tables, resolve the resource
     /// path lists, and collect the `{% docs %}` blocks — everything the later
     /// stages read before a single resource is synthesized.
-    pub(super) fn load(dir: &Path) -> Result<Self> {
+    pub(super) fn load(dir: &Path, cli_vars: Option<&CliVars>) -> Result<Self> {
         let proj_path = dir.join("dbt_project.yml");
         let proj_str = fs::read_to_string(&proj_path)
             .with_context(|| format!("failed to read dbt_project.yml: {}", proj_path.display()))?;
@@ -125,8 +125,9 @@ impl Synthesis {
 
         // `var('name')` scope for `+enabled` / `config(enabled=)` — the
         // project-file render and a node's render consult different var
-        // tables (see vars.rs), so both are loaded once here.
-        let vars = Vars::load(dir, &project, &mut warnings);
+        // tables (see vars.rs), so both are loaded once here, the `--vars`
+        // map sitting above each like dbt's CLI-vars precedence.
+        let vars = Vars::load(dir, &project, cli_vars, &mut warnings);
 
         let proj = project.name.clone();
         // `source-paths` is the pre-0.17 alias for `model-paths`, `data-paths`
@@ -530,11 +531,16 @@ impl Synthesis {
     /// relation's own ref/source resolve.
     pub(super) fn synthesize_yaml_snapshots(&mut self, parsed: &[ParsedSchemaFile]) {
         for (schema, file, yml_root) in parsed {
+            let yml_path = rel_path(&self.dir, file);
             for entry in &schema.snapshots {
                 let Some(rel) = &entry.relation else {
                     continue;
                 };
-                if entry.config.enabled == Some(false) {
+                if self.vars.schema_disabled(
+                    entry.config.enabled.as_ref(),
+                    &format!("{yml_path}: snapshot '{}' config.enabled", entry.name),
+                    &mut self.warnings,
+                ) {
                     continue;
                 }
                 if self.name_index.contains_key(&entry.name) {
@@ -776,6 +782,7 @@ impl Synthesis {
             proj: &self.proj,
             pat: &self.pat,
             name_index: &self.name_index,
+            vars: &self.vars,
         };
         for (schema, file, yml_root) in parsed {
             // dbt records a source's `path`/`original_file_path` as the declaring
@@ -792,7 +799,14 @@ impl Synthesis {
                     // re-enables the table (verified). A `false` outcome
                     // parks the table under `disabled` like dbt, tests and
                     // all.
-                    if tbl.config.enabled.or(src.config.enabled) == Some(false) {
+                    if self.vars.schema_disabled(
+                        tbl.config.enabled.as_ref().or(src.config.enabled.as_ref()),
+                        &format!(
+                            "{yml_path}: source table '{}.{}' config.enabled",
+                            src.name, tbl.name
+                        ),
+                        &mut self.warnings,
+                    ) {
                         continue;
                     }
                     let uid = format!("source.{}.{}.{}", self.proj, src.name, tbl.name);
@@ -880,6 +894,8 @@ impl Synthesis {
                         &tbl.name,
                         None,
                         &tbl.tests,
+                        &yml_path,
+                        &mut self.warnings,
                     );
                     synth_tests(
                         &mut self.nodes,
@@ -888,6 +904,8 @@ impl Synthesis {
                         &tbl.name,
                         None,
                         &tbl.data_tests,
+                        &yml_path,
+                        &mut self.warnings,
                     );
                     for col in &tbl.columns {
                         synth_tests(
@@ -897,6 +915,8 @@ impl Synthesis {
                             &tbl.name,
                             Some(&col.name),
                             &col.tests,
+                            &yml_path,
+                            &mut self.warnings,
                         );
                         synth_tests(
                             &mut self.nodes,
@@ -905,6 +925,8 @@ impl Synthesis {
                             &tbl.name,
                             Some(&col.name),
                             &col.data_tests,
+                            &yml_path,
+                            &mut self.warnings,
                         );
                     }
                 }
@@ -916,8 +938,12 @@ impl Synthesis {
             // like a model's. dbt records `path` resource-root-relative (like a
             // model's) and `original_file_path` project-root-relative.
             for exp in &schema.exposures {
-                // `config: enabled: false` parks the exposure like dbt's `disabled`.
-                if exp.config.enabled == Some(false) {
+                // `config: enabled:` parks the exposure like dbt's `disabled`.
+                if self.vars.schema_disabled(
+                    exp.config.enabled.as_ref(),
+                    &format!("{yml_path}: exposure '{}' config.enabled", exp.name),
+                    &mut self.warnings,
+                ) {
                     continue;
                 }
                 let uid = format!("exposure.{}.{}", self.proj, exp.name);
@@ -967,10 +993,14 @@ impl Synthesis {
             // semantic layer reads this model" answers identically in both
             // modes (`unused_models` depends on it).
             for sm in &schema.semantic_models {
-                // `enabled: false` — either spelling — parks the entry like
-                // dbt's `disabled` (it never consumes its `model:` then);
-                // the `config:` spelling wins when both are declared.
-                if sm.config.enabled.or(sm.enabled) == Some(false) {
+                // `enabled:` — either spelling — parks the entry like dbt's
+                // `disabled` (it never consumes its `model:` then); the
+                // `config:` spelling wins when both are declared.
+                if self.vars.schema_disabled(
+                    sm.config.enabled.as_ref().or(sm.enabled.as_ref()),
+                    &format!("{yml_path}: semantic model '{}' enabled", sm.name),
+                    &mut self.warnings,
+                ) {
                     continue;
                 }
                 let Some(model) = &sm.model else {

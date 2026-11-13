@@ -403,6 +403,19 @@ pub(super) fn de_opt_string_vec<'de, D: serde::Deserializer<'de>>(
     .transpose()
 }
 
+/// An `enabled:`/`config.enabled:` scalar kept RAW: a Jinja string like
+/// `"{{ var('x') }}"` must reach the enabled-expression evaluator (dbt
+/// renders a single `{{ … }}` natively into a bool), and every non-bool
+/// present value — a number, `null`, a list — is a `enabled`-validation
+/// error dbt raises, degraded downstream to enabled + warning rather
+/// than a whole-file parse failure here. Absent → `None`; any present
+/// value (an explicit `null` included) → `Some(value)`.
+pub(super) fn de_enabled<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(d).map(Some)
+}
+
 /// The three-state `Option<Option<T>>` recipe: paired with
 /// `#[serde(default)]` it distinguishes ABSENT (`None`) from an explicit
 /// `null` (`Some(None)`) — the difference between "inherits the higher

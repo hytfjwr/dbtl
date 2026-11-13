@@ -10,5 +10,20 @@ vars:
   # Top level: true — but the project-scoped entry below shadows it for
   # in-file config(), so marts/fct_lane_pairs stays disabled.
   lane_pairs_enabled: true
+  # `env`/`region` name the dimensions comparison and membership `enabled`
+  # expressions read (`var('env') == 'prod'`, `var('region') in [...]`).
+  env: dev
+  region: us
+  # `lock_sandbox`/`force_sandbox` drive the `and`/`not`/`or` chain on the
+  # models/sandbox/ tree `+enabled`.
+  lock_sandbox: false
+  force_sandbox: false
+  # A real bool for `config(enabled=var('fleet_flag', false))` — `--vars`
+  # flips it on.
+  fleet_flag: false
+  # A STRING flag — `| as_bool` coerces it in a YAML `{{ }}` render (the
+  # filter is an identity no-op inside in-file `config()`); `--vars
+  # '{telematics_flag: "True"}'` flips the source table on.
+  telematics_flag: "False"
   logistics:
     lane_pairs_enabled: false

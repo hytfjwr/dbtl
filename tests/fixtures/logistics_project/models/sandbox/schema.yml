@@ -1,0 +1,11 @@
+version: 2
+
+models:
+  - name: sbx_probe
+    description: "Sandbox probe — the folder's tree `+enabled` expression decides"
+    columns:
+      - name: shipment_id
+        tests:
+          - unique
+          - not_null
+      - name: status

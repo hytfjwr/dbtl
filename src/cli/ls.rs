@@ -42,7 +42,8 @@ pub fn run_ls(
     // report counts.
     let diff = match src.diff {
         Some(d) => {
-            let (base, _) = load_baseline(d, src.scope, &src.project_dir())?;
+            let (base, _) =
+                load_baseline(d, src.scope, &src.project_dir(), src.cli_vars()?.as_ref())?;
             Some(selector_diff(src, &resolved, &base)?)
         }
         None => None,
