@@ -27,8 +27,8 @@ pub use baseline::{Baseline, BASELINE_SCHEMA, DEFAULT_BASELINE_NAME};
 
 mod registry;
 pub use registry::{
-    removed_rule, removed_rule_error, Category, LintPreset, ParamKind, ParamSpec, RemovedRule,
-    Requires, RuleInfo, Severity, REGISTRY, REMOVED_RULES,
+    removed_rule, removed_rule_error, Category, LayerMapDefault, LintPreset, ParamKind, ParamSpec,
+    RemovedRule, Requires, RuleInfo, Severity, REGISTRY, REMOVED_RULES,
 };
 
 mod call_sites;
@@ -138,6 +138,14 @@ pub enum LintRule {
     UnusedCte,
     /// A model's final query has `ORDER BY` with no LIMIT/FETCH/TOP.
     OrderByWithoutLimit,
+    /// An exposure carries no description (opt-in).
+    UndocumentedExposures,
+    /// A model's SQL file runs past the `max_lines` budget, counting
+    /// non-blank, non-Jinja-comment-only lines (opt-in).
+    ModelTooLong,
+    /// A model's materialization isn't in its layer's `allowed` list
+    /// (opt-in).
+    LayerMaterializations,
 }
 
 impl LintRule {
@@ -145,7 +153,7 @@ impl LintRule {
     /// order of the enum and of [`REGISTRY`]. The original structure rules
     /// lead; rules added later append in registry order so the emitted
     /// sequence stays stable.
-    pub const ALL: [LintRule; 40] = [
+    pub const ALL: [LintRule; 43] = [
         Self::DirectJoinToSource,
         Self::MultipleSourcesJoined,
         Self::SourceFanout,
@@ -186,6 +194,9 @@ impl LintRule {
         Self::DuplicateOutputColumns,
         Self::UnusedCte,
         Self::OrderByWithoutLimit,
+        Self::UndocumentedExposures,
+        Self::ModelTooLong,
+        Self::LayerMaterializations,
     ];
 
     /// This rule's registry row — every rule has exactly one (drift-tested).
@@ -589,6 +600,12 @@ pub struct LintConfig {
     /// (`missing_primary_key_tests.accept_primary_key_constraint`) —
     /// validated against the registry's [`ParamSpec`] like the integer map.
     pub bool_params: BTreeMap<LintRule, BTreeMap<String, bool>>,
+    /// rule → declared layer-map parameter values — param name → the
+    /// CONFIGURED layer → string-list table (only the layers the file
+    /// wrote; [`LintConfig::map_param`] merges it over the registry
+    /// default one layer at a time). Validated against the registry's
+    /// [`ParamSpec`] like the integer map.
+    pub map_params: BTreeMap<LintRule, BTreeMap<String, BTreeMap<String, Vec<String>>>>,
     /// `naming_conventions`: model TYPE → allowed name prefixes, where the
     /// type is resolved by `lint_model_type` (prefix-first, then
     /// [`first_dir`] folder, else `other`). A model whose resolved type is
@@ -617,6 +634,7 @@ impl Default for LintConfig {
             params: BTreeMap::new(),
             list_params: BTreeMap::new(),
             bool_params: BTreeMap::new(),
+            map_params: BTreeMap::new(),
             naming_prefixes: BTreeMap::from([
                 ("staging".to_string(), vec!["stg_".to_string()]),
                 ("intermediate".to_string(), vec!["int_".to_string()]),
@@ -715,6 +733,31 @@ impl LintConfig {
             .and_then(|m| m.get(param))
             .copied()
             .or_else(|| rule.info().bool_param(param))
+    }
+
+    /// The effective layer → string-list table of `rule`'s layer-map
+    /// parameter `param`: the registry-declared default table with each
+    /// configured layer's list applied over it (a configured entry
+    /// overrides ONE layer, never the whole table — `naming_prefixes`'s
+    /// per-layer merge follows the same convention). `None` only when
+    /// `rule` declares no layer-map parameter of that name.
+    pub fn map_param(&self, rule: LintRule, param: &str) -> Option<BTreeMap<String, Vec<String>>> {
+        let (default, _) = rule.info().layer_map_param(param)?;
+        let mut out: BTreeMap<String, Vec<String>> = default
+            .iter()
+            .map(|(layer, list)| {
+                (
+                    (*layer).to_string(),
+                    list.iter().map(|s| s.to_string()).collect(),
+                )
+            })
+            .collect();
+        if let Some(configured) = self.map_params.get(&rule).and_then(|m| m.get(param)) {
+            for (layer, list) in configured {
+                out.insert(layer.clone(), list.clone());
+            }
+        }
+        Some(out)
     }
 }
 

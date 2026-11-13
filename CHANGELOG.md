@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Three opt-in lint rules — `undocumented_exposures`, `model_too_long`
+  (`max_lines`, default 300), and `layer_materializations` (per-layer
+  `allowed` map) — all off under `standard` and on under `strict` — plus
+  `required_meta_keys.resource_types` widening its target set to seeds,
+  snapshots, sources, and exposures.
 - `dbtl lint --fix` / `--fix-dry-run` — safe automatic repairs for the
   rules whose findings pin a determined edit (today `trailing_semicolon`
   and `unused_cte`; `--list-rules`'s `FIX` column and `--explain`'s

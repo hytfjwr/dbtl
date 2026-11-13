@@ -37,6 +37,7 @@ use super::{Finding, LintRule};
 pub const YAML_ATTRIBUTE_RULE_IDS: &[&str] = &[
     "undocumented_models",
     "undocumented_columns",
+    "undocumented_exposures",
     "missing_primary_key_tests",
     "public_models_without_contract",
     "contract_columns_without_type",

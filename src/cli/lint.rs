@@ -632,6 +632,27 @@ fn explain_rule(id: &str, cfg: &dbtl::LintConfig) -> Result<(), CliError> {
                         p.description
                     );
                 }
+                dbtl::ParamKind::LayerMap { default, builtins } => {
+                    let default: std::collections::BTreeMap<String, Vec<String>> = default
+                        .iter()
+                        .map(|(l, vs)| (l.to_string(), vs.iter().map(|s| s.to_string()).collect()))
+                        .collect();
+                    let current = cfg.map_param(rule, p.name).unwrap_or_default();
+                    let render = |m: &std::collections::BTreeMap<String, Vec<String>>| {
+                        m.iter()
+                            .map(|(l, vs)| format!("{l}: [{}]", vs.join(", ")))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    };
+                    out += &format!(
+                        "  {}  layer-map  default {{{}}}, current {{{}}}, built-in [{}] + lint.naming_prefixes layers — {}\n",
+                        p.name,
+                        render(&default),
+                        render(&current),
+                        builtins.join(", "),
+                        p.description
+                    );
+                }
                 dbtl::ParamKind::Bool { default } => {
                     let current = cfg.bool_param(rule, p.name).unwrap_or(default);
                     out += &format!(

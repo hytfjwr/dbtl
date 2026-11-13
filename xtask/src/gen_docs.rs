@@ -401,6 +401,14 @@ fn param_type(kind: ParamKind) -> String {
                 .collect::<Vec<_>>()
                 .join(" ")
         ),
+        ParamKind::LayerMap { builtins, .. } => format!(
+            "mapping of layer names to lists of strings ({} or a `lint.naming_prefixes` layer)",
+            builtins
+                .iter()
+                .map(|s| format!("`{s}`"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
         ParamKind::RegexList { .. } => "list of regular expressions".to_string(),
         ParamKind::SelectorList { .. } => "list of selectors".to_string(),
         ParamKind::Bool { .. } => "boolean".to_string(),
@@ -412,6 +420,14 @@ fn param_default(kind: ParamKind) -> String {
     match kind {
         ParamKind::Int { default, .. } => format!("`{default}`"),
         ParamKind::Bool { default } => format!("`{default}`"),
+        ParamKind::LayerMap { default, .. } => format!(
+            "`{{{}}}`",
+            default
+                .iter()
+                .map(|(l, vs)| format!("{l}: [{}]", vs.join(", ")))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         ParamKind::StringList { default, .. }
         | ParamKind::LayerList { default, .. }
         | ParamKind::RegexList { default }
@@ -684,6 +700,17 @@ fn param_schema(p: &dbtl_core::ParamSpec) -> Value {
             "items": {"type": "string"},
             "default": default,
             "description": format!("{} (each item must be a valid selector — same grammar as `exclude:`; `state:` is not allowed)", p.description),
+        }),
+        // No `enum` on the keys either: a property name may be a built-in
+        // layer or the project's own `lint.naming_prefixes` key — a fixed
+        // property set would reject the custom layers the parser accepts.
+        // `default` renders the shipped per-layer map so the documented
+        // defaults match what an unconfigured run resolves.
+        ParamKind::LayerMap { default, builtins } => json!({
+            "type": "object",
+            "additionalProperties": {"type": "array", "items": {"type": "string"}},
+            "default": default.iter().map(|(l, vs)| (l.to_string(), json!(vs))).collect::<serde_json::Map<String, Value>>(),
+            "description": format!("{} (built-in layers: {})", p.description, builtins.join(", ")),
         }),
         ParamKind::Bool { default } => json!({
             "type": "boolean",

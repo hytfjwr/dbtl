@@ -147,3 +147,53 @@ pub(super) fn exposure_parents_materializations(
         ));
     }
 }
+
+/// `layer_materializations`: a model whose [`lint_model_type`] layer has an
+/// `allowed` list materializes to a shape the list doesn't name — a
+/// staging model persisting as a table, a marts model staying a view. The
+/// `allowed` map merges per layer over the shipped defaults: an
+/// unconfigured layer keeps its default list, a layer absent from the map
+/// (including `other` unless configured) is unchecked, and — like
+/// [`naming_prefixes`] — a layer mapped to `[]` means "nothing to require"
+/// and is skipped. A model with no materialization recorded is never
+/// judged: its storage shape is unknown, same as `is_view_or_ephemeral`.
+pub(super) fn layer_materializations(
+    dag: &Dag,
+    uids: &[&String],
+    in_scope: &dyn Fn(&NodeInfo) -> bool,
+    config: &LintConfig,
+    out: &mut Vec<Finding>,
+) {
+    let allowed = config
+        .map_param(LintRule::LayerMaterializations, "allowed")
+        .expect("the registry declares layer_materializations.allowed");
+    for uid in uids {
+        let Some(n) = dag.get(uid) else { continue };
+        if n.resource_type != "model" || !in_scope(n) {
+            continue;
+        }
+        let layer = lint_model_type(n, config);
+        let Some(list) = allowed.get(layer) else {
+            continue;
+        };
+        if list.is_empty() {
+            continue;
+        }
+        let Some(mat) = n.materialized.as_deref() else {
+            continue;
+        };
+        if list.iter().any(|m| m == mat) {
+            continue;
+        }
+        out.push(Finding::new(
+            LintRule::LayerMaterializations,
+            (*uid).clone(),
+            Vec::new(),
+            format!(
+                "{layer} model {} materializes as '{mat}' (allowed: {})",
+                display_name(dag, uid),
+                list.join(", ")
+            ),
+        ));
+    }
+}

@@ -63,6 +63,15 @@ lint:
     rejoining_upstream:
       ignore_shared_parents: ["dim_*"]   # selector list: exempt shared
                                          #   parents matching it
+    required_meta_keys:
+      keys: [owner, domain]            # meta keys each checked resource needs
+      resource_types: [model, source]  # model | seed | snapshot | source |
+                                       #   exposure; default [model]
+    layer_materializations:
+      allowed:                         # layer -> permitted materializations;
+        staging: [view, ephemeral]     #   keys are staging/intermediate/marts/
+        marts: [table, incremental]    #   other + naming_prefixes layers;
+                                       #   unlisted layers keep the defaults
   model_fanout_threshold: 5       # compat flat keys; an error if combined
   source_fanout_threshold: 2      #   with the nested param form
   naming_prefixes:                # per-layer merge over the defaults

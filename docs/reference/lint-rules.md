@@ -2,7 +2,7 @@
 
 # Lint rules
 
-40 rules, evaluated by `dbtl lint`, `dbtl check --lint`, the docs generator, and the TUI's Lint lens — one registry table also backs `--list-rules`, `--explain`, SARIF metadata, and `.dbtl.yml` validation, so all of them describe the same rule set.
+43 rules, evaluated by `dbtl lint`, `dbtl check --lint`, the docs generator, and the TUI's Lint lens — one registry table also backs `--list-rules`, `--explain`, SARIF metadata, and `.dbtl.yml` validation, so all of them describe the same rule set.
 
 ## Rule-set presets
 
@@ -12,7 +12,7 @@
 | ------ | ----- |
 | `minimal` | only the rules whose default severity is `error` — 5 rules |
 | `standard` | every rule the registry enables by default — 40 rules |
-| `strict` | every rule, opt-in included — 40 rules |
+| `strict` | every rule, opt-in included — 43 rules |
 
 | Rule | Category | Default | `minimal` | `standard` | `strict` | Inputs | Fix | Summary |
 | ---- | -------- | ------- | --------- | ---------- | -------- | ------ | --- | ------- |
@@ -56,6 +56,9 @@
 | [`duplicate_output_columns`](#duplicate_output_columns) | sql | error | on | on | on | graph + parsed SQL | - | a model's final SELECT emits the same output column name twice |
 | [`unused_cte`](#unused_cte) | sql | warn | off | on | on | graph + parsed SQL | auto | a CTE is defined but never read |
 | [`order_by_without_limit`](#order_by_without_limit) | sql | warn | off | on | on | graph + parsed SQL | - | a model's final query has ORDER BY without LIMIT |
+| [`undocumented_exposures`](#undocumented_exposures) | documentation | off (opt-in) | off | off | on | graph | - | an exposure has no description |
+| [`model_too_long`](#model_too_long) | structure | off (opt-in) | off | off | on | graph | - | a model's SQL file runs past the configured line budget |
+| [`layer_materializations`](#layer_materializations) | performance | off (opt-in) | off | off | on | graph | - | a model's materialization isn't allowed for its layer |
 
 ## `direct_join_to_source`
 
@@ -412,13 +415,14 @@ A model is missing a required meta key.
 
 **Example:** with keys: [owner] configured, dim_products lacks meta.owner. Fix: add owner: data-team to the model's meta.
 
-**Fix:** add the required keys to the model's meta
+**Fix:** add the required keys to the resource's meta
 
 **Parameters:**
 
 | Name | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
-| `keys` | list of strings | `[]` | meta keys every model must declare |
+| `keys` | list of strings | `[]` | meta keys every checked resource must declare |
+| `resource_types` | list of strings (one of `model` `seed` `snapshot` `source` `exposure`) | `[model]` | resource kinds the meta-key requirement applies to |
 
 ## `contract_columns_without_type`
 
@@ -673,3 +677,53 @@ A model's final query has ORDER BY without LIMIT.
 **Fix:** remove the ORDER BY; sort in the query that reads the model
 
 **Parameters:** none.
+
+## `undocumented_exposures`
+
+Category: `documentation` · Default: `off` (opt-in — runs at `warn` when enabled) · Inputs: graph · Auto-fix: no
+
+An exposure has no description.
+
+**Why:** An exposure is the declared contract between the DAG and a downstream consumer — the dashboard or report a stakeholder actually reads. With no description, the docs list a name that promises nothing about what it shows or who it serves, and the exposure becomes an unexplained edge in the lineage.
+
+**Example:** the churn_report exposure has no description. Fix: add a `description:` saying what the dashboard answers and who reads it.
+
+**Fix:** add a description to the exposure's schema.yml entry
+
+**Parameters:** none.
+
+## `model_too_long`
+
+Category: `structure` · Default: `off` (opt-in — runs at `warn` when enabled) · Inputs: graph · Auto-fix: no
+
+A model's SQL file runs past the configured line budget.
+
+**Why:** A model that sprawls past a few hundred lines is doing the work of several — every reader pays the whole file to find one step, and the joins and aggregations buried inside resist review and testing. Splitting along CTE boundaries gives each piece a name, a test surface, and its own materialization choice. Blank lines and Jinja-comment-only lines never count toward the budget.
+
+**Example:** fct_orders runs 412 counted lines. Fix: extract stages into int_ models so each file stays under `max_lines` (default 300).
+
+**Fix:** extract stages into intermediate models, or raise `max_lines` when the length is intentional
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+| ---- | ---- | ------- | ----------- |
+| `max_lines` | integer ≥ 1 | `300` | maximum counted lines before a model flags — blank lines and Jinja-comment-only lines never count |
+
+## `layer_materializations`
+
+Category: `performance` · Default: `off` (opt-in — runs at `warn` when enabled) · Inputs: graph · Auto-fix: no
+
+A model's materialization isn't allowed for its layer.
+
+**Why:** Each layer exists to do one kind of work: staging maps and cleans raw data (views keep it cheap to rebuild), intermediate composes, and marts serve (a durable relation keeps consumer reads fast). A durable staging model wastes warehouse writes on a layer nobody queries; a view in marts re-plans the whole chain on every read. The layer resolves the same way `lint_model_type` does — a `naming_prefixes` prefix first, then the first directory, else `other` — and layers the `allowed` map doesn't list are never judged.
+
+**Example:** fct_orders materializes as ephemeral in the marts layer. Fix: materialize it as a table or incremental model so consumers read a durable relation.
+
+**Fix:** change the model's materialization to one its layer allows, or widen the layer's `allowed` list
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+| ---- | ---- | ------- | ----------- |
+| `allowed` | mapping of layer names to lists of strings (`staging` `intermediate` `marts` `other` or a `lint.naming_prefixes` layer) | `{staging: [view, ephemeral], intermediate: [view, ephemeral, table, incremental], marts: [table, incremental, view]}` | materializations each layer permits — a layer not listed is unchecked, and `lint.naming_prefixes` layer names are valid keys |
