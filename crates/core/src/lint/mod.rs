@@ -40,6 +40,7 @@ pub use location::{
 };
 
 mod rules;
+pub(crate) use rules::meta_dbtl_warnings;
 pub use rules::{run_rules, LintInput, LintOutcome, SkippedRule};
 
 /// A static structure-check rule, identified by its stable snake_case
@@ -410,18 +411,17 @@ impl Finding {
     }
 
     /// The identity used by `check --lint --diff`'s "new violations only"
-    /// comparison and by the lint baseline. For EDGE findings
-    /// (`layer_violation`, `rejoining_upstream`) the other endpoint(s) are
-    /// part of the identity — the violation IS the edge. For node-scoped
-    /// findings the rule + node is the identity: a model that was already
-    /// violating stays "pre-existing" even when its implicated neighbours
-    /// changed (e.g. it joined one more source), so `--diff` doesn't re-flag
-    /// stale violations as new.
+    /// comparison and by the lint baseline. `layer_violation` keeps its
+    /// `related` endpoint in the identity — the violation IS the edge,
+    /// so a different edge is a different finding. Every other rule is
+    /// node-scoped: the rule + node is the identity and `related` rides
+    /// only as context. A finding that was already violating stays
+    /// "pre-existing" even when its implicated neighbours changed — the
+    /// rejoin hop gaining a second bypassing parent, a model joining one
+    /// more source — so `--diff` doesn't re-flag stale violations as new.
     pub fn key(&self) -> (LintRule, &str, &[String]) {
         match self.rule {
-            LintRule::LayerViolation | LintRule::RejoiningUpstream => {
-                (self.rule, self.node_uid.as_str(), &self.related)
-            }
+            LintRule::LayerViolation => (self.rule, self.node_uid.as_str(), &self.related),
             _ => (self.rule, self.node_uid.as_str(), &[]),
         }
     }
@@ -564,9 +564,10 @@ impl LintConfig {
 
     /// The effective value of `rule`'s string-list parameter `param` — a
     /// configured override else the registry-declared default — covering
-    /// the `StringList`, `RegexList`, and `SelectorList` param kinds (the
-    /// config parser already validated a `RegexList`'s entries compile and
-    /// a `SelectorList`'s entries parse). `None` only when `rule` declares
+    /// the `StringList`, `LayerList`, `RegexList`, and `SelectorList` param
+    /// kinds (the config parser already validated a `RegexList`'s entries
+    /// compile, a `SelectorList`'s entries parse, and a `LayerList`'s
+    /// entries name real layers). `None` only when `rule` declares
     /// no list parameter of that name.
     pub fn str_list_param(&self, rule: LintRule, param: &str) -> Option<Vec<String>> {
         self.list_params

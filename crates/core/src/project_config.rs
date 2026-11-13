@@ -178,16 +178,35 @@ impl ProjectConfig {
         let file: ProjectFile =
             serde_norway::from_str(text).map_err(|e| format!("invalid .dbtl.yml: {e}"))?;
         let mut lint = LintConfig::default();
-        for (name, spec) in file.lint.rules {
-            let rule = LintRule::from_name(&name).ok_or_else(|| {
-                crate::lint::removed_rule_error(&name).unwrap_or_else(|| {
+        // Per-layer merge BEFORE the rules loop — `unused_models.layers`
+        // validates against these keys plus the built-in layer names, so a
+        // project-invented layer can be checked like a built-in one. A
+        // project overrides only the layers it lists; a layer mapped to
+        // `[]` is unchecked (absent == unchecked anyway, but an explicit
+        // empty list also SHUTS OFF a default layer).
+        if let Some(prefixes) = file.lint.naming_prefixes {
+            for (layer, p) in prefixes {
+                if layer.trim().is_empty() {
+                    return Err("lint.naming_prefixes: layer names must be non-empty".to_string());
+                }
+                if p.iter().any(|s| s.trim().is_empty()) {
+                    return Err(format!(
+                        "lint.naming_prefixes.{layer}: prefixes must be non-empty strings"
+                    ));
+                }
+                lint.naming_prefixes.insert(layer, p);
+            }
+        }
+        for (name, value) in &file.lint.rules {
+            let rule = LintRule::from_name(name).ok_or_else(|| {
+                crate::lint::removed_rule_error(name).unwrap_or_else(|| {
                     format!(
                         "unknown lint rule '{name}' (valid rules: {})",
                         valid_rule_names()
                     )
                 })
             })?;
-            match spec {
+            match parse_rule_entry(name, value)? {
                 // `true` = enabled at the registry default — the same as an
                 // absent entry.
                 RuleSpec::Toggle(true) => {}
@@ -205,16 +224,15 @@ impl ProjectConfig {
                         // silently suppressing nothing at evaluation time.
                         for spec in &settings.exclude {
                             crate::select::validate_selector(spec).map_err(|e| {
-                                format!("invalid exclude selector for rule '{name}': {e}")
+                                format!("lint.rules.{name}.exclude: invalid selector '{spec}': {e}")
                             })?;
                             // `state:` needs a diff the lint evaluation
                             // never builds — allowed by the grammar but it
                             // would silently match nothing here.
                             if crate::select::selector_uses_state(spec) {
                                 return Err(format!(
-                                    "invalid exclude selector for rule '{name}': \
-                                     'state:' selectors need a diff; rule excludes \
-                                     never have one"
+                                    "lint.rules.{name}.exclude: 'state:' selectors need a diff; \
+                                     rule excludes never have one"
                                 ));
                             }
                         }
@@ -239,26 +257,74 @@ impl ProjectConfig {
                                     .and_then(|v| usize::try_from(v).ok())
                                     .filter(|v| *v >= min)
                                     .ok_or_else(|| {
-                                        format!("{name}.{param} must be an integer >= {min}")
+                                        format!(
+                                            "lint.rules.{name}.{param} must be an integer >= {min}"
+                                        )
                                     })?;
                                 lint.params.entry(rule).or_default().insert(param, v);
                             }
                             ParamKind::StringList { allowed, .. } => {
                                 let items = value.as_sequence().ok_or_else(|| {
-                                    format!("{name}.{param} must be a list of strings")
+                                    format!("lint.rules.{name}.{param} must be a list of strings")
                                 })?;
                                 let mut list = Vec::with_capacity(items.len());
                                 for item in items {
                                     let s = item.as_str().ok_or_else(|| {
-                                        format!("{name}.{param} must be a list of strings")
+                                        format!(
+                                            "lint.rules.{name}.{param} must be a list of strings"
+                                        )
                                     })?;
+                                    if s.trim().is_empty() {
+                                        return Err(format!(
+                                            "lint.rules.{name}.{param}: entries must be non-empty"
+                                        ));
+                                    }
                                     if let Some(allowed) = allowed {
                                         if !allowed.contains(&s) {
                                             return Err(format!(
-                                                "{name}.{param}: '{s}' is not a valid value (valid: {})",
+                                                "lint.rules.{name}.{param}: '{s}' is not a valid value (valid: {})",
                                                 allowed.join(", ")
                                             ));
                                         }
+                                    }
+                                    list.push(s.to_string());
+                                }
+                                lint.list_params
+                                    .entry(rule)
+                                    .or_default()
+                                    .insert(param, list);
+                            }
+                            ParamKind::LayerList { builtins, .. } => {
+                                let items = value.as_sequence().ok_or_else(|| {
+                                    format!(
+                                        "lint.rules.{name}.{param} must be a list of layer names"
+                                    )
+                                })?;
+                                let mut list = Vec::with_capacity(items.len());
+                                for item in items {
+                                    let s = item.as_str().ok_or_else(|| {
+                                        format!(
+                                            "lint.rules.{name}.{param} must be a list of layer names"
+                                        )
+                                    })?;
+                                    if s.trim().is_empty() {
+                                        return Err(format!(
+                                            "lint.rules.{name}.{param}: entries must be non-empty"
+                                        ));
+                                    }
+                                    // Built-in layer names plus whatever
+                                    // layers the merged `lint.naming_prefixes`
+                                    // map declares (merged above, before this
+                                    // loop, so a custom layer can be checked
+                                    // like a built-in one).
+                                    if !builtins.contains(&s)
+                                        && !lint.naming_prefixes.contains_key(s)
+                                    {
+                                        return Err(format!(
+                                            "lint.rules.{name}.{param}: '{s}' is not a valid layer \
+                                             (valid: {}, or a layer named in lint.naming_prefixes)",
+                                            builtins.join(", ")
+                                        ));
                                     }
                                     list.push(s.to_string());
                                 }
@@ -273,15 +339,24 @@ impl ProjectConfig {
                                 // selector must error here rather than
                                 // silently suppressing nothing.
                                 let items = value.as_sequence().ok_or_else(|| {
-                                    format!("{name}.{param} must be a list of selectors")
+                                    format!("lint.rules.{name}.{param} must be a list of selectors")
                                 })?;
                                 let mut list = Vec::with_capacity(items.len());
                                 for item in items {
                                     let s = item.as_str().ok_or_else(|| {
-                                        format!("{name}.{param} must be a list of selectors")
+                                        format!(
+                                            "lint.rules.{name}.{param} must be a list of selectors"
+                                        )
                                     })?;
+                                    if s.trim().is_empty() {
+                                        return Err(format!(
+                                            "lint.rules.{name}.{param}: entries must be non-empty"
+                                        ));
+                                    }
                                     crate::select::validate_selector(s).map_err(|e| {
-                                        format!("invalid selector in {name}.{param}: {e}")
+                                        format!(
+                                            "lint.rules.{name}.{param}: invalid selector '{s}': {e}"
+                                        )
                                     })?;
                                     // `state:` needs a diff the lint
                                     // evaluation never builds — allowed by
@@ -289,9 +364,8 @@ impl ProjectConfig {
                                     // match nothing here.
                                     if crate::select::selector_uses_state(s) {
                                         return Err(format!(
-                                            "invalid selector in {name}.{param}: \
-                                             'state:' selectors need a diff; rule \
-                                             parameters never have one"
+                                            "lint.rules.{name}.{param}: 'state:' selectors need a \
+                                             diff; rule parameters never have one"
                                         ));
                                     }
                                     list.push(s.to_string());
@@ -303,16 +377,25 @@ impl ProjectConfig {
                             }
                             ParamKind::RegexList { .. } => {
                                 let items = value.as_sequence().ok_or_else(|| {
-                                    format!("{name}.{param} must be a list of regex patterns")
+                                    format!(
+                                        "lint.rules.{name}.{param} must be a list of regex patterns"
+                                    )
                                 })?;
                                 let mut list = Vec::with_capacity(items.len());
                                 for item in items {
                                     let s = item.as_str().ok_or_else(|| {
-                                        format!("{name}.{param} must be a list of regex patterns")
+                                        format!(
+                                            "lint.rules.{name}.{param} must be a list of regex patterns"
+                                        )
                                     })?;
+                                    if s.trim().is_empty() {
+                                        return Err(format!(
+                                            "lint.rules.{name}.{param}: entries must be non-empty"
+                                        ));
+                                    }
                                     if let Err(e) = regex::Regex::new(s) {
                                         return Err(format!(
-                                            "{name}.{param}: '{s}' is not a valid regex: {e}"
+                                            "lint.rules.{name}.{param}: '{s}' is not a valid regex: {e}"
                                         ));
                                     }
                                     list.push(s.to_string());
@@ -324,7 +407,7 @@ impl ProjectConfig {
                             }
                             ParamKind::Bool { .. } => {
                                 let v = value.as_bool().ok_or_else(|| {
-                                    format!("{name}.{param} must be true or false")
+                                    format!("lint.rules.{name}.{param} must be true or false")
                                 })?;
                                 lint.bool_params.entry(rule).or_default().insert(param, v);
                             }
@@ -348,14 +431,6 @@ impl ProjectConfig {
                 "source_fanout_threshold",
                 t,
             )?;
-        }
-        // Per-layer merge: a project overrides only the layers it lists; a
-        // layer mapped to `[]` is unchecked (absent == unchecked anyway, but
-        // an explicit empty list also SHUTS OFF a default layer).
-        if let Some(prefixes) = file.lint.naming_prefixes {
-            for (layer, p) in prefixes {
-                lint.naming_prefixes.insert(layer, p);
-            }
         }
         let baseline_explicit = file.lint.baseline.is_some();
         if let Some(baseline) = file.lint.baseline {
@@ -556,10 +631,14 @@ struct CheckFile {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 struct LintFile {
-    /// rule name → `bool` | settings object. Unknown rule names are
-    /// validated separately so the error can list the valid set.
+    /// rule name → `bool` | settings object. Values stay raw
+    /// [`serde_norway::Value`]s so each entry can produce a rule-named
+    /// error — validated in [`parse_rule_entry`] (an untagged enum would
+    /// collapse every malformed entry into one generic variant error).
+    /// Unknown rule names are validated separately so the error can list
+    /// the valid set.
     #[cfg_attr(feature = "schema", schemars(skip))]
-    rules: BTreeMap<String, RuleSpec>,
+    rules: BTreeMap<String, serde_norway::Value>,
     /// Compat flat keys — the same value `rules.<id>.threshold` sets; both
     /// spellings together are an error naming both keys.
     model_fanout_threshold: Option<usize>,
@@ -595,16 +674,16 @@ pub fn severity_setting_schema() -> schemars::Schema {
 /// `rules.<id>` accepts the compat `bool` (`false` = off, `true` = the
 /// registry default severity) or the object form
 /// (`{severity: error|warn|off, exclude: [...], <declared params>}`).
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
 enum RuleSpec {
     Toggle(bool),
     Settings(RuleSettings),
 }
 
-/// The object form of `rules.<id>`.
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+/// The object form of `rules.<id>` — built by [`parse_rule_entry`] from the
+/// raw [`serde_norway::Value`] so each malformed entry produces a
+/// rule-named error (an untagged derive would collapse every failure into
+/// the same "did not match any variant" message).
+#[derive(Debug, Default)]
 struct RuleSettings {
     severity: Option<SeveritySetting>,
     /// dbt-selector strings — findings whose `node_uid` matches the union
@@ -613,8 +692,59 @@ struct RuleSettings {
     /// Rule-declared params (`threshold`, …) — validated against the
     /// registry's [`ParamSpec`](crate::lint::ParamSpec) at parse so an
     /// undeclared key errors naming the rule and its accepted params.
-    #[serde(flatten)]
     params: BTreeMap<String, serde_norway::Value>,
+}
+
+/// One `lint.rules.<id>` entry: `root_models: false` (bool toggle) or
+/// `{severity: error|warn|off, exclude: [selectors], <declared params>}`.
+/// Anything else — a bare string, a list, a number — is a config error that
+/// names the key and the accepted shapes. `severity`/`exclude` are peeled
+/// off here; every other key lands in `params` for the registry check —
+/// unknown param names error in the caller, where the rule's declared set
+/// is known.
+fn parse_rule_entry(name: &str, value: &serde_norway::Value) -> Result<RuleSpec, String> {
+    match value {
+        serde_norway::Value::Bool(on) => Ok(RuleSpec::Toggle(*on)),
+        serde_norway::Value::Mapping(map) => {
+            let mut settings = RuleSettings::default();
+            for (k, v) in map {
+                let key = k
+                    .as_str()
+                    .ok_or_else(|| format!("lint.rules.{name}: parameter names must be strings"))?;
+                match key {
+                    "severity" => {
+                        // `severity: ~` is "unset" — the same as omitting
+                        // the key (the gate parser follows the same rule).
+                        settings.severity = match v {
+                            serde_norway::Value::Null => None,
+                            _ => Some(parse_severity(v, &format!("lint.rules.{name}.severity"))?),
+                        };
+                    }
+                    "exclude" => {
+                        let items = v.as_sequence().ok_or_else(|| {
+                            format!("lint.rules.{name}.exclude must be a list of selector strings")
+                        })?;
+                        for item in items {
+                            let s = item.as_str().ok_or_else(|| {
+                                format!(
+                                    "lint.rules.{name}.exclude must be a list of selector strings"
+                                )
+                            })?;
+                            settings.exclude.push(s.to_string());
+                        }
+                    }
+                    _ => {
+                        settings.params.insert(key.to_string(), v.clone());
+                    }
+                }
+            }
+            Ok(RuleSpec::Settings(settings))
+        }
+        _ => Err(format!(
+            "lint.rules.{name} must be true|false or a table of settings \
+             (severity: error|warn|off, exclude: [selectors], declared params)"
+        )),
+    }
 }
 
 /// The `severity:` wire value — `off` folds into "no severity" (disabled).
@@ -784,7 +914,7 @@ fn set_threshold(
     let params = lint.params.entry(rule).or_default();
     if params.contains_key("threshold") {
         return Err(format!(
-            "{flat_key} and rules.{}.threshold set the same option; use only one",
+            "{flat_key} and lint.rules.{}.threshold set the same option; use only one",
             rule.name()
         ));
     }
@@ -966,7 +1096,10 @@ mod tests {
             "{err} names the rule and the valid set"
         );
         let err = parse("lint:\n  rules:\n    root_models: {severity: quiet}\n").unwrap_err();
-        assert!(err.contains("invalid .dbtl.yml"), "{err}");
+        assert!(
+            err.contains("lint.rules.root_models.severity must be one of error|warn|off"),
+            "{err}"
+        );
         // An undeclared parameter names the rule and its accepted params.
         let err = parse("lint:\n  rules:\n    model_fanout: {threshld: 3}\n").unwrap_err();
         assert!(
@@ -1054,6 +1187,117 @@ mod tests {
     fn exclude_must_be_a_string_list() {
         assert!(parse("lint:\n  rules:\n    root_models: {exclude: \"x\"}\n").is_err());
         assert!(parse("lint:\n  rules:\n    root_models: {exclude: [1]}\n").is_err());
+    }
+
+    #[test]
+    fn rule_entry_errors_name_the_key_and_the_accepted_forms() {
+        // A scalar where the bool/object forms belong — the error names the
+        // key path and both accepted shapes, not a serde variant dump.
+        let err = parse("lint:\n  rules:\n    root_models: warn\n").unwrap_err();
+        assert!(
+            err.contains("lint.rules.root_models must be true|false or a table of settings"),
+            "{err}"
+        );
+        // A number and a list hit the same shape error.
+        for bad in [
+            "lint:\n  rules:\n    root_models: 3\n",
+            "lint:\n  rules:\n    root_models: [warn]\n",
+        ] {
+            let err = parse(bad).unwrap_err();
+            assert!(err.contains("lint.rules.root_models"), "{bad} → {err}");
+        }
+        // A scalar `exclude` names the key and the list shape it wants.
+        let err =
+            parse("lint:\n  rules:\n    root_models:\n      exclude: \"stg_*\"\n").unwrap_err();
+        assert!(
+            err.contains("lint.rules.root_models.exclude must be a list of selector strings"),
+            "{err}"
+        );
+        // A wrong-case severity names the accepted values.
+        let err = parse("lint:\n  rules:\n    root_models:\n      severity: Warn\n").unwrap_err();
+        assert!(
+            err.contains("lint.rules.root_models.severity must be one of error|warn|off"),
+            "{err}"
+        );
+        // A duplicated key inside the entry names the entry and the key —
+        // the YAML parser rejects it before the shape check runs.
+        let err = parse(
+            "lint:\n  rules:\n    root_models:\n      severity: warn\n      severity: error\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("lint.rules.root_models") && err.contains("severity"),
+            "{err}"
+        );
+        // `severity: ~` is "unset" — same as omitting the key.
+        let pc = parse("lint:\n  rules:\n    root_models:\n      severity: ~\n").unwrap();
+        assert_eq!(pc.lint.severity(LintRule::RootModels), Some(Severity::Warn));
+    }
+
+    #[test]
+    fn blank_strings_in_config_lists_are_errors() {
+        // An empty/whitespace string is never a meaningful entry — a blank
+        // prefix would match EVERYTHING (starts_with("") is true), a blank
+        // meta key checks nothing, a blank selector matches nothing. All
+        // are config errors naming the key.
+        for (yaml, what) in [
+            (
+                "lint:\n  naming_prefixes:\n    marts: [\"\"]\n",
+                "lint.naming_prefixes.marts: prefixes must be non-empty strings",
+            ),
+            (
+                "lint:\n  naming_prefixes:\n    marts: [\"  \"]\n",
+                "lint.naming_prefixes.marts: prefixes must be non-empty strings",
+            ),
+            (
+                "lint:\n  rules:\n    required_meta_keys: {keys: [\"\"]}\n",
+                "lint.rules.required_meta_keys.keys: entries must be non-empty",
+            ),
+            (
+                "lint:\n  rules:\n    rejoining_upstream: {ignore_shared_parents: [\"\"]}\n",
+                "lint.rules.rejoining_upstream.ignore_shared_parents: entries must be non-empty",
+            ),
+        ] {
+            let err = parse(yaml).unwrap_err();
+            assert!(err.contains(what), "{yaml} → {err}");
+        }
+        // A blank layer NAME is an error too — a `"": [p_]` key would
+        // register a layer nothing can name.
+        let err = parse("lint:\n  naming_prefixes:\n    \"\": [x_]\n").unwrap_err();
+        assert!(err.contains("lint.naming_prefixes"), "{err}");
+        // A blank `exclude` selector is already an error via the grammar
+        // (`empty selector`) — the message names the key path.
+        let err = parse("lint:\n  rules:\n    root_models: {exclude: [\"  \"]}\n").unwrap_err();
+        assert!(err.contains("lint.rules.root_models.exclude"), "{err}");
+        // Real values are untouched.
+        parse("lint:\n  naming_prefixes:\n    marts: [fct_, dim_]\n").unwrap();
+    }
+
+    #[test]
+    fn unused_models_layers_accepts_naming_prefixes_layers() {
+        // The built-in layers plus whatever layers `lint.naming_prefixes`
+        // declares — a project-invented layer (snapshots, util) can be
+        // checked like a built-in one.
+        let pc = parse(
+            "lint:\n  naming_prefixes:\n    snapshots: [snap_]\n  rules:\n    unused_models:\n      layers: [snapshots, marts]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            pc.lint.str_list_param(LintRule::UnusedModels, "layers"),
+            Some(vec!["snapshots".to_string(), "marts".to_string()])
+        );
+        // The built-ins alone still work.
+        parse("lint:\n  rules:\n    unused_models:\n      layers: [staging]\n").unwrap();
+        // A layer that is neither built-in nor prefix-configured errors,
+        // naming both sources of valid values.
+        let err =
+            parse("lint:\n  rules:\n    unused_models:\n      layers: [bogus]\n").unwrap_err();
+        assert!(
+            err.contains("lint.rules.unused_models.layers")
+                && err.contains("staging")
+                && err.contains("naming_prefixes"),
+            "{err}"
+        );
     }
 
     #[test]

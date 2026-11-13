@@ -829,6 +829,7 @@ fn manifest_warnings(manifest: &RawManifest) -> Vec<String> {
             }
         ));
     }
+    warnings.extend(crate::lint::meta_dbtl_warnings(manifest));
     warnings
 }
 

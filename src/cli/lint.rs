@@ -208,17 +208,31 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
     // the existing baseline NOT applied — the file written IS the baseline
     // now) and always exit 0.
     if let Some(path_arg) = args.write_baseline {
-        let findings = dbtl::run_rules(
+        let outcome = dbtl::run_rules(
             dbtl::LintInput::new(&resolved.dag, &cfg)
                 .with_sql(Some(&sql_resolver))
                 .with_catalog(catalog.as_deref()),
-        )
-        .findings;
-        let baseline = dbtl::Baseline::from_findings(&findings);
+        );
         let path = match path_arg {
             Some(p) => PathBuf::from(p),
             None => lint_baseline_path(&cfg.baseline, config_found, &candidates),
         };
+        // Merge into whatever the file already holds: the rules that ran
+        // rewrite their rows, but rows for rules `--rules` narrowed out —
+        // or that skipped for a missing input — carry over. Without the
+        // merge a subset rewrite would silently un-freeze every violation
+        // it never evaluated.
+        let ran: std::collections::BTreeSet<dbtl::LintRule> = dbtl::LintRule::ALL
+            .iter()
+            .copied()
+            .filter(|r| cfg.enabled(*r))
+            .filter(|r| !outcome.skipped.iter().any(|s| s.rule == *r))
+            .collect();
+        let mut baseline = load_lint_baseline_file(&path, false)?.unwrap_or_default();
+        let fresh = dbtl::Baseline::from_findings(&outcome.findings);
+        let new_entries = fresh.len();
+        baseline.replace_entries_for(&ran, fresh);
+        let kept = baseline.len() - new_entries;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)
                 .with_context(|| format!("failed to create {}", dir.display()))
@@ -228,11 +242,17 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
             .with_context(|| format!("failed to write lint baseline {}", path.display()))
             .input()?;
         if !args.quiet {
+            let carried = if kept > 0 {
+                format!(" ({kept} kept for rules that did not run)")
+            } else {
+                String::new()
+            };
             write_stdout(
                 &format!(
-                    "wrote {} finding(s) to {}\n",
+                    "wrote {} finding(s) to {}{}\n",
                     baseline.len(),
-                    path.display()
+                    path.display(),
+                    carried
                 ),
                 anstream::ColorChoice::Auto,
             )?;
@@ -440,6 +460,19 @@ fn explain_rule(id: &str, cfg: &dbtl::LintConfig) -> Result<(), CliError> {
                         p.name,
                         default.join(", "),
                         current.join(", "),
+                        p.description
+                    );
+                }
+                dbtl::ParamKind::LayerList { default, builtins } => {
+                    let current = cfg
+                        .str_list_param(rule, p.name)
+                        .unwrap_or_else(|| default.iter().map(|s| s.to_string()).collect());
+                    out += &format!(
+                        "  {}  layer-list  default [{}], current [{}], built-in [{}] + lint.naming_prefixes layers — {}\n",
+                        p.name,
+                        default.join(", "),
+                        current.join(", "),
+                        builtins.join(", "),
                         p.description
                     );
                 }
