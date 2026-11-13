@@ -13,7 +13,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `dbtl lint` (and CLL) with a stack overflow: a lexical depth bound
   estimates the parsed tree's depth before it is built, and over-limit
   models degrade to the unparsed/name-match path like any other
-  unparseable SQL.
+  unparsable SQL.
 - Source-mode SQL parsing now renders Jinja the way the file lexes it —
   `{{ }}` inside string literals expands without the tag's own quotes
   closing the string early (`'{{ var('x') }}'` parses), backslash

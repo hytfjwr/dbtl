@@ -7042,7 +7042,7 @@ fn deep_sql_linted(sql: &str) -> LintOutcome {
 fn assert_deep_unparsed(out: &LintOutcome) {
     assert!(
         out.unparsed.iter().any(|u| u == "model.p.deep"),
-        "the over-depth model must read as unparseable"
+        "the over-depth model must read as unparsable"
     );
     assert!(
         !out.unparsed.iter().any(|u| u == "model.p.ok"),
