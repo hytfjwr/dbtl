@@ -1627,6 +1627,7 @@ fn detail_maps_the_model_config_governance_fields() {
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
         docs: Default::default(),
+        unresolved_adjacent: HashMap::new(),
     };
     let dag = Dag::build(&manifest);
     let d = dag.detail("model.p.m").expect("the model's detail");
