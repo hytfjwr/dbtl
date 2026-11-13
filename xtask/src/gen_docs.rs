@@ -343,6 +343,14 @@ fn param_type(kind: ParamKind) -> String {
                 .join(" ")
         ),
         ParamKind::StringList { .. } => "list of strings".to_string(),
+        ParamKind::LayerList { builtins, .. } => format!(
+            "list of layer names ({} or a `lint.naming_prefixes` layer)",
+            builtins
+                .iter()
+                .map(|s| format!("`{s}`"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
         ParamKind::RegexList { .. } => "list of regular expressions".to_string(),
         ParamKind::SelectorList { .. } => "list of selectors".to_string(),
         ParamKind::Bool { .. } => "boolean".to_string(),
@@ -355,6 +363,7 @@ fn param_default(kind: ParamKind) -> String {
         ParamKind::Int { default, .. } => format!("`{default}`"),
         ParamKind::Bool { default } => format!("`{default}`"),
         ParamKind::StringList { default, .. }
+        | ParamKind::LayerList { default, .. }
         | ParamKind::RegexList { default }
         | ParamKind::SelectorList { default } => {
             format!("`[{}]`", default.join(", "))
@@ -544,6 +553,15 @@ fn param_schema(p: &dbtl_core::ParamSpec) -> Value {
             },
             "default": default,
             "description": p.description,
+        }),
+        // No `enum`: the accepted set is builtins PLUS the project's own
+        // `lint.naming_prefixes` keys — a fixed schema enum would reject the
+        // custom layers the parser accepts.
+        ParamKind::LayerList { default, builtins } => json!({
+            "type": "array",
+            "items": {"type": "string"},
+            "default": default,
+            "description": format!("{} (built-in layers: {})", p.description, builtins.join(", ")),
         }),
         ParamKind::RegexList { default } => json!({
             "type": "array",

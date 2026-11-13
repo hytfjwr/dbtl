@@ -1,15 +1,16 @@
 //! The `.dbtl-baseline.json` format: a frozen set of lint findings, keyed by
-//! [`Finding::key`] identity — edge rules on `(rule, node_uid, related)`, node
-//! rules on `(rule, node_uid)` — so reordering or renumbering findings never
-//! changes what matches. The module is deliberately pure: parsing, writing
-//! and applying are free functions with no file IO, and the `baseline:` path
-//! resolution lives in the project-config loader / CLI wiring.
+//! [`Finding::key`] identity — the edge rule `layer_violation` on
+//! `(rule, node_uid, related)`, every other rule on `(rule, node_uid)` — so
+//! reordering or renumbering findings never changes what matches. The
+//! module is deliberately pure: parsing, writing and applying are free
+//! functions with no file IO, and the `baseline:` path resolution lives in
+//! the project-config loader / CLI wiring.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::{removed_rule, Finding};
+use super::{removed_rule, Finding, LintRule};
 
 /// The `schema` stamp every baseline file carries. `from_json` rejects any
 /// other value: a misread baseline would match nothing, which never lets a
@@ -39,8 +40,8 @@ pub struct Baseline {
 }
 
 /// One baseline row. `related` is the sorted parent/child endpoint list for
-/// edge rules, `[]` for node rules (a node finding's `related` is context,
-/// not identity).
+/// `layer_violation` (the edge IS the finding), `[]` for every other rule
+/// (their `related` is context, not identity — see [`Finding::key`]).
 type BaselineEntry = (String, String, Vec<String>);
 
 impl Baseline {
@@ -88,6 +89,14 @@ impl Baseline {
                 let mut related = f.related;
                 related.sort();
                 related.dedup();
+                // Migration: a `rejoining_upstream` entry written before
+                // the rule went node-keyed still froze its finding —
+                // its `related` was context even then. `key()` now ignores
+                // it, so an old row matches only once it reads `[]`.
+                // (`layer_violation`'s related stays: the edge IS its key.)
+                if LintRule::from_name(&f.rule) == Some(LintRule::RejoiningUpstream) {
+                    related.clear();
+                }
                 Some((f.rule, f.node, related))
             })
             .collect();
@@ -143,6 +152,18 @@ impl Baseline {
                 f.baselined = true;
             }
         }
+    }
+
+    /// Rewrite the entries for the rules that ran: drop this baseline's
+    /// rows for every rule in `ran`, then absorb `fresh`'s rows. Rows for
+    /// rules that did NOT run — narrowed out by a rule filter, or skipped
+    /// for a missing input — carry over untouched, so a subset rewrite
+    /// can't silently un-freeze violations the run never looked at.
+    /// Unknown rule names (never-registered ids) keep their rows too.
+    pub fn replace_entries_for(&mut self, ran: &BTreeSet<LintRule>, fresh: Baseline) {
+        self.entries
+            .retain(|(rule, _, _)| LintRule::from_name(rule).is_none_or(|r| !ran.contains(&r)));
+        self.entries.extend(fresh.entries);
     }
 
     /// The number of frozen entries (for reports and tests).
