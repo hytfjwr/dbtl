@@ -333,7 +333,9 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 catalog.expect("gated"),
                 &mut out,
             ),
-            LintRule::TrailingSemicolon => sql::trailing_semicolon(dag, &uids, &in_scope, &mut out),
+            LintRule::TrailingSemicolon => {
+                sql::trailing_semicolon(dag, &uids, &in_scope, dialect, &mut out)
+            }
             LintRule::DuplicateOutputColumns => sql::duplicate_output_columns(
                 dag,
                 &uids,
