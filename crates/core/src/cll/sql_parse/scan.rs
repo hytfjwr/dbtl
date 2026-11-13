@@ -268,23 +268,21 @@ fn scan_set_expr(e: &SetExpr, scope: &ScanScope, out: &mut RelationScan<'_>) {
         // `TABLE 'file.ext'` literal is the same explicit file read as
         // `FROM 'file.ext'` — its `'` quote marks it, so no relation is
         // recorded.
-        SetExpr::Table(t) => {
+        SetExpr::Table(t)
             if t.schema_name
                 .iter()
                 .chain(&t.table_name)
-                .all(|i| i.quote_style != Some('\''))
-            {
-                let mut parts: Vec<String> = Vec::new();
-                if let Some(s) = &t.schema_name {
-                    parts.push(norm_ident(s));
-                }
-                if let Some(n) = &t.table_name {
-                    parts.push(norm_ident(n));
-                }
-                let span =
-                    Span::union_iter(t.schema_name.iter().chain(&t.table_name).map(|i| i.span));
-                record_name(span, &parts, scope, out);
+                .all(|i| i.quote_style != Some('\'')) =>
+        {
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(s) = &t.schema_name {
+                parts.push(norm_ident(s));
             }
+            if let Some(n) = &t.table_name {
+                parts.push(norm_ident(n));
+            }
+            let span = Span::union_iter(t.schema_name.iter().chain(&t.table_name).map(|i| i.span));
+            record_name(span, &parts, scope, out);
         }
         // Insert/Update/Delete/Merge bodies aren't a model's SELECT — the
         // resolver ignores them too.
