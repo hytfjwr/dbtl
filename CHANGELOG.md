@@ -22,14 +22,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   other rows: a subset write merges into the file, rewriting only the
   rules that actually ran — rules `--rules` narrowed out or skipped for a
   missing input keep their frozen rows — instead of silently un-freezing
-  violations the run never evaluated.
+  violations the run never evaluated. A write also refuses to clobber an
+  existing baseline it cannot read (unreadable or malformed file → input
+  error), matching the read path's never-silently-unfreeze rule.
 - `.dbtl.yml` reports better and validates tighter: a `lint.rules.<id>`
   entry that isn't `true|false` or a settings table now names the key and
   the accepted forms instead of a generic enum error; empty or whitespace
   strings in `naming_prefixes` and list parameters are config errors
   instead of match-everything values; `unused_models.layers` accepts
   layers named in `lint.naming_prefixes`; and a malformed
-  `meta.dbtl.ignore` warns once per node while still suppressing nothing.
+  `meta.dbtl.ignore` warns once per node while still suppressing nothing —
+  including a list that mixes valid ids with non-string items or a
+  `dbtl:` value written as a JSON-encoded string, both of which now fail
+  loudly instead of suppressing partially or silently.
 - Source-mode SQL parsing now renders Jinja the way the file lexes it —
   `{{ }}` inside string literals expands without the tag's own quotes
   closing the string early (`'{{ var('x') }}'` parses), backslash
@@ -50,7 +55,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with an in-file CTE, which now correctly leaves the CTE flagged
   unread. Lint findings from rendered SQL keep mapping back to the raw
   source positions.
->>>>>>> origin/main
 - Manifests for `versions:`-ed models parse again: dbt writes `version` /
   `latest_version` as a JSON number for `v: 1`-style declarations (and a
   string for `v: beta`-style ones), which previously failed the whole

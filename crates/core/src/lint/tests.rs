@@ -1815,6 +1815,15 @@ fn malformed_meta_dbtl_ignore_warns_once_per_node() {
                 serde_json::json!({"dbtl": {"ignore": ["root_models"]}}),
             ),
             mk("stg_g", serde_json::json!({"dbtl": {"docs": "hi"}})),
+            // `meta.dbtl` written as a JSON-encoded string: a malformed
+            // `ignore` inside still warns (the suppression reader
+            // re-parses the same stringified value) — and a plain
+            // non-JSON string carries no `ignore` at all.
+            mk(
+                "stg_h",
+                serde_json::json!({"dbtl": "{\"ignore\": {\"x\": 1}}"}),
+            ),
+            mk("stg_i", serde_json::json!({"dbtl": "just a note"})),
         ],
         vec![(
             "source.p.raw.t".into(),
@@ -1838,7 +1847,7 @@ fn malformed_meta_dbtl_ignore_warns_once_per_node() {
         .collect();
     assert_eq!(
         meta_warnings.len(),
-        5,
+        6,
         "one warning per malformed node+source, none for the valid ones: {meta_warnings:?}"
     );
     for (uid, what) in [
@@ -1846,6 +1855,7 @@ fn malformed_meta_dbtl_ignore_warns_once_per_node() {
         ("model.p.stg_b", "must be"),
         ("model.p.stg_c", "must be"),
         ("model.p.stg_d", "unknown lint rule id(s): bogus_rule"),
+        ("model.p.stg_h", "must be"),
         ("source.p.raw.t", "must be"),
     ] {
         assert_eq!(

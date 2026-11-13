@@ -530,6 +530,22 @@ pub(crate) fn meta_dbtl_warnings(manifest: &crate::RawManifest) -> Vec<String> {
         let Some(dbtl) = meta.get("dbtl") else {
             continue;
         };
+        // `meta.dbtl` can itself be a JSON-encoded string (`dbtl:
+        // '{"ignore": …}'`): the suppression reader re-parses the
+        // stringified `detail.meta` value the same way, so mirror it here —
+        // a string that decodes to an object is classified by its
+        // contents, any other string carries no `ignore` at all.
+        let reparsed;
+        let dbtl = match dbtl {
+            serde_json::Value::String(s) => {
+                reparsed = serde_json::from_str::<serde_json::Value>(s).ok();
+                match &reparsed {
+                    Some(v @ serde_json::Value::Object(_)) => v,
+                    _ => continue,
+                }
+            }
+            other => other,
+        };
         match meta_ignore(dbtl) {
             MetaIgnore::Malformed => warnings.push(format!(
                 "{uid}: meta.dbtl.ignore must be \"all\" or a list of lint rule ids"

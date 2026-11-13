@@ -121,14 +121,15 @@ Adopting lint on a project that already breaks rules should not force a flag day
 
 ### The baseline file
 
-`dbtl lint --write-baseline` writes every current finding to a file. The path is the one `lint.baseline` names in `.dbtl.yml`, or `.dbtl-baseline.json` at the project root. `--write-baseline <PATH>` picks the path explicitly. The write always exits 0.
+`dbtl lint --write-baseline` writes every current finding to a file. The path is the one `lint.baseline` names in `.dbtl.yml`, or `.dbtl-baseline.json` at the project root. `--write-baseline <PATH>` picks the path explicitly. The write exits 0.
 
 Commit the file. Baselined findings still report but never fail, and the tally counts them separately.
 
 - `--no-baseline` ignores the file for one run.
 - `--write-baseline` cannot combine with `--diff` or `--select`. A partial set must never overwrite the frozen one.
+- `--write-baseline` combined with `--rules` merges instead of replacing: only rows for rules that actually ran are rewritten — rows for filtered-out or skipped rules keep their frozen entries, and the write reports how many were kept.
 - A missing path that you configured explicitly produces a warning.
-- An unreadable or malformed baseline is an input error (exit 3). A frozen set that cannot be read must never silently unfreeze.
+- An unreadable or malformed baseline is an input error (exit 3) — even for `--write-baseline`, which refuses to clobber a frozen set it cannot read. A frozen set that cannot be read must never silently unfreeze.
 
 ### The diff baseline
 
