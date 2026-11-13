@@ -62,10 +62,17 @@ pub(super) struct DbtProject {
     pub(super) snapshots: serde_json::Value,
     /// The `sources:` config tree — keyed by the source's fqn (`<pkg>`:
     /// `<declaring-yml dirs>`: `<source>`: `<table>` — verified against real
-    /// dbt's recorded fqn). Only `+meta` is read (other `+`-configs like
-    /// `+enabled`/`+event_time` are out of scope).
+    /// dbt's recorded fqn). `+enabled` parks the table; `+meta` and
+    /// `+freshness` merge at the bottom of their precedence chains.
     #[serde(default)]
     pub(super) sources: serde_json::Value,
+    /// The `exposures:` config tree — keyed by the exposure's fqn (`<pkg>`:
+    /// `<declaring-yml dirs>`: `<name>` — the same fqn a compiled manifest
+    /// records). `+enabled` parks the exposure; `+meta` merges below the
+    /// entry's `meta:` (other `+`-configs like `+tags`/`+group` are not
+    /// implemented for exposures).
+    #[serde(default)]
+    pub(super) exposures: serde_json::Value,
     /// The `vars:` block, raw — `var('name')` calls in `config(enabled=)`
     /// resolve against it (scoped `<name>:` entries shadowing the top
     /// level). `+enabled` does NOT see it: `dbt_project.yml` renders

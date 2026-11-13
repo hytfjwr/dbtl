@@ -9345,6 +9345,47 @@ fn exposure_meta_lands_on_node_detail_in_both_modes() {
     }
 }
 
+#[test]
+fn exposures_tree_meta_merges_below_entry_and_enabled_parks() {
+    // `exposures:` tree config keys by the exposure fqn — the project
+    // name, the declaring yml's dirs, the name. `+meta` sits at the
+    // BOTTOM of the merge (entry `meta:` overrides it, `config: meta:`
+    // wins overall) and `+enabled: false` parks the exposure, exactly
+    // like the other resource trees.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models/marts")).unwrap();
+    std::fs::create_dir_all(dir.path().join("models/parked")).unwrap();
+    std::fs::write(dir.path().join("models/stg_a.sql"), "select 1").unwrap();
+    std::fs::write(
+        dir.path().join("dbt_project.yml"),
+        "name: p\nprofile: p\nexposures:\n  p:\n    marts:\n      +meta:\n        domain: from_tree\n        team: tree_loses\n    parked:\n      +enabled: false\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("models/marts/exp.yml"),
+        "version: 2\nexposures:\n  - name: exp\n    type: dashboard\n    owner:\n      name: t\n    meta:\n      team: entry_wins\n    config:\n      meta:\n        owner: cfg_wins\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("models/parked/exp2.yml"),
+        "version: 2\nexposures:\n  - name: exp2\n    type: dashboard\n    owner:\n      name: t\n",
+    )
+    .unwrap();
+    let sm = crate::manifest_from_source(dir.path()).unwrap();
+    let sdag = Dag::build(&sm);
+    let meta = &sdag
+        .detail("exposure.p.exp")
+        .expect("the marts exposure survives")
+        .meta;
+    assert_eq!(meta["domain"], "from_tree", "tree +meta fills a gap");
+    assert_eq!(meta["team"], "entry_wins", "entry meta: beats the tree");
+    assert_eq!(meta["owner"], "cfg_wins", "config.meta beats both");
+    assert!(
+        sdag.get("exposure.p.exp2").is_none(),
+        "exposures: +enabled: false parks the exposure"
+    );
+}
+
 // ---- undocumented_exposures ---------------------------------------------------
 
 #[test]
