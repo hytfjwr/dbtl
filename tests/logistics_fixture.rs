@@ -202,25 +202,39 @@ fn rule_counts(dag: &Dag) -> BTreeMap<String, usize> {
 }
 
 #[test]
-fn lint_rule_counts_match_except_compiled_only_rules() {
-    // Every rule must produce the same count in both modes EXCEPT the two
-    // SQL rules that legitimately see only manifest-mode compiled SQL (the
-    // shipkit macro expansion): `unused_cte` and `order_by_without_limit`.
+fn lint_rule_counts_are_pinned_in_both_modes() {
+    // Every rule's count is pinned absolutely per mode; the only
+    // manifest↔source difference is the two SQL rules that legitimately see
+    // only manifest-mode compiled SQL (the shipkit macro expansion):
+    // `unused_cte` and `order_by_without_limit`.
     let (m, s) = dags();
-    let mc = rule_counts(&m);
-    let sc = rule_counts(&s);
-    for rule in mc.keys().chain(sc.keys()).collect::<BTreeSet<_>>() {
-        let m_count = mc.get(rule).copied().unwrap_or(0);
-        let s_count = sc.get(rule).copied().unwrap_or(0);
-        match rule.as_str() {
-            "unused_cte" | "order_by_without_limit" => continue, // pinned below
-            _ => assert_eq!(m_count, s_count, "lint:{rule} counts diverge between modes"),
-        }
-    }
-    assert_eq!(mc.get("unused_cte"), Some(&1), "manifest mode");
-    assert_eq!(sc.get("unused_cte"), None, "source mode");
-    assert_eq!(mc.get("order_by_without_limit"), Some(&1), "manifest mode");
-    assert_eq!(sc.get("order_by_without_limit"), None, "source mode");
+    let expected = |pairs: &[(&str, usize)]| -> BTreeMap<String, usize> {
+        pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    };
+    assert_eq!(
+        rule_counts(&m),
+        expected(&[
+            ("missing_primary_key_tests", 14),
+            ("model_fanout", 1),
+            ("order_by_without_limit", 1),
+            ("root_models", 1),
+            ("undocumented_columns", 7),
+            ("undocumented_models", 14),
+            ("unused_cte", 1),
+        ]),
+        "manifest-mode rule counts drifted"
+    );
+    assert_eq!(
+        rule_counts(&s),
+        expected(&[
+            ("missing_primary_key_tests", 14),
+            ("model_fanout", 1),
+            ("root_models", 1),
+            ("undocumented_columns", 7),
+            ("undocumented_models", 14),
+        ]),
+        "source-mode rule counts drifted"
+    );
 }
 
 #[test]

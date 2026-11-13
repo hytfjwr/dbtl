@@ -183,7 +183,11 @@ fn run_dbt(
         .args(["--profiles-dir"])
         .arg(profiles_dir)
         .args(["--project-dir", "."])
-        .current_dir(project_dir);
+        .current_dir(project_dir)
+        // dbt copies this into metadata.send_anonymous_usage_stats; pinning it
+        // keeps the manifest identical no matter what the caller's shell
+        // exports (CI's dbt-compat job sets the same value).
+        .env("DBT_SEND_ANONYMOUS_USAGE_STATS", "false");
     let status = cmd
         .status()
         .with_context(|| format!("run uvx dbt {subcmd}"))?;
@@ -194,8 +198,9 @@ fn run_dbt(
 }
 
 /// Pin every per-run value so regenerating the same project and dbt
-/// version is byte-identical: the six volatile `metadata` fields go null
-/// and every resource's `created_at` stamp becomes 0.
+/// version is byte-identical: the five volatile `metadata` fields go null
+/// and every resource's `created_at` stamp becomes 0. (`project_id` stays —
+/// it is a deterministic hash of the project name, not a per-run value.)
 fn write_manifest(project_dir: &Path, out: &Path) -> Result<()> {
     let generated = project_dir.join("target/manifest.json");
     let text =
@@ -207,7 +212,6 @@ fn write_manifest(project_dir: &Path, out: &Path) -> Result<()> {
             "generated_at",
             "invocation_id",
             "invocation_started_at",
-            "project_id",
             "run_started_at",
             "user_id",
         ] {
@@ -240,10 +244,24 @@ fn zero_created_at(value: &mut serde_json::Value) {
 /// The one exception is `columns`: it is a name → column map whose order IS
 /// the schema declaration order (the lint findings print it, source mode
 /// preserves it), so only its nested entries are canonicalized.
+///
+/// The same instability hits the set-derived lists `depends_on.nodes`,
+/// `depends_on.macros`, and `sources` (a `ref()`/`source()` pair list) —
+/// their order carries no meaning, so they are sorted too.
 fn sort_keys(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
             map.sort_keys();
+            if let Some(serde_json::Value::Object(deps)) = map.get_mut("depends_on") {
+                for key in ["nodes", "macros"] {
+                    if let Some(serde_json::Value::Array(items)) = deps.get_mut(key) {
+                        items.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+                    }
+                }
+            }
+            if let Some(serde_json::Value::Array(sources)) = map.get_mut("sources") {
+                sources.sort_by_key(|s| s.to_string());
+            }
             for (key, nested) in map.iter_mut() {
                 if key == "columns" {
                     if let serde_json::Value::Object(cols) = nested {
