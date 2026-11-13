@@ -33,6 +33,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A model whose SQL nests deeper than a small stack can walk — tens of
+  thousands of `AND`/`||` terms or `UNION ALL` arms — no longer aborts
+  `dbtl lint` (and CLL) with a stack overflow: a lexical depth bound
+  estimates the parsed tree's depth before it is built, and over-limit
+  models degrade to the unparsed/name-match path like any other
+  unparsable SQL.
 - `dbtl --diff <base> --select 'state:modified'` resolves the selector
   against the loaded diff: the `--diff` baseline now loads before
   `--select` is resolved, so `state:` atoms see real change state, and a
@@ -56,6 +62,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   including a list that mixes valid ids with non-string items or a
   `dbtl:` value written as a JSON-encoded string, both of which now fail
   loudly instead of suppressing partially or silently.
+- Source mode now follows `ref()`/`source()` calls made inside
+  project-local `{% macro %}` bodies — bound arguments, defaults, nested
+  calls, project-qualified invokes, and provable `adapter.dispatch()`
+  names produce the same graph edges real dbt records, so macro-carried
+  dependencies no longer trigger false `root_models`/`unused_sources`
+  findings (calls that can't be proven still suppress those claims
+  instead of faking edges).
 - Source-mode SQL parsing now renders Jinja the way the file lexes it —
   `{{ }}` inside string literals expands without the tag's own quotes
   closing the string early (`'{{ var('x') }}'` parses), backslash

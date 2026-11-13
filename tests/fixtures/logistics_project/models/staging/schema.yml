@@ -50,4 +50,38 @@ models:
     description: "Lane rate updates staged from the TMS feed"
     columns:
       - name: lane_id
+  # Macro-carried staging models — every body is a single macro call; the
+  # schema entry pins docs + key tests the same as a literal-select model.
+  - name: stg_ops_events
+    description: "Ops event feed staged through a project macro"
+    columns:
+      - name: feed_id
+        description: "Feed row id"
+        tests:
+          - unique
+          - not_null
+  - name: stg_rate_cards
+    description: "Carrier rate cards staged through a bound-arg macro"
+    columns:
+      - name: feed_id
+        description: "Feed row id"
+        tests:
+          - unique
+          - not_null
+  - name: stg_sensor_pings
+    description: "Sensor pings staged through a nested macro chain"
+    columns:
+      - name: feed_id
+        description: "Feed row id"
+        tests:
+          - unique
+          - not_null
+  - name: stg_dock_arrivals
+    description: "Dock arrivals staged through a project-qualified macro"
+    columns:
+      - name: feed_id
+        description: "Feed row id"
+        tests:
+          - unique
+          - not_null
   - name: stg_shipment_events

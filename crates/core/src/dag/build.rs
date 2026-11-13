@@ -386,9 +386,26 @@ impl Dag {
                 .clone()
                 .filter(|s| !s.trim().is_empty()),
             overview: None,
-            // A freshly-built graph has no prune history — only
-            // `PackageScope::apply_with_warnings` writes this map.
-            pruned_adjacent: HashMap::new(),
+            // Source-mode loads record the macro calls they could not
+            // resolve in `RawManifest::unresolved_adjacent` (`#[serde(skip)]`
+            // — always empty on a real manifest) — the same "unprovable
+            // adjacency" record a `PackageScope::Root` prune writes, so
+            // degree-judging rules treat a hidden-macro edge exactly like a
+            // severed package edge. A manifest-mode build starts empty:
+            // only `PackageScope::apply_with_warnings` adds to it.
+            pruned_adjacent: manifest
+                .unresolved_adjacent
+                .iter()
+                .map(|(uid, a)| {
+                    (
+                        uid.clone(),
+                        PrunedAdjacent {
+                            parents: a.parents,
+                            children: a.children,
+                        },
+                    )
+                })
+                .collect(),
         };
         // The overview needs the resolved root package, which is a property of
         // the built graph — a second pass over the manifest's `docs` map.

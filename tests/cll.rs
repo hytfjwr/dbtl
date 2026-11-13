@@ -613,6 +613,7 @@ fn perf_closure_walk_is_fast_enough() {
         }
     }
     let dag = Dag::build(&RawManifest {
+        unresolved_adjacent: Default::default(),
         nodes,
         sources: HashMap::new(),
         exposures: HashMap::new(),

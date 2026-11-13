@@ -50,6 +50,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
+use crate::catalog::Catalog;
+use crate::dag::Dag;
 use sqlparser::ast::{
     AccessExpr, Distinct, ExcludeSelectItem, Expr, Function, FunctionArg, FunctionArgExpr,
     FunctionArgumentClause, FunctionArguments, GroupByExpr, Ident, InTarget, Join, JoinConstraint,
@@ -63,10 +65,6 @@ use sqlparser::dialect::{
     HiveDialect, MsSqlDialect, MySqlDialect, OracleDialect, PostgreSqlDialect, RedshiftSqlDialect,
     SQLiteDialect, SnowflakeDialect, SparkSqlDialect, TeradataDialect,
 };
-use sqlparser::parser::Parser;
-
-use crate::catalog::Catalog;
-use crate::dag::Dag;
 
 use super::{
     dedup_columns, normalize_column, resolution_sql, ColumnEdge, ColumnEdgeKind, ColumnRef,
@@ -75,6 +73,7 @@ use super::{
 
 mod ast;
 mod bind;
+mod depth;
 mod dialect;
 mod expr;
 mod facts;
@@ -87,6 +86,7 @@ mod scope;
 mod tests;
 
 use ast::*;
+use depth::parse_statements;
 pub use dialect::SqlDialect;
 use dialect::{date_part_arg_position, is_date_part_word};
 use facts::{outer_order_by_span, star_over_single_explicit_cte};
@@ -466,8 +466,7 @@ impl SqlParseResolver {
     fn compute_expr_map(&self, dag: &Dag, uid: &str) -> Option<BTreeMap<String, String>> {
         let (text, _) = resolution_sql(dag, uid)?;
         let sql = render_jinja(text, self.dialect);
-        let dialect = self.dialect.sqlparser();
-        let stmts = Parser::parse_sql(&*dialect, &sql).ok()?;
+        let stmts = parse_statements(self.dialect, &sql)?;
         let query = stmts.iter().find_map(|s| match s {
             Statement::Query(q) => Some(&**q),
             _ => None,
@@ -502,6 +501,8 @@ impl SqlParseResolver {
     /// models (`resolve_in_binding` → `col_set(parent)` → `analyzed`) to
     /// one frame per DAG edge along a linear chain — memoized results and
     /// the cycle guard make it proportional to path length, not graph size.
+    /// The lexical bound in [`depth`] runs earlier still — text whose flat
+    /// chains would build an unwalkably deep tree never reaches the parser.
     fn analyzed(&self, dag: &Dag, node: &str) -> Option<Rc<Analyzed>> {
         if let Some(v) = self.analyzed_memo.borrow().get(node) {
             return v.clone();
@@ -520,8 +521,7 @@ impl SqlParseResolver {
         }
         let out = (|| {
             let rendered = render_jinja_mapped(text, JinjaMark::Plain, self.dialect);
-            let dialect = self.dialect.sqlparser();
-            let stmts = Parser::parse_sql(&*dialect, &rendered.text).ok()?;
+            let stmts = parse_statements(self.dialect, &rendered.text)?;
             // A render producing no statements — whitespace, comments, or
             // config-only (`{{ config() }}` renders to whitespace) — is
             // judged-and-empty, not unparsable: the SQL rules find nothing,
