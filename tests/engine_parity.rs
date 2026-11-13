@@ -547,7 +547,7 @@ fn lint_config_warnings_match_the_cli() {
 /// approximation — the stderr notice is `ColumnsOutput::warnings`.
 #[test]
 fn columns_fallback_warning_matches_stderr() {
-    // stg_orders' SQL present but unparseable → the closure resolves it
+    // stg_orders' SQL present but unparsable → the closure resolves it
     // by name-match (a node with NO SQL resolves silently instead).
     let mut manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(sample_manifest_path()).unwrap()).unwrap();
