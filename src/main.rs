@@ -88,7 +88,7 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
 
     // --list-themes is a plain stdout listing, no data source / TTY needed.
     if cli.list_themes {
-        print_theme_list();
+        print_theme_list()?;
         return Ok(());
     }
 

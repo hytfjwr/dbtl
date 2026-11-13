@@ -323,6 +323,55 @@ fn ls_empty_match_prints_nothing_for_line_formats() {
 
 // ---- strict validation --------------------------------------------------------
 
+/// A closed stdout pipe must be a normal end of output — `dbtl ls | head -1`
+/// exits 0, never the panic a raw `println!` dies on. Unix-only: the test
+/// relies on dropping the pipe's read end out from under a large write.
+#[cfg(unix)]
+#[test]
+fn ls_survives_a_closed_stdout_pipe() {
+    // A manifest big enough that `--output uids` far exceeds the pipe
+    // buffer — with the reader gone, EVERY write sees the closed pipe.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manifest = dir.path().join("manifest.json");
+    std::fs::write(
+        &manifest,
+        xtask::synth::manifest_json(&xtask::synth::synth_manifest(&xtask::synth::SynthParams {
+            models: 8000,
+            ..Default::default()
+        })),
+    )
+    .expect("write synth manifest");
+
+    let mut child = dbtl(&[
+        "ls",
+        "*",
+        "--output",
+        "uids",
+        "--manifest",
+        manifest.to_str().unwrap(),
+    ])
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped())
+    .spawn()
+    .expect("spawn dbtl");
+    // Close the read end immediately: the listing's first write lands on a
+    // pipe with no readers (BrokenPipe) — a normal end of output, not a
+    // panic (101) or a SIGPIPE kill (no exit code).
+    drop(child.stdout.take());
+    let out = child.wait_with_output().expect("collect child output");
+    assert!(
+        out.status.success(),
+        "closed stdout pipe must exit cleanly, got {:?}, stderr: {}",
+        out.status.code(),
+        stderr(&out)
+    );
+    assert!(
+        !stderr(&out).contains("panic"),
+        "no panic on a closed pipe: {}",
+        stderr(&out)
+    );
+}
+
 #[test]
 fn ls_malformed_specs_are_usage_errors() {
     for (spec, needle) in [

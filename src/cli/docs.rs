@@ -124,14 +124,20 @@ pub fn run_docs(src: &DataSourceArgs, args: &DocsArgs) -> Result<(), CliError> {
     if args.clean {
         let removed = remove_stale_docs(&out_dir, &files)?;
         if !args.quiet && !removed.is_empty() {
-            println!("removed {} stale file(s)", removed.len());
+            write_stdout(
+                &format!("removed {} stale file(s)\n", removed.len()),
+                anstream::ColorChoice::Auto,
+            )?;
         }
     }
     // The success summary is the only stdout `docs` writes; `--quiet` drops it
     // for CI. Errors are returned as `Err` and printed to stderr by `main`
     // either way, so silencing stdout never hides a failure.
     if !args.quiet {
-        println!("wrote {} files to {}", files.len(), out_dir.display());
+        write_stdout(
+            &format!("wrote {} files to {}\n", files.len(), out_dir.display()),
+            anstream::ColorChoice::Auto,
+        )?;
     }
     Ok(())
 }
@@ -383,13 +389,19 @@ pub(super) fn check_docs(
     let drift = docs_differences(out_dir, files);
     if drift.total() == 0 {
         if !quiet {
-            println!("docs up to date ({} files)", files.len());
+            write_stdout(
+                &format!("docs up to date ({} files)\n", files.len()),
+                anstream::ColorChoice::Auto,
+            )?;
         }
         return Ok(());
     }
+    let mut out = String::new();
     for p in drift.lines() {
-        println!("{p}");
+        out.push_str(&p);
+        out.push('\n');
     }
+    write_stdout(&out, anstream::ColorChoice::Auto)?;
     Err(CliError::gate(anyhow::anyhow!(
         "docs are out of date: {} difference(s)",
         drift.total()

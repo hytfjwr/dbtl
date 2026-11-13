@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Closing the stdout pipe early (`dbtl ls … | head -1`, `dbtl columns … |
+  head`, `dbtl docs … | head`) now exits cleanly instead of panicking on a
+  broken pipe — every CLI stdout write goes through one writer that treats
+  `EPIPE` as a normal end of output.
+
 ## [0.6.3] - 2026-11-13
 
 ### Added

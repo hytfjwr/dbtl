@@ -5,9 +5,7 @@
 //! `cargo xtask gen-docs` task is its only caller.
 
 use std::collections::BTreeMap;
-use std::io::Write;
 
-use anyhow::Context;
 use clap::{Arg, ArgAction, Command, CommandFactory};
 
 use super::exit::ExitKind;
@@ -20,11 +18,7 @@ pub const GENERATED_MARKER: &str =
 
 /// Print the generated CLI reference (Markdown) to stdout.
 pub fn run_cli_reference() -> Result<(), CliError> {
-    let mut out = std::io::stdout().lock();
-    out.write_all(cli_reference_markdown().as_bytes())
-        .context("failed to write the CLI reference")?;
-    out.flush().context("failed to write the CLI reference")?;
-    Ok(())
+    super::write_stdout(&cli_reference_markdown(), anstream::ColorChoice::Auto)
 }
 
 /// Render the whole reference document.

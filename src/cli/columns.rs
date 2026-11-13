@@ -81,11 +81,14 @@ pub fn run_columns(
     };
     let report = dbtl::closure_report(dag, &resolver, &col, direction);
     match format {
-        ImpactFormat::Markdown => print!("{report}"),
-        ImpactFormat::Json => println!(
-            "{}",
-            serde_json::to_string_pretty(&report).map_err(|e| CliError::new(e.into()))?
-        ),
+        ImpactFormat::Markdown => write_stdout(&report.to_string(), anstream::ColorChoice::Auto)?,
+        ImpactFormat::Json => write_stdout(
+            &format!(
+                "{}\n",
+                serde_json::to_string_pretty(&report).map_err(|e| CliError::new(e.into()))?
+            ),
+            anstream::ColorChoice::Auto,
+        )?,
     }
     // Parser coverage transparency: how many models ended up on the
     // name-match approximation (missing/unparsable SQL). Status goes to

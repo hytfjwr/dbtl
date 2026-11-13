@@ -4,8 +4,6 @@
 //! touched — they exist so packaging can ship completions and a man page
 //! built from the exact CLI definition they describe.
 
-use std::io::{self, Write};
-
 use anyhow::Context;
 use clap::CommandFactory;
 
@@ -14,11 +12,10 @@ use super::{Cli, CliError};
 /// Write the completion script for `shell` to stdout.
 pub fn run_completions(shell: clap_complete::Shell) -> Result<(), CliError> {
     let mut cmd = Cli::command();
-    let mut out = io::stdout().lock();
-    clap_complete::generate(shell, &mut cmd, "dbtl", &mut out);
-    out.flush()
-        .context("failed to write the completion script")?;
-    Ok(())
+    let mut buf = Vec::new();
+    clap_complete::generate(shell, &mut cmd, "dbtl", &mut buf);
+    let script = String::from_utf8(buf).context("the generated completion script is not UTF-8")?;
+    super::write_stdout(&script, anstream::ColorChoice::Auto)
 }
 
 /// Write the man page (roff) for the top-level `dbtl` command to stdout.
@@ -26,9 +23,9 @@ pub fn run_completions(shell: clap_complete::Shell) -> Result<(), CliError> {
 /// dispatch reads, so the page can't drift from the real CLI.
 pub fn run_man() -> Result<(), CliError> {
     let man = clap_mangen::Man::new(Cli::command());
-    let mut out = io::stdout().lock();
-    man.render(&mut out)
+    let mut buf = Vec::new();
+    man.render(&mut buf)
         .context("failed to render the man page")?;
-    out.flush().context("failed to write the man page")?;
-    Ok(())
+    let page = String::from_utf8(buf).context("the rendered man page is not UTF-8")?;
+    super::write_stdout(&page, anstream::ColorChoice::Auto)
 }
