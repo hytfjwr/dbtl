@@ -882,6 +882,19 @@ pub fn call_sites_masked(masked: &str) -> Vec<CallSite> {
 // Jinja branch structure — which call sites can execute in one render
 // ---------------------------------------------------------------------------
 
+/// Which block kind an [`ArmStep`]'s chain is — an `{% if %}` arm split
+/// and a `{% for %}` arm split mean different things to the SQL render
+/// (an `if` chain's `{% else %}` can union select items; a `for`
+/// chain's `{% else %}` is its empty-iteration fallback, never a union
+/// member).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmKind {
+    /// An `{% if %}`/`{% elif %}`/`{% else %}` chain arm.
+    If,
+    /// A `{% for %}` body arm or its `{% else %}` fallback arm.
+    For,
+}
+
 /// One `{% if %}`/`{% for %}` arm in a template's branch structure:
 /// `chain` is the block's id (its open tag's source order — unique per
 /// block), `arm` the branch inside it — the `{% if %}`/`{% for %}` body is
@@ -895,6 +908,8 @@ pub struct ArmStep {
     /// The branch inside it — `{% if %}`/`{% for %}` is 0, each
     /// `{% elif %}`/`{% else %}` arm +1.
     pub arm: u32,
+    /// Whether the step's chain is an `{% if %}` or a `{% for %}` block.
+    pub kind: ArmKind,
 }
 
 /// Do the arm paths `a` and `b` disagree on a shared chain? Then the
@@ -1080,9 +1095,15 @@ pub fn jinja_branches(text: &str) -> JinjaBranches {
         let sig: Vec<ArmStep> = stack
             .iter()
             .filter_map(|f| match f {
-                Frame::If { chain, arm, .. } | Frame::For { chain, arm, .. } => Some(ArmStep {
+                Frame::If { chain, arm, .. } => Some(ArmStep {
                     chain: *chain,
                     arm: *arm,
+                    kind: ArmKind::If,
+                }),
+                Frame::For { chain, arm, .. } => Some(ArmStep {
+                    chain: *chain,
+                    arm: *arm,
+                    kind: ArmKind::For,
                 }),
                 Frame::Block(_) => None,
             })
@@ -1104,7 +1125,7 @@ pub fn jinja_branches(text: &str) -> JinjaBranches {
 /// — `None` when unterminated. `{{ }}` tracks bracket depth like the
 /// render (a `}}` inside `{{ f({'x':1}) }}` doesn't close); `{% %}` and
 /// `{# #}` end at the first tag close.
-pub(super) fn jinja_tag_close(b: &[u8], i: usize) -> Option<usize> {
+pub(crate) fn jinja_tag_close(b: &[u8], i: usize) -> Option<usize> {
     let close: &[u8] = match b.get(i + 1)? {
         b'{' => b"}}",
         b'%' => b"%}",
@@ -1131,7 +1152,7 @@ pub(super) fn jinja_tag_close(b: &[u8], i: usize) -> Option<usize> {
 /// and padding stripped (`{%- if x -%}` → `if`) — plus the remainder
 /// after the word. A body whose first token isn't an identifier yields
 /// `""`.
-pub(super) fn tag_word(body: &str) -> (&str, &str) {
+pub(crate) fn tag_word(body: &str) -> (&str, &str) {
     let body = body.trim_matches(|c: char| c.is_whitespace() || c == '-' || c == '+');
     let end = body
         .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
@@ -1142,7 +1163,7 @@ pub(super) fn tag_word(body: &str) -> (&str, &str) {
 /// Is `rest` (after `{% set %}`) the assignment form `name = expr`? The
 /// block form `{% set x %}…{% endset %}` has no `=` at bracket depth 0
 /// outside quotes.
-fn jinja_set_assigns(rest: &str) -> bool {
+pub(crate) fn jinja_set_assigns(rest: &str) -> bool {
     let b = rest.as_bytes();
     let (mut depth, mut quote) = (0usize, 0u8);
     let mut i = 0;
@@ -1168,7 +1189,7 @@ fn jinja_set_assigns(rest: &str) -> bool {
 
 /// `needle`'s first offset in `hay[from..]` — the raw-tag body's
 /// `{%`-finder.
-pub(super) fn find_subslice(hay: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+pub(crate) fn find_subslice(hay: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     hay.get(from.min(hay.len())..)?
         .windows(needle.len())
         .position(|w| w == needle)

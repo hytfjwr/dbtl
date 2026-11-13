@@ -5698,6 +5698,77 @@ fn cartesian_join_flags_conditionless_joins() {
 }
 
 #[test]
+fn sql_facts_never_combine_mutually_exclusive_arms() {
+    // `{% if %}`/`{% else %}` arms never execute in one render — a fact
+    // formed only by combining arms is suppressed; the same fact inside
+    // one arm still reports.
+    let m = manifest(
+        vec![
+            // `n` once per arm — one output column on either render.
+            model_sql(
+                "dup_arm",
+                "select {% if x %}a as n{% else %}b as n{% endif %} from t",
+            ),
+            model_sql(
+                "dup_real",
+                "select {% if x %}a as n, a as n{% else %}b as n{% endif %} from t",
+            ),
+            // `final` declared once per arm, read unconditionally.
+            model_sql(
+                "cte_arm",
+                "with {% if x %}final as (select 1 as a)\
+                 {% else %}final as (select 2 as a){% endif %} select * from final",
+            ),
+            model_sql(
+                "cte_real",
+                "with dead as (select 1 as a), live as (select 2 as a) select * from live",
+            ),
+            // `from`-keyword arms union the relations — no `from`
+            // phantom, and the branch comma isn't a comma join.
+            model_sql(
+                "from_arm",
+                "select * {% if x %}from a.t{% else %}from b.u{% endif %}",
+            ),
+            model_sql("cart_real", "select * from a.t join b.u"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[
+        LintRule::DuplicateOutputColumns,
+        LintRule::UnusedCte,
+        LintRule::HardCodedReferences,
+        LintRule::CartesianJoin,
+    ]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::DuplicateOutputColumns),
+        vec!["model.p.dup_real"],
+        "the per-arm `n` isn't a duplicate; the same-arm repeat is"
+    );
+    assert_eq!(
+        flagged(&out.findings, LintRule::UnusedCte),
+        vec!["model.p.cte_real"],
+        "every render reads SOME `final`; `dead` is unread in all of them"
+    );
+    assert_eq!(
+        flagged(&out.findings, LintRule::CartesianJoin),
+        vec!["model.p.cart_real"],
+        "the FROM-item branch union isn't a written comma join"
+    );
+    // `from_arm` still reports the written relations — both of them,
+    // never `from` itself.
+    let f = out
+        .findings
+        .iter()
+        .find(|f| f.rule == LintRule::HardCodedReferences && f.node_uid == "model.p.from_arm")
+        .unwrap();
+    assert!(f.message.contains("a.t, b.u"), "{}", f.message);
+}
+
+#[test]
 fn unknown_column_reference_trusts_only_catalog_or_contract_parents() {
     let m = manifest(
         vec![

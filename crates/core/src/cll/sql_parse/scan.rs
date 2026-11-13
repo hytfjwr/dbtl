@@ -102,6 +102,13 @@ impl RelationScan<'_> {
     /// reads it, so the parse can't prove unread-ness. A literal folds
     /// to lowercase like the unquoted-reference side of `record_name`'s
     /// CTE check, so case handling matches the existing name comparison.
+    ///
+    /// An unread def is also excused when a SAME-named sibling it sits
+    /// in a mutually exclusive `{% if %}`/`{% else %}` arm with IS read:
+    /// `with {% if %}x as (…){% else %}x as (…){% endif %} select *
+    /// from x` binds the reference to whichever arm the text kept, but
+    /// the render holding the unread def holds a `from x` reader too —
+    /// no real render leaves it unread.
     pub(super) fn unread_ctes(&self) -> impl Iterator<Item = &(String, Span)> {
         let literals: BTreeSet<String> = self
             .rendered
@@ -110,8 +117,31 @@ impl RelationScan<'_> {
         self.cte_defs
             .iter()
             .enumerate()
-            .filter(move |(id, (name, _))| !self.cte_uses.contains(id) && !literals.contains(name))
+            .filter(move |(id, (name, span))| {
+                if self.cte_uses.contains(id) || literals.contains(name) {
+                    return false;
+                }
+                !self.cte_defs.iter().enumerate().any(|(other, (n, s))| {
+                    other != *id
+                        && n == name
+                        && self.cte_uses.contains(&other)
+                        && self.exclusive_spans(span, s)
+                })
+            })
             .map(|(_, def)| def)
+    }
+
+    /// Do `a`/`b` sit in mutually exclusive `{% if %}`/`{% for %}` arms?
+    /// `false` without a render map or a mappable position — no proof
+    /// of exclusivity, no suppression.
+    fn exclusive_spans(&self, a: &Span, b: &Span) -> bool {
+        let Some(r) = self.rendered else {
+            return false;
+        };
+        let (Some(a), Some(b)) = (r.span_arm_path(*a), r.span_arm_path(*b)) else {
+            return false;
+        };
+        crate::source::arms_exclusive(&a, &b)
     }
 }
 

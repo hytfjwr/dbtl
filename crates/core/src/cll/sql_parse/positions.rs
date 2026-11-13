@@ -16,11 +16,11 @@ use std::ops::Range;
 use sqlparser::ast::{Spanned, Statement};
 
 use super::ast::query_wildcard_items;
-use super::depth::parse_statements;
 use super::dialect::SqlDialect;
 use super::facts::{outer_order_by_span, output_name_occurrences};
-use super::jinja::{render_jinja_mapped, JinjaMark};
+use super::jinja::{jinja_parse, JinjaMark};
 use super::scan::{scan_statements, scan_statements_positions};
+use crate::source::{arms_exclusive, ArmStep};
 
 /// Positions inside a model's `raw_code` that the SQL lint rules attach
 /// to findings — byte ranges into the raw text (the finding converts them
@@ -65,8 +65,7 @@ pub struct MarkedRelations {
 /// Render `raw` (`Plain`) and extract the positions — `None` when the
 /// text doesn't parse: a positionless finding, never a guessed one.
 pub(super) fn plain_positions(raw: &str, dialect: SqlDialect) -> Option<SqlPositions> {
-    let rendered = render_jinja_mapped(raw, JinjaMark::Plain, dialect);
-    let stmts = parse_statements(dialect, &rendered.text)?;
+    let (rendered, stmts) = jinja_parse(raw, JinjaMark::Plain, dialect)?;
     let mut out = SqlPositions::default();
     for s in &stmts {
         if let Statement::Query(q) = s {
@@ -85,11 +84,24 @@ pub(super) fn plain_positions(raw: &str, dialect: SqlDialect) -> Option<SqlPosit
         _ => None,
     }) {
         for (name, spans) in output_name_occurrences(q) {
-            let ranges: Vec<Range<usize>> = spans
-                .iter()
-                .filter_map(|s| rendered.span_source(*s))
-                .collect();
-            if ranges.len() == spans.len() {
+            // The fact count only counts a name's largest co-runnable
+            // occurrence set (exclusive `{% if %}`/`{% else %}` arms
+            // never render together) — keep the same occurrences here,
+            // so a name the facts don't count can't get a position the
+            // count doesn't back.
+            let mut kept: Vec<Vec<ArmStep>> = Vec::new();
+            let mut ranges: Vec<Range<usize>> = Vec::with_capacity(spans.len());
+            for s in &spans {
+                let Some(src) = rendered.span_source(*s) else {
+                    continue;
+                };
+                let path = rendered.branches().arm_path(src.start).to_vec();
+                if kept.iter().all(|k| !arms_exclusive(k, &path)) {
+                    kept.push(path);
+                    ranges.push(src);
+                }
+            }
+            if !ranges.is_empty() {
                 out.output_names.push((name, ranges));
             }
         }
@@ -117,8 +129,7 @@ pub(super) fn plain_positions(raw: &str, dialect: SqlDialect) -> Option<SqlPosit
 /// Render `raw` (`Marked`) and return the hand-coded relation scan —
 /// `None` like [`plain_positions`].
 pub(super) fn marked_relations(raw: &str, dialect: SqlDialect) -> Option<MarkedRelations> {
-    let rendered = render_jinja_mapped(raw, JinjaMark::Marked, dialect);
-    let stmts = parse_statements(dialect, &rendered.text)?;
+    let (rendered, stmts) = jinja_parse(raw, JinjaMark::Marked, dialect)?;
     let scan = scan_statements(&stmts, Some(&rendered));
     let spans = scan
         .hard_coded_spans

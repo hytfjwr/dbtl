@@ -5,9 +5,15 @@
 use std::collections::BTreeSet;
 use std::ops::Range;
 
+use sqlparser::ast::Statement;
 use sqlparser::tokenizer::Span;
 
+use super::depth::parse_statements;
 use super::SqlDialect;
+use crate::source::{
+    find_subslice, jinja_branches, jinja_set_assigns, jinja_tag_close, mask_jinja_comments,
+    tag_word, ArmKind, ArmStep, JinjaBranches,
+};
 
 /// The name `{{ this }}` renders to — marked like every generated token,
 /// so it parses as a normal identifier, never matches a parent, and the
@@ -79,6 +85,11 @@ pub(super) struct RenderedSql {
     /// `WITH` CTE sharing a name with one may be read through the join
     /// the parse can't see — `unused_cte` counts it as read.
     pub(super) jinja_literals: Vec<String>,
+    /// The `{% if %}`/`{% for %}` arm index over the raw source — spans
+    /// mapped back through `segs` become the arm paths the
+    /// exclusive-arm fact checks ([`crate::source::arms_exclusive`])
+    /// read.
+    branches: JinjaBranches,
 }
 
 impl RenderedSql {
@@ -109,6 +120,20 @@ impl RenderedSql {
             });
         }
         out
+    }
+
+    /// The source's `{% if %}`/`{% for %}` arm index — arm paths of
+    /// mapped positions decide which occurrences can share a render.
+    pub(super) fn branches(&self) -> &JinjaBranches {
+        &self.branches
+    }
+
+    /// The source byte range a parsed [`Span`] points at — `None` for an
+    /// empty span or one whose (line, column) math doesn't land on the
+    /// text: a position the renderer can't place is no position.
+    pub(super) fn span_arm_path(&self, span: Span) -> Option<Vec<ArmStep>> {
+        self.span_source(span)
+            .map(|r| self.branches.arm_path(r.start).to_vec())
     }
 
     /// The source byte range a parsed [`Span`] points at — `None` for an
@@ -531,6 +556,21 @@ const NAME_WORDS: &[&[u8]] = &[
     b"like", b"ilike", b"rlike", b"similar", b"not", b"on", b"or", b"then", b"when", b"with",
 ];
 
+/// Which `{% if %}`/`{% for %}` arms a render emits — [`jinja_parse`]
+/// judges the union view first and falls to the collapse view when the
+/// union text can't parse.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RenderArms {
+    /// Every arm's content — an `{% if %}` chain's `{% elif %}`/`{% else %}`
+    /// splits emit `,` where the position allows, unioning the arms as
+    /// list items: the coverage view the resolver and lint judge first.
+    Union,
+    /// Only each chain's arm 0 — one render's worth of SQL, so facts can
+    /// never combine mutually exclusive arms. Every arm split renders
+    /// whitespace.
+    Collapse,
+}
+
 /// The byte-walk state [`render_jinja_mapped`] carries — the emitted
 /// text + segment map plus the little context a `{{ }}` render needs:
 /// the last completed word (`as`/`from`/`join`/`select` matter), whether
@@ -541,6 +581,12 @@ struct Scan<'a> {
     sql: &'a str,
     lex: Lex,
     mark: JinjaMark,
+    /// The arm mode this render runs under.
+    arms: RenderArms,
+    /// The source's `{% if %}`/`{% for %}` arm index — arm paths decide
+    /// collapse-mode drops and whether a `{% else %}` split can emit
+    /// `,`.
+    branches: JinjaBranches,
     out: Vec<u8>,
     segs: Vec<Seg>,
     branch_commas: BTreeSet<usize>,
@@ -570,11 +616,19 @@ struct Scan<'a> {
 }
 
 impl<'a> Scan<'a> {
-    fn new(sql: &'a str, mark: JinjaMark, lex: Lex) -> Scan<'a> {
+    fn new(
+        sql: &'a str,
+        mark: JinjaMark,
+        lex: Lex,
+        branches: JinjaBranches,
+        arms: RenderArms,
+    ) -> Scan<'a> {
         Scan {
             sql,
             lex,
             mark,
+            arms,
+            branches,
             out: Vec::with_capacity(sql.len() + 16),
             segs: Vec::new(),
             branch_commas: BTreeSet::new(),
@@ -660,13 +714,33 @@ impl<'a> Scan<'a> {
             segs: self.segs,
             branch_commas: self.branch_commas,
             jinja_literals: self.jinja_literals,
+            branches: self.branches,
         }
+    }
+
+    /// Is raw offset `off` inside a `>0` arm the collapse render keeps
+    /// out — the `{% elif %}`/`{% else %}` bodies dbt wouldn't emit on
+    /// the arm-0 render this text approximates?
+    fn dropped(&self, off: usize) -> bool {
+        self.arms == RenderArms::Collapse && self.branches.arm_path(off).iter().any(|s| s.arm > 0)
     }
 
     fn run(&mut self) {
         let b = self.sql.as_bytes();
         let mut i = 0usize;
         while i < b.len() {
+            // Collapse mode: a stretch sitting in a `>0` arm emits one
+            // space for the whole run — the chain's arm 0 keeps its
+            // text.
+            if self.dropped(i) {
+                let start = i;
+                i += 1;
+                while i < b.len() && self.dropped(i) {
+                    i += 1;
+                }
+                self.subst(start..i, b" ", true);
+                continue;
+            }
             match b[i] {
                 // Comments pass through verbatim — a `{{` inside one is
                 // comment text, never a marker. `--` needs whitespace
@@ -738,7 +812,10 @@ impl<'a> Scan<'a> {
         self.copy(i..i + 1, false);
         let mut j = i + 1;
         while j < b.len() {
-            if escape && b[j] == b'\\' && j + 1 < b.len() {
+            if self.dropped(j) {
+                self.subst(j..j + 1, b" ", false);
+                j += 1;
+            } else if escape && b[j] == b'\\' && j + 1 < b.len() {
                 self.copy(j..j + 2, false);
                 j += 2;
             } else if b[j] == q {
@@ -785,7 +862,12 @@ impl<'a> Scan<'a> {
         };
         let mut j = i + 2;
         while j < b.len() {
-            if b[j] == b'{' && matches!(b.get(j + 1), Some(&b'{') | Some(&b'%') | Some(&b'#')) {
+            if self.dropped(j) {
+                self.subst(j..j + 1, b" ", false);
+                j += 1;
+            } else if b[j] == b'{'
+                && matches!(b.get(j + 1), Some(&b'{') | Some(&b'%') | Some(&b'#'))
+            {
                 j = self.tag(j, TagCtx::Literal(b'\''));
             } else if b[j] == close && b.get(j + 1) == Some(&b'\'') {
                 self.copy(j..j + 2, false);
@@ -807,7 +889,12 @@ impl<'a> Scan<'a> {
         self.copy(i..i + dlen, false);
         let mut j = i + dlen;
         while j < b.len() {
-            if b[j] == b'{' && matches!(b.get(j + 1), Some(&b'{') | Some(&b'%') | Some(&b'#')) {
+            if self.dropped(j) {
+                self.subst(j..j + 1, b" ", false);
+                j += 1;
+            } else if b[j] == b'{'
+                && matches!(b.get(j + 1), Some(&b'{') | Some(&b'%') | Some(&b'#'))
+            {
                 j = self.tag(j, TagCtx::Literal(b'$'));
             } else if b[j..].starts_with(delim) {
                 self.copy(j..j + dlen, false);
@@ -824,18 +911,25 @@ impl<'a> Scan<'a> {
     /// Handle the `{{`/`{%`/`{#` tag opened at `i` — unterminated markers
     /// copy the rest verbatim (a later `{{` in the remainder is text, and
     /// swallowing the tail would fabricate a shorter query that parses to
-    /// wrong edges). Returns the index after the tag.
+    /// wrong edges). Returns the index after the tag — or after the whole
+    /// paired span for the template-body `{% %}` forms
+    /// ([`Scan::block_tag`]).
     fn tag(&mut self, i: usize, ctx: TagCtx) -> usize {
         let b = self.sql.as_bytes();
         let kind = b[i + 1];
         match tag_close(b, i, kind) {
             Some(e) => {
                 match kind {
-                    b'{' => self.expr_tag(i, e, ctx),
+                    b'{' => {
+                        self.expr_tag(i, e, ctx);
+                        e + 2
+                    }
                     b'%' => self.block_tag(i, e, ctx),
-                    _ => self.subst(i..e + 2, b" ", ctx.is_top()), // `{# … #}`
+                    _ => {
+                        self.subst(i..e + 2, b" ", ctx.is_top()); // `{# … #}`
+                        e + 2
+                    }
                 }
-                e + 2
             }
             None => {
                 self.copy(i..b.len(), ctx.is_top());
@@ -897,36 +991,78 @@ impl<'a> Scan<'a> {
         }
     }
 
-    /// `{% … %}` tags drop entirely — the tag's body keeps flowing into
-    /// the output. A `{% else %}`/`{% elif %}` branch split becomes a `,`
-    /// instead of a space: inside a select list `a , b` covers BOTH
-    /// branches as separate items (the documented branch union), where
-    /// `a b` would parse as `a AS b` — the false branch's name stealing
-    /// the true branch's value. An adjacent literal comma (the
-    /// `{% if %}, b{% else %}, c{% endif %}` conditional-column idiom)
-    /// already separates the items, so a space there — and clause-level
-    /// splits (`select 1 , select 2`) just fail to parse → the safe
-    /// per-model fallback. Inside a literal a comma is just a character —
-    /// the tag always drops to a space.
-    fn block_tag(&mut self, i: usize, e: usize, ctx: TagCtx) {
+    /// `{% … %}` handling, with two body-aware exceptions:
+    ///
+    /// - A `{% set x %}…{% endset %}`/`{% macro %}…{% endmacro %}`/
+    ///   `{% call %}…{% endcall %}` block is template-side text — dbt
+    ///   evaluates the body into a variable, macro, or call result and
+    ///   never emits its SQL at this position — so the whole paired span
+    ///   renders as whitespace ([`block_body_end`] applies the same tag
+    ///   rules [`jinja_branches`] walks by; an unmatched tag falls back
+    ///   to tag-only dropping, body text and all).
+    /// - An `{% else %}`/`{% elif %}` arm split — only inside an
+    ///   `{% if %}` chain (the arm index's innermost step says which
+    ///   block kind the tag sits in; a `{% for %}`'s `{% else %}` is its
+    ///   empty-iteration fallback, never a union member) — becomes `,`
+    ///   in the union render where the position allows: inside a select
+    ///   list `a , b` covers BOTH branches as separate items (the
+    ///   documented branch union), where `a b` would parse as `a AS b` —
+    ///   the false branch's name stealing the true branch's value. An
+    ///   adjacent literal comma (the `{% if %}, b{% else %}, c{% endif %}`
+    ///   idiom) already separates the items, so a space there. An arm
+    ///   opening with `from` keeps the `,` and blanks the keyword —
+    ///   `from a ,  b` reads as a FROM-item union. An arm opening with
+    ///   any other clause keyword (`{% else %} limit 100`,
+    ///   `{% else %} where …`) can't follow `,` without the keyword
+    ///   posing as a name (`FROM a , FROM b` reads `from` as a
+    ///   relation) — it emits whitespace and the [`jinja_parse`] retry
+    ///   keeps one arm instead. Inside a literal a comma is just a
+    ///   character — the tag always drops to a space.
+    ///
+    /// Returns the index after the tag — after the `{% end… %}` for the
+    /// blanked-body forms.
+    fn block_tag(&mut self, i: usize, e: usize, ctx: TagCtx) -> usize {
+        let (word, rest) = tag_word(&self.sql[i + 2..e]);
+        if let Some(end) = block_body_end(self.sql, e + 2, word, rest) {
+            self.subst(i..end, b" ", ctx.is_top());
+            return end;
+        }
         if let TagCtx::Literal(_) = ctx {
             self.subst(i..e + 2, b" ", false);
-            return;
+            return e + 2;
         }
-        let split = jinja_branch_split(&self.sql[i + 2..e]);
-        let literal_comma = split
-            && (self.last_sig == Some(b',')
-                || self.sql.as_bytes()[e + 2..]
-                    .iter()
-                    .find(|c| !c.is_ascii_whitespace())
-                    == Some(&b','));
-        if split && !literal_comma {
-            // The offset is `out`'s current end — the byte `,` lands at.
-            self.branch_commas.insert(self.out.len());
-            self.subst(i..e + 2, b",", true);
-        } else {
-            self.subst(i..e + 2, b" ", true);
+        let if_split = self.arms == RenderArms::Union
+            && matches!(word, "elif" | "elseif" | "else")
+            && matches!(self.branches.arm_path(i).last(), Some(s) if s.kind == ArmKind::If);
+        let comma_ready = if_split
+            && self.last_sig != Some(b',')
+            && next_sig_byte(self.sql.as_bytes(), e + 2) != Some(b',');
+        if comma_ready {
+            match arm_start(self.sql.as_bytes(), e + 2, &self.lex) {
+                ArmStart::From(w) => {
+                    // The offset is `out`'s current end — the byte `,`
+                    // lands at.
+                    self.branch_commas.insert(self.out.len());
+                    self.subst(i..e + 2, b",", true);
+                    self.copy(e + 2..w.start, false);
+                    let end = w.end;
+                    self.subst(w, b" ", true);
+                    // The `from` still opens the clause for what the
+                    // arm emits — a following `{{ }}` reads FROM
+                    // position.
+                    self.note(b"from ");
+                    return end;
+                }
+                ArmStart::Boundary => {}
+                ArmStart::Other => {
+                    self.branch_commas.insert(self.out.len());
+                    self.subst(i..e + 2, b",", true);
+                    return e + 2;
+                }
+            }
         }
+        self.subst(i..e + 2, b" ", true);
+        e + 2
     }
 
     /// The render for a classified relation name — the quoted
@@ -1174,38 +1310,408 @@ fn tag_close(b: &[u8], i: usize, kind: u8) -> Option<usize> {
 /// markers inside SQL comments stay text. A `{{`/`}}` pair that can't be
 /// matched (an unterminated tag, or one whose `}}` only exists inside a
 /// later literal) leaves the remainder verbatim rather than eating it.
+#[cfg(test)]
 pub(super) fn render_jinja(sql: &str, dialect: SqlDialect) -> String {
     render_jinja_as(sql, JinjaMark::Plain, dialect)
 }
 
 /// [`render_jinja`] with an explicit marker mode — see [`JinjaMark`].
+#[cfg(test)]
 pub(super) fn render_jinja_as(sql: &str, mark: JinjaMark, dialect: SqlDialect) -> String {
     render_jinja_mapped(sql, mark, dialect).text
 }
 
 /// [`render_jinja_as`], plus the rendered→raw byte map the lint rules
-/// convert parsed spans through to point at the written file.
+/// convert parsed spans through to point at the written file — the union
+/// arm render ([`RenderArms::Union`]).
 pub(super) fn render_jinja_mapped(sql: &str, mark: JinjaMark, dialect: SqlDialect) -> RenderedSql {
-    let mut scan = Scan::new(sql, mark, Lex::new(dialect));
+    render_arms(sql, mark, dialect, RenderArms::Union)
+}
+
+/// [`render_jinja_mapped`] with an explicit arm mode — see
+/// [`RenderArms`]. The `{% if %}`/`{% for %}` arm index is built on the
+/// comment-masked text — `mask_jinja_comments`, the same masking the
+/// call-site scanner indexes — so a `{# {% else %} #}` can't fake an arm
+/// and every arm path lines up with what `CallSiteResolver` computes.
+pub(super) fn render_arms(
+    sql: &str,
+    mark: JinjaMark,
+    dialect: SqlDialect,
+    arms: RenderArms,
+) -> RenderedSql {
+    let branches = jinja_branches(&mask_jinja_comments(sql));
+    let mut scan = Scan::new(sql, mark, Lex::new(dialect), branches, arms);
     scan.run();
     scan.finish()
 }
 
-/// Is `body` (the inside of a `{% … %}` tag, whitespace-control dashes and
-/// spaces stripped) a Jinja branch split — `else`, `elif`, or `elseif`? The
-/// keyword must be followed by nothing or a non-identifier char so
-/// `{%- else -%}` matches but an identifier like `elsewhere` can't.
-pub(super) fn jinja_branch_split(body: &str) -> bool {
-    let body = body.trim_matches(|c: char| c.is_whitespace() || c == '-' || c == '+');
-    ["elseif", "else", "elif"].iter().any(|kw| {
-        body.strip_prefix(kw).is_some_and(|rest| {
-            rest.is_empty()
-                || !rest
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-        })
-    })
+/// Render `sql` and return the first parse that succeeds, trying:
+///
+/// 1. the union render as-is,
+/// 2. the union render with dangling loop separators blanked
+///    ([`strip_dangling`]) — a `{% for %}` body's
+///    `{% if not loop.last %}SEP{% endif %}` keeps the separator on the
+///    last iteration because `loop.last` can't be evaluated here,
+/// 3. the collapse render — arm 0 of every `{% if %}`/`{% for %}` chain,
+///    one render's worth of SQL, so mutually exclusive arms (`where`,
+///    `on`, `limit`, whole-statement splits) can't combine into an
+///    unparseable or phantom-fact union, and
+/// 4. the collapse render stripped the same way.
+///
+/// `None` when all four fail — the caller's unparsed-model path.
+pub(super) fn jinja_parse(
+    sql: &str,
+    mark: JinjaMark,
+    dialect: SqlDialect,
+) -> Option<(RenderedSql, Vec<Statement>)> {
+    let lex = Lex::new(dialect);
+    let mut rendered = render_jinja_mapped(sql, mark, dialect);
+    if let Some(stmts) = parse_statements(dialect, &rendered.text) {
+        return Some((rendered, stmts));
+    }
+    strip_dangling(&mut rendered, &lex);
+    if let Some(stmts) = parse_statements(dialect, &rendered.text) {
+        return Some((rendered, stmts));
+    }
+    let mut rendered = render_arms(sql, mark, dialect, RenderArms::Collapse);
+    if let Some(stmts) = parse_statements(dialect, &rendered.text) {
+        return Some((rendered, stmts));
+    }
+    strip_dangling(&mut rendered, &lex);
+    parse_statements(dialect, &rendered.text).map(|stmts| (rendered, stmts))
+}
+
+// ---------------------------------------------------------------------------
+// Parse-failure retry helpers — dangling separators and arm starts
+// ---------------------------------------------------------------------------
+
+/// Words an arm can't open with when `,` precedes it — clause starters
+/// and clause-internal boundary words (`limit`/`where`/`on`/`union`/
+/// `and`/`or`/`then`/`end`…): after a comma they'd parse as a name
+/// (`FROM a , FROM b` reads `from` as a relation) or simply fail.
+/// Deliberately absent: words a `,`-separated item legitimately starts
+/// with — `not`/`case`/function names/`over`, and the comma-joinable
+/// FROM items `lateral`/`unnest`. `select` IS included — `, select`
+/// can't union the statements — while [`dangling_at`] treats it as an
+/// operand because `union all select` is a real arm.
+const ARM_BOUNDARY_WORDS: &[&[u8]] = &[
+    b"all",
+    b"and",
+    b"anti",
+    b"apply",
+    b"as",
+    b"asof",
+    b"between",
+    b"by",
+    b"collate",
+    b"cross",
+    b"distinct",
+    b"else",
+    b"end",
+    b"escape",
+    b"except",
+    b"fetch",
+    b"for",
+    b"from",
+    b"full",
+    b"group",
+    b"having",
+    b"ilike",
+    b"in",
+    b"inner",
+    b"intersect",
+    b"into",
+    b"is",
+    b"join",
+    b"left",
+    b"like",
+    b"limit",
+    b"match_recognize",
+    b"minus",
+    b"natural",
+    b"offset",
+    b"on",
+    b"or",
+    b"order",
+    b"outer",
+    b"pivot",
+    b"prewhere",
+    b"qualify",
+    b"right",
+    b"rlike",
+    b"select",
+    b"semi",
+    b"set",
+    b"similar",
+    b"tablesample",
+    b"then",
+    b"top",
+    b"union",
+    b"unpivot",
+    b"using",
+    b"values",
+    b"when",
+    b"where",
+    b"window",
+    b"with",
+];
+
+/// What the raw text after an arm split opens with — decides whether
+/// the union render can put `,` between the arms.
+enum ArmStart {
+    /// `from` — the `Range` covers the keyword: `from a , <blank> b`
+    /// unions the keyword-per-arm idiom's relations.
+    From(Range<usize>),
+    /// A word that can't follow `,` — whitespace is the honest render;
+    /// the collapse retry then keeps one arm.
+    Boundary,
+    /// Anything else — an expression, a name, a `{{`/`{%` marker: `,`
+    /// unions the arms like today.
+    Other,
+}
+
+/// The first token an arm opens with — whitespace, SQL comments, and
+/// `{# #}` Jinja comments skipped.
+fn arm_start(b: &[u8], from: usize, lex: &Lex) -> ArmStart {
+    let mut j = from;
+    loop {
+        match b.get(j) {
+            Some(c) if c.is_ascii_whitespace() => j += 1,
+            Some(b'-') if lex.dash_comment_at(b, j) => j = line_comment_end(b, j),
+            Some(b'/') if lex.slash_comment_at(b, j) => j = line_comment_end(b, j),
+            Some(b'/') if b.get(j + 1) == Some(&b'*') => {
+                j = block_comment_end(b, j, lex.nested_comments)
+            }
+            Some(b'#') if lex.hash_comment_at(b, j) => j = line_comment_end(b, j),
+            Some(b'{') if b.get(j + 1) == Some(&b'#') => match jinja_tag_close(b, j) {
+                Some(e) => j = e + 2,
+                None => return ArmStart::Other,
+            },
+            Some(&c) if word_byte(c) => {
+                let start = j;
+                while j < b.len() && word_byte(b[j]) {
+                    j += 1;
+                }
+                let mut w = b[start..j].to_vec();
+                w.make_ascii_lowercase();
+                return if w == b"from" {
+                    ArmStart::From(start..j)
+                } else if ARM_BOUNDARY_WORDS.contains(&w.as_slice()) {
+                    ArmStart::Boundary
+                } else {
+                    ArmStart::Other
+                };
+            }
+            // Punctuation or a `{{`/`{%` marker — the arm's own render
+            // decides the shape; `,` is the honest union.
+            _ => return ArmStart::Other,
+        }
+    }
+}
+
+/// The first non-whitespace byte at or after `from` — the `,`-adjacency
+/// check's lookahead.
+fn next_sig_byte(b: &[u8], from: usize) -> Option<u8> {
+    b[from..].iter().find(|c| !c.is_ascii_whitespace()).copied()
+}
+
+/// The next `{` opening a `{{`/`{%`/`{#` marker at or after `from` —
+/// `None` when the rest of the text holds none.
+fn next_tag_open(b: &[u8], from: usize) -> Option<usize> {
+    (from..b.len().saturating_sub(1))
+        .find(|&i| b[i] == b'{' && matches!(b.get(i + 1), Some(&b'{') | Some(&b'%') | Some(&b'#')))
+}
+
+/// The offset just past the `{% end… %}` closing the template-body
+/// block `{% <word> … %}` opened — `{% set x %}` (the block form ONLY:
+/// `{% set x = … %}` is the statement, no body), `{% macro %}`,
+/// `{% call %}`. `None` for other tags and unmatched pairs — the tag
+/// then renders like any other, body text and all. Same-word blocks
+/// nest; `{% raw %}` bodies are inert; `{{`/`{#` markers are skipped
+/// whole — the same rules [`jinja_branches`] walks by.
+fn block_body_end(sql: &str, from: usize, word: &str, rest: &str) -> Option<usize> {
+    let close = match word {
+        "set" if !jinja_set_assigns(rest) => "endset",
+        "macro" => "endmacro",
+        "call" => "endcall",
+        _ => return None,
+    };
+    let b = sql.as_bytes();
+    let mut depth = 1usize;
+    let mut j = from;
+    loop {
+        let open = next_tag_open(b, j)?;
+        let e = jinja_tag_close(b, open)?;
+        if b[open + 1] == b'%' {
+            let (w, r) = tag_word(&sql[open + 2..e]);
+            if w == close {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(e + 2);
+                }
+            } else if w == "raw" {
+                // A `{% raw %}` body is inert — scan `{%` markers for
+                // `{% endraw %}` like `jinja_branches` does.
+                let mut k = e + 2;
+                loop {
+                    let t = find_subslice(b, k, b"{%")?;
+                    let te = jinja_tag_close(b, t)?;
+                    k = te + 2;
+                    if tag_word(&sql[t + 2..te]).0 == "endraw" {
+                        break;
+                    }
+                }
+                j = k;
+                continue;
+            } else if w == word && (word != "set" || !jinja_set_assigns(r)) {
+                depth += 1;
+            }
+        }
+        j = e + 2;
+    }
+}
+
+/// Blank the `,`/`and`/`or`/`union [all|distinct]`/`intersect`/`except`/
+/// `minus` separators the rendered text leaves dangling — a `{% for %}`
+/// body's `{% if not loop.last %} SEP {% endif %}` keeps the separator
+/// on the last iteration because `loop.last` can't be evaluated here,
+/// so `a, b, from t` or `x union all y union all` reaches the parser
+/// with a separator missing its right operand. A separator is dangling
+/// when the token after it can't be an operand — `)`, `;`, another
+/// separator, the text's end, or an [`ARM_BOUNDARY_WORDS`] keyword
+/// (`select` excepted: `union all select` is a real arm). Blanked
+/// bytes become spaces — every rendered offset and segment stays
+/// valid. A separator with a real operand after it (`a , b`,
+/// `x union all y`) is never touched, so the strip only fires on text
+/// that couldn't parse anyway.
+fn strip_dangling(rendered: &mut RenderedSql, lex: &Lex) {
+    let toks = sep_tokens(rendered.text.as_bytes(), lex);
+    let mut blanks: Vec<Range<usize>> = Vec::new();
+    let mut i = 0usize;
+    while i < toks.len() {
+        let (r, t) = toks[i].clone();
+        let mut sep_end = None;
+        match t {
+            Tok::Comma => sep_end = Some(r.end),
+            Tok::Word => match lower(&rendered.text, &r).as_str() {
+                "and" | "or" => sep_end = Some(r.end),
+                "union" | "intersect" | "except" | "minus" => {
+                    sep_end = Some(r.end);
+                    // `union all`/`union distinct` are one separator.
+                    if let Some((r2, Tok::Word)) = toks.get(i + 1) {
+                        let w2 = lower(&rendered.text, r2);
+                        if w2 == "all" || w2 == "distinct" {
+                            sep_end = Some(r2.end);
+                            i += 1;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        if let Some(end) = sep_end {
+            if dangling_at(&toks, i + 1, &rendered.text) {
+                blanks.push(r.start..end);
+            }
+        }
+        i += 1;
+    }
+    if blanks.is_empty() {
+        return;
+    }
+    let mut text = std::mem::take(&mut rendered.text).into_bytes();
+    for r in blanks {
+        for c in &mut text[r] {
+            *c = b' ';
+        }
+    }
+    rendered.text = String::from_utf8(text).expect("blanked bytes stay UTF-8");
+}
+
+/// The token stream [`strip_dangling`] reads — word runs and the
+/// single-byte punctuation a separator check cares about; comments and
+/// literals (every dialect form) are skipped like the parser reads
+/// them.
+#[derive(Clone, PartialEq)]
+enum Tok {
+    Word,
+    Comma,
+    RParen,
+    Semi,
+    Other,
+}
+
+fn sep_tokens(b: &[u8], lex: &Lex) -> Vec<(Range<usize>, Tok)> {
+    let mut toks = Vec::new();
+    let mut i = 0usize;
+    while i < b.len() {
+        match b[i] {
+            c if c.is_ascii_whitespace() => i += 1,
+            b'-' if lex.dash_comment_at(b, i) => i = line_comment_end(b, i),
+            b'/' if lex.slash_comment_at(b, i) => i = line_comment_end(b, i),
+            b'/' if b.get(i + 1) == Some(&b'*') => i = block_comment_end(b, i, lex.nested_comments),
+            b'#' if lex.hash_comment_at(b, i) => i = line_comment_end(b, i),
+            b'\'' if lex.q_quote_at(b, i) => i = q_quote_end(b, i),
+            q @ (b'\'' | b'"' | b'`') => i = quoted_end(b, i, q, lex.escape_for(b, i)),
+            b'$' if lex.dollar_quote => match dollar_quote_open(b, i) {
+                Some(dlen) => {
+                    let from = i + dlen;
+                    i = dollar_quote_close(b, from, &b[i..i + dlen]).map_or(b.len(), |c| c + dlen);
+                }
+                None => {
+                    toks.push((i..i + 1, Tok::Other));
+                    i += 1;
+                }
+            },
+            c if word_byte(c) => {
+                let start = i;
+                while i < b.len() && word_byte(b[i]) {
+                    i += 1;
+                }
+                toks.push((start..i, Tok::Word));
+            }
+            b',' => {
+                toks.push((i..i + 1, Tok::Comma));
+                i += 1;
+            }
+            b')' => {
+                toks.push((i..i + 1, Tok::RParen));
+                i += 1;
+            }
+            b';' => {
+                toks.push((i..i + 1, Tok::Semi));
+                i += 1;
+            }
+            _ => {
+                toks.push((i..i + 1, Tok::Other));
+                i += 1;
+            }
+        }
+    }
+    toks
+}
+
+/// Can the token at `i` (or the text's end) take a separator's operand?
+/// `)`, `;`, another separator, a clause keyword — `select` excepted:
+/// `union all select` is a real arm — and EOF can't, so the separator
+/// before them is dangling.
+fn dangling_at(toks: &[(Range<usize>, Tok)], i: usize, text: &str) -> bool {
+    match toks.get(i) {
+        None => true,
+        Some((_, Tok::Comma | Tok::RParen | Tok::Semi)) => true,
+        Some((r, Tok::Word)) => {
+            let w = lower(text, r);
+            w != "select" && ARM_BOUNDARY_WORDS.contains(&w.as_bytes())
+        }
+        Some((_, Tok::Other)) => false,
+    }
+}
+
+/// The token's bytes lowercased — separator and boundary matching is
+/// case-insensitive.
+fn lower(text: &str, r: &Range<usize>) -> String {
+    text[r.clone()].to_ascii_lowercase()
 }
 
 /// If `b[i]` opens a dollar-quoted string, the opening delimiter's byte
@@ -1402,13 +1908,17 @@ pub(crate) fn trailing_semicolon(sql: &str, dialect: SqlDialect) -> Option<Range
     let b = sql.as_bytes();
     // `(position, byte)` of the last meaningful byte — a Jinja mark
     // contributes a synthetic byte (no raw byte stands for it, and marks
-    // never end in `;`, so it can't be the tail). `{%` emits `,` on a
-    // branch split unless a literal comma already separates the items —
-    // the same adjacency rule the render applies, tracked as the byte.
+    // never end in `;`, so it can't be the tail). `{%` emits `,` on an
+    // `{% if %}` chain's arm split unless a literal comma already
+    // separates the items or the next arm opens with a clause keyword —
+    // the same rule the union render applies, tracked as the byte.
     let mut last: Option<(usize, u8)> = None;
     // Set by an unterminated Jinja marker — the render copies the rest
     // verbatim, so a later `{{` in the remainder is text, not a marker.
     let mut verbatim = false;
+    // The arm index — built lazily on the first `{%` tag (most SQL
+    // holds none).
+    let mut branches: Option<JinjaBranches> = None;
     let mut i = 0;
     while i < b.len() {
         match b[i] {
@@ -1462,16 +1972,35 @@ pub(crate) fn trailing_semicolon(sql: &str, dialect: SqlDialect) -> Option<Range
                                     last = Some((i, b'"'));
                                 }
                             }
-                            // `{% … %}` emits `,` on a branch split
-                            // (`{% else %}`) unless a literal comma
-                            // already separates the items — meaningful
-                            // either way only when it emits `,`.
-                            b'%' if jinja_branch_split(&sql[i + 2..e])
-                                && last.map(|(_, c)| c) != Some(b',')
-                                && b[e + 2..].iter().find(|c| !c.is_ascii_whitespace())
-                                    != Some(&b',') =>
-                            {
-                                last = Some((i, b','));
+                            // `{% … %}` emits `,` only at an
+                            // `{% if %}` chain's `{% elif %}`/`{% else %}`
+                            // split where no literal `,` is adjacent and
+                            // the next arm doesn't open with a
+                            // non-`from` clause keyword — the union
+                            // render's exact emission condition.
+                            b'%' => {
+                                let branches = branches.get_or_insert_with(|| {
+                                    jinja_branches(&mask_jinja_comments(sql))
+                                });
+                                let (word, rest) = tag_word(&sql[i + 2..e]);
+                                // A `{% set %}`/`{% macro %}`/`{% call %}`
+                                // body renders whitespace too — skip the
+                                // whole paired span like `block_tag` does.
+                                if let Some(end) = block_body_end(sql, e + 2, word, rest) {
+                                    i = end;
+                                    continue;
+                                }
+                                if matches!(word, "elif" | "elseif" | "else")
+                                    && matches!(
+                                        branches.arm_path(i).last(),
+                                        Some(s) if s.kind == ArmKind::If
+                                    )
+                                    && last.map(|(_, c)| c) != Some(b',')
+                                    && next_sig_byte(b, e + 2) != Some(b',')
+                                    && !matches!(arm_start(b, e + 2, &lex), ArmStart::Boundary)
+                                {
+                                    last = Some((i, b','));
+                                }
                             }
                             // `{# … #}` emits nothing.
                             _ => {}

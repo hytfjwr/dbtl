@@ -135,6 +135,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   positions pair, and a model whose render produces no statements —
   whitespace, comments, or an output-less `{{ config() }}` — is judged
   empty instead of counted among the unparsable.
+- Source-mode raw SQL now renders Jinja template blocks, loops, and
+  non-`FROM` branches instead of choking on them: `{% set x %}…{%
+  endset %}`, `{% macro %}…{% endmacro %}`, and `{% call %}…{% endcall
+  %}` bodies (nested forms included) are template-side text and blank
+  out whole, so their interior SQL no longer splits a model into phantom
+  statements; a `{% for %}` body's trailing `{% if not loop.last %}`
+  separator (`union all`, `,`, `and`, `or`) is blanked on a parse retry
+  so one-iteration renders still parse; and mutually exclusive `{% if
+  %}`/`{% else %}` arms in non-`FROM` positions (`where`, `join … on`,
+  `limit`, whole-statement splits) no longer combine — the render falls
+  back to one arm's worth of SQL, so `duplicate_output_columns`,
+  `unused_cte`, `hard_coded_references`, and `cartesian_join` only
+  report findings a single real render can produce. `{% else %}from …`
+  arms still union as `FROM` items (the repeated `from` blanks under
+  the branch comma, so `from` never poses as a written relation), a
+  `{% for %}`'s `{% else %}` correctly renders its empty-iteration
+  fallback instead of a fake union member, and both branch alternatives
+  keep their `ref()`/`source()` graph edges — only the
+  simultaneous-execution lint claims went away.
 
 ## [0.6.4] - 2026-11-13
 

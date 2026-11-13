@@ -52,6 +52,7 @@ use std::rc::Rc;
 
 use crate::catalog::Catalog;
 use crate::dag::Dag;
+use crate::source::{arms_exclusive, ArmStep};
 use sqlparser::ast::{
     AccessExpr, Distinct, ExcludeSelectItem, Expr, Function, FunctionArg, FunctionArgExpr,
     FunctionArgumentClause, FunctionArguments, GroupByExpr, Ident, InTarget, Join, JoinConstraint,
@@ -86,10 +87,9 @@ mod scope;
 mod tests;
 
 use ast::*;
-use depth::parse_statements;
 pub use dialect::SqlDialect;
 use dialect::{date_part_arg_position, is_date_part_word};
-use facts::{outer_order_by_span, star_over_single_explicit_cte};
+use facts::{outer_order_by_span, output_name_occurrences, star_over_single_explicit_cte};
 pub(crate) use jinja::trailing_semicolon;
 use jinja::*;
 use positions::{marked_relations, plain_positions};
@@ -465,8 +465,7 @@ impl SqlParseResolver {
     /// reason still catches the edit).
     fn compute_expr_map(&self, dag: &Dag, uid: &str) -> Option<BTreeMap<String, String>> {
         let (text, _) = resolution_sql(dag, uid)?;
-        let sql = render_jinja(text, self.dialect);
-        let stmts = parse_statements(self.dialect, &sql)?;
+        let (_, stmts) = jinja_parse(text, JinjaMark::Plain, self.dialect)?;
         let query = stmts.iter().find_map(|s| match s {
             Statement::Query(q) => Some(&**q),
             _ => None,
@@ -520,8 +519,7 @@ impl SqlParseResolver {
             return None; // uid cycle — degrade the re-entered node
         }
         let out = (|| {
-            let rendered = render_jinja_mapped(text, JinjaMark::Plain, self.dialect);
-            let stmts = parse_statements(self.dialect, &rendered.text)?;
+            let (rendered, stmts) = jinja_parse(text, JinjaMark::Plain, self.dialect)?;
             // A render producing no statements — whitespace, comments, or
             // config-only (`{{ config() }}` renders to whitespace) — is
             // judged-and-empty, not unparsable: the SQL rules find nothing,
@@ -573,6 +571,39 @@ impl SqlParseResolver {
                         dup_counts.push(1);
                     }
                 }
+            }
+            // A name whose occurrences sit in mutually exclusive
+            // `{% if %}`/`{% else %}` arms reaches one render only as
+            // often as its largest co-runnable set — count each name
+            // there, or an `if`/`else` pair of same-named columns
+            // fabricates a duplicate no real render contains.
+            let name_spans = output_name_occurrences(query);
+            for (idx, name) in dup_order.iter().enumerate() {
+                if dup_counts[idx] <= 1 {
+                    continue;
+                }
+                let mut paths: Vec<Vec<ArmStep>> = name_spans
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, spans)| {
+                        spans
+                            .iter()
+                            .map(|s| rendered.span_arm_path(*s).unwrap_or_default())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // Occurrences whose span doesn't map to a written
+                // position can't be arm-attributed — unconditional.
+                while paths.len() < dup_counts[idx] {
+                    paths.push(Vec::new());
+                }
+                let mut kept: Vec<&Vec<ArmStep>> = Vec::new();
+                for path in &paths {
+                    if kept.iter().all(|k| !arms_exclusive(k, path)) {
+                        kept.push(path);
+                    }
+                }
+                dup_counts[idx] = kept.len().min(dup_counts[idx]);
             }
             Some(Rc::new(Analyzed {
                 scope,

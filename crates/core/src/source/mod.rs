@@ -192,6 +192,8 @@ use yaml::*;
 // machinery as the loaders' own pass, not a second implementation.
 pub use collect::mask_jinja_comments;
 pub use patterns::{
-    arms_exclusive, call_sites_masked, jinja_branches, ArmStep, CallKind, CallSite, JinjaBranches,
+    arms_exclusive, call_sites_masked, jinja_branches, ArmKind, ArmStep, CallKind, CallSite,
+    JinjaBranches,
 };
 pub(crate) use patterns::{config_arg, lit_value};
+pub(crate) use patterns::{find_subslice, jinja_set_assigns, jinja_tag_close, tag_word};
