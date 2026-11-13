@@ -8,7 +8,7 @@ description: Run static best-practice rules over your dbt project graph, with se
 ```sh
 dbtl lint                                   # auto-detect the data source
 dbtl lint --manifest target/manifest.json
-dbtl lint --select 'path:marts+'            # restrict findings to a selector
+dbtl lint --select 'path:models/marts+'            # restrict findings to a selector
 dbtl lint --rules root_models,model_fanout  # a named subset
 dbtl lint --fail-on warn                    # fail on warnings too
 ```

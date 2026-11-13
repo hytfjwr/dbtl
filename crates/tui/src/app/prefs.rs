@@ -14,6 +14,25 @@ impl App {
         &self.lint_config
     }
 
+    /// The full [`run_rules`](crate::run_rules) outcome under the app's
+    /// current dag/config/catalog/dialect — findings PLUS the evaluation
+    /// warnings (deprecated selector forms in `exclude:`/rule params).
+    /// Every lint recompute goes through this so a warning can never
+    /// evaluate-and-drop.
+    pub(super) fn lint_outcome(&self) -> crate::LintOutcome {
+        crate::run_rules(
+            crate::LintInput::new(&self.dag, &self.lint_config)
+                .with_catalog(self.catalog.as_deref())
+                .with_dialect(self.sql_dialect),
+        )
+    }
+
+    /// `outcome.warnings` as pending-notice text — a Warning-level toast,
+    /// `; `-joined like the `.dbtl.yml` load warnings.
+    fn notice_lint_warnings(outcome: &crate::LintOutcome) -> Option<String> {
+        (!outcome.warnings.is_empty()).then(|| format!("warning: {}", outcome.warnings.join("; ")))
+    }
+
     /// Replace the lint configuration and recompute findings (test/CLI seam —
     /// production gets its config from the auto-detected `.dbtl.yml`). Findings
     /// are a style input, so the generation bumps like a reload — and under
@@ -22,12 +41,12 @@ impl App {
     /// toggles and `reload` use.
     pub fn set_lint_config(&mut self, config: crate::LintConfig) {
         self.lint_config = config;
-        self.lint_findings = crate::run_rules(
-            crate::LintInput::new(&self.dag, &self.lint_config)
-                .with_catalog(self.catalog.as_deref())
-                .with_dialect(self.sql_dialect),
-        )
-        .findings;
+        let outcome = self.lint_outcome();
+        let w = Self::notice_lint_warnings(&outcome);
+        self.lint_findings = outcome.findings;
+        if let Some(w) = w {
+            self.set_notice_level(NoticeLevel::Warning, w);
+        }
         self.generation += 1;
         if self.list_filter == ListFilter::Linted {
             self.apply_list_filter();
@@ -87,12 +106,12 @@ impl App {
         }
         // The catalog is also a lint input (`Requires::Catalog` rules read
         // it) — recompute so the Lint lens tracks the new file.
-        self.lint_findings = crate::run_rules(
-            crate::LintInput::new(&self.dag, &self.lint_config)
-                .with_catalog(self.catalog.as_deref())
-                .with_dialect(self.sql_dialect),
-        )
-        .findings;
+        let outcome = self.lint_outcome();
+        let w = Self::notice_lint_warnings(&outcome);
+        self.lint_findings = outcome.findings;
+        if let Some(w) = w {
+            self.set_notice_level(NoticeLevel::Warning, w);
+        }
         self.generation += 1;
         Ok(())
     }
@@ -294,12 +313,12 @@ impl App {
             self.diff = Some(compute_diff_with(base, &self.dag, &base_res, &self.cll));
             self.diff_cll = Some(base_res);
         }
-        self.lint_findings = crate::run_rules(
-            crate::LintInput::new(&self.dag, &self.lint_config)
-                .with_catalog(self.catalog.as_deref())
-                .with_dialect(self.sql_dialect),
-        )
-        .findings;
+        let outcome = self.lint_outcome();
+        let w = Self::notice_lint_warnings(&outcome);
+        self.lint_findings = outcome.findings;
+        if let Some(w) = w {
+            self.set_notice_level(NoticeLevel::Warning, w);
+        }
         self.generation += 1;
     }
 

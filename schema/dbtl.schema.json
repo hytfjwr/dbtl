@@ -808,7 +808,7 @@
               ]
             },
             "exposures_dependent_on_private_models": {
-              "description": "an exposure depends on a private/protected model",
+              "description": "an exposure depends on a model outside the allowed access levels",
               "anyOf": [
                 {
                   "type": "boolean"
@@ -839,6 +839,21 @@
                         "type": "string"
                       },
                       "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    },
+                    "allowed_access": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "public",
+                          "protected",
+                          "private"
+                        ]
+                      },
+                      "default": [
+                        "public"
+                      ],
+                      "description": "access levels an exposure's model parents may declare — dbt defaults undeclared models to `protected`, so projects without explicit `access:` should add `protected` here or disable the rule"
                     }
                   }
                 }

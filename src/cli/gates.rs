@@ -48,7 +48,8 @@ pub fn run_impact(
     let selection = if select.is_empty() {
         None
     } else {
-        let sel = selector_set(&resolved.dag, Some(&diff), select);
+        let (sel, notes) = selector_set_report(&resolved.dag, Some(&diff), select);
+        warn_each("", &notes);
         if sel.is_empty() {
             eprintln!("warning: --select '{}' matched no nodes", select.join(" "));
         }
@@ -634,6 +635,8 @@ impl CheckRun<'_> {
                 selection: self.selection.as_ref(),
                 read_text,
             });
+            // `exclude:`/selector-param deprecation notes — one line each.
+            warn_each("", &assembly.warnings);
             gates.extend(assembly.gates);
             report.lint = Some(assembly.tally);
         }
@@ -727,7 +730,8 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
     let selection = if args.select.is_empty() {
         None
     } else {
-        let sel = selector_set(dag, diff.as_ref(), args.select);
+        let (sel, notes) = selector_set_report(dag, diff.as_ref(), args.select);
+        warn_each("", &notes);
         if sel.is_empty() {
             eprintln!(
                 "warning: --select '{}' matched no nodes",

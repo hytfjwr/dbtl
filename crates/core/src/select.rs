@@ -16,6 +16,19 @@
 //! without glob characters keeps the exact-match behavior — no pattern
 //! syntax is interpreted otherwise.
 //!
+//! `path:` follows dbt's own `PathSelectorMethod`: the pattern is a glob
+//! over paths RELATIVE TO THE PROJECT ROOT (`*`/`?`/`[…]` never cross a
+//! `/`, a `**` segment spans directories), and a node matches when its
+//! `original_file_path` or any ancestor directory of it matches, or its
+//! `patch_path` matches the pattern itself — so `path:models/staging`
+//! selects everything under that dir, and `path:models/**/schema.yml`
+//! reaches the `.yml`-patched nodes too.
+//! For compatibility the pre-dbt-semantics form — the path RELATIVE TO the
+//! resource directory (`path:staging` for `models/staging/stg.sql`) — still
+//! matches, but [`select_report`] surfaces a deprecation note naming the
+//! project-relative rewrite each CLI surface prints once. The legacy
+//! substring read (`path:marts` also hitting `stg_marts.sql`) is gone.
+//!
 //! `2+name` = the node plus ≤2 upstream hops; `name+` = node + all downstream;
 //! `+name+` = both directions. `state:modified[+]` selects the [`DagDiff`]
 //! changed set (added ∪ modified) when a diff is loaded — the in-app
@@ -39,18 +52,37 @@ use crate::{is_exposure, Dag, DagDiff};
 /// the matching `unique_id` set. Union across whitespace-separated terms,
 /// intersection across each term's comma-separated factors.
 pub fn select(dag: &Dag, diff: Option<&DagDiff>, spec: &str) -> BTreeSet<String> {
+    select_report(dag, diff, spec).0
+}
+
+/// [`select`] plus the evaluation's deprecation notes — currently the
+/// `path:` legacy resource-relative form still matching (each note names
+/// the project-relative rewrite). Non-interactive surfaces print them once
+/// per invocation on stderr (`warning: …`); the interactive `!` search
+/// ignores them — a partially typed spec warns about nothing.
+pub fn select_report(
+    dag: &Dag,
+    diff: Option<&DagDiff>,
+    spec: &str,
+) -> (BTreeSet<String>, Vec<String>) {
     let mut out = BTreeSet::new();
+    let mut notes = BTreeSet::new();
     for term in spec.split_whitespace() {
-        out.extend(evaluate_term(dag, diff, term));
+        out.extend(evaluate_term(dag, diff, term, &mut notes));
     }
-    out
+    (out, notes.into_iter().collect())
 }
 
 /// One comma-separated intersection term.
-fn evaluate_term(dag: &Dag, diff: Option<&DagDiff>, term: &str) -> BTreeSet<String> {
+fn evaluate_term(
+    dag: &Dag,
+    diff: Option<&DagDiff>,
+    term: &str,
+    notes: &mut BTreeSet<String>,
+) -> BTreeSet<String> {
     let mut acc: Option<BTreeSet<String>> = None;
     for factor in term.split(',') {
-        let set = evaluate_factor(dag, diff, factor);
+        let set = evaluate_factor(dag, diff, factor, notes);
         acc = Some(match acc {
             None => set,
             Some(prev) => prev.intersection(&set).cloned().collect(),
@@ -60,7 +92,12 @@ fn evaluate_term(dag: &Dag, diff: Option<&DagDiff>, term: &str) -> BTreeSet<Stri
 }
 
 /// `[@N+] atom [+]` — an atom set plus its bounded neighbourhood.
-fn evaluate_factor(dag: &Dag, diff: Option<&DagDiff>, factor: &str) -> BTreeSet<String> {
+fn evaluate_factor(
+    dag: &Dag,
+    diff: Option<&DagDiff>,
+    factor: &str,
+    notes: &mut BTreeSet<String>,
+) -> BTreeSet<String> {
     // Leading hops: "+" or "<n>+" before the atom.
     let (up_hops, rest) = match factor.split_once('+') {
         Some(("", rest)) => (None, rest), // +x
@@ -75,7 +112,7 @@ fn evaluate_factor(dag: &Dag, diff: Option<&DagDiff>, factor: &str) -> BTreeSet<
         Some(a) => (a, true),
         None => (rest, false),
     };
-    let base = evaluate_atom(dag, diff, atom);
+    let base = evaluate_atom(dag, diff, atom, notes);
     if up_hops == 0 && !down {
         return base;
     }
@@ -93,8 +130,16 @@ fn evaluate_factor(dag: &Dag, diff: Option<&DagDiff>, factor: &str) -> BTreeSet<
     out
 }
 
-/// The atom's direct match set (before hop expansion).
-fn evaluate_atom(dag: &Dag, diff: Option<&DagDiff>, atom: &str) -> BTreeSet<String> {
+/// The atom's direct match set (before hop expansion). `notes` collects
+/// the deprecation texts an atom's evaluation produced (the `path:` legacy
+/// form), deduplicated by the `BTreeSet` so a spec repeating one atom notes
+/// once.
+fn evaluate_atom(
+    dag: &Dag,
+    diff: Option<&DagDiff>,
+    atom: &str,
+    notes: &mut BTreeSet<String>,
+) -> BTreeSet<String> {
     let nodes = || dag.nodes().iter();
     // `config.materialized:x` — the key itself is dotted, so handle it before
     // the generic `key:value` split (a bare split_once(':') would misread it
@@ -133,10 +178,67 @@ fn evaluate_atom(dag: &Dag, diff: Option<&DagDiff>, atom: &str) -> BTreeSet<Stri
             })
             .map(|(uid, _)| uid.clone())
             .collect(),
-        Some(("path", p)) => nodes()
-            .filter(|(_, n)| n.path.as_deref().is_some_and(|np| np.contains(p)))
-            .map(|(uid, _)| uid.clone())
-            .collect(),
+        Some(("path", p)) => {
+            // `path:x/` reads like `path:x` — `Path` drops the trailing
+            // slash the same way.
+            let p = p.trim_end_matches('/');
+            let re = path_glob_regex(p);
+            let mut set = BTreeSet::new();
+            let mut legacy_only = BTreeSet::new();
+            for (uid, n) in dag.nodes() {
+                let d = dag.detail(uid);
+                // dbt's PathSelectorMethod: the project-root-relative
+                // `original_file_path` and each of its ancestor directories
+                // are match targets; `patch_path` must match the selector
+                // itself (`ymlfp in paths` — no ancestor walk).
+                let current = d.is_some_and(|d| {
+                    d.original_file_path
+                        .as_deref()
+                        .is_some_and(|ofp| path_or_ancestors_match(&re, ofp))
+                        || d.patch_path.as_deref().is_some_and(|pp| re.is_match(pp))
+                });
+                if current {
+                    set.insert(uid.clone());
+                    continue;
+                }
+                // The legacy form — the path relative to the node's
+                // resource directory (`n.path`) with the same
+                // file-or-ancestor reading — still matches but notes a
+                // deprecation: the match only exists because this
+                // resource-relative form did.
+                if n.path
+                    .as_deref()
+                    .is_some_and(|np| path_or_ancestors_match(&re, np))
+                {
+                    set.insert(uid.clone());
+                    legacy_only.insert(uid.clone());
+                }
+            }
+            if !legacy_only.is_empty() {
+                // The project-relative rewrite each matched node suggests —
+                // usually one (`path:staging` → `path:models/staging`), one
+                // per resource root when several matched.
+                let mut rewrites = BTreeSet::new();
+                for uid in &legacy_only {
+                    if let Some(r) = legacy_path_rewrite(dag, uid, p) {
+                        rewrites.insert(format!("'path:{r}'"));
+                    }
+                }
+                let suggestion = if rewrites.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        ": {}",
+                        rewrites.into_iter().collect::<Vec<_>>().join(" or ")
+                    )
+                };
+                notes.insert(format!(
+                    "selector '{atom}' uses the deprecated resource-relative path form \
+                     — write it project-relative instead{suggestion}"
+                ));
+            }
+            set
+        }
         Some(("exposure", e)) => {
             // Models feeding the named exposure = its upstream closure + the
             // exposure itself (matches `dbt --select exposure:x` semantics).
@@ -389,6 +491,172 @@ pub(crate) fn glob_regex(pattern: &str) -> regex::Regex {
     regex::Regex::new(&out).unwrap_or_else(|_| regex::Regex::new("\\A\\z").unwrap())
 }
 
+/// The `path:` glob translation — pathlib `Path.glob` semantics like dbt's
+/// own path selector: `*`, `?` and `[…]` never cross a `/` boundary, and a
+/// whole-segment `**` spans zero or more directories (`a/**/b` matches
+/// `a/b`, `a/**` matches `a` itself — the globbed set is a path PREFIX the
+/// ancestor check then re-derives). The same total-fnmatch degradation
+/// [`glob_regex`] applies: an unterminated `[` is a literal.
+fn path_glob_regex(pattern: &str) -> regex::Regex {
+    let mut out = String::from("\\A(?s)");
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        // A whole-segment `**` — zero or more path segments.
+        if c == '*'
+            && chars.get(i + 1) == Some(&'*')
+            && (i == 0 || chars[i - 1] == '/')
+            && chars.get(i + 2).is_none_or(|c| *c == '/')
+        {
+            let whole = i == 0;
+            i += 2;
+            match chars.get(i) {
+                // `…/**` at the end matches the prefix dir itself too — fold
+                // the just-emitted literal `/` into the optional tail.
+                // `**` as the whole pattern matches every path.
+                None => {
+                    if !whole && out.ends_with('/') {
+                        out.pop();
+                        out.push_str("(?:/.*)?");
+                    } else {
+                        out.push_str(".*");
+                    }
+                }
+                // `…/**/` at the end reads the same as `…/**`.
+                Some('/') if i + 1 == chars.len() => {
+                    if !whole && out.ends_with('/') {
+                        out.pop();
+                        out.push_str("(?:/.*)?");
+                    } else {
+                        out.push_str(".*");
+                    }
+                    i += 1;
+                }
+                // `**/…` — the segment plus its slash, both optional.
+                Some('/') => {
+                    out.push_str("(?:.*/)?");
+                    i += 1;
+                }
+                _ => unreachable!("checked above"),
+            }
+            continue;
+        }
+        match c {
+            '*' => out.push_str("[^/]*"),
+            '?' => out.push_str("[^/]"),
+            '[' => {
+                // Same fnmatch class as `glob_regex`, `/`-bounded.
+                let mut j = i + 1;
+                let mut negated = false;
+                if chars.get(j) == Some(&'!') {
+                    negated = true;
+                    j += 1;
+                }
+                let mut body = String::new();
+                let mut first = true;
+                let mut closed = false;
+                while let Some(&c) = chars.get(j) {
+                    if c == ']' && !first {
+                        closed = true;
+                        j += 1;
+                        break;
+                    }
+                    first = false;
+                    body.push(c);
+                    j += 1;
+                }
+                if !closed {
+                    // Unterminated `[` — literals, like `glob_regex`.
+                    out.push_str("\\[");
+                    if negated {
+                        out.push('!');
+                    }
+                    out.push_str(&regex::escape(&body));
+                    i = j;
+                    continue;
+                }
+                let emit_body = |out: &mut String, body: &str| {
+                    for c in body.chars() {
+                        // Inside a class, `[` `\` `]` `^` need escaping for
+                        // the regex crate; `-` keeps its range meaning.
+                        if matches!(c, '[' | '\\' | ']' | '^') {
+                            out.push('\\');
+                        }
+                        out.push(c);
+                    }
+                };
+                if negated {
+                    // `[^…]` must still refuse `/` — append it to the
+                    // exclusion set.
+                    out.push_str("[^");
+                    emit_body(&mut out, &body);
+                    out.push('/');
+                    out.push(']');
+                } else {
+                    // A positive class can't match `/` either — strip it
+                    // (an all-`/` body then matches nothing: `[^\s\S]`).
+                    let body: String = body.chars().filter(|c| *c != '/').collect();
+                    if body.is_empty() {
+                        out.push_str("[^\\s\\S]");
+                    } else {
+                        out.push('[');
+                        emit_body(&mut out, &body);
+                        out.push(']');
+                    }
+                }
+                i = j;
+                continue;
+            }
+            c => out.push_str(&regex::escape(&c.to_string())),
+        }
+        i += 1;
+    }
+    out.push_str("\\z");
+    // Only literals/classes/segment-bound wildcards are emitted, so it
+    // always compiles; the fallback can never match.
+    regex::Regex::new(&out).unwrap_or_else(|_| regex::Regex::new("\\A\\z").unwrap())
+}
+
+/// Does `re` match `path` or any of its ancestor directories — dbt's
+/// `ofp in paths or any(parent in paths)` check. The trailing `/` walk
+/// visits each strict prefix at a `/` boundary (`a/b/c.sql` → `a/b`, `a`).
+fn path_or_ancestors_match(re: &regex::Regex, path: &str) -> bool {
+    let mut rest = path;
+    loop {
+        if re.is_match(rest) {
+            return true;
+        }
+        let Some((dir, _)) = rest.rsplit_once('/') else {
+            return false;
+        };
+        rest = dir;
+    }
+}
+
+/// The project-relative rewrite a legacy-matched node suggests for `path:`.
+/// `n.path` is the node's path under its resource directory; when
+/// `original_file_path` carries it as a suffix (`models/` + `staging/x.sql`),
+/// the rewrite is that resource root prepended to the pattern — else the
+/// node's own file path is the most honest suggestion.
+fn legacy_path_rewrite(dag: &Dag, uid: &str, pattern: &str) -> Option<String> {
+    let n = dag.get(uid)?;
+    let np = n.path.as_deref()?;
+    let ofp = dag
+        .detail(uid)
+        .and_then(|d| d.original_file_path.as_deref());
+    match ofp {
+        Some(ofp) if ofp.len() > np.len() && ofp.ends_with(np) => {
+            Some(format!("{}{}", &ofp[..ofp.len() - np.len()], pattern))
+        }
+        Some(ofp) => Some(ofp.to_string()),
+        // No project-relative anchor to suggest from — a bare `n.path`
+        // rewrite would still be the deprecated form (models carry
+        // resource-dir-relative paths). Better the note's generic tail.
+        None => None,
+    }
+}
+
 /// `unique_id` → neighbour `unique_id`s, from the kept edge list.
 /// `up=true` gives parents (upstream walk), `false` gives children.
 fn adjacency(dag: &Dag, up: bool) -> HashMap<String, Vec<String>> {
@@ -433,7 +701,9 @@ mod tests {
     use crate::Dag;
 
     /// stg -> int -> fct (+ a lone `other`), with tags/materializations/paths
-    /// parameterizable by test.
+    /// parameterizable by test. `original_file_path` is set the way real
+    /// manifests carry it — `models/` + the resource-relative `path` — so
+    /// `path:` exercises the project-root-relative (dbt) read.
     pub(super) fn dag() -> Dag {
         let mk = |uid: &str, name: &str, path: &str, mat: &str, deps: &[&str], tags: &[&str]| {
             (
@@ -442,6 +712,7 @@ mod tests {
                     name: name.into(),
                     resource_type: "model".into(),
                     path: Some(path.into()),
+                    original_file_path: Some(format!("models/{path}")),
                     raw_code: Some("select 1".into()),
                     config: crate::RawConfig {
                         materialized: Some(mat.into()),
@@ -618,10 +889,246 @@ mod tests {
         let d = dag();
         assert_eq!(names(&select(&d, None, "fct")), vec!["fct"]);
         assert_eq!(names(&select(&d, None, "tag:nightly")), vec!["int", "stg"]);
-        assert_eq!(names(&select(&d, None, "path:staging")), vec!["stg"]);
+        // The legacy resource-relative spelling still selects — and notes.
+        let (set, notes) = select_report(&d, None, "path:staging");
+        assert_eq!(names(&set), vec!["stg"]);
+        assert_eq!(
+            notes,
+            vec![
+                "selector 'path:staging' uses the deprecated resource-relative \
+                 path form — write it project-relative instead: \
+                 'path:models/staging'"
+                    .to_string()
+            ]
+        );
+        // The project-root-relative (dbt) spelling selects without noting.
+        let (set, notes) = select_report(&d, None, "path:models/staging");
+        assert_eq!(names(&set), vec!["stg"]);
+        assert!(notes.is_empty());
         assert_eq!(
             names(&select(&d, None, "config.materialized:table")),
             vec!["fct", "other"]
+        );
+    }
+
+    /// A `path:`-semantics testbed: a model + a source + an exposure under
+    /// `models/staging`/`models/marts`, plus `stg_marts` (a shared-prefix
+    /// name the old substring read would false-positive) and a `seed` dir
+    /// model patched by `models/marts/schema.yml` (the `patch_path` case).
+    /// Sources/exposures carry project-relative `path` already — the same
+    /// shape real manifests produce.
+    fn path_dag() -> Dag {
+        let mk_model = |uid: &str, path: &str, patch: Option<&str>| {
+            (
+                uid.to_string(),
+                RawNode {
+                    name: uid.rsplit('.').next().unwrap().into(),
+                    resource_type: "model".into(),
+                    path: Some(path.into()),
+                    original_file_path: Some(format!("models/{path}")),
+                    patch_path: patch.map(|p| format!("p://{p}")),
+                    ..Default::default()
+                },
+            )
+        };
+        let mut nodes = HashMap::from([
+            mk_model("model.p.stg", "staging/stg.sql", None),
+            mk_model("model.p.mart", "marts/mart.sql", None),
+            mk_model("model.p.stg_marts", "marts/stg_marts.sql", None),
+            mk_model(
+                "model.p.seeded",
+                "seeded.sql",
+                Some("models/marts/schema.yml"),
+            ),
+        ]);
+        nodes.extend([mk_model("model.p.deep", "marts/core/deep.sql", None)]);
+        let sources = HashMap::from([(
+            "source.p.raw.stg".to_string(),
+            crate::manifest::RawSource {
+                name: "stg".into(),
+                path: Some("models/staging/schema.yml".into()),
+                original_file_path: Some("models/staging/schema.yml".into()),
+                ..Default::default()
+            },
+        )]);
+        let exposures = HashMap::from([(
+            "exposure.p.dash".to_string(),
+            crate::manifest::RawExposure {
+                name: "dash".into(),
+                path: Some("marts/schema.yml".into()),
+                original_file_path: Some("models/marts/schema.yml".into()),
+                ..Default::default()
+            },
+        )]);
+        Dag::build(&RawManifest {
+            unresolved_adjacent: Default::default(),
+            metadata: Default::default(),
+            nodes,
+            sources,
+            exposures,
+            macros: HashMap::new(),
+            semantic_models: HashMap::new(),
+            metrics: HashMap::new(),
+            saved_queries: HashMap::new(),
+            unit_tests: HashMap::new(),
+            functions: HashMap::new(),
+            parent_map: HashMap::new(),
+            child_map: HashMap::new(),
+            docs: Default::default(),
+        })
+    }
+
+    /// uids, keeping resource type — path tests mix models/sources/exposures.
+    fn uids(set: &BTreeSet<String>) -> Vec<String> {
+        set.iter()
+            .map(|u| {
+                let mut s = u.split('.');
+                format!("{}.{}", s.next().unwrap(), s.next_back().unwrap())
+            })
+            .collect()
+    }
+
+    /// dbt `PathSelectorMethod`: match `original_file_path`, any ancestor
+    /// dir of it, or `patch_path` — all project-root-relative.
+    #[test]
+    fn path_matches_original_file_path_ancestors_and_patch() {
+        let d = path_dag();
+        // An ancestor dir of `original_file_path` selects the node —
+        // model AND source AND exposure under `models/marts`/`staging`.
+        assert_eq!(
+            uids(&select(&d, None, "path:models/staging")),
+            vec!["model.stg", "source.stg"]
+        );
+        assert_eq!(
+            uids(&select(&d, None, "path:models/marts")),
+            vec![
+                "exposure.dash",
+                "model.deep",
+                "model.mart",
+                "model.stg_marts"
+            ]
+        );
+        // `model.seeded` does NOT match here: `patch_path` gets no
+        // ancestor walk in dbt — `models/marts/schema.yml` must match the
+        // selector itself, and a directory isn't that file (the glob
+        // forms below that DO name it select it).
+        // The project root itself selects everything (5 models + source +
+        // exposure).
+        assert_eq!(select(&d, None, "path:models").len(), 7);
+        // An exact file path matches too (dbt `ofp in paths`).
+        assert_eq!(
+            uids(&select(&d, None, "path:models/marts/mart.sql")),
+            vec!["model.mart"]
+        );
+        // Boundary-respecting: `mart` is neither an ancestor segment nor a
+        // substring of `stg_marts.sql` — the old substring read is gone.
+        assert!(select(&d, None, "path:models/mart").is_empty());
+        assert!(select(&d, None, "path:mart").is_empty());
+    }
+
+    /// `path:` globs: `*`/`?`/`[…]` never cross `/`, a `**` segment spans
+    /// directories — pathlib `Path.glob` semantics like dbt's.
+    #[test]
+    fn path_globs() {
+        let d = path_dag();
+        // `*` stays inside its segment.
+        assert_eq!(
+            uids(&select(&d, None, "path:models/marts/*.sql")),
+            vec!["model.mart", "model.stg_marts"]
+        );
+        // `**` spans — and `a/**` includes `a` itself (the ancestor check
+        // then re-derives everything beneath). `seeded` joins through
+        // `patch_path`: `models/marts/**` matches `schema.yml` itself.
+        assert_eq!(
+            uids(&select(&d, None, "path:models/marts/**")),
+            vec![
+                "exposure.dash",
+                "model.deep",
+                "model.mart",
+                "model.seeded",
+                "model.stg_marts"
+            ]
+        );
+        assert_eq!(
+            uids(&select(&d, None, "path:**/deep.sql")),
+            vec!["model.deep"]
+        );
+        // `stg*` is a FILE-name glob — the source's `schema.yml` doesn't
+        // start with `stg`, so only the two models match.
+        assert_eq!(
+            uids(&select(&d, None, "path:models/**/stg*")),
+            vec!["model.stg", "model.stg_marts"]
+        );
+        // `?` — one char, segment-bound.
+        assert_eq!(
+            uids(&select(&d, None, "path:models/ma?ts/mart.sql")),
+            vec!["model.mart"]
+        );
+        // `[…]` classes, segment-bound — `[a-s]*` also reaches `deep` via
+        // its `core` ancestor dir and `dash` via `schema.yml`.
+        assert_eq!(
+            uids(&select(&d, None, "path:models/marts/[a-s]*")),
+            vec![
+                "exposure.dash",
+                "model.deep",
+                "model.mart",
+                "model.seeded",
+                "model.stg_marts"
+            ]
+        );
+        assert_eq!(
+            uids(&select(&d, None, "path:models/marts/[!m]*.sql")),
+            vec!["model.stg_marts"]
+        );
+    }
+
+    /// The legacy resource-relative read (`n.path`) still matches — once —
+    /// with a note naming the project-relative rewrite; nodes matching only
+    /// the new semantics never produce it.
+    #[test]
+    fn path_legacy_form_still_matches_with_a_deprecation_note() {
+        let d = path_dag();
+        // `path:marts` = the old spelling of `path:models/marts`; it still
+        // selects every `n.path`-under-`marts/` node (the exposure's
+        // declaring yml included — but NOT `seeded`, whose path is
+        // `seeded.sql`), noting the rewrite once for the whole spec.
+        let (set, notes) = select_report(&d, None, "path:marts path:marts");
+        assert_eq!(
+            uids(&set),
+            vec![
+                "exposure.dash",
+                "model.deep",
+                "model.mart",
+                "model.stg_marts"
+            ]
+        );
+        assert_eq!(
+            notes,
+            vec![
+                "selector 'path:marts' uses the deprecated resource-relative \
+                 path form — write it project-relative instead: \
+                 'path:models/marts'"
+                    .to_string()
+            ]
+        );
+        // A pattern matching via BOTH forms notes only for the nodes the
+        // current form missed — `path:models` matches current everywhere.
+        let (_, notes) = select_report(&d, None, "path:models");
+        assert!(notes.is_empty());
+        // A spec's notes dedupe across terms and are sorted.
+        let (_, notes) = select_report(&d, None, "path:staging path:marts tag:x");
+        assert_eq!(
+            notes,
+            vec![
+                "selector 'path:marts' uses the deprecated resource-relative \
+                 path form — write it project-relative instead: \
+                 'path:models/marts'"
+                    .to_string(),
+                "selector 'path:staging' uses the deprecated resource-relative \
+                 path form — write it project-relative instead: \
+                 'path:models/staging'"
+                    .to_string(),
+            ]
         );
     }
 

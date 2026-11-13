@@ -309,8 +309,10 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
         // because the `--diff` baseline loaded above.
         // `--select` starts on the model's TAB — activating it when
         // it is already open, appending one when it is not.
+        let (set, notes) = dbtl::select_report(&app.dag, app.diff(), name);
+        cli::warn_each("", &notes);
         let found = app.open_tab_by_name(name)
-            || dbtl::select(&app.dag, app.diff(), name)
+            || set
                 .iter()
                 .find(|uid| app.dag.get(uid).is_some_and(|n| n.resource_type == "model"))
                 .is_some_and(|uid| app.open_node_as_tab(uid));

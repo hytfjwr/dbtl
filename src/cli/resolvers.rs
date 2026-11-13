@@ -243,20 +243,26 @@ pub(super) fn require_diff_for_state(specs: &[String], has_diff: bool) -> Result
     Ok(())
 }
 
-/// Evaluate the selector list into its `unique_id` set — the union of
-/// each spec's [`dbtl::select`] result (a repeated flag unions exactly
+/// Evaluate the selector list into its `unique_id` set plus each spec's
+/// evaluation notes — currently the `path:` legacy resource-relative
+/// form, so a non-interactive command prints them once per invocation
+/// through [`crate::cli::out::warn_each`]. The set is the union of each
+/// spec's [`dbtl::select_report`] result (a repeated flag unions exactly
 /// like a whitespace-separated spec). Infallible once
 /// [`validate_selector_specs`] passed; `diff` feeds `state:` atoms.
-pub(super) fn selector_set(
+pub(super) fn selector_set_report(
     dag: &dbtl::Dag,
     diff: Option<&dbtl::DagDiff>,
     specs: &[String],
-) -> std::collections::BTreeSet<String> {
+) -> (std::collections::BTreeSet<String>, Vec<String>) {
     let mut set = std::collections::BTreeSet::new();
+    let mut notes = std::collections::BTreeSet::new();
     for spec in specs {
-        set.extend(dbtl::select(dag, diff, spec));
+        let (matched, spec_notes) = dbtl::select_report(dag, diff, spec);
+        set.extend(matched);
+        notes.extend(spec_notes);
     }
-    set
+    (set, notes.into_iter().collect())
 }
 
 /// The `DagDiff` a `state:` selector compares against — the SAME resolver

@@ -1189,6 +1189,24 @@ fn unique_key_normalizes_string_list_and_absent_forms() {
             "model.p.not_a_string".to_string(),
             ingest_model("not_a_string", Some(serde_json::json!(7)), None),
         ),
+        // dbt's "unset" spellings: empty/whitespace strings, in either
+        // declared shape, plus lists that mix a real key with a blank.
+        (
+            "model.p.empty_scalar".to_string(),
+            ingest_model("empty_scalar", Some(serde_json::json!("")), None),
+        ),
+        (
+            "model.p.blank_scalar".to_string(),
+            ingest_model("blank_scalar", Some(serde_json::json!("  ")), None),
+        ),
+        (
+            "model.p.empty_list".to_string(),
+            ingest_model("empty_list", Some(serde_json::json!([""])), None),
+        ),
+        (
+            "model.p.mixed_list".to_string(),
+            ingest_model("mixed_list", Some(serde_json::json!(["id", " "])), None),
+        ),
     ]);
     let manifest = RawManifest {
         unresolved_adjacent: Default::default(),
@@ -1214,9 +1232,21 @@ fn unique_key_normalizes_string_list_and_absent_forms() {
         vec!["a".to_string(), "b".to_string()],
         "list order is the declared order"
     );
-    for uid in ["model.p.absent", "model.p.nulled", "model.p.not_a_string"] {
+    for uid in [
+        "model.p.absent",
+        "model.p.nulled",
+        "model.p.not_a_string",
+        "model.p.empty_scalar",
+        "model.p.blank_scalar",
+        "model.p.empty_list",
+    ] {
         assert!(uk(uid).is_empty(), "{uid} must normalize to unconfigured");
     }
+    assert_eq!(
+        uk("model.p.mixed_list"),
+        vec!["id".to_string()],
+        "blank entries drop; real keys keep their order"
+    );
 }
 
 #[test]

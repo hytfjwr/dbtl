@@ -51,7 +51,7 @@ lint:
       threshold: 5                # declared params only; unknown keys error
       exclude:                    # dbt selector specs: skip findings on matches
         - "stg_legacy_*"
-        - "path:legacy"
+        - "path:models/legacy"
         - "tag:wip"
     select_star:
       allow_final_star_over_single_cte: true   # `select *` closing one

@@ -78,7 +78,9 @@ pub(super) fn meta_strings(
 /// Normalize `config.unique_key` to `Vec<String>`: dbt accepts a bare string
 /// (`unique_key: id`) or a string list (`unique_key: [a, b]`) and keeps that
 /// declared shape on the wire. Anything else (null, numbers, a map) is
-/// unconfigured → empty.
+/// unconfigured → empty; blank entries (`""`, `"  "`) are dbt's own
+/// "unset" spellings and drop out the same way, so an incremental model
+/// with `unique_key: ''` still counts as unconfigured.
 pub(super) fn unique_key_from(value: &Option<serde_json::Value>) -> Vec<String> {
     match value {
         Some(serde_json::Value::String(s)) => vec![s.clone()],
@@ -88,6 +90,9 @@ pub(super) fn unique_key_from(value: &Option<serde_json::Value>) -> Vec<String> 
             .collect(),
         _ => Vec::new(),
     }
+    .into_iter()
+    .filter(|s| !s.trim().is_empty())
+    .collect()
 }
 
 /// Strip the `<package>://` scheme off a manifest `patch_path`

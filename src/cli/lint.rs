@@ -286,7 +286,8 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
     let selection = if args.select.is_empty() {
         None
     } else {
-        let sel = selector_set(&resolved.dag, diff.as_ref(), args.select);
+        let (sel, notes) = selector_set_report(&resolved.dag, diff.as_ref(), args.select);
+        warn_each("", &notes);
         if sel.is_empty() {
             eprintln!(
                 "warning: --select '{}' matched no nodes",
@@ -322,6 +323,9 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
             read_text: &read_text,
         },
     );
+    // `exclude:`/selector-param deprecation notes from the evaluation —
+    // one `warning:` line per distinct legacy spec.
+    warn_each("", &run.warnings);
     plan.emit(
         &run.report,
         "lint",

@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 
 use super::*;
-use crate::select::select;
+use crate::select::select_report;
 use crate::SqlDialect;
 use crate::{Catalog, SqlParseResolver};
 
@@ -139,6 +139,13 @@ pub struct LintOutcome {
     /// `BTreeSet`; `forbidden_patterns` (a raw-text rule) never
     /// contributes, and neither do models that simply HAVE no SQL.
     pub unparsed: BTreeSet<String>,
+    /// Evaluation-time warnings — currently the `path:` legacy
+    /// resource-relative form surfacing through a rule's `exclude:` or a
+    /// selector parameter — deduplicated and sorted (each distinct
+    /// deprecated spec warns once per lint evaluation, no matter how many
+    /// rules read it). Every surface prints them through its own warning
+    /// channel.
+    pub warnings: Vec<String>,
 }
 
 /// Evaluate the enabled rules over the input's dag and return every
@@ -170,6 +177,9 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
     // Models whose SQL exists but wouldn't parse for a `Requires::Sql`
     // rule — one uid per model regardless of how many SQL rules asked.
     let mut unparsed = BTreeSet::new();
+    // Selector deprecation notes — a `BTreeSet` dedupes the same
+    // `path:`-form warning across rules/excludes and sorts the result.
+    let mut notes = BTreeSet::new();
     for rule in LintRule::ALL {
         if !config.enabled(rule) {
             continue;
@@ -209,9 +219,9 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 modeling::model_fanout(dag, &uids, &in_scope, config, &mut out)
             }
             LintRule::RootModels => modeling::root_models(dag, &uids, &in_scope, &sites, &mut out),
-            LintRule::RejoiningUpstream => {
-                modeling::rejoining_upstream(dag, &uids, &in_scope, config, &sites, &mut out)
-            }
+            LintRule::RejoiningUpstream => modeling::rejoining_upstream(
+                dag, &uids, &in_scope, config, &sites, &mut out, &mut notes,
+            ),
             LintRule::MartsDependOnSource => {
                 modeling::marts_depend_on_source(dag, &uids, &in_scope, config, &sites, &mut out)
             }
@@ -245,7 +255,9 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 performance::exposure_parents_materializations(dag, &uids, &in_scope, &mut out)
             }
             LintRule::ExposuresDependentOnPrivateModels => {
-                governance::exposures_dependent_on_private_models(dag, &uids, &in_scope, &mut out)
+                governance::exposures_dependent_on_private_models(
+                    dag, &uids, &in_scope, config, &mut out,
+                )
             }
             LintRule::UndocumentedSources => {
                 documentation::undocumented_sources(dag, &uids, &in_scope, &mut out)
@@ -368,11 +380,12 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
     for f in &mut out {
         envelope(dag, config, f);
     }
-    suppress(dag, config, &mut out);
+    suppress(dag, config, &mut out, &mut notes);
     LintOutcome {
         findings: out,
         skipped,
         unparsed,
+        warnings: notes.into_iter().collect(),
     }
 }
 
@@ -430,8 +443,9 @@ pub(super) fn envelope(dag: &Dag, config: &LintConfig, f: &mut Finding) {
 /// Drop findings suppressed by `lint.rules.<id>.exclude` selectors or by
 /// node `meta: {dbtl: {ignore: ...}}`. Both match on the finding's
 /// `node_uid` — the CHILD side for edge rules — and remove findings whole,
-/// never reordering them.
-fn suppress(dag: &Dag, config: &LintConfig, out: &mut Vec<Finding>) {
+/// never reordering them. Each `exclude:` spec's evaluation notes (the
+/// `path:` legacy form) join `notes` for the outcome's warning channel.
+fn suppress(dag: &Dag, config: &LintConfig, out: &mut Vec<Finding>, notes: &mut BTreeSet<String>) {
     // Each rule's exclude spec evaluates ONCE into a uid set (the strings
     // are a union — `exclude: [a, b]` drops nodes matching a OR b).
     let excluded: BTreeMap<LintRule, BTreeSet<String>> = LintRule::ALL
@@ -443,7 +457,9 @@ fn suppress(dag: &Dag, config: &LintConfig, out: &mut Vec<Finding>) {
             } else {
                 let mut set = BTreeSet::new();
                 for spec in specs {
-                    set.extend(select(dag, None, spec));
+                    let (matched, spec_notes) = select_report(dag, None, spec);
+                    set.extend(matched);
+                    notes.extend(spec_notes);
                 }
                 Some((*rule, set))
             }
