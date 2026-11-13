@@ -45,28 +45,35 @@ use std::collections::BTreeMap;
 use ratatui::style::Color;
 use serde::Deserialize;
 
-/// Declares the [`Theme`] struct, [`ROLE_NAMES`], and the name→field setter
-/// from ONE list, so a new role automatically becomes settable from a theme
-/// file and visible in the "valid roles" error message — they cannot drift.
+/// Declares the [`Theme`] struct, [`ROLE_NAMES`], [`ROLE_DOCS`], and the
+/// name→field setter from ONE list, so a new role automatically becomes
+/// settable from a theme file, visible in the "valid roles" error message,
+/// and listed in the generated theme reference — they cannot drift.
 macro_rules! theme_roles {
-    ($( $(#[$doc:meta])* $name:ident ),+ $(,)?) => {
+    ($( @group $group:literal ; $( $name:ident => $doc:literal ),+ $(,)? );+ $(;)?) => {
         /// One complete colour palette: every semantic role the UI paints.
         /// `Copy` — the active theme is handed around by value/borrow, never
         /// via a global.
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub struct Theme {
-            $( $(#[$doc])* pub $name: Color, )+
+            $( $( #[doc = $doc] pub $name: Color, )+ )+
         }
 
         /// Every role name a custom theme file may set, in declaration order
         /// (the YAML `colors:` keys).
-        pub const ROLE_NAMES: &[&str] = &[$(stringify!($name)),+];
+        pub const ROLE_NAMES: &[&str] = &[$( $( stringify!($name), )+ )+];
+
+        /// `(group, name, what it paints)` per role, in declaration order —
+        /// the source the generated theme reference lists, so the documented
+        /// roles can never drift from the accepted ones.
+        pub const ROLE_DOCS: &[(&str, &str, &str)] =
+            &[$( $( ($group, stringify!($name), $doc), )+ )+];
 
         impl Theme {
             /// Set a role by its [`ROLE_NAMES`] name; `false` for an unknown name.
             fn set_role(&mut self, name: &str, color: Color) -> bool {
                 match name {
-                    $(stringify!($name) => self.$name = color,)+
+                    $( $( stringify!($name) => self.$name = color, )+ )+
                     _ => return false,
                 }
                 true
@@ -76,88 +83,66 @@ macro_rules! theme_roles {
 }
 
 theme_roles!(
-    // ---- core chrome ----
-    /// The primary accent: focused-pane borders/titles, modal frames, carets,
-    /// the selection bar (via REVERSED), the sort chip.
-    accent,
-    /// Unfocused pane borders — recede into the background.
-    border_idle,
-    /// Bright body text (the selected-name echo in the status bar, modal titles).
-    text_bright,
-    /// Secondary text: titles of unfocused panes, status-bar core, key labels.
-    text_dim,
-    /// Tertiary text: dependency badges, minimap.
-    text_faint,
-    /// Off-path lineage nodes under the focus dim (cursor off-root). Deliberately
-    /// BRIGHTER than `text_faint`: the dim must recede from the path band yet
-    /// stay readable — the off-path nodes are context, not noise. Distinct from
-    /// `text_dim`/`sb_thumb`/`class_other` so no surface aliases by accident.
-    lineage_dim,
-    /// The status-bar background band.
-    surface,
-    /// A raised surface: the root↔cursor path band, gauge tracks.
-    surface_hi,
-    /// The right-border scrollbar thumb.
-    sb_thumb,
-    // ---- semantic states ----
-    /// Good / passing: the coverage-gauge high grade, the focus chip.
-    ok,
-    /// Caution: coverage chip + mid gauge grade, lineage scroll markers, the
-    /// top-hub stats bar.
-    warn,
-    /// Problem: impact chip, low gauge grade, coverage-gap names, and the
-    /// `Warn`/`Violation` lens tints (vivid — no class colour may equal it, so
-    /// the tint can never disappear into one).
-    danger,
-    /// A leaf model with no downstream (a quieter red than `danger`).
-    orphan,
-    /// Search/palette match-char highlight, the bookmark star + chip.
-    gold,
-    // ---- materialization classes (lineage box colours; the PASTEL family) ----
-    /// Persisted table — the healthy resting state (aliases `ok` in the default).
-    class_table,
-    class_view,
-    class_incremental,
-    class_ephemeral,
-    class_source,
-    class_seed,
-    class_snapshot,
-    /// A declared downstream consumer (exposure) — the impact terminator.
-    class_exposure,
-    class_other,
-    // ---- layers (list headers + the Layer lens; the VIVID family) ----
-    layer_staging,
-    layer_intermediate,
-    layer_marts,
-    layer_utilities,
-    layer_other,
-    // ---- degree-heat ramp (DegreeHeat lens; VIVID — distinct from every class) ----
-    heat_low,
-    heat_mid,
-    heat_high,
-    // ---- diff lens (added / modified vs the --diff baseline; VIVID) ----
-    diff_add,
-    diff_mod,
-    // ---- status-bar chips ----
-    /// The `[view]` direction/depth chip (a chip role, deliberately NOT
-    /// `class_view`: it names the lineage view filter, not a materialization).
-    chip_view,
-    // ---- overlays ----
-    /// Overlay section headers (`columns:` / `tests:` / stats sections).
-    section,
-    /// SQL keyword highlight in the `s` preview.
-    sql_keyword,
-    /// SQL string literals in the `s` preview.
-    sql_string,
-    /// SQL comments (`--`, `/* */`, and Jinja `{# #}`) in the `s` preview.
-    sql_comment,
-    /// Jinja expressions/statements (`{{ ref(..) }}` / `{% if %}`) in the `s` preview.
-    sql_jinja,
-    // ---- stats mini-bars (decorative chart fills, one per chart) ----
-    bar_resource,
-    bar_materialization,
-    bar_degree,
-    bar_transitive,
+    @group "core chrome";
+    accent => "The primary accent: focused-pane borders/titles, modal frames, carets, the selection bar (via REVERSED), the sort chip.",
+    border_idle => "Unfocused pane borders — recede into the background.",
+    text_bright => "Bright body text (the selected-name echo in the status bar, modal titles).",
+    text_dim => "Secondary text: titles of unfocused panes, status-bar core, key labels.",
+    text_faint => "Tertiary text: dependency badges, minimap.",
+    lineage_dim => "Off-path lineage nodes under the focus dim (cursor off-root). Deliberately brighter than `text_faint`: the dim must recede from the path band yet stay readable — the off-path nodes are context, not noise. Distinct from `text_dim`/`sb_thumb`/`class_other` so no surface aliases by accident.",
+    surface => "The status-bar background band.",
+    surface_hi => "A raised surface: the root↔cursor path band, gauge tracks.",
+    sb_thumb => "The right-border scrollbar thumb.";
+
+    @group "semantic states";
+    ok => "Good / passing: the coverage-gauge high grade, the focus chip.",
+    warn => "Caution: coverage chip + mid gauge grade, lineage scroll markers, the top-hub stats bar.",
+    danger => "Problem: impact chip, low gauge grade, coverage-gap names, and the `Warn`/`Violation` lens tints (vivid — no class colour may equal it, so the tint can never disappear into one).",
+    orphan => "A leaf model with no downstream (a quieter red than `danger`).",
+    gold => "Search/palette match-char highlight, the bookmark star + chip.";
+
+    @group "materialization classes"; // lineage box colours — the PASTEL family
+    class_table => "A `table`-materialized model — the healthy resting state (aliases `ok` in the default).",
+    class_view => "A `view`-materialized model.",
+    class_incremental => "An `incremental`-materialized model.",
+    class_ephemeral => "An `ephemeral` model.",
+    class_source => "A dbt source — an external input.",
+    class_seed => "A dbt seed.",
+    class_snapshot => "A dbt snapshot.",
+    class_exposure => "A declared downstream consumer (exposure) — the impact terminator.",
+    class_other => "A model with an unknown or missing materialization.";
+
+    @group "layers"; // list headers + the Layer lens — the VIVID family
+    layer_staging => "The `staging` layer's colour.",
+    layer_intermediate => "The `intermediate` layer's colour.",
+    layer_marts => "The `marts` layer's colour.",
+    layer_utilities => "The `utilities` layer's colour.",
+    layer_other => "The colour for nodes in no known layer.";
+
+    @group "degree-heat ramp"; // DegreeHeat lens — VIVID, distinct from every class
+    heat_low => "Low downstream-degree tint.",
+    heat_mid => "Mid downstream-degree tint.",
+    heat_high => "High downstream-degree tint.";
+
+    @group "diff lens"; // added / modified vs the --diff baseline — VIVID
+    diff_add => "Nodes added vs the `--diff` baseline.",
+    diff_mod => "Nodes modified vs the `--diff` baseline.";
+
+    @group "status-bar chips";
+    chip_view => "The `[view]` direction/depth chip (a chip role, deliberately NOT `class_view`: it names the lineage view filter, not a materialization).";
+
+    @group "overlays";
+    section => "Overlay section headers (`columns:` / `tests:` / stats sections).",
+    sql_keyword => "SQL keyword highlight in the `s` preview.",
+    sql_string => "SQL string literals in the `s` preview.",
+    sql_comment => "SQL comments (`--`, `/* */`, and Jinja `{# #}`) in the `s` preview.",
+    sql_jinja => "Jinja expressions/statements (`{{ ref(..) }}` / `{% if %}`) in the `s` preview.";
+
+    @group "stats mini-bars"; // decorative chart fills, one per chart
+    bar_resource => "The resource-type bar's fill.",
+    bar_materialization => "The materialization bar's fill.",
+    bar_degree => "The degree bar's fill.",
+    bar_transitive => "The transitive-hub bar's fill.";
 );
 
 // ---- the default palette, as the LEGACY constants ---------------------------

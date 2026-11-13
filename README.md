@@ -98,7 +98,7 @@ Press `?` in the app for every key in the current mode, or read the [keybindings
 | `K` | Column lineage for the traced column |
 | `a` | Node actions menu |
 | `y` | Yank menu: `yy` unique_id, `ym` Mermaid, `yc` ASCII art, `y!` dbt selector |
-| `o` | Open the model's SQL in `$EDITOR` |
+| `o` | Open the model's file in `$VISUAL` (falling back to `$EDITOR`) |
 | `P` | Run `dbt parse` and switch to the manifest |
 | `r` | Reload the data source |
 | `Ctrl-p` | Command palette |

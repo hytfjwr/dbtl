@@ -61,6 +61,8 @@ dbtl --theme mine
 | `base` | The preset to start from. Defaults to `default`. |
 | `colors` | A map of role name to color. Each color is `#rrggbb` or an xterm-256 index. Roles you leave out come from the base. |
 
+Every role name and what it paints is in the [themes reference](../reference/themes.md). A user file named like a preset (`default.yml`, `dusk.yml`, …) overrides that preset for you.
+
 ### Errors and warnings
 
 An unknown role or an invalid color stops startup with an error that lists the valid values.

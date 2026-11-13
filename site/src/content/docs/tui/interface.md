@@ -21,11 +21,13 @@ The `dbtl` screen has three panes, a tab strip, and a status line. This page cov
 | `<` `>` | Narrow or widen a pane by 4 columns. The inspector resizes while it has focus, the list otherwise. |
 | `=` | Reset both pane widths to the default |
 
+`Cmd`-modified keys reach `dbtl` only through terminals that speak the kitty keyboard protocol — `dbtl` probes for it at startup and the `Ctrl` twins always work.
+
 ### Terminal size
 
 `dbtl` needs at least 50 columns by 12 rows. Below that it draws only a "terminal too small" notice, and `q` and `Ctrl-c` still work.
 
-- Between 50 and 80 columns, the model list collapses into a drawer. `Ctrl-b` toggles it and `Tab` cycles focus.
+- From 50 to 79 columns, the model list collapses into a drawer. `Ctrl-b` toggles it and `Tab` cycles focus.
 - At 160 columns or more, the inspector appears by itself. Below that, press `I` to show it.
 
 In a narrow tmux pane, resize or zoom the pane (`prefix z`) instead of disabling panes.
@@ -122,11 +124,11 @@ With a `catalog.json` loaded, the structure view also shows warehouse column typ
 
 `s` opens a syntax-highlighted SQL preview. Inside the preview, `c` toggles between raw and compiled SQL. The title shows `[raw]`, `[compiled]`, or `[compiled, stale]` when the source file is newer than the compiled version. Compiled SQL comes from the manifest's `compiled_code` or from `target/compiled/`. Run `dbt compile` or `dbt build` to produce it.
 
-`o` opens the model's SQL in `$EDITOR`.
+`o` opens the model's file in `$VISUAL`, or `$EDITOR` when `$VISUAL` is unset.
 
 `S` opens the project stats dashboard. It includes a runtime-weighted critical path when run results are loaded, and a lint worklist.
 
-In any scrollable modal, `j` and `k` scroll, `d` `u` `Ctrl-d` `Ctrl-u` `PgDn` `PgUp` page, `g` and `G` jump to the top or bottom, and `Esc`, `Enter`, or `q` closes it.
+In any scrollable modal, `j` and `k` scroll, `d` `u` `Ctrl-d` `Ctrl-u` `PgDn` `PgUp` page, `g` and `G` jump to the top or bottom, and `Esc` or `q` closes it. Two modals give `Enter` a job instead: in the structure view it traces the cursored column (or jumps to a `relationships` test's target), and in the column-lineage modal it jumps to that column's model — close those with `Esc` or `q`.
 
 ## Node actions menu
 
@@ -149,7 +151,7 @@ Items act on the node the menu opened on. Over the structure view or the SQL pre
 | `x` | Copy the lineage as Graphviz DOT |
 | `c` | Copy the lineage as an ASCII diagram |
 | `i` | Copy a Markdown impact report |
-| `e` | Write the diagram to a file |
+| `e` | Write the diagram to a file in the current directory: `<model>_lineage.txt` (`<project>_overview.txt` from the whole-graph overview) |
 | `!` | Copy the view as a runnable `dbt build --select` command |
 | `y` | Open the yank menu |
 
@@ -162,7 +164,7 @@ The yank menu has one key per target: `y` copies the `unique_id`, `Y` the name, 
 | `r` | Reload the data source. Also re-reads `run_results.json`. |
 | `P` | Run `dbt parse` and switch to the generated manifest. Needs `dbt` on your `PATH`. |
 
-Start with `--watch` to reload automatically when the data source changes. In manifest mode, it watches the manifest file. In source mode, it watches the `.sql`, `.yml`, and `.csv` files in the project.
+Start with `--watch` to reload automatically when the data source changes — a change counts once the poller confirms a newer stamp, scanning at most every two seconds. In manifest mode it watches the manifest file's mtime. In source mode it watches the `.sql`, `.py`, `.yml`, `.yaml`, and `.csv` files under the project, skipping dot-directories and `target/` except `target/compiled/` (so a `dbt compile` refreshes the compiled-SQL view).
 
 ## Status line
 

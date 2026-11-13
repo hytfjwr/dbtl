@@ -23,7 +23,7 @@ mod watch;
 use std::process::ExitCode;
 
 use anyhow::Context;
-use clap::{CommandFactory, FromArgMatches};
+use clap::FromArgMatches;
 
 use cli::{
     build_app, check_flag_usage, exit_code, load_baseline, run_check, run_cli_reference,
@@ -43,7 +43,7 @@ fn main() -> ExitCode {
     // `get_matches`/`from_arg_matches` (not `Cli::parse`) so `run` also sees
     // the raw `ArgMatches`: `value_source` is how the ignored-flag check
     // tells an explicitly typed flag from an env-fed or defaulted value.
-    let matches = Cli::command().get_matches();
+    let matches = cli::command().get_matches();
     let cli = match Cli::from_arg_matches(&matches) {
         Ok(cli) => cli,
         Err(err) => err.exit(),

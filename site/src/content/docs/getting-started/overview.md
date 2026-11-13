@@ -21,7 +21,7 @@ To install `dbtl` and open your first project, start with [Installation](install
 
 ### No compile, no browser
 
-`dbtl` builds lineage from `dbt_project.yml`, model `.sql` files (`ref()` and `source()`) and `schema.yml`. It is a single static binary and runs entirely in the terminal, including over SSH. See the [quick start](quick-start.md) for the data sources it reads.
+`dbtl` builds lineage from `dbt_project.yml`, model `.sql` files (`ref()` and `source()`) and `schema.yml`. It is a single self-contained binary — the Linux musl builds are fully static — and runs entirely in the terminal, including over SSH. See the [quick start](quick-start.md) for the data sources it reads.
 
 ### Navigate the graph
 
@@ -69,7 +69,7 @@ Five built-in presets, live switching with `Ctrl-t`, and your own YAML theme fil
 
 ### One selector grammar everywhere
 
-The dbt selector language (`tag:`, `path:`, `config.materialized:`, `meta:`, `exposure:`, `state:`, hops, globs, unions, intersections) drives `dbtl ls`, the TUI's `!` search, and `--select` and `--exclude` on `check`, `lint`, `impact`, and `docs`. A spec means the same set in every context. See [Selector syntax](../cli/selectors.md).
+The dbt selector language (`tag:`, `path:`, `config.materialized:`, `meta:`, `exposure:`, `state:`, hops, globs, unions, intersections) drives `dbtl ls`, the TUI's `!` search, and `--select` on `check`, `lint`, `impact`, and `docs` — `docs` and `ls` also take `--exclude`. A spec means the same set in every context. See [Selector syntax](../cli/selectors.md).
 
 ### Docs that match the screen
 

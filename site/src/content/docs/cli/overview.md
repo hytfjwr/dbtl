@@ -3,7 +3,7 @@ title: CLI overview
 description: Every dbtl subcommand in one table, and how the data-source flags behave across them.
 ---
 
-`dbtl` with no subcommand starts the interactive TUI. Every subcommand is non-interactive: it prints to stdout, sets an [exit code](../configuration/exit-codes.md), and needs no TTY, so you can run it in CI.
+`dbtl` with no subcommand starts the interactive TUI. Every subcommand is non-interactive: it prints to stdout, sets an [exit code](../configuration/exit-codes.md), and needs no TTY, so you can run it in CI. The TUI itself needs a real terminal — bare `dbtl` in a non-TTY (a pipe, `ssh` without `-t`, a CI step) exits with code 3 and `error: failed to initialize terminal (no TTY?)` instead of running headless.
 
 ## Subcommands
 
@@ -53,7 +53,7 @@ These flags work on either side of the subcommand. `dbtl --manifest m.json check
 | `--run-results <PATH>` | Use this `run_results.json` instead of the one found next to the data source. |
 | `--catalog <PATH>` | Use this `catalog.json` instead of the one found next to the data source. |
 | `--include-packages` | Include nodes installed from dbt packages in the graph. |
-| `--sql-dialect <DIALECT>` | Pin the SQL dialect the parser uses. `auto` reads the manifest's adapter type. |
+| `--sql-dialect <DIALECT>` | Pin the SQL dialect the parser uses — `generic`, `postgres`, `snowflake`, `bigquery`, `mysql`, `sqlite`, `duckdb`, `spark`, and more, case-insensitive (the full spelling list is in the [CLI reference](../reference/cli.md#global-flags)). `auto` reads the manifest's adapter type. |
 
 A subcommand honors only the global flags it consumes. If you type another one explicitly, the command stops with a usage error (exit code 2) instead of ignoring the flag. The same applies to TUI-only flags such as `--theme` or `--watch` placed next to a subcommand.
 

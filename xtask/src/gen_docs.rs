@@ -55,6 +55,10 @@ pub fn generate(cli_markdown: &str) -> Vec<GeneratedFile> {
             contents: config_markdown(&dbtl_schema),
         },
         GeneratedFile {
+            path: "docs/reference/themes.md",
+            contents: themes_markdown(),
+        },
+        GeneratedFile {
             path: "schema/dbtl.schema.json",
             contents: json_document(&dbtl_schema),
         },
@@ -215,6 +219,19 @@ fn keybindings_markdown() -> String {
         }
         out.push('\n');
     }
+
+    out.push_str(
+        "## Outside the app\n\n\
+         Files the TUI writes land in the current working directory: `e` \
+         exports the lineage view as `<model>_lineage.txt` \
+         (`<project>_overview.txt` from the whole-graph overview), and the `D` \
+         modal's `e` exports the PR impact report as `<project>_pr_impact.md`. \
+         `o` opens the model's file with `$VISUAL`, falling back to `$EDITOR` \
+         when it is unset.\n\n\
+         `Cmd`-modified bindings are delivered only by terminals that speak \
+         the kitty keyboard protocol — dbtl probes for it at startup; \
+         everywhere else their `Ctrl` alternatives cover the same actions.\n",
+    );
     out
 }
 
@@ -697,7 +714,7 @@ fn config_markdown(dbtl_schema: &Value) -> String {
             cell(&desc(node))
         ));
     }
-    out.push_str("Any other top-level key is allowed but ignored (it produces a warning).\n");
+    out.push_str("\nAny other top-level key is allowed but ignored (it produces a warning).\n");
 
     // lint:
     section(&mut out, &props, "lint", "lint", &lint_default, &lint_type);
@@ -962,6 +979,86 @@ fn desc(node: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
+}
+
+// ---------------------------------------------------------------------------
+// themes.md — the colour themes: presets + every role a custom file may set.
+// ---------------------------------------------------------------------------
+
+fn themes_markdown() -> String {
+    use dbtl_tui::ui::theme::{preset_names, ROLE_DOCS};
+
+    let mut out = doc_header("Themes");
+    out.push_str(
+        "The TUI's colour themes — the built-in presets below plus user files. \
+         `--theme <name>` (or `DBTL_THEME`) names a preset or a user file, \
+         then falls back to a literal path to a theme YAML file. User files \
+         are `*.yml`/`*.yaml` under `$XDG_CONFIG_HOME/dbtl/themes` (else \
+         `~/.config/dbtl/themes`); a file's stem is its theme name, and a \
+         user file shadows a same-named preset. `dbtl --list-themes` prints \
+         every resolvable name.\n\n",
+    );
+
+    out.push_str("## Presets\n\n| Name | For |\n| ---- | --- |\n");
+    for name in preset_names() {
+        out.push_str(&format!("| `{name}` | {} |\n", preset_blurb(name)));
+    }
+
+    out.push_str(
+        "\n## Custom theme files\n\n\
+         A theme file starts from a `base` preset (default `default`) and \
+         overrides roles under `colors:`:\n\n\
+         ```yaml\n\
+         base: dark\n\
+         colors:\n\
+         \x20 accent: \"#87afff\"\n\
+         \x20 class_table: 114\n\
+         ```\n\n\
+         A colour value is a `\"#rrggbb\"` string or an xterm-256 index \
+         (`0`–`255`). Unknown `base` names, unknown role names, and unparsable \
+         colours are errors naming the accepted alternatives. `dbtl` warns — \
+         but still launches — when a theme's lens tints collide with a class \
+         colour, because a tint that shares a class's colour is invisible on \
+         those nodes.\n\n\
+         ## Roles\n\n\
+         Every `colors:` key the parser accepts — the same list the \
+         `unknown colour role` error names.\n\n",
+    );
+
+    let mut group = "";
+    for &(g, name, doc) in ROLE_DOCS {
+        if g != group {
+            group = g;
+            let mut heading = g.to_string();
+            if let Some(c) = heading.get_mut(0..1) {
+                c.make_ascii_uppercase();
+            }
+            out.push_str(&format!(
+                "{}### {heading}\n\n| Role | Paints |\n| ---- | ------ |\n",
+                if out.ends_with('\n') && !out.ends_with("\n\n") {
+                    "\n"
+                } else {
+                    ""
+                }
+            ));
+        }
+        out.push_str(&format!("| `{name}` | {} |\n", cell(doc)));
+    }
+    out.push('\n');
+    out
+}
+
+/// A one-line "what background it suits" per preset — display-only; a new
+/// preset falls back to a generic line until one is written.
+fn preset_blurb(name: &str) -> &'static str {
+    match name {
+        "default" => "xterm-256 palette for dark backgrounds; the fallback when no theme is named",
+        "dark" => "truecolor, for near-black neutral-cool backgrounds",
+        "dusk" => "truecolor, for lighter blue mid-dark backgrounds",
+        "light" => "truecolor, for light backgrounds — the only light preset",
+        "warm" => "truecolor, for warm umber backgrounds",
+        _ => "a built-in preset",
+    }
 }
 
 #[cfg(test)]

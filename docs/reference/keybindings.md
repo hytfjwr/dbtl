@@ -21,12 +21,12 @@ The main three-pane screen.
 | `Enter` | open structure / re-root to cursor / toggle +more |
 | `/` | search (list filter / lineage jump) |
 | `?` | toggle this help |
-| `o` | open SQL in $EDITOR |
+| `o` | open the model's file in $VISUAL or $EDITOR |
 | `y` | yank menu |
 | `Y` | copy model name |
 | `m` | copy lineage as Mermaid |
 | `x` | copy lineage as Graphviz DOT |
-| `r` | reload manifest |
+| `r` | reload data source |
 | `z` | cursor home + re-center lineage |
 | `u` | toggle upstream side |
 | `d` | toggle downstream side |
@@ -314,3 +314,8 @@ The home tab.
 | `q/Ctrl-c` | quit |
 | `click / wheel` | open the row / move the item cursor |
 
+## Outside the app
+
+Files the TUI writes land in the current working directory: `e` exports the lineage view as `<model>_lineage.txt` (`<project>_overview.txt` from the whole-graph overview), and the `D` modal's `e` exports the PR impact report as `<project>_pr_impact.md`. `o` opens the model's file with `$VISUAL`, falling back to `$EDITOR` when it is unset.
+
+`Cmd`-modified bindings are delivered only by terminals that speak the kitty keyboard protocol — dbtl probes for it at startup; everywhere else their `Ctrl` alternatives cover the same actions.

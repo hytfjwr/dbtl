@@ -1,8 +1,9 @@
 //! Repository documentation integrity: every relative link and `#anchor`
 //! in the committed Markdown resolves, no file repeats a heading anchor,
-//! and every `dbtl` invocation shown in a fenced code block names a real
-//! subcommand with real flags. A fixture-command table also proves the
-//! documented workflows execute with their documented exit codes.
+//! and every `dbtl` invocation shown in a fenced code block or an inline
+//! `code` span names a real subcommand with flags that subcommand accepts.
+//! A fixture-command table also proves the documented workflows execute
+//! with their documented exit codes.
 
 mod common;
 
@@ -25,6 +26,7 @@ fn markdown_files() -> Vec<PathBuf> {
         root.join("CHANGELOG.md"),
         root.join("CONTRIBUTING.md"),
         root.join("RELEASING.md"),
+        root.join("SECURITY.md"),
         root.join(".github/PULL_REQUEST_TEMPLATE.md"),
     ];
     collect_md(&root.join("docs"), &mut files);
@@ -41,6 +43,17 @@ fn collect_md(dir: &Path, out: &mut Vec<PathBuf>) {
             out.push(path);
         }
     }
+}
+
+/// The files whose `dbtl` invocations are checked: the repo docs above plus
+/// the site content pages. Site pages join the command check only — their
+/// relative links resolve to site routes, not repo paths, and
+/// `site/scripts/check-links.mjs` already validates them.
+fn command_files() -> Vec<PathBuf> {
+    let mut files = markdown_files();
+    collect_md(&repo_root().join("site/src/content/docs"), &mut files);
+    files.sort();
+    files
 }
 
 /// GitHub's anchor algorithm: lowercase, keep letters/digits/underscore/
@@ -232,59 +245,78 @@ fn no_duplicate_heading_anchors() {
 
 // ---- documented commands -------------------------------------------------
 
-/// `dbtl ...` command lines from fenced ```console|sh|bash|shell blocks,
-/// with `\`-continuations joined. Returns (command, file, line number).
+/// `dbtl ...` invocations, from fenced ```console|sh|bash|shell|zsh|yaml
+/// blocks (with `\`-continuations joined) and from inline `code` spans.
+/// Inside a scanned fence a `dbtl ` anywhere before the line's first `#`
+/// comment marks a documented invocation (`dbtl …`, `$ dbtl …`, `run: dbtl
+/// …`, `- dbtl …`); everything before it is a prompt or a list marker.
+/// Returns (command, file, line number).
 fn documented_commands() -> Vec<(String, PathBuf, usize)> {
     let mut out = Vec::new();
-    for file in markdown_files() {
+    for file in command_files() {
         let text = std::fs::read_to_string(&file).unwrap();
         let mut in_fence = false;
-        let mut fence_is_shell = false;
+        let mut fence_scans = false;
         let mut pending: Option<(String, usize)> = None;
         for (idx, line) in text.lines().enumerate() {
             if line.trim_start().starts_with("```") {
                 if in_fence {
                     in_fence = false;
+                    pending = None; // an unterminated continuation dies with its block
                 } else {
                     in_fence = true;
                     let lang = line.trim_start().trim_start_matches('`').trim();
-                    fence_is_shell = matches!(lang, "console" | "sh" | "bash" | "shell" | "zsh");
+                    fence_scans = matches!(
+                        lang,
+                        "console" | "sh" | "bash" | "shell" | "zsh" | "yaml" | "yml"
+                    );
                 }
                 continue;
             }
-            if !in_fence || !fence_is_shell {
-                continue;
-            }
-            if let Some((mut cmd, start)) = pending.take() {
-                let trimmed = line
-                    .trim_end()
-                    .split(" #")
-                    .next()
-                    .unwrap_or(line.trim_end());
-                cmd.push(' ');
-                cmd.push_str(trimmed.trim_end_matches('\\').trim());
-                if trimmed.ends_with('\\') {
-                    pending = Some((cmd, start));
-                } else {
-                    out.push((cmd, file.clone(), start));
+            if in_fence {
+                if !fence_scans {
+                    continue;
+                }
+                // The first `#` starts a comment in every scanned fence
+                // language — a `dbtl` mention after it is prose, not a
+                // documented invocation, and quoting one inside a comment
+                // would smuggle a stray backtick into the command.
+                let code = line.split('#').next().unwrap_or(line);
+                if let Some((mut cmd, start)) = pending.take() {
+                    let trimmed = code.trim_end();
+                    cmd.push(' ');
+                    cmd.push_str(trimmed.trim_end_matches('\\').trim());
+                    if trimmed.ends_with('\\') {
+                        pending = Some((cmd, start));
+                    } else {
+                        out.push((cmd, file.clone(), start));
+                    }
+                    continue;
+                }
+                if let Some(pos) = code.find("dbtl ") {
+                    let rest = code[pos + 5..].trim_end();
+                    let cmd = format!("dbtl {}", rest.trim_end_matches('\\').trim_end());
+                    if rest.ends_with('\\') {
+                        pending = Some((cmd, idx + 1));
+                    } else {
+                        out.push((cmd, file.clone(), idx + 1));
+                    }
                 }
                 continue;
             }
-            let stripped = line.trim_start();
-            let invocation = stripped
-                .strip_prefix('$')
-                .map_or(stripped, |s| s.trim_start());
-            let invocation = invocation
-                .strip_prefix("- ")
-                .map_or(invocation, |s| s.trim_start());
-            if let Some(rest) = invocation.strip_prefix("dbtl ") {
-                // Console examples document with trailing `# comments`.
-                let rest = rest.split(" #").next().unwrap_or(rest);
-                let cmd = format!("dbtl {}", rest.trim_end().trim_end_matches('\\').trim_end());
-                if rest.trim_end().ends_with('\\') {
-                    pending = Some((cmd, idx + 1));
-                } else {
-                    out.push((cmd, file.clone(), idx + 1));
+            // Prose: inline `code` spans that start with `dbtl ` are commands
+            // (`` `dbtl` `` alone — no trailing space — is a product mention).
+            let mut rest = line;
+            while let Some(open) = rest.find('`') {
+                let after = &rest[open + 1..];
+                match after.find('`') {
+                    Some(close) => {
+                        if let Some(cmd) = after[..close].strip_prefix("dbtl ") {
+                            out.push((format!("dbtl {}", cmd.trim()), file.clone(), idx + 1));
+                        }
+                        rest = &after[close + 1..];
+                    }
+                    None => break,
                 }
             }
         }
@@ -292,10 +324,17 @@ fn documented_commands() -> Vec<(String, PathBuf, usize)> {
     out
 }
 
-/// Every `--long` flag and bare subcommand the real CLI accepts, read from
-/// each `--help` surface so the check can't drift from the implementation.
-fn accepted_tokens() -> (BTreeSet<String>, BTreeSet<String>) {
-    const SUBCOMMANDS: [&str; 8] = [
+/// Every `--long` flag each command accepts, read from its `--help` surface
+/// so the check can't drift from the implementation. The root set covers
+/// the TUI (global + TUI-only flags); a subcommand's set is its own args
+/// plus the global flags it consumes — `dbtl <sub> --help` is pruned to
+/// exactly those.
+fn accepted_flags() -> (
+    BTreeSet<String>,
+    BTreeMap<String, BTreeSet<String>>,
+    BTreeSet<String>,
+) {
+    const SUBCOMMANDS: [&str; 9] = [
         "docs",
         "impact",
         "check",
@@ -304,46 +343,57 @@ fn accepted_tokens() -> (BTreeSet<String>, BTreeSet<String>) {
         "columns",
         "completions",
         "man",
+        "cli-reference",
     ];
-    let mut flags = BTreeSet::new();
-    let mut subs = BTreeSet::new();
-    let mut scrape = |args: &[&str]| {
+    let scrape = |args: &[&str]| -> BTreeSet<String> {
         let out = dbtl_cmd()
             .args(args)
             .arg("--help")
             .output()
             .expect("dbtl --help runs");
         let text = String::from_utf8_lossy(&out.stdout);
-        for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
-            if word.starts_with("--") && word.len() > 2 {
-                flags.insert(word.to_string());
-            }
-        }
+        text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .filter(|w| w.starts_with("--") && w.len() > 2)
+            .map(str::to_string)
+            .collect()
     };
-    scrape(&[]);
+    let root = scrape(&[]);
+    let mut per_sub = BTreeMap::new();
+    let mut subs = BTreeSet::new();
     for sub in SUBCOMMANDS {
         subs.insert(sub.to_string());
-        scrape(&[sub]);
+        per_sub.insert(sub.to_string(), scrape(&[sub]));
     }
-    (flags, subs)
+    // `help` is clap's built-in pseudo-subcommand — it anchors a documented
+    // command; the root set is the lenient validation for it.
+    subs.insert("help".to_string());
+    per_sub.insert("help".to_string(), root.clone());
+    (root, per_sub, subs)
 }
 
 #[test]
 fn documented_subcommands_and_flags_exist() {
-    let (flags, subs) = accepted_tokens();
+    let (root_flags, sub_flags, subs) = accepted_flags();
     let mut failures = Vec::new();
     for (cmd, file, line) in documented_commands() {
         let tokens: Vec<&str> = cmd.split_whitespace().collect();
-        // Any token equal to a real subcommand anchors the command; other
-        // bare words are positional args (paths, selectors, node names).
+        // Any token equal to a real subcommand anchors the command; flags
+        // validate against THAT command's accepted set — a global flag the
+        // subcommand doesn't consume is a usage error, so documenting one
+        // is a doc bug. Other bare words are positional args (paths,
+        // selectors, node names).
         let positioned = tokens.iter().position(|t| subs.contains(*t));
+        let accepted = positioned.map_or(&root_flags, |i| &sub_flags[tokens[i]]);
         for token in &tokens {
             if let Some(flag) = token.strip_prefix("--") {
                 let name = flag.split('=').next().unwrap_or(flag);
                 let candidate = format!("--{name}");
-                if !flags.contains(&candidate) {
+                if !accepted.contains(&candidate) {
+                    let context = positioned
+                        .map(|i| format!("'{}'", tokens[i]))
+                        .unwrap_or_else(|| "the TUI".to_string());
                     failures.push(format!(
-                        "{}:{line} `{cmd}` — unknown flag {candidate}",
+                        "{}:{line} `{cmd}` — flag {candidate} is not accepted by {context}",
                         file.display()
                     ));
                 }
