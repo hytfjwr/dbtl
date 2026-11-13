@@ -1,5 +1,5 @@
-// Graph helpers shared by the lineage renderer, the selector engine, the home
-// demo and the playground. A graph is {nodes, edges}; an edge is [parent, child].
+// Graph helpers shared by the lineage renderer and the home demo.
+// A graph is {nodes, edges}; an edge is [parent, child].
 
 export interface GraphNode {
   id: string;

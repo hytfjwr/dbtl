@@ -1,9 +1,8 @@
 // Sample projects: the build-time graph data (src/data/graph.json, written by
-// scripts/prebuild.mjs) turned into the shapes the lineage renderer, the selector
-// engine and the demo panels read. No DOM and no JSON import, so Node can load it too.
+// scripts/prebuild.mjs) turned into the shapes the lineage renderer and the
+// demo panels read. No DOM and no JSON import, so Node can load it too.
 import type { Graph } from "./graph.ts";
 import type { LineageNode } from "./lineage.ts";
-import type { SelectorNode } from "./selector.ts";
 
 export interface RawNode {
   uid: string;
@@ -11,10 +10,9 @@ export interface RawNode {
   resource_type: string;
   materialized: string | null;
   tags: string[];
-  meta: Record<string, string>;
-  selector_path: string;
+  /** First directory of the model path (staging, marts, ...). Empty for other resource types. */
+  layer: string;
   path: string;
-  package: string;
   test_count: number;
   description: string;
   columns: [string, string][];
@@ -26,7 +24,12 @@ export interface RawSample {
   nodes: RawNode[];
 }
 
-export interface ProjectNode extends SelectorNode, LineageNode {
+export interface ProjectNode extends LineageNode {
+  /** Resource type: model, source, seed, snapshot, exposure. */
+  type: string;
+  /** Materialization of models, seeds and snapshots. */
+  mat: string | null;
+  tags: string[];
   /** First directory of the model path (staging, marts, ...). Empty for other resource types. */
   layer: string;
   /** File the node is declared in, relative to the project. */
@@ -37,21 +40,6 @@ export interface ProjectNode extends SelectorNode, LineageNode {
 
 export interface Project extends Graph<ProjectNode> {
   name: string;
-}
-
-export interface LintFinding {
-  rule: string;
-  severity: "error" | "warn";
-  uid: string;
-  message: string;
-  file: string;
-}
-
-export interface LintData {
-  project: string;
-  /** Rules that ran; rules that need a warehouse catalog are skipped. */
-  rules: number;
-  findings: LintFinding[];
 }
 
 /** The tag drawn in a node's top border. Same rule as dbtl's lineage boxes. */
@@ -90,11 +78,9 @@ export function toProject(raw: RawSample): Project {
     type: n.resource_type,
     mat: n.materialized,
     tags: n.tags,
-    selPath: n.selector_path,
-    meta: n.meta,
+    layer: n.layer,
     tag: tagOf(n.resource_type, n.materialized),
     tests: n.test_count,
-    layer: n.resource_type === "model" ? n.selector_path.split("/")[0] : "",
     path: n.path,
     desc: n.description,
     cols: n.columns,

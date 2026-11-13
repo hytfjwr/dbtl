@@ -117,6 +117,9 @@
   .pg-out {
     grid-template-columns: minmax(0, 1fr);
   }
+  .pg-ed {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .site-foot .cols {
     grid-template-columns: 1fr 1fr;
   }
@@ -230,12 +233,6 @@
   }
   .pg-lin {
     min-height: 320px;
-  }
-  .pg-lint .f {
-    grid-template-columns: 48px minmax(0, 1fr);
-  }
-  .pg-lint .f .node {
-    grid-column: 2;
   }
   .s-foot .r {
     display: none;

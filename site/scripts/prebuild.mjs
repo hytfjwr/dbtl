@@ -28,9 +28,6 @@ function readVersion() {
   return found[1];
 }
 
-// source.<pkg>.<source>.<table> and <type>.<pkg>.<name> both carry the package second.
-const packageOf = (uid) => uid.split(".")[1] ?? "";
-
 // The two sample projects the home demo and the playground run on.
 const SAMPLES = [
   { name: "jaffle_finance", file: "manifest.json" },
@@ -45,15 +42,6 @@ const TEST_FLAGS = {
   accepted_values: "AV",
   accepted_range: "AR",
 };
-
-// Same stringification dbtl applies to `meta` before matching `meta:key=value`:
-// strings stay as they are, everything else becomes compact JSON.
-const metaStrings = (meta) =>
-  Object.fromEntries(
-    Object.entries(meta ?? {})
-      .map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)])
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
-  );
 
 function buildGraph(file) {
   const manifest = JSON.parse(
@@ -103,8 +91,8 @@ function buildGraph(file) {
 
   return kept
     .map(([uid, raw]) => {
-      // dbtl reads materialization, tags and meta only from models, seeds and
-      // snapshots (and meta from sources); exposures carry none of them.
+      // dbtl reads materialization and tags only from models, seeds and
+      // snapshots; exposures carry none of them.
       const built = ["model", "seed", "snapshot"].includes(raw.resource_type);
       return {
         uid,
@@ -112,11 +100,9 @@ function buildGraph(file) {
         resource_type: raw.resource_type,
         materialized: built ? (raw.config?.materialized ?? null) : null,
         tags: built ? (raw.tags ?? []) : [],
-        meta: raw.resource_type === "exposure" ? {} : metaStrings(raw.meta),
-        // `path:` selectors match this field (relative to the resource root), not the display path.
-        selector_path: raw.path ?? "",
+        // The home demo groups models by the first directory of their path.
+        layer: raw.resource_type === "model" ? (raw.path ?? "").split("/")[0] : "",
         path: raw.original_file_path ?? raw.path ?? "",
-        package: raw.package_name ?? packageOf(uid),
         test_count: testCount.get(uid) ?? 0,
         description: (raw.description ?? "").trim(),
         columns: Object.values(raw.columns ?? {}).map((c) => [c.name, flagsFor(uid, c.name)]),

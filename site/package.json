@@ -6,11 +6,9 @@
   "scripts": {
     "dev": "node scripts/build-engine.mjs && node scripts/prebuild.mjs && astro dev",
     "data:graph": "node scripts/prebuild.mjs",
-    "data:lint": "node scripts/lint-data.mjs",
     "build": "node scripts/build-engine.mjs && node scripts/prebuild.mjs && astro build && node scripts/check-engine.mjs && pagefind --site dist && node scripts/check-links.mjs",
     "preview": "astro preview",
     "check-links": "node scripts/check-links.mjs",
-    "check:selectors": "node scripts/check-selectors.mjs",
     "check:engine": "node scripts/check-engine.mjs",
     "format": "oxfmt && rumdl fmt",
     "format:check": "oxfmt --check && rumdl fmt --check",
