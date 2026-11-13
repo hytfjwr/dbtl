@@ -28,7 +28,9 @@ A Cargo workspace: the `dbtl` binary and root library plus member crates
 selectors, column lineage, lineage layout), `dbtl-tui` (the interactive
 app), `dbtl-docs` (the `dbtl docs` generator), `dbtl-report` (the
 `check`/`lint` report model, renderers, and lint-gate evaluation — no
-filesystem, terminal, or clap dependencies), and `xtask` (dev
+filesystem, terminal, or clap dependencies), `dbtl-wasm` (the in-memory
+engine the docs site compiles to WebAssembly — a pure `engine` API plus
+thin `wasm-bindgen` JSON bindings), and `xtask` (dev
 automation). The root `src/lib.rs` is a thin facade re-exporting the
 member crates.
 
@@ -119,6 +121,35 @@ The documentation site lives in `site/`.
 - Sources are formatted and linted: run `pnpm run format` to fix formatting,
   `pnpm run format:check` and `pnpm run lint` to check, and `pnpm run check`
   for the type check. All of them run in CI.
+
+### The WebAssembly engine
+
+`pnpm run dev`, `pnpm run build`, and `pnpm run check` all start by building
+the engine (`site/scripts/build-engine.mjs`): `dbtl-wasm` compiled to
+`wasm32-unknown-unknown`, post-processed by `wasm-bindgen`, and written to
+`site/public/engine/` (gitignored, like the staged sample data in
+`site/public/samples/`). You need:
+
+```console
+$ rustup target add wasm32-unknown-unknown
+$ cargo install wasm-bindgen-cli --version <version> --locked
+```
+
+where `<version>` is exactly the `wasm-bindgen` version pinned in
+`crates/wasm/Cargo.toml` — the CLI post-processes the `.wasm`, so a
+mismatched version fails the build. To build or check the site without the
+Rust toolchain, set `DBTL_SKIP_ENGINE=1`: every script then skips the
+engine step, checks still pass, and anything that loads the engine gets a
+clear "not built" error — enough for site work that never touches the
+playground. `pnpm run check:engine` loads the built wasm from Node and
+compares its lint output against the native engine for both bundled
+samples; it runs inside `pnpm run build`.
+
+`wasm-bindgen` is excluded from automated Cargo updates: the crate pin in
+`crates/wasm/Cargo.toml`, the CLI version CI installs in
+`.github/workflows/docs-site.yml`, and that workflow's archive SHA-256 must
+move together — a bump is one manual change to all three.
+
 - The site is published only when a release is cut. A pull request builds it
   to check it, and nothing is deployed.
 - In examples, write the release version as `@DBTL_TAG@` (for example `v1.2.3`) or
