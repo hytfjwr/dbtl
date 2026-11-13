@@ -1355,7 +1355,7 @@ pub(super) fn render_arms(
 /// 3. the collapse render — arm 0 of every `{% if %}`/`{% for %}` chain,
 ///    one render's worth of SQL, so mutually exclusive arms (`where`,
 ///    `on`, `limit`, whole-statement splits) can't combine into an
-///    unparseable or phantom-fact union, and
+///    unparsable or phantom-fact union, and
 /// 4. the collapse render stripped the same way.
 ///
 /// `None` when all four fail — the caller's unparsed-model path.
