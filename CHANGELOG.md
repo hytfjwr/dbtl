@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `unknown_column_reference` no longer misreads date-part keywords in
+  date functions, same-SELECT aliases in `WHERE`/`GROUP BY`/`HAVING`/
+  `QUALIFY`/`ORDER BY`, or an `UNNEST`'s table alias as upstream columns.
+
 ## [0.6.4] - 2026-11-13
 
 ### Changed

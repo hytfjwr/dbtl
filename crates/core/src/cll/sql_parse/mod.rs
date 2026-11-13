@@ -88,6 +88,7 @@ mod tests;
 
 use ast::*;
 pub use dialect::SqlDialect;
+use dialect::{date_part_arg_position, is_date_part_word};
 use facts::{outer_order_by_span, star_over_single_explicit_cte};
 pub(crate) use jinja::trailing_semicolon;
 use jinja::*;
