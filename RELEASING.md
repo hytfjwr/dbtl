@@ -19,14 +19,12 @@ Releases are almost fully automated. The flow is:
 
 `release.yml` resolves the tag from `Cargo.toml` (so the shipped binary's
 `--version` can never disagree with the tag), then calls the reusable build
-workflow (`.github/workflows/release-build.yml`) for every target:
-
-| Target | Artifact |
-| ------ | -------- |
-| `aarch64-apple-darwin`, `x86_64-apple-darwin` | `dbtl-<tag>-<target>.tar.gz` |
-| `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` | `dbtl-<tag>-<target>.tar.gz` |
-| `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl` | `dbtl-<tag>-<target>.tar.gz` (fully static — the job fails if the ELF requests a dynamic loader) |
-| `x86_64-pc-windows-msvc` | `dbtl-<tag>-<target>.zip` |
+workflow (`.github/workflows/release-build.yml`) once per target. The per-OS
+archives it produces are the ones listed on the
+[installation page](site/src/content/docs/getting-started/installation.md);
+the Homebrew tap's formula downloads those same GNU-Linux archives. The musl
+builds are fully static — the job fails if the ELF requests a dynamic
+loader.
 
 Every archive contains the binary, `LICENSE`, `README.md`, the generated
 shell completions (`completions/`), and the man page (`man/dbtl.1`). The

@@ -32,11 +32,9 @@ dbtl ls '2+fct_orders' --exclude path:staging      # subtract after the union
 
 ## Selectors
 
-Whitespace-separated terms union. Comma-separated factors intersect. `+` and `N+` expand up and downstream. Atoms are `tag:`, `path:`, `config.materialized:`, `exposure:`, `state:modified|new`, `meta:key[=value]`, bare names, and globs. See [Selectors](selectors.md) for the full grammar.
+The selector grammar — unions, intersections, upstream and downstream hops, `tag:`/`path:`/`config.materialized:`/`exposure:`/`state:`/`meta:` atoms, and globs — is documented under [Selectors](selectors.md). `state:` specs need `--diff`.
 
 `--exclude <SELECTOR>` subtracts a spec's matches after the union. It is repeatable, and each occurrence takes one spec.
-
-`state:` specs need `--diff`. `dbtl` resolves them with its own comparison of the SQL, config, column, and macro changes it can read. The set may not match dbt's `state:modified`.
 
 ## Output shapes
 
@@ -53,4 +51,4 @@ Whitespace-separated terms union. Comma-separated factors intersect. `+` and `N+
 
 An empty match prints nothing (`[]` under `json`) and exits 0. A malformed spec is a usage error and exits 2. See [Exit codes](../configuration/exit-codes.md).
 
-`ls` accepts the global flags `--manifest`, `--source`, `--project`, `--include-packages`, and `--diff`.
+The global flags `ls` accepts are listed in the [CLI reference](../reference/cli.md#dbtl-ls).

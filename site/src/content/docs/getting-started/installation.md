@@ -28,12 +28,14 @@ Each archive contains the `dbtl` binary, `LICENSE`, `README.md`, shell completio
 
 ### Verify the download
 
-Verify the download against `checksums.txt` and the build provenance before you unpack it:
+Download `checksums.txt` from the same release, next to the archive. Then verify the digest and the build provenance before you unpack:
 
 ```sh
 sha256sum --check --ignore-missing checksums.txt
 gh attestation verify dbtl-@DBTL_TAG@-aarch64-apple-darwin.tar.gz --repo hytfjwr/dbtl
 ```
+
+The provenance check needs the GitHub CLI (`gh`). Skip it when `gh` is not installed; the digest check alone still verifies the archive's bytes.
 
 ## From source
 

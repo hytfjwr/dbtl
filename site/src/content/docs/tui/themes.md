@@ -36,7 +36,7 @@ Set `theme` in your [user config](../configuration/user-config.md):
 theme: dusk
 ```
 
-The precedence is `config.yml`, then the theme saved with your project's view state, then `--theme` or `DBTL_THEME`. The command-line flag and the environment variable always win over a configured theme.
+A configured theme loses to the one saved with a project's view state, and both lose to `--theme` or `DBTL_THEME`. See [Precedence](../configuration/user-config.md#precedence).
 
 ## Define your own theme
 

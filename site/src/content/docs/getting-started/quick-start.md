@@ -9,6 +9,8 @@ Run `dbtl` at the root of any dbt project.
 dbtl
 ```
 
+The model list opens on the left, grouped by layer directory. Picking a model draws its lineage — what it reads from on the left and what depends on it on the right. Press `?` for the key list, or `q` to quit.
+
 ## Choose a data source
 
 `dbtl` reads lineage from one of two sources.
@@ -40,11 +42,15 @@ If `dbt` is on your `PATH`, press `P` inside the app to run `dbt parse` and swit
 
 ### Unsupported resource types
 
-A manifest, including one written by dbt Fusion, can carry resource types that `dbtl` does not handle. It still loads. Unsupported or unknown `resource_type` values are kept as generic lineage nodes, and a non-empty `functions` map is reported. Each kind produces one warning, shown on stderr at startup and as a toast after an `r` reload, so nothing is dropped silently. See [notifications](../tui/interface.md#notifications).
+A manifest, including one written by dbt Fusion, can carry resource types that `dbtl` does not handle. The load still succeeds.
+
+- Unsupported or unknown `resource_type` values become generic lineage nodes.
+- A non-empty `functions` map is reported.
+- Each kind produces one warning, shown on stderr at startup and as a toast after an `r` reload, so nothing is dropped silently. See [notifications](../tui/interface.md#notifications).
 
 ## Start on a model
 
-`--select` opens a model at startup. Pass a model name or a dbt selector spec. Its first match opens in a tab, and it must be a model. `state:` selectors are not available here because the selector resolves before `--diff` loads.
+`--select` opens a model at startup: `dbtl` resolves the spec and opens its first match, which must be a model, in a tab. `state:` selectors are not available here — the selection resolves before `--diff` loads.
 
 ```sh
 dbtl --select stg_orders
@@ -62,15 +68,7 @@ The selector grammar is covered in [selector syntax](../cli/selectors.md).
 
 ## Package scope
 
-By default, the graph contains the root project only. A compiled manifest mixes in nodes from installed dbt packages, and `dbtl` prunes them at load, so manifest mode and source mode agree on the node set.
-
-Pass `--include-packages` to widen the graph to the packages' nodes. They appear in the model list and lineage as dependency context, but every metric (coverage, orphans, stats, `dbtl check`) still counts the root project only.
-
-```sh
-dbtl --include-packages
-```
-
-The status line shows `scope:root` or `scope:+pkgs`. In source mode `--include-packages` has no effect and prints a warning, because installed packages are never parsed.
+By default the graph contains the root project only; `--include-packages` widens it to installed-package nodes while every metric still counts the root project. See [Package scope](../cli/overview.md#package-scope).
 
 ## Other launch options
 
@@ -80,7 +78,7 @@ The status line shows `scope:root` or `scope:+pkgs`. In source mode `--include-p
 | `--run-results <path>` | Load a specific `run_results.json`. See [Run results and catalog](../tui/run-results-and-catalog.md). |
 | `--catalog <path>` | Load a specific `catalog.json`. See [Run results and catalog](../tui/run-results-and-catalog.md). |
 | `--theme <name>` | Pick a color theme. See [Themes](../tui/themes.md). |
-| `--ascii` / `--unicode` | Force a glyph mode instead of probing the terminal. |
+| `--ascii` / `--unicode` | Force a glyph mode instead of probing the terminal. See [Troubleshooting](../configuration/troubleshooting.md#borders-look-doubled-or-misaligned). |
 
 Global data flags work on either side of a subcommand. The full flag list is in the [CLI reference](../reference/cli.md).
 

@@ -84,15 +84,24 @@ Press `p` to anchor the path's start on the selected model. The highlight then r
 
 ## Column trace
 
-Trace one column through the graph from the [structure view](interface.md#structure-view).
+Trace one column through the graph from the [structure view](structure-view.md).
 
 1. Open the structure view with `Enter`.
 2. Move to a column with `h` and `l`.
 3. Press `Enter` or `c`.
 
-The lineage pane then filters to the models related to that column.
+The lineage pane then filters to the models related to that column. Each box lists its related columns, one row per column, with a mark naming how the column reaches that node:
 
-- Each box lists its related columns. `>` marks the traced column, and the other marks name the edge kind.
+| Mark | What it is |
+| ---- | ---------- |
+| `>` | The traced column itself, highlighted with the on-path band. |
+| `·` (`-` in ASCII mode) | Passthrough — a bare select of the upstream column. |
+| `~` | Rename — `x AS c` from a parent column. |
+| `*` | Transform — a computed expression such as `sum(x)`. |
+| `%` | Filter or join — the column only shapes which rows exist. |
+
+A dimmed column row is an inferred name — the trace found no exact link for it.
+
 - A `column:model.col` chip replaces the `[view]` label in the status line, and the pane title gains `[col:name]`.
 - `h` and `l` step the traced column upstream and downstream.
 - `K` opens the column-lineage modal. In it, `j` and `k` move the row cursor and `Enter` re-roots to a row's model.
