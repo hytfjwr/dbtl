@@ -455,7 +455,8 @@ fn explain_rule(id: &str, cfg: &dbtl::LintConfig) -> Result<(), CliError> {
     } else {
         out += &format!(
             "default: off (opt-in) — enable with `lint.preset: strict`, \
-             `lint.categories.{}`, `lint.rules.{}`, or `--rules {}`\n",
+             `lint.categories.{}: error|warn`, `lint.rules.{}: true`, \
+             or `--rules {}`\n",
             info.category.name(),
             info.id,
             info.id
