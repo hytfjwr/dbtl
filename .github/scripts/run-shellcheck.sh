@@ -149,10 +149,16 @@ fi
 work="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/run-shellcheck.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
+# Enumeration results land in files first: a failure inside a process
+# substitution (an unlintable multi-line run:, an unreadable file) exits
+# only that subshell — the direct call keeps the exit in this shell.
+print_targets "$root" >"$work/targets"
+print_run_snippets "$root/action.yml" >"$work/runs"
+
 files=()
 while IFS= read -r -d '' f; do
 	files+=("$f")
-done < <(print_targets "$root")
+done <"$work/targets"
 
 # Extracted run: snippets are linted as bash text — a .shellcheckrc next to
 # the temp files supplies the dialect (shellcheck reads it from each file's
@@ -165,7 +171,7 @@ while IFS=$'\t' read -r n text; do
 	snip="$work/action-yml-run-${n}.sh"
 	printf '%s\n' "$text" >"$snip"
 	snips+=("$snip")
-done < <(print_run_snippets "$root/action.yml")
+done <"$work/runs"
 
 total=$((${#files[@]} + ${#snips[@]}))
 echo "shellcheck: linting $total target(s)"
