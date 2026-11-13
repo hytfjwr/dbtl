@@ -270,6 +270,17 @@ pub fn git_isolated_env(cmd: &mut Command) {
         .env("GIT_CONFIG_NOSYSTEM", "1");
 }
 
+/// Write `(relative path, contents)` pairs under `dir` — a scratch
+/// source-mode project's files (parents created) — and return `dir`.
+pub fn write_project(dir: &std::path::Path, files: &[(&str, &str)]) -> PathBuf {
+    for (rel, contents) in files {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, contents).unwrap();
+    }
+    dir.to_path_buf()
+}
+
 /// A recursive directory copy — `std::fs` has none, and the diff/git tests
 /// need an editable twin of a fixture project.
 pub fn copy_tree(src: &std::path::Path, dst: &std::path::Path) {

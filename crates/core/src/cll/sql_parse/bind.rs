@@ -62,11 +62,13 @@ impl SqlParseResolver {
                 for e in with_hints {
                     res.foj.extend(self.expr_refs(ctx, refs, e)?);
                 }
+                let mut table_arg_sources = ColSources::new();
                 if let Some(args) = args {
                     for a in &args.args {
-                        res.foj.extend(self.function_arg_refs(ctx, refs, a)?);
+                        table_arg_sources.extend(self.function_arg_refs(ctx, refs, a)?);
                     }
                 }
+                res.foj.extend(table_arg_sources.iter().cloned());
                 let parts = object_name_parts(name);
                 let last = parts.last().cloned().unwrap_or_default();
                 let binding_name = alias
@@ -113,6 +115,30 @@ impl SqlParseResolver {
                     } else {
                         TableSrc::Parent(p.uid.clone())
                     }
+                } else if args.is_some() && last == "unnest" {
+                    // A dialect without the UNNEST table factor parses
+                    // `unnest(x) t` as a function-like table — bind the same
+                    // value-column shape: the table alias (else `unnest`)
+                    // names the exploded element.
+                    let names: Vec<String> = match alias.as_ref() {
+                        Some(a) if !a.columns.is_empty() => {
+                            a.columns.iter().map(|c| norm_ident(&c.name)).collect()
+                        }
+                        Some(a) => vec![norm_ident(&a.name)],
+                        None => vec!["unnest".to_string()],
+                    };
+                    TableSrc::Derived(Rc::new(QueryRes {
+                        out: names
+                            .into_iter()
+                            .map(|name| OutCol {
+                                name,
+                                bare: false,
+                                sources: table_arg_sources.clone(),
+                                synthetic: false,
+                            })
+                            .collect(),
+                        foj: ColSources::new(),
+                    }))
                 } else {
                     TableSrc::External
                 };
@@ -199,10 +225,16 @@ impl SqlParseResolver {
                 }
                 res.foj.extend(elem_sources.iter().cloned());
                 let mut out: Vec<OutCol> = {
-                    let names: Vec<String> = alias
-                        .as_ref()
-                        .map(|a| a.columns.iter().map(|c| norm_ident(&c.name)).collect())
-                        .unwrap_or_else(|| vec!["unnest".to_string()]);
+                    let names: Vec<String> = match alias.as_ref() {
+                        Some(a) if !a.columns.is_empty() => {
+                            a.columns.iter().map(|c| norm_ident(&c.name)).collect()
+                        }
+                        // `UNNEST(arr) x` names no column alias: the table
+                        // alias itself is the value column's name —
+                        // `select x` reads the exploded element.
+                        Some(a) => vec![norm_ident(&a.name)],
+                        None => vec!["unnest".to_string()],
+                    };
                     names
                         .into_iter()
                         .map(|name| OutCol {

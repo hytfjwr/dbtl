@@ -20,6 +20,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   version distinctly — `dbtl ls 'fct_orders.v1'` selects exactly that
   spelling like real dbt — and a `versions: include:`-scoped unit test now
   attaches to its declared version rather than an arbitrary same-named one.
+- `unknown_column_reference` no longer misreads date-part keywords in
+  date functions, same-SELECT aliases in `WHERE`/`GROUP BY`/`HAVING`/
+  `QUALIFY`/`ORDER BY`, or an `UNNEST`'s table alias as upstream columns.
 
 ## [0.6.4] - 2026-11-13
 
