@@ -214,6 +214,7 @@ jobs:
             awk -v f="dbtl-${TAG}-$1.tar.gz" '$2 == f { print $1 }' checksums.txt
           }
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          mkdir -p tap/Formula
           cat > tap/Formula/dbtl.rb <<EOF
           class Dbtl < Formula
             desc "Terminal UI for exploring dbt model lineage as ASCII art"
