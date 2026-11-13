@@ -1466,6 +1466,7 @@ models:
           - unique: {config: {enabled: false}}
           - not_null: {enabled: false}
           - not_null
+          - not_null: {config: {severity: warn}, enabled: true, where: "id > 0"}
 "#,
     )
     .unwrap();
@@ -1485,16 +1486,25 @@ models:
         })
         .collect();
     kinds.sort();
-    assert_eq!(kinds, ["not_null", "unique"], "{kinds:?}");
+    assert_eq!(kinds, ["not_null", "not_null", "unique"], "{kinds:?}");
     // An enabled test's `config:`/`enabled:` keys never leak into kwargs —
-    // the real manifest records them under `config`, not test args.
+    // the real manifest records them under `config`, not test args. The
+    // map form proves the strip is real (a bare test has no keys to strip).
     let t = m
         .nodes
         .values()
-        .find(|n| n.test_metadata.as_ref().and_then(|t| t.name.as_deref()) == Some("not_null"))
+        .find(|n| {
+            n.test_metadata.as_ref().and_then(|t| t.name.as_deref()) == Some("not_null")
+                && n.test_metadata
+                    .as_ref()
+                    .and_then(|t| t.kwargs.as_ref())
+                    .is_some_and(|k| !k.is_empty())
+        })
         .unwrap();
     let kwargs = t.test_metadata.as_ref().unwrap().kwargs.as_ref().unwrap();
     assert!(!kwargs.contains_key("config") && !kwargs.contains_key("enabled"));
+    assert_eq!(kwargs.len(), 1, "only the real arg survives: {kwargs:?}");
+    assert_eq!(kwargs["where"], serde_json::json!("id > 0"));
 }
 
 // ---- data-paths (the pre-1.0 seed-paths alias) -------------------------------

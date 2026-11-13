@@ -703,11 +703,13 @@ impl Synthesis {
                             // and ignores table-level/`+loader` declarations
                             // (verified on 1.12.6).
                             loader: src.loader.clone(),
-                            // `loaded_at_field` resolves down table `config:` >
-                            // table top-level > source `config:` > source
-                            // top-level; an explicit `null` at any level clears
-                            // the inherited value (`+loaded_at_field` is one
-                            // dbt ignores — deliberately not resolved).
+                            // `loaded_at_field` resolves props-before-config
+                            // per level (the reverse of meta/freshness):
+                            // table top-level > table `config:` > source
+                            // top-level > source `config:`; an explicit
+                            // `null` at the table level clears the inherited
+                            // value (`+loaded_at_field` is one dbt ignores —
+                            // deliberately not resolved).
                             loaded_at_field: source_loaded_at_field(src, tbl),
                             // `freshness:` merges PER THRESHOLD down table
                             // `config:` > table > source `config:` > source >
