@@ -91,6 +91,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   exempted, so a dim legitimately joining at both hops stops flagging —
   `exclude:` still matches the flagged hop (B). `state:` selectors are
   rejected at config load; there is no diff to evaluate them against.
+- Docs site: a Guides section with walkthroughs for adopting lint on an
+  existing project, reviewing a pull request, and exploring a large
+  project; an FAQ covering the verified dbt versions; and direct links
+  to the playground from the home page, footer, and getting-started
+  pages.
 
 ## [0.6.3] - 2026-11-13
 
