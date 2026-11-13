@@ -98,6 +98,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Source mode also accepts the `config({...})` positional-dict spelling of
   `config()` kwargs (same ordered last-wins/merge semantics) and the
   deprecated `data-paths` alias for `seed-paths` (declaring both warns).
+- `dbtl lint --source` on large projects is much faster: each `.yml` is
+  read and scanned for `- name:` entries once instead of once per
+  finding, and excerpts slice only the annotated lines. A finding's
+  line lookup is also section-aware now, so a model and a source table
+  sharing a name no longer resolve to the wrong `- name:` entry.
 
 ## [0.6.4] - 2026-11-13
 

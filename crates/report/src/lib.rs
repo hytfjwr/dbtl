@@ -38,6 +38,7 @@ pub use lint::{
 use dbtl_core::{Dag, DiffReport, Finding, Severity, SkippedRule};
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 /// The schema marker every JSON-shaped report carries — lets a consumer pin
 /// the layout version before reading fields.
@@ -386,7 +387,7 @@ pub struct RenderCtx<'a> {
     pub dag: Option<&'a Dag>,
     /// The excerpt texts `text` annotates, keyed by `location.file` —
     /// populated only for the human formats (see [`collect_sources`]).
-    pub sources: Option<&'a BTreeMap<String, String>>,
+    pub sources: Option<&'a BTreeMap<String, SourceText>>,
     /// Emit ANSI styling — only ever true for stdout `text`/`concise`
     /// (report files and the step summary always render plain).
     pub styled: bool,
@@ -425,13 +426,84 @@ pub fn render_report(format: ReportFormat, report: &Report, ctx: &RenderCtx<'_>)
     }
 }
 
+/// One excerpt text plus the byte offsets where each of its lines
+/// starts: `text` renders slices of it, and (line, column) → byte
+/// lookups run against `line_starts` so a large `.yml` isn't rescanned
+/// for every finding that lands in it.
+pub struct SourceText {
+    /// The file's full text — a finding's excerpt slices lines out of it.
+    pub text: String,
+    /// `line_starts[i]` is the byte offset line `i + 1` (1-based) begins
+    /// at — each `\n` byte opens a new line.
+    line_starts: Vec<usize>,
+}
+
+impl SourceText {
+    pub fn new(text: String) -> Self {
+        let mut line_starts = vec![0];
+        line_starts.extend(
+            text.match_indices('\n')
+                .map(|(i, _)| i + 1)
+                // A trailing `\n` opens no empty line after it — the same
+                // line count `str::split_inclusive`/the snippet's own map
+                // see.
+                .filter(|&s| s < text.len()),
+        );
+        SourceText { text, line_starts }
+    }
+
+    /// The byte offset of 1-based `(line, column)` — columns count
+    /// `char`s like every other position in the report — `None` when
+    /// the line doesn't exist or the column sits past its end. Both
+    /// `\n` and `\r\n` line endings are handled (the `\r` stays part of
+    /// its line).
+    pub(crate) fn position_byte(&self, line: u32, column: u32) -> Option<usize> {
+        if line == 0 || column == 0 {
+            return None;
+        }
+        let start = *self.line_starts.get(line as usize - 1)?;
+        if column == 1 {
+            return Some(start);
+        }
+        // The line's bytes, excluding the `\n` that ends it.
+        let end = self
+            .line_starts
+            .get(line as usize)
+            .map_or(self.text.len(), |next| next - 1);
+        let mut chars = self.text[start..end].chars();
+        let mut offset = start;
+        for _ in 1..column {
+            offset += chars.next()?.len_utf8();
+        }
+        Some(offset)
+    }
+
+    /// The byte range `line`'s bytes occupy — including its `\n` when
+    /// one is there (the last line runs to EOF). `None` past EOF.
+    pub(crate) fn line_span(&self, line: u32) -> Option<Range<usize>> {
+        let start = *self.line_starts.get(line.checked_sub(1)? as usize)?;
+        let end = self
+            .line_starts
+            .get(line as usize)
+            .copied()
+            .unwrap_or(self.text.len());
+        Some(start..end)
+    }
+
+    /// The 1-based line `byte` falls inside — a byte at a line's start
+    /// belongs to that line; one at EOF to the last line.
+    pub(crate) fn line_of_byte(&self, byte: usize) -> u32 {
+        self.line_starts.partition_point(|&s| s <= byte) as u32
+    }
+}
+
 /// The excerpt texts `text`/`concise` annotate, keyed by `location.file`:
 /// `.yml` files resolved once through `env.read_text` (the same source
 /// [`fill_finding_lines_with`](dbtl_core::fill_finding_lines_with) fills
 /// positions from), `.sql` taken from `Dag::raw_code` — the exact string
 /// positions were computed against. A file that can't be resolved stays
 /// absent; its findings render position-only.
-pub fn collect_sources(report: &Report, env: &RenderEnv<'_>) -> BTreeMap<String, String> {
+pub fn collect_sources(report: &Report, env: &RenderEnv<'_>) -> BTreeMap<String, SourceText> {
     let mut sources = BTreeMap::new();
     for f in report.gates.iter().flat_map(|g| g.counted()) {
         let Some(loc) = f.location.as_ref() else {
@@ -446,7 +518,7 @@ pub fn collect_sources(report: &Report, env: &RenderEnv<'_>) -> BTreeMap<String,
             env.dag.raw_code(&f.node_uid).map(str::to_string)
         };
         if let Some(text) = text {
-            sources.insert(loc.file.clone(), text);
+            sources.insert(loc.file.clone(), SourceText::new(text));
         }
     }
     sources
