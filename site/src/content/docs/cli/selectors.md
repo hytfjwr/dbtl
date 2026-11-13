@@ -21,6 +21,7 @@ description: The dbt selector grammar that dbtl uses in the TUI search, --select
 | `meta:key=value` | Nodes where the stringified `meta` value equals `value`. |
 | `state:modified`, `state:new` | Nodes the `--diff` baseline marks as modified or new. |
 | `name`, `fct_*` | A bare node name, or a glob. |
+| `name.v1`, `name.vbeta` | One version of a `versions:`-ed model. The bare `name` still selects every version. |
 
 Examples:
 
@@ -33,6 +34,7 @@ config.materialized:table,path:marts   # tables whose path contains marts
 meta:owner=alice                 # nodes whose owner meta is alice
 state:modified+                  # changed nodes and their downstream
 fct_*                            # a glob
+fct_orders.v2+                   # version 2 and its downstream
 ```
 
 > [!NOTE]

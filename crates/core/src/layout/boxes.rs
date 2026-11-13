@@ -12,11 +12,14 @@ pub(super) const BOX_H: usize = 3;
 /// Blank rows between stacked boxes in the same column (room for connectors).
 pub(super) const ROW_GAP: usize = 1;
 
-/// The display label for a node: its `name` (short, human-facing). Sources keep
-/// their `name` too; that is acceptable for the PoC (collisions are vanishingly
-/// rare in lineage subgraphs and the rect map disambiguates by unique_id).
-pub(super) fn label_of(node: &crate::NodeInfo) -> &str {
-    &node.name
+/// The display label for a node: its `name` (short, human-facing) — or, for a
+/// versioned model, the `name.vseg` spelling [`crate::list_name`] shares with
+/// `ls`/the list/docs (same-name versions must not draw identical boxes).
+/// Sources keep their `name` too; that is acceptable for the PoC (collisions
+/// are vanishingly rare in lineage subgraphs and the rect map disambiguates by
+/// unique_id).
+pub(super) fn label_of(node: &crate::NodeInfo) -> String {
+    crate::list_name(&node.unique_id, &node.name)
 }
 
 /// The materialization tag shown at the top-left of a node's box (`+Tag---+`),

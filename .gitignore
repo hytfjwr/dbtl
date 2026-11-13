@@ -15,6 +15,11 @@ tests/fixtures/logistics_project/logs/
 tests/fixtures/logistics_project/dbt_packages/
 tests/fixtures/logistics_project/.user.yml
 tests/fixtures/logistics_project/package-lock.yml
+tests/fixtures/versioned_project/target/
+tests/fixtures/versioned_project/logs/
+tests/fixtures/versioned_project/dbt_packages/
+tests/fixtures/versioned_project/.user.yml
+tests/fixtures/versioned_project/package-lock.yml
 
 # rendered demo (produced by vhs — the Demo workflow uploads it as an artifact)
 demo/demo.gif

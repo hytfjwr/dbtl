@@ -310,7 +310,10 @@ fn assemble_model_list(by_layer: Vec<(String, Vec<NodeInfo>)>) -> ModelList {
             model_to_row.push(rows.len()); // this model's display-row index
             rows.push(DisplayRow::Model {
                 model_index: models.len(),
-                name: node.name.clone(),
+                // `list_name` — a versioned model rows as `fct_orders.v1`
+                // (the same spelling lint/`ls`/docs show); unversioned
+                // nodes keep the plain declared name.
+                name: crate::list_name(&node.unique_id, &node.name),
             });
             models.push(node.clone());
         }
@@ -403,7 +406,12 @@ pub fn match_indices(name: &str, query: &str) -> Vec<usize> {
 /// sort `full` was built with — re-running it after a sort change reorders the
 /// filtered view for free.
 pub fn build_filtered_model_list(full: &ModelList, query: &str) -> ModelList {
-    filter_model_list(full, |m| crate::name_matches_query(&m.name, query))
+    // Match the SHOWN name (`list_name` — `fct_orders.v1` for a versioned
+    // model): it still answers a bare `fct_orders` query by subsequence,
+    // and it lets `v1`-style queries reach a specific version.
+    filter_model_list(full, |m| {
+        crate::name_matches_query(&crate::list_name(&m.unique_id, &m.name), query)
+    })
 }
 
 /// Narrow a [`ModelList`] to the models `keep` accepts, preserving the group

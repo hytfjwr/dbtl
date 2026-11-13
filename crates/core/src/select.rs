@@ -32,6 +32,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use crate::dag::{normalize_version, versioned_model_segs};
 use crate::{is_exposure, Dag, DagDiff};
 
 /// Evaluate `spec` over `dag` (with optional `diff` for `state:` selectors) →
@@ -159,20 +160,44 @@ fn evaluate_atom(dag: &Dag, diff: Option<&DagDiff>, atom: &str) -> BTreeSet<Stri
                 // glob. (A `key:value` the arms above didn't claim still
                 // lands here; node names can't contain ':', so the literal
                 // `key:` prefix simply never matches — same as today.)
-                // The regex compiles ONCE per atom, not per node.
+                // The regex compiles ONCE per atom, not per node. A
+                // versioned model also tries its `name.vseg` spelling, so
+                // `fct_orders.v*` reaches every version.
                 let re = glob_regex(atom);
                 nodes()
-                    .filter(|(_, n)| re.is_match(&n.name))
+                    .filter(|(uid, n)| {
+                        re.is_match(&n.name)
+                            || versioned_model_segs(uid)
+                                .is_some_and(|(name, vseg)| re.is_match(&format!("{name}.{vseg}")))
+                    })
                     .map(|(uid, _)| uid.clone())
                     .collect()
             } else {
                 nodes()
-                    .filter(|(_, n)| n.name == atom)
+                    .filter(|(uid, n)| name_atom_matches(uid, &n.name, atom))
                     .map(|(uid, _)| uid.clone())
                     .collect()
             }
         }
     }
+}
+
+/// Bare-name atom match — the declared `name` as ever, or a versioned
+/// model's `name.vseg` spelling (`fct_orders.v1`, the same name `ls` /
+/// lint / the TUI list show — see [`crate::list_name`]). The version
+/// compares prefix-free like `ref(…, v=…)`: `fct_orders.1` and
+/// `fct_orders.v1` both land on `model.<pkg>.fct_orders.v1`, and a bare
+/// `fct_orders` still matches every version of the family (dbt's
+/// name-selector semantics — versions share one model name).
+fn name_atom_matches(uid: &str, name: &str, atom: &str) -> bool {
+    if name == atom {
+        return true;
+    }
+    let Some((aname, aver)) = atom.split_once('.') else {
+        return false;
+    };
+    versioned_model_segs(uid)
+        .is_some_and(|(n, vseg)| aname == n && normalize_version(aver) == normalize_version(vseg))
 }
 
 /// Strictly validate a selector `spec` for the non-interactive surfaces
@@ -493,6 +518,97 @@ mod tests {
         set.iter()
             .map(|u| u.rsplit('.').next().unwrap().to_string())
             .collect()
+    }
+
+    /// `stg -> fct.v1 / fct.v2 / fct.vbeta`, `fct.v2 -> use_all` — the graph
+    /// a real `versions:`-ed model compiles to (several nodes sharing the
+    /// declared name `fct`, plus one consumer pinned to v2).
+    fn versioned_dag() -> Dag {
+        let mk = |uid: &str, name: &str| {
+            (
+                uid.to_string(),
+                RawNode {
+                    name: name.into(),
+                    resource_type: "model".into(),
+                    ..Default::default()
+                },
+            )
+        };
+        let mut nodes = HashMap::from([mk("model.p.stg", "stg"), mk("model.p.use_all", "use_all")]);
+        for v in ["v1", "v2", "vbeta"] {
+            nodes.insert(
+                format!("model.p.fct.{v}"),
+                RawNode {
+                    name: "fct".into(),
+                    resource_type: "model".into(),
+                    ..Default::default()
+                },
+            );
+        }
+        Dag::build(&RawManifest {
+            metadata: Default::default(),
+            nodes,
+            sources: HashMap::new(),
+            exposures: HashMap::new(),
+            macros: HashMap::new(),
+            semantic_models: HashMap::new(),
+            metrics: HashMap::new(),
+            saved_queries: HashMap::new(),
+            unit_tests: HashMap::new(),
+            functions: HashMap::new(),
+            parent_map: HashMap::from([
+                ("model.p.fct.v1".into(), vec!["model.p.stg".into()]),
+                ("model.p.fct.v2".into(), vec!["model.p.stg".into()]),
+                ("model.p.fct.vbeta".into(), vec!["model.p.stg".into()]),
+                ("model.p.use_all".into(), vec!["model.p.fct.v2".into()]),
+            ]),
+            child_map: HashMap::from([
+                (
+                    "model.p.stg".into(),
+                    vec![
+                        "model.p.fct.v1".into(),
+                        "model.p.fct.v2".into(),
+                        "model.p.fct.vbeta".into(),
+                    ],
+                ),
+                ("model.p.fct.v2".into(), vec!["model.p.use_all".into()]),
+            ]),
+            docs: Default::default(),
+        })
+    }
+
+    #[test]
+    fn version_qualified_name_atoms_pick_one_spelling() {
+        let d = versioned_dag();
+        // dbt's `model.vN` selector semantics — the `vseg` spelling every
+        // surface displays — plus the prefix-free `ref(…, v=…)` forms.
+        assert_eq!(names(&select(&d, None, "fct.v1")), vec!["v1"]);
+        assert_eq!(names(&select(&d, None, "fct.1")), vec!["v1"]);
+        assert_eq!(names(&select(&d, None, "fct.V2")), vec!["v2"]);
+        assert_eq!(names(&select(&d, None, "fct.vbeta")), vec!["vbeta"]);
+        // The bare family name still hits every version — dbt's own
+        // name-selector semantics (versions share one model name).
+        assert_eq!(names(&select(&d, None, "fct")), vec!["v1", "v2", "vbeta"]);
+        // A version no node carries matches nothing, and the qualified
+        // spelling doesn't leak onto another model's versions.
+        assert!(select(&d, None, "fct.v9").is_empty());
+        assert!(select(&d, None, "use_all.v1").is_empty());
+    }
+
+    #[test]
+    fn versioned_globs_and_hops() {
+        let d = versioned_dag();
+        // A glob matches the `name.vseg` spelling AND the bare name — both
+        // reach every version of the family.
+        assert_eq!(
+            names(&select(&d, None, "fct.v*")),
+            vec!["v1", "v2", "vbeta"]
+        );
+        assert_eq!(names(&select(&d, None, "f*")), vec!["v1", "v2", "vbeta"]);
+        assert_eq!(names(&select(&d, None, "fct.v?")), vec!["v1", "v2"]);
+        // Hops expand from the one version the atom picked.
+        assert_eq!(names(&select(&d, None, "fct.v2+")), vec!["v2", "use_all"]);
+        assert_eq!(names(&select(&d, None, "+fct.v1")), vec!["v1", "stg"]);
     }
 
     #[test]

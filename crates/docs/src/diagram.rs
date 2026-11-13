@@ -30,10 +30,10 @@ pub(super) fn push_legend(
     for n in &sg.nodes {
         let name = dag
             .get(&n.unique_id)
-            .map(|i| i.name.as_str())
-            .unwrap_or(&n.name);
+            .map(|i| list_name(&n.unique_id, &i.name))
+            .unwrap_or_else(|| n.name.clone());
         match files.get(&n.unique_id) {
-            Some(rel) => s.push_str(&format!("- [{}]({})\n", md_label(name), href_of(rel))),
+            Some(rel) => s.push_str(&format!("- [{}]({})\n", md_label(&name), href_of(rel))),
             None => s.push_str(&format!("- {name}\n")),
         }
     }
@@ -68,11 +68,14 @@ pub(super) fn push_dep_list(
         return;
     }
     for uid in deps {
-        let name = dag.get(uid).map(|n| n.name.as_str()).unwrap_or(uid);
+        let name = dag
+            .get(uid)
+            .map(|n| list_name(uid, &n.name))
+            .unwrap_or_else(|| uid.clone());
         match files.get(uid) {
             Some(rel) => s.push_str(&format!(
                 "- [{}]({})\n",
-                md_label(name),
+                md_label(&name),
                 page_link(page_rel, rel)
             )),
             None => s.push_str(&format!("- {name}\n")),

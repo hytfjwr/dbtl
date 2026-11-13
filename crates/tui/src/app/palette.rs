@@ -35,9 +35,13 @@ impl App {
                 .active_list()
                 .models
                 .iter()
-                .filter(|m| model_q.is_empty() || !match_indices(&m.name, model_q).is_empty())
+                .filter(|m| {
+                    model_q.is_empty()
+                        || !match_indices(&crate::list_name(&m.unique_id, &m.name), model_q)
+                            .is_empty()
+                })
                 .map(|m| PaletteRow::Model {
-                    name: m.name.clone(),
+                    name: crate::list_name(&m.unique_id, &m.name),
                     uid: m.unique_id.clone(),
                 })
                 .collect();

@@ -19,7 +19,7 @@ use dbtl_core::layer::{first_dir, layer_rank};
 use dbtl_core::mermaid::subgraph_mermaid_linked;
 use dbtl_core::{
     column_coverage_counts, column_doc_coverage_counts, coverage_counts, doc_coverage_counts,
-    in_package, normalize_column, Catalog, ColumnEdgeKind, ColumnLineage, ColumnRef,
+    in_package, list_name, normalize_column, Catalog, ColumnEdgeKind, ColumnLineage, ColumnRef,
     ColumnResolver, CompiledOrigin, Dag, Edge, Finding, LineageDepth, NodeInfo, PackageScope,
     RunResults, SqlDialect, SqlParseResolver, Subgraph, LAYER_ORDER,
 };

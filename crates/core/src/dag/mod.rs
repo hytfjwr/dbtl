@@ -71,6 +71,47 @@ pub(crate) fn uid_package(uid: &str) -> Option<&str> {
     uid.split('.').nth(1)
 }
 
+/// A version string compared prefix-free — `v2` and `2` are the same
+/// version (`ref('x', v='v2')` and `ref('x', v=2)` both land on the
+/// `model.<pkg>.<name>.v2` uid, whose last segment is `v` + the declared
+/// `v:` value). Shared by the unit-test target resolution, the lint
+/// call-site matcher, and every surface that asks "is this THE latest
+/// version" (a `latest_version` of `2` and a node `version` of `v2` must
+/// compare equal). Exactly ONE leading `v` is stripped — a `v: 'v3'`
+/// declaration lives on the `vv3` uid segment and must keep comparing
+/// distinct from `v: 3`, the way dbt's selector spelling does.
+pub fn normalize_version(s: &str) -> &str {
+    s.strip_prefix(['v', 'V']).unwrap_or(s)
+}
+
+/// `model.<pkg>.<name>.<vseg>` → `Some((name, vseg))`; every other uid
+/// shape → `None`. The ONE versioned-model uid test [`list_name`], the
+/// lint display name, the selector's `name.vseg` atom, and the unit-test
+/// target resolver share.
+pub(crate) fn versioned_model_segs(uid: &str) -> Option<(&str, &str)> {
+    let mut it = uid.split('.');
+    match (it.next(), it.next(), it.next(), it.next(), it.next()) {
+        (Some("model"), Some(_), Some(name), Some(vseg), None) => Some((name, vseg)),
+        _ => None,
+    }
+}
+
+/// The name LIST surfaces print for `uid` — `dbtl ls --output names`, the
+/// TUI model list and lineage boxes, the generated-docs labels, and the
+/// Mermaid node labels share it: `name.vseg` for a versioned model (the
+/// same spelling [`display_name`](crate::lint::display_name) gives a
+/// finding) so `fct_orders.v1`/`v2`/`vbeta` never read as three
+/// indistinguishable `fct_orders` labels, and the plain node `name` for
+/// everything else (the unversioned output contract stays byte-identical).
+/// Pure — the uid's fourth segment already carries the version — so
+/// callers without a `Dag` in scope use it too.
+pub fn list_name(uid: &str, name: &str) -> String {
+    match versioned_model_segs(uid) {
+        Some((n, vseg)) => format!("{n}.{vseg}"),
+        None => name.to_string(),
+    }
+}
+
 /// Whether a description string carries no real content — the whitespace-only
 /// case (`" "`, `"\n  "`) that every "is it documented?" judgment must treat
 /// as missing (absence itself is `Option`'s job). The single shared predicate

@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
-use crate::dag::Dag;
+use crate::dag::{normalize_version, versioned_model_segs, Dag};
 use crate::source::{
     arms_exclusive, call_sites_masked, jinja_branches, kwarg, lit_value, mask_jinja_comments,
     ArmStep, CallKind, CallSite, JinjaBranches,
@@ -27,14 +27,14 @@ use super::{Finding, Label};
 /// else the node name (the uid's last segment, which `NodeInfo.name`
 /// agrees with).
 pub fn display_name(dag: &Dag, uid: &str) -> String {
+    if let Some((name, vseg)) = versioned_model_segs(uid) {
+        return format!("{name}.{vseg}");
+    }
     // `it.next()` x5 — no Vec: uids have ≤4 segments.
     let mut it = uid.split('.');
     match (it.next(), it.next(), it.next(), it.next(), it.next()) {
         (Some("source"), Some(_), Some(source), Some(table), None) => {
             format!("{source}.{table}")
-        }
-        (Some("model"), Some(_), Some(name), Some(version), None) => {
-            format!("{name}.{version}")
         }
         (Some(_), Some(_), Some(name), None, None) => name.to_string(),
         _ => dag
@@ -76,15 +76,61 @@ pub(crate) fn pluralize(n: usize, word: &str) -> String {
     }
 }
 
-/// A version string compared prefix-free — `v2` and `2` are the same
-/// version (`ref('x', v='v2')` and `ref('x', v=2)` both land on `.v2`).
-fn normalize_version(s: &str) -> &str {
-    s.trim_start_matches(['v', 'V'])
+/// The `(package, name)` a model uid folds into — `model.<pkg>.<name>` and
+/// `model.<pkg>.<name>.vN` are the same logical model for counting (the
+/// version spellings share one `ref('name')` family). A non-model uid is
+/// its own key — only models carry versions.
+fn model_family_key(uid: &str) -> (&str, &str) {
+    let mut it = uid.split('.');
+    match (it.next(), it.next(), it.next()) {
+        (Some("model"), Some(pkg), Some(name)) => (pkg, name),
+        _ => (uid, ""),
+    }
 }
 
-/// The numeric version a `model.<pkg>.<name>.vN` uid carries.
+/// Group `uids` into version families (see [`model_family_key`]): one
+/// entry per distinct `(package, name)`, so the `v1`/`v2`/`vbeta`
+/// spellings of one model count ONCE for fanout/join thresholds.
+/// Families order by first appearance in `uids` — callers pass the
+/// uid-sorted neighbour list, so the output is deterministic; members
+/// keep that input order.
+pub(crate) fn version_families(uids: &[String]) -> Vec<Vec<&String>> {
+    let mut families: Vec<Vec<&String>> = Vec::new();
+    let mut index: HashMap<(&str, &str), usize> = HashMap::new();
+    for uid in uids {
+        let key = model_family_key(uid);
+        if let Some(&i) = index.get(&key) {
+            families[i].push(uid);
+        } else {
+            index.insert(key, families.len());
+            families.push(vec![uid]);
+        }
+    }
+    families
+}
+
+/// The name one version family carries in a message: a lone member keeps
+/// its display name (`fct_orders.v1` names the one version participating);
+/// several spellings share the model's bare name — the family IS the
+/// model, and it was counted once.
+pub(crate) fn family_name(dag: &Dag, members: &[&String]) -> String {
+    if let [only] = members {
+        display_name(dag, only)
+    } else {
+        members[0]
+            .split('.')
+            .nth(2)
+            .unwrap_or(members[0])
+            .to_string()
+    }
+}
+
+/// The numeric version a `model.<pkg>.<name>.vN` uid carries — `None`
+/// for unversioned models, non-model uids, and non-numeric spellings
+/// (`vbeta`).
 fn version_number(uid: &str) -> Option<u64> {
-    normalize_version(uid.split('.').nth(3)?).parse().ok()
+    let (_, vseg) = versioned_model_segs(uid)?;
+    normalize_version(vseg).parse().ok()
 }
 
 /// The masked-SQL + call-site pair [`CallSiteResolver`] extracts once per

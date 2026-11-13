@@ -135,19 +135,16 @@ pub(super) fn readme_markdown(
     s.push_str("| --- | --- | --- | --- | --- |\n");
     for node in readme_order(listed) {
         let uid = node.unique_id.as_str();
+        // `list_name` — a versioned model reads `fct_orders.v1` (the
+        // `ls`/TUI spelling), so same-name versions stay distinct rows.
+        let name = list_name(uid, &node.name);
         let link = files
             .get(uid)
-            .map(|rel| {
-                format!(
-                    "[{}]({})",
-                    md_label(&node.name),
-                    page_link("README.md", rel)
-                )
-            })
-            .unwrap_or_else(|| md_cell(&node.name));
+            .map(|rel| format!("[{}]({})", md_label(&name), page_link("README.md", rel)))
+            .unwrap_or_else(|| md_cell(&name));
         s.push_str(&format!(
             "| {} | {} | {} | {} | {} |\n",
-            md_cell(&node.name),
+            md_cell(&name),
             md_cell(&node.resource_type),
             md_cell(node.materialized.as_deref().unwrap_or("-")),
             node.test_count,

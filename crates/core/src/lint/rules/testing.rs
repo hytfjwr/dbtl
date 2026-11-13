@@ -62,7 +62,7 @@ pub(super) fn missing_primary_key_tests(
             Vec::new(),
             format!(
                 "{} has no unique+not_null test pair (or unique_combination_of_columns)",
-                n.name
+                display_name(dag, uid)
             ),
         ));
     }
