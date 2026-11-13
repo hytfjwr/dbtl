@@ -53,7 +53,7 @@ Any other top-level key is allowed but ignored (it produces a warning).
 | Key | Type | Description |
 | --- | ---- | ----------- |
 | `severity` | `error` \| `warn` \| `off` | The severity findings report at; `off` disables the rule. |
-| `exclude` | list of strings | dbt selector strings — findings whose node matches the union are dropped. |
+| `exclude` | list | dbt selector specs — findings whose node matches the union are suppressed. Each item is a bare selector string or `{select: <selector>, reason: <why>}`; the reason reports under `--show-suppressed`. |
 | _rule parameters_ | per-rule | Declared per rule — see the parameters tables in the [lint rules reference](lint-rules.md); an undeclared name is an error. |
 
 ### `check:`

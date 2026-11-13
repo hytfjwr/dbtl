@@ -28,29 +28,35 @@ pub fn render(report: &Report, ctx: &RenderCtx<'_>) -> String {
     out
 }
 
-/// `<anchor>: error|warning[<rule>] <message>` — the anchor is the same
-/// `file[:line[:column]]`/uid shape every format uses, the severity tag
-/// the only styled part.
+/// `<anchor>: error|warning|suppressed[<rule>] <message>` — the anchor is
+/// the same `file[:line[:column]]`/uid shape every format uses, the
+/// severity tag the only styled part. Suppressed findings
+/// (`--show-suppressed`) read `suppressed[<rule>]` and carry their
+/// mechanism + reason in parentheses.
 fn finding_line(f: &dbtl_core::Finding, ctx: &RenderCtx<'_>) -> String {
-    let word = match f.severity {
-        dbtl_core::Severity::Error => "error",
-        dbtl_core::Severity::Warn => "warning",
+    let (word, style) = match &f.suppression {
+        Some(_) => (
+            "suppressed",
+            anstyle::Style::new().effects(anstyle::Effects::DIMMED),
+        ),
+        None => match f.severity {
+            dbtl_core::Severity::Error => ("error", text::error_style()),
+            dbtl_core::Severity::Warn => ("warning", text::warn_style()),
+        },
     };
     let tag = format!("{word}[{}]", f.rule.name());
     let tag = if ctx.styled {
-        text::paint(
-            &tag,
-            match f.severity {
-                dbtl_core::Severity::Error => text::error_style(),
-                dbtl_core::Severity::Warn => text::warn_style(),
-            },
-        )
+        text::paint(&tag, style)
     } else {
         tag
     };
     // `--path-prefix` is a github/sarif/codeclimate concern — like `text`,
     // `concise` prints the project-relative path verbatim.
-    format!("{}: {tag} {}", finding_anchor(f, None), f.message)
+    let line = format!("{}: {tag} {}", finding_anchor(f, None), f.message);
+    match &f.suppression {
+        Some(s) => format!("{line} ({})", text::suppression_label(s)),
+        None => line,
+    }
 }
 
 #[cfg(test)]
@@ -69,6 +75,7 @@ mod tests {
             has_diff: false,
             skipped: Vec::new(),
             unparsed_models: Vec::new(),
+            suppressed: SuppressedSummary::default(),
         });
         for (rule, uid, msg, sev, file, line, col) in [
             (

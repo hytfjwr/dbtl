@@ -107,6 +107,7 @@ Usage: dbtl check [OPTIONS]
 | `--path-prefix` | `<PREFIX>` | — | — | Prefix prepended to the file paths the `github`, `sarif`, and `codeclimate` formats emit — for a project living in a repository subdirectory. A usage error when none of those formats is selected via `--format` or `--report` |
 | `--docs-dir` | `<DIR>` | — | — | Gate on generated-docs freshness: compare this directory against what `dbtl docs` would generate right now — the exact comparison `dbtl docs --check` runs — and fail the run when they differ |
 | `--select` | `<SELECTOR>` (repeatable) | — | — | Restrict every gate to nodes matching a dbt selector — coverage counts, lint findings, and the `--diff` gates all intersect the selection (`docs_drift` never does; it compares whole doc sets). The grammar of `dbtl ls` (`tag:x`, `path:y`, `+name+`, `state:modified`, …), NOT the TUI's `--select`, which opens one model's tab; `state:` atoms need `--diff`. Repeatable — specs union |
+| `--show-suppressed` | — | — | `false` | List the lint findings `lint.rules.<id>.exclude` and `meta.dbtl.ignore` suppressed: `text`/`concise` mark each `suppressed` and name the mechanism + reason, `json` adds the finding's `suppressed`/`suppression` fields. The `sarif`, `junit`, and `codeclimate` formats never emit them, and suppressed findings never gate — the flag changes visibility only |
 | `--quiet` | — | — | `false` | Suppress the per-check report on stdout; only the exit code matters |
 | `-h` `--help` | — | — | — | Print help (see a summary with '-h') |
 
@@ -135,6 +136,7 @@ Usage: dbtl lint [OPTIONS]
 | `--list-rules` | — | — | `false` | List every lint rule — id, category, default severity, effective severity, enabled state, preset membership, summary — and exit. Reads `.dbtl.yml` when found; never loads a data source |
 | `--explain` | `<ID>` | — | — | Show one rule's full registry entry (rationale, example, params, fix guidance, docs link) and exit — no data load |
 | `--select` | `<SELECTOR>` (repeatable) | — | — | Restrict findings to nodes matching a dbt selector — the grammar of `dbtl ls` (`tag:x`, `path:y`, `+name+`, `state:modified`, …), NOT the TUI's `--select`, which opens one model's tab. `state:` atoms need `--diff`. Repeatable — specs union. Cannot combine with `--write-baseline` (a partial finding set must never overwrite the frozen file) |
+| `--show-suppressed` | — | — | `false` | List the findings `lint.rules.<id>.exclude` and `meta.dbtl.ignore` suppressed: `text`/`concise` mark each `suppressed` and name the mechanism + reason, `json` adds the finding's `suppressed`/`suppression` fields. The `sarif`, `junit`, and `codeclimate` formats never emit them, and suppressed findings never gate — the flag changes visibility only. Cannot combine with `--write-baseline`/`--list-rules`/ `--explain` (they never evaluate findings) |
 | `--quiet` | — | — | `false` | Suppress the report on stdout; only the exit code matters |
 | `-h` `--help` | — | — | — | Print help (see a summary with '-h') |
 

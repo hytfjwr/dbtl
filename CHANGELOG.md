@@ -8,6 +8,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Lint suppressions now carry a reason, and reports surface them.
+  `meta.dbtl.ignore` accepts a map form — `ignore: {root_models: "pk
+  enforced upstream", all: "imported model"}` — recording a reason per
+  rule, with `meta.dbtl.reason` as the fallback for the map's `~`
+  entries, the list form, and `"all"`. `.dbtl.yml`'s
+  `lint.rules.<id>.exclude` accepts `{select: <selector>, reason: <why>}`
+  objects alongside bare selector strings. A new `--show-suppressed`
+  flag on `dbtl lint` and `dbtl check` lists the suppressed findings
+  marked with their mechanism and reason (`text`/`concise`/`json`); the
+  `sarif`, `junit`, `codeclimate`, and `github` formats never emit them,
+  and suppressed findings never count toward `--fail-on`, the baseline,
+  or the exit code.
+- The lint report counts suppressed findings and names unparsable models
+  in machine-readable form. The summary line gains `N findings
+  suppressed (K meta.dbtl.ignore, M exclude; J without a reason)` when
+  suppression dropped any, and `--format json` carries
+  `summary.suppressed` (`{total, by: {exclude, meta}, without_reason}`)
+  plus `summary.unparsed_models` (`{count, names}`) — the same set the
+  text summary's "skipped SQL rules" line names.
 - Lint rule-set presets and category severities. `lint.preset: minimal|standard|strict` in `.dbtl.yml` (or `--preset` on `dbtl lint` and `dbtl check`) picks the base rule set a run starts from: `minimal` runs only the error-default rules, `standard` (the shipped default) runs every default-enabled rule, and `strict` runs the whole registry. `lint.categories: {<category>: error|warn|off}` pins a whole category above the preset and below `lint.rules.<id>`; `--rules` remains the authoritative selector above all of them. `--list-rules` shows the resolved severity/enablement under the active config alongside per-preset membership, and `--explain` reports the effective values.
 - `?` full-text search now matches compiled SQL in addition to raw SQL,
   descriptions, and column names, so a `ref()`/`source()` target that only

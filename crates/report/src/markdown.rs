@@ -34,18 +34,25 @@ pub fn render(report: &Report, ctx: &RenderCtx<'_>) -> String {
     }
     let s = &report.summary;
     out.push_str(&format!(
-        "\n**summary:** {} error(s), {} warning(s), {} baselined, {} skipped\n",
+        "\n**summary:** {} error(s), {} warning(s), {} baselined, {} skipped",
         s.errors, s.warnings, s.baselined, s.skipped
     ));
+    if let Some(sup) = &s.suppressed {
+        out.push_str(&format!(", {} suppressed", sup.total));
+    }
+    out.push('\n');
 
     // A section per gate that surfaced anything — counted findings listed,
-    // baselined findings reduced to a count.
+    // baselined findings reduced to a count. Suppressed findings
+    // (`--show-suppressed`) never list: the machine-facing formats keep
+    // them out of the document body entirely.
     for gate in &report.gates {
-        if gate.findings.is_empty() && gate.details.is_empty() {
+        let counted: Vec<&dbtl_core::Finding> = gate.counted().collect();
+        let baselined = gate.findings.iter().filter(|f| f.baselined).count();
+        if counted.is_empty() && baselined == 0 && gate.details.is_empty() {
             continue;
         }
         out.push_str(&format!("\n## {}\n\n", gate.title));
-        let counted: Vec<&dbtl_core::Finding> = gate.counted().collect();
         for f in counted.iter().take(SECTION_CAP) {
             out.push_str(&format!("- {}\n", finding_line(f)));
         }
@@ -55,7 +62,6 @@ pub fn render(report: &Report, ctx: &RenderCtx<'_>) -> String {
         for d in &gate.details {
             out.push_str(&format!("- {d}\n"));
         }
-        let baselined = gate.findings.iter().filter(|f| f.baselined).count();
         if baselined > 0 {
             out.push_str(&format!("- _{baselined} baselined_\n"));
         }

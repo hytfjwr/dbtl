@@ -281,6 +281,10 @@ pub struct LintOptions {
     /// `error` (default) | `warn` | `never` — the `--fail-on` flag; the
     /// file's `fail_on:` fills in when absent.
     pub fail_on: Option<FailOn>,
+    /// The `--show-suppressed` flag — suppressed findings list in the
+    /// `text`/`ansi`/`json` outputs with their mechanism and reason (the
+    /// summary counts them either way).
+    pub show_suppressed: bool,
 }
 
 /// `dbtl lint`'s output as data: the three stdout bodies plus the exit
@@ -588,6 +592,7 @@ impl Engine {
                     base_sql: None,
                 },
                 selection: selection.as_ref(),
+                show_suppressed: input.show_suppressed,
                 read_text: &read_text,
             },
         );
@@ -1000,6 +1005,69 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.kind, ErrorKind::Usage);
         assert!(err.message.contains("unknown lint rule 'no_such_rule'"));
+    }
+
+    #[test]
+    fn lint_show_suppressed_lists_the_suppressed_findings() {
+        let (engine, _) = load_fixture();
+        // `unused_models` fires exactly once on the fixture — a named
+        // exclude spec suppresses it with a reason.
+        let config = "lint:\n  rules:\n    unused_models:\n      exclude: [{select: \"int_shoppers__combined\", reason: kept for a downstream spike}]\n"
+            .to_string();
+        // Without the flag the suppressed findings count in the summary
+        // but never list.
+        let out = engine
+            .lint(&LintOptions {
+                config: Some(config.clone()),
+                ..LintOptions::default()
+            })
+            .unwrap();
+        assert!(
+            out.text.contains("suppressed") && !out.text.contains("kept for a downstream spike"),
+            "the count reports, the reasons stay hidden:\n{}",
+            out.text
+        );
+        let json: serde_json::Value = serde_json::from_str(&out.json).unwrap();
+        let total = json["summary"]["suppressed"]["total"]
+            .as_u64()
+            .expect("summary.suppressed.total");
+        assert_eq!(total, 1, "the fixture's unused_models finding suppressed");
+        // With the flag they list — marked with mechanism + reason — in
+        // both bodies.
+        let out = engine
+            .lint(&LintOptions {
+                config: Some(config),
+                show_suppressed: true,
+                ..LintOptions::default()
+            })
+            .unwrap();
+        assert!(
+            out.text
+                .contains("suppressed: exclude — kept for a downstream spike"),
+            "the marker names mechanism + reason:\n{}",
+            out.text
+        );
+        let json: serde_json::Value = serde_json::from_str(&out.json).unwrap();
+        let suppressed: Vec<&serde_json::Value> = json["gates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| {
+                g["findings"]
+                    .as_array()
+                    .map(|a| a.iter())
+                    .unwrap_or_default()
+            })
+            .filter(|f| f["suppressed"] == true)
+            .collect();
+        assert_eq!(suppressed.len() as u64, total, "every one lists");
+        for f in &suppressed {
+            assert_eq!(f["suppression"]["by"], "exclude", "{f}");
+            assert_eq!(
+                f["suppression"]["reason"], "kept for a downstream spike",
+                "{f}"
+            );
+        }
     }
 
     #[test]

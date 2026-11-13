@@ -77,6 +77,7 @@ Key flags:
 | `--fail-on error\|warn\|never` | The minimum severity that fails the run. With `never`, a tripped gate prints `WARN` and never counts. |
 | `--select <SELECTOR>` | Scope every gate to matching nodes. `docs_drift` is never scoped, because it compares whole doc sets. |
 | `--docs-dir <DIR>` | Gate on generated-docs freshness. |
+| `--show-suppressed` | List the lint findings `lint.rules.<id>.exclude` and `meta.dbtl.ignore` suppressed, with the mechanism and reason. Reporting only — suppressed findings never gate. See [Suppressed findings](lint.md#suppressed-findings). |
 | `--format`, `--color`, `--report`, `--step-summary`, `--path-prefix`, `--quiet` | Control the report. See [Report formats](#report-formats). |
 
 `check` accepts `--select` with the full [selector grammar](selectors.md). `--diff` takes a manifest file, a project directory, or a git revision. See [Git diffs and baselines](#git-diffs-and-baselines).
@@ -143,6 +144,8 @@ Only breaking changes trip `--no-breaking`. Partial-breaking changes show up in 
 - `impact` prints Markdown or `--format json`, and takes `--report markdown:<path>` and `--report json:<path>`.
 
 The `github` format emits `::error` and `::warning` annotations per finding in severity order. GitHub caps how many a step shows.
+
+Findings suppressed by `lint.rules.<id>.exclude` or `meta.dbtl.ignore` never reach the `sarif`, `junit`, `codeclimate`, or `github` formats, even under `--show-suppressed` — a finding CI annotates is always a counted one. The `json` summary still reports them under `summary.suppressed` and names SQL-unparsable models under `summary.unparsed_models`.
 
 ## Git diffs and baselines
 

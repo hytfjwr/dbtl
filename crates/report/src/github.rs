@@ -89,10 +89,15 @@ pub fn render(report: &Report, ctx: &RenderCtx<'_>) -> String {
         out.push('\n');
     }
     let s = &report.summary;
-    out.push_str(&format!(
-        "::notice title=dbtl::{} error(s), {} warning(s), {} baselined, {} skipped\n",
+    let mut notice = format!(
+        "::notice title=dbtl::{} error(s), {} warning(s), {} baselined, {} skipped",
         s.errors, s.warnings, s.baselined, s.skipped
-    ));
+    );
+    if let Some(sup) = &s.suppressed {
+        notice.push_str(&format!(", {} suppressed", sup.total));
+    }
+    notice.push('\n');
+    out.push_str(&notice);
     out
 }
 

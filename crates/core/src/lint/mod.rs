@@ -281,6 +281,51 @@ pub struct Label {
 /// and SARIF's `helpUri`.
 pub const LINT_RULE_DOCS_BASE: &str = "https://hytfjwr.github.io/dbtl/reference/lint-rules/";
 
+/// What suppressed a finding — the mechanism a `suppression` record
+/// attributes the drop to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SuppressionSource {
+    /// `.dbtl.yml`'s `lint.rules.<id>.exclude` — a dbt-selector spec.
+    Exclude,
+    /// The node's `meta.dbtl.ignore` (with `meta.dbtl.reason` as the
+    /// fallback reason for the list/`"all"` forms and `~` map values).
+    Meta,
+}
+
+/// The record a suppressed finding carries: which mechanism dropped it and
+/// the reason written next to it (`exclude: [{select, reason}]`,
+/// `meta.dbtl.ignore: {<rule>: <reason>}`, or `meta.dbtl.reason`), `None`
+/// when the suppression records none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Suppression {
+    /// The suppressing mechanism.
+    pub by: SuppressionSource,
+    /// The recorded reason.
+    pub reason: Option<String>,
+}
+
+/// One `lint.rules.<id>.exclude` entry: the `{select, reason}` object
+/// form's resolved shape — a bare selector string is the same entry with
+/// `reason: None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExcludeSpec {
+    /// The dbt-selector spec (`stg_*`, `path:…`, `tag:…`, …).
+    pub select: String,
+    /// The recorded reason (`reason: ~`/omitted = none).
+    pub reason: Option<String>,
+}
+
+impl ExcludeSpec {
+    /// A selector spec with no recorded reason — the bare-string form.
+    pub fn new(select: impl Into<String>) -> Self {
+        ExcludeSpec {
+            select: select.into(),
+            reason: None,
+        }
+    }
+}
+
 /// One rule violation on one node: the violating node, the related nodes for
 /// context (a layer violation's parent, a rejoin's C+A endpoints, a fanout's
 /// children — sorted), a human-readable explanation, and the envelope
@@ -333,6 +378,10 @@ pub struct Finding {
     /// `true` when a baseline entry matched — set by [`Baseline::apply`],
     /// never by `run_rules` itself.
     pub baselined: bool,
+    /// The suppression record when `run_rules` dropped this finding from
+    /// the counted set — `Some` only inside [`LintOutcome::suppressed`];
+    /// the findings every gate counts carry `None`.
+    pub suppression: Option<Suppression>,
 }
 
 impl Finding {
@@ -356,6 +405,7 @@ impl Finding {
             labels: Vec::new(),
             help: None,
             baselined: false,
+            suppression: None,
         }
     }
 
@@ -440,7 +490,8 @@ impl Serialize for Finding {
             "Finding",
             8 + self.location.is_some() as usize
                 + self.label.is_some() as usize
-                + !self.labels.is_empty() as usize,
+                + !self.labels.is_empty() as usize
+                + 2 * self.suppression.is_some() as usize,
         )?;
         st.serialize_field("rule", &self.rule)?;
         st.serialize_field("node_uid", &self.node_uid)?;
@@ -451,6 +502,10 @@ impl Serialize for Finding {
             st.serialize_field("location", location)?;
         }
         st.serialize_field("baselined", &self.baselined)?;
+        if let Some(suppression) = &self.suppression {
+            st.serialize_field("suppressed", &true)?;
+            st.serialize_field("suppression", suppression)?;
+        }
         if let Some(label) = &self.label {
             st.serialize_field("label", label)?;
         }
@@ -507,9 +562,10 @@ pub struct LintConfig {
     /// resolves below the `categories` map, then the `preset` — see
     /// `severity()`.
     pub rules: BTreeMap<LintRule, RuleEnabled>,
-    /// rule → `exclude:` selector strings; findings whose `node_uid`
-    /// matches the union are dropped.
-    pub exclude: BTreeMap<LintRule, Vec<String>>,
+    /// rule → `exclude:` selector specs; findings whose `node_uid`
+    /// matches the union are suppressed (each spec carries the optional
+    /// `reason` its `{select, reason}` object form recorded).
+    pub exclude: BTreeMap<LintRule, Vec<ExcludeSpec>>,
     /// rule → declared integer parameter values (validated against the
     /// registry's [`ParamSpec`] at parse — only declared names land here).
     pub params: BTreeMap<LintRule, BTreeMap<String, usize>>,
@@ -602,8 +658,8 @@ impl LintConfig {
         self.severity(rule).is_some()
     }
 
-    /// `rule`'s `exclude:` selectors (empty when unset).
-    pub fn excludes(&self, rule: LintRule) -> &[String] {
+    /// `rule`'s `exclude:` selector specs (empty when unset).
+    pub fn excludes(&self, rule: LintRule) -> &[ExcludeSpec] {
         self.exclude.get(&rule).map(Vec::as_slice).unwrap_or(&[])
     }
 

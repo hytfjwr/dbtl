@@ -1845,3 +1845,206 @@ fn dbtl_yml_exclude_selectors_suppress_matching_findings() {
         stderr(&out)
     );
 }
+
+// ---- suppression: reasons and --show-suppressed -----------------------------
+
+/// Two parentless models — two `root_models` findings; `a`'s schema.yml
+/// carries `meta.dbtl.ignore` in the map form with a reason.
+fn suppression_project(dir: &Path) -> PathBuf {
+    common::write_project(
+        dir,
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            ("models/a.sql", "select 1 as id\n"),
+            ("models/b.sql", "select 1 as id\n"),
+            (
+                "models/schema.yml",
+                "version: 2\n\nmodels:\n  - name: a\n    meta:\n      dbtl:\n        ignore: {root_models: staging stub}\n",
+            ),
+        ],
+    )
+}
+
+#[test]
+fn show_suppressed_lists_the_reason_and_never_gates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = suppression_project(tmp.path());
+    let lint = |extra: &[&str]| {
+        let mut args: Vec<&str> = vec![
+            "lint",
+            "--source",
+            root.to_str().unwrap(),
+            "--rules",
+            "root_models",
+            // `root_models` warnings only gate under `--fail-on warn`.
+            "--fail-on",
+            "warn",
+        ];
+        args.extend_from_slice(extra);
+        run(&args)
+    };
+    // Without the flag only `b` lists — `a`'s finding exists only as the
+    // suppressed summary line.
+    let out = lint(&[]);
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("b.sql"), "the live finding lists: {text}");
+    assert!(
+        text.contains("suppressed") && text.contains("meta.dbtl.ignore"),
+        "the suppressed count + mechanism report: {text}"
+    );
+    assert!(
+        !text.contains("a.sql") && !text.contains("staging stub"),
+        "the suppressed finding itself stays hidden: {text}"
+    );
+    // With the flag `a` lists too — marked, with the recorded reason —
+    // and it still doesn't count.
+    let out = lint(&["--show-suppressed"]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "suppressed findings never gate, stderr: {}",
+        stderr(&out)
+    );
+    let text = stdout(&out);
+    assert!(
+        text.contains("suppressed: meta.dbtl.ignore — staging stub"),
+        "the marker names mechanism + reason: {text}"
+    );
+    // Exclude the other model by object spec → nothing counts → pass.
+    std::fs::write(
+        root.join(".dbtl.yml"),
+        "lint:\n  rules:\n    root_models:\n      exclude: [{select: b, reason: legacy}]\n",
+    )
+    .unwrap();
+    let out = lint(&["--show-suppressed"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "all findings suppressed → pass, stderr: {}",
+        stderr(&out)
+    );
+    let text = stdout(&out);
+    assert!(
+        text.contains("2 findings suppressed"),
+        "both mechanisms counted: {text}"
+    );
+    assert!(
+        text.contains("suppressed: exclude — legacy"),
+        "the exclude spec's reason renders: {text}"
+    );
+}
+
+#[test]
+fn suppressed_findings_carry_the_structured_fields_in_json() {
+    // `unused_models` fires exactly once on the fixture — an object-form
+    // exclude spec suppresses it with a reason.
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    std::fs::write(
+        tmp.path().join(".dbtl.yml"),
+        "lint:\n  rules:\n    unused_models:\n      exclude: [{select: \"int_shoppers__combined\", reason: \"kept for a downstream spike\"}]\n",
+    )
+    .unwrap();
+    // The count alone — nothing else — is already there without the flag.
+    let out = lint_on(&m, &["--rules", "unused_models", "--format", "json"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(
+        json["summary"]["suppressed"],
+        serde_json::json!({
+            "total": 1,
+            "by": {"meta": 0, "exclude": 1},
+            "without_reason": 0,
+        }),
+        "the suppressed summary: {}",
+        json["summary"]
+    );
+    // Under --show-suppressed the finding lists and carries the mechanism
+    // + reason; nothing else about the finding shape changes.
+    let out = lint_on(
+        &m,
+        &[
+            "--rules",
+            "unused_models",
+            "--format",
+            "json",
+            "--show-suppressed",
+        ],
+    );
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    let suppressed: Vec<&serde_json::Value> = json["gates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| {
+            g["findings"]
+                .as_array()
+                .map(|a| a.iter())
+                .unwrap_or_default()
+        })
+        .filter(|f| f["suppressed"] == true)
+        .collect();
+    assert_eq!(suppressed.len(), 1, "the suppressed finding lists");
+    let f = suppressed[0];
+    assert_eq!(f["suppression"]["by"], "exclude", "{f}");
+    assert_eq!(
+        f["suppression"]["reason"], "kept for a downstream spike",
+        "{f}"
+    );
+    // `check --lint` takes the flag too — same findings, same summary.
+    let out = run(&[
+        "check",
+        "--manifest",
+        m.to_str().unwrap(),
+        "--lint",
+        "--rules",
+        "unused_models",
+        "--format",
+        "json",
+        "--show-suppressed",
+    ]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(
+        json["summary"]["suppressed"]["total"], 1,
+        "check reports the same suppressed count"
+    );
+}
+
+#[test]
+fn json_summary_names_the_unparsable_models() {
+    // The text summary's third line counts models the SQL rules couldn't
+    // parse — the JSON summary carries the same set by name.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = common::write_project(
+        tmp.path(),
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            ("models/ok.sql", "select 1 as id\n"),
+            ("models/m_broken.sql", "select from where or\n"),
+        ],
+    );
+    let out = run(&[
+        "lint",
+        "--source",
+        root.to_str().unwrap(),
+        "--rules",
+        "select_star",
+        "--format",
+        "json",
+    ]);
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(
+        json["summary"]["unparsed_models"],
+        serde_json::json!({"count": 1, "names": ["m_broken"]}),
+        "the unparsable set lists by name: {}",
+        json["summary"]
+    );
+}
