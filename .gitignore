@@ -21,3 +21,6 @@ site/dist/
 site/.astro/
 site/src/data/graph.json
 site/src/data/version.json
+# the wasm engine + sample data build-engine.mjs generates into public/
+site/public/engine/
+site/public/samples/
