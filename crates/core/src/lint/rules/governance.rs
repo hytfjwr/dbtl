@@ -66,11 +66,11 @@ pub(super) fn exposures_dependent_on_private_models(
             .direct_parents(uid)
             .iter()
             .filter_map(|p| {
-                let pn = dag.get(p)?;
-                if pn.resource_type != "model" {
+                let parent = dag.get(p)?;
+                if parent.resource_type != "model" {
                     return None;
                 }
-                let access = dag.detail(&pn.unique_id)?.access.clone()?;
+                let access = dag.detail(&parent.unique_id)?.access.clone()?;
                 (!allowed.contains(&access)).then(|| (p.clone(), access))
             })
             .collect();
