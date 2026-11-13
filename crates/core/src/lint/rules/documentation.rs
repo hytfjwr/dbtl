@@ -64,6 +64,38 @@ pub(super) fn undocumented_sources(
     }
 }
 
+/// `undocumented_exposures`: an exposure with no description — the same
+/// `clean_desc`-normalized check [`undocumented_models`] runs, at the DAG's
+/// downstream edge. Opt-in (`default_enabled: false`) — dbt never required
+/// a description, so most projects' exposures all flag until documented or
+/// the rule stays off.
+pub(super) fn undocumented_exposures(
+    dag: &Dag,
+    uids: &[&String],
+    in_scope: &dyn Fn(&NodeInfo) -> bool,
+    out: &mut Vec<Finding>,
+) {
+    for uid in uids {
+        let Some(n) = dag.get(uid) else { continue };
+        if n.resource_type != "exposure" || !in_scope(n) {
+            continue;
+        }
+        if dag
+            .detail(uid)
+            .and_then(|d| d.description.as_ref())
+            .is_some()
+        {
+            continue;
+        }
+        out.push(Finding::new(
+            LintRule::UndocumentedExposures,
+            (*uid).clone(),
+            Vec::new(),
+            format!("exposure {} has no description", display_name(dag, uid)),
+        ));
+    }
+}
+
 /// `undocumented_columns`: a node whose declared columns include at least
 /// one without a description — one finding per node naming the bare columns
 /// (a node with no declared columns is not "missing column descriptions").

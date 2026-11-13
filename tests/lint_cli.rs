@@ -737,9 +737,16 @@ fn list_rules_prints_one_row_per_registry_rule() {
             row.contains(rule.info().category.name()),
             "category column: {row}"
         );
+        let expected = if rule.info().default_enabled {
+            rule.info().default_severity.name()
+        } else {
+            // An opt-in rule lists as `off` — its registry severity only
+            // shows once something enables it.
+            "off"
+        };
         assert!(
-            row.contains(rule.info().default_severity.name()),
-            "severity column shows the registry default: {row}"
+            row.contains(expected),
+            "severity column shows the resolved default: {row}"
         );
         assert!(row.contains(rule.info().summary), "summary column: {row}");
     }
@@ -832,11 +839,21 @@ fn preset_flag_narrows_the_rule_set() {
         body.contains("error["),
         "the error-default rules still run: {body}"
     );
-    // `strict` is the full registry set — identical to the unflagged run
-    // while every shipped rule is default-enabled.
+    // `strict` is the full registry set — every standard finding still
+    // fires, and the opt-in rules may add their own on top.
     let strict = lint_on(&m, &["--preset", "strict", "--format", "concise"]);
     let base = lint_on(&m, &["--format", "concise"]);
-    assert_eq!(stdout(&strict), stdout(&base), "strict == the full set");
+    let strict_body = stdout(&strict);
+    let base_body = stdout(&base);
+    for line in base_body
+        .lines()
+        .filter(|l| l.contains("warning[") || l.contains("error["))
+    {
+        assert!(
+            strict_body.contains(line),
+            "strict keeps every standard finding: {line}\n--- strict ---\n{strict_body}"
+        );
+    }
     // An unknown preset name is a usage error.
     let out = lint_on(&m, &["--preset", "bogus"]);
     assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));

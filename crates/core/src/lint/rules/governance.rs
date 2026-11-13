@@ -97,10 +97,14 @@ pub(super) fn exposures_dependent_on_private_models(
     }
 }
 
-/// `required_meta_keys`: a model missing any configured `meta` key — the
-/// `keys` parameter, empty by default (an empty list makes the rule a
-/// no-op). Values aren't inspected: a key is present even when its value is
-/// the empty string.
+/// `required_meta_keys`: a resource missing any configured `meta` key —
+/// the `keys` parameter, empty by default (an empty list makes the rule a
+/// no-op), and `resource_types` (default `[model]`) widening the checked
+/// kinds to seeds, snapshots, sources, and exposures. Values aren't
+/// inspected: a key is present even when its value is the empty string.
+/// Each kind's `meta` is the merged dict the dag records — a source's is
+/// the source+table merge (config included), an exposure's its entry's
+/// `meta:` with `config: meta:` overlaid.
 pub(super) fn required_meta_keys(
     dag: &Dag,
     uids: &[&String],
@@ -114,9 +118,12 @@ pub(super) fn required_meta_keys(
     if keys.is_empty() {
         return;
     }
+    let types = config
+        .str_list_param(LintRule::RequiredMetaKeys, "resource_types")
+        .expect("the registry declares required_meta_keys.resource_types");
     for uid in uids {
         let Some(n) = dag.get(uid) else { continue };
-        if n.resource_type != "model" || !in_scope(n) {
+        if !types.iter().any(|t| t == &n.resource_type) || !in_scope(n) {
             continue;
         }
         let Some(d) = dag.detail(uid) else { continue };

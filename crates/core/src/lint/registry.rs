@@ -505,13 +505,21 @@ pub static REGISTRY: &[RuleInfo] = &[
                     and groupings built on that tag.",
         example: "with keys: [owner] configured, dim_products lacks meta.owner. \
                   Fix: add owner: data-team to the model's meta.",
-        help: "add the required keys to the model's meta",
-        params: &[ParamSpec::string_list(
-            "keys",
-            &[],
-            None,
-            "meta keys every model must declare",
-        )],
+        help: "add the required keys to the resource's meta",
+        params: &[
+            ParamSpec::string_list(
+                "keys",
+                &[],
+                None,
+                "meta keys every checked resource must declare",
+            ),
+            ParamSpec::string_list(
+                "resource_types",
+                &["model"],
+                Some(&["model", "seed", "snapshot", "source", "exposure"]),
+                "resource kinds the meta-key requirement applies to",
+            ),
+        ],
         requires: Requires::Graph,
     },
     RuleInfo {
@@ -866,6 +874,85 @@ pub static REGISTRY: &[RuleInfo] = &[
         params: &[],
         requires: Requires::Sql,
     },
+    RuleInfo {
+        rule: LintRule::UndocumentedExposures,
+        id: "undocumented_exposures",
+        category: Category::Documentation,
+        default_severity: Severity::Warn,
+        default_enabled: false,
+        summary: "an exposure has no description",
+        rationale: "An exposure is the declared contract between the DAG and \
+                    a downstream consumer — the dashboard or report a \
+                    stakeholder actually reads. With no description, the docs \
+                    list a name that promises nothing about what it shows or \
+                    who it serves, and the exposure becomes an unexplained \
+                    edge in the lineage.",
+        example: "the churn_report exposure has no description. Fix: add a \
+                  `description:` saying what the dashboard answers and who \
+                  reads it.",
+        help: "add a description to the exposure's schema.yml entry",
+        params: &[],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::ModelTooLong,
+        id: "model_too_long",
+        category: Category::Structure,
+        default_severity: Severity::Warn,
+        default_enabled: false,
+        summary: "a model's SQL file runs past the configured line budget",
+        rationale: "A model that sprawls past a few hundred lines is doing \
+                    the work of several — every reader pays the whole file \
+                    to find one step, and the joins and aggregations buried \
+                    inside resist review and testing. Splitting along CTE \
+                    boundaries gives each piece a name, a test surface, and \
+                    its own materialization choice. Blank lines and \
+                    Jinja-comment-only lines never count toward the budget.",
+        example: "fct_orders runs 412 counted lines. Fix: extract stages \
+                  into int_ models so each file stays under `max_lines` \
+                  (default 300).",
+        help: "extract stages into intermediate models, or raise `max_lines` when the length is intentional",
+        params: &[ParamSpec::int(
+            "max_lines",
+            1,
+            300,
+            "maximum counted lines before a model flags — blank lines and Jinja-comment-only lines never count",
+        )],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::LayerMaterializations,
+        id: "layer_materializations",
+        category: Category::Performance,
+        default_severity: Severity::Warn,
+        default_enabled: false,
+        summary: "a model's materialization isn't allowed for its layer",
+        rationale: "Each layer exists to do one kind of work: staging maps \
+                    and cleans raw data (views keep it cheap to rebuild), \
+                    intermediate composes, and marts serve (a durable \
+                    relation keeps consumer reads fast). A durable staging \
+                    model wastes warehouse writes on a layer nobody queries; \
+                    a view in marts re-plans the whole chain on every read. \
+                    The layer resolves the same way `lint_model_type` does — \
+                    a `naming_prefixes` prefix first, then the first \
+                    directory, else `other` — and layers the `allowed` map \
+                    doesn't list are never judged.",
+        example: "fct_orders materializes as ephemeral in the marts layer. \
+                  Fix: materialize it as a table or incremental model so \
+                  consumers read a durable relation.",
+        help: "change the model's materialization to one its layer allows, or widen the layer's `allowed` list",
+        params: &[ParamSpec::layer_map(
+            "allowed",
+            &[
+                ("staging", &["view", "ephemeral"]),
+                ("intermediate", &["view", "ephemeral", "table", "incremental"]),
+                ("marts", &["table", "incremental", "view"]),
+            ],
+            &["staging", "intermediate", "marts", "other"],
+            "materializations each layer permits — a layer not listed is unchecked, and `lint.naming_prefixes` layer names are valid keys",
+        )],
+        requires: Requires::Graph,
+    },
 ];
 
 /// A rule the registry once carried and has since dropped. The id stays
@@ -1162,7 +1249,36 @@ impl ParamSpec {
             description,
         }
     }
+
+    /// A layer-map parameter — a layer name → list-of-strings table:
+    /// keys name model layers (the `builtins` set plus `lint.naming_prefixes`
+    /// keys, like [`layer_list`](ParamSpec::layer_list)), values are
+    /// arbitrary non-empty strings. `default` is the shipped table a
+    /// configured entry overrides ONE LAYER AT A TIME (an unconfigured
+    /// layer keeps its shipped list); the merged result lands in
+    /// [`LintConfig::map_params`](crate::LintConfig).
+    pub const fn layer_map(
+        name: &'static str,
+        default: &'static [(&'static str, &'static [&'static str])],
+        builtins: &'static [&'static str],
+        description: &'static str,
+    ) -> Self {
+        ParamSpec {
+            name,
+            kind: ParamKind::LayerMap { default, builtins },
+            description,
+        }
+    }
 }
+
+/// What [`RuleInfo::layer_map_param`] returns: the layer → string-list
+/// default table a [`ParamKind::LayerMap`] declares, plus the built-in
+/// layer names its keys may name (a `lint.naming_prefixes` key is valid
+/// on top).
+pub type LayerMapDefault = (
+    &'static [(&'static str, &'static [&'static str])],
+    &'static [&'static str],
+);
 
 /// The value space of a [`ParamSpec`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1191,6 +1307,16 @@ pub enum ParamKind {
     /// `LintConfig::list_params` like a `StringList`.
     LayerList {
         default: &'static [&'static str],
+        builtins: &'static [&'static str],
+    },
+    /// A layer name → string-list table — keys name model layers
+    /// (`builtins` plus `lint.naming_prefixes` keys, like `LayerList`),
+    /// values arbitrary non-empty strings. The config parser validates
+    /// each key against the union and each value against the list shape;
+    /// a configured table overrides `default` one layer at a time in
+    /// `LintConfig::map_params`.
+    LayerMap {
+        default: &'static [(&'static str, &'static [&'static str])],
         builtins: &'static [&'static str],
     },
     /// A `true`/`false` switch with a default used when the config
@@ -1287,6 +1413,20 @@ impl RuleInfo {
     pub fn bool_param(&self, name: &str) -> Option<bool> {
         self.params.iter().find_map(|p| match p.kind {
             ParamKind::Bool { default } if p.name == name => Some(default),
+            _ => None,
+        })
+    }
+
+    /// `(default table, built-in layer names)` of the declared layer-map
+    /// parameter `name`, if any — [`LintConfig::map_param`](crate::LintConfig::map_param)
+    /// merges a configured table over the default per layer and the config
+    /// parser validates keys against `builtins` plus `lint.naming_prefixes`,
+    /// so the registry is the single place both read.
+    pub fn layer_map_param(&self, name: &str) -> Option<LayerMapDefault> {
+        self.params.iter().find_map(|p| match p.kind {
+            ParamKind::LayerMap { default, builtins } if p.name == name => {
+                Some((default, builtins))
+            }
             _ => None,
         })
     }

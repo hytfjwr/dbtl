@@ -179,10 +179,14 @@ pub(super) fn detail_from_node(node: &RawNode) -> NodeDetail {
 
 /// Detail for an exposure (no materialization / warehouse coordinates; the
 /// kind / owner / url live in the [`ExposureInfo`] side map instead).
+/// `meta` is the exposure's merged dict — a real manifest records it at the
+/// exposure top level, and source mode synthesizes the same top-level +
+/// `config: meta:` merge.
 pub(super) fn detail_from_exposure(exposure: &RawExposure) -> NodeDetail {
     NodeDetail {
         description: clean_desc(&exposure.description),
         original_file_path: exposure.original_file_path.clone(),
+        meta: meta_strings(&exposure.meta),
         ..Default::default()
     }
 }
