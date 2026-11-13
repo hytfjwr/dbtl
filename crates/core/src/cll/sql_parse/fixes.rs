@@ -368,7 +368,7 @@ fn parse_with(sql: &str, kw: usize, lex: &Lex) -> Option<(WithClause, usize)> {
         j = skip_insignificant(b, j, lex);
         let Some(name) = ident_at(b, j, lex) else {
             // A promised item that never arrives (`… ,` then a
-            // keyword/other token) makes the clause unparseable —
+            // keyword/other token) makes the clause unparsable —
             // but a `,`-free stop is just the clause's end when it
             // follows a completed item.
             if comma_before.is_some() {

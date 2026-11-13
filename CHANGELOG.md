@@ -15,7 +15,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   re-lint to a fixpoint in the same run, and report what remains — a
   deletion that makes another CTE unread is cleaned up too. Edits refuse
   Jinja-covered or split template constructs, overlapping ranges,
-  unparseable results, stale manifest/disk drift, and anything that
+  unparsable results, stale manifest/disk drift, and anything that
   would introduce a new finding under another rule; writes are atomic
   and preserve LF/CRLF and the final-newline state. `--fix-dry-run`
   prints a unified diff per file (stdout for the human formats, stderr
