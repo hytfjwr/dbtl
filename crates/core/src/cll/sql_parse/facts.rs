@@ -12,10 +12,11 @@
 
 use sqlparser::ast::{
     AccessExpr, Expr, LimitClause, ObjectNamePart, Query, Select, SelectItem, SetExpr, Spanned,
+    TableFactor,
 };
 use sqlparser::tokenizer::Span;
 
-use super::ast::norm_ident;
+use super::ast::{norm_ident, object_name_parts, query_wildcard_items};
 
 /// The `Select` whose projection names the output — the leftmost arm of a
 /// set-operation chain (`UNION`/`EXCEPT`/`INTERSECT` name their columns
@@ -122,6 +123,64 @@ fn push_name(order: &mut Vec<String>, spans: &mut Vec<Vec<Span>>, name: String, 
             spans.push(vec![span]);
         }
     }
+}
+
+/// The `Select` the model's final query IS — a bare `SELECT` (possibly
+/// wrapped in `SetExpr::Query` parens), nothing else. Unlike
+/// [`leftmost_select`], set operations don't unwrap: the
+/// `select * from final` exemption proves the WHOLE output comes from one
+/// explicit CTE, and a `UNION` arm's own `*`/`FROM` can't be accounted
+/// for by that shape.
+fn bare_final_select(e: &SetExpr) -> Option<&Select> {
+    match e {
+        SetExpr::Select(sel) => Some(sel),
+        SetExpr::Query(q) if q.pipe_operators.is_empty() => bare_final_select(&q.body),
+        _ => None,
+    }
+}
+
+/// The `select * from <one CTE>` closing shape many dbt projects end a
+/// model on: the final query's FROM reads exactly one `WITH` CTE — no
+/// joins, no other relations — and that CTE's own query names every
+/// column explicitly (no `*`/`t.*` in any of its projections). The
+/// wildcard's columns are then provably enumerated inside the CTE, so
+/// `select_star`'s `allow_final_star_over_single_cte` param can exempt
+/// exactly this shape. Everything else — a `*` inside the CTE, a join or
+/// second FROM entry, a subquery/table FROM, `|>` steps — keeps flagging:
+/// "can't prove" stays a violation.
+pub(super) fn star_over_single_explicit_cte(q: &Query) -> bool {
+    if !q.pipe_operators.is_empty() {
+        return false;
+    }
+    let Some(sel) = bare_final_select(&q.body) else {
+        return false;
+    };
+    let [from] = &sel.from[..] else {
+        return false;
+    };
+    if !from.joins.is_empty() {
+        return false;
+    }
+    let TableFactor::Table { name, .. } = &from.relation else {
+        return false;
+    };
+    // A CTE reference is one identifier — a qualified `schema.final` is a
+    // real relation, never a `WITH` name.
+    let parts = object_name_parts(name);
+    let [from_name] = &parts[..] else {
+        return false;
+    };
+    let Some(with) = &q.with else {
+        return false;
+    };
+    let Some(cte) = with
+        .cte_tables
+        .iter()
+        .find(|c| norm_ident(&c.alias.name) == *from_name)
+    else {
+        return false;
+    };
+    query_wildcard_items(&cte.query).is_empty()
 }
 
 /// The outermost `ORDER BY`'s expression range when the model's final

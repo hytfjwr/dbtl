@@ -344,6 +344,7 @@ fn param_type(kind: ParamKind) -> String {
         ),
         ParamKind::StringList { .. } => "list of strings".to_string(),
         ParamKind::RegexList { .. } => "list of regular expressions".to_string(),
+        ParamKind::SelectorList { .. } => "list of selectors".to_string(),
         ParamKind::Bool { .. } => "boolean".to_string(),
     }
 }
@@ -353,7 +354,9 @@ fn param_default(kind: ParamKind) -> String {
     match kind {
         ParamKind::Int { default, .. } => format!("`{default}`"),
         ParamKind::Bool { default } => format!("`{default}`"),
-        ParamKind::StringList { default, .. } | ParamKind::RegexList { default } => {
+        ParamKind::StringList { default, .. }
+        | ParamKind::RegexList { default }
+        | ParamKind::SelectorList { default } => {
             format!("`[{}]`", default.join(", "))
         }
     }
@@ -547,6 +550,12 @@ fn param_schema(p: &dbtl_core::ParamSpec) -> Value {
             "items": {"type": "string", "format": "regex"},
             "default": default,
             "description": format!("{} (each item must compile as a regular expression)", p.description),
+        }),
+        ParamKind::SelectorList { default } => json!({
+            "type": "array",
+            "items": {"type": "string"},
+            "default": default,
+            "description": format!("{} (each item must be a valid selector — same grammar as `exclude:`; `state:` is not allowed)", p.description),
         }),
         ParamKind::Bool { default } => json!({
             "type": "boolean",

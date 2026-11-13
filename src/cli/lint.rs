@@ -431,6 +431,18 @@ fn explain_rule(id: &str, cfg: &dbtl::LintConfig) -> Result<(), CliError> {
                         p.description
                     );
                 }
+                dbtl::ParamKind::SelectorList { default } => {
+                    let current = cfg
+                        .str_list_param(rule, p.name)
+                        .unwrap_or_else(|| default.iter().map(|s| s.to_string()).collect());
+                    out += &format!(
+                        "  {}  selector-list  default [{}], current [{}] — {}\n",
+                        p.name,
+                        default.join(", "),
+                        current.join(", "),
+                        p.description
+                    );
+                }
                 dbtl::ParamKind::Bool { default } => {
                     let current = cfg.bool_param(rule, p.name).unwrap_or(default);
                     out += &format!(

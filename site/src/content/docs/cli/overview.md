@@ -35,6 +35,8 @@ Every subcommand that reads a project resolves its data source the same way:
 
 With neither `--manifest` nor `--source`, `dbtl` uses `<project>/target/manifest.json` if it exists and parses the project source otherwise.
 
+An auto-detected manifest can go stale: `dbt parse` ran before your last edits. When a project file (`.sql`, `.py`, `.yml`, `.yaml`, `.csv`) is newer than the manifest, `dbtl` warns on stderr — naming the count and the newest file — and suggests `dbt parse` or `--source`. Explicit `--manifest` and `--source` choose the source deliberately and never warn.
+
 ```sh
 dbtl lint                                   # auto-detect in the current directory
 dbtl lint --project /path/to/dbt-project    # auto-detect in another directory

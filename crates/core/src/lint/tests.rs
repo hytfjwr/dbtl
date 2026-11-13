@@ -380,6 +380,85 @@ fn rejoining_upstream_flags_the_redundant_hop() {
 }
 
 #[test]
+fn rejoining_upstream_ignore_shared_parents_exempts_matching_as() {
+    // dim_users -> fct_orders -> rpt_daily AND dim_users -> rpt_daily: the
+    // dimensional shape — a fact and its downstream both join the same
+    // dim. The selector matches A (the shared parent), never B (the
+    // flagged hop) — `exclude:` can't express that (it filters B).
+    let m = manifest(
+        vec![
+            model("dim_users", "marts/dim_users.sql"),
+            model("fct_orders", "marts/fct_orders.sql"),
+            model("rpt_daily", "marts/rpt_daily.sql"),
+            model("stg_extra", "staging/stg_extra.sql"),
+        ],
+        vec![],
+        &[
+            ("model.p.dim_users", "model.p.fct_orders"),
+            ("model.p.fct_orders", "model.p.rpt_daily"),
+            ("model.p.dim_users", "model.p.rpt_daily"),
+        ],
+    );
+    // Default (empty list): the redundant hop still flags.
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::RejoiningUpstream),
+        vec!["model.p.fct_orders"]
+    );
+    // dim_* exempts every shared parent → nothing left to flag.
+    let cfg = config_from(
+        "lint:\n  rules:\n    rejoining_upstream: {ignore_shared_parents: [\"dim_*\"]}\n",
+    );
+    let f = findings_of(&m, &cfg);
+    assert!(
+        flagged(&f, LintRule::RejoiningUpstream).is_empty(),
+        "every shared parent matched → no bypass remains"
+    );
+    // A selector that doesn't match A exempts nothing.
+    let cfg = config_from(
+        "lint:\n  rules:\n    rejoining_upstream: {ignore_shared_parents: [\"fct_*\"]}\n",
+    );
+    let f = findings_of(&m, &cfg);
+    assert_eq!(
+        flagged(&f, LintRule::RejoiningUpstream),
+        vec!["model.p.fct_orders"],
+        "the selector matches shared parents (A), never the flagged hop (B)"
+    );
+    // A second, non-matching shared parent keeps the finding alive — the
+    // parameter drops A's from the list, not the whole check.
+    let m = manifest(
+        vec![
+            model("dim_users", "marts/dim_users.sql"),
+            model("stg_extra", "staging/stg_extra.sql"),
+            model("fct_orders", "marts/fct_orders.sql"),
+            model("rpt_daily", "marts/rpt_daily.sql"),
+        ],
+        vec![],
+        &[
+            ("model.p.dim_users", "model.p.fct_orders"),
+            ("model.p.stg_extra", "model.p.fct_orders"),
+            ("model.p.fct_orders", "model.p.rpt_daily"),
+            ("model.p.dim_users", "model.p.rpt_daily"),
+            ("model.p.stg_extra", "model.p.rpt_daily"),
+        ],
+    );
+    let cfg = config_from(
+        "lint:\n  rules:\n    rejoining_upstream: {ignore_shared_parents: [\"dim_*\"]}\n",
+    );
+    let f = findings_of(&m, &cfg);
+    let hit = f
+        .iter()
+        .find(|f| f.rule == LintRule::RejoiningUpstream)
+        .expect("stg_extra is still an unexempted shared parent");
+    assert_eq!(hit.node_uid, "model.p.fct_orders");
+    assert!(
+        hit.message.contains("stg_extra"),
+        "the remaining A is the one the message names: {}",
+        hit.message
+    );
+}
+
+#[test]
 fn rejoining_upstream_counts_only_data_node_children_and_endpoints() {
     // the single-use semantics:
     //  - source→B→C + source→C: B flags (A need not be a model).
@@ -1049,6 +1128,23 @@ fn registry_params_are_the_declared_config_keys_with_matching_defaults() {
                         assert!(
                             regex::Regex::new(d).is_ok(),
                             "{}.{}'s default '{d}' must compile",
+                            row.id,
+                            p.name
+                        );
+                    }
+                }
+                ParamKind::SelectorList { default } => {
+                    assert_eq!(
+                        LintConfig::default().str_list_param(row.rule, p.name),
+                        Some(default.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
+                        "{}.{}",
+                        row.id,
+                        p.name
+                    );
+                    for d in default {
+                        assert!(
+                            crate::select::validate_selector(d).is_ok(),
+                            "{}.{}'s default '{d}' must parse as a selector",
                             row.id,
                             p.name
                         );
@@ -4674,6 +4770,72 @@ fn select_star_skips_models_without_analyzable_sql() {
     assert!(
         out.findings.is_empty(),
         "unparsable/absent SQL is 'not judged', never flagged"
+    );
+}
+
+#[test]
+fn select_star_param_exempts_only_the_provable_single_cte_close() {
+    let m = manifest(
+        vec![
+            // Exempt under the parameter: the final select reads exactly
+            // one CTE and that CTE writes its columns out — the wildcard
+            // is a close-the-model idiom, not a loose grab.
+            model_sql(
+                "close",
+                "with final as (select a, b from t) select * from final",
+            ),
+            model_sql(
+                "close_alias",
+                "with final as (select a from t) select f.* from final f",
+            ),
+            model_sql(
+                "close_extra",
+                "with final as (select a from t) select *, 1 as x from final",
+            ),
+            // Still flagged: no shape provably names every column the
+            // wildcard emits.
+            model_sql(
+                "star_in_cte",
+                "with final as (select * from t) select * from final",
+            ),
+            model_sql(
+                "joined",
+                "with final as (select a from t) select * from final join u on true",
+            ),
+            model_sql("subq", "select * from (select a from t) s"),
+            model_sql(
+                "unioned",
+                "with final as (select a from t) select * from final union all select a from u",
+            ),
+            model_sql("plain_table", "select * from final"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+
+    // Off by default — every output wildcard flags, exempting nothing.
+    let out = lint_outcome(&dag, &cfg_only(&[LintRule::SelectStar]), Some(&res), None);
+    assert_eq!(flagged(&out.findings, LintRule::SelectStar).len(), 8);
+
+    // On: only the provable `select * from <one all-explicit CTE>` close
+    // drops out. Aliased/augmented wildcards stay exempt; joins,
+    // subqueries, real tables, a `*` inside the CTE, and UNION shapes
+    // keep flagging.
+    let cfg =
+        config_from("lint:\n  rules:\n    select_star: {allow_final_star_over_single_cte: true}\n");
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::SelectStar),
+        vec![
+            "model.p.joined",
+            "model.p.plain_table",
+            "model.p.star_in_cte",
+            "model.p.subq",
+            "model.p.unioned",
+        ],
+        "only the provable single-explicit-CTE close is exempt"
     );
 }
 

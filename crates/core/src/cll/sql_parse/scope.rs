@@ -157,6 +157,11 @@ pub(super) struct Analyzed {
     /// the `order_by_without_limit` lint input
     /// (`facts::outer_order_by_span`).
     pub(super) unlimited_order_by: bool,
+    /// The final query is a `select * from <one all-explicit-columns CTE>`
+    /// — `select_star`'s `allow_final_star_over_single_cte` opt-out input
+    /// (`facts::star_over_single_explicit_cte`). Irrelevant when
+    /// `unbounded_wildcard` is false (nothing would flag anyway).
+    pub(super) star_over_single_explicit_cte: bool,
 }
 
 /// Per-query context: the `Dag`, the model's direct-parent matcher table,

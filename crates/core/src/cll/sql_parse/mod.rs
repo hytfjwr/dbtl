@@ -88,7 +88,7 @@ mod tests;
 
 use ast::*;
 pub use dialect::SqlDialect;
-use facts::outer_order_by_span;
+use facts::{outer_order_by_span, star_over_single_explicit_cte};
 pub(crate) use jinja::trailing_semicolon;
 use jinja::*;
 use positions::{marked_relations, plain_positions};
@@ -151,6 +151,11 @@ pub struct SqlFacts {
     /// `order_by_without_limit`. Positions underlines the ORDER BY
     /// expressions when the raw render's own outer ORDER BY exists.
     pub unlimited_order_by: bool,
+    /// The final query is `select * from <one CTE>` and that CTE's
+    /// projections are all explicit columns — `select_star`'s
+    /// `allow_final_star_over_single_cte` param exempts exactly this
+    /// shape; every other wildcard still flags.
+    pub star_over_single_explicit_cte: bool,
 }
 
 /// The parser-backed resolver: parses each model's SQL (compiled first, raw as
@@ -273,6 +278,7 @@ impl SqlParseResolver {
                 duplicate_outputs: an.duplicate_outputs.clone(),
                 unused_ctes: an.unused_ctes.clone(),
                 unlimited_order_by: an.unlimited_order_by,
+                star_over_single_explicit_cte: an.star_over_single_explicit_cte,
             })
         });
         self.facts_memo
@@ -569,6 +575,7 @@ impl SqlParseResolver {
                     .collect(),
                 unused_ctes: scan.unread_ctes().map(|(name, _)| name.clone()).collect(),
                 unlimited_order_by: outer_order_by_span(query).is_some(),
+                star_over_single_explicit_cte: star_over_single_explicit_cte(query),
             }))
         })();
         self.analyzing.borrow_mut().remove(node);

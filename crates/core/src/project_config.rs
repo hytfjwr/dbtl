@@ -267,6 +267,40 @@ impl ProjectConfig {
                                     .or_default()
                                     .insert(param, list);
                             }
+                            ParamKind::SelectorList { .. } => {
+                                // Same grammar + same strictness as the
+                                // rule's `exclude:` specs — a typo'd
+                                // selector must error here rather than
+                                // silently suppressing nothing.
+                                let items = value.as_sequence().ok_or_else(|| {
+                                    format!("{name}.{param} must be a list of selectors")
+                                })?;
+                                let mut list = Vec::with_capacity(items.len());
+                                for item in items {
+                                    let s = item.as_str().ok_or_else(|| {
+                                        format!("{name}.{param} must be a list of selectors")
+                                    })?;
+                                    crate::select::validate_selector(s).map_err(|e| {
+                                        format!("invalid selector in {name}.{param}: {e}")
+                                    })?;
+                                    // `state:` needs a diff the lint
+                                    // evaluation never builds — allowed by
+                                    // the grammar but it would silently
+                                    // match nothing here.
+                                    if crate::select::selector_uses_state(s) {
+                                        return Err(format!(
+                                            "invalid selector in {name}.{param}: \
+                                             'state:' selectors need a diff; rule \
+                                             parameters never have one"
+                                        ));
+                                    }
+                                    list.push(s.to_string());
+                                }
+                                lint.list_params
+                                    .entry(rule)
+                                    .or_default()
+                                    .insert(param, list);
+                            }
                             ParamKind::RegexList { .. } => {
                                 let items = value.as_sequence().ok_or_else(|| {
                                     format!("{name}.{param} must be a list of regex patterns")
@@ -1041,6 +1075,41 @@ mod tests {
         assert!(
             parse("lint:\n  rules:\n    root_models: {exclude: [\"stg_*\", \"tag:wip\"]}\n")
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn selector_list_params_validate_like_exclude() {
+        // `ignore_shared_parents` is a `ParamKind::SelectorList` — the same
+        // grammar and error surface as `exclude:`.
+        let pc = parse(
+            "lint:\n  rules:\n    rejoining_upstream: {ignore_shared_parents: [\"dim_*\", \"tag:shared\"]}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            pc.lint
+                .str_list_param(LintRule::RejoiningUpstream, "ignore_shared_parents"),
+            Some(vec!["dim_*".to_string(), "tag:shared".to_string()])
+        );
+        // Wrong shapes and bad atoms error at load, not mid-evaluation.
+        for yaml in [
+            "lint:\n  rules:\n    rejoining_upstream: {ignore_shared_parents: dim_*}\n",
+            "lint:\n  rules:\n    rejoining_upstream: {ignore_shared_parents: [1]}\n",
+            "lint:\n  rules:\n    rejoining_upstream: {ignore_shared_parents: [\"bogus:spec:nop\"]}\n",
+        ] {
+            assert!(parse(yaml).is_err(), "{yaml} must not parse");
+        }
+        // `state:` needs a diff the lint evaluation never builds.
+        let err = parse(
+            "lint:\n  rules:\n    rejoining_upstream: {ignore_shared_parents: [\"state:modified\"]}\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("state:"), "{err}");
+        // A param declared on a rule that doesn't own it still errors —
+        // the registry, not the YAML, decides which keys are legal.
+        assert!(
+            parse("lint:\n  rules:\n    root_models: {ignore_shared_parents: [\"dim_*\"]}\n")
+                .is_err()
         );
     }
 

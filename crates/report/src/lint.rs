@@ -212,7 +212,10 @@ pub fn evaluate_lint(
 /// gate (`SKIP lint <rule>: <reason>` in text, `status: "skip"` in JSON),
 /// informational only, never counted as a failure.
 pub fn lint_gates(dag: &Dag, outcome: &LintGateOutcome) -> Vec<GateResult> {
-    let name = |f: &Finding| dag.get(&f.node_uid).map_or("", |n| n.name.as_str());
+    // The shared display naming the findings themselves use — a source is
+    // `<source>.<table>`, so two same-named tables from different sources
+    // (`raw_a.orders`/`raw_b.orders`) never collapse into one entry.
+    let name = |f: &Finding| dbtl_core::display_name(dag, &f.node_uid);
     let mut gates = Vec::with_capacity(outcome.rules.len() + outcome.skipped.len());
     let mut rules = outcome.rules.iter().peekable();
     let mut skipped = outcome.skipped.iter().peekable();
@@ -359,7 +362,11 @@ pub fn lint_assembly(inputs: &LintRunInputs<'_>) -> LintAssembly {
         pre_existing: outcome.rules.iter().map(|r| r.pre_existing).sum(),
         has_diff: outcome.has_diff,
         skipped: outcome.skipped,
-        unparsed_models: outcome.unparsed.len(),
+        unparsed_models: outcome
+            .unparsed
+            .iter()
+            .map(|u| dbtl_core::display_name(inputs.dag, u))
+            .collect(),
     };
     LintAssembly {
         gates,
@@ -418,10 +425,34 @@ mod tests {
         )
     }
 
+    /// A source node literal — `source.p.<src>.<tbl>` like a real manifest
+    /// (`NodeInfo.name` carries the bare table name; `display_name`
+    /// qualifies it with the source segment).
+    fn source(src: &str, tbl: &str) -> (String, dbtl_core::RawSource) {
+        (
+            format!("source.p.{src}.{tbl}"),
+            dbtl_core::RawSource {
+                name: tbl.into(),
+                resource_type: "source".into(),
+                ..Default::default()
+            },
+        )
+    }
+
     /// A manifest assembled from the given models + (parent, child) edges;
     /// `child_map` derives from `edges` so each test writes its graph once.
     fn manifest(
         nodes: Vec<(String, dbtl_core::RawNode)>,
+        edges: &[(&str, &str)],
+    ) -> dbtl_core::RawManifest {
+        manifest_with(nodes, Vec::new(), edges)
+    }
+
+    /// [`manifest`] plus a `sources` map — the gate-naming tests need real
+    /// source nodes, not just models.
+    fn manifest_with(
+        nodes: Vec<(String, dbtl_core::RawNode)>,
+        sources: Vec<(String, dbtl_core::RawSource)>,
         edges: &[(&str, &str)],
     ) -> dbtl_core::RawManifest {
         let mut parent_map: HashMap<String, Vec<String>> = HashMap::new();
@@ -439,7 +470,7 @@ mod tests {
         dbtl_core::RawManifest {
             metadata: Default::default(),
             nodes: nodes.into_iter().collect(),
-            sources: HashMap::new(),
+            sources: sources.into_iter().collect(),
             exposures: HashMap::new(),
             macros: HashMap::new(),
             semantic_models: HashMap::new(),
@@ -579,5 +610,29 @@ mod tests {
         // `never` never fails.
         let out = evaluate_lint(&dag, &cfg, None, None, FailOn::Never, no_aux(), None);
         assert!(!out.failed && out.rules[0].status == GateStatus::Warn);
+    }
+
+    /// Two same-named tables in different sources: the gate's node list
+    /// qualifies each with its source (`raw_a.orders, raw_b.orders`), where
+    /// the old bare-`name` list collapsed both to `orders, orders`. The
+    /// findings themselves already render the qualified `display_name`.
+    #[test]
+    fn gate_message_qualifies_same_named_source_tables() {
+        let dag = Dag::build(&manifest_with(
+            vec![model("x", "marts/x.sql")],
+            vec![source("raw_a", "orders"), source("raw_b", "orders")],
+            &[],
+        ));
+        let cfg = cfg_only(&[LintRule::UnusedSources]);
+        let outcome = evaluate_lint(&dag, &cfg, None, None, FailOn::Error, no_aux(), None);
+        let gates = lint_gates(&dag, &outcome);
+        let gate = gates
+            .iter()
+            .find(|g| g.id == "lint:unused_sources")
+            .expect("the unused_sources gate");
+        assert_eq!(
+            gate.message,
+            "lint unused_sources: 2 violation(s): raw_a.orders, raw_b.orders"
+        );
     }
 }

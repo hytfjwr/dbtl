@@ -118,7 +118,11 @@ pub static REGISTRY: &[RuleInfo] = &[
                   drop the redundant stg_orders ref or move the shared logic \
                     into int_pricing.",
         help: "drop the redundant direct ref, or move the shared logic into the intermediate model",
-        params: &[],
+        params: &[ParamSpec::selector_list(
+            "ignore_shared_parents",
+            &[],
+            "selectors matching shared parents (the A node) to exempt — e.g. shared dim_* dimensions",
+        )],
         requires: Requires::Graph,
     },
     RuleInfo {
@@ -522,7 +526,11 @@ pub static REGISTRY: &[RuleInfo] = &[
                   out the columns the model actually produces so its output \
                   contract is explicit.",
         help: "list the columns the model produces",
-        params: &[],
+        params: &[ParamSpec::bool(
+            "allow_final_star_over_single_cte",
+            false,
+            "exempt a final `select *` whose FROM reads exactly one CTE that names every column explicitly",
+        )],
         requires: Requires::Sql,
     },
     RuleInfo {
@@ -951,6 +959,23 @@ impl ParamSpec {
             description,
         }
     }
+
+    /// A selector-list parameter — every item must parse under the same
+    /// selector grammar `exclude:` uses (the config parser validates at
+    /// load; `state:` selectors are rejected since a lint evaluation has
+    /// no diff for them to read). Items land in
+    /// [`LintConfig::list_params`](crate::LintConfig) like a `StringList`.
+    pub const fn selector_list(
+        name: &'static str,
+        default: &'static [&'static str],
+        description: &'static str,
+    ) -> Self {
+        ParamSpec {
+            name,
+            kind: ParamKind::SelectorList { default },
+            description,
+        }
+    }
 }
 
 /// The value space of a [`ParamSpec`].
@@ -969,6 +994,11 @@ pub enum ParamKind {
     /// item compiles at load; items land in `LintConfig::list_params` like
     /// a `StringList`.
     RegexList { default: &'static [&'static str] },
+    /// A list of `exclude:`-grammar selectors — the config parser
+    /// validates each item at load and rejects `state:` (a lint run has
+    /// no diff context for it); items land in
+    /// `LintConfig::list_params` like a `StringList`.
+    SelectorList { default: &'static [&'static str] },
     /// A `true`/`false` switch with a default used when the config
     /// doesn't set it; values land in `LintConfig::bool_params`.
     Bool { default: bool },
@@ -1020,9 +1050,10 @@ impl RuleInfo {
     }
 
     /// `(default, allowed)` of the declared list parameter `name`, if any —
-    /// `RegexList` rows report `allowed: None` (any string is a candidate,
-    /// the regex-compile check is the validation). The config parser
-    /// validates `StringList` items against `allowed` and
+    /// `RegexList`/`SelectorList` rows report `allowed: None` (any string
+    /// is a candidate; the regex-compile / selector-grammar check is the
+    /// validation). The config parser validates `StringList` items against
+    /// `allowed` and
     /// [`LintConfig::str_list_param`](crate::LintConfig::str_list_param)
     /// falls back to `default`, so the registry is the single place both
     /// read.
@@ -1034,7 +1065,11 @@ impl RuleInfo {
             ParamKind::StringList { default, allowed } if p.name == name => {
                 Some((default, allowed))
             }
-            ParamKind::RegexList { default } if p.name == name => Some((default, None)),
+            ParamKind::RegexList { default } | ParamKind::SelectorList { default }
+                if p.name == name =>
+            {
+                Some((default, None))
+            }
             _ => None,
         })
     }

@@ -12,6 +12,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   single-key shortcuts can be switched off from the status line, code blocks
   are only tab stops while they actually scroll, and search results rank
   titles and headings above body text.
+- The lint tally's `N models skipped SQL rules (unparsable SQL)` line now
+  names the models — up to ten in `unique_id` order, then `+K more` — so
+  an unparsable file surfaces by name instead of only inflating a count.
+  JSON and the other machine formats are unchanged.
+- `dbtl lint --help` and `dbtl check --lint`'s flag help now name both
+  suppression routes — `.dbtl.yml`'s `lint.rules.<id>.exclude` selectors
+  and a node's `meta.dbtl.ignore` — and the project-config docs document
+  the `reason:` convention (ignored by `dbtl`, kept for humans) plus the
+  shared-dimension example (`ignore_shared_parents: ["dim_*"]` /
+  `exclude: ["dim_*"]`).
 
 ### Fixed
 
@@ -47,6 +57,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   arms once (they never execute in one render; the graph's edges are
   unchanged), and `unused_cte` treats a CTE name passed to a macro as a
   string argument (`{{ join_x('cte_name') }}`) as read.
+- Lint gate messages (`dbtl check --lint` rows, `gates[].message` in the
+  JSON report) now render source nodes through the shared display-name
+  helper as `<source>.<table>` — two same-named tables from different
+  sources no longer collapse into one ambiguous `orders, orders` entry.
 
 ### Added
 
@@ -60,6 +74,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `tests/doc_links.rs` now scans `site/src/content/docs/**` too — `dbtl`
   invocations in fenced blocks and inline code are checked against the
   flags each subcommand actually accepts.
+- A stale auto-detected manifest now warns on stderr: when `--project`
+  picks `<project>/target/manifest.json` and project files
+  (`.sql`/`.py`/`.yml`/`.yaml`/`.csv`, `target/` itself excluded) are
+  newer, the warning names the count and the newest file and suggests
+  `dbt parse` or `--source`. Explicit `--manifest`/`--source` never warn.
+  In the TUI the same warning lands in the startup notification.
+- `select_star` gained an opt-in `allow_final_star_over_single_cte`
+  parameter (`.dbtl.yml`, default `false`): a final `select *`/`t.*` that
+  reads exactly one CTE naming every column explicitly no longer flags —
+  the "close the model over `final`" idiom. Every other wildcard shape
+  (joins, subqueries, real tables, a `*` inside the CTE, UNION arms)
+  still flags.
+- `rejoining_upstream` gained `ignore_shared_parents` (a dbt-selector
+  list, default empty): shared parents (the A node) matching the spec are
+  exempted, so a dim legitimately joining at both hops stops flagging —
+  `exclude:` still matches the flagged hop (B). `state:` selectors are
+  rejected at config load; there is no diff to evaluate them against.
 - Docs site: a Guides section with walkthroughs for adopting lint on an
   existing project, reviewing a pull request, and exploring a large
   project; an FAQ covering the verified dbt versions; and direct links

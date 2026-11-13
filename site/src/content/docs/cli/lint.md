@@ -17,7 +17,7 @@ Text output is one annotated block per finding. The header names the severity an
 
 Findings in a properties `.yml` (descriptions, tests, freshness, contract columns) point at the `- name:` entry's line and column. A `.sql` finding points at the offending syntax — the wildcard, relation name, joined table, column reference, regex match, trailing semicolon, duplicated output column, unread CTE, or unbounded `ORDER BY` — when the rule can pin it exactly.
 
-A closing tally reads `Found N errors and M warnings in K files`, with `K baselined` or `K pre-existing, not counted` in parentheses when a baseline or `--diff` suppresses findings. It then reports `N rules reported findings; M skipped (need --catalog)` and, when models carried SQL the parser could not read, `N models skipped SQL rules (unparsable SQL)`.
+A closing tally reads `Found N errors and M warnings in K files`, with `K baselined` or `K pre-existing, not counted` in parentheses when a baseline or `--diff` suppresses findings. It then reports `N rules reported findings; M skipped (need --catalog)` and, when models carried SQL the parser could not read, `N models skipped SQL rules (unparsable SQL): <names>` — up to ten model names, then `+K more`.
 
 ```text
 error[public_models_without_contract]: fct_public_api is access: public without an enforced contract

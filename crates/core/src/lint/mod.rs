@@ -564,9 +564,10 @@ impl LintConfig {
 
     /// The effective value of `rule`'s string-list parameter `param` — a
     /// configured override else the registry-declared default — covering
-    /// BOTH `StringList` and `RegexList` param kinds (the config parser
-    /// already validated a `RegexList`'s entries compile). `None` only when
-    /// `rule` declares no list parameter of that name.
+    /// the `StringList`, `RegexList`, and `SelectorList` param kinds (the
+    /// config parser already validated a `RegexList`'s entries compile and
+    /// a `SelectorList`'s entries parse). `None` only when `rule` declares
+    /// no list parameter of that name.
     pub fn str_list_param(&self, rule: LintRule, param: &str) -> Option<Vec<String>> {
         self.list_params
             .get(&rule)
