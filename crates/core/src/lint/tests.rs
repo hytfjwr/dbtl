@@ -9843,7 +9843,7 @@ fn models_without_unit_tests_flags_only_marts_models_without_one() {
     );
     m.unit_tests
         .extend([unit_test("model.p.fct_tested", "fct_tested_math")]);
-    let cfg = cfg_only_optin(
+    let cfg = cfg_only_opt_in(
         LintRule::ModelsWithoutUnitTests,
         "lint:\n  rules:\n    models_without_unit_tests: true\n",
     );
@@ -9888,7 +9888,7 @@ fn models_without_unit_tests_layers_param_retargets_the_check() {
         vec![],
         &[],
     );
-    let cfg = cfg_only_optin(
+    let cfg = cfg_only_opt_in(
         LintRule::ModelsWithoutUnitTests,
         "lint:\n  rules:\n    models_without_unit_tests:\n      layers: [staging]\n",
     );
@@ -9916,7 +9916,7 @@ fn models_without_unit_tests_never_flags_models_dbt_cant_test() {
         vec![],
         &[],
     );
-    let cfg = cfg_only_optin(
+    let cfg = cfg_only_opt_in(
         LintRule::ModelsWithoutUnitTests,
         "lint:\n  rules:\n    models_without_unit_tests: true\n",
     );
@@ -9945,7 +9945,7 @@ fn models_without_unit_tests_checks_each_version_member() {
         "model.p.fct_orders.v2",
         "fct_orders_v2_keeps_rows",
     )]);
-    let cfg = cfg_only_optin(
+    let cfg = cfg_only_opt_in(
         LintRule::ModelsWithoutUnitTests,
         "lint:\n  rules:\n    models_without_unit_tests: true\n",
     );
@@ -9957,9 +9957,9 @@ fn models_without_unit_tests_checks_each_version_member() {
     );
 }
 
-/// `cfg_only` for an OPT-IN rule: the yaml enables it (`rules:` presence
+/// `cfg_only` for an opt-in rule: the yaml enables it (`rules:` presence
 /// turns a rule on), every other rule gets an explicit `Off`.
-fn cfg_only_optin(rule: LintRule, yaml: &str) -> LintConfig {
+fn cfg_only_opt_in(rule: LintRule, yaml: &str) -> LintConfig {
     let mut cfg = config_from(yaml);
     for r in LintRule::ALL {
         if r != rule {
