@@ -310,7 +310,7 @@ impl SqlParseResolver {
             if raw.trim().is_empty() {
                 return None;
             }
-            marked_relations(raw, &*self.dialect.sqlparser()).map(Rc::new)
+            marked_relations(raw, self.dialect).map(Rc::new)
         })();
         self.hard_coded_memo
             .borrow_mut()
@@ -334,7 +334,7 @@ impl SqlParseResolver {
             if raw.trim().is_empty() {
                 return None;
             }
-            plain_positions(raw, &*self.dialect.sqlparser()).map(Rc::new)
+            plain_positions(raw, self.dialect).map(Rc::new)
         })();
         self.positions_memo
             .borrow_mut()
@@ -463,7 +463,7 @@ impl SqlParseResolver {
     /// reason still catches the edit).
     fn compute_expr_map(&self, dag: &Dag, uid: &str) -> Option<BTreeMap<String, String>> {
         let (text, _) = resolution_sql(dag, uid)?;
-        let sql = render_jinja(text);
+        let sql = render_jinja(text, self.dialect);
         let dialect = self.dialect.sqlparser();
         let stmts = Parser::parse_sql(&*dialect, &sql).ok()?;
         let query = stmts.iter().find_map(|s| match s {
@@ -517,7 +517,7 @@ impl SqlParseResolver {
             return None; // uid cycle — degrade the re-entered node
         }
         let out = (|| {
-            let rendered = render_jinja_mapped(text, JinjaMark::Plain);
+            let rendered = render_jinja_mapped(text, JinjaMark::Plain, self.dialect);
             let dialect = self.dialect.sqlparser();
             let stmts = Parser::parse_sql(&*dialect, &rendered.text).ok()?;
             let query = stmts.iter().find_map(|s| match s {

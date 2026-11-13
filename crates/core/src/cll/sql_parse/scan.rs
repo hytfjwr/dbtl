@@ -39,7 +39,7 @@ use sqlparser::ast::{
 use sqlparser::tokenizer::Span;
 
 use super::ast::{join_constraint, norm_ident, object_name_parts};
-use super::jinja::{RenderedSql, JINJA_MARK_PREFIX};
+use super::jinja::{generated_name, RenderedSql};
 
 /// The relation/join facts a query's FROM/JOIN clauses carry — see the
 /// module doc above. `hard_coded` is only meaningful on a
@@ -275,7 +275,7 @@ fn scan_select(sel: &Select, scope: &BTreeSet<String>, out: &mut RelationScan<'_
     // per-row expansions, not products, same as the JOIN-arm rule.
     if sel.from.len() > 1 && sel.selection.is_none() {
         for (i, twj) in sel.from.iter().enumerate().skip(1) {
-            if functionish_factor(&twj.relation) {
+            if functionish_factor(&twj.relation) || marked_factor(&twj.relation) {
                 continue;
             }
             // A `,` a `{% elif %}`/`{% else %}` arm split emitted is the
@@ -381,6 +381,16 @@ fn functionish_factor(f: &TableFactor) -> bool {
     )
 }
 
+/// Is `f` a `Table` factor whose name carries the `__dbtl_` mark — a
+/// Jinja-generated token (`{{ var('t') }}`, `{{ m() }}`), not a written
+/// relation? A generated name can stand in for a join with a condition
+/// the render can't see, so a product can't be proven — the safe
+/// direction is not counting it.
+fn marked_factor(f: &TableFactor) -> bool {
+    matches!(f, TableFactor::Table { name, args: None, .. }
+        if object_name_parts(name).iter().any(|p| generated_name(p)))
+}
+
 /// Whether an `ON` condition can never reject a row: `ON TRUE` (parens
 /// unwrapped) or a self-comparison of equal literals (`ON 1 = 1`,
 /// `ON 'x' = 'x'`). Only LITERAL equality counts — `a.id = a.id` is
@@ -415,6 +425,7 @@ fn scan_join(j: &Join, scope: &BTreeSet<String>, out: &mut RelationScan<'_>) {
     // a join TARGET that isn't a relation at all (UNNEST / table
     // functions / lateral applies are per-row, not products).
     let unconditional = !functionish_factor(&j.relation)
+        && !marked_factor(&j.relation)
         && !matches!(j.join_operator, JoinOperator::AsOf { .. })
         && match join_constraint(j) {
             Some(JoinConstraint::None) => true,
@@ -977,18 +988,24 @@ fn record_name(span: Span, parts: &[String], scope: &BTreeSet<String>, out: &mut
     // A single-part name resolves against the visible CTE frames
     // innermost-first — a hit counts as that CTE's read (`unused_cte`),
     // independent of whether the same name is also a written relation.
+    // A name inside a Jinja tag's render is generated, not written: a
+    // `{{ ref('x') }}` standing next to a CTE named `x` resolves to the
+    // MODEL `x`, never the in-file `WITH` — the CTE stays unread.
     if let [name] = parts {
-        if let Some(id) = out
-            .cte_frames
-            .iter()
-            .rev()
-            .find_map(|f| f.get(name.as_str()))
-        {
-            out.cte_uses.insert(*id);
+        let generated = out.rendered.is_some_and(|r| r.is_generated(span));
+        if !generated {
+            if let Some(id) = out
+                .cte_frames
+                .iter()
+                .rev()
+                .find_map(|f| f.get(name.as_str()))
+            {
+                out.cte_uses.insert(*id);
+            }
         }
     }
     if parts.is_empty()
-        || parts.iter().any(|p| p.starts_with(JINJA_MARK_PREFIX))
+        || parts.iter().any(|p| generated_name(p))
         || (parts.len() == 1 && scope.contains(parts[0].as_str()))
         || parts
             .iter()

@@ -6395,6 +6395,175 @@ fn unused_cte_counts_a_name_a_macro_argument_carries() {
     );
 }
 
+// ---- Jinja rendering inside literals, identifiers and item lists ------
+// The shapes that used to go `unparsable` (or flag artifacts of the
+// `NULL` placeholder render): a `{{ }}` inside a string literal, tags
+// glued into identifier text, `{{ }}` in relation positions, and
+// select-list macro lines.
+
+#[test]
+fn jinja_inside_literals_and_identifiers_still_parses() {
+    // Every one of these shapes used to fail the parse. They now render
+    // to parseable SQL, so nothing lands on `unparsed` — and none of the
+    // generated placeholders produces a finding (`rel_frag`'s
+    // `__dbtl_…_raw.tbl` is no written relation, `macro_cols`'s
+    // `, __dbtl_…` item is no comma product).
+    let m = manifest(
+        vec![
+            model_sql(
+                "lit",
+                "select id, '{{ var('x', 'a') }}' as tag\nfrom {{ ref('base') }}",
+            ),
+            model_sql(
+                "cast_lit",
+                "select cast('{{ var('last_run') }}' as timestamp) as t\nfrom {{ ref('base') }}",
+            ),
+            model_sql(
+                "glued",
+                "select {{ c }}_sum as s, total_{{ c }} as t\nfrom {{ ref('base') }}",
+            ),
+            model_sql("rel_frag", "select id\nfrom {{ var('s') }}_raw.tbl"),
+            model_sql(
+                "macro_cols",
+                "select o.id as other\n{{ select_cols('o') }}\nfrom {{ ref('base') }} o",
+            ),
+            // An apostrophe inside a `{# #}` comment is comment text —
+            // the comment still closes at `#}` and the model parses.
+            model_sql(
+                "cmt",
+                "select a {# don't run this #} , b\nfrom {{ ref('base') }}",
+            ),
+            // A subquery's `select`/`from` stay inside the parens — the
+            // trailing `{{ }}` is a new select item, not a `NULL` alias.
+            model_sql(
+                "subq",
+                "select a, (select y from {{ var('t') }}) {{ m() }}\nfrom {{ ref('base') }}",
+            ),
+            // `{{ ref('events') }}_2024` — a glued ref renders a marked
+            // generated name: parses AND reads no same-named relation.
+            model_sql("ref_glued", "select id\nfrom {{ ref('events') }}_2024"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[
+        LintRule::HardCodedReferences,
+        LintRule::CartesianJoin,
+        LintRule::DuplicateOutputColumns,
+    ]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert!(
+        out.unparsed.is_empty(),
+        "every jinja-heavy shape reaches the rules: {:?}",
+        out.unparsed
+    );
+    assert!(
+        out.findings.is_empty(),
+        "no generated placeholder may produce a finding: {:?}",
+        out.findings
+    );
+}
+
+#[test]
+fn jinja_placeholders_never_fold_into_a_duplicate_column() {
+    // `select {{ a() }}, {{ b() }}` used to render `NULL, NULL` — a fake
+    // `duplicate output column: null`. Each tag emits a unique generated
+    // identifier, so the items stay distinct; a real duplicate still
+    // flags.
+    let m = manifest(
+        vec![
+            model_sql(
+                "two_vars",
+                "select {{ a() }}, {{ b() }}\nfrom {{ ref('base') }}",
+            ),
+            model_sql("real_dup", "select x as a, y as a\nfrom {{ ref('base') }}"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::DuplicateOutputColumns]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert!(
+        out.unparsed.is_empty(),
+        "the placeholder items parse: {:?}",
+        out.unparsed
+    );
+    assert_eq!(
+        flagged(&out.findings, LintRule::DuplicateOutputColumns),
+        vec!["model.p.real_dup"],
+        "generated names never collide — only the written duplicate flags"
+    );
+}
+
+#[test]
+fn a_ref_named_like_a_cte_does_not_read_it() {
+    // `{{ ref('stg_x') }}` renders `"stg_x"` — byte-identical to the
+    // in-file CTE it isn't — but the rendered span is generated, so it
+    // isn't a read and `stg_x` still flags unread. A WRITTEN `from
+    // stg_x` does read the CTE.
+    let m = manifest(
+        vec![
+            model_sql(
+                "via_ref",
+                "with stg_x as (select 1 as id)\nselect o.id\nfrom {{ ref('stg_x') }} o",
+            ),
+            model_sql(
+                "written",
+                "with stg_x as (select 1 as id)\nselect stg_x.id\nfrom stg_x",
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::UnusedCte]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::UnusedCte),
+        vec!["model.p.via_ref"],
+        "the generated ref() name isn't a read of the same-named CTE"
+    );
+    let f = finding_on(&out.findings, LintRule::UnusedCte, "model.p.via_ref");
+    assert!(
+        f.message.ends_with(": stg_x"),
+        "the unread CTE is named: {}",
+        f.message
+    );
+}
+
+#[test]
+fn jinja_generated_columns_never_report_as_unknown() {
+    // A `{{ }}` expression against a contract-known parent renders a
+    // generated identifier — the unknown-column rule must not flag the
+    // marker name. A real missing column still flags.
+    let m = manifest(
+        vec![
+            model_sql_cols("stg", "select 1", &[("id", None), ("amount", None)], true),
+            model_sql("gen_col", "select id, {{ metric() }} from stg"),
+            model_sql("typo", "select id, nope from stg"),
+        ],
+        vec![],
+        &[
+            ("model.p.stg", "model.p.gen_col"),
+            ("model.p.stg", "model.p.typo"),
+        ],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only(&[LintRule::UnknownColumnReference]);
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::UnknownColumnReference),
+        vec!["model.p.typo"],
+        "the generated `__dbtl_` name is no unknown column — `nope` is"
+    );
+}
+
 #[test]
 fn unused_cte_lists_every_unread_name_in_one_finding() {
     let raw = "with a as (select 1),\n     b as (select 2)\nselect 3";

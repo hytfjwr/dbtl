@@ -542,18 +542,26 @@ impl SqlParseResolver {
                 Some(cols) => {
                     if cols.iter().any(|c| c == col) {
                         s.insert((uid.clone(), col.to_string()));
-                    } else {
+                    } else if !generated_name(col) {
                         // A KNOWN column list without `col` → no edge (the
                         // precision win over v0's blind name-match) — but
                         // the ref WAS written, so record the provable miss.
+                        // A `__dbtl_` name is Jinja-generated
+                        // (`{{ target.col }}` renders a marked column) —
+                        // nothing was written, so nothing is proven.
                         ctx.unresolved
                             .borrow_mut()
                             .insert((uid.clone(), col.to_string()));
                     }
                 }
-                // Unknown column list → trust the qualification.
+                // Unknown column list → trust the qualification — but a
+                // `__dbtl_` name is Jinja-generated (`t.{{ m() }}` renders
+                // a marked column): the parent provably has no such
+                // column, so crediting it would invent an edge.
                 None => {
-                    s.insert((uid.clone(), col.to_string()));
+                    if !generated_name(col) {
+                        s.insert((uid.clone(), col.to_string()));
+                    }
                 }
             },
             TableSrc::Derived(q) => {
@@ -639,8 +647,14 @@ impl SqlParseResolver {
                                 found.insert((uid.clone(), col.to_string()));
                             }
                         }
+                        // An unknown-list parent is creditable only for a
+                        // name that was actually written — a `__dbtl_`
+                        // generated name exists in no column list, so
+                        // crediting it would invent an edge.
                         None => {
-                            unknown.insert(uid.clone());
+                            if !generated_name(col) {
+                                unknown.insert(uid.clone());
+                            }
                         }
                     },
                     TableSrc::Derived(q) => {
@@ -685,13 +699,14 @@ impl SqlParseResolver {
                         result.insert((uid.clone(), col.to_string()));
                     }
                 }
-                if result.is_empty() {
+                if result.is_empty() && !generated_name(col) {
                     // A bare `col` absent from EVERY bound parent's known
                     // column list — an unresolvable name (like `t.gone`,
                     // just unqualified). Record it against every checked
                     // parent — any of them could have been the intended
                     // home; the --diff scan intersects with actually-dead
-                    // columns, so a wrong guess can't misfire.
+                    // columns, so a wrong guess can't misfire. Skip
+                    // `__dbtl_` names — Jinja-generated, not written refs.
                     for uid in &checked {
                         ctx.unresolved
                             .borrow_mut()
