@@ -1,5 +1,5 @@
 ---
-import { REPO_URL } from "../../lib/site.ts";
+import { REPO_URL, url } from "../../lib/site.ts";
 import { docsHref, firstDocsSlug } from "./links.ts";
 
 const install = "brew install hytfjwr/tap/dbtl";
@@ -26,6 +26,9 @@ const install = "brew install hytfjwr/tap/dbtl";
     </div>
     <a class="btn primary" href={docsHref(firstDocsSlug)}>
       Get started
+    </a>
+    <a class="btn" href={url("playground/")}>
+      Playground
     </a>
     <a class="btn" href={REPO_URL}>
       GitHub
