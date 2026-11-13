@@ -15,8 +15,39 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Classifies the pull request's changed paths into the code/docs/site/
+  # docsref scopes; downstream jobs skip themselves on scopes they do not
+  # consume. On push and any non-PR event every scope reports true.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+      docs: ${{ steps.classify.outputs.docs }}
+      site: ${{ steps.classify.outputs.site }}
+      docsref: ${{ steps.classify.outputs.docsref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The diff is between the merge commit's two parents — depth 2
+          # keeps the base commit reachable.
+          fetch-depth: 2
+
+      - name: Classify changed paths
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: bash .github/scripts/changed-paths.sh "$EVENT_NAME" | tee -a "$GITHUB_OUTPUT"
+
   lint:
     name: Lint
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -47,6 +78,8 @@ jobs:
 
   build-test:
     name: Build & Test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     permissions:
@@ -101,6 +134,8 @@ jobs:
 
   msrv:
     name: MSRV
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -136,8 +171,11 @@ jobs:
       - name: Check (minimum supported toolchain)
         run: cargo check --workspace --all-targets --locked
 
+  # Runs on every change shape — the spell check covers prose too — but the
+  # cargo steps only pay for themselves when code changed.
   hygiene:
     name: Hygiene
+    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -152,26 +190,31 @@ jobs:
         uses: crate-ci/typos@276087d9a4f06398b3e04825487805e2d7375888 # v1.52.2
 
       - name: Install Rust toolchain
+        if: needs.changes.outputs.code != 'false'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
           targets: wasm32-unknown-unknown
 
       - name: Cache cargo
+        if: needs.changes.outputs.code != 'false'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Own key — rustdoc output differs from normal builds; saved on pushes to main only.
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-machete
+        if: needs.changes.outputs.code != 'false'
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-machete
 
       - name: Unused dependencies
+        if: needs.changes.outputs.code != 'false'
         run: cargo machete
 
       - name: Doc build (warnings are errors)
+        if: needs.changes.outputs.code != 'false'
         run: cargo doc --workspace --no-deps --locked
         env:
           RUSTDOCFLAGS: "-D warnings"
@@ -179,21 +222,28 @@ jobs:
       # dbtl-core is the crate a wasm build will link — keep it type-clean
       # for the wasm target even though nothing here links or runs it.
       - name: Check dbtl-core (wasm32)
+        if: needs.changes.outputs.code != 'false'
         run: cargo check -p dbtl-core --target wasm32-unknown-unknown --locked
 
       # dbtl-report is the report-building crate a wasm caller links — same
       # type-clean contract as dbtl-core (no filesystem/terminal deps).
       - name: Check dbtl-report (wasm32)
+        if: needs.changes.outputs.code != 'false'
         run: cargo check -p dbtl-report --target wasm32-unknown-unknown --locked
 
       # dbtl-wasm is the crate the docs site actually compiles to wasm — a
       # wasm32-only dependency or API use must fail here, not in the site
       # build.
       - name: Check dbtl-wasm (wasm32)
+        if: needs.changes.outputs.code != 'false'
         run: cargo check -p dbtl-wasm --target wasm32-unknown-unknown --locked
 
   docs-reference:
     name: Docs reference
+    needs: changes
+    # The generated surface only drifts from code edits or a docs/ and
+    # schema/ edit — other Markdown cannot affect it.
+    if: needs.changes.outputs.code != 'false' || needs.changes.outputs.docsref != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -221,6 +271,8 @@ jobs:
 
   coverage:
     name: Coverage (report)
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -275,6 +327,8 @@ jobs:
 
   tui-e2e:
     name: TUI E2E (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     permissions:
@@ -306,3 +360,73 @@ jobs:
       # explicit cargo-test invocation here.
       - name: TUI PTY end-to-end tests
         run: cargo test --test tui_pty --locked -- --ignored
+
+  # The docs-only path of Build & Test: repository-Markdown edits still run
+  # the tests that read that Markdown, on one ubuntu runner, so a prose PR
+  # never queues a macOS or Windows leg. A separate job (not a step inside
+  # the matrix) is what lets the heavy legs skip outright.
+  markdown-tests:
+    name: Markdown tests
+    needs: changes
+    if: needs.changes.outputs.code == 'false' && needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Restores the shared debug/test build; never saves.
+          shared-key: test
+          save-if: false
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-nextest
+
+      # The suites that read repository Markdown: tests/doc_links.rs and
+      # tests/changelog.rs plus dbtl-tui's README-keybindings unit test.
+      - name: Tests that read repository Markdown
+        run: |
+          cargo nextest run --locked --profile ci -p dbtl --test doc_links --test changelog
+          cargo nextest run --locked --profile ci -p dbtl-tui -E 'test(readme_keybindings_resolve_against_bindings)'
+
+  # The single required check for this workflow: fails when any needed job
+  # failed or was cancelled; change-scoped skips pass.
+  ci-result:
+    name: CI result
+    needs:
+      - changes
+      - lint
+      - build-test
+      - msrv
+      - hygiene
+      - docs-reference
+      - markdown-tests
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Aggregate the required checks
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: bash .github/scripts/aggregate-results.sh

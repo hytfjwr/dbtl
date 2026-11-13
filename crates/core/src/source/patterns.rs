@@ -287,16 +287,30 @@ impl Patterns {
     }
 
     /// Whether the file's config() calls leave it disabled — the LAST
-    /// `enabled=<bool literal>` decides, matching dbt's ordered config()
+    /// resolvable `enabled=` decides, matching dbt's ordered config()
     /// application (verified: `config(enabled=false)` then
-    /// `config(enabled=true)` leaves the node enabled). A non-bool
-    /// `enabled=` expression doesn't change the outcome.
-    pub(super) fn disabled(&self, sql: &str) -> bool {
+    /// `config(enabled=true)` leaves the node enabled). Resolvable means a
+    /// bool literal or a `var('name'[, default])` (`| as_bool` allowed)
+    /// the node's var scope resolves to a bool — every other `enabled=`
+    /// value fails dbt's boolean validation; it's reported once per site
+    /// (`ctx` names the file) and can't change the outcome, so the node
+    /// stays enabled unless another value decides.
+    pub(super) fn disabled(
+        &self,
+        sql: &str,
+        vars: &Vars,
+        warnings: &mut Vec<String>,
+        ctx: &str,
+    ) -> bool {
         config_kwarg_exprs(sql, "enabled")
             .into_iter()
-            .filter_map(|expr| match lit_value(expr) {
-                Some(serde_json::Value::Bool(b)) => Some(b),
-                _ => None,
+            .filter_map(|expr| {
+                vars.node_enabled(expr).or_else(|| {
+                    warnings.push(format!(
+                        "{ctx}: config(enabled={expr}) could not be evaluated as a boolean; the resource stays enabled"
+                    ));
+                    None
+                })
             })
             .next_back()
             == Some(false)

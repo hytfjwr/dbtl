@@ -79,11 +79,32 @@ Useful `xtask` tasks:
 - Docs changes: keep prose lines wrapped reasonably, and make sure every
   relative link resolves — `tests/doc_links.rs` checks links and anchors.
 
-CI runs on every PR: fmt/clippy (`Lint`), the test suite on Linux, Windows,
-and macOS (`Build & Test`), an MSRV check (`MSRV`), spell check,
-`cargo machete`, and `cargo doc` (`Hygiene`), generated-docs freshness
-(`Docs reference`), the Action self-test, the dogfood end-to-end job, and a
-real-PTY TUI suite on Unix (`TUI E2E`).
+CI runs on every PR, gated by three required aggregate checks — `CI
+result`, `Security result`, and `Dogfood result`. Each aggregate fails when
+a job it needs fails or is cancelled; a skipped job passes.
+
+A `changes` job first classifies the pull request's diff into scopes, and
+each job runs only when its scope changed:
+
+- **code** — anything outside the docs/site buckets (Rust sources,
+  `Cargo.*`, `tests/`, `crates/`, `xtask/`, `benches/`, `action/`, `demo/`,
+  `.github/` except a `docs-site.yml`-only change, config files). Runs
+  everything: `Lint`, `Build & Test` on Linux/Windows/macOS, `MSRV`,
+  `Hygiene`, `Docs reference`, `Coverage (report)`, `TUI E2E`, the Action
+  self-test, and Dogfood E2E.
+- **docs** — repository prose: top-level `*.md`, one level of `.github/*.md`,
+  `docs/**`, `schema/**` (site content docs also set `site`). Runs
+  `Markdown tests` (the suites that read repository Markdown), the spell
+  check, and `Docs reference` when `docs/` or `schema/` changed.
+- **site** — `site/**` and `docs-site.yml`. Runs the spell check and the
+  security jobs; the site build lives in the docs-site workflow.
+
+The security jobs always run. When classification cannot produce a diff it
+reports every scope changed, so an ambiguous pull request runs everything.
+
+If you add a job that must gate merges, add it to the aggregate's `needs` —
+`tests/ci_scripts.rs` fails when a job sits outside every aggregate's
+`needs` without being declared report-only.
 
 ## Testing notes
 
