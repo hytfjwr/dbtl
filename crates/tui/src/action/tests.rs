@@ -37,6 +37,7 @@ fn detail_mode() -> Mode {
         col_counts: std::collections::BTreeMap::new(),
         stale: false,
         name_match: false,
+        lint: vec![],
         scroll: 0,
     })
 }

@@ -3,7 +3,7 @@ title: Structure view
 description: Open the structure view on a node to see its columns, tests, description, and governance fields, and to start a column trace.
 ---
 
-`Enter` on the selected model opens the structure view: columns, tests, and description. It also shows governance fields (access, group, contract, version) and the `meta` dict when the model declares them. The dict is sorted, and nested values appear as compact JSON.
+`Enter` on the selected model opens the structure view: columns, tests, and description. It also shows governance fields (access, group, contract, version) and the `meta` dict when the model declares them — plus `language` when the build isn't `sql`, `incremental_strategy`, `deprecation_date`, and `constraints` when declared. The dict is sorted, and nested values appear as compact JSON. When the node has lint findings, a lint section lists them below the tests — the same findings the inspector pane shows.
 
 ## Column rows
 

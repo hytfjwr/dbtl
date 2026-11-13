@@ -898,3 +898,44 @@ fn tui_start_with_an_unmatched_select_exits_two() {
         stderr(&out)
     );
 }
+
+#[test]
+fn tui_start_select_selector_skips_a_non_model_first_match() {
+    // `fct_orders+` selector-matches `exposure.sample.orders_dashboard`
+    // FIRST (unique_id order), then the models — resolution must skip the
+    // exposure and open the first MODEL match rather than failing the
+    // whole flag. A resolved --select proceeds to terminal init, which
+    // errors on a piped (TTY-less) run: exit 3, not the usage-error 2.
+    let m = sample_manifest();
+    let out = spawn_and_wait(&["--manifest", m.to_str().unwrap(), "--select", "fct_orders+"]);
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a selector hit on a later model still resolves: {}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("terminal"),
+        "the failure is TTY init, not select: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn tui_start_state_select_without_a_diff_still_misses() {
+    // The unchanged floor for the --diff ordering fix: `state:` atoms see
+    // no baseline, so they match nothing and --select reports a miss.
+    let m = sample_manifest();
+    let out = spawn_and_wait(&[
+        "--manifest",
+        m.to_str().unwrap(),
+        "--select",
+        "state:modified",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "state:modified without --diff finds nothing: {}",
+        stderr(&out)
+    );
+}

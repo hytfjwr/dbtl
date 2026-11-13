@@ -3027,3 +3027,81 @@ fn readme_without_overview_keeps_the_title_provenance_pair() {
     );
     assert_eq!(dag.overview(), None, "the fixture declares no overview");
 }
+
+#[test]
+fn node_page_bullets_carry_the_declared_governance_fields() {
+    // language (non-sql only) / incremental_strategy / deprecation_date /
+    // constraints — the declared values land as heading bullets, conditional
+    // on presence so an undeclared field emits no bullet.
+    use dbtl_core::{RawConfig, RawConstraint};
+    let mut m = empty_manifest();
+    let mut n = node("m", "model", &[]);
+    n.language = Some("python".into());
+    n.deprecation_date = Some("2026-12-31T00:00:00+09:00".into());
+    n.constraints = vec![
+        RawConstraint {
+            constraint_type: Some("primary_key".into()),
+            columns: Some(vec!["id".into()]),
+            ..Default::default()
+        },
+        RawConstraint {
+            constraint_type: Some("check".into()),
+            expression: Some("id > 0\nand id < 999".into()),
+            ..Default::default()
+        },
+    ];
+    n.config = RawConfig {
+        materialized: Some("incremental".into()),
+        incremental_strategy: Some("merge".into()),
+        ..Default::default()
+    };
+    m.nodes.insert("model.p.m".into(), n);
+    // A plain sql-language model beside it: no governance bullets at all.
+    m.nodes
+        .insert("model.p.plain".into(), node("plain", "model", &[]));
+    let dag = dag_from(m);
+    let out = generate_docs(&dag, "p", "src", PackageScope::Root);
+    let page = file(&out, "models/model.p.m.md");
+    for needle in [
+        "- language: `python`\n",
+        "- incremental_strategy: `merge`\n",
+        "- deprecation_date: `2026-12-31T00:00:00+09:00`\n",
+        "- constraints: `primary_key (id)`, `check: id > 0 and id < 999`\n",
+    ] {
+        assert!(page.contains(needle), "missing {needle:?} in:\n{page}");
+    }
+    let plain = file(&out, "models/model.p.plain.md");
+    for banned in [
+        "language:",
+        "incremental_strategy:",
+        "deprecation_date:",
+        "constraints:",
+    ] {
+        assert!(
+            !plain.contains(banned),
+            "undeclared {banned:?} must emit no bullet:\n{plain}"
+        );
+    }
+}
+
+#[test]
+fn node_page_omits_the_default_sql_language() {
+    // `language: sql` is dbt's default build — the bullet stays off the page
+    // (the modal applies the same rule, so the two surfaces agree).
+    use dbtl_core::RawConfig;
+    let mut m = empty_manifest();
+    let mut n = node("m", "model", &[]);
+    n.language = Some("sql".into());
+    n.config = RawConfig {
+        materialized: Some("view".into()),
+        ..Default::default()
+    };
+    m.nodes.insert("model.p.m".into(), n);
+    let dag = dag_from(m);
+    let out = generate_docs(&dag, "p", "src", PackageScope::Root);
+    let page = file(&out, "models/model.p.m.md");
+    assert!(
+        !page.contains("- language:"),
+        "sql-language models carry no language bullet:\n{page}"
+    );
+}

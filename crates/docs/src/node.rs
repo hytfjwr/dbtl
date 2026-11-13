@@ -152,6 +152,36 @@ fn push_heading_bullets(
                 "- latest: {}\n",
                 opt_code(detail.and_then(|d| d.latest_version.as_deref()))
             ));
+            // The remaining governance-adjacent fields are conditional —
+            // unlike the fixed bullets above, an absent value emits NO
+            // bullet (and `language` only reports a non-`sql` build: the
+            // default carries no news).
+            if let Some(lang) = detail
+                .and_then(|d| d.language.as_deref())
+                .filter(|l| *l != "sql")
+            {
+                s.push_str(&format!("- language: `{lang}`\n"));
+            }
+            if let Some(strategy) = detail.and_then(|d| d.incremental_strategy.as_deref()) {
+                s.push_str(&format!("- incremental_strategy: `{strategy}`\n"));
+            }
+            if let Some(date) = detail.and_then(|d| d.deprecation_date.as_deref()) {
+                s.push_str(&format!("- deprecation_date: `{date}`\n"));
+            }
+            let constraints = detail.map(|d| d.constraints.as_slice()).unwrap_or(&[]);
+            if !constraints.is_empty() {
+                // Declared order is the deterministic order (dbt writes the
+                // list as declared). One inline-code label per entry — the
+                // same `ConstraintInfo::label` the structure modal renders.
+                s.push_str(&format!(
+                    "- constraints: {}\n",
+                    constraints
+                        .iter()
+                        .map(|c| format!("`{}`", c.label()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
             push_db_schema_tags(s, detail);
             push_artifact_bullets(s, ctx, uid, true);
         }

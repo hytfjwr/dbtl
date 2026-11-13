@@ -446,3 +446,33 @@ fn state_selectors_resolve_against_git_revisions() {
         assert!(out_s.contains(needle), "missing {needle:?} in:\n{out_s}");
     }
 }
+
+#[test]
+fn tui_select_state_selector_sees_the_loaded_diff() {
+    // The startup ordering contract: `--select` resolves AFTER the `--diff`
+    // baseline loads, so `state:` atoms read the real diff. `state:modified`
+    // hits the touched stg_orders → startup proceeds to terminal init —
+    // which errors on this piped (TTY-less) run: exit 3. Resolved before
+    // the baseline existed, the same selector would miss → exit 2.
+    let (repo, _base) = two_commit_repo(".");
+    let root = repo.root.to_str().unwrap().to_string();
+    let out = run(&[
+        "--project",
+        &root,
+        "--diff",
+        "git:HEAD~1",
+        "--select",
+        "state:modified",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "resolved --select reaches TTY init, stderr: {}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("terminal"),
+        "the failure is terminal init, not the selector: {}",
+        stderr(&out)
+    );
+}

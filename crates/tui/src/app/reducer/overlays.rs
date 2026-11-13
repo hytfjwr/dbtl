@@ -30,6 +30,22 @@ fn detail_view_for(app: &App, uid: String) -> DetailView {
     // `column_counts_for` just resolved this uid, so the fallback
     // flag is settled: `[name-match]` marks the name-match path.
     let name_match = app.cll.is_fallback(&uid);
+    // This node's lint findings — severity + rule id + registry summary +
+    // the finding's message, in `lint_findings`' own deterministic order. A
+    // finding lands here only when `node_uid` IS this node: `related` uids
+    // are context on the OTHER node's violation. The inspector pane reads
+    // the SAME vec through `detail.lint` — this is the one producer.
+    let lint = app
+        .lint_findings()
+        .iter()
+        .filter(|f| f.node_uid == uid)
+        .map(|f| crate::InspectorLintFinding {
+            severity: f.severity,
+            rule: f.rule.name().to_string(),
+            summary: f.rule.description().to_string(),
+            message: f.message.clone(),
+        })
+        .collect();
     DetailView {
         model_id: uid,
         name,
@@ -44,6 +60,7 @@ fn detail_view_for(app: &App, uid: String) -> DetailView {
         col_counts,
         stale,
         name_match,
+        lint,
         scroll: 0,
     }
 }
@@ -55,8 +72,8 @@ fn detail_view_for(app: &App, uid: String) -> DetailView {
 /// modal's construction, it never reassembles domain data itself); the
 /// remaining fields are the pane-only extras the modal doesn't carry:
 /// materialization tag, the third (exposure) component of the impact
-/// breakdown, per-column catalog types, the last-run row, this node's lint
-/// findings, and the diff readout.
+/// breakdown, per-column catalog types, the last-run row, and the diff
+/// readout.
 pub(in crate::app) fn inspector_view_for(app: &App, uid: String) -> crate::InspectorView {
     let detail = detail_view_for(app, uid.clone());
     // `impact_breakdown_for`'s third component — the downstream EXPOSURE
@@ -107,21 +124,6 @@ pub(in crate::app) fn inspector_view_for(app: &App, uid: String) -> crate::Inspe
             (word, r.execution_time)
         })
     });
-    // This node's lint findings — severity + rule id + registry summary +
-    // the finding's message, in `lint_findings`' own deterministic order. A
-    // finding lands here only when `node_uid` IS this node: `related` uids
-    // are context on the OTHER node's violation.
-    let lint = app
-        .lint_findings()
-        .iter()
-        .filter(|f| f.node_uid == uid)
-        .map(|f| crate::InspectorLintFinding {
-            severity: f.severity,
-            rule: f.rule.name().to_string(),
-            summary: f.rule.description().to_string(),
-            message: f.message.clone(),
-        })
-        .collect();
     // The diff readout for THIS node — `+ added`, or `~ modified:` plus the
     // baseline's recorded reasons (a fixed-order human list). `None` on
     // `Unchanged` (nothing to show) or when no baseline is loaded.
@@ -142,7 +144,6 @@ pub(in crate::app) fn inspector_view_for(app: &App, uid: String) -> crate::Inspe
         owner,
         col_types,
         run,
-        lint,
         diff,
     }
 }

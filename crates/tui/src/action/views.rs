@@ -54,13 +54,20 @@ pub struct DetailView {
     /// approximation (unparsed or missing SQL) — the columns header gets a
     /// `[name-match]` tag.
     pub name_match: bool,
+    /// This node's own lint findings — only findings whose `node_uid` IS
+    /// this node (`related` uids are context on the OTHER node's
+    /// violation). Built by `detail_view_for` for BOTH the modal and the
+    /// inspector pane (the pane reads `detail.lint` — one producer, never
+    /// two).
+    pub lint: Vec<InspectorLintFinding>,
     pub scroll: usize,
 }
 
-/// One lint finding attached to a node, snapshotted for the inspector's Lint
-/// section: `severity` picks the mark (`x`/`!` — `Chrome`'s run glyphs) and
-/// the colour, `rule` is the registry's snake_case id, `summary` its one-line
-/// description, `message` the finding's own explanation.
+/// One lint finding attached to a node, snapshotted for the structure
+/// modal's and the inspector pane's lint sections: `severity` picks the mark
+/// (`x`/`!` — `Chrome`'s run glyphs) and the colour, `rule` is the registry's
+/// snake_case id, `summary` its one-line description, `message` the finding's
+/// own explanation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectorLintFinding {
     pub severity: crate::Severity,
@@ -73,7 +80,7 @@ pub struct InspectorLintFinding {
 /// (or the rooted selection): `detail` reuses the structure modal's
 /// `detail_view_for` assembly verbatim (the "share the DetailView
 /// construction" rule — one domain pass, never two), and the pane-specific
-/// extras (tag / exposures / catalog types / last-run / lint / diff) join
+/// extras (tag / exposures / catalog types / last-run / diff) join
 /// here. Plain comparable data, built at `(uid, generation)` cache time so
 /// the render layer stays `Dag`-free.
 #[derive(Debug, Clone, PartialEq)]
@@ -103,10 +110,6 @@ pub struct InspectorView {
     /// `(status word, optional seconds)` — `("success", Some(3.2))` renders
     /// `✓ success  3.2s`. `None` when the artifact doesn't cover the node.
     pub run: Option<(String, Option<f64>)>,
-    /// This node's lint findings (only findings whose `node_uid` IS this
-    /// node — `related` uids are context for the OTHER node's violation,
-    /// not this node's).
-    pub lint: Vec<InspectorLintFinding>,
     /// The diff readout when a `--diff` baseline flags this node:
     /// `"+ added"` / `"~ modified: {reasons}"`. `None` when unchanged or no
     /// baseline is loaded.
