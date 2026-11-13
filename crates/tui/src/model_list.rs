@@ -582,6 +582,7 @@ mod tests {
             },
         );
         let manifest = RawManifest {
+            unresolved_adjacent: Default::default(),
             metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
@@ -738,6 +739,7 @@ mod tests {
         add("model.p.m_a", "marts_a", "marts/m_a.sql", None);
         add("model.p.s_b", "stg_b", "staging/s_b.sql", Some("alice"));
         let manifest = RawManifest {
+            unresolved_adjacent: Default::default(),
             metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
@@ -857,6 +859,7 @@ mod tests {
             },
         );
         let manifest = RawManifest {
+            unresolved_adjacent: Default::default(),
             metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
@@ -932,6 +935,7 @@ mod tests {
         );
         parent_map.insert("model.p.i_y".to_string(), vec!["model.p.s_b".to_string()]);
         let manifest = RawManifest {
+            unresolved_adjacent: Default::default(),
             metadata: Default::default(),
             nodes,
             sources: HashMap::new(),

@@ -8,9 +8,10 @@ impl Dag {
         &self.macros
     }
 
-    /// The macro `unique_id`s a kept node's compiled SQL calls
-    /// (`depends_on.macros`). Empty for nodes that call no macro — and for
-    /// every node in source mode.
+    /// The macro `unique_id`s a kept node invokes (`depends_on.macros`).
+    /// Empty for nodes that call no macro — and for source-mode nodes
+    /// whose only macro calls are package-namespaced or unknown (source
+    /// mode records project-local invokes only, the same set dbt writes).
     pub fn node_macros(&self, unique_id: &str) -> &[String] {
         self.node_macros.get(unique_id).map_or(&[], Vec::as_slice)
     }

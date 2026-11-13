@@ -372,6 +372,7 @@ fn lint_surfaces_are_all_ascii() {
         vec!["model.p.stg_b".to_string()],
     )]);
     let dag = dbtl::Dag::build(&dbtl::RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
@@ -830,6 +831,7 @@ fn search_palette_surfaces_are_all_ascii() {
     // lineage pane's own one-line reason, in ASCII (dash must be `-`).
     use std::collections::HashMap;
     let empty = dbtl::Dag::build(&dbtl::RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes: HashMap::new(),
         sources: HashMap::new(),

@@ -392,6 +392,7 @@ fn selected_file_path_stays_under_the_project_root() {
         node("mid", "models/../../outside.sql"),
     );
     let dag = Dag::build(&RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),

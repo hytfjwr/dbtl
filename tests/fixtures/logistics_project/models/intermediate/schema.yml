@@ -1,0 +1,11 @@
+version: 2
+
+models:
+  - name: int_rate_cards
+    description: "Rate-card rows staged through the macro feed"
+    columns:
+      - name: feed_id
+        description: "Feed row id"
+        tests:
+          - unique
+          - not_null

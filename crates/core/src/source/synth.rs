@@ -6,13 +6,13 @@
 //! applies them. Warning ORDER is significant (first-seen dedup happens in
 //! `finish`), so the stage order is a contract, not a preference.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 use super::*;
-use crate::{RawConfig, RawDoc, RawExposure, RawExposureOwner, RawMetadata};
+use crate::{RawConfig, RawDoc, RawExposure, RawExposureOwner, RawMetadata, UnresolvedAdjacent};
 
 /// The shared state the source-synthesis stages build up: the parsed project
 /// file and its resource paths, the collected docs blocks, the synthesized
@@ -31,6 +31,10 @@ pub(super) struct Synthesis {
     model_paths: Vec<String>,
     seed_paths: Vec<String>,
     snapshot_paths: Vec<String>,
+    /// The project-local `{% macro %}` table (collected in `load` like the
+    /// docs blocks) — the edge pass binds `{{ name(…) }}`/`{% … name(…) %}`
+    /// invocations against it for macro-derived `ref`/`source` edges.
+    macros: Macros,
     pat: Patterns,
     /// The collected `{% docs %}` blocks every description intake renders
     /// through (`{{ doc() }}` expansion).
@@ -68,6 +72,33 @@ pub(super) struct Synthesis {
 /// file (for `original_file_path`) and the resource root (exposure `path` is
 /// recorded relative to it, the way dbt does for models).
 type ParsedSchemaFile = (SchemaFile, PathBuf, PathBuf);
+
+/// What `resolve_edges` produces beyond the two adjacency maps — the macro
+/// metadata and the unprovable-adjacency record `finish` folds into the
+/// manifest.
+#[derive(Debug, Default)]
+pub(super) struct EdgeExtras {
+    /// uid → `macro.<proj>.<name>` unique_ids the node's Jinja invokes
+    /// (direct calls only — dbt records nested callees on the callee's
+    /// own `depends_on.macros`) — `depends_on.macros`'s source-mode
+    /// value.
+    pub node_macros: HashMap<String, Vec<String>>,
+    /// The unresolvable-call record — `unresolved_adjacent`'s raw
+    /// material.
+    pub unresolved: UnresolvedCalls,
+}
+
+/// `resolve_edges`'s product — the two adjacency maps plus the extra
+/// metadata that accompanies them.
+#[derive(Debug, Default)]
+pub(super) struct ResolvedEdges {
+    /// uid → sorted parent uids (only nodes WITH parents get an entry).
+    pub parent_map: HashMap<String, Vec<String>>,
+    /// uid → sorted child uids — the adjacency map's other direction.
+    pub child_map: HashMap<String, Vec<String>>,
+    /// The macro metadata and unprovable-adjacency record.
+    pub extras: EdgeExtras,
+}
 
 impl Synthesis {
     /// Read `dbt_project.yml`, load the `var()` tables, resolve the resource
@@ -131,6 +162,20 @@ impl Synthesis {
                 .clone()
                 .unwrap_or_else(|| vec!["snapshots".to_string()]),
         );
+        // `macro-paths` feeds two consumers: the `{% macro %}` table the
+        // edge pass resolves invocations against, and the docs-paths
+        // default (an unset `docs-paths` scans every resource dir).
+        let macro_paths = contained_resource_paths(
+            project
+                .macro_paths
+                .clone()
+                .unwrap_or_else(|| vec!["macros".to_string()]),
+        );
+
+        // Every `{% macro %}` under `macro-paths` — collected up front
+        // like the docs blocks so the edge pass resolves `{{ name(…) }}`
+        // calls in model/snapshot SQL against the project's own table.
+        let macros = Macros::load(dir, &macro_paths, &mut warnings);
 
         let pat = Patterns::new();
 
@@ -146,12 +191,7 @@ impl Synthesis {
                 model_paths.clone(),
                 seed_paths.clone(),
                 snapshot_paths.clone(),
-                contained_resource_paths(
-                    project
-                        .macro_paths
-                        .clone()
-                        .unwrap_or_else(|| vec!["macros".to_string()]),
-                ),
+                macro_paths.clone(),
                 contained_resource_paths(
                     project
                         .analysis_paths
@@ -180,6 +220,7 @@ impl Synthesis {
             model_paths,
             seed_paths,
             snapshot_paths,
+            macros,
             pat,
             docs,
             nodes: HashMap::new(),
@@ -570,13 +611,28 @@ impl Synthesis {
     /// `(parent_map, child_map)` — unresolved refs (cross-package, typo,
     /// gated) drop out; a source referenced but not declared in schema.yml
     /// dangles here and is pruned later.
-    pub(super) fn resolve_edges(
-        &self,
-    ) -> (HashMap<String, Vec<String>>, HashMap<String, Vec<String>>) {
+    ///
+    /// A second pass over each node's Jinja tags resolves `{{ name(…) }}` /
+    /// `{% … name(…) %}` calls against the project macro table: an invoked
+    /// macro's own `ref`/`source` calls (args bound to the invocation's
+    /// literal values, nested calls followed under the depth cap) emit the
+    /// same edge shapes direct calls do, the invoked macro's unique_id lands
+    /// in `depends_on.macros`, and a call the table can't prove — a package
+    /// `ns.name()`, an `adapter.dispatch` of an unknown name, a project
+    /// macro whose bound args stayed non-literal — counts into the
+    /// unprovable-adjacency record `finish` writes to
+    /// `RawManifest::unresolved_adjacent`. That record is what keeps
+    /// degree-judging lint rules honest: `root_models` can't claim "no
+    /// parents" on a node whose hidden parents live inside a package macro
+    /// body, and `unused_sources` can't claim "no consumers" on a source
+    /// table one of those calls literally named.
+    pub(super) fn resolve_edges(&self) -> ResolvedEdges {
         let mut parent_map: HashMap<String, Vec<String>> = HashMap::new();
         let mut child_map: HashMap<String, Vec<String>> = HashMap::new();
+        let mut extras = EdgeExtras::default();
         for (uid, sql) in &self.node_sql {
             let mut parents: Vec<String> = Vec::new();
+            let mut invoked: BTreeSet<String> = BTreeSet::new();
             // `sql` is already comment-masked — no second mask pass.
             for site in self.pat.call_sites_masked(sql) {
                 match site.kind {
@@ -597,6 +653,59 @@ impl Synthesis {
                     CallKind::Config => {}
                 }
             }
+            for call in jinja_calls(sql) {
+                match self.macros.classify_callee(call.name, &self.proj) {
+                    // `ref`/`source`/`config` belong to the call-site pass
+                    // above; dbt/Jinja builtins carry no deps.
+                    Callee::DepCall | Callee::Builtin => {}
+                    Callee::Project(def) => {
+                        // `proj.name(…)` qualifies back to the bare macro —
+                        // `depends_on.macros` records the bare name's uid.
+                        let bare = call
+                            .name
+                            .rsplit_once('.')
+                            .map(|(_, n)| n)
+                            .unwrap_or(call.name);
+                        let res = self.macros.resolve_call(bare, def, call.args, &self.proj);
+                        self.absorb_resolution(
+                            uid,
+                            res,
+                            call.args,
+                            &mut parents,
+                            &mut invoked,
+                            &mut extras.unresolved,
+                        );
+                    }
+                    Callee::Dispatch => {
+                        let res = self.macros.resolve_dispatch(call.args, &self.proj);
+                        self.absorb_resolution(
+                            uid,
+                            res,
+                            call.args,
+                            &mut parents,
+                            &mut invoked,
+                            &mut extras.unresolved,
+                        );
+                    }
+                    // A package `ns.name(…)` or an unknown bare call — the
+                    // callee's `ref()`/`source()` reach can't be proven
+                    // (`dbt_packages/` is never read), so the call counts
+                    // as unprovable adjacency and its literal arguments are
+                    // kept as source-table candidates.
+                    Callee::Foreign => {
+                        *extras.unresolved.parents.entry(uid.clone()).or_default() += 1;
+                        extras
+                            .unresolved
+                            .candidates
+                            .extend(Macros::literal_args_of(call.args));
+                    }
+                }
+            }
+            if !invoked.is_empty() {
+                extras
+                    .node_macros
+                    .insert(uid.clone(), invoked.into_iter().collect());
+            }
             parents.sort();
             parents.dedup();
             for parent in &parents {
@@ -613,7 +722,47 @@ impl Synthesis {
             children.sort();
             children.dedup();
         }
-        (parent_map, child_map)
+        ResolvedEdges {
+            parent_map,
+            child_map,
+            extras,
+        }
+    }
+
+    /// Fold one macro-resolution outcome into the edge pass's running
+    /// state: resolved `ref`/`source` targets join `parents` (an
+    /// unresolvable name drops like an ordinary unresolved `ref`), the
+    /// invoked macro names land in `invoked`, and an `incomplete`
+    /// resolution counts as unprovable adjacency — its literal args stay
+    /// candidates for the source tables a hidden `source()` may have read.
+    fn absorb_resolution(
+        &self,
+        uid: &str,
+        res: Resolution,
+        args_text: &str,
+        parents: &mut Vec<String>,
+        invoked: &mut BTreeSet<String>,
+        unresolved: &mut UnresolvedCalls,
+    ) {
+        for name in &res.refs {
+            if let Some(parent) = self.name_index.get(name) {
+                parents.push(parent.clone());
+            }
+        }
+        for (src, tbl) in &res.sources {
+            parents.push(format!("source.{}.{}.{}", self.proj, src, tbl));
+        }
+        invoked.extend(
+            res.macros
+                .iter()
+                .map(|m| format!("macro.{}.{}", self.proj, m)),
+        );
+        if res.incomplete {
+            *unresolved.parents.entry(uid.to_string()).or_default() += 1;
+            unresolved
+                .candidates
+                .extend(Macros::literal_args_of(args_text));
+        }
     }
 
     /// The schema-metadata pass: source nodes, exposures, semantic-model
@@ -957,10 +1106,41 @@ impl Synthesis {
         parent_map: HashMap<String, Vec<String>>,
         child_map: HashMap<String, Vec<String>>,
         manifest_docs: HashMap<String, RawDoc>,
+        extras: EdgeExtras,
     ) -> (RawManifest, Vec<String>) {
         let mut seen_warnings = HashSet::new();
         self.warnings.retain(|w| seen_warnings.insert(w.clone()));
 
+        // Each node's invoked-macro unique_ids — `depends_on.macros`, the
+        // field a real manifest carries for a model calling a macro.
+        // `depends_on.nodes` stays empty (as before): `parent_map` is the
+        // synthesized manifest's adjacency source.
+        for (uid, macros) in extras.node_macros {
+            if let Some(node) = self.nodes.get_mut(&uid) {
+                node.depends_on.macros = macros;
+            }
+        }
+
+        // The unprovable-adjacency record. Two directions fold into the
+        // same map the `Dag` calls `pruned_adjacent`: a counted call on a
+        // node means it may have parents the graph doesn't show, and each
+        // literal argument those calls carried names a source table that
+        // may have a consumer the graph doesn't show. Only NOW (post
+        // `apply_schema_files`) do declared sources exist to match the
+        // candidates against.
+        let mut unresolved_adjacent: HashMap<String, UnresolvedAdjacent> = HashMap::new();
+        for (uid, n) in extras.unresolved.parents {
+            unresolved_adjacent.entry(uid).or_default().parents += n;
+        }
+        for table in &extras.unresolved.candidates {
+            for (uid, src) in &self.sources {
+                if &src.name == table {
+                    unresolved_adjacent.entry(uid.clone()).or_default().children += 1;
+                }
+            }
+        }
+
+        let raw_macros = self.macros.raw_macros(&self.proj);
         (
             RawManifest {
                 // `dbt_project.yml`'s `name` IS the root project — record it where
@@ -978,7 +1158,12 @@ impl Synthesis {
                 exposures: self.exposures,
                 parent_map,
                 child_map,
-                macros: HashMap::new(),
+                unresolved_adjacent,
+                // The project's own `{% macro %}` table — real manifests
+                // carry these (and the diff walks their depends_on for
+                // shared-macro impact), so the synthesized manifest fills
+                // the same shape instead of leaving the map absent.
+                macros: raw_macros.into_iter().collect(),
                 // Source mode never synthesizes semantic-layer resources or unit
                 // tests — they're YAML-only resources the source parser doesn't
                 // scan. `semantic_models:` entries ARE scanned, but only to mark

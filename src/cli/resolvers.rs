@@ -312,6 +312,7 @@ mod tests {
     /// search treats the project dir itself as the root).
     fn resolved_at(dir: &std::path::Path) -> ResolvedSource {
         let manifest = dbtl::RawManifest {
+            unresolved_adjacent: Default::default(),
             metadata: Default::default(),
             nodes: HashMap::new(),
             sources: HashMap::new(),

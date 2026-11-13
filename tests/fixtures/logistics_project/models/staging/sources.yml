@@ -73,6 +73,18 @@ sources:
         config: {loaded_at_field: cleared_cfg_ts}
         freshness: null
         description: "Append-only feed"
+      # Macro-carried reads — each table below is consumed by exactly one
+      # model through a project macro (never a literal `source()` in the
+      # model's own SQL), so `unused_sources` must count them as used in
+      # both modes.
+      - name: ops_events
+        description: "Ops-side event feed"
+      - name: rate_cards
+        description: "Contracted carrier rate cards"
+      - name: sensor_pings
+        description: "Dock sensor heartbeat pings"
+      - name: dock_arrivals
+        description: "Dock door arrival feed"
   # A source-level `config.enabled: false` disables every table that does
   # not re-enable itself — `revived_rates` does, so it stays.
   # `database:` is declared so the value is deterministic: left undeclared

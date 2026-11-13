@@ -41,6 +41,7 @@ fn collapse_dag(kids: usize, leaf_parent: Option<&str>) -> Dag {
         edge(parent, "model.p.leaf");
     }
     Dag::build(&crate::RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes: node_map,
         sources: HashMap::new(),
@@ -414,6 +415,7 @@ fn nested_hub_app(threshold: usize) -> App {
         edge("model.p.m10", &d);
     }
     let dag = Dag::build(&crate::RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes: node_map,
         sources: HashMap::new(),
@@ -518,6 +520,7 @@ fn modal_yank_ascii_does_not_inherit_the_current_roots_keep_set() {
         edge("model.p.hub", &m);
     }
     let dag = Dag::build(&crate::RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes: node_map,
         sources: HashMap::new(),
@@ -702,6 +705,7 @@ fn pk_dag() -> Dag {
         },
     );
     Dag::build(&RawManifest {
+        unresolved_adjacent: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
