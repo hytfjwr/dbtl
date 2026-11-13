@@ -457,6 +457,12 @@
 code.nw {
   white-space: nowrap;
 }
+/* longer code CAN wrap — but a long token with no spaces or hyphens
+   (a rule id, a uid) has no break opportunity, so it needs an
+   emergency break to keep narrow screens from scrolling sideways */
+code:not(.nw) {
+  overflow-wrap: anywhere;
+}
 .pager {
   display: grid;
   grid-template-columns: 1fr 1fr;
