@@ -88,7 +88,9 @@ export async function initialState(): Promise<PgInitial> {
     return { ...base, built: false, reason: message(e).split("\n")[0]! };
   }
   try {
-    base.matched = engine.select(spec).nodes;
+    const sel = engine.select(spec);
+    base.matched = sel.nodes;
+    base.selectError = sel.warnings.map((w) => `warning: ${w}`).join("\n");
     base.lineage = engine.lineage({
       roots: base.matched.map((n) => n.unique_id),
       direction: "both",

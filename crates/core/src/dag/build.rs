@@ -40,7 +40,7 @@ impl Dag {
                     unique_id: unique_id.clone(),
                     name: node.name.clone(),
                     resource_type: node.resource_type.clone(),
-                    path: node.path.clone(),
+                    path: node.path.as_deref().map(super::convert::norm_seps),
                     materialized: node.config.materialized.clone(),
                     ..Default::default() // direct_up/down filled after pruning below
                 },

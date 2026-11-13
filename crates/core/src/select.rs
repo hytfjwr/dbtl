@@ -646,7 +646,13 @@ fn legacy_path_rewrite(dag: &Dag, uid: &str, pattern: &str) -> Option<String> {
         .detail(uid)
         .and_then(|d| d.original_file_path.as_deref());
     match ofp {
-        Some(ofp) if ofp.len() > np.len() && ofp.ends_with(np) => {
+        // Boundary-checked suffix: `mstaging/x.sql` must not suffix-match
+        // `staging/x.sql` — the prefix cut needs a `/` before `np`.
+        Some(ofp)
+            if ofp.len() > np.len()
+                && ofp.ends_with(np)
+                && ofp.as_bytes()[ofp.len() - np.len() - 1] == b'/' =>
+        {
             Some(format!("{}{}", &ofp[..ofp.len() - np.len()], pattern))
         }
         Some(ofp) => Some(ofp.to_string()),
@@ -1130,6 +1136,44 @@ mod tests {
                     .to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn windows_manifest_paths_normalize_to_slashes() {
+        // A manifest produced by `dbt compile` on Windows carries
+        // `\`-separated `path`/`original_file_path` — `Dag::build`
+        // normalizes both so `path:` selectors and the legacy `n.path`
+        // read see `/` separators like every other platform.
+        let nodes = HashMap::from([(
+            "model.p.mart".to_string(),
+            RawNode {
+                name: "mart".into(),
+                resource_type: "model".into(),
+                path: Some("marts\\mart.sql".into()),
+                original_file_path: Some("models\\marts\\mart.sql".into()),
+                ..Default::default()
+            },
+        )]);
+        let d = Dag::build(&RawManifest {
+            unresolved_adjacent: Default::default(),
+            metadata: Default::default(),
+            nodes,
+            sources: HashMap::new(),
+            exposures: HashMap::new(),
+            macros: HashMap::new(),
+            semantic_models: HashMap::new(),
+            metrics: HashMap::new(),
+            saved_queries: HashMap::new(),
+            unit_tests: HashMap::new(),
+            functions: HashMap::new(),
+            parent_map: HashMap::new(),
+            child_map: HashMap::new(),
+            docs: Default::default(),
+        });
+        let (set, notes) = select_report(&d, None, "path:models/marts");
+        assert_eq!(uids(&set), vec!["model.mart"]);
+        // The new semantics match — no legacy-compat note fires.
+        assert!(notes.is_empty());
     }
 
     #[test]

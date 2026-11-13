@@ -264,6 +264,9 @@ struct CheckRun<'a> {
     diff: Option<dbtl::DagDiff>,
     /// The `--select` uid set every gate intersects (`None` = whole run).
     selection: Option<BTreeSet<String>>,
+    /// Deprecation notes the `--select` evaluation emitted — merged with
+    /// the lint assembly's so a shared spec warns once.
+    select_notes: Vec<String>,
 }
 
 impl CheckRun<'_> {
@@ -638,10 +641,18 @@ impl CheckRun<'_> {
                 selection: self.selection.as_ref(),
                 read_text,
             });
-            // `exclude:`/selector-param deprecation notes — one line each.
-            warn_each("", &assembly.warnings);
+            // `exclude:`/selector-param deprecation notes plus the
+            // `--select` notes — deduplicated: a spec shared between the
+            // two channels warns once.
+            let mut notes: BTreeSet<String> = self.select_notes.iter().cloned().collect();
+            notes.extend(assembly.warnings.iter().cloned());
+            warn_each("", &notes.into_iter().collect::<Vec<_>>());
             gates.extend(assembly.gates);
             report.lint = Some(assembly.tally);
+        } else {
+            // No lint stage — the `--select` notes still print here rather
+            // than never.
+            warn_each("", &self.select_notes);
         }
         Ok(())
     }
@@ -733,11 +744,12 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
     // it. `docs_drift` deliberately ignores it — a docs freshness
     // comparison is whole-set by definition. An empty match warns and
     // runs on (a gate on zero nodes passes).
+    let mut select_notes: Vec<String> = Vec::new();
     let selection = if args.select.is_empty() {
         None
     } else {
         let (sel, notes) = selector_set_report(dag, diff.as_ref(), args.select);
-        warn_each("", &notes);
+        select_notes = notes;
         if sel.is_empty() {
             eprintln!(
                 "warning: --select '{}' matched no nodes",
@@ -766,6 +778,7 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
         base_ctx,
         diff,
         selection,
+        select_notes,
     };
     run.coverage_gates(&mut gates);
     run.diff_gates(&mut gates, &mut report);
