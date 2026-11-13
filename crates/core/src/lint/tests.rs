@@ -5156,6 +5156,310 @@ fn fill_finding_lines_with_matches_the_disk_wrapper() {
     );
 }
 
+#[test]
+fn fill_finding_lines_scopes_same_names_to_their_sections() {
+    // A source table and a model both named `orders`: the model finding
+    // resolves inside `models:` — its own `- name:` — never the source
+    // table's same-named entry, and the source finding descends
+    // `sources:` → `tables:` to the table's line.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    //      4   - name: raw           8
+    //      5     tables:            9 models:
+    //      6       - name: orders  10   - name: orders
+    //      7       - name: customers
+    std::fs::write(
+        dir.path().join("models/schema.yml"),
+        "version: 2\n\nsources:\n  - name: raw\n    tables:\n      - name: orders\n      - name: customers\n\nmodels:\n  - name: orders\n",
+    )
+    .unwrap();
+    let model = filed_model("orders", "models/orders.sql", Some("models/schema.yml"));
+    let mut src = source("raw.orders");
+    src.1.original_file_path = Some("models/schema.yml".into());
+    let m = manifest(vec![model], vec![src], &[]);
+    let dag = Dag::build(&m);
+    let mut f = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    fill_finding_lines(&mut f, &dag, dir.path());
+    let line = |rule, uid| {
+        f.iter()
+            .find(|x| x.rule == rule && x.node_uid == uid)
+            .and_then(|x| x.location.as_ref().and_then(|l| l.line))
+    };
+    assert_eq!(
+        line(LintRule::UndocumentedModels, "model.p.orders"),
+        Some(10),
+        "the model's own `- name:` under `models:` — not the table's"
+    );
+    assert_eq!(
+        line(LintRule::MissingPrimaryKeyTests, "model.p.orders"),
+        Some(10)
+    );
+    assert_eq!(
+        line(LintRule::UnusedSources, "source.p.raw.orders"),
+        Some(6),
+        "the source finding descends sources → tables → the table"
+    );
+}
+
+#[test]
+fn fill_finding_lines_a_column_named_like_a_model_stays_a_column() {
+    // `stg_x` is a COLUMN of `orders` and a MODEL in its own right; a
+    // source table shares the model's name too. The column finding
+    // descends orders → columns → stg_x, and the `stg_x` model finding
+    // lands on its own `models:` entry — the column above it can't
+    // answer for it.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    //      4   - name: raw            9   - name: orders
+    //      5     tables:             10     columns:
+    //      6       - name: orders    11       - name: stg_x
+    //      7                         12   - name: stg_x
+    //      8 models:
+    std::fs::write(
+        dir.path().join("models/schema.yml"),
+        "version: 2\n\nsources:\n  - name: raw\n    tables:\n      - name: orders\n\nmodels:\n  - name: orders\n    columns:\n      - name: stg_x\n  - name: stg_x\n",
+    )
+    .unwrap();
+    let mut orders = filed_model("orders", "models/orders.sql", Some("models/schema.yml"));
+    orders.1.columns =
+        serde_json::Map::from_iter([("stg_x".to_string(), serde_json::json!({"name": "stg_x"}))]);
+    let stg_x = filed_model("stg_x", "models/stg_x.sql", Some("models/schema.yml"));
+    let m = manifest(vec![orders, stg_x], vec![], &[]);
+    let dag = Dag::build(&m);
+    let mut f = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    fill_finding_lines(&mut f, &dag, dir.path());
+    let line = |rule, uid| {
+        f.iter()
+            .find(|x| x.rule == rule && x.node_uid == uid)
+            .and_then(|x| x.location.as_ref().and_then(|l| l.line))
+    };
+    assert_eq!(
+        line(LintRule::UndocumentedModels, "model.p.orders"),
+        Some(9),
+        "the model entry — not the source table's same-named one"
+    );
+    assert_eq!(
+        line(LintRule::UndocumentedColumns, "model.p.orders"),
+        Some(11),
+        "the column's `- name:` inside orders' `columns:`"
+    );
+    assert_eq!(
+        line(LintRule::UndocumentedModels, "model.p.stg_x"),
+        Some(12),
+        "the `stg_x` MODEL — the column above it is another list's entry"
+    );
+}
+
+#[test]
+fn fill_finding_lines_a_versioned_model_resolves_past_versions() {
+    // `versions:` items are `- v:` lines — no `- name:` to land on — so
+    // the model finding answers on the model's own entry, and a column
+    // declared under a version's `columns:` resolves on its line.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    //      4   - name: fct_orders    6       - v: 1
+    //      5     versions:           7       - v: 2
+    //                                 8         columns:
+    //                                 9           - name: id
+    std::fs::write(
+        dir.path().join("models/schema.yml"),
+        "version: 2\n\nmodels:\n  - name: fct_orders\n    versions:\n      - v: 1\n      - v: 2\n        columns:\n          - name: id\n",
+    )
+    .unwrap();
+    let mut m = filed_model(
+        "fct_orders",
+        "models/fct_orders.sql",
+        Some("models/schema.yml"),
+    );
+    m.1.columns =
+        serde_json::Map::from_iter([("id".to_string(), serde_json::json!({"name": "id"}))]);
+    let m = manifest(vec![m], vec![], &[]);
+    let dag = Dag::build(&m);
+    let mut f = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    fill_finding_lines(&mut f, &dag, dir.path());
+    let line = |rule| {
+        f.iter()
+            .find(|x| x.rule == rule && x.node_uid == "model.p.fct_orders")
+            .and_then(|x| x.location.as_ref().and_then(|l| l.line))
+    };
+    assert_eq!(
+        line(LintRule::MissingPrimaryKeyTests),
+        Some(4),
+        "the model's own `- name:` — `versions:` is navigated through"
+    );
+    assert_eq!(
+        line(LintRule::UndocumentedColumns),
+        Some(9),
+        "the column under a version's `columns:` still resolves"
+    );
+}
+
+#[test]
+fn yaml_name_line_skips_block_scalar_bodies() {
+    // `description: |` bodies are text, not structure: a `- name:`
+    // inside one is no declaration — the real `ghost` model wins the
+    // lookup, and `a`'s block holds only `id`.
+    //     1 models:                  5     columns:
+    //     2   - name: a              6       - name: id
+    //     3     description: |       7   - name: ghost
+    //     4       - name: ghost
+    let yml = "models:\n  - name: a\n    description: |\n      - name: ghost\n    columns:\n      - name: id\n  - name: ghost\n";
+    assert_eq!(yaml_name_line(yml, &names(&["ghost"])), Some(7));
+    assert_eq!(
+        yaml_name_line(yml, &names(&["a", "ghost"])),
+        None,
+        "the scalar-body `- name:` isn't a declaration"
+    );
+    assert_eq!(yaml_name_line(yml, &names(&["a", "id"])), Some(6));
+}
+
+#[test]
+fn fill_finding_lines_quoted_section_keys_still_resolve() {
+    // `"models":` declares `models` like a bare `models:` — the
+    // section lookup answers inside it, and a `"columns"` list key
+    // resolves the same way.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    //      3 "models":            6   'columns':
+    //      4   - name: orders     7     - name: id
+    //      5     description: ok
+    std::fs::write(
+        dir.path().join("models/schema.yml"),
+        "version: 2\n\n\"models\":\n  - name: orders\n    description: ok\n    'columns':\n      - name: id\n",
+    )
+    .unwrap();
+    let mut m = filed_model("orders", "models/orders.sql", Some("models/schema.yml"));
+    m.1.columns =
+        serde_json::Map::from_iter([("id".to_string(), serde_json::json!({"name": "id"}))]);
+    let m = manifest(vec![m], vec![], &[]);
+    let dag = Dag::build(&m);
+    let mut f = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    fill_finding_lines(&mut f, &dag, dir.path());
+    let line = |rule| {
+        f.iter()
+            .find(|x| x.rule == rule && x.node_uid == "model.p.orders")
+            .and_then(|x| x.location.as_ref().and_then(|l| l.line))
+    };
+    assert_eq!(line(LintRule::MissingPrimaryKeyTests), Some(4));
+    assert_eq!(line(LintRule::UndocumentedColumns), Some(7));
+}
+
+#[test]
+fn fill_finding_lines_descends_into_anchored_list_keys() {
+    // `columns: &c` anchors the block the deeper lines carry — the
+    // column entry still belongs to the model's `columns:` list and
+    // resolves on its own `- name:` line.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    //      3 models:              6     columns: &c
+    //      4   - name: orders     7       - name: id
+    //      5     description: ok
+    std::fs::write(
+        dir.path().join("models/schema.yml"),
+        "version: 2\n\nmodels:\n  - name: orders\n    description: ok\n    columns: &c\n      - name: id\n",
+    )
+    .unwrap();
+    let mut m = filed_model("orders", "models/orders.sql", Some("models/schema.yml"));
+    m.1.columns =
+        serde_json::Map::from_iter([("id".to_string(), serde_json::json!({"name": "id"}))]);
+    let m = manifest(vec![m], vec![], &[]);
+    let dag = Dag::build(&m);
+    let mut f = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    fill_finding_lines(&mut f, &dag, dir.path());
+    let line = |rule| {
+        f.iter()
+            .find(|x| x.rule == rule && x.node_uid == "model.p.orders")
+            .and_then(|x| x.location.as_ref().and_then(|l| l.line))
+    };
+    assert_eq!(
+        line(LintRule::UndocumentedColumns),
+        Some(7),
+        "the column under an anchored `columns:` list still resolves"
+    );
+}
+
+#[test]
+fn fill_finding_lines_crlf_files_index_the_same() {
+    // CRLF endings: the index counts lines, not bytes — the same model
+    // resolves on the same line with `\r\n` separators.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    std::fs::write(
+        dir.path().join("models/schema.yml"),
+        "version: 2\r\n\r\nmodels:\r\n  - name: orders\r\n    columns:\r\n      - name: id\r\n",
+    )
+    .unwrap();
+    let mut m = filed_model("orders", "models/orders.sql", Some("models/schema.yml"));
+    m.1.columns =
+        serde_json::Map::from_iter([("id".to_string(), serde_json::json!({"name": "id"}))]);
+    let m = manifest(vec![m], vec![], &[]);
+    let dag = Dag::build(&m);
+    let mut f = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    fill_finding_lines(&mut f, &dag, dir.path());
+    let line = |rule| {
+        f.iter()
+            .find(|x| x.rule == rule && x.node_uid == "model.p.orders")
+            .and_then(|x| x.location.as_ref().and_then(|l| l.line))
+    };
+    assert_eq!(line(LintRule::MissingPrimaryKeyTests), Some(4));
+    assert_eq!(line(LintRule::UndocumentedColumns), Some(6));
+}
+
+#[test]
+fn yaml_name_line_skips_folded_scalar_bodies() {
+    // `description: >` folds like `|` — a `- name:` line inside its
+    // body is text, not a declaration.
+    //     1 models:                  5     columns:
+    //     2   - name: a              6       - name: id
+    //     3     description: >       7   - name: ghost
+    //     4       - name: ghost
+    let yml = "models:\n  - name: a\n    description: >\n      - name: ghost\n    columns:\n      - name: id\n  - name: ghost\n";
+    assert_eq!(yaml_name_line(yml, &names(&["ghost"])), Some(7));
+    assert_eq!(
+        yaml_name_line(yml, &names(&["a", "ghost"])),
+        None,
+        "the folded-scalar `- name:` isn't a declaration"
+    );
+    assert_eq!(yaml_name_line(yml, &names(&["a", "id"])), Some(6));
+}
+
+#[test]
+fn fill_finding_lines_with_reads_each_file_once() {
+    // However many findings land in one yml, `read_text` resolves it —
+    // and its `- name:` index is built — exactly once.
+    let schema = "models:\n  - name: a\n  - name: b\n  - name: c\n  - name: d\n";
+    let m = manifest(
+        vec![
+            filed_model("a", "models/a.sql", Some("models/schema.yml")),
+            filed_model("b", "models/b.sql", Some("models/schema.yml")),
+            filed_model("c", "models/c.sql", Some("models/schema.yml")),
+            filed_model("d", "models/d.sql", Some("models/schema.yml")),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let mut f = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    let calls = std::cell::Cell::new(0);
+    fill_finding_lines_with(&mut f, &dag, &|file| {
+        calls.set(calls.get() + 1);
+        (file == "models/schema.yml").then(|| schema.to_string())
+    });
+    assert_eq!(
+        calls.get(),
+        1,
+        "four findings in one file — one read, one index"
+    );
+    assert_eq!(
+        f.iter()
+            .filter(|x| x.rule == LintRule::UndocumentedModels
+                && x.location.as_ref().and_then(|l| l.line).is_some())
+            .count(),
+        4,
+        "every finding still resolved its line"
+    );
+}
+
 /// A catalog literal the `Rc`-carrying resolver and the lint input share.
 fn catalog_json(json: &str) -> Rc<Catalog> {
     Rc::new(Catalog::from_json(json).unwrap())
