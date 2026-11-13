@@ -5313,6 +5313,37 @@ fn yaml_name_line_skips_block_scalar_bodies() {
 }
 
 #[test]
+fn fill_finding_lines_quoted_section_keys_still_resolve() {
+    // `"models":` declares `models` like a bare `models:` — the
+    // section lookup answers inside it, and a `"columns"` list key
+    // resolves the same way.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    //      3 "models":            6   'columns':
+    //      4   - name: orders     7     - name: id
+    //      5     description: ok
+    std::fs::write(
+        dir.path().join("models/schema.yml"),
+        "version: 2\n\n\"models\":\n  - name: orders\n    description: ok\n    'columns':\n      - name: id\n",
+    )
+    .unwrap();
+    let mut m = filed_model("orders", "models/orders.sql", Some("models/schema.yml"));
+    m.1.columns =
+        serde_json::Map::from_iter([("id".to_string(), serde_json::json!({"name": "id"}))]);
+    let m = manifest(vec![m], vec![], &[]);
+    let dag = Dag::build(&m);
+    let mut f = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    fill_finding_lines(&mut f, &dag, dir.path());
+    let line = |rule| {
+        f.iter()
+            .find(|x| x.rule == rule && x.node_uid == "model.p.orders")
+            .and_then(|x| x.location.as_ref().and_then(|l| l.line))
+    };
+    assert_eq!(line(LintRule::MissingPrimaryKeyTests), Some(4));
+    assert_eq!(line(LintRule::UndocumentedColumns), Some(7));
+}
+
+#[test]
 fn fill_finding_lines_with_reads_each_file_once() {
     // However many findings land in one yml, `read_text` resolves it —
     // and its `- name:` index is built — exactly once.

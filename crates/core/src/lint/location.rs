@@ -226,9 +226,20 @@ enum KeyTail {
 
 /// `key: <tail>` where `key` is a bare word (the shape dbt properties
 /// keys take: `models`, `tables`, `columns`, `config`, `+meta`, …) —
-/// quoted or flow-prefixed keys simply don't parse and stay plain lines.
+/// a quoted key answers with its unquoted name (`"models":` declares
+/// `models` exactly like `models:`), while flow-prefixed keys simply
+/// don't parse and stay plain lines.
 fn key_tail(trimmed: &str) -> Option<(String, KeyTail)> {
     let (key, rest) = trimmed.split_once(':')?;
+    let key = key.trim_end();
+    let key = if key.len() >= 2
+        && ((key.starts_with('"') && key.ends_with('"'))
+            || (key.starts_with('\'') && key.ends_with('\'')))
+    {
+        &key[1..key.len() - 1]
+    } else {
+        key
+    };
     if key.is_empty()
         || key.starts_with('-')
         || !key
@@ -464,8 +475,8 @@ impl YamlIndex {
 /// `models`/`seeds`/`snapshots`/`exposures`/`sources`/`metrics`/… — and
 /// `steps` the `(list_key, name)` pairs to descend, each entry required
 /// to sit directly inside that list (`sources` → `tables` → `columns`,
-/// `models` → `columns`, `versions`-housed `columns` land on the model
-/// itself since `- v:` items are no `- name:`).
+/// `models` → `columns`, `versions`-housed `columns` answer as the
+/// model's children since `- v:` items are no `- name:`).
 struct YamlLookup {
     section: String,
     steps: Vec<(String, String)>,
