@@ -272,7 +272,7 @@ pub enum Commands {
         /// project-local `.dbtl.yml`. With --diff, only violations that did
         /// not exist in the baseline gate. Findings suppress per rule via
         /// `.dbtl.yml`'s `lint.rules.<id>.exclude` (dbt-selector specs) and
-        /// per node via `meta.dbtl.ignore` (rule ids, or `all`).
+        /// per node via `meta.dbtl.ignore` (rule ids, `all`, or a {rule-id|all: reason} map).
         #[arg(long)]
         lint: bool,
         /// Fail when the diff carries BREAKING column changes that
@@ -355,10 +355,10 @@ pub enum Commands {
         /// List the lint findings `lint.rules.<id>.exclude` and
         /// `meta.dbtl.ignore` suppressed: `text`/`concise` mark each
         /// `suppressed` and name the mechanism + reason, `json` adds the
-        /// finding's `suppressed`/`suppression` fields. The `sarif`,
-        /// `junit`, and `codeclimate` formats never emit them, and
-        /// suppressed findings never gate — the flag changes visibility
-        /// only.
+        /// finding's `suppressed`/`suppression` fields. The machine-facing
+        /// formats (`sarif`, `junit`, `codeclimate`, `github`, `markdown`)
+        /// never emit them, and suppressed findings never gate — the flag
+        /// changes visibility only.
         #[arg(long)]
         show_suppressed: bool,
         /// Suppress the per-check report on stdout; only the exit code matters.
@@ -458,10 +458,10 @@ pub enum Commands {
         /// List the findings `lint.rules.<id>.exclude` and
         /// `meta.dbtl.ignore` suppressed: `text`/`concise` mark each
         /// `suppressed` and name the mechanism + reason, `json` adds the
-        /// finding's `suppressed`/`suppression` fields. The `sarif`,
-        /// `junit`, and `codeclimate` formats never emit them, and
-        /// suppressed findings never gate — the flag changes visibility
-        /// only. Cannot combine with `--write-baseline`/`--list-rules`/
+        /// finding's `suppressed`/`suppression` fields. The machine-facing
+        /// formats (`sarif`, `junit`, `codeclimate`, `github`, `markdown`)
+        /// never emit them, and suppressed findings never gate — the flag
+        /// changes visibility only. Cannot combine with `--write-baseline`/`--list-rules`/
         /// `--explain` (they never evaluate findings).
         #[arg(long,
                conflicts_with_all = ["write_baseline", "list_rules", "explain"])]

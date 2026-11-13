@@ -532,6 +532,10 @@ fn meta_ignore(dbtl: &serde_json::Value) -> MetaIgnore {
             }
             MetaIgnore::List(list)
         }
+        // An empty map suppresses nothing — classify it as malformed so
+        // `meta_dbtl_warnings` still says the intended suppression does
+        // nothing, like every other unrecognized shape.
+        serde_json::Value::Object(entries) if entries.is_empty() => MetaIgnore::Malformed,
         serde_json::Value::Object(entries) => {
             for value in entries.values() {
                 if !matches!(
@@ -556,7 +560,9 @@ fn meta_dbtl(dag: &Dag, node_uid: &str) -> Option<(MetaIgnore, Option<String>)> 
     let raw = dag.detail(node_uid)?.meta.get("dbtl")?;
     let v = serde_json::from_str::<serde_json::Value>(raw).ok()?;
     let reason = v.get("reason").and_then(|r| match r {
-        serde_json::Value::String(s) => Some(s.clone()),
+        // An empty reason reads as none — a bare `suppressed:` marker with
+        // a dangling dash is worse than no reason at all.
+        serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
         // A scalar `reason:` stringifies like every other meta value.
         serde_json::Value::Number(_) | serde_json::Value::Bool(_) => Some(r.to_string()),
         _ => None,
@@ -582,7 +588,13 @@ fn meta_suppression(dag: &Dag, node_uid: &str, rule: LintRule) -> Option<Option<
             // A rule-named key wins over `all` — the specific record is the
             // more precise reason. `~` values fall back to `meta.dbtl.reason`.
             let entry = entries.get(rule.name()).or_else(|| entries.get("all"))?;
-            Some(entry.as_str().map(str::to_string).or(fallback))
+            Some(
+                entry
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .or(fallback),
+            )
         }
         MetaIgnore::Absent | MetaIgnore::Malformed => None,
     }
@@ -655,6 +667,22 @@ pub(crate) fn meta_dbtl_warnings(manifest: &crate::RawManifest) -> Vec<String> {
                 }
             }
             MetaIgnore::Absent | MetaIgnore::All => {}
+        }
+        // `meta.dbtl.reason` is the fallback every map-`~`/list
+        // suppression reads — a map/list value drops silently in
+        // `meta_dbtl`, so say so here like a malformed `ignore`.
+        if let Some(r) = dbtl.get("reason") {
+            if !matches!(
+                r,
+                serde_json::Value::String(_)
+                    | serde_json::Value::Number(_)
+                    | serde_json::Value::Bool(_)
+                    | serde_json::Value::Null
+            ) {
+                warnings.push(format!(
+                    "{uid}: meta.dbtl.reason must be a string or number/bool scalar"
+                ));
+            }
         }
     }
     warnings.sort();

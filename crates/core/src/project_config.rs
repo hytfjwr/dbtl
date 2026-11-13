@@ -862,7 +862,10 @@ fn parse_exclude(name: &str, value: &serde_norway::Value) -> Result<Vec<ExcludeS
                                     )
                                         })?
                                         .to_string(),
-                                ),
+                                )
+                                // An empty reason reads as none — same as
+                                // `meta.dbtl` reason normalization.
+                                .filter(|s| !s.is_empty()),
                             };
                         }
                         _ => {

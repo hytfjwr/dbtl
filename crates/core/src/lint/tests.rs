@@ -2216,6 +2216,66 @@ fn meta_dbtl_ignore_map_warns_on_unknown_ids_and_bad_values() {
         .contains(&"model.p.stg_bad"),
         "a malformed map value suppresses nothing"
     );
+    // An empty `ignore: {}` map is malformed — it suppresses nothing and
+    // warns like every other unrecognized shape.
+    let m = manifest(
+        vec![mk("stg_empty", serde_json::json!({"dbtl": {"ignore": {}}}))],
+        vec![],
+        &[],
+    );
+    let (_dag, warnings) = crate::dag_from_manifest(&m);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.starts_with("model.p.stg_empty:") && w.contains("meta.dbtl.ignore")),
+        "empty ignore map warns: {warnings:?}"
+    );
+}
+
+#[test]
+fn meta_dbtl_reason_non_scalar_warns() {
+    // A map/list `meta.dbtl.reason` drops silently in `meta_dbtl` — warn
+    // at load like a malformed `ignore`, and an empty string reads as no
+    // reason at all (never a dangling `suppressed:` marker).
+    let mk = |name: &str, meta: serde_json::Value| {
+        (
+            format!("model.p.{name}"),
+            RawNode {
+                name: name.into(),
+                resource_type: "model".into(),
+                path: Some(format!("staging/{name}.sql")),
+                meta: meta.as_object().cloned().unwrap_or_default(),
+                ..Default::default()
+            },
+        )
+    };
+    let m = manifest(
+        vec![
+            mk(
+                "stg_badreason",
+                serde_json::json!({"dbtl": {"ignore": "all", "reason": {"ticket": 1}}}),
+            ),
+            mk(
+                "stg_emptyreason",
+                serde_json::json!({"dbtl": {"ignore": "all", "reason": ""}}),
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    let (_dag, warnings) = crate::dag_from_manifest(&m);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.starts_with("model.p.stg_badreason:") && w.contains("meta.dbtl.reason")),
+        "non-scalar reason warns: {warnings:?}"
+    );
+    let suppressed = suppressed_of(&m, &LintConfig::default());
+    assert_eq!(
+        suppressed.get(&("model.p.stg_emptyreason".to_string(), LintRule::RootModels)),
+        Some(&(SuppressionSource::Meta, None)),
+        "an empty reason reads as none"
+    );
 }
 
 #[test]

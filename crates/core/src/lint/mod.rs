@@ -301,7 +301,9 @@ pub enum SuppressionSource {
 pub struct Suppression {
     /// The suppressing mechanism.
     pub by: SuppressionSource,
-    /// The recorded reason.
+    /// The recorded reason — omitted from the wire when absent, like the
+    /// rest of the finding's optional fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 

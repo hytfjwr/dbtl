@@ -103,6 +103,8 @@ export interface LintOptions {
   /** A dbt selector narrowing findings to matched nodes. */
   selector?: string | null;
   fail_on?: FailOn | null;
+  /** List suppressed findings in the lint output (`dbtl --show-suppressed`). */
+  show_suppressed?: boolean | null;
   // There is no baseline input: the run always behaves like `dbtl lint
   // --no-baseline` — a baseline freezes findings from a real checkout,
   // and the engine has no filesystem to read one from.
