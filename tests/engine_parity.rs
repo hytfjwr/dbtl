@@ -668,6 +668,71 @@ fn package_scope_matches_the_cli() {
     }
 }
 
+// ---- versioned models: the real dbt `versions:` wire shape -------------------
+
+/// An engine loaded with the real-dbt `versions:` fixture — `v: 1`/`v: 2`
+/// encode `version` as a JSON NUMBER (the parse the engine previously
+/// rejected), `v: beta` as a string.
+fn versioned_engine() -> Engine {
+    let (engine, _) = Engine::load(&LoadInput {
+        manifest: std::fs::read_to_string(fixture_path("versioned_manifest.json")).unwrap(),
+        ..LoadInput::default()
+    })
+    .expect("versioned fixture loads");
+    engine
+}
+
+#[test]
+fn versioned_select_and_columns_match_the_cli() {
+    let manifest = fixture_path("versioned_manifest.json");
+    let engine = versioned_engine();
+
+    // `name.vseg` picks one version; the bare name takes the whole family —
+    // the same sets `ls --output uids` prints, in order.
+    for spec in [
+        "fct_orders.v1",
+        "fct_orders",
+        "fct_orders.v*",
+        "fct_orders.v2+",
+    ] {
+        assert_selector_parity(&manifest, &engine, spec);
+    }
+
+    // A versioned column target resolves like the CLI's — both paths share
+    // `list_name` matching, so `fct_orders.v2.id` lands on v2 alone.
+    assert_columns_parity(&manifest, &engine, "fct_orders.v2.id", true);
+
+    // And the bare family name is the same ambiguity bail on both sides.
+    let cli = run(&[
+        "columns",
+        "--manifest",
+        manifest.to_str().unwrap(),
+        "fct_orders.id",
+    ]);
+    let err = engine
+        .columns(&ColumnsInput {
+            target: "fct_orders.id".to_string(),
+            upstream: false,
+        })
+        .expect_err("an ambiguous family name errors");
+    assert_eq!(cli.status.code(), Some(2));
+    assert_eq!(stderr(&cli).trim(), format!("error: {err}"));
+    assert!(err.message.contains("is ambiguous"), "message: {err}");
+}
+
+#[test]
+fn versioned_lint_matches_the_cli() {
+    // The folded-family fanout counts and version-qualified finding names
+    // must agree byte-for-byte with the CLI's report.
+    let engine = versioned_engine();
+    assert_lint_parity(
+        &fixture_path("versioned_manifest.json"),
+        &engine,
+        &LintOptions::default(),
+        &[],
+    );
+}
+
 /// Two kept nodes sharing a name make the `<model>` segment ambiguous —
 /// the same `pass the unique_id` bail the CLI reports.
 #[test]

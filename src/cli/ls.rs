@@ -58,14 +58,19 @@ pub fn run_ls(
     match output {
         LsFormat::Names => {
             // (name, unique_id) rows — same-name nodes both print, in a
-            // deterministic order.
-            let mut rows: Vec<(&str, &str)> = selected
+            // deterministic order. A versioned model shows its `name.vseg`
+            // (`list_name` — the spelling lint/TUI/docs share) so the
+            // versions never read as identical rows.
+            let mut rows: Vec<(String, &str)> = selected
                 .iter()
-                .filter_map(|uid| dag.get(uid).map(|n| (n.name.as_str(), uid.as_str())))
+                .filter_map(|uid| {
+                    dag.get(uid)
+                        .map(|n| (dbtl::list_name(uid, &n.name), uid.as_str()))
+                })
                 .collect();
             rows.sort();
             for (name, _) in rows {
-                out.push_str(name);
+                out.push_str(&name);
                 out.push('\n');
             }
         }
@@ -77,12 +82,15 @@ pub fn run_ls(
         }
         LsFormat::Selector => {
             // Paste-ready for `dbt build --select`: buildable resources
-            // only, deduplicated, sorted.
-            let names: BTreeSet<&str> = selected
+            // only, deduplicated, sorted. A versioned model emits its
+            // `name.vseg` (dbt selects `fct_orders.v1` to that one
+            // version) so the output round-trips the exact selection —
+            // the bare name would re-select every version.
+            let names: BTreeSet<String> = selected
                 .iter()
                 .filter_map(|uid| dag.get(uid))
                 .filter(|n| matches!(n.resource_type.as_str(), "model" | "seed" | "snapshot"))
-                .map(|n| n.name.as_str())
+                .map(|n| dbtl::list_name(&n.unique_id, &n.name))
                 .collect();
             if !names.is_empty() {
                 out.push_str(&names.into_iter().collect::<Vec<_>>().join(" "));

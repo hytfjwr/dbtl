@@ -352,10 +352,20 @@ impl SqlParseResolver {
         f: &Function,
     ) -> Option<ColSources> {
         let mut s = ColSources::new();
+        let fname = object_name_parts(&f.name)
+            .last()
+            .cloned()
+            .unwrap_or_default();
         for args in [&f.parameters, &f.args] {
             match args {
                 FunctionArguments::List(l) => {
-                    for a in &l.args {
+                    for (i, a) in l.args.iter().enumerate() {
+                        // `dateadd(day, 1, d)`'s `day` — a bare unit word
+                        // at a documented date-part slot is the keyword,
+                        // never a column reference.
+                        if date_part_arg_position(&fname, i, self.dialect) && is_date_part_arg(a) {
+                            continue;
+                        }
                         s.extend(self.function_arg_refs(ctx, refs, a)?);
                     }
                     for c in &l.clauses {
@@ -619,13 +629,14 @@ impl SqlParseResolver {
         scope: &Scope<'_>,
         col: &str,
     ) -> ColSources {
-        // Collect per-level (known hits, unknown uids), innermost first —
-        // and every KNOWN-list parent the ref was checked against.
-        let mut levels: Vec<(ColSources, BTreeSet<String>)> = Vec::new();
+        // Collect per-level (known hits, resolved?, unknown uids), innermost
+        // first — and every KNOWN-list parent the ref was checked against.
+        let mut levels: Vec<(ColSources, bool, BTreeSet<String>)> = Vec::new();
         let mut checked: BTreeSet<String> = BTreeSet::new();
         let mut sc = Some(scope);
         while let Some(s) = sc {
             let mut found = ColSources::new();
+            let mut resolved = false;
             let mut unknown = BTreeSet::new();
             for b in &s.bindings {
                 match &b.src {
@@ -648,16 +659,22 @@ impl SqlParseResolver {
                     },
                     TableSrc::Derived(q) => {
                         if let Some(o) = q.out.iter().find(|o| o.name == *col) {
+                            // A matched output resolves the name even when
+                            // it carries no sources (a literal-derived or
+                            // set-derived column): the name is bound, just
+                            // lineage-free — an outer `col` stays shadowed.
+                            resolved = true;
                             found.extend(o.sources.iter().cloned());
                         }
                     }
                     TableSrc::External => {}
                 }
             }
-            levels.push((found, unknown));
+            resolved |= !found.is_empty();
+            levels.push((found, resolved, unknown));
             sc = s.outer;
         }
-        match levels.iter().position(|(found, _)| !found.is_empty()) {
+        match levels.iter().position(|(_, resolved, _)| *resolved) {
             Some(k) => {
                 let mut result = levels[k].0.clone();
                 // Unknowns OUTER of the outermost known level still can't be
@@ -665,9 +682,9 @@ impl SqlParseResolver {
                 // resolving level is settled.
                 let m = levels
                     .iter()
-                    .rposition(|(found, _)| !found.is_empty())
+                    .rposition(|(_, resolved, _)| *resolved)
                     .unwrap_or(k);
-                for (_, unknown) in &levels[m + 1..] {
+                for (_, _, unknown) in &levels[m + 1..] {
                     for uid in unknown {
                         result.insert((uid.clone(), col.to_string()));
                     }
@@ -677,7 +694,7 @@ impl SqlParseResolver {
             // Nothing provable anywhere → every unknown stays a candidate.
             None => {
                 let mut result = ColSources::new();
-                for (_, unknown) in &levels {
+                for (_, _, unknown) in &levels {
                     for uid in unknown {
                         result.insert((uid.clone(), col.to_string()));
                     }

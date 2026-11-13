@@ -11,7 +11,8 @@ use super::report::{ImpactOpts, PrImpact};
 use crate::dag::testable;
 use crate::layer::{first_dir, layer_rank, VIOLATION_LAYERS};
 use crate::{
-    coverage_gap, in_package, is_exposure, ColumnChangeClass, Dag, DagDiff, ExposureInfo, NodeInfo,
+    coverage_gap, in_package, is_exposure, list_name, ColumnChangeClass, Dag, DagDiff,
+    ExposureInfo, NodeInfo,
 };
 
 /// The PR Impact Pack over the changed set of a [`DagDiff`]: blast radius,
@@ -83,7 +84,7 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, opts: &ImpactOpt
         } else if n.resource_type == "model" {
             affected_models += 1;
             if first_dir(n) == Some("marts") {
-                affected_marts.push(n.name.clone());
+                affected_marts.push(list_name(&n.unique_id, &n.name));
             }
             // The affected-owner set collects the SAME model population
             // `affected_models` counts — downstream models only, the changed
@@ -111,7 +112,7 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, opts: &ImpactOpt
     } else {
         let mut names: Vec<String> = changed
             .iter()
-            .filter_map(|uid| dag.get(uid).map(|n| n.name.clone()))
+            .filter_map(|uid| dag.get(uid).map(|n| list_name(&n.unique_id, &n.name)))
             .collect();
         names.sort();
         names.dedup();
@@ -165,9 +166,9 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, opts: &ImpactOpt
             .filter_map(|uid| {
                 dag.get(uid).map(|n| {
                     if column_accounted(uid) {
-                        n.name.clone()
+                        list_name(&n.unique_id, &n.name)
                     } else {
-                        format!("{}+", n.name)
+                        format!("{}+", list_name(&n.unique_id, &n.name))
                     }
                 })
             })
@@ -186,7 +187,7 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, opts: &ImpactOpt
         .iter()
         .filter_map(|uid| dag.get(uid))
         .filter(|n| in_scope(n) && coverage_gap(n))
-        .map(|n| n.name.clone())
+        .map(|n| list_name(&n.unique_id, &n.name))
         .collect();
     untested_changes.sort();
 
@@ -206,7 +207,7 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, opts: &ImpactOpt
                 .then(|| {
                     dag.get(uid)
                         .filter(|n| in_scope(n))
-                        .map(|n| (n.name.clone(), down))
+                        .map(|n| (list_name(&n.unique_id, &n.name), down))
                 })
                 .flatten()
         })
@@ -227,8 +228,12 @@ pub fn pr_impact(dag: &Dag, base: Option<&Dag>, diff: &DagDiff, opts: &ImpactOpt
         // re-report a staging-side violation whose child is out of scope.
         .filter(|(_, c)| opts.selection.is_none_or(|s| s.contains(c)))
         .map(|(p, c)| {
-            let parent_name = dag.get(p).map_or_else(|| p.clone(), |n| n.name.clone());
-            let child_name = dag.get(c).map_or_else(|| c.clone(), |n| n.name.clone());
+            let parent_name = dag
+                .get(p)
+                .map_or_else(|| p.clone(), |n| list_name(&n.unique_id, &n.name));
+            let child_name = dag
+                .get(c)
+                .map_or_else(|| c.clone(), |n| list_name(&n.unique_id, &n.name));
             (parent_name, child_name)
         })
         .collect();

@@ -112,7 +112,10 @@ pub(super) fn select_star(
             LintRule::SelectStar,
             (*uid).clone(),
             vec![],
-            format!("{}'s final SELECT uses select * / t.*", n.name),
+            format!(
+                "{}'s final SELECT uses select * / t.*",
+                display_name(dag, uid)
+            ),
         );
         if let Some((file, raw)) = sql_anchor(dag, uid) {
             if let Some(pos) = sql.sql_positions(dag, uid) {
@@ -198,7 +201,7 @@ pub(super) fn hard_coded_references(
                 vec![],
                 format!(
                     "{} reads {} without ref()/source(): {}",
-                    n.name,
+                    display_name(dag, uid),
                     pluralize(names.len(), "relation"),
                     names
                         .iter()
@@ -254,7 +257,7 @@ pub(super) fn cartesian_join(
             vec![],
             format!(
                 "{} joins without a join condition: {}",
-                n.name,
+                display_name(dag, uid),
                 facts.cartesian.join(", ")
             ),
         );
@@ -323,7 +326,7 @@ pub(super) fn unknown_column_reference(
             related,
             format!(
                 "{} names {} its upstream doesn't emit: {}",
-                n.name,
+                display_name(dag, uid),
                 pluralize(pairs.len(), "column"),
                 pairs.join(", ")
             ),
@@ -398,7 +401,7 @@ pub(super) fn forbidden_patterns(
                 vec![],
                 format!(
                     "{}'s raw SQL matches forbidden {}: {}",
-                    n.name,
+                    display_name(dag, uid),
                     pluralize(hits.len(), "pattern"),
                     hits.join(", ")
                 ),
@@ -477,7 +480,7 @@ pub(super) fn trailing_semicolon(
             LintRule::TrailingSemicolon,
             (*uid).clone(),
             vec![],
-            format!("{}'s SQL ends with a semicolon", n.name),
+            format!("{}'s SQL ends with a semicolon", display_name(dag, uid)),
         );
         if let Some((file, raw)) = sql_anchor(dag, uid) {
             let mut spans: Vec<SpanNote> = vec![(semi, "trailing semicolon".to_string())];
@@ -524,7 +527,7 @@ pub(super) fn duplicate_output_columns(
             vec![],
             format!(
                 "{} produces duplicate output {}: {}",
-                n.name,
+                display_name(dag, uid),
                 pluralize(names.len(), "column"),
                 name_list(&names)
             ),
@@ -638,7 +641,7 @@ pub(super) fn unused_cte(
             vec![],
             format!(
                 "{} defines {} it never reads: {}",
-                n.name,
+                display_name(dag, uid),
                 pluralize(names.len(), "CTE"),
                 name_list(&names)
             ),
@@ -709,7 +712,10 @@ pub(super) fn order_by_without_limit(
             LintRule::OrderByWithoutLimit,
             (*uid).clone(),
             vec![],
-            format!("{}'s final query has ORDER BY but no LIMIT", n.name),
+            format!(
+                "{}'s final query has ORDER BY but no LIMIT",
+                display_name(dag, uid)
+            ),
         );
         if let Some((file, raw)) = sql_anchor(dag, uid) {
             if let Some(pos) = sql.sql_positions(dag, uid) {

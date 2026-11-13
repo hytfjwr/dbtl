@@ -76,13 +76,14 @@ pub(super) fn push_stats_summary(s: &mut String, dag: &Dag, files: &BTreeMap<Str
                 .then_with(|| a.unique_id.cmp(&b.unique_id))
         });
         for node in orphans {
+            let name = list_name(&node.unique_id, &node.name);
             match files.get(&node.unique_id) {
                 Some(rel) => s.push_str(&format!(
                     "- [{}]({})\n",
-                    md_label(&node.name),
+                    md_label(&name),
                     page_link("README.md", rel)
                 )),
-                None => s.push_str(&format!("- {}\n", node.name)),
+                None => s.push_str(&format!("- {name}\n")),
             }
         }
     }
@@ -154,13 +155,13 @@ pub(super) fn push_lint_summary(
         for f in fs {
             let name = dag
                 .get(&f.node_uid)
-                .map(|n| n.name.as_str())
-                .unwrap_or(&f.node_uid);
+                .map(|n| list_name(&f.node_uid, &n.name))
+                .unwrap_or_else(|| f.node_uid.clone());
             let baselined = if f.baselined { " (baselined)" } else { "" };
             match files.get(&f.node_uid) {
                 Some(rel) => s.push_str(&format!(
                     "- [{}]({}) — {}{}\n",
-                    md_label(name),
+                    md_label(&name),
                     page_link("README.md", rel),
                     f.message,
                     baselined

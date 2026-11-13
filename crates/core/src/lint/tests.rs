@@ -91,6 +91,24 @@ fn test_on(target: &str, kind: &str, column: &str) -> (String, RawNode) {
     )
 }
 
+/// A versioned-model literal — `model.p.<name>.<vseg>`, the uid shape a
+/// real `versions:`-ed model compiles to (several nodes sharing one
+/// declared `name`). `version`/`latest_version` carry the declared values
+/// like the manifest does.
+fn versioned_model(name: &str, vseg: &str, path: &str) -> (String, RawNode) {
+    (
+        format!("model.p.{name}.{vseg}"),
+        RawNode {
+            name: name.into(),
+            resource_type: "model".into(),
+            path: Some(path.into()),
+            version: Some(vseg.trim_start_matches(['v', 'V']).into()),
+            latest_version: Some("2".into()),
+            ..Default::default()
+        },
+    )
+}
+
 /// The uids flagged by `rule` in `findings`, sorted for comparison.
 fn flagged(findings: &[Finding], rule: LintRule) -> Vec<&str> {
     let mut uids: Vec<&str> = findings
@@ -259,6 +277,79 @@ fn source_fanout_flags_source_with_two_model_children() {
 }
 
 #[test]
+fn source_fanout_folds_model_versions_into_one_consumer() {
+    // raw feeds fct_orders.v1+v2+vbeta — three DAG children but ONE model
+    // family: a naive count trips the default threshold (2) on versions
+    // alone, which is exactly the version-inflation the fold prevents.
+    let versioned = || {
+        vec![
+            versioned_model("fct_orders", "v1", "marts/fct_orders_v1.sql"),
+            versioned_model("fct_orders", "v2", "marts/fct_orders_v2.sql"),
+            versioned_model("fct_orders", "vbeta", "marts/fct_orders_vbeta.sql"),
+        ]
+    };
+    let m = manifest(
+        versioned(),
+        vec![source("raw.orders")],
+        &[
+            ("source.p.raw.orders", "model.p.fct_orders.v1"),
+            ("source.p.raw.orders", "model.p.fct_orders.v2"),
+            ("source.p.raw.orders", "model.p.fct_orders.vbeta"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert!(
+        flagged(&f, LintRule::SourceFanout).is_empty(),
+        "3 versions of one model are ONE consumer — no fanout finding"
+    );
+
+    // Control: a second DISTINCT consumer crosses the threshold — and the
+    // message counts families (2, not 4), naming the multi-version family
+    // by its bare model name while keeping every member uid in `related`.
+    let mut nodes = versioned();
+    nodes.push(model("stg_other", "staging/stg_other.sql"));
+    let m2 = manifest(
+        nodes,
+        vec![source("raw.orders")],
+        &[
+            ("source.p.raw.orders", "model.p.fct_orders.v1"),
+            ("source.p.raw.orders", "model.p.fct_orders.v2"),
+            ("source.p.raw.orders", "model.p.fct_orders.vbeta"),
+            ("source.p.raw.orders", "model.p.stg_other"),
+        ],
+    );
+    let f2 = findings_of(&m2, &LintConfig::default());
+    let hits: Vec<&Finding> = f2
+        .iter()
+        .filter(|f| f.rule == LintRule::SourceFanout)
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "findings: {:?}",
+        flagged(&f2, LintRule::SourceFanout)
+    );
+    let hit = hits[0];
+    assert!(
+        hit.message.contains("directly feeds 2 models"),
+        "family count, not node count: {}",
+        hit.message
+    );
+    assert!(
+        hit.message.contains("fct_orders,") || hit.message.contains("fct_orders "),
+        "the folded family names bare: {}",
+        hit.message
+    );
+    assert!(!hit.message.contains("fct_orders.v"), "{:?}", hit.message);
+    assert!(hit.message.contains("stg_other"), "{}", hit.message);
+    assert_eq!(
+        hit.related.len(),
+        4,
+        "related keeps the version-specific member uids"
+    );
+}
+
+#[test]
 fn model_fanout_flags_leaf_children_at_threshold() {
     // hub feeds 2 leaf models; default threshold is 5 → no finding. With a
     // config of 2 the same graph flags hub. int_* keeps the names legal.
@@ -327,6 +418,62 @@ fn model_fanout_skips_leaves_only_packages_consume() {
             parents: 0,
             children: 1
         })
+    );
+}
+
+#[test]
+fn model_fanout_folds_versioned_leaves_into_one_consumer() {
+    // int_hub's only leaf children are fct_x.v1 + fct_x.v2 — one leaf
+    // FAMILY feeding one logical consumer. At threshold 2 the per-node
+    // count flags, the fold must not; a second distinct leaf does flag.
+    let m = manifest(
+        vec![
+            model("int_hub", "intermediate/int_hub.sql"),
+            versioned_model("fct_x", "v1", "marts/fct_x_v1.sql"),
+            versioned_model("fct_x", "v2", "marts/fct_x_v2.sql"),
+        ],
+        vec![],
+        &[
+            ("model.p.int_hub", "model.p.fct_x.v1"),
+            ("model.p.int_hub", "model.p.fct_x.v2"),
+        ],
+    );
+    let cfg = config_from("lint:\n  model_fanout_threshold: 2\n");
+    let f = findings_of(&m, &cfg);
+    assert!(
+        flagged(&f, LintRule::ModelFanout).is_empty(),
+        "two versions of one leaf = one consumer — no fanout finding"
+    );
+
+    let m2 = manifest(
+        vec![
+            model("int_hub", "intermediate/int_hub.sql"),
+            versioned_model("fct_x", "v1", "marts/fct_x_v1.sql"),
+            versioned_model("fct_x", "v2", "marts/fct_x_v2.sql"),
+            model("fct_other", "marts/fct_other.sql"),
+        ],
+        vec![],
+        &[
+            ("model.p.int_hub", "model.p.fct_x.v1"),
+            ("model.p.int_hub", "model.p.fct_x.v2"),
+            ("model.p.int_hub", "model.p.fct_other"),
+        ],
+    );
+    let f2 = findings_of(&m2, &cfg);
+    let hits: Vec<&Finding> = f2
+        .iter()
+        .filter(|f| f.rule == LintRule::ModelFanout)
+        .collect();
+    assert_eq!(hits.len(), 1);
+    assert!(
+        hits[0].message.contains("directly feeds 2 leaf models"),
+        "family count, not node count: {}",
+        hits[0].message
+    );
+    assert!(
+        hits[0].message.contains("fct_x") && !hits[0].message.contains("fct_x.v"),
+        "folded family named bare once: {}",
+        hits[0].message
     );
 }
 
@@ -2159,6 +2306,70 @@ fn too_many_joins_flags_at_the_configured_threshold() {
     // A higher threshold un-flags the same graph.
     let cfg = config_from("lint:\n  rules:\n    too_many_joins: {threshold: 8}\n");
     assert!(flagged(&findings_of(&m, &cfg), LintRule::TooManyJoins).is_empty());
+}
+
+#[test]
+fn too_many_joins_folds_versioned_parents_into_one_resource() {
+    // fct_join reads dim.v1 + dim.v2 + int_a: three parent nodes, two
+    // data-resource FAMILIES — joining two spellings of `dim` is still
+    // reading `dim`. At threshold 3 the naive count flags, the fold must not.
+    let m = manifest(
+        vec![
+            model("fct_join", "marts/fct_join.sql"),
+            versioned_model("dim", "v1", "marts/dim_v1.sql"),
+            versioned_model("dim", "v2", "marts/dim_v2.sql"),
+            model("int_a", "intermediate/int_a.sql"),
+        ],
+        vec![],
+        &[
+            ("model.p.dim.v1", "model.p.fct_join"),
+            ("model.p.dim.v2", "model.p.fct_join"),
+            ("model.p.int_a", "model.p.fct_join"),
+        ],
+    );
+    let cfg = config_from("lint:\n  rules:\n    too_many_joins: {threshold: 3}\n");
+    let f = findings_of(&m, &cfg);
+    assert!(
+        flagged(&f, LintRule::TooManyJoins).is_empty(),
+        "v1+v2 of one model count once — 2 families < 3"
+    );
+
+    // Control: a third DISTINCT parent crosses it — the message counts 3
+    // families and names the folded `dim` family bare once.
+    let m2 = manifest(
+        vec![
+            model("fct_join", "marts/fct_join.sql"),
+            versioned_model("dim", "v1", "marts/dim_v1.sql"),
+            versioned_model("dim", "v2", "marts/dim_v2.sql"),
+            model("int_a", "intermediate/int_a.sql"),
+            model("int_b", "intermediate/int_b.sql"),
+        ],
+        vec![],
+        &[
+            ("model.p.dim.v1", "model.p.fct_join"),
+            ("model.p.dim.v2", "model.p.fct_join"),
+            ("model.p.int_a", "model.p.fct_join"),
+            ("model.p.int_b", "model.p.fct_join"),
+        ],
+    );
+    let f2 = findings_of(&m2, &cfg);
+    let hits: Vec<&Finding> = f2
+        .iter()
+        .filter(|f| f.rule == LintRule::TooManyJoins)
+        .collect();
+    assert_eq!(hits.len(), 1);
+    assert!(
+        hits[0]
+            .message
+            .contains("directly depends on 3 data resources"),
+        "family count, not node count: {}",
+        hits[0].message
+    );
+    assert!(
+        hits[0].message.contains("dim,") && !hits[0].message.contains("dim.v"),
+        "folded family named bare once: {}",
+        hits[0].message
+    );
 }
 
 // ---- chained_views -------------------------------------------------------------

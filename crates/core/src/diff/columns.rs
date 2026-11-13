@@ -85,7 +85,7 @@ pub(super) fn column_changes(
         let added: Vec<String> = after.difference(&before).cloned().collect();
         let node_name = current
             .get(uid)
-            .map(|n| n.name.clone())
+            .map(|n| crate::list_name(&n.unique_id, &n.name))
             .unwrap_or_else(|| uid.clone());
 
         // Direct upstream provenance per output column — the rename input.
@@ -312,7 +312,11 @@ pub(super) fn affected_lists(
         if !keep(cr) {
             continue;
         }
-        cols.insert(format!("{}.{}", n.name, cr.column));
+        cols.insert(format!(
+            "{}.{}",
+            crate::list_name(&n.unique_id, &n.name),
+            cr.column
+        ));
         if n.resource_type == "model" && in_scope(n) {
             model_uids.insert(cr.node.clone());
         }
@@ -333,7 +337,7 @@ pub(super) fn affected_lists(
     let name_of = |uid: &String| {
         current
             .get(uid)
-            .map(|n| n.name.clone())
+            .map(|n| crate::list_name(&n.unique_id, &n.name))
             .unwrap_or_else(|| uid.clone())
     };
     let mut models: Vec<String> = model_uids.iter().map(&name_of).collect();

@@ -29,9 +29,10 @@ pub(super) fn index_pages(ctx: &PageInputs<'_>, owner_meta_key: &str) -> Vec<(St
 /// bare (label-escaped) name when no page was generated for it — the same
 /// "generated pages only" link rule every page follows.
 fn linked_name(node: &NodeInfo, from: &str, files: &BTreeMap<String, String>) -> String {
+    let name = list_name(&node.unique_id, &node.name);
     match files.get(&node.unique_id) {
-        Some(path) => format!("[{}]({})", md_label(&node.name), page_link(from, path)),
-        None => md_cell(&node.name),
+        Some(path) => format!("[{}]({})", md_label(&name), page_link(from, path)),
+        None => md_cell(&name),
     }
 }
 

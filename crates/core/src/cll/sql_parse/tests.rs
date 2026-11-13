@@ -2198,3 +2198,489 @@ fn columns_only_fallback_still_marks_the_node() {
     assert!(r.is_fallback("model.t.m"));
     assert_eq!(r.fallback_nodes(), vec!["model.t.m".to_string()]);
 }
+
+// -- date/time parts are keywords, never columns ------------------------------
+
+#[test]
+fn date_part_words_never_read_columns() {
+    // `dateadd(day, …)`'s `day` — a bare unit word at a documented part
+    // slot — is the keyword, not a column. Only the real inputs feed
+    // the outputs.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.up", "select 1", &["id", "d"]),
+            model(
+                "model.t.m",
+                "select u.id, dateadd(day, 1, u.d) as d1, \
+                 datediff(day, u.d, u.d) as n, \
+                 datepart(hour, u.d) as h, \
+                 timestampadd(minute, 1, u.d) as d2, \
+                 timeadd(hour, 1, u.d) as t, \
+                 dateadd((day), 1, u.d) as p, \
+                 last_day(u.d, month) as ld \
+                 from \"up\" u",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m")],
+    ));
+    let r = resolver();
+    let got = edge_set(&dag, &r, "model.t.m");
+    let want: BTreeSet<_> = [
+        e("model.t.up.id", "id", ColumnEdgeKind::Passthrough),
+        e("model.t.up.d", "d1", ColumnEdgeKind::Transform),
+        e("model.t.up.d", "n", ColumnEdgeKind::Transform),
+        e("model.t.up.d", "h", ColumnEdgeKind::Transform),
+        e("model.t.up.d", "d2", ColumnEdgeKind::Transform),
+        e("model.t.up.d", "t", ColumnEdgeKind::Transform),
+        e("model.t.up.d", "p", ColumnEdgeKind::Transform),
+        e("model.t.up.d", "ld", ColumnEdgeKind::Transform),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(got, want);
+    assert!(r
+        .sql_facts(&dag, "model.t.m")
+        .unwrap()
+        .unresolved
+        .is_empty());
+}
+
+#[test]
+fn bigquery_date_fns_take_the_part_last() {
+    // BigQuery's `_trunc`/`_diff` family ends with the part —
+    // `date_trunc(d, month)`, `date_diff(a, b, day)`. The same slot
+    // leads elsewhere; each dialect reads its own documented shape.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.up", "select 1", &["d", "d2"]),
+            model(
+                "model.t.m",
+                "select date_trunc(u.d, month) as m, \
+                 date_diff(u.d, u.d2, day) as n, \
+                 timestamp_diff(u.d, u.d2, hour) as h \
+                 from \"up\" u",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m")],
+    ));
+    let r = SqlParseResolver::new(None, SqlDialect::BigQuery);
+    let got = edge_set(&dag, &r, "model.t.m");
+    let want: BTreeSet<_> = [
+        e("model.t.up.d", "m", ColumnEdgeKind::Transform),
+        e("model.t.up.d", "n", ColumnEdgeKind::Transform),
+        e("model.t.up.d2", "n", ColumnEdgeKind::Transform),
+        e("model.t.up.d", "h", ColumnEdgeKind::Transform),
+        e("model.t.up.d2", "h", ColumnEdgeKind::Transform),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(got, want);
+    assert!(r
+        .sql_facts(&dag, "model.t.m")
+        .unwrap()
+        .unresolved
+        .is_empty());
+}
+
+#[test]
+fn a_part_word_at_a_non_part_slot_stays_a_column_ref() {
+    // Dialect precision cuts both ways: under Snowflake `date_trunc`
+    // leads with the part, so `date_trunc(d, month)`'s `month` at arg 1
+    // IS a value position — it stays a column reference (an unresolved
+    // one here, since `up` provably lacks it).
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.up", "select 1", &["d"]),
+            model(
+                "model.t.m",
+                "select date_trunc(u.d, month) as m from \"up\" u",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m")],
+    ));
+    let r = SqlParseResolver::new(None, SqlDialect::Snowflake);
+    assert_eq!(
+        r.sql_facts(&dag, "model.t.m").unwrap().unresolved,
+        vec![("model.t.up".to_string(), "month".to_string())]
+    );
+}
+
+#[test]
+fn generic_suppresses_the_part_word_in_either_position() {
+    // With no pinned dialect the signature's part slot is unknowable —
+    // a documented part word in EITHER spelling's slot stays uncounted
+    // rather than guessed.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.up", "select 1", &["d"]),
+            model(
+                "model.t.m",
+                "select date_trunc(month, u.d) as a, \
+                 date_trunc(u.d, month) as b, \
+                 date_diff(day, u.d, u.d) as c, \
+                 date_diff(u.d, u.d, day) as e \
+                 from \"up\" u",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m")],
+    ));
+    let r = resolver();
+    assert!(r
+        .sql_facts(&dag, "model.t.m")
+        .unwrap()
+        .unresolved
+        .is_empty());
+}
+
+#[test]
+fn a_non_part_word_at_a_part_slot_stays_a_column_ref() {
+    // `dateadd(status, 1, d)` — `status` isn't a documented part word,
+    // so it keeps resolving as a column (and lands in `unresolved`
+    // when the parent provably lacks it).
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.up", "select 1", &["d"]),
+            model(
+                "model.t.m",
+                "select dateadd(status, 1, u.d) as x from \"up\" u",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m")],
+    ));
+    let r = resolver();
+    assert_eq!(
+        r.sql_facts(&dag, "model.t.m").unwrap().unresolved,
+        vec![("model.t.up".to_string(), "status".to_string())]
+    );
+}
+
+#[test]
+fn a_real_column_at_a_part_slot_still_resolves() {
+    // Suppression is word-list-bounded: `parts` isn't a unit word, so
+    // `dateadd(parts, …)` still reads the parent column `parts`.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.up", "select 1", &["parts", "d"]),
+            model(
+                "model.t.m",
+                "select dateadd(parts, 1, u.d) as x from \"up\" u",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m")],
+    ));
+    let got = edge_set(&dag, &resolver(), "model.t.m");
+    let want: BTreeSet<_> = [
+        e("model.t.up.parts", "x", ColumnEdgeKind::Transform),
+        e("model.t.up.d", "x", ColumnEdgeKind::Transform),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(got, want);
+}
+
+// -- same-SELECT aliases -------------------------------------------------------
+
+#[test]
+fn select_alias_resolves_in_where_group_by_and_having() {
+    // `where c`/`group by c`/`having sum(c)` read the `a + b as c`
+    // alias — never an upstream column `c`. The clause's real FROM
+    // column `f` still binds through the FROM scope (its FilterOrJoin
+    // fan reaches every output); the alias's own sources shape the
+    // rows too, but already hold `c`'s value edge so no fan shows.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.up", "select 1", &["id", "a", "b", "f"]),
+            model(
+                "model.t.m",
+                "select u.id, u.a + u.b as c from \"up\" u \
+                 where c > u.f group by c having sum(c) > 0",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m")],
+    ));
+    let r = resolver();
+    let got = edge_set(&dag, &r, "model.t.m");
+    let want: BTreeSet<_> = [
+        e("model.t.up.id", "id", ColumnEdgeKind::Passthrough),
+        e("model.t.up.a", "c", ColumnEdgeKind::Transform),
+        e("model.t.up.b", "c", ColumnEdgeKind::Transform),
+        e("model.t.up.f", "id", ColumnEdgeKind::FilterOrJoin),
+        e("model.t.up.f", "c", ColumnEdgeKind::FilterOrJoin),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(got, want);
+    assert!(r
+        .sql_facts(&dag, "model.t.m")
+        .unwrap()
+        .unresolved
+        .is_empty());
+}
+
+#[test]
+fn select_alias_resolves_in_qualify() {
+    // `qualify rn = 1` reads the window function's alias — QUALIFY's
+    // whole job is reaching select aliases. (`id` already holds the
+    // value edges, so its row-shaping fan drops — the fix's observable
+    // is that `rn` never records as an unresolved reference.)
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.up", "select 1", &["id"]),
+            model(
+                "model.t.m",
+                "select u.id, row_number() over (order by u.id) as rn \
+                 from \"up\" u qualify rn = 1",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m")],
+    ));
+    let r = SqlParseResolver::new(None, SqlDialect::Snowflake);
+    let got = edge_set(&dag, &r, "model.t.m");
+    let want: BTreeSet<_> = [
+        e("model.t.up.id", "id", ColumnEdgeKind::Passthrough),
+        e("model.t.up.id", "rn", ColumnEdgeKind::Transform),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(got, want);
+    assert!(r
+        .sql_facts(&dag, "model.t.m")
+        .unwrap()
+        .unresolved
+        .is_empty());
+}
+
+#[test]
+fn later_select_items_read_earlier_aliases() {
+    // `select a + 1 as c, c * 2 as d` — `d`'s `c` is the alias, so `d`
+    // traces to `a` rather than a phantom upstream `c`.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.up", "select 1", &["a"]),
+            model(
+                "model.t.m",
+                "select u.a + 1 as c, c * 2 as d from \"up\" u",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m")],
+    ));
+    let r = resolver();
+    let got = edge_set(&dag, &r, "model.t.m");
+    let want: BTreeSet<_> = [
+        e("model.t.up.a", "c", ColumnEdgeKind::Transform),
+        e("model.t.up.a", "d", ColumnEdgeKind::Transform),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(got, want);
+    assert!(r
+        .sql_facts(&dag, "model.t.m")
+        .unwrap()
+        .unresolved
+        .is_empty());
+}
+
+#[test]
+fn a_from_column_beats_a_same_named_select_alias() {
+    // `u.a as c` declares the alias `c`, but `where c` keeps reading the
+    // FROM column `u.c` — the FROM scope sits inner to the alias level.
+    // The read is provable: `up.c` is never projected, so it can only
+    // reach the edges through the FilterOrJoin fan the WHERE feeds. An
+    // alias-first read would put `up.a` there instead — and `up.a`
+    // already holds `c`'s value edge, so nothing would show at all.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.up", "select 1", &["a", "c"]),
+            model(
+                "model.t.m",
+                "select u.a as c from \"up\" u where c = 1",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m")],
+    ));
+    let r = resolver();
+    let got = edge_set(&dag, &r, "model.t.m");
+    let want: BTreeSet<_> = [
+        e("model.t.up.a", "c", ColumnEdgeKind::Rename),
+        e("model.t.up.c", "c", ColumnEdgeKind::FilterOrJoin),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(got, want);
+    assert!(r
+        .sql_facts(&dag, "model.t.m")
+        .unwrap()
+        .unresolved
+        .is_empty());
+}
+
+#[test]
+fn a_later_alias_does_not_leak_backward() {
+    // Aliases declare left to right: item 1's bare `c` can't see item
+    // 2's `c`. A leak wouldn't flag anything — it would silently read
+    // `a` through the alias — so the check is that `c` still records
+    // unresolved against the parent that lacks it, and `x` carries no
+    // source at all.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.up", "select 1", &["a"]),
+            model(
+                "model.t.m",
+                "select c as x, u.a + 1 as c from \"up\" u",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m")],
+    ));
+    let r = resolver();
+    let got = edge_set(&dag, &r, "model.t.m");
+    let want: BTreeSet<_> = [e("model.t.up.a", "c", ColumnEdgeKind::Transform)]
+        .into_iter()
+        .collect();
+    assert_eq!(got, want);
+    assert_eq!(
+        r.sql_facts(&dag, "model.t.m").unwrap().unresolved,
+        vec![("model.t.up".to_string(), "c".to_string())]
+    );
+}
+
+#[test]
+fn order_by_expression_reads_the_select_alias() {
+    // `order by c + f` — a compound ORDER BY expression sees the
+    // select's declared names too (a bare `order by c` already bound
+    // via the output-name match). `c`'s own source `a` already holds a
+    // value edge; `f`'s row-shaping fan reaches every output.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.up", "select 1", &["id", "a", "f"]),
+            model(
+                "model.t.m",
+                "select u.id, u.a + 1 as c from \"up\" u order by c + f limit 5",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m")],
+    ));
+    let r = resolver();
+    let got = edge_set(&dag, &r, "model.t.m");
+    let want: BTreeSet<_> = [
+        e("model.t.up.id", "id", ColumnEdgeKind::Passthrough),
+        e("model.t.up.a", "c", ColumnEdgeKind::Transform),
+        e("model.t.up.f", "id", ColumnEdgeKind::FilterOrJoin),
+        e("model.t.up.f", "c", ColumnEdgeKind::FilterOrJoin),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(got, want);
+    assert!(r
+        .sql_facts(&dag, "model.t.m")
+        .unwrap()
+        .unresolved
+        .is_empty());
+}
+
+// -- UNNEST output names -------------------------------------------------------
+
+#[test]
+fn unnest_table_alias_names_its_value_column() {
+    // `unnest(u.payload) as x`: `x` names the exploded value column —
+    // `select x` reads it and never an upstream column `x`. (`payload`
+    // already holds `x`'s value edge, so its row-shaping fan drops.)
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.up", "select 1", &["id", "payload"]),
+            model(
+                "model.t.m",
+                "select b.id, x from \"up\" b cross join unnest(b.payload) as x",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m")],
+    ));
+    let r = resolver();
+    let got = edge_set(&dag, &r, "model.t.m");
+    let want: BTreeSet<_> = [
+        e("model.t.up.id", "id", ColumnEdgeKind::Passthrough),
+        e("model.t.up.payload", "x", ColumnEdgeKind::Transform),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(got, want);
+    assert!(r
+        .sql_facts(&dag, "model.t.m")
+        .unwrap()
+        .unresolved
+        .is_empty());
+}
+
+#[test]
+fn unnest_table_alias_names_its_value_column_in_table_syntax() {
+    // Dialects without the UNNEST table factor parse `unnest(x) t` as
+    // a function-like table — the same value-column binding results.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.up", "select 1", &["id", "payload"]),
+            model(
+                "model.t.m",
+                "select b.id, x from \"up\" b cross join unnest(b.payload) as x",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m")],
+    ));
+    let r = SqlParseResolver::new(None, SqlDialect::Snowflake);
+    let got = edge_set(&dag, &r, "model.t.m");
+    let want: BTreeSet<_> = [
+        e("model.t.up.id", "id", ColumnEdgeKind::Passthrough),
+        e("model.t.up.payload", "x", ColumnEdgeKind::Transform),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(got, want);
+    assert!(r
+        .sql_facts(&dag, "model.t.m")
+        .unwrap()
+        .unresolved
+        .is_empty());
+}
+
+#[test]
+fn unnest_column_alias_list_still_names_the_value() {
+    // `unnest(u.payload) as t(v)` — an explicit column alias keeps
+    // naming the value column, unchanged.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.up", "select 1", &["id", "payload"]),
+            model(
+                "model.t.m",
+                "select b.id, t.v from \"up\" b cross join unnest(b.payload) as t(v)",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m")],
+    ));
+    let r = resolver();
+    let got = edge_set(&dag, &r, "model.t.m");
+    let want: BTreeSet<_> = [
+        e("model.t.up.id", "id", ColumnEdgeKind::Passthrough),
+        e("model.t.up.payload", "v", ColumnEdgeKind::Transform),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(got, want);
+    assert!(r
+        .sql_facts(&dag, "model.t.m")
+        .unwrap()
+        .unresolved
+        .is_empty());
+}

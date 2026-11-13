@@ -63,7 +63,7 @@ impl App {
             out.push_str(&format!(
                 "  \"{}\" [label=\"{}\\n({})\"];\n",
                 dot_escape(&n.unique_id),
-                dot_escape(&n.name),
+                dot_escape(&crate::list_name(&n.unique_id, &n.name)),
                 dot_escape(kind),
             ));
         }
@@ -138,11 +138,14 @@ impl App {
     /// toggle a `+` suffix, and a hop-depth limit becomes the `N+`/`+N` bounded
     /// forms, so what the user yanks is what the pane shows. The root is almost
     /// always a model (the list holds only models, and `jump_to` re-roots only
-    /// to list members), so the bare name is a valid node selector — for the
-    /// yank menu's modal target (possibly a source/seed) it is still the
+    /// to list members), so the bare name is a valid node selector — and for a
+    /// VERSIONED model the `name.vseg` spelling selects that one version, the
+    /// faithful form (`fct_orders` alone would re-select every version); for
+    /// the yank menu's modal target (possibly a source/seed) it is still the
     /// nearest name form v0 emits. `None` for an unknown uid.
     pub fn dbt_selector_command_for(&self, uid: &str) -> Option<String> {
-        let base = &self.dag.get(uid)?.name;
+        let n = self.dag.get(uid)?;
+        let base = crate::list_name(&n.unique_id, &n.name);
         let view = &self.tab().lineage_view;
         let prefix = match (view.upstream, view.depth) {
             (false, _) => String::new(),
@@ -172,7 +175,7 @@ impl App {
                 .into_iter()
                 .filter_map(|u| self.dag.get(&u))
                 .filter(|n| !crate::is_exposure(n))
-                .map(|n| n.name.clone())
+                .map(|n| crate::list_name(&n.unique_id, &n.name))
                 .collect();
             v.sort();
             v
@@ -200,7 +203,7 @@ impl App {
             v.dedup();
             v
         };
-        let mut out = format!("# Impact: {}\n\n", node.name);
+        let mut out = format!("# Impact: {}\n\n", crate::list_name(uid, &node.name));
         out.push_str(&format!("- unique_id: `{uid}`\n"));
         out.push_str(&format!(
             "- direct: {} upstream / {} downstream\n",
