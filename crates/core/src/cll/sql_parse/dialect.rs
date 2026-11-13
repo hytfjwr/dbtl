@@ -176,6 +176,7 @@ const DATE_PART_ARG_POSITIONS: &[(&str, &[usize], &[usize])] = &[
     ("timediff", &[0], &[0]),
     ("timestampadd", &[0], &[0]),
     ("timestampdiff", &[0], &[0]),
+    ("timeadd", &[0], &[0]),
     ("last_day", &[1], &[1]),
     // `_trunc`: part leads everywhere but BigQuery, where it ends.
     ("date_trunc", &[0], &[1]),

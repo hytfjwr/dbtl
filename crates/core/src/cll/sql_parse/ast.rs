@@ -142,10 +142,20 @@ pub(super) fn is_date_part_arg(arg: &FunctionArg) -> bool {
         | FunctionArg::ExprNamed { arg, .. } => arg,
     };
     match arg {
-        FunctionArgExpr::Expr(Expr::Identifier(i)) => {
-            i.quote_style.is_none() && is_date_part_word(&norm_ident(i))
+        FunctionArgExpr::Expr(e) => {
+            date_part_word_expr(e).is_some_and(|i| is_date_part_word(&norm_ident(i)))
         }
         _ => false,
+    }
+}
+
+/// `e`, peeled of parens — `dateadd((day), …)`'s `(day)` spells the same
+/// keyword `day` does — when it is a bare unquoted identifier.
+fn date_part_word_expr(e: &Expr) -> Option<&Ident> {
+    match e {
+        Expr::Identifier(i) if i.quote_style.is_none() => Some(i),
+        Expr::Nested(inner) => date_part_word_expr(inner),
+        _ => None,
     }
 }
 

@@ -1658,6 +1658,8 @@ fn date_part_words_never_read_columns() {
                  datediff(day, u.d, u.d) as n, \
                  datepart(hour, u.d) as h, \
                  timestampadd(minute, 1, u.d) as d2, \
+                 timeadd(hour, 1, u.d) as t, \
+                 dateadd((day), 1, u.d) as p, \
                  last_day(u.d, month) as ld \
                  from \"up\" u",
                 &[],
@@ -1673,6 +1675,8 @@ fn date_part_words_never_read_columns() {
         e("model.t.up.d", "n", ColumnEdgeKind::Transform),
         e("model.t.up.d", "h", ColumnEdgeKind::Transform),
         e("model.t.up.d", "d2", ColumnEdgeKind::Transform),
+        e("model.t.up.d", "t", ColumnEdgeKind::Transform),
+        e("model.t.up.d", "p", ColumnEdgeKind::Transform),
         e("model.t.up.d", "ld", ColumnEdgeKind::Transform),
     ]
     .into_iter()
@@ -1930,16 +1934,18 @@ fn later_select_items_read_earlier_aliases() {
 
 #[test]
 fn a_from_column_beats_a_same_named_select_alias() {
-    // `select u.c * 10 as c … where c > 2` — the WHERE's `c` exists in
-    // the FROM scope and keeps meaning the FROM column, not the alias.
-    // (`u.c` already holds the value edge, so its row-shaping fan drops —
-    // same attachment policy as before.)
+    // `u.a as c` declares the alias `c`, but `where c` keeps reading the
+    // FROM column `u.c` — the FROM scope sits inner to the alias level.
+    // The read is provable: `up.c` is never projected, so it can only
+    // reach the edges through the FilterOrJoin fan the WHERE feeds. An
+    // alias-first read would put `up.a` there instead — and `up.a`
+    // already holds `c`'s value edge, so nothing would show at all.
     let dag = Dag::build(&manifest(
         vec![
-            model("model.t.up", "select 1", &["id", "c"]),
+            model("model.t.up", "select 1", &["a", "c"]),
             model(
                 "model.t.m",
-                "select u.id, u.c * 10 as c from \"up\" u where c > 2",
+                "select u.a as c from \"up\" u where c = 1",
                 &[],
             ),
         ],
@@ -1948,8 +1954,8 @@ fn a_from_column_beats_a_same_named_select_alias() {
     let r = resolver();
     let got = edge_set(&dag, &r, "model.t.m");
     let want: BTreeSet<_> = [
-        e("model.t.up.id", "id", ColumnEdgeKind::Passthrough),
-        e("model.t.up.c", "c", ColumnEdgeKind::Transform),
+        e("model.t.up.a", "c", ColumnEdgeKind::Rename),
+        e("model.t.up.c", "c", ColumnEdgeKind::FilterOrJoin),
     ]
     .into_iter()
     .collect();
@@ -1963,21 +1969,28 @@ fn a_from_column_beats_a_same_named_select_alias() {
 
 #[test]
 fn a_later_alias_does_not_leak_backward() {
-    // Aliases declare left to right: item 1's `c` can't see item 2's
-    // `c` — the parent provably lacks `c`, so the unresolved ref
-    // records like any other missing column.
+    // Aliases declare left to right: item 1's bare `c` can't see item
+    // 2's `c`. A leak wouldn't flag anything — it would silently read
+    // `a` through the alias — so the check is that `c` still records
+    // unresolved against the parent that lacks it, and `x` carries no
+    // source at all.
     let dag = Dag::build(&manifest(
         vec![
             model("model.t.up", "select 1", &["a"]),
             model(
                 "model.t.m",
-                "select u.c as x, u.a + 1 as c from \"up\" u",
+                "select c as x, u.a + 1 as c from \"up\" u",
                 &[],
             ),
         ],
         &[("model.t.up", "model.t.m")],
     ));
     let r = resolver();
+    let got = edge_set(&dag, &r, "model.t.m");
+    let want: BTreeSet<_> = [e("model.t.up.a", "c", ColumnEdgeKind::Transform)]
+        .into_iter()
+        .collect();
+    assert_eq!(got, want);
     assert_eq!(
         r.sql_facts(&dag, "model.t.m").unwrap().unresolved,
         vec![("model.t.up".to_string(), "c".to_string())]

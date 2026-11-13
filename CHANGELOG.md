@@ -8,22 +8,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- `unknown_column_reference` no longer misreads three kinds of names as
-  upstream columns. Bare date/time-part keywords inside date functions
-  (`dateadd(day, …)`, `date_trunc(month, …)`, `datediff(week, …)`, …)
-  are skipped at the argument positions each SQL dialect gives them —
-  part-first for most dialects, part-last for BigQuery's
-  `*_trunc`/`*_diff` family, and both documented positions when no
-  dialect is configured — while a quoted or qualified argument still
-  counts as a column reference, and a real parent column at the same
-  position still resolves. Names a SELECT defines itself (`a + b as c`)
-  now resolve inside the same query — in later select items, `WHERE`,
-  `GROUP BY`, `HAVING`, `QUALIFY`, and `ORDER BY` expressions — with a
-  FROM column of the same name still winning inside the clause it
-  belongs to. And `UNNEST(…)` given only a table alias
-  (`cross join unnest(…) as t`) now exposes that alias as its value
-  column instead of the fixed name `unnest`, so selecting `t` resolves;
-  an explicit column list (`unnest(…) t(v)`) still takes precedence.
+- `unknown_column_reference` no longer misreads date-part keywords in
+  date functions, same-SELECT aliases in `WHERE`/`GROUP BY`/`HAVING`/
+  `QUALIFY`/`ORDER BY`, or an `UNNEST`'s table alias as upstream columns.
 
 ## [0.6.4] - 2026-11-13
 

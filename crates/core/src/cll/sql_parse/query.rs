@@ -53,8 +53,8 @@ impl SqlParseResolver {
         // same-named FROM column) and the body's FROM scope (a qualified
         // or never-projected column) — resolve exprs against a probe scope
         // of the returned bindings stacked over the body's declared-name
-        // set (the same same-SELECT alias level the row-shaping tail uses),
-        // with the output-name match as the last-word fallback.
+        // set (the same alias level the row-shaping tail resolves
+        // against), with the output-name match as the last-word fallback.
         let alias = Scope {
             bindings: vec![Binding {
                 name: String::new(),
@@ -683,6 +683,13 @@ impl SqlParseResolver {
         // same surface.
         let mut out: Vec<OutCol> = Vec::new();
         for item in &sel.projection {
+            // Nothing declared yet — the alias level can't contribute,
+            // so resolve straight against FROM and skip the clones.
+            if out.is_empty() {
+                let refs = ref_scope(env, &scope);
+                self.resolve_select_item(ctx, refs, &scope, item, &mut out)?;
+                continue;
+            }
             let alias = Scope {
                 bindings: vec![Binding {
                     name: String::new(),
