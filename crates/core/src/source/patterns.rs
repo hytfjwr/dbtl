@@ -904,6 +904,19 @@ pub fn call_sites_masked(masked: &str) -> Vec<CallSite> {
 // Jinja branch structure — which call sites can execute in one render
 // ---------------------------------------------------------------------------
 
+/// Which block kind an [`ArmStep`]'s chain is — an `{% if %}` arm split
+/// and a `{% for %}` arm split mean different things to the SQL render
+/// (an `if` chain's `{% else %}` can union select items; a `for`
+/// chain's `{% else %}` is its empty-iteration fallback, never a union
+/// member).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmKind {
+    /// An `{% if %}`/`{% elif %}`/`{% else %}` chain arm.
+    If,
+    /// A `{% for %}` body arm or its `{% else %}` fallback arm.
+    For,
+}
+
 /// One `{% if %}`/`{% for %}` arm in a template's branch structure:
 /// `chain` is the block's id (its open tag's source order — unique per
 /// block), `arm` the branch inside it — the `{% if %}`/`{% for %}` body is
@@ -917,6 +930,8 @@ pub struct ArmStep {
     /// The branch inside it — `{% if %}`/`{% for %}` is 0, each
     /// `{% elif %}`/`{% else %}` arm +1.
     pub arm: u32,
+    /// Whether the step's chain is an `{% if %}` or a `{% for %}` block.
+    pub kind: ArmKind,
 }
 
 /// Do the arm paths `a` and `b` disagree on a shared chain? Then the
@@ -986,6 +1001,8 @@ pub fn jinja_branches(text: &str) -> JinjaBranches {
     }
     /// `{% word %}…{% end<tail> %}` pairs other than `if`/`for`/`raw` —
     /// their interior still composes arms; only the `end` word differs.
+    /// (`debug` is deliberately absent — Jinja's `{% debug %}` is a
+    /// single statement tag, not a pair.)
     const BLOCK_TAGS: &[(&str, &str)] = &[
         ("macro", "endmacro"),
         ("block", "endblock"),
@@ -994,7 +1011,6 @@ pub fn jinja_branches(text: &str) -> JinjaBranches {
         ("with", "endwith"),
         ("trans", "endtrans"),
         ("autoescape", "endautoescape"),
-        ("debug", "enddebug"),
         ("docs", "enddocs"),
         ("snapshot", "endsnapshot"),
         ("test", "endtest"),
@@ -1054,10 +1070,19 @@ pub fn jinja_branches(text: &str) -> JinjaBranches {
                     }
                     _ => malformed = true,
                 },
-                "raw" => {
+                word @ ("raw" | "comment") => {
                     // `{% raw %}…{% endraw %}` — the body is inert text
-                    // (its `{…}`s are literal). Scan to the `{% endraw %}`
-                    // tag; no frame — calls inside keep the enclosing arm.
+                    // (its `{…}`s are literal). `{% comment %}…{% endcomment %}`
+                    // is dead text Jinja never parses. Neither nests — the
+                    // first matching end tag closes — and no frame opens:
+                    // offsets inside keep the enclosing arm. (Both spans
+                    // are already blanked on masked input; this read is
+                    // the same one for a caller on unmasked text.)
+                    let end_word = if word == "raw" {
+                        "endraw"
+                    } else {
+                        "endcomment"
+                    };
                     let mut j = e + 2;
                     i = loop {
                         let Some(open) = find_subslice(b, j, b"{%") else {
@@ -1068,7 +1093,7 @@ pub fn jinja_branches(text: &str) -> JinjaBranches {
                             malformed = true;
                             break b.len();
                         };
-                        if tag_word(&text[open + 2..end]).0 == "endraw" {
+                        if tag_word(&text[open + 2..end]).0 == end_word {
                             break end + 2;
                         }
                         j = end + 2;
@@ -1102,9 +1127,15 @@ pub fn jinja_branches(text: &str) -> JinjaBranches {
         let sig: Vec<ArmStep> = stack
             .iter()
             .filter_map(|f| match f {
-                Frame::If { chain, arm, .. } | Frame::For { chain, arm, .. } => Some(ArmStep {
+                Frame::If { chain, arm, .. } => Some(ArmStep {
                     chain: *chain,
                     arm: *arm,
+                    kind: ArmKind::If,
+                }),
+                Frame::For { chain, arm, .. } => Some(ArmStep {
+                    chain: *chain,
+                    arm: *arm,
+                    kind: ArmKind::For,
                 }),
                 Frame::Block(_) => None,
             })
@@ -1125,8 +1156,12 @@ pub fn jinja_branches(text: &str) -> JinjaBranches {
 /// The close-pair offset of the Jinja tag opened at `b[i]` (`{{`/`{%`/`{#`)
 /// — `None` when unterminated. `{{ }}` tracks bracket depth like the
 /// render (a `}}` inside `{{ f({'x':1}) }}` doesn't close); `{% %}` and
-/// `{# #}` end at the first tag close.
-pub(super) fn jinja_tag_close(b: &[u8], i: usize) -> Option<usize> {
+/// `{# #}` end at the first tag close. `'…'`/`"…"` spans inside `{{`/`{%`
+/// are skipped like the render's `tag_close` (backslash-escaped and
+/// doubled quotes stay inside), so a quoted `}}`/`%}`/`{` can't fake a
+/// close or a depth step — `{{ "{" }}`, `{% if x == 'a%}' %}`. A `{# #}`
+/// comment holds no string syntax, so its quotes never skip.
+pub(crate) fn jinja_tag_close(b: &[u8], i: usize) -> Option<usize> {
     let close: &[u8] = match b.get(i + 1)? {
         b'{' => b"}}",
         b'%' => b"%}",
@@ -1140,6 +1175,10 @@ pub(super) fn jinja_tag_close(b: &[u8], i: usize) -> Option<usize> {
             return Some(j);
         }
         match b[j] {
+            q @ (b'\'' | b'"') if close != b"#}" => {
+                j = quoted_tag_end(b, j, q);
+                continue;
+            }
             b'(' | b'[' | b'{' if tracked => depth += 1,
             b')' | b']' | b'}' if tracked => depth = depth.saturating_sub(1),
             _ => {}
@@ -1149,11 +1188,34 @@ pub(super) fn jinja_tag_close(b: &[u8], i: usize) -> Option<usize> {
     None
 }
 
+/// One-past the quote that closes the `'…'`/`"…"` opened at `i` —
+/// `b.len()` when unterminated. Jinja strings backslash-escape (`\'`
+/// stays inside) and double-quote (`''`) escapes too — the same read the
+/// render's `quoted_end` does.
+fn quoted_tag_end(b: &[u8], i: usize, q: u8) -> usize {
+    let mut j = i + 1;
+    while j < b.len() {
+        if b[j] == b'\\' {
+            j += 2;
+            continue;
+        }
+        if b[j] == q {
+            if b.get(j + 1) == Some(&q) {
+                j += 2;
+                continue;
+            }
+            return j + 1;
+        }
+        j += 1;
+    }
+    b.len()
+}
+
 /// The leading word of a `{% %}` tag body — whitespace-control dashes
 /// and padding stripped (`{%- if x -%}` → `if`) — plus the remainder
 /// after the word. A body whose first token isn't an identifier yields
 /// `""`.
-pub(super) fn tag_word(body: &str) -> (&str, &str) {
+pub(crate) fn tag_word(body: &str) -> (&str, &str) {
     let body = body.trim_matches(|c: char| c.is_whitespace() || c == '-' || c == '+');
     let end = body
         .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
@@ -1164,7 +1226,7 @@ pub(super) fn tag_word(body: &str) -> (&str, &str) {
 /// Is `rest` (after `{% set %}`) the assignment form `name = expr`? The
 /// block form `{% set x %}…{% endset %}` has no `=` at bracket depth 0
 /// outside quotes.
-fn jinja_set_assigns(rest: &str) -> bool {
+pub(crate) fn jinja_set_assigns(rest: &str) -> bool {
     let b = rest.as_bytes();
     let (mut depth, mut quote) = (0usize, 0u8);
     let mut i = 0;
@@ -1190,7 +1252,7 @@ fn jinja_set_assigns(rest: &str) -> bool {
 
 /// `needle`'s first offset in `hay[from..]` — the raw-tag body's
 /// `{%`-finder.
-pub(super) fn find_subslice(hay: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+pub(crate) fn find_subslice(hay: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     hay.get(from.min(hay.len())..)?
         .windows(needle.len())
         .position(|w| w == needle)

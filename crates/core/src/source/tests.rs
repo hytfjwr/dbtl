@@ -1459,14 +1459,34 @@ fn path_at(text: &str, offset: usize) -> Vec<ArmStep> {
         .to_vec()
 }
 
+/// An `{% if %}`-chain step literal — `ArmKind::For` only ever comes
+/// from `{% for %}` blocks.
+fn if_arm(chain: u32, arm: u32) -> ArmStep {
+    ArmStep {
+        chain,
+        arm,
+        kind: ArmKind::If,
+    }
+}
+
+/// A `{% for %}`-chain step literal — arm 0 the body, arm 1 its
+/// `{% else %}` fallback.
+fn for_arm(chain: u32, arm: u32) -> ArmStep {
+    ArmStep {
+        chain,
+        arm,
+        kind: ArmKind::For,
+    }
+}
+
 #[test]
 fn jinja_branches_index_if_elif_else_arms() {
     let sql = "a{% if x %}b{% elif y %}c{% else %}d{% endif %}e";
     let arm = |c: &str| path_at(sql, sql.find(c).unwrap());
     assert_eq!(arm("a"), vec![]);
-    assert_eq!(arm("b"), vec![ArmStep { chain: 0, arm: 0 }]);
-    assert_eq!(arm("c"), vec![ArmStep { chain: 0, arm: 1 }]);
-    assert_eq!(arm("d"), vec![ArmStep { chain: 0, arm: 2 }]);
+    assert_eq!(arm("b"), vec![if_arm(0, 0)]);
+    assert_eq!(arm("c"), vec![if_arm(0, 1)]);
+    assert_eq!(arm("d"), vec![if_arm(0, 2)]);
     assert_eq!(path_at(sql, sql.rfind('e').unwrap()), vec![]);
     // `{% if %}`/`{% elif %}`/`{% else %}` arms are mutually exclusive.
     assert!(arms_exclusive(&arm("b"), &arm("c")));
@@ -1484,15 +1504,9 @@ fn jinja_branches_nest_and_compose() {
     let sql = "{% if a %}{% if b %}x{% else %}y{% endif %}{% else %}z{% endif %}";
     let arm = |c: &str| path_at(sql, sql.find(c).unwrap());
     let (x, y, z) = (arm("x"), arm("y"), arm("z"));
-    assert_eq!(
-        x,
-        vec![ArmStep { chain: 0, arm: 0 }, ArmStep { chain: 1, arm: 0 }]
-    );
-    assert_eq!(
-        y,
-        vec![ArmStep { chain: 0, arm: 0 }, ArmStep { chain: 1, arm: 1 }]
-    );
-    assert_eq!(z, vec![ArmStep { chain: 0, arm: 1 }]);
+    assert_eq!(x, vec![if_arm(0, 0), if_arm(1, 0)]);
+    assert_eq!(y, vec![if_arm(0, 0), if_arm(1, 1)]);
+    assert_eq!(z, vec![if_arm(0, 1)]);
     // `x`/`y` share the outer arm but disagree inside it → exclusive;
     // `x`/`z` disagree on the outer chain → exclusive too.
     assert!(arms_exclusive(&x, &y));
@@ -1509,7 +1523,9 @@ fn jinja_branches_for_else_and_macro_blocks() {
         "{% for i in xs %}a{% else %}b{% endfor %}{% macro m() %}{% if c %}z{% endif %}{% endmacro %}";
     let arm = |c: &str| path_at(sql, sql.find(c).unwrap());
     assert!(arms_exclusive(&arm("a"), &arm("b")));
-    assert_eq!(arm("z"), vec![ArmStep { chain: 1, arm: 0 }]);
+    assert_eq!(arm("a"), vec![for_arm(0, 0)]);
+    assert_eq!(arm("b"), vec![for_arm(0, 1)]);
+    assert_eq!(arm("z"), vec![if_arm(1, 0)]);
     // The `{% macro %}` block itself isn't an arm — `a` and `z` compose
     // freely (different chains, no disagreement).
     assert!(!arms_exclusive(&arm("a"), &arm("z")));
@@ -2187,5 +2203,42 @@ fn macro_calls_in_jinja_comments_are_inert() {
     assert!(!m.parent_map.contains_key("model.p.m1"));
     // A commented-out call is still a call-shape we can classify — it is
     // masked before the scan, so it neither edges nor counts.
+    assert!(m.unresolved_adjacent.is_empty());
+}
+
+#[test]
+fn comment_and_raw_blocks_never_reach_the_call_scan() {
+    // `{% comment %}…{% endcomment %}` is dead text Jinja never parses,
+    // `{% raw %}…{% endraw %}` emits its body literally — calls inside
+    // either can't be edges (dbt only runs the live `{{ }}`).
+    let sql = "{% comment %} {{ ref('ghost') }} {% endcomment %}\
+             \n{% raw %} {{ source('s','t') }} {% endraw %}\
+             \n{{ ref('live') }}";
+    let sites = sites_of(sql);
+    assert_eq!(sites.len(), 1);
+    assert_eq!(&sql[sites[0].span.clone()], "ref('live')");
+    // Unclosed blocks mask to the end — dbt errors on them, and nothing
+    // they wrap can phantom-edge.
+    let sites = sites_of("{{ ref('live') }} {% comment %} {{ ref('ghost') }}");
+    assert_eq!(sites.len(), 1);
+}
+
+#[test]
+fn comment_and_raw_calls_produce_no_edges() {
+    let dir = tempfile::tempdir().unwrap();
+    macro_project(
+        dir.path(),
+        &[(
+            "m1",
+            "{% comment %} {{ union_raw('orders') }} {% endcomment %}select 1",
+        )],
+        &[(
+            "macros",
+            "{% macro union_raw(t) %}select * from {{ source('shop', t) }}{% endmacro %}",
+        )],
+        Some(SHOP_SCHEMA),
+    );
+    let m = manifest_from_source(dir.path()).unwrap();
+    assert!(!m.parent_map.contains_key("model.p.m1"));
     assert!(m.unresolved_adjacent.is_empty());
 }

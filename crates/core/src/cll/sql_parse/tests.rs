@@ -2231,6 +2231,336 @@ fn jinja_else_preserves_the_conditional_comma_idiom() {
     assert_eq!(got, want);
 }
 
+// -- template block bodies -----------------------------------------------------
+
+#[test]
+fn jinja_template_block_bodies_render_as_whitespace() {
+    // `{% set x %}…{% endset %}`/`{% macro %}…{% endmacro %}`/
+    // `{% call %}…{% endcall %}` bodies are template-side text — dbt
+    // evaluates them into a variable, macro, or call result and never
+    // emits their SQL at that position — so the WHOLE paired span
+    // renders whitespace, not two statements' worth of body text.
+    for (raw, rendered) in [
+        (
+            "{% set q %}select 9 as bogus{% endset %}select 1 as id",
+            " select 1 as id",
+        ),
+        (
+            "{% macro m() %}select 9 as bogus{% endmacro %}select 2 as id",
+            " select 2 as id",
+        ),
+        (
+            "{% call m() %}select 9 as bogus{% endcall %}select 3 as id",
+            " select 3 as id",
+        ),
+        // `{% set x = … %}` is the assignment statement — no body —
+        // so only the tag drops and the tail stays live.
+        ("{% set x = 1 %}select 4 as id", " select 4 as id"),
+        // Same-word blocks nest — the span ends at the OUTER
+        // `{% endset %}`.
+        (
+            "{% set a %}{% set b %}x{% endset %}y{% endset %}select 5 as id",
+            " select 5 as id",
+        ),
+        // A `{% raw %}` body inside a block is inert text — its
+        // `{% endset %}` can't close the outer block early.
+        (
+            "{% set a %}{% raw %}{% endset %}{% endraw %}y{% endset %}select 6 as id",
+            " select 6 as id",
+        ),
+        // An unmatched opener falls back to tag-only dropping — the
+        // body text stays live rather than eating the tail.
+        ("{% set q %}select 7 as id", " select 7 as id"),
+    ] {
+        assert_eq!(render_jinja(raw, SqlDialect::Generic), rendered, "{raw:?}");
+    }
+    // Whitespace-control dashes parse the same.
+    assert_eq!(
+        render_jinja(
+            "{%- set q -%}select 9 as bogus{%- endset -%}select 8 as id",
+            SqlDialect::Generic
+        ),
+        " select 8 as id"
+    );
+}
+
+#[test]
+fn jinja_arm_start_picks_the_else_render() {
+    // An arm opening with `from` keeps the `,` and blanks the keyword —
+    // `from a ,  b` unions the relations as FROM items. An arm opening
+    // with any other clause keyword (`limit`/`where`/`select`…) can't
+    // follow `,` without the keyword posing as a name — it emits
+    // whitespace and the [`jinja_parse`] retry keeps one arm instead.
+    assert_eq!(
+        render_jinja(
+            "select * {% if x %} from a {% else %} from b {% endif %}",
+            SqlDialect::Generic
+        ),
+        "select *   from a ,   b  "
+    );
+    assert_eq!(
+        render_jinja(
+            "select id from t {% if x %} limit 10 {% else %} limit 20 {% endif %}",
+            SqlDialect::Generic
+        ),
+        "select id from t   limit 10   limit 20  "
+    );
+    // A `{% for %}`'s `{% else %}` is its empty-iteration fallback —
+    // never a union member — so it renders a space, not `,`.
+    assert_eq!(
+        render_jinja(
+            "select {% for i in xs %}a{% else %}b{% endfor %} from t",
+            SqlDialect::Generic
+        ),
+        "select  a b  from t"
+    );
+}
+
+#[test]
+fn jinja_parse_recovers_loop_separators_and_exclusive_arms() {
+    // The `{% if not loop.last %}` idiom leaves `union all` dangling —
+    // `loop.last` can't be evaluated statically — so the strip blanks
+    // it and the single statement parses.
+    let sql = "{% for t in ['a','b'] %}\nselect id from {{ t }}\n\
+               {% if not loop.last %} union all {% endif %}\n{% endfor %}\n";
+    let (r, stmts) = jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic).unwrap();
+    assert_eq!(stmts.len(), 1);
+    assert!(!r.text.contains("union"), "the dangling separator blanked");
+    // The same idiom on select items — a trailing `,` before `from`.
+    let sql =
+        "select {% for c in ['a','b'] %} c{% if not loop.last %},{% endif %} {% endfor %} from t";
+    let (_, stmts) = jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic).unwrap();
+    assert_eq!(stmts.len(), 1);
+    // Positions the union can't combine — a `,` between arm bodies is
+    // no clause separator — collapse to one arm's render.
+    for sql in [
+        "select id from t where {% if x %} a > 1 {% else %} a > 2 {% endif %}",
+        "select a.id from a join b on {% if x %} a.x = b.x {% else %} a.y = b.y {% endif %}",
+        "select id from t {% if x %} limit 10 {% else %} limit 20 {% endif %}",
+        "{% if x %}select 1 as id{% else %}select 2 as id{% endif %}",
+        "select * {% if x %} from a.t {% else %} from b.u {% endif %}",
+    ] {
+        assert!(
+            jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic).is_some(),
+            "{sql:?} parses"
+        );
+    }
+    // Genuinely broken SQL still fails every retry.
+    assert!(jinja_parse(
+        "select from where or",
+        JinjaMark::Plain,
+        SqlDialect::Generic
+    )
+    .is_none());
+}
+
+#[test]
+fn jinja_arm_splits_where_a_comma_cannot_parse_render_a_space() {
+    // `,` needs a completed item or expression before it — after an
+    // operand-expecting keyword, an operator, `(`, or nothing at all it
+    // is guaranteed-invalid, so the split emits whitespace and the
+    // arms' text concatenates instead.
+    for (sql, rendered) in [
+        // Empty arm 0 — `select ,a`/`from ,t` fail where the space
+        // render parses.
+        (
+            "select {% if x %}{% else %}a{% endif %} from t",
+            "select   a  from t",
+        ),
+        (
+            "select * from {% if x %}{% else %}t{% endif %}",
+            "select * from   t ",
+        ),
+        // `a +` can't precede `,` — `a +  b` reads as one expression.
+        (
+            "select {% if x %}a +{% else %}b{% endif %} from t",
+            "select  a + b  from t",
+        ),
+        // `and`/`limit` need their operand — `and ,b`/`limit ,10` fail
+        // where `and  b`/`limit  10` parse.
+        (
+            "select id from t where a > 0 and {% if x %}{% else %}b > 0{% endif %}",
+            "select id from t where a > 0 and   b > 0 ",
+        ),
+        (
+            "select id from t limit {% if x %}{% else %}10{% endif %}",
+            "select id from t limit   10 ",
+        ),
+        // `end` completes a CASE — `end , b` IS a valid list split.
+        (
+            "select case when p then 1 end {% if x %}{% else %}b{% endif %} from t",
+            "select case when p then 1 end  ,b  from t",
+        ),
+    ] {
+        assert_eq!(render_jinja(sql, SqlDialect::Generic), rendered, "{sql:?}");
+        assert!(
+            jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic).is_some(),
+            "{sql:?} parses"
+        );
+    }
+}
+
+#[test]
+fn jinja_comment_commas_never_read_as_written_separators() {
+    // A `{# … #}` inside the `{% else %}from` gap can't leak into the
+    // render — Jinja drops it.
+    assert_eq!(
+        render_jinja(
+            "select * {% if x %} from a.t {% else %}{# c #} from b.u {% endif %}",
+            SqlDialect::Generic
+        ),
+        "select *   from a.t ,   b.u  "
+    );
+    // A `,` inside a comment in an arm body is text, not a written
+    // comma join — the branch comma alone separates the arms.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.a", "select 1", &["id"]),
+            model("model.t.b", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "select t.id from {% if x %}{{ ref('a') }} t{% else %}/* , */ {{ ref('b') }} t{% endif %}",
+                &[],
+            ),
+        ],
+        &[("model.t.a", "model.t.m"), ("model.t.b", "model.t.m")],
+    ));
+    let r = resolver();
+    assert!(!r.is_fallback("model.t.m"));
+    assert!(r.sql_facts(&dag, "model.t.m").unwrap().cartesian.is_empty());
+}
+
+#[test]
+fn jinja_block_body_models_resolve_the_surrounding_sql() {
+    // The block body never reaches the render — the model resolves
+    // against the SQL around it, not a phantom first statement.
+    for (uid, sql) in [
+        (
+            "model.t.set",
+            "{% set q %}select 9 as bogus{% endset %}select u.id from {{ ref('up') }} u",
+        ),
+        (
+            "model.t.macro",
+            "{% macro m() %}select 9 as bogus{% endmacro %}select u.id from {{ ref('up') }} u",
+        ),
+        (
+            "model.t.call",
+            "{% call m() %}select 9 as bogus{% endcall %}select u.id from {{ ref('up') }} u",
+        ),
+    ] {
+        let dag = Dag::build(&manifest(
+            vec![
+                model("model.t.up", "select 1", &["id"]),
+                raw_model(uid, sql, &[]),
+            ],
+            &[("model.t.up", uid)],
+        ));
+        let r = resolver();
+        assert!(!r.is_fallback(uid), "{uid} parses");
+        let got = edge_set(&dag, &r, uid);
+        let want: BTreeSet<_> = [e("model.t.up.id", "id", ColumnEdgeKind::Passthrough)]
+            .into_iter()
+            .collect();
+        assert_eq!(got, want, "{uid}");
+    }
+}
+
+#[test]
+fn exclusive_arms_do_not_fabricate_duplicate_output_columns() {
+    // The same output name once per `{% if %}`/`{% else %}` arm is ONE
+    // output column on every real render — not a duplicate. A repeat
+    // inside ONE arm still flags.
+    let dag = Dag::build(&manifest(
+        vec![
+            raw_model(
+                "model.t.dup",
+                "select {% if x %}r.refund_total as refund_total\
+                 {% else %}cast(null as integer) as refund_total{% endif %} from r",
+                &[],
+            ),
+            raw_model(
+                "model.t.real",
+                "select {% if x %}a as n, a as n{% else %}b as n{% endif %} from t",
+                &[],
+            ),
+        ],
+        &[],
+    ));
+    let r = resolver();
+    assert!(r
+        .sql_facts(&dag, "model.t.dup")
+        .unwrap()
+        .duplicate_outputs
+        .is_empty());
+    assert_eq!(
+        r.sql_facts(&dag, "model.t.real").unwrap().duplicate_outputs,
+        vec![("n".to_string(), 2)]
+    );
+}
+
+#[test]
+fn exclusive_arms_do_not_fabricate_an_unread_cte() {
+    // `final` declared once per arm and read unconditionally: whichever
+    // render ran, a `from final` bound SOME `final` — no render leaves
+    // a same-named sibling unread. A genuinely unread CTE still flags.
+    let dag = Dag::build(&manifest(
+        vec![
+            raw_model(
+                "model.t.dup",
+                "with {% if x %}final as (select 1 as a)\
+                 {% else %}final as (select 2 as a){% endif %} select * from final",
+                &[],
+            ),
+            raw_model(
+                "model.t.real",
+                "with dead as (select 1 as a), live as (select 2 as a) select * from live",
+                &[],
+            ),
+        ],
+        &[],
+    ));
+    let r = resolver();
+    assert!(r
+        .sql_facts(&dag, "model.t.dup")
+        .unwrap()
+        .unused_ctes
+        .is_empty());
+    assert_eq!(
+        r.sql_facts(&dag, "model.t.real").unwrap().unused_ctes,
+        vec!["dead".to_string()]
+    );
+}
+
+#[test]
+fn from_keyword_arms_union_relations_without_a_phantom_from() {
+    // `{% else %}from …` renders `,` + a blanked keyword: the FROM-item
+    // union keeps both written relations, `from` never poses as one,
+    // and the branch comma isn't a written comma join.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.a", "select 1", &["id"]),
+            model("model.t.b", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "select t.id {% if x %}from {{ ref('a') }} t{% else %}from {{ ref('b') }} t{% endif %}",
+                &[],
+            ),
+        ],
+        &[("model.t.a", "model.t.m"), ("model.t.b", "model.t.m")],
+    ));
+    let r = resolver();
+    assert!(!r.is_fallback("model.t.m"));
+    assert!(r.sql_facts(&dag, "model.t.m").unwrap().cartesian.is_empty());
+    // The Marked scan sees the written names around the refs — and no
+    // `from` among them.
+    let m = marked_relations(
+        "select * {% if x %} from a.t {% else %} from b.u {% endif %}",
+        SqlDialect::Generic,
+    )
+    .unwrap();
+    assert_eq!(m.names, vec!["a.t".to_string(), "b.u".to_string()]);
+}
+
 // -- table alias column lists -------------------------------------------------
 
 #[test]
@@ -2841,4 +3171,72 @@ fn unnest_column_alias_list_still_names_the_value() {
         .unwrap()
         .unresolved
         .is_empty());
+}
+
+#[test]
+fn comment_and_raw_blocks_render_like_jinja() {
+    // `{% comment %}` is dead text: body + tags render as spaces, so a
+    // commented-out `a, b` can't fabricate select items or outputs.
+    let r = render_jinja_mapped(
+        "select {% comment %}a, b{% endcomment %} c from t",
+        JinjaMark::Plain,
+        SqlDialect::Generic,
+    );
+    assert_eq!(r.text.trim(), "select   c from t", "{}", r.text);
+    // `{% raw %}` emits its body verbatim — `{{`/`{%` inside are literal.
+    let r = render_jinja_mapped(
+        "select {% raw %}{{ not_a_tag }}, x{% endraw %} c from t",
+        JinjaMark::Plain,
+        SqlDialect::Generic,
+    );
+    assert_eq!(
+        r.text.trim(),
+        "select  {{ not_a_tag }}, x  c from t",
+        "{}",
+        r.text
+    );
+}
+
+#[test]
+fn comment_blocks_do_not_kill_the_arm_map() {
+    // `{% endcomment %}` after a real `{% if %}`/{% else %}` must not go
+    // malformed — the exclusive arms still index.
+    let sql =
+        "select * from {% if x %}t1{% else %}t2{% endif %} {% comment %} junk {% endcomment %}";
+    let branches = crate::source::jinja_branches(&crate::source::mask_jinja_comments(sql));
+    let t1 = sql.find("t1").unwrap();
+    let t2 = sql.find("t2").unwrap();
+    assert!(
+        crate::source::arms_exclusive(branches.arm_path(t1), branches.arm_path(t2)),
+        "exclusive arms survive a comment block"
+    );
+    // And `{% debug %}` is a single tag, not an unclosed pair.
+    let sql = "select * from {% if x %}t1{% else %}t2{% endif %} {% debug %}";
+    let branches = crate::source::jinja_branches(&crate::source::mask_jinja_comments(sql));
+    assert!(
+        crate::source::arms_exclusive(branches.arm_path(t1), branches.arm_path(t2)),
+        "exclusive arms survive debug"
+    );
+}
+
+#[test]
+fn quoted_close_markers_dont_truncate_tags() {
+    // `{{ "{" }}`/`{{ 'a}}b' }}` — the quoted `}`/`}}` can't close early,
+    // so the `{% if %}` after them still indexes its arms.
+    let sql = "select {{ '{' }} x from {% if y %}t1{% else %}t2{% endif %}";
+    let branches = crate::source::jinja_branches(&crate::source::mask_jinja_comments(sql));
+    let t1 = sql.find("t1").unwrap();
+    let t2 = sql.find("t2").unwrap();
+    assert!(
+        crate::source::arms_exclusive(branches.arm_path(t1), branches.arm_path(t2)),
+        "arms index after a quoted brace literal"
+    );
+    let sql = "select {{ \"a}}b\" }} x from {% if y %}t1{% else %}t2{% endif %}";
+    let branches = crate::source::jinja_branches(&crate::source::mask_jinja_comments(sql));
+    let t1 = sql.find("t1").unwrap();
+    let t2 = sql.find("t2").unwrap();
+    assert!(
+        crate::source::arms_exclusive(branches.arm_path(t1), branches.arm_path(t2)),
+        "arms index after a quoted close marker"
+    );
 }

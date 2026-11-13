@@ -156,9 +156,10 @@ pub(super) fn collect_files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
 /// same byte length as the input, so an offset computed on the masked text
 /// indexes the original text too (call-site positions).
 ///
-/// A text without `{#` needs no copy — the borrowed input returns as-is.
+/// A text without `{#` or `{%` needs no copy — the borrowed input returns
+/// as-is.
 pub fn mask_jinja_comments(text: &str) -> Cow<'_, str> {
-    if !text.contains("{#") {
+    if !text.contains("{#") && !text.contains("{%") {
         return Cow::Borrowed(text);
     }
     let b = text.as_bytes();
@@ -181,6 +182,62 @@ pub fn mask_jinja_comments(text: &str) -> Cow<'_, str> {
                 }
             }
             i = j + 2;
+        } else {
+            i += 1;
+        }
+    }
+    // Second pass, on the masked text (a `{# #}`-masked `{% … %}` opens
+    // nothing): `{% comment %}…{% endcomment %}` and `{% raw %}…{% endraw %}`
+    // are dead to every consumer of this text — Jinja executes no call
+    // inside either, so a `ref()`/`source()`/`config()` there must not
+    // reach the call scans, `disabled()`, or the arm index. Neither nests
+    // (the first matching `{% end… %}` closes, the way the lexer eats the
+    // body verbatim); an unclosed one masks to the end — dbt errors on it,
+    // and the safe direction is under-reporting what it would never run.
+    let mut i = 0;
+    while i + 1 < out.len() {
+        if out[i] == b'{' && out[i + 1] == b'%' {
+            let Some(e) = jinja_tag_close(&out, i) else {
+                i += 1;
+                continue;
+            };
+            let word = tag_word(
+                std::str::from_utf8(&out[i + 2..e]).expect("masking emits ASCII spaces only"),
+            )
+            .0;
+            if word != "comment" && word != "raw" {
+                i = e + 2;
+                continue;
+            }
+            let end_word = if word == "raw" {
+                "endraw"
+            } else {
+                "endcomment"
+            };
+            let mut j = e + 2;
+            let close_end = loop {
+                let Some(open) = find_subslice(&out, j, b"{%") else {
+                    break out.len();
+                };
+                let Some(te) = jinja_tag_close(&out, open) else {
+                    break out.len();
+                };
+                if tag_word(
+                    std::str::from_utf8(&out[open + 2..te])
+                        .expect("masking emits ASCII spaces only"),
+                )
+                .0 == end_word
+                {
+                    break te + 2;
+                }
+                j = te + 2;
+            };
+            for c in &mut out[i..close_end] {
+                if *c != b'\n' {
+                    *c = b' ';
+                }
+            }
+            i = close_end;
         } else {
             i += 1;
         }
