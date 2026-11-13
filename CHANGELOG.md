@@ -14,7 +14,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   titles and headings above body text.
 - The lint tally's `N models skipped SQL rules (unparsable SQL)` line now
   names the models — up to ten in `unique_id` order, then `+K more` — so
-  an unparseable file surfaces by name instead of only inflating a count.
+  an unparsable file surfaces by name instead of only inflating a count.
   JSON and the other machine formats are unchanged.
 - `dbtl lint --help` and `dbtl check --lint`'s flag help now name both
   suppression routes — `.dbtl.yml`'s `lint.rules.<id>.exclude` selectors
