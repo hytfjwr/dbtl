@@ -26,7 +26,9 @@ dbtl impact --diff git:main --select 'tag:marts+'               # only matching 
 
 ## dbtl check
 
-`dbtl check` prints one `PASS`, `WARN`, `FAIL`, or `SKIP` line per gate. It exits 1 when any gate fails at or above `--fail-on`. With `--lint`, the findings print first as annotated blocks — position, source excerpt, and fix links (see [dbtl lint](lint.md) for the block shape) — then the gate rows, with clean lint rules collapsed into one `PASS lint` row, and the lint tally at the end. The gate rows below are `dbtl check --lint --source tests/fixtures/sample_project` on the repository's sample fixture.
+`dbtl check` prints one `PASS`, `WARN`, `FAIL`, or `SKIP` line per gate. It exits 1 when any gate fails at or above `--fail-on`.
+
+With `--lint`, the findings print first as annotated blocks — position, source excerpt, and fix links (see [dbtl lint](lint.md) for the block shape). The gate rows follow, with clean lint rules collapsed into one `PASS lint` row and the lint tally at the end. The output below is `dbtl check --lint --source tests/fixtures/sample_project` on the repository's sample fixture.
 
 ```text
 scope: root project only

@@ -27,7 +27,7 @@ dbtl --sql-dialect snowflake columns m.id # pin the parser dialect
 
 `dbtl` splits the target on the last `.`. A column whose own name contains a `.`, such as a quoted `"a.b"` identifier, cannot be expressed here today.
 
-`columns` accepts the global flags `--manifest`, `--source`, `--project`, `--include-packages`, `--catalog`, and `--sql-dialect`. See the [CLI overview](overview.md#global-flags).
+The global flags `columns` accepts are listed in the [CLI reference](../reference/cli.md#dbtl-columns).
 
 ## Output
 

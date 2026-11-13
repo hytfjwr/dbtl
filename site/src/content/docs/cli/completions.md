@@ -13,10 +13,19 @@ Supported shells are `bash`, `zsh`, `fish`, `powershell`, and `elvish`.
 dbtl completions zsh    # completion script on stdout
 ```
 
-Redirect the output to a file in a location your shell loads completions from.
+Redirect the output to a file in a location your shell loads completions from. The conventional places:
+
+| Shell | Where the script goes |
+| ----- | --------------------- |
+| `bash` | `~/.local/share/bash-completion/completions/dbtl` |
+| `zsh` | `_dbtl` in any directory on `$fpath`, such as `~/.zfunc/_dbtl` (add `fpath+=~/.zfunc` before `compinit` in `.zshrc`) |
+| `fish` | `~/.config/fish/completions/dbtl.fish` |
+| `powershell` | A script you dot-source from `$PROFILE`, or `dbtl completions powershell \| Out-String \| Invoke-Expression` inside it |
+| `elvish` | `~/.config/elvish/lib/dbtl.elv`, then `use dbtl` in `rc.elv` |
 
 ```sh
-dbtl completions bash > dbtl.bash
+dbtl completions bash > ~/.local/share/bash-completion/completions/dbtl
+dbtl completions fish > ~/.config/fish/completions/dbtl.fish
 ```
 
 `completions` accepts no global flags. Passing `--manifest` or another data-source flag is a usage error.

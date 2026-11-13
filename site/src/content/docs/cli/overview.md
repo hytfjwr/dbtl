@@ -55,15 +55,7 @@ These flags work on either side of the subcommand. `dbtl --manifest m.json check
 | `--include-packages` | Include nodes installed from dbt packages in the graph. |
 | `--sql-dialect <DIALECT>` | Pin the SQL dialect the parser uses — `generic`, `postgres`, `snowflake`, `bigquery`, `mysql`, `sqlite`, `duckdb`, `spark`, and more, case-insensitive (the full spelling list is in the [CLI reference](../reference/cli.md#global-flags)). `auto` reads the manifest's adapter type. |
 
-A subcommand honors only the global flags it consumes. If you type another one explicitly, the command stops with a usage error (exit code 2) instead of ignoring the flag. The same applies to TUI-only flags such as `--theme` or `--watch` placed next to a subcommand.
-
-| Command | Global flags it accepts |
-| ------- | ----------------------- |
-| `docs` | `--manifest`, `--source`, `--project`, `--include-packages`, `--diff`, `--run-results`, `--catalog`, `--sql-dialect` |
-| `impact`, `check`, `lint` | `--manifest`, `--source`, `--project`, `--include-packages`, `--diff`, `--catalog`, `--sql-dialect` |
-| `ls` | `--manifest`, `--source`, `--project`, `--include-packages`, `--diff` |
-| `columns` | `--manifest`, `--source`, `--project`, `--include-packages`, `--catalog`, `--sql-dialect` |
-| `completions` | none |
+A subcommand honors only the global flags it consumes. If you type another one explicitly, the command stops with a usage error (exit code 2) instead of ignoring the flag. The same applies to TUI-only flags such as `--theme` or `--watch` placed next to a subcommand. The set each subcommand accepts is listed at the end of its page in the [CLI reference](../reference/cli.md).
 
 ## Package scope
 

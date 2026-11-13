@@ -155,8 +155,9 @@ The documentation site lives in `site/`.
   `pnpm exec playwright install chromium`, then `pnpm run build` and
   `pnpm run test:e2e`. They run in CI on pull requests only.
 
-- The site is published only when a release is cut. A pull request builds it
-  to check it, and nothing is deployed.
+- The site is published only when a release is cut —
+  [RELEASING.md](RELEASING.md) describes that flow. A pull request builds
+  the site to check it, and nothing is deployed.
 - In examples, write the release version as `@DBTL_TAG@` (for example `v1.2.3`) or
   `@DBTL_VERSION@` (`1.2.3`). The build replaces them with the version in
   `Cargo.toml`, and an unknown `@DBTL_...@` token fails the build.

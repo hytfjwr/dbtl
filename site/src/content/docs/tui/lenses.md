@@ -25,18 +25,20 @@ Lenses with no data are skipped. The column-impact lens is reachable only while 
 
 ## Available lenses
 
-| Lens | Tints nodes by | Needs |
-|---|---|---|
-| Coverage | Test coverage | Nothing |
-| Blast radius | Size of the downstream impact, on a low, mid, high ramp | Nothing |
-| Layer | The layer the node belongs to | Nothing |
-| Layer violation | Layer violations | Nothing |
-| Lint | Static lint findings | Nothing |
-| Diff | Changes against a `--diff` baseline | `--diff` |
-| Run status | Status in the last run | `run_results.json` |
-| Runtime | Execution time in the last run | `run_results.json` |
-| Column impact | The downstream closure of a traced column | A traced column |
-| Primary key | Whether the model has a primary-key test | Nothing |
+One lens appears under three names: the name this page uses, the value the `lens` key in your [user config](../configuration/user-config.md) takes, and the `[lens:…]` tag the lineage title shows.
+
+| Lens | Config value | Title tag | Tints nodes by | Needs |
+|---|---|---|---|---|
+| Coverage | `coverage` | `[lens:coverage]` | Test coverage | Nothing |
+| Blast radius | `degree-heat` | `[lens:heat]` | Size of the downstream impact, on a low, mid, high ramp | Nothing |
+| Layer | `layer` | `[lens:layer]` | The layer the node belongs to | Nothing |
+| Layer violation | `layer-violation` | `[lens:violation]` | Layer violations | Nothing |
+| Lint | `lint` | `[lens:lint]` | Static lint findings | Nothing |
+| Diff | `diff` | `[lens:diff]` | Changes against a `--diff` baseline | `--diff` |
+| Run status | `run-status` | `[lens:run]` | Status in the last run | `run_results.json` |
+| Runtime | `run-time` | `[lens:time]` | Execution time in the last run | `run_results.json` |
+| Column impact | `column-impact` | `[lens:col]` | The downstream closure of a traced column | A traced column |
+| Primary key | `primary-key` | `[lens:pk]` | Whether the model has a primary-key test | Nothing |
 
 ### Coverage
 
@@ -87,8 +89,8 @@ Press `S` to open the project stats dashboard. With run results loaded, it inclu
 
 ## Export from the TUI
 
-The lineage can be copied or exported as Mermaid (`m`), Graphviz DOT (`x`), an ASCII diagram (`c`), or a Markdown impact report (`i`). See [Copy and export](interface.md#copy-and-export).
+The lineage can be copied or exported as Mermaid (`m`), Graphviz DOT (`x`), an ASCII diagram (`c`), or a Markdown impact report (`i`). See [Copy and export](copy-and-export.md).
 
 ## Set a default lens
 
-Set `lens` in your [user config](../configuration/user-config.md) to start with a lens. The accepted values are `off`, `coverage`, `degree-heat`, `layer`, `layer-violation`, `lint`, `diff`, `run-status`, `run-time`, `column-impact`, and `primary-key`. A project you already visited restores its saved lens instead.
+Set `lens` in your [user config](../configuration/user-config.md) to start with a lens. The accepted values are the config values in the table above, plus `off`. A project you already visited restores its saved lens instead.

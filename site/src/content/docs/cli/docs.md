@@ -73,7 +73,8 @@ On models and snapshots, each declared column also gets an `Upstream` cell with 
 
 GitHub refuses to render Mermaid figures past about 50,000 characters or 500 edges. Every generated figure is bounded to 40,000 characters and 400 edges, which leaves headroom under the real limit.
 
-- **Node pages** draw the lineage `--lineage-depth` hops out. The default is 2. Pass an integer of 1 or more, or `all` for the node's whole closure. You can also set it as `docs.lineage_depth` in `.dbtl.yml`. If a figure exceeds the budget, `dbtl` reduces the depth one hop at a time until it fits, and the page notes the reduction. If even depth 1 exceeds it, the figure becomes `Diagram omitted: N nodes / M edges exceed GitHub's Mermaid limits.` The direct parent and child link lists still render.
+- **Node pages** draw the lineage `--lineage-depth` hops out. The default is 2. Pass an integer of 1 or more, or `all` for the node's whole closure. You can also set it as `docs.lineage_depth` in `.dbtl.yml`.
+- **When a figure exceeds the budget**, `dbtl` reduces the depth one hop at a time until it fits, and the page notes the reduction. If even depth 1 exceeds it, the figure becomes `Diagram omitted: N nodes / M edges exceed GitHub's Mermaid limits.` The direct parent and child link lists still render.
 - **The index's whole-graph figure** splits by logical layer on large projects. A split figure that still exceeds the budget degrades to the same omission line plus a table.
 
 Diagrams come from the same Mermaid core that the TUI's `m` yank uses, so a page's figure matches what the app copies for the same view.

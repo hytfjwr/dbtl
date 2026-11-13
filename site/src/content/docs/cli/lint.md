@@ -13,7 +13,11 @@ dbtl lint --rules root_models,model_fanout  # a named subset
 dbtl lint --fail-on warn                    # fail on warnings too
 ```
 
-Text output is one annotated block per finding: an `error[rule]`/`warning[rule]` header, a `--> file[:line[:column]]` position, the source excerpt with the span underlined when it resolves, and `= help:`/`= docs:` footers. Findings in a properties `.yml` (descriptions, tests, freshness, contract columns) point at the `- name:` entry's line and column; a `.sql` finding points at the offending syntax (the wildcard, relation name, joined table, column reference, regex match, trailing semicolon, duplicated output column, unread CTE, or unbounded `ORDER BY`) when the rule can pin it exactly. A closing tally reads `Found N errors and M warnings in K files` — with `K baselined`/`K pre-existing, not counted` in parentheses when a baseline or `--diff` suppresses findings — plus `N rules reported findings; M skipped (need --catalog)` and, when models carried SQL the parser could not read, `N models skipped SQL rules (unparsable SQL)`.
+Text output is one annotated block per finding. The header names the severity and rule (`error[rule]` or `warning[rule]`), followed by a `--> file[:line[:column]]` position, the source excerpt with the span underlined when it resolves, and `= help:`/`= docs:` footers.
+
+Findings in a properties `.yml` (descriptions, tests, freshness, contract columns) point at the `- name:` entry's line and column. A `.sql` finding points at the offending syntax — the wildcard, relation name, joined table, column reference, regex match, trailing semicolon, duplicated output column, unread CTE, or unbounded `ORDER BY` — when the rule can pin it exactly.
+
+A closing tally reads `Found N errors and M warnings in K files`, with `K baselined` or `K pre-existing, not counted` in parentheses when a baseline or `--diff` suppresses findings. It then reports `N rules reported findings; M skipped (need --catalog)` and, when models carried SQL the parser could not read, `N models skipped SQL rules (unparsable SQL)`.
 
 ```text
 error[public_models_without_contract]: fct_public_api is access: public without an enforced contract
@@ -65,9 +69,7 @@ One findings list feeds every surface, so the numbers cannot drift apart:
 
 ## The rule set
 
-Every rule belongs to one category: `modeling`, `testing`, `governance`, `documentation`, `structure`, `performance`, `sql`, or `warehouse` — the `warehouse` rules run against `catalog.json` and are skipped without one.
-
-The [lint rules reference](../reference/lint-rules.md) lists every rule with its category, default severity, inputs, rationale, fix guidance, and parameters.
+The [lint rules reference](../reference/lint-rules.md) lists every rule with its category, default severity, inputs, rationale, fix guidance, and parameters. Rules in the `warehouse` category run against `catalog.json` and are skipped without one.
 
 ### List and explain rules
 
@@ -80,7 +82,7 @@ dbtl lint --explain model_fanout  # rationale, example, fix guidance, params, do
 
 ## Severities and fail_on
 
-Every finding carries the severity its rule resolves to. Only the rules that flag a broken guarantee or a build-time failure ship at `error` — `missing_primary_key_tests`, `public_models_without_contract`, `unknown_column_reference`, `trailing_semicolon` (a tail `;` splits dbt's `create … as (…)` wrapper), and `duplicate_output_columns` (the warehouse can't tell two same-named columns apart). Every other rule ships at `warn` so it reports without gating; opt a rule into `error` with `severity: error` in `.dbtl.yml` when it should fail your builds. The `fail_on` threshold decides what fails the run:
+Every finding carries the severity its rule resolves to; each rule's default severity is listed in the [lint rules reference](../reference/lint-rules.md). Only the rules that flag a broken guarantee or a build-time failure ship at `error`. Every other rule ships at `warn` so it reports without gating; opt a rule into `error` with `severity: error` in `.dbtl.yml` when it should fail your builds. The `fail_on` threshold decides what fails the run:
 
 | `fail_on` | Result |
 | --------- | ------ |
@@ -143,11 +145,4 @@ dbtl check --lint --diff git:origin/main      # PRs fail only on NEW findings
 
 `dbtl lint` renders the same `dbtl.report/v1` document as `dbtl check`. It accepts `--format`, `--color`, `--report <FMT>:<PATH>`, `--step-summary`, `--path-prefix`, and `--quiet`. See [report formats](check-and-impact.md#report-formats).
 
-| Code | Meaning |
-| ---- | ------- |
-| `0` | Pass. |
-| `1` | A finding at or above `fail_on`. |
-| `2` | Usage error: an unknown rule name, conflicting flags, or a malformed `.dbtl.yml`. |
-| `3` | Input error: a missing data source or an unreadable baseline. |
-
-The [exit codes](../configuration/exit-codes.md) page has the full table.
+`dbtl lint` exits 1 when a finding lands at or above `fail_on`, 2 on usage errors such as an unknown rule name or a malformed `.dbtl.yml`, and 3 on input errors such as a missing data source or an unreadable baseline. See [Exit codes](../configuration/exit-codes.md).
