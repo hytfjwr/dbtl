@@ -2,7 +2,7 @@
 //! check`'s impact gates — plus the coverage/counts family the status `cov`
 //! segment, `t` lens, stats dashboard, `dbtl docs` summaries, and `dbtl
 //! check` gates all read. Every listing resolves NAMES (a `RawNode.path`,
-//! an exposure's `name`, `""` only for unparseable uids) and is sorted —
+//! an exposure's `name`, `""` only for unparsable uids) and is sorted —
 //! one diff yields one stable report, so re-opening the same diff in the
 //! TUI and re-running `dbtl impact` print the same bytes.
 //!
