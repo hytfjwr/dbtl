@@ -60,7 +60,7 @@ Linting a project that already breaks rules should not require a flag day. The p
 ## Check it works
 
 - `dbtl lint` prints `No findings (N baselined)` and exits 0 on a fully frozen project.
-- `dbtl check --lint` prints one `PASS`, `WARN`, `FAIL`, or `SKIP` row per rule. With `--diff`, a `FAIL` row appears only when the change adds findings.
+- `dbtl check --lint` prints a `WARN`, `FAIL`, or `SKIP` row for each rule that reported or could not run, and folds the clean rules into one `PASS lint: N rules clean` line. With `--diff`, a `FAIL` row appears only when the change adds findings.
 - Exit codes tell a gate failure (1) from a wrong invocation or a missing input (2 and 3). See [exit codes](../configuration/exit-codes.md).
 
 ## Where next

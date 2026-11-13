@@ -19,8 +19,8 @@ No. Source mode parses the project files itself, and manifest mode reads an exis
 
 | dbt | Verified | How it is verified |
 | --- | -------- | ------------------ |
-| dbt Core | the latest release, plus 1.12.6 and 1.9.1 | A weekly job regenerates the fixture projects' manifests at the newest `dbt-core` release and at each project's recorded version, then runs the manifest↔source consistency tests. Every committed fixture loads in the test suite; they carry `dbt_version` 1.12.6 and 1.9.1 on manifest schema v12. |
-| dbt Fusion | 2.0.0 | A committed Fusion-generated manifest (schema v12) loads in the test suite. Resource types `dbtl` cannot draw are kept as generic nodes or reported as warnings — nothing is dropped silently. See [unsupported resource types](quick-start.md#unsupported-resource-types). |
+| dbt Core | the latest release, plus 1.12.6 and 1.9.1 | A weekly job regenerates the fixture projects' manifests at the newest `dbt-core` release and at each project's recorded version, then runs the manifest↔source consistency tests. Every committed fixture loads in the test suite; the versioned fixtures carry `dbt_version` 1.12.6 and 1.9.1 on manifest schema v12. |
+| dbt Fusion | 2.0.0 | A committed hand-written manifest exercising Fusion resource types (`dbt_version` 2.0.0, schema v12) loads in the test suite. Resource types `dbtl` cannot draw are kept as generic nodes or reported as warnings — nothing is dropped silently. See [unsupported resource types](quick-start.md#unsupported-resource-types). |
 | No dbt at all | always | Source mode reads `dbt_project.yml`, model SQL, and `schema.yml` directly and never calls `dbt`. |
 
 ## Does dbtl need a warehouse connection or credentials?
@@ -49,7 +49,7 @@ Start `dbtl` with `--diff <baseline>` — a manifest, another checkout, or a `gi
 
 ## What does dbtl write to my project?
 
-Nothing by default. Two opt-in commands write files: `dbtl lint --write-baseline` writes `.dbtl-baseline.json`, and `dbtl docs --out <DIR>` writes the generated Markdown tree. Your per-project view (bookmarks, tabs, the active lens) is saved outside the project under `~/.local/state/dbtl/`. See [saved state](../configuration/user-config.md#saved-state).
+Nothing by default. Two opt-in commands write files: `dbtl lint --write-baseline` writes `.dbtl-baseline.json`, and `dbtl docs --out <DIR>` writes the generated Markdown tree. In the TUI, `e` writes an export into the current directory — the lineage as `<name>_lineage.txt`, or the PR impact report as `<project>_pr_impact.md` from the diff view. Your per-project view (bookmarks, tabs, the active lens) is saved outside the project under `$XDG_STATE_HOME/dbtl/`, or `~/.local/state/dbtl/` when that variable is unset. See [saved state](../configuration/user-config.md#saved-state).
 
 ## How do I upgrade dbtl?
 
@@ -57,4 +57,4 @@ With Homebrew, `brew upgrade dbtl`. Otherwise download the new archive from the 
 
 ## Where do I report a bug?
 
-Open an issue on [GitHub](https://github.com/hytfjwr/dbtl/issues/new/choose) — the templates ask for the `dbtl` version, platform, invocation, and what you expected versus what happened.
+Open an issue on [GitHub](https://github.com/hytfjwr/dbtl/issues/new/choose) — the template asks for the `dbtl` version, platform, invocation, and what you expected versus what happened.

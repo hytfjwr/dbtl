@@ -41,14 +41,14 @@ description: See what a dbt branch changes — the blast radius, breaking column
    dbtl check --diff git:origin/main --lint
    ```
 
-   `--no-breaking` fails on column changes that downstream models still reference. With `--lint`, lint gates count only findings the change adds. See [the gate set](../cli/check-and-impact.md#the-gate-set).
+   `--no-breaking` fails on breaking column changes only — columns the diff removes or renames that downstream models still reference. Type and expression changes report as partial-breaking and never trip it. With `--lint`, lint gates count only findings the change adds. See [the gate set](../cli/check-and-impact.md#the-gate-set).
 
-5. **Put it in CI.** The [GitHub Action](../ci/github-action.md) runs `dbtl check` on each pull request, annotates the findings, and posts the report as a sticky comment. On other systems, run the same `dbtl check --diff` yourself — see [other CI systems](../ci/other-ci.md).
+5. **Put it in CI.** The [GitHub Action](../ci/github-action.md) runs `dbtl check` on each pull request, annotates the findings, and appends the report to the step summary; a sticky PR comment is opt-in via the `comment` input. On other systems, run the same `dbtl check --diff` yourself — see [other CI systems](../ci/other-ci.md).
 
 ## Check it works
 
 - The report's `changed:` line counts added, modified, and removed nodes; `affected models:` sizes the blast radius.
-- `dbtl check --diff` prints `PASS`, `WARN`, `FAIL`, or `SKIP` rows for the diff gates — `untested_changes`, `breaking_columns`, `changed_hubs`, `affected_exposures`, and `blast_radius`.
+- `dbtl check --diff` prints `PASS`, `WARN`, `FAIL`, or `SKIP` rows for the six diff gates — `new_layer_violations`, `untested_changes`, `breaking_columns`, `changed_hubs`, `affected_exposures`, and `blast_radius`.
 - A `git:` baseline parses the committed source, so uncommitted changes in your working tree count as the current side. See [git diffs and baselines](../cli/check-and-impact.md#git-diffs-and-baselines).
 
 ## Where next

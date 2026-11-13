@@ -47,4 +47,4 @@ Either way, keep a CI gate as the source of truth — a hook only shortens the f
       args: [--project, path/to/dbt-project]
 ```
 
-Without it, a root that holds no `dbt_project.yml` fails with a "no data source" input error. See [troubleshooting](../configuration/troubleshooting.md#dbtl-reports-no-data-source).
+Without it, a root that holds neither `target/manifest.json` nor `dbt_project.yml` fails with a "no data source" input error. See [troubleshooting](../configuration/troubleshooting.md#dbtl-reports-no-data-source).
