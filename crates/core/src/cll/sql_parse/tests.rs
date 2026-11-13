@@ -1533,6 +1533,252 @@ fn ref_rendered_next_to_same_named_cte_does_not_read_it() {
     assert!(facts.unused_ctes.is_empty());
 }
 
+#[test]
+fn jinja_comment_never_treats_its_quotes_as_strings() {
+    // `{# don't #}` — a `'` inside a Jinja comment is comment text, not
+    // a string opener: the comment still closes at `#}`. (Skipping a
+    // quoted span once hunted a closing quote to EOF — `tag_close`
+    // returned `None`, the `{#` leaked into the render, and the model
+    // fell back unparsable.)
+    assert_eq!(
+        render_jinja("select a {# don't #} from t", SqlDialect::Generic),
+        "select a   from t"
+    );
+    // A second comment's `#}` is the SECOND comment's close — the SQL
+    // between them isn't eaten as comment text.
+    assert_eq!(
+        render_jinja(
+            "select a {# don't #} , b {# isn't #} from t",
+            SqlDialect::Generic
+        ),
+        "select a   , b   from t"
+    );
+    // And the file still parses.
+    let dag = Dag::build(&manifest(
+        vec![raw_model(
+            "model.t.m",
+            "select a {# don't run this #} , b from t",
+            &[],
+        )],
+        &[],
+    ));
+    let r = resolver();
+    let _ = r.columns(&dag, "model.t.m");
+    assert!(!r.is_fallback("model.t.m"));
+    // `{{`/`{%` DO hold Jinja strings — a quoted `}}`/`%}` still can't
+    // fake their close.
+    assert_eq!(
+        render_jinja("select {{ f('}') }} from t", SqlDialect::Generic),
+        "select __dbtl_jinja_0__ from t"
+    );
+}
+
+#[test]
+fn inner_subquery_keywords_do_not_leak_into_the_outer_context() {
+    // `select a, (select y from t) {{ m() }}` — the inner `from` is the
+    // SUBQUERY's: it must not close the outer item list and render the
+    // tag as ` NULL ` (the `)` restores `select`, and `)` itself ends an
+    // expression → `, <name>`).
+    assert_eq!(
+        render_jinja("select a, (select y from t) {{ m() }}", SqlDialect::Generic),
+        "select a, (select y from t) , __dbtl_jinja_0__"
+    );
+    // `where exists (select 1) {{ m() }}` — the inner `select` is the
+    // subquery's: it must not flip the outer context into a select list
+    // and drop `, __dbtl_…` into a WHERE expression — a value render
+    // (` NULL `) is what the position means.
+    assert_eq!(
+        render_jinja(
+            "select a from t where exists (select 1) {{ m() }}",
+            SqlDialect::Generic
+        ),
+        "select a from t where exists (select 1)  NULL "
+    );
+    // The select-item case parses to a real item.
+    let dag = Dag::build(&manifest(
+        vec![raw_model(
+            "model.t.m",
+            "select a, (select y from t) {{ m() }} from t",
+            &[],
+        )],
+        &[],
+    ));
+    let r = resolver();
+    assert!(!r.is_fallback("model.t.m"));
+    // `(select …)` is an unnamed (synthetic) output — `columns()` never
+    // invents it — leaving the written `a` and the generated item.
+    assert_eq!(
+        r.columns(&dag, "model.t.m"),
+        vec!["a".to_string(), "__dbtl_jinja_0__".to_string()]
+    );
+}
+
+#[test]
+fn glued_ref_source_this_render_as_generated_names() {
+    // `{{ ref('events') }}_2024` — the real-world partitioned-table
+    // idiom: the glued identifier can't hold `"events"` (doesn't parse)
+    // or the bare `events` (would bind a same-named CTE/relation the tag
+    // never read) — a marked generated name stays one identifier AND
+    // keeps the generated-name protections.
+    assert_eq!(
+        render_jinja(
+            "select * from {{ ref('events') }}_2024",
+            SqlDialect::Generic
+        ),
+        "select * from __dbtl_jinja_0___2024"
+    );
+    assert_eq!(
+        render_jinja(
+            "select * from {{ source('raw', 'events') }}_v2",
+            SqlDialect::Generic
+        ),
+        "select * from __dbtl_jinja_0___v2"
+    );
+    assert_eq!(
+        render_jinja("select * from {{ this }}_stg", SqlDialect::Generic),
+        "select * from __dbtl_jinja_0___stg"
+    );
+    // A qualified-in tag (`o.{{ ref('x') }}`) glues the same way —
+    // `o."x"` can't form inside a dotted name.
+    assert_eq!(
+        render_jinja("select o.{{ ref('x') }} from t o", SqlDialect::Generic),
+        "select o.__dbtl_jinja_0__ from t o"
+    );
+    // A NON-glued ref still renders its quoted relation name.
+    assert_eq!(
+        render_jinja("select * from {{ ref('events') }}", SqlDialect::Generic),
+        "select * from \"events\""
+    );
+    // The glued shapes parse — and never surface as written relations.
+    let dag = Dag::build(&manifest(
+        vec![
+            raw_model("model.t.m", "select * from {{ ref('events') }}_2024", &[]),
+            raw_model(
+                "model.t.m2",
+                "select * from {{ source('raw', 'events') }}_v2",
+                &[],
+            ),
+        ],
+        &[],
+    ));
+    let r = resolver();
+    let _ = r.columns(&dag, "model.t.m");
+    let _ = r.columns(&dag, "model.t.m2");
+    assert!(!r.is_fallback("model.t.m"));
+    assert!(!r.is_fallback("model.t.m2"));
+    assert!(marked_relations(
+        "select * from {{ ref('events') }}_2024",
+        SqlDialect::Generic
+    )
+    .unwrap()
+    .names
+    .is_empty());
+}
+
+#[test]
+fn generated_columns_never_invent_parent_columns() {
+    // `u.{{ m() }}` → `u.__dbtl_jinja_0__` — against a parent whose
+    // column list is UNKNOWN (an unparsable model declares none), the
+    // qualified ref must not be trusted into `(up, __dbtl_jinja_0__)`:
+    // the generated name exists in no column list, so crediting it would
+    // fabricate an edge. A written `u.id` still trusts the unknown list.
+    let dag = Dag::build(&manifest(
+        vec![
+            raw_model("model.t.up", "select from", &[]),
+            raw_model(
+                "model.t.m",
+                "select u.id, u.{{ m() }}, {{ m2() }} from {{ ref('up') }} u",
+                &[],
+            ),
+        ],
+        &[("model.t.up", "model.t.m")],
+    ));
+    let r = resolver();
+    let got = edge_set(&dag, &r, "model.t.m");
+    let want: BTreeSet<_> = [e("model.t.up.id", "id", ColumnEdgeKind::Passthrough)]
+        .into_iter()
+        .collect();
+    assert_eq!(got, want);
+    // The generated outputs exist (positions keep them) but carry no
+    // invented sources.
+    assert_eq!(
+        r.columns(&dag, "model.t.m"),
+        vec![
+            "id".to_string(),
+            "__dbtl_jinja_0__".to_string(),
+            "__dbtl_jinja_1__".to_string()
+        ]
+    );
+}
+
+#[test]
+fn dialect_decides_line_comments_nested_blocks_and_string_prefixes() {
+    // `//` is a line comment only under Snowflake — elsewhere the `{{`
+    // after it is live code.
+    let raw = "select a // {{ x }}\nfrom t";
+    assert_eq!(render_jinja(raw, SqlDialect::Snowflake), raw);
+    assert_eq!(
+        render_jinja(raw, SqlDialect::Generic),
+        "select a // __dbtl_jinja_0__\nfrom t"
+    );
+    // `--` needs whitespace only where the dialect asks (MySQL): `--x`
+    // is an expression, so the `{{` on the line stays live; `-- x` is a
+    // comment there too.
+    let raw = "select a --x {{ y }}\nfrom t";
+    assert_eq!(render_jinja(raw, SqlDialect::Generic), raw);
+    assert_eq!(
+        render_jinja(raw, SqlDialect::MySql),
+        "select a --x , __dbtl_jinja_0__\nfrom t"
+    );
+    let raw = "select a -- {{ y }}\nfrom t";
+    assert_eq!(render_jinja(raw, SqlDialect::MySql), raw);
+    // `/*` nests only where the dialect says — Postgres closes the
+    // comment at the OUTER `*/` (the `{{` stays comment text); MySQL's
+    // flat scan ends at the first `*/`, leaving the `{{` live.
+    let raw = "select a /* x /* y */ {{ z }} */ from t";
+    assert_eq!(render_jinja(raw, SqlDialect::Postgres), raw);
+    assert_eq!(
+        render_jinja(raw, SqlDialect::MySql),
+        "select a /* x /* y */ , __dbtl_jinja_0__ */ from t"
+    );
+    // `$$` is a dollar-quoted string everywhere except SQLite, where
+    // `$…$` is a placeholder — the `{{` between the `$$`s is a literal
+    // interior under Postgres but live code under SQLite.
+    let raw = "select $$ {{ x }} $$";
+    assert_eq!(
+        render_jinja(raw, SqlDialect::Postgres),
+        "select $$  NULL  $$"
+    );
+    assert_eq!(
+        render_jinja(raw, SqlDialect::Sqlite),
+        "select $$ , __dbtl_jinja_0__ $$"
+    );
+    // `q'[x]'`/`nq'[x]'` — Oracle/Generic — hold an interior `'` inside
+    // the literal; elsewhere `q` is an identifier and `'` opens a plain
+    // literal that `don't`'s apostrophe closes.
+    let raw = "select q'[don't {{ x }}]' from t";
+    assert_eq!(
+        render_jinja(raw, SqlDialect::Oracle),
+        "select q'[don't  NULL ]' from t"
+    );
+    assert_eq!(
+        render_jinja(raw, SqlDialect::Postgres),
+        "select q'[don't , __dbtl_jinja_0__]' from t"
+    );
+    // `u&'…'` — Postgres/Generic — `\` begins a codepoint escape (a
+    // `\'` can't close); elsewhere `u` `&` are ordinary and the `'`
+    // literal follows the dialect's own escape rule.
+    let raw = "select u&'a\\' {{ x }} b'";
+    assert_eq!(
+        render_jinja(raw, SqlDialect::Postgres),
+        "select u&'a\\'  NULL  b'"
+    );
+    assert_eq!(
+        render_jinja(raw, SqlDialect::Sqlite),
+        "select u&'a\\' , __dbtl_jinja_0__ b'"
+    );
+}
+
 // -- synthetic `__colN` outputs never leak -----------------------------------
 
 #[test]

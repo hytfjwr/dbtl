@@ -242,9 +242,18 @@ fn word_byte(c: u8) -> bool {
 
 /// The lexical judgments the byte walk needs — every one read off the
 /// same `sqlparser` dialect the parser runs under, so a `\'`, an
-/// `E'…'`/`x'…'`/`r'…'`/`b'…'` prefix, a `"` that is a string rather
-/// than a quoted identifier, and `#`-to-EOL comments all close where the
+/// `E'…'`/`x'…'`/`r'…'`/`b'…'`/`u&'…'` prefix, a `q'[x]'` quoted string,
+/// a `"` that is a string rather than a quoted identifier, `#`-/`//`-/
+/// `--`-to-EOL comments, and `/* /* */ */` nesting all close where the
 /// tokenizer closes them, never where a hand-rolled scanner guessed.
+///
+/// Approximations that remain (all cheap and safe-direction): `'''…'''`
+/// triple-quoted strings scan as a `''`-escaped `'…'` — the same byte
+/// span, and an interior `{{ }}` still renders inside a literal;
+/// `N'…'` national strings scan as a plain `'` literal — the tokenizer
+/// reads them with the same quote and the dialect's own escape rule;
+/// `x`/`u&` prefixes only count at word start (`xu&'` stays a plain
+/// literal, matching the tokenizer's word-first read).
 struct Lex {
     /// `\'`/`\"` escape inside a `'…'`/`"…"` string —
     /// `Dialect::supports_string_literal_backslash_escape` (Snowflake,
@@ -268,6 +277,27 @@ struct Lex {
     /// ClickHouse — the last asking for a following space or `!`).
     hash_comment: bool,
     hash_comment_space: bool,
+    /// `/* /* */ */` nesting — `Dialect::supports_nested_comments`
+    /// (Generic, Postgres, ClickHouse, Databricks, DuckDb, MsSql, Spark).
+    nested_comments: bool,
+    /// `$$…$$`/`$tag$…$tag$` ARE strings — inverted
+    /// `Dialect::supports_dollar_placeholder` (SQLite, where a `$x$`
+    /// is a parameter, never a quoted string).
+    dollar_quote: bool,
+    /// `--` opens a comment only before whitespace —
+    /// `Dialect::requires_single_line_comment_whitespace` (MySQL: `--x`
+    /// is an expression, not a comment).
+    dash_comment_space: bool,
+    /// `//` opens a line comment — Snowflake only (the tokenizer keys
+    /// off the concrete dialect via `dialect_of!`; no predicate).
+    slash_comment: bool,
+    /// `q'[x]'`/`nq'[x]'` quote-delimited strings —
+    /// `Dialect::supports_quote_delimited_string` (Oracle, Generic).
+    q_quote: bool,
+    /// `U&'…'` unicode literals — `Dialect::supports_unicode_string_literal`
+    /// (Postgres, Generic). `\` begins a codepoint escape there — it
+    /// consumes the following bytes, like a quote escape for this scan.
+    unicode_prefix: bool,
 }
 
 impl Lex {
@@ -287,14 +317,21 @@ impl Lex {
             ),
             hash_comment: d.supports_hash_comment(),
             hash_comment_space: d.requires_hash_comment_space(),
+            nested_comments: d.supports_nested_comments(),
+            dollar_quote: !d.supports_dollar_placeholder(),
+            dash_comment_space: d.requires_single_line_comment_whitespace(),
+            slash_comment: matches!(dialect, SqlDialect::Snowflake),
+            q_quote: d.supports_quote_delimited_string(),
+            unicode_prefix: d.supports_unicode_string_literal(),
         }
     }
 
     /// Does `\` + any byte escape inside the literal opened at `b[i]` —
     /// the dialect's flag plus the prefix quirks the tokenizer applies:
-    /// `x'…'` always escapes, `E'…'` escapes under escape-constant
-    /// dialects, `r'…'`/`b'…'` never do, and an identifier quote (`"` on
-    /// most dialects, `` ` `` everywhere) never escapes at all.
+    /// `x'…'`/`u&'…'` always treat `\` as an escape (a codepoint escape
+    /// for `u&`), `E'…'` escapes under escape-constant dialects,
+    /// `r'…'`/`b'…'` never do, and an identifier quote (`"` on most
+    /// dialects, `` ` `` everywhere) never escapes at all.
     fn escape_for(&self, b: &[u8], i: usize) -> bool {
         let prefixed = |c: u8| -> bool {
             i >= 1 && b[i - 1].eq_ignore_ascii_case(&c) && (i < 2 || !word_byte(b[i - 2]))
@@ -308,9 +345,17 @@ impl Lex {
                     && !(self.byte_prefix && prefixed(b'b'))
             }
             _ => {
+                // `u&'…'`/`U&'…'`: the `u` must START a word (`xu&'` is
+                // `xu` `&` `'…'` — a plain literal, as the tokenizer
+                // reads the word first).
+                let unicode = self.unicode_prefix
+                    && i >= 2
+                    && b[i - 1] == b'&'
+                    && b[i - 2].eq_ignore_ascii_case(&b'u')
+                    && (i < 3 || !word_byte(b[i - 3]));
                 if (self.raw_prefix && prefixed(b'r')) || (self.byte_prefix && prefixed(b'b')) {
                     false
-                } else if prefixed(b'x') || (self.e_string && prefixed(b'e')) {
+                } else if unicode || prefixed(b'x') || (self.e_string && prefixed(b'e')) {
                     true
                 } else {
                     self.string_escape
@@ -319,12 +364,43 @@ impl Lex {
         }
     }
 
+    /// Does `--` at `b[i]` open a line comment — always, except where the
+    /// dialect requires whitespace after the dashes (MySQL: `--x` is an
+    /// expression, `-- x` a comment; a trailing `--` at EOF is not one).
+    fn dash_comment_at(&self, b: &[u8], i: usize) -> bool {
+        b.get(i + 1) == Some(&b'-')
+            && (!self.dash_comment_space || b.get(i + 2).is_some_and(|c| c.is_ascii_whitespace()))
+    }
+
+    /// Does `//` at `b[i]` open a line comment (Snowflake)?
+    fn slash_comment_at(&self, b: &[u8], i: usize) -> bool {
+        self.slash_comment && b.get(i + 1) == Some(&b'/')
+    }
+
     /// Does `#` at `b[i]` open a line comment — the dialect's hash-comment
     /// predicate, including the following-space-or-`!` requirement where
     /// the dialect asks for it.
     fn hash_comment_at(&self, b: &[u8], i: usize) -> bool {
         self.hash_comment
             && (!self.hash_comment_space || matches!(b.get(i + 1), Some(b' ') | Some(b'!')))
+    }
+
+    /// Does the `'` at `b[i]` open a `q'[x]'`/`nq'[x]'` quote-delimited
+    /// string — only where the dialect supports them AND the `'` follows
+    /// a bare `q`/`Q` (optionally `n`-prefixed). An identifier ending in
+    /// `q` (`sq'…'`) or `nq` (`xnq'…'`) stays a plain `'` literal, as
+    /// the tokenizer reads the whole word first.
+    fn q_quote_at(&self, b: &[u8], i: usize) -> bool {
+        if !self.q_quote || i == 0 || !b[i - 1].eq_ignore_ascii_case(&b'q') {
+            return false;
+        }
+        if i == 1 {
+            return true;
+        }
+        if !word_byte(b[i - 2]) {
+            return true;
+        }
+        b[i - 2].eq_ignore_ascii_case(&b'n') && (i < 3 || !word_byte(b[i - 3]))
     }
 }
 
@@ -481,6 +557,13 @@ struct Scan<'a> {
     /// Inside a `SELECT` item list — `select`/`distinct` set it, a
     /// [`CLAUSE_WORDS`] keyword clears it.
     select: bool,
+    /// The `(last_word, select)` frames `(` pushed — a parenthesized
+    /// expression is a FRESH context: the `select`/`from` an inner
+    /// subquery holds are its own, and letting them mutate the outer
+    /// state would render a following `{{ }}` from the wrong position
+    /// (`select a, (select y from t) {{ m() }}` — the inner `from` must
+    /// not close the outer item list). `)` restores the frame.
+    paren: Vec<(Vec<u8>, bool)>,
     /// Per-render counter stamped on generated names so two `{{ }}`
     /// placeholders can never collide into one name.
     seq: usize,
@@ -500,14 +583,17 @@ impl<'a> Scan<'a> {
             last_word: Vec::new(),
             last_sig: None,
             select: false,
+            paren: Vec::new(),
             seq: 0,
         }
     }
 
     /// Feed emitted TOKEN bytes into the word/clause context — identifier
     /// bytes accumulate into `word`, other bytes complete it (updating
-    /// `last_word`/`select`), and every non-whitespace byte updates
-    /// `last_sig`. Literal interiors and comments are never fed.
+    /// `last_word`/`select`), every non-whitespace byte updates
+    /// `last_sig`, and `(`/`)` push/pop the [`Scan::paren`] frames so a
+    /// subquery's keywords stay inside the subquery. Literal interiors
+    /// and comments are never fed.
     fn note(&mut self, bytes: &[u8]) {
         for &c in bytes {
             if !c.is_ascii_whitespace() {
@@ -515,7 +601,9 @@ impl<'a> Scan<'a> {
             }
             if word_byte(c) {
                 self.word.push(c.to_ascii_lowercase());
-            } else if !self.word.is_empty() {
+                continue;
+            }
+            if !self.word.is_empty() {
                 let w = std::mem::take(&mut self.word);
                 if w == b"select" || w == b"distinct" {
                     self.select = true;
@@ -523,6 +611,20 @@ impl<'a> Scan<'a> {
                     self.select = false;
                 }
                 self.last_word = w;
+            }
+            match c {
+                b'(' => {
+                    self.paren
+                        .push((std::mem::take(&mut self.last_word), self.select));
+                    self.select = false;
+                }
+                b')' => {
+                    if let Some((w, s)) = self.paren.pop() {
+                        self.last_word = w;
+                        self.select = s;
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -550,10 +652,11 @@ impl<'a> Scan<'a> {
     }
 
     fn finish(self) -> RenderedSql {
-        // Jinja interiors are ASCII for anything we render; copied bytes
-        // keep the original UTF-8 untouched.
+        // Invariant: emitted text is always valid UTF-8 — renders are
+        // ASCII and every copied range is a contiguous run of the source
+        // `&str`, emitted in order.
         RenderedSql {
-            text: String::from_utf8(self.out).unwrap_or_default(),
+            text: String::from_utf8(self.out).expect("the render only emits valid UTF-8"),
             segs: self.segs,
             branch_commas: self.branch_commas,
             jinja_literals: self.jinja_literals,
@@ -566,14 +669,22 @@ impl<'a> Scan<'a> {
         while i < b.len() {
             match b[i] {
                 // Comments pass through verbatim — a `{{` inside one is
-                // comment text, never a marker.
-                b'-' if b.get(i + 1) == Some(&b'-') => {
+                // comment text, never a marker. `--` needs whitespace
+                // after it only where the dialect asks (MySQL's `--x`
+                // is an expression); `//` is Snowflake's own; `/*`
+                // nests where the dialect says it does.
+                b'-' if self.lex.dash_comment_at(b, i) => {
+                    let end = line_comment_end(b, i);
+                    self.copy(i..end, false);
+                    i = end;
+                }
+                b'/' if self.lex.slash_comment_at(b, i) => {
                     let end = line_comment_end(b, i);
                     self.copy(i..end, false);
                     i = end;
                 }
                 b'/' if b.get(i + 1) == Some(&b'*') => {
-                    let end = block_comment_end(b, i);
+                    let end = block_comment_end(b, i, self.lex.nested_comments);
                     self.copy(i..end, false);
                     i = end;
                 }
@@ -585,11 +696,17 @@ impl<'a> Scan<'a> {
                     self.copy(i..end, false);
                     i = end;
                 }
+                // `q'[x]'`/`nq'[x]'` — a `'…'` scan would stop at the
+                // first interior `'`, so it gets its own close rule.
+                b'\'' if self.lex.q_quote_at(b, i) => {
+                    i = self.q_literal(i);
+                }
                 q @ (b'\'' | b'"' | b'`') => {
                     i = self.literal(i, q);
                 }
-                // Dollar-quoted strings — `$$…$$`/`$tag$…$tag$`.
-                b'$' => match dollar_quote_open(b, i) {
+                // Dollar-quoted strings — `$$…$$`/`$tag$…$tag$`, only
+                // where `$` isn't a placeholder (SQLite).
+                b'$' if self.lex.dollar_quote => match dollar_quote_open(b, i) {
                     Some(dlen) => {
                         i = self.dollar_literal(i, dlen);
                     }
@@ -639,6 +756,41 @@ impl<'a> Scan<'a> {
                 && matches!(b.get(j + 1), Some(&b'{') | Some(&b'%') | Some(&b'#'))
             {
                 j = self.tag(j, TagCtx::Literal(q));
+            } else {
+                self.copy(j..j + 1, false);
+                j += 1;
+            }
+        }
+        j
+    }
+
+    /// Scan a `q'[x]'` quote-delimited literal opened at `i` — no
+    /// escapes: the byte after `'` picks the delimiter (`(`/`<`/`{`
+    /// pair, `[`→`]`, else the byte itself) and the string closes at
+    /// `enddelim'`. Jinja tags inside render like anywhere else.
+    /// Returns the index after the close — `b.len()` when unterminated.
+    fn q_literal(&mut self, i: usize) -> usize {
+        let b = self.sql.as_bytes();
+        self.copy(i..i + 1, false);
+        let Some(&open) = b.get(i + 1) else {
+            return b.len();
+        };
+        self.copy(i + 1..i + 2, false);
+        let close = match open {
+            b'(' => b')',
+            b'[' => b']',
+            b'<' => b'>',
+            b'{' => b'}',
+            c => c,
+        };
+        let mut j = i + 2;
+        while j < b.len() {
+            if b[j] == b'{' && matches!(b.get(j + 1), Some(&b'{') | Some(&b'%') | Some(&b'#')) {
+                j = self.tag(j, TagCtx::Literal(b'\''));
+            } else if b[j] == close && b.get(j + 1) == Some(&b'\'') {
+                self.copy(j..j + 2, false);
+                self.note(b"\"");
+                return j + 2;
             } else {
                 self.copy(j..j + 1, false);
                 j += 1;
@@ -698,8 +850,22 @@ impl<'a> Scan<'a> {
     fn expr_tag(&mut self, i: usize, e: usize, ctx: TagCtx) {
         let inner = &self.sql[i + 2..e];
         let src = i..e + 2;
+        let after = self.sql.as_bytes().get(e + 2).copied();
         match classify_jinja_expr(inner) {
             JinjaExpr::Config => self.subst(src, b" ", ctx.is_top()),
+            // A classified relation name GLUED to identifier text
+            // (`{{ ref('events') }}_2024`, `o.{{ ref('x') }}`) can't keep
+            // the quoted render — `"events"_2024` isn't SQL — and it
+            // can't render the raw name into the glued identifier either:
+            // `events_2024` could bind a same-named CTE/relation the tag
+            // never read. A marked generated name parses as one
+            // identifier AND stays under the generated-name protections.
+            JinjaExpr::Ref(_) | JinjaExpr::Source(..) | JinjaExpr::This
+                if ctx.is_top() && self.adjacent(after) =>
+            {
+                let n = self.jinja_name();
+                self.subst(src, n.as_bytes(), true);
+            }
             JinjaExpr::Ref(name) => {
                 let n = match self.mark {
                     JinjaMark::Plain => name,
@@ -725,7 +891,6 @@ impl<'a> Scan<'a> {
             }
             JinjaExpr::Other(literals) => {
                 self.jinja_literals.extend(literals);
-                let after = self.sql.as_bytes().get(e + 2).copied();
                 let t = self.other_text(ctx, after);
                 self.subst(src, t.as_bytes(), ctx.is_top());
             }
@@ -854,10 +1019,12 @@ impl<'a> Scan<'a> {
     /// it a NEW select item rather than part of the previous one?
     /// Identifiers (but not the `select`/`distinct` openers), literals,
     /// `)`, `]`, `*`, `?` end expressions; keywords, operators, `(`, `,`
-    /// don't.
+    /// don't. `'`/`` ` `` can't appear as `last_sig` — a literal's
+    /// closing quote is fed as the `"` boundary byte (see
+    /// [`Scan::literal`]), so `"` stands in for every closed literal.
     fn expr_ender(&self) -> bool {
         match self.last_sig {
-            Some(b')' | b']' | b'*' | b'?' | b'\'' | b'"' | b'`') => true,
+            Some(b')' | b']' | b'*' | b'?' | b'"') => true,
             Some(c) if word_byte(c) || c >= 0x80 => {
                 // A word — under `select` it's an identifier or a literal:
                 // clause keywords already flipped `select` off, and
@@ -879,12 +1046,53 @@ fn line_comment_end(b: &[u8], i: usize) -> usize {
 }
 
 /// The index after `*/` for the block comment opened at `i` — `b.len()`
+/// when unterminated. `nested` (the dialect's
+/// `supports_nested_comments`) counts inner `/*`/`*/` pairs so
+/// `/* a /* b */ c */` ends at the OUTER close where the dialect sees
+/// one; a flat dialect's first `*/` wins either way.
+fn block_comment_end(b: &[u8], i: usize, nested: bool) -> usize {
+    let mut depth = 1usize;
+    let mut j = i + 2;
+    while j + 1 < b.len() {
+        if b[j] == b'*' && b[j + 1] == b'/' {
+            depth -= 1;
+            if depth == 0 {
+                return j + 2;
+            }
+            j += 2;
+        } else if nested && b[j] == b'/' && b[j + 1] == b'*' {
+            depth += 1;
+            j += 2;
+        } else {
+            j += 1;
+        }
+    }
+    b.len()
+}
+
+/// The index after a `q'[x]'` quote-delimited string opened at `i` —
+/// the byte after `'` picks the delimiter (`(`/`[`/`<`/`{` pair, else
+/// the byte itself) and the string closes at `enddelim'`. `b.len()`
 /// when unterminated.
-fn block_comment_end(b: &[u8], i: usize) -> usize {
-    b[i + 2..]
-        .windows(2)
-        .position(|w| w == b"*/")
-        .map_or(b.len(), |p| i + 2 + p + 2)
+fn q_quote_end(b: &[u8], i: usize) -> usize {
+    let Some(&open) = b.get(i + 1) else {
+        return b.len();
+    };
+    let close = match open {
+        b'(' => b')',
+        b'[' => b']',
+        b'<' => b'>',
+        b'{' => b'}',
+        c => c,
+    };
+    let mut j = i + 2;
+    while j + 1 < b.len() {
+        if b[j] == close && b[j + 1] == b'\'' {
+            return j + 2;
+        }
+        j += 1;
+    }
+    b.len()
 }
 
 /// The index just past the closing quote of the `q`-quoted span opened
@@ -912,9 +1120,10 @@ fn quoted_end(b: &[u8], i: usize, q: u8, escape: bool) -> usize {
 /// The index of the close marker's first byte for the tag opened at `i`
 /// (`kind` = `b'{'`/`b'%'`/`b'#'`) — `None` when unterminated. `{{ }}`
 /// tracks bracket depth so `{{ a({'x':1}) }}` doesn't close at the inner
-/// `}}`; `'…'`/`"…"` spans inside ANY tag are skipped so a quoted `}}`,
-/// `%}`, or `#}` — or a bracket inside a string — can't fake the close
-/// (`{{ f('}') }}`, `{{ var('x', 'a') }}`…). Shared by the render and
+/// `}}`; `'…'`/`"…"` spans inside `{{`/`{%` are skipped so a quoted `}}`
+/// or `%}` — or a bracket inside a string — can't fake the close
+/// (`{{ f('}') }}`, `{{ var('x', 'a') }}`…). A `{# #}` comment holds no
+/// string syntax, so its quotes never skip. Shared by the render and
 /// the trailing-semicolon scan so both read the same tag boundaries.
 fn tag_close(b: &[u8], i: usize, kind: u8) -> Option<usize> {
     let close: &[u8] = match kind {
@@ -930,7 +1139,13 @@ fn tag_close(b: &[u8], i: usize, kind: u8) -> Option<usize> {
             return Some(j);
         }
         match b[j] {
-            q @ (b'\'' | b'"') => {
+            // A `{# #}` comment holds NO string syntax — a `'`/`"` inside
+            // is plain comment text (`{# don't run #}`), and skipping a
+            // quoted span would either hunt a closing quote to EOF
+            // (returning `None` → the `{#` leaks into the render) or eat
+            // the SQL between two `#}`s. Only `{{`/`{%` bodies hold
+            // Jinja strings whose quotes can hide a close marker.
+            q @ (b'\'' | b'"') if kind != b'#' => {
                 // Jinja strings backslash-escape — `\'` stays inside.
                 j = quoted_end(b, j, q, true);
                 continue;
@@ -1174,10 +1389,12 @@ pub(super) fn jinja_call_args(e: &str, fname: &str) -> Option<Vec<String>> {
 /// }}` renders blank, every other `{{ }}` emits text — but a substituted
 /// mark never EMITS a `;`, so the effective tail is a copied byte: the
 /// raw text answers the question with no render at all. The scan walks
-/// the same regions [`render_jinja_mapped`] does — literals, comments
-/// (`--`, `/* */`, and dialect `#`), dollar-quoted strings, and Jinja
-/// markers — under the same dialect-derived rules, so a `;` inside one
-/// never counts, a literal AFTER the `;` still counts as content
+/// the same regions [`render_jinja_mapped`] does — literals (`'…'`/
+/// `q'[x]'`/`u&'…'` included), comments (`--`/`//`, `/* */` — nested
+/// where the dialect nests — and dialect `#`), dollar-quoted strings,
+/// and Jinja markers — under the same dialect-derived rules, so a `;`
+/// inside one never counts, a literal AFTER the `;` still counts as
+/// content
 /// (`select 1; 'x'` is mid-file, not a tail), and only the LAST
 /// meaningful byte can qualify.
 pub(crate) fn trailing_semicolon(sql: &str, dialect: SqlDialect) -> Option<Range<usize>> {
@@ -1195,21 +1412,29 @@ pub(crate) fn trailing_semicolon(sql: &str, dialect: SqlDialect) -> Option<Range
     let mut i = 0;
     while i < b.len() {
         match b[i] {
-            b'-' if b.get(i + 1) == Some(&b'-') => {
+            b'-' if lex.dash_comment_at(b, i) => {
+                i = line_comment_end(b, i);
+            }
+            b'/' if lex.slash_comment_at(b, i) => {
                 i = line_comment_end(b, i);
             }
             b'/' if b.get(i + 1) == Some(&b'*') => {
-                i = block_comment_end(b, i);
+                i = block_comment_end(b, i, lex.nested_comments);
             }
             b'#' if lex.hash_comment_at(b, i) => {
                 i = line_comment_end(b, i);
+            }
+            b'\'' if lex.q_quote_at(b, i) => {
+                let end = q_quote_end(b, i);
+                last = Some((end - 1, b[end - 1]));
+                i = end;
             }
             q @ (b'\'' | b'"' | b'`') => {
                 let end = quoted_end(b, i, q, lex.escape_for(b, i));
                 last = Some((end - 1, b[end - 1]));
                 i = end;
             }
-            b'$' => match dollar_quote_open(b, i) {
+            b'$' if lex.dollar_quote => match dollar_quote_open(b, i) {
                 Some(dlen) => {
                     let from = i + dlen;
                     let end =

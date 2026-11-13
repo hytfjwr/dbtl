@@ -5968,6 +5968,21 @@ fn jinja_inside_literals_and_identifiers_still_parses() {
                 "macro_cols",
                 "select o.id as other\n{{ select_cols('o') }}\nfrom {{ ref('base') }} o",
             ),
+            // An apostrophe inside a `{# #}` comment is comment text —
+            // the comment still closes at `#}` and the model parses.
+            model_sql(
+                "cmt",
+                "select a {# don't run this #} , b\nfrom {{ ref('base') }}",
+            ),
+            // A subquery's `select`/`from` stay inside the parens — the
+            // trailing `{{ }}` is a new select item, not a `NULL` alias.
+            model_sql(
+                "subq",
+                "select a, (select y from {{ var('t') }}) {{ m() }}\nfrom {{ ref('base') }}",
+            ),
+            // `{{ ref('events') }}_2024` — a glued ref renders a marked
+            // generated name: parses AND reads no same-named relation.
+            model_sql("ref_glued", "select id\nfrom {{ ref('events') }}_2024"),
         ],
         vec![],
         &[],

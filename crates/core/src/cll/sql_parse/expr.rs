@@ -544,9 +544,14 @@ impl SqlParseResolver {
                             .insert((uid.clone(), col.to_string()));
                     }
                 }
-                // Unknown column list → trust the qualification.
+                // Unknown column list → trust the qualification — but a
+                // `__dbtl_` name is Jinja-generated (`t.{{ m() }}` renders
+                // a marked column): the parent provably has no such
+                // column, so crediting it would invent an edge.
                 None => {
-                    s.insert((uid.clone(), col.to_string()));
+                    if !generated_name(col) {
+                        s.insert((uid.clone(), col.to_string()));
+                    }
                 }
             },
             TableSrc::Derived(q) => {
@@ -631,8 +636,14 @@ impl SqlParseResolver {
                                 found.insert((uid.clone(), col.to_string()));
                             }
                         }
+                        // An unknown-list parent is creditable only for a
+                        // name that was actually written — a `__dbtl_`
+                        // generated name exists in no column list, so
+                        // crediting it would invent an edge.
                         None => {
-                            unknown.insert(uid.clone());
+                            if !generated_name(col) {
+                                unknown.insert(uid.clone());
+                            }
                         }
                     },
                     TableSrc::Derived(q) => {
