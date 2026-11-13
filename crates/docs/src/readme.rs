@@ -264,10 +264,14 @@ pub(super) fn push_readme_lineage(s: &mut String, dag: &Dag, files: &BTreeMap<St
             s.push_str("\n| Name | Type | Materialization |\n");
             s.push_str("| --- | --- | --- |\n");
             for n in &sg.nodes {
+                // `list_name` — a versioned model reads `fct_orders.v1`
+                // (the spelling every other table in this README uses);
+                // the link still keys on the uid.
+                let name = list_name(&n.unique_id, &n.name);
                 let cell = files
                     .get(&n.unique_id)
-                    .map(|rel| format!("[{}]({})", md_label(&n.name), page_link("README.md", rel)))
-                    .unwrap_or_else(|| md_cell(&n.name));
+                    .map(|rel| format!("[{}]({})", md_label(&name), page_link("README.md", rel)))
+                    .unwrap_or_else(|| md_cell(&name));
                 s.push_str(&format!(
                     "| {} | {} | {} |\n",
                     cell,
