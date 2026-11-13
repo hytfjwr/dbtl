@@ -1123,6 +1123,20 @@ impl<'a> Scan<'a> {
     /// blanked-body forms.
     fn block_tag(&mut self, i: usize, e: usize, ctx: TagCtx) -> usize {
         let (word, rest) = tag_word(&self.sql[i + 2..e]);
+        if word == "raw" {
+            // `{% raw %}` emits its body verbatim — the open/close tags
+            // render to spaces but the literal text between them is
+            // copied through untouched: `{{`/`{%` markers inside are
+            // literal characters, not tags.
+            if let Some((body_end, tag_end)) = raw_body_end(self.sql, e + 2) {
+                self.subst(i..e + 2, b" ", ctx.is_top());
+                self.copy(e + 2..body_end, ctx.is_top());
+                self.subst(body_end..tag_end, b" ", ctx.is_top());
+                return tag_end;
+            }
+            // An unclosed `{% raw %}` renders like any other tag — its
+            // body flows through (malformed input either way).
+        }
         if let Some(end) = block_body_end(self.sql, e + 2, word, rest) {
             self.subst(i..end, b" ", ctx.is_top());
             return end;
@@ -1651,18 +1665,47 @@ fn next_tag_open(b: &[u8], from: usize) -> Option<usize> {
         .find(|&i| b[i] == b'{' && matches!(b.get(i + 1), Some(&b'{') | Some(&b'%') | Some(&b'#')))
 }
 
+/// For `{% raw %}…{% endraw %}`: `(body_end, tag_end)` — the offset of
+/// the `{% endraw %}` tag's open and one past its close — `None` when no
+/// `{% endraw %}` follows. Raw bodies don't nest (the lexer eats them
+/// verbatim), so the first `{% endraw %}` wins.
+fn raw_body_end(sql: &str, from: usize) -> Option<(usize, usize)> {
+    let b = sql.as_bytes();
+    let mut j = from;
+    loop {
+        let open = find_subslice(b, j, b"{%")?;
+        let e = jinja_tag_close(b, open)?;
+        if tag_word(&sql[open + 2..e]).0 == "endraw" {
+            return Some((open, e + 2));
+        }
+        j = e + 2;
+    }
+}
+
 /// The offset just past the `{% end… %}` closing the template-body
 /// block `{% <word> … %}` opened — `{% set x %}` (the block form ONLY:
 /// `{% set x = … %}` is the statement, no body), `{% macro %}`,
-/// `{% call %}`. `None` for other tags and unmatched pairs — the tag
-/// then renders like any other, body text and all. Same-word blocks
-/// nest; `{% raw %}` bodies are inert; `{{`/`{#` markers are skipped
-/// whole — the same rules [`jinja_branches`] walks by.
+/// `{% call %}`, plus the dead-body declarations (`{% comment %}`,
+/// `{% docs %}`) whose contents Jinja/dbt never parses.
+/// `None` for other tags and unmatched pairs — the tag
+/// then renders like any other, body text and all. `set`/`macro`/`call`
+/// nest same-word; the dead-body words don't (their first end tag
+/// closes, the lexer eating the body verbatim); `{% raw %}` bodies are
+/// inert; `{{`/`{#` markers are skipped whole — the same rules
+/// [`jinja_branches`] walks by.
 fn block_body_end(sql: &str, from: usize, word: &str, rest: &str) -> Option<usize> {
-    let close = match word {
-        "set" if !jinja_set_assigns(rest) => "endset",
-        "macro" => "endmacro",
-        "call" => "endcall",
+    let (close, nests) = match word {
+        "set" if !jinja_set_assigns(rest) => ("endset", true),
+        "macro" => ("endmacro", true),
+        "call" => ("endcall", true),
+        // Dead bodies — Jinja/dbt never parses their contents, so a
+        // `{{ ref() }}`/`,` inside them emits nothing. `comment` bodies
+        // are dropped text; `docs` bodies are doc prose. Neither nests —
+        // the first end tag closes (the lexer eats the body verbatim).
+        // (`test`/`snapshot`/`embed`/`materialization`/`verification`
+        // bodies DO render or define SQL — they flow through.)
+        "comment" => ("endcomment", false),
+        "docs" => ("enddocs", false),
         _ => return None,
     };
     let b = sql.as_bytes();
@@ -1692,7 +1735,7 @@ fn block_body_end(sql: &str, from: usize, word: &str, rest: &str) -> Option<usiz
                 }
                 j = k;
                 continue;
-            } else if w == word && (word != "set" || !jinja_set_assigns(r)) {
+            } else if nests && w == word && (word != "set" || !jinja_set_assigns(r)) {
                 depth += 1;
             }
         }

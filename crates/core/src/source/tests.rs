@@ -2205,3 +2205,40 @@ fn macro_calls_in_jinja_comments_are_inert() {
     // masked before the scan, so it neither edges nor counts.
     assert!(m.unresolved_adjacent.is_empty());
 }
+
+#[test]
+fn comment_and_raw_blocks_never_reach_the_call_scan() {
+    // `{% comment %}…{% endcomment %}` is dead text Jinja never parses,
+    // `{% raw %}…{% endraw %}` emits its body literally — calls inside
+    // either can't be edges (dbt only runs the live `{{ }}`).
+    let sql = "{% comment %} {{ ref('ghost') }} {% endcomment %}\
+             \n{% raw %} {{ source('s','t') }} {% endraw %}\
+             \n{{ ref('live') }}";
+    let sites = sites_of(sql);
+    assert_eq!(sites.len(), 1);
+    assert_eq!(&sql[sites[0].span.clone()], "ref('live')");
+    // Unclosed blocks mask to the end — dbt errors on them, and nothing
+    // they wrap can phantom-edge.
+    let sites = sites_of("{{ ref('live') }} {% comment %} {{ ref('ghost') }}");
+    assert_eq!(sites.len(), 1);
+}
+
+#[test]
+fn comment_and_raw_calls_produce_no_edges() {
+    let dir = tempfile::tempdir().unwrap();
+    macro_project(
+        dir.path(),
+        &[(
+            "m1",
+            "{% comment %} {{ union_raw('orders') }} {% endcomment %}select 1",
+        )],
+        &[(
+            "macros",
+            "{% macro union_raw(t) %}select * from {{ source('shop', t) }}{% endmacro %}",
+        )],
+        Some(SHOP_SCHEMA),
+    );
+    let m = manifest_from_source(dir.path()).unwrap();
+    assert!(!m.parent_map.contains_key("model.p.m1"));
+    assert!(m.unresolved_adjacent.is_empty());
+}

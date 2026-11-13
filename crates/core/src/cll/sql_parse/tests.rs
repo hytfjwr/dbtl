@@ -3172,3 +3172,71 @@ fn unnest_column_alias_list_still_names_the_value() {
         .unresolved
         .is_empty());
 }
+
+#[test]
+fn comment_and_raw_blocks_render_like_jinja() {
+    // `{% comment %}` is dead text: body + tags render as spaces, so a
+    // commented-out `a, b` can't fabricate select items or outputs.
+    let r = render_jinja_mapped(
+        "select {% comment %}a, b{% endcomment %} c from t",
+        JinjaMark::Plain,
+        SqlDialect::Generic,
+    );
+    assert_eq!(r.text.trim(), "select   c from t", "{}", r.text);
+    // `{% raw %}` emits its body verbatim — `{{`/`{%` inside are literal.
+    let r = render_jinja_mapped(
+        "select {% raw %}{{ not_a_tag }}, x{% endraw %} c from t",
+        JinjaMark::Plain,
+        SqlDialect::Generic,
+    );
+    assert_eq!(
+        r.text.trim(),
+        "select  {{ not_a_tag }}, x  c from t",
+        "{}",
+        r.text
+    );
+}
+
+#[test]
+fn comment_blocks_do_not_kill_the_arm_map() {
+    // `{% endcomment %}` after a real `{% if %}`/{% else %}` must not go
+    // malformed — the exclusive arms still index.
+    let sql =
+        "select * from {% if x %}t1{% else %}t2{% endif %} {% comment %} junk {% endcomment %}";
+    let branches = crate::source::jinja_branches(&crate::source::mask_jinja_comments(sql));
+    let t1 = sql.find("t1").unwrap();
+    let t2 = sql.find("t2").unwrap();
+    assert!(
+        crate::source::arms_exclusive(branches.arm_path(t1), branches.arm_path(t2)),
+        "exclusive arms survive a comment block"
+    );
+    // And `{% debug %}` is a single tag, not an unclosed pair.
+    let sql = "select * from {% if x %}t1{% else %}t2{% endif %} {% debug %}";
+    let branches = crate::source::jinja_branches(&crate::source::mask_jinja_comments(sql));
+    assert!(
+        crate::source::arms_exclusive(branches.arm_path(t1), branches.arm_path(t2)),
+        "exclusive arms survive debug"
+    );
+}
+
+#[test]
+fn quoted_close_markers_dont_truncate_tags() {
+    // `{{ "{" }}`/`{{ 'a}}b' }}` — the quoted `}`/`}}` can't close early,
+    // so the `{% if %}` after them still indexes its arms.
+    let sql = "select {{ '{' }} x from {% if y %}t1{% else %}t2{% endif %}";
+    let branches = crate::source::jinja_branches(&crate::source::mask_jinja_comments(sql));
+    let t1 = sql.find("t1").unwrap();
+    let t2 = sql.find("t2").unwrap();
+    assert!(
+        crate::source::arms_exclusive(branches.arm_path(t1), branches.arm_path(t2)),
+        "arms index after a quoted brace literal"
+    );
+    let sql = "select {{ \"a}}b\" }} x from {% if y %}t1{% else %}t2{% endif %}";
+    let branches = crate::source::jinja_branches(&crate::source::mask_jinja_comments(sql));
+    let t1 = sql.find("t1").unwrap();
+    let t2 = sql.find("t2").unwrap();
+    assert!(
+        crate::source::arms_exclusive(branches.arm_path(t1), branches.arm_path(t2)),
+        "arms index after a quoted close marker"
+    );
+}
