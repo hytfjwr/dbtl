@@ -98,6 +98,12 @@ pub(super) struct SchemaFile {
     /// carry as nodes (no semantic-layer resources are synthesized).
     #[serde(default)]
     pub(super) semantic_models: Vec<SchemaSemanticModel>,
+    /// `unit_tests:` — dbt ≥1.8 unit test declarations. Synthesized into
+    /// `RawManifest::unit_tests` so `Dag::build` attaches them to their
+    /// `model:` targets through the same intake a real manifest feeds
+    /// (the `tests` side map — never a graph node).
+    #[serde(default)]
+    pub(super) unit_tests: Vec<SchemaUnitTest>,
 }
 
 /// Shared shape for `models:` / `seeds:` / `snapshots:` entries (only what we read).
@@ -370,4 +376,51 @@ pub(super) struct SchemaSourceTable {
     pub(super) tests: Vec<serde_json::Value>,
     #[serde(default)]
     pub(super) data_tests: Vec<serde_json::Value>,
+}
+
+/// A `unit_tests:` entry — dbt's YAML-declared unit test (dbt ≥1.8).
+/// `model:` is a bare model name (not a Jinja `ref()`); `versions:`
+/// selects the versioned members when the model is versioned;
+/// `given:`/`expect:` deserialize into the wire `RawUnitTestIo` shape
+/// directly — `input:`/`rows:`/`format:` are the surfaced fields
+/// (`format:` tells a parseable `csv` block from a `sql` query string)
+/// and the `fixture:` key rides along ignored, exactly like a real
+/// manifest read.
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct SchemaUnitTest {
+    #[serde(deserialize_with = "de_string")]
+    pub(super) name: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub(super) model: Option<String>,
+    #[serde(default)]
+    pub(super) config: SchemaUnitTestConfig,
+    #[serde(default)]
+    pub(super) versions: SchemaUnitTestVersions,
+    #[serde(default)]
+    pub(super) given: Vec<RawUnitTestIo>,
+    #[serde(default)]
+    pub(super) expect: Option<RawUnitTestIo>,
+}
+
+/// The `config:` block of a `unit_tests:` entry. `enabled` is the ONLY
+/// disable channel — a top-level `enabled:` is a dbt parse error, so it
+/// is never read.
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct SchemaUnitTestConfig {
+    /// `config.enabled:` — raw, like every other `enabled` channel (a
+    /// `{{ … }}` string must reach the expression evaluator).
+    #[serde(default, deserialize_with = "de_enabled")]
+    pub(super) enabled: Option<serde_json::Value>,
+}
+
+/// The `versions:` filter of a `unit_tests:` entry. `include` is a
+/// version list or `'*'` (every version); `exclude` a version list the
+/// selection subtracts. Kept as raw `Value` — numbers, `'beta'`-style
+/// strings, and the wildcard all parse under dbt's schema.
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct SchemaUnitTestVersions {
+    #[serde(default)]
+    pub(super) include: serde_json::Value,
+    #[serde(default)]
+    pub(super) exclude: serde_json::Value,
 }

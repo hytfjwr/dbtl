@@ -388,6 +388,9 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
             LintRule::LayerMaterializations => {
                 performance::layer_materializations(dag, &uids, &in_scope, config, &mut out)
             }
+            LintRule::ModelsWithoutUnitTests => {
+                testing::models_without_unit_tests(dag, &uids, &in_scope, config, &mut out)
+            }
         }
     }
     // The envelope fields are filled in ONE place — the severity the config

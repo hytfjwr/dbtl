@@ -2,7 +2,7 @@
 
 # Lint rules
 
-43 rules, evaluated by `dbtl lint`, `dbtl check --lint`, the docs generator, and the TUI's Lint lens — one registry table also backs `--list-rules`, `--explain`, SARIF metadata, and `.dbtl.yml` validation, so all of them describe the same rule set.
+44 rules, evaluated by `dbtl lint`, `dbtl check --lint`, the docs generator, and the TUI's Lint lens — one registry table also backs `--list-rules`, `--explain`, SARIF metadata, and `.dbtl.yml` validation, so all of them describe the same rule set.
 
 ## Rule-set presets
 
@@ -12,7 +12,7 @@
 | ------ | ----- |
 | `minimal` | only the rules whose default severity is `error` — 5 rules |
 | `standard` | every rule the registry enables by default — 40 rules |
-| `strict` | every rule, opt-in included — 43 rules |
+| `strict` | every rule, opt-in included — 44 rules |
 
 | Rule | Category | Default | `minimal` | `standard` | `strict` | Inputs | Summary |
 | ---- | -------- | ------- | --------- | ---------- | -------- | ------ | ------- |
@@ -59,6 +59,7 @@
 | [`undocumented_exposures`](#undocumented_exposures) | documentation | off (opt-in) | off | off | on | graph | an exposure has no description |
 | [`model_too_long`](#model_too_long) | structure | off (opt-in) | off | off | on | graph | a model's SQL file runs past the configured line budget |
 | [`layer_materializations`](#layer_materializations) | performance | off (opt-in) | off | off | on | graph | a model's materialization isn't allowed for its layer |
+| [`models_without_unit_tests`](#models_without_unit_tests) | testing | off (opt-in) | off | off | on | graph | a model in a checked layer has no unit test |
 
 ## `direct_join_to_source`
 
@@ -727,3 +728,21 @@ A model's materialization isn't allowed for its layer.
 | Name | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
 | `allowed` | mapping of layer names to lists of strings (`staging` `intermediate` `marts` `other` or a `lint.naming_prefixes` layer) | `{staging: [view, ephemeral], intermediate: [view, ephemeral, table, incremental], marts: [table, incremental, view]}` | materializations each layer permits — a layer not listed is unchecked, and `lint.naming_prefixes` layer names are valid keys |
+
+## `models_without_unit_tests`
+
+Category: `testing` · Default: `off` (opt-in — runs at `warn` when enabled) · Inputs: graph
+
+A model in a checked layer has no unit test.
+
+**Why:** Schema tests guard the SHAPE of a model's output — a column is unique, non-null, inside a domain — but they can't say the numbers are right. A unit test mocks a model's inputs and asserts the rows it should produce, the check that catches a fanning join or a flipped sign before the data ships. Marts are where those mistakes reach consumers, so the check defaults there; staging and intermediate stay opt-in. Python models and materialized views can't carry a unit test (dbt supports them on SQL models only) and never flag.
+
+**Example:** fct_orders doubles every order amount after a join fanout. Fix: declare a `unit_tests:` entry mocking the input rows so the wrong output fails before it reaches the warehouse.
+
+**Fix:** add a `unit_tests:` entry to the model's schema.yml, or narrow `layers`
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+| ---- | ---- | ------- | ----------- |
+| `layers` | list of layer names (`staging` `intermediate` `marts` `other` or a `lint.naming_prefixes` layer) | `[marts]` | model layers the unit-test check applies to — a built-in layer or a `lint.naming_prefixes` layer |

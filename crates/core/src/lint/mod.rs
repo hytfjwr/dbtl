@@ -144,6 +144,10 @@ pub enum LintRule {
     /// A model's materialization isn't in its layer's `allowed` list
     /// (opt-in).
     LayerMaterializations,
+    /// A model in a checked layer (default marts) carries no `unit`
+    /// test — an opt-in coverage rule (Python models and materialized
+    /// views can't carry one and never flag).
+    ModelsWithoutUnitTests,
 }
 
 impl LintRule {
@@ -151,7 +155,7 @@ impl LintRule {
     /// order of the enum and of [`REGISTRY`]. The original structure rules
     /// lead; rules added later append in registry order so the emitted
     /// sequence stays stable.
-    pub const ALL: [LintRule; 43] = [
+    pub const ALL: [LintRule; 44] = [
         Self::DirectJoinToSource,
         Self::MultipleSourcesJoined,
         Self::SourceFanout,
@@ -195,6 +199,7 @@ impl LintRule {
         Self::UndocumentedExposures,
         Self::ModelTooLong,
         Self::LayerMaterializations,
+        Self::ModelsWithoutUnitTests,
     ];
 
     /// This rule's registry row — every rule has exactly one (drift-tested).

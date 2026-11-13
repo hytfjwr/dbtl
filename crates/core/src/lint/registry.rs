@@ -953,6 +953,35 @@ pub static REGISTRY: &[RuleInfo] = &[
         )],
         requires: Requires::Graph,
     },
+    RuleInfo {
+        rule: LintRule::ModelsWithoutUnitTests,
+        id: "models_without_unit_tests",
+        category: Category::Testing,
+        default_severity: Severity::Warn,
+        default_enabled: false,
+        summary: "a model in a checked layer has no unit test",
+        rationale: "Schema tests guard the SHAPE of a model's output — a column \
+                    is unique, non-null, inside a domain — but they can't say \
+                    the numbers are right. A unit test mocks a model's inputs \
+                    and asserts the rows it should produce, the check that \
+                    catches a fanning join or a flipped sign before the data \
+                    ships. Marts are where those mistakes reach consumers, so \
+                    the check defaults there; staging and intermediate stay \
+                    opt-in. Python models and materialized views can't carry \
+                    a unit test (dbt supports them on SQL models only) and \
+                    never flag.",
+        example: "fct_orders doubles every order amount after a join fanout. \
+                  Fix: declare a `unit_tests:` entry mocking the input rows \
+                  so the wrong output fails before it reaches the warehouse.",
+        help: "add a `unit_tests:` entry to the model's schema.yml, or narrow `layers`",
+        params: &[ParamSpec::layer_list(
+            "layers",
+            &["marts"],
+            &["staging", "intermediate", "marts", "other"],
+            "model layers the unit-test check applies to — a built-in layer or a `lint.naming_prefixes` layer",
+        )],
+        requires: Requires::Graph,
+    },
 ];
 
 /// A rule the registry once carried and has since dropped. The id stays

@@ -887,15 +887,18 @@ fn unit_tests_carry_their_shape() {
                 crate::RawUnitTestIo {
                     input: Some("ref('a')".into()),
                     rows: Some(serde_json::json!([{"id": 1}, {"id": 2}])),
+                    ..Default::default()
                 },
                 crate::RawUnitTestIo {
                     input: Some("source('s','c')".into()),
                     rows: Some(serde_json::json!([{"id": 3}])),
+                    ..Default::default()
                 },
             ],
             expect: Some(crate::RawUnitTestIo {
                 input: None,
                 rows: Some(serde_json::json!([{"id": 1}])),
+                ..Default::default()
             }),
             ..Default::default()
         },

@@ -44,6 +44,9 @@ pub(super) struct Synthesis {
     exposures: HashMap<String, RawExposure>,
     /// name -> unique_id for models/seeds/snapshots, so `ref('x')` can resolve.
     name_index: HashMap<String, String>,
+    /// `unit_tests:` declarations → the `RawManifest::unit_tests` map —
+    /// filled in `apply_schema_files` once `name_index` is complete.
+    unit_tests: HashMap<String, RawUnitTest>,
     /// (uid, Jinja-comment-masked SQL) deferred to the ref/source pass —
     /// masking preserves byte length, so call-site offsets index the raw text.
     node_sql: Vec<(String, String)>,
@@ -228,6 +231,7 @@ impl Synthesis {
             sources: HashMap::new(),
             exposures: HashMap::new(),
             name_index: HashMap::new(),
+            unit_tests: HashMap::new(),
             node_sql: Vec::new(),
             tree_mat: HashMap::new(),
             tree_meta: HashMap::new(),
@@ -1079,6 +1083,18 @@ impl Synthesis {
                 &self.docs,
                 &mut self.warnings,
             );
+
+            // `unit_tests:` — dbt ≥1.8 unit tests, synthesized into the
+            // `RawManifest.unit_tests` map a real parse emits so
+            // `Dag::build` attaches them to their `model:` targets
+            // through the one intake path.
+            synth_unit_tests(
+                &mut self.unit_tests,
+                &test_ctx,
+                &schema.unit_tests,
+                &yml_path,
+                &mut self.warnings,
+            );
         }
     }
 
@@ -1231,8 +1247,8 @@ impl Synthesis {
                 // shared-macro impact), so the synthesized manifest fills
                 // the same shape instead of leaving the map absent.
                 macros: raw_macros.into_iter().collect(),
-                // Source mode never synthesizes semantic-layer resources or unit
-                // tests — they're YAML-only resources the source parser doesn't
+                // Source mode never synthesizes semantic-layer resources —
+                // they're YAML-only resources the source parser doesn't
                 // scan. `semantic_models:` entries ARE scanned, but only to mark
                 // each consumed node's `semantic_dependents` (above) — the same
                 // fact `Dag::build` derives from this map's records in manifest
@@ -1240,7 +1256,11 @@ impl Synthesis {
                 semantic_models: HashMap::new(),
                 metrics: HashMap::new(),
                 saved_queries: HashMap::new(),
-                unit_tests: HashMap::new(),
+                // The `unit_tests:` declarations synthesized in
+                // `apply_schema_files` — the same map a real manifest
+                // carries, so `Dag::build` attaches each test through
+                // the one intake path.
+                unit_tests: self.unit_tests,
                 functions: HashMap::new(),
                 docs: manifest_docs,
             },

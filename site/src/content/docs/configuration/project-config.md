@@ -72,6 +72,9 @@ lint:
         staging: [view, ephemeral]     #   keys are staging/intermediate/marts/
         marts: [table, incremental]    #   other + naming_prefixes layers;
                                        #   unlisted layers keep the defaults
+    models_without_unit_tests:
+      layers: [marts]                  # layers the unit-test check covers;
+                                       #   same key set as `allowed` above
   model_fanout_threshold: 5       # compat flat keys; an error if combined
   source_fanout_threshold: 2      #   with the nested param form
   naming_prefixes:                # per-layer merge over the defaults

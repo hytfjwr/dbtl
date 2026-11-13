@@ -2242,3 +2242,207 @@ fn comment_and_raw_calls_produce_no_edges() {
     assert!(!m.parent_map.contains_key("model.p.m1"));
     assert!(m.unresolved_adjacent.is_empty());
 }
+
+// ---- unit_tests: YAML → RawManifest → TestInfo ------------------------------
+
+/// A scratch project with `models/` SQL files and one schema.yml — returns
+/// the synthesized manifest plus the loader warnings.
+fn unit_test_project(
+    files: &[(&str, &str)],
+    schema: &str,
+) -> (crate::manifest::RawManifest, Vec<String>) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    std::fs::write(
+        dir.path().join("dbt_project.yml"),
+        "name: p\nmodel-paths: [models]\n",
+    )
+    .unwrap();
+    for (name, sql) in files {
+        std::fs::write(dir.path().join(format!("models/{name}.sql")), sql).unwrap();
+    }
+    std::fs::write(dir.path().join("models/schema.yml"), schema).unwrap();
+    manifest_from_source_with_warnings(dir.path(), None).unwrap()
+}
+
+#[test]
+fn unit_tests_synthesize_wire_records_and_attach() {
+    // The full intake: `unit_tests:` → a `RawUnitTest` keyed like a real
+    // manifest (`unit_test.<proj>.<model>.<name>`), `depends_on.nodes`
+    // carrying the tested model's uid, `given`/`expect` verbatim — and
+    // `Dag::build` attaches it as `kind: "unit"` metadata with the
+    // UnitTestShape counts.
+    let (m, w) = unit_test_project(
+        &[("stg_a", "select 1"), ("fct_a", "select 1")],
+        r#"version: 2
+unit_tests:
+  - name: doubles_amount
+    model: fct_a
+    given:
+      - input: ref('stg_a')
+        rows:
+          - {id: 1, amount: 2}
+          - {id: 2, amount: 3}
+    expect:
+      rows:
+        - {id: 1, doubled: 4}
+"#,
+    );
+    assert!(w.is_empty(), "{w:?}");
+    let ut = m
+        .unit_tests
+        .get("unit_test.p.fct_a.doubles_amount")
+        .expect("the wire record is keyed like a manifest unit test");
+    assert_eq!(ut.model.as_deref(), Some("fct_a"));
+    assert_eq!(ut.depends_on.nodes, vec!["model.p.fct_a".to_string()]);
+    let dag = crate::Dag::build(&m);
+    let t = dag
+        .tests("model.p.fct_a")
+        .iter()
+        .find(|t| t.kind == "unit")
+        .expect("the unit test attaches to its model");
+    let shape = t.unit.as_ref().expect("kind unit carries its shape");
+    assert_eq!(
+        (shape.inputs, shape.given_rows, shape.expect_rows),
+        (1, Some(2), Some(1))
+    );
+}
+
+#[test]
+fn unit_tests_expand_versioned_families_by_member_files() {
+    // `<model>_v<version>.sql` members stand in for the `versions:` block:
+    // an unfiltered entry emits one record per member, `include: [2]`
+    // selects just v2, `exclude: ['beta']` drops it. `v`/`2`/`V2` spellings
+    // normalize to one member, and the uid/version segments match what a
+    // real manifest writes.
+    let files = [
+        ("fct_orders_v1", "select 1"),
+        ("fct_orders_v2", "select 1"),
+        ("fct_orders_vbeta", "select 1"),
+    ];
+    let (m, w) = unit_test_project(
+        &files,
+        r#"version: 2
+unit_tests:
+  - name: all_versions
+    model: fct_orders
+    given: []
+  - name: scoped_v2
+    model: fct_orders
+    versions: {include: [2]}
+    given: []
+  - name: excluding_beta
+    model: fct_orders
+    versions: {exclude: ['beta']}
+    given: []
+"#,
+    );
+    assert!(w.is_empty(), "{w:?}");
+    let mut ids: Vec<&str> = m.unit_tests.keys().map(String::as_str).collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        vec![
+            "unit_test.p.fct_orders.all_versions_v1",
+            "unit_test.p.fct_orders.all_versions_v2",
+            "unit_test.p.fct_orders.all_versions_vbeta",
+            "unit_test.p.fct_orders.excluding_beta_v1",
+            "unit_test.p.fct_orders.excluding_beta_v2",
+            "unit_test.p.fct_orders.scoped_v2_v2",
+        ]
+    );
+    let v2 = &m.unit_tests["unit_test.p.fct_orders.scoped_v2_v2"];
+    assert_eq!(v2.version.as_deref(), Some("2"));
+    assert_eq!(
+        v2.depends_on.nodes,
+        vec!["model.p.fct_orders_v2".to_string()]
+    );
+    let beta = &m.unit_tests["unit_test.p.fct_orders.all_versions_vbeta"];
+    assert_eq!(beta.version.as_deref(), Some("beta"));
+    // …and they attach to the right graph nodes only.
+    let dag = crate::Dag::build(&m);
+    let kinds = |uid: &str| -> Vec<&str> {
+        let mut v: Vec<&str> = dag.tests(uid).iter().map(|t| t.name.as_str()).collect();
+        v.sort_unstable();
+        v
+    };
+    assert_eq!(
+        kinds("model.p.fct_orders_v2"),
+        vec!["all_versions", "excluding_beta", "scoped_v2"]
+    );
+    assert_eq!(kinds("model.p.fct_orders_vbeta"), vec!["all_versions"]);
+}
+
+#[test]
+fn unit_tests_csv_rows_count_the_records_dbt_parses() {
+    // `format: csv` rows stay a string in YAML, but real dbt parses them
+    // into row dicts — source mode reproduces the COUNT (header excluded)
+    // so `expect_rows` matches the manifest shape.
+    let (m, w) = unit_test_project(
+        &[("fct_a", "select 1")],
+        r#"version: 2
+unit_tests:
+  - name: csv_expect
+    model: fct_a
+    given:
+      - input: ref('fct_a')
+        format: csv
+        rows: |
+          id,amount
+          1,2
+          2,3
+    expect:
+      format: csv
+      rows: |
+        id,doubled
+        1,4
+"#,
+    );
+    assert!(w.is_empty(), "{w:?}");
+    let dag = crate::Dag::build(&m);
+    let t = dag
+        .tests("model.p.fct_a")
+        .iter()
+        .find(|t| t.kind == "unit")
+        .expect("the unit test attaches");
+    let shape = t.unit.as_ref().unwrap();
+    assert_eq!(
+        (shape.inputs, shape.given_rows, shape.expect_rows),
+        (1, Some(2), Some(1))
+    );
+}
+
+#[test]
+fn unit_tests_config_enabled_and_missing_targets() {
+    // `config.enabled: false` parks the test (dbt's `disabled` map);
+    // a missing `model:` warns and skips; an undeclared target still
+    // records `depends_on` for `Dag::build` to drop like a manifest-side
+    // record.
+    let (m, w) = unit_test_project(
+        &[("fct_a", "select 1")],
+        r#"version: 2
+unit_tests:
+  - name: off_test
+    model: fct_a
+    config: {enabled: false}
+    given: []
+  - name: no_model
+    given: []
+  - name: ghost_target
+    model: ghost
+    given: []
+"#,
+    );
+    assert!(
+        w.iter().any(|s| s.contains("'no_model'")),
+        "the missing-model warning names the test: {w:?}"
+    );
+    let mut ids: Vec<&str> = m.unit_tests.keys().map(String::as_str).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, vec!["unit_test.p.ghost.ghost_target"]);
+    let dag = crate::Dag::build(&m);
+    assert!(
+        dag.tests("model.p.fct_a").iter().all(|t| t.kind != "unit"),
+        "a disabled unit test never attaches"
+    );
+}
