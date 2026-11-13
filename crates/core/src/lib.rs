@@ -36,10 +36,10 @@ pub use cll::{
 };
 pub use compiled::{default_compiled_dir, default_target_dir, CompiledOrigin, CompiledSql};
 pub use dag::{
-    coverage_gap, dag_from_manifest_json, description_blank, has_pk_guarantee, in_package,
-    is_exposure, load_dag, load_dag_with_warnings, unhandled_resource_types, ColumnInfo,
-    ConstraintInfo, Dag, Edge, ExposureInfo, FreshnessThreshold, MacroInfo, NodeDetail, NodeInfo,
-    PackageScope, PrunedAdjacent, ResourceTypeSupport, Subgraph, TestInfo, UnitTestShape,
+    coverage_gap, dag_from_manifest, dag_from_manifest_json, description_blank, has_pk_guarantee,
+    in_package, is_exposure, load_dag, load_dag_with_warnings, unhandled_resource_types,
+    ColumnInfo, ConstraintInfo, Dag, Edge, ExposureInfo, FreshnessThreshold, MacroInfo, NodeDetail,
+    NodeInfo, PackageScope, PrunedAdjacent, ResourceTypeSupport, Subgraph, TestInfo, UnitTestShape,
 };
 pub use diff::{
     compute_diff, compute_diff_with, ColumnChange, ColumnChangeClass, ColumnChangeKind, DagDiff,

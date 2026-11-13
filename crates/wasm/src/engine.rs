@@ -10,10 +10,10 @@
 //! `dbtl_report`'s assembly and renderers rather than a parallel path.
 
 use dbtl_core::{
-    self, closure_report, dag_from_manifest_json, layout_density, parse_manifest,
-    selector_uses_state, validate_selector, CellAttr, ClosureDirection, ColumnRef, ColumnResolver,
-    Dag, Edge, FailOn, MaterializationClass, NodeInfo, PackageScope, RawManifest, SqlDialect,
-    SqlParseResolver, Subgraph,
+    self, closure_report, dag_from_manifest, layout_density, parse_manifest, selector_uses_state,
+    validate_selector, CellAttr, ClosureDirection, ColumnRef, ColumnResolver, Dag, Edge, FailOn,
+    MaterializationClass, NodeInfo, PackageScope, RawManifest, SqlDialect, SqlParseResolver,
+    Subgraph,
 };
 use dbtl_report::{
     collect_sources, lint_report, render_report, LintAux, LintRunInputs, RenderCtx, RenderEnv,
@@ -114,6 +114,9 @@ pub struct SelectedNode {
     pub resource_type: String,
     /// The materialization (models/seeds/snapshots), else `null`.
     pub materialized: Option<String>,
+    /// The project-relative file the node is declared in
+    /// (`original_file_path`), when known.
+    pub path: Option<String>,
 }
 
 /// `select`'s output.
@@ -261,6 +264,10 @@ pub struct LineageOutput {
 
 /// The lint call's input: the `.dbtl.yml` text (defaults when absent), an
 /// optional narrowing selector, and the fail threshold.
+///
+/// There is no lint-baseline input — the run always behaves as if
+/// `--no-baseline` were passed (a baseline file freezes findings from a
+/// real project checkout, which the engine has no filesystem to read).
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct LintOptions {
@@ -268,7 +275,8 @@ pub struct LintOptions {
     /// same unknown-key warnings apply). `null` = shipped defaults.
     pub config: Option<String>,
     /// A dbt selector narrowing findings to matched nodes — the
-    /// `lint --select` flag's semantics.
+    /// `lint --select` flag's semantics, including its `invalid --select`
+    /// error wording.
     pub selector: Option<String>,
     /// `error` (default) | `warn` | `never` — the `--fail-on` flag; the
     /// file's `fail_on:` fills in when absent.
@@ -351,10 +359,12 @@ impl Engine {
     /// then `(scope) `-prefixed scope warnings, then the unknown-adapter
     /// SQL-dialect notice.
     pub fn load(input: &LoadInput) -> Result<(Self, LoadOutput), EngineError> {
-        let (dag, mut warnings) = dag_from_manifest_json(&input.manifest)
-            .map_err(|e| EngineError::input(format!("{e:#}")))?;
+        // One parse, kept: the manifest stays behind for `replace_sql`
+        // edits and `rebuild`, so `dag_from_manifest` (the same build +
+        // warnings `dag_from_manifest_json` runs) avoids a second parse.
         let manifest =
             parse_manifest(&input.manifest).map_err(|e| EngineError::input(format!("{e:#}")))?;
+        let (dag, mut warnings) = dag_from_manifest(&manifest);
         let scope = if input.include_packages {
             PackageScope::All
         } else {
@@ -402,12 +412,19 @@ impl Engine {
 
     /// Evaluate a dbt selector against the loaded graph — the same
     /// strict-grammar validation and evaluation `dbtl ls` runs, so the
-    /// uid set matches `ls <spec> --output uids`. A `state:` atom has no
-    /// baseline to compare against here; it errors with the CLI's own
-    /// wording.
+    /// uid set matches `ls <spec> --output uids` and the rows match
+    /// `ls --format json`. A `state:` atom has no baseline to compare
+    /// against here; it errors with the CLI's own wording.
     pub fn select(&self, spec: &str) -> Result<SelectOutput, EngineError> {
+        self.select_labeled(spec, "selector")
+    }
+
+    /// [`select`](Self::select) with the CLI flag name the error message
+    /// cites — `ls` reports `invalid selector '…'` while `--select`-carrying
+    /// commands report `invalid --select '…'`.
+    fn select_labeled(&self, spec: &str, flag: &str) -> Result<SelectOutput, EngineError> {
         validate_selector(spec)
-            .map_err(|e| EngineError::usage(format!("invalid selector '{spec}': {e}")))?;
+            .map_err(|e| EngineError::usage(format!("invalid {flag} '{spec}': {e}")))?;
         if selector_uses_state(spec) {
             return Err(EngineError::usage(
                 "a 'state:' selector needs --diff to name the baseline it compares against",
@@ -417,7 +434,7 @@ impl Engine {
         Ok(SelectOutput {
             nodes: selected
                 .iter()
-                .map(|uid| SelectedNode::new(uid, self.dag.get(uid)))
+                .map(|uid| SelectedNode::new(&self.dag, uid))
                 .collect(),
         })
     }
@@ -541,7 +558,7 @@ impl Engine {
         let fail_on = input.fail_on.or(config.fail_on).unwrap_or(FailOn::Error);
         let selection = match &input.selector {
             Some(spec) => {
-                let selected = self.select(spec)?;
+                let selected = self.select_labeled(spec, "--select")?;
                 let set: BTreeSet<String> =
                     selected.nodes.iter().map(|n| n.unique_id.clone()).collect();
                 if set.is_empty() {
@@ -675,10 +692,25 @@ impl Engine {
     /// SQL — column lineage resolves `compiled_code` before `raw_code`, so
     /// a stale compiled text must go with the edit or resolution would keep
     /// reading the pre-edit SQL. The DAG is rebuilt from the patched
-    /// manifest, so lint and lineage see the same edited graph.
+    /// manifest, so lint and lineage see the same edited graph. Only nodes
+    /// in the scoped graph are editable — a package node the scope pruned
+    /// is invisible to every read, so silently rewriting its SQL would
+    /// leave state nothing observes.
     pub fn replace_sql(&mut self, unique_id: &str, sql: &str) -> Result<ChangeOutput, EngineError> {
-        let Some(node) = self.manifest.nodes.get(unique_id) else {
+        if !self.dag.contains(unique_id) {
             return Err(EngineError::usage(format!("no node '{unique_id}'")));
+        }
+        let Some(node) = self.manifest.nodes.get(unique_id) else {
+            // Sources/exposures are graph nodes but live outside
+            // `manifest.nodes` — never SQL-editable.
+            let kind = self
+                .dag
+                .get(unique_id)
+                .map(|n| n.resource_type.as_str())
+                .unwrap_or("node");
+            return Err(EngineError::usage(format!(
+                "'{unique_id}' is a {kind}, not a model or snapshot"
+            )));
         };
         if !matches!(node.resource_type.as_str(), "model" | "snapshot") {
             return Err(EngineError::usage(format!(
@@ -701,8 +733,12 @@ impl Engine {
     }
 
     /// Restore a node's SQL to its loaded state — the `replace_sql` revert.
-    /// `changed` is `false` when the node was never edited.
+    /// `changed` is `false` when the node was never edited; an out-of-scope
+    /// or unknown `unique_id` is the same usage error `replace_sql` gives.
     pub fn revert_sql(&mut self, unique_id: &str) -> Result<ChangeOutput, EngineError> {
+        if !self.dag.contains(unique_id) {
+            return Err(EngineError::usage(format!("no node '{unique_id}'")));
+        }
         let Some((raw, compiled)) = self.sql_edits.remove(unique_id) else {
             return Ok(ChangeOutput { changed: false });
         };
@@ -788,12 +824,14 @@ impl Engine {
 }
 
 impl SelectedNode {
-    fn new(uid: &str, n: Option<&NodeInfo>) -> Self {
+    fn new(dag: &Dag, uid: &str) -> Self {
+        let n = dag.get(uid);
         SelectedNode {
             unique_id: uid.to_string(),
             name: n.map(|n| n.name.clone()).unwrap_or_default(),
             resource_type: n.map(|n| n.resource_type.clone()).unwrap_or_default(),
             materialized: n.and_then(|n| n.materialized.clone()),
+            path: dag.detail(uid).and_then(|d| d.original_file_path.clone()),
         }
     }
 }
@@ -1000,7 +1038,8 @@ mod tests {
         assert_eq!(restored.has_compiled_code, before.has_compiled_code);
         // A second revert is a no-op.
         assert!(!engine.revert_sql(uid).unwrap().changed);
-        // Non-model nodes refuse the edit.
+        // Non-model nodes refuse the edit — a source names what it is,
+        // not "no node" (it IS a graph node, just not an editable one).
         let err = engine
             .replace_sql(
                 "source.jaffle_finance.prod_lake_jaffle_payment.suppliers",
@@ -1008,5 +1047,64 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(err.kind, ErrorKind::Usage);
+        assert!(err.message.contains("is a source"), "message: {err}");
+    }
+
+    #[test]
+    fn select_nodes_carry_the_ls_json_path() {
+        let (engine, _) = load_fixture();
+        let out = engine.select("fct_subscription_process").unwrap();
+        let node = out
+            .nodes
+            .iter()
+            .find(|n| n.unique_id == "model.jaffle_finance.fct_subscription_process")
+            .expect("the model is selected");
+        assert_eq!(
+            node.path.as_deref(),
+            Some(
+                "models/marts/dimensional/jaffle/subscription_process/fct_subscription_process.sql"
+            ),
+            "path mirrors ls --format json's original_file_path"
+        );
+    }
+
+    #[test]
+    fn replace_and_revert_refuse_out_of_scope_nodes() {
+        // The packages fixture keeps installed-package nodes out of the
+        // root-scoped graph: they load (they're in the raw manifest) but
+        // are invisible to every operation — edits must refuse them too.
+        let (mut engine, _) = Engine::load(&LoadInput {
+            manifest: fixture("packages_manifest.json"),
+            ..LoadInput::default()
+        })
+        .expect("packages fixture loads");
+        let pruned = "model.audit_tools.audit_events";
+        assert!(
+            engine.manifest.nodes.contains_key(pruned),
+            "the uid exists in the raw manifest but not the scoped dag"
+        );
+        assert!(!engine.dag().contains(pruned));
+        let err = engine.replace_sql(pruned, "select 1").unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Usage);
+        assert_eq!(err.message, format!("no node '{pruned}'"));
+        assert_eq!(
+            engine.revert_sql(pruned).unwrap_err().message,
+            format!("no node '{pruned}'")
+        );
+        // include_packages keeps the node in scope — then it IS editable.
+        let (mut engine, _) = Engine::load(&LoadInput {
+            manifest: fixture("packages_manifest.json"),
+            include_packages: true,
+            ..LoadInput::default()
+        })
+        .expect("packages fixture loads with packages");
+        assert!(engine.dag().contains(pruned));
+        if engine
+            .node_detail(pruned)
+            .map(|d| d.resource_type == "model")
+            .unwrap_or(false)
+        {
+            assert!(engine.replace_sql(pruned, "select 1").is_ok());
+        }
     }
 }

@@ -61,7 +61,7 @@ impl WasmEngine {
     }
 
     /// `{selector}` → `{nodes: [{unique_id, name, resource_type,
-    /// materialized}]}` — `dbtl ls`'s match set.
+    /// materialized, path}]}` — `dbtl ls`'s match set.
     pub fn select(&self, input: &str) -> Result<String, JsError> {
         #[derive(serde::Deserialize)]
         struct Input {

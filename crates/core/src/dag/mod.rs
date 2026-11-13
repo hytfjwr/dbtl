@@ -752,8 +752,16 @@ fn manifest_warnings(manifest: &RawManifest) -> Vec<String> {
 /// `load_dag_with_warnings` instead.
 pub fn dag_from_manifest_json(contents: &str) -> Result<(Dag, Vec<String>)> {
     let manifest = crate::manifest::parse_manifest(contents)?;
-    let warnings = manifest_warnings(&manifest);
-    Ok((Dag::build(&manifest), warnings))
+    Ok(dag_from_manifest(&manifest))
+}
+
+/// [`dag_from_manifest_json`] over an already-parsed [`RawManifest`] — for
+/// callers that keep the manifest around (the in-memory engine edits it in
+/// place, so it must not pay for a second parse). Same build and same
+/// warning lines; the manifest is borrowed, not consumed.
+pub fn dag_from_manifest(manifest: &RawManifest) -> (Dag, Vec<String>) {
+    let warnings = manifest_warnings(manifest);
+    (Dag::build(manifest), warnings)
 }
 
 /// Like [`load_dag`], but also returns load-time warnings — the lines
