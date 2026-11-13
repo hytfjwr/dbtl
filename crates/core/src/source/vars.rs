@@ -225,13 +225,27 @@ fn parse_var_expr(expr: &str) -> Option<VarExpr> {
     })
 }
 
-/// The expression inside a string that is exactly one `{{ ... }}` block —
-/// whitespace-control `{{-`/`-}}` allowed — else `None` (mixed text
-/// renders to a non-bool string anyway, which fails dbt's validation).
+/// The expression inside a string that is exactly one `{{ ... }}` block,
+/// else `None`. Whitespace OUTSIDE the delimiters renders literally —
+/// dbt then sees " False " and fails validation — unless a `{{-`/`-}}`
+/// dash on that side strips it, so outer whitespace is tolerated only
+/// with the matching whitespace-control dash (mixed text renders to a
+/// non-bool string anyway, which fails dbt's validation).
 fn jinja_expr(s: &str) -> Option<&str> {
+    let lead_ws = s.len() - s.trim_start().len();
+    let trail_ws = s.len() - s.trim_end().len();
     let inner = s.trim().strip_prefix("{{")?.strip_suffix("}}")?;
-    let inner = inner.strip_prefix('-').unwrap_or(inner);
-    let inner = inner.strip_suffix('-').unwrap_or(inner);
+    let (inner, lctl) = match inner.strip_prefix('-') {
+        Some(rest) => (rest, true),
+        None => (inner, false),
+    };
+    let (inner, rctl) = match inner.strip_suffix('-') {
+        Some(rest) => (rest, true),
+        None => (inner, false),
+    };
+    if (lead_ws > 0 && !lctl) || (trail_ws > 0 && !rctl) {
+        return None;
+    }
     let inner = inner.trim();
     (!inner.is_empty()).then_some(inner)
 }

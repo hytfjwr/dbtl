@@ -55,17 +55,20 @@ pub(super) fn tree_segments(proj: &str, rel: &str) -> Vec<String> {
 /// same [`meta_map`] conversion schema.yml uses — non-string keys stringify
 /// the same way and a non-mapping `+meta` warns once per tree level.
 /// `tree_path` names the walked path (`models`, `models.sample.staging`, …)
-/// so the warning says which level misdeclared it. `+enabled` resolves
-/// through [`Vars::tree_enabled`]: a native bool or a `{{ var(...) }}` the
-/// project-file render scope sees — anything dbt would reject (a plain
-/// `'false'` string, an unresolvable var) warns once per level and keeps
-/// the resource enabled.
+/// so the warning says which level misdeclared it. `vars` resolves
+/// `+enabled` through [`Vars::tree_enabled`]: a native bool or a
+/// `{{ var(...) }}` the project-file render scope sees — anything dbt
+/// would reject (a plain `'false'` string, an unresolvable var) warns
+/// once per level and keeps the resource enabled. `None` = the tree
+/// doesn't apply `+enabled` at all (the `sources:` walk — the key is
+/// not implemented there), so it stays a silent bool-only read rather
+/// than warning on an ignored key.
 pub(super) fn resolve_tree_config(
     tree: &serde_json::Value,
     segments: &[String],
     tree_path: String,
     warnings: &mut Vec<String>,
-    vars: &Vars,
+    vars: Option<&Vars>,
 ) -> TreeConfig {
     let mut out = TreeConfig::default();
     if !tree.is_object() {
@@ -74,13 +77,14 @@ pub(super) fn resolve_tree_config(
     if let Some(m) = tree["+materialized"].as_str() {
         out.materialized = Some(m.to_string());
     }
-    match vars.tree_enabled(&tree["+enabled"]) {
-        Some(e) => out.enabled = Some(e),
-        None if !tree["+enabled"].is_null() => warnings.push(format!(
+    match vars.map(|v| v.tree_enabled(&tree["+enabled"])) {
+        Some(Some(e)) => out.enabled = Some(e),
+        Some(None) if !tree["+enabled"].is_null() => warnings.push(format!(
             "dbt_project.yml '+enabled' at '{tree_path}' could not be evaluated as a boolean ({}); the resource stays enabled",
             serde_json::to_string(&tree["+enabled"]).unwrap_or_else(|_| "?".to_string())
         )),
-        None => {}
+        None => out.enabled = tree["+enabled"].as_bool(),
+        _ => {}
     }
     out.meta.extend(meta_map(
         &tree["+meta"],

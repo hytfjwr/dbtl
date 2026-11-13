@@ -229,7 +229,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             &tree_segments(&proj, &path),
             "models".to_string(),
             &mut warnings,
-            &vars,
+            Some(&vars),
         );
         // Disabled models never reach the manifest's `nodes` (dbt parks them
         // under `disabled`); drop them here too, edges included.
@@ -308,7 +308,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
             &tree_segments(&proj, &path),
             "seeds".to_string(),
             &mut warnings,
-            &vars,
+            Some(&vars),
         );
         if tree.enabled == Some(false) {
             continue;
@@ -372,7 +372,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                 &segments,
                 "snapshots".to_string(),
                 &mut warnings,
-                &vars,
+                Some(&vars),
             );
             if tree.enabled == Some(false) {
                 continue;
@@ -499,7 +499,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                 &segments,
                 "snapshots".to_string(),
                 &mut warnings,
-                &vars,
+                Some(&vars),
             );
             if tree.enabled == Some(false) {
                 continue;
@@ -615,12 +615,16 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
                 segments.pop();
                 segments.push(src.name.clone());
                 segments.push(tbl.name.clone());
+                // `+enabled` is not applied on `sources:` (the walk is
+                // for `+meta` only) — passing no var scope keeps it the
+                // silent bool read instead of warning on a key dbtl
+                // ignores.
                 let tree = resolve_tree_config(
                     &project.sources,
                     &segments,
                     "sources".to_string(),
                     &mut warnings,
-                    &vars,
+                    None,
                 );
                 sources.insert(
                     uid.clone(),
