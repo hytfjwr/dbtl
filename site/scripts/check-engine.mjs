@@ -54,6 +54,18 @@ if (SAMPLES.length === 0) {
   fail(`${samplesDir} has no staged samples — run scripts/build-engine.mjs first`);
 }
 
+// The staged directories must be exactly the projects the switcher offers —
+// pg-render.ts and build-engine.mjs keep no shared constant, so a drift
+// fails here instead of 404ing a fetch in the browser.
+const { SAMPLES: offered } = await import("../src/scripts/pg-render.ts");
+const want = [...offered].sort();
+if (SAMPLES.length !== want.length || SAMPLES.some((n, i) => n !== want[i])) {
+  fail(
+    `staged samples [${SAMPLES.join(", ")}] do not match the switcher's ` +
+      `SAMPLES [${want.join(", ")}] — update both lists together`,
+  );
+}
+
 // The expected lint bodies — `{text, json}` per sample — from the engine
 // running natively over the same staged files the wasm load reads.
 function expected(dir) {

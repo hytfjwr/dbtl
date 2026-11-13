@@ -24,6 +24,8 @@ export interface PgInitial {
   spec: string;
   /** Total nodes in the loaded project. */
   total: number;
+  /** Warnings the load emitted — the lint footer's `warning:` lines. */
+  warnings: string[];
   matched: SelectedNode[];
   /** A malformed selector's message, like the `dbtl ls` exit-2 error. */
   selectError: string;
@@ -63,6 +65,7 @@ export async function initialState(): Promise<PgInitial> {
     project,
     spec,
     total: 0,
+    warnings: [] as string[],
     matched: [] as SelectedNode[],
     selectError: "",
     lineage: null as LineageOutput | null,
@@ -78,7 +81,9 @@ export async function initialState(): Promise<PgInitial> {
   let input;
   try {
     input = await sampleInput(project);
-    base.total = engine.load(input).nodes;
+    const load = engine.load(input);
+    base.total = load.nodes;
+    base.warnings = load.warnings;
   } catch (e) {
     return { ...base, built: false, reason: message(e).split("\n")[0]! };
   }

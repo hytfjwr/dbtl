@@ -28,6 +28,10 @@ interface Pending {
 /** Give up after this many traps in a row — a manifest that keeps crashing won't loop forever. */
 const MAX_CRASHES = 2;
 
+/** The transient error every call blocked by a worker death rejects with. */
+const crashError = (): Error =>
+  Object.assign(new Error("the engine restarted — retry"), { name: "EngineCrash" });
+
 export class EngineClient {
   private worker: Worker | null = null;
   private seq = 0;
@@ -36,6 +40,7 @@ export class EngineClient {
   private readyP: Promise<void> = Promise.resolve();
   private lastLoad: LoadInput | null = null;
   private edits = new Map<string, string>();
+  private restored: LoadInput | null = null;
   private crashes = 0;
   private deadReason = "";
 
@@ -51,6 +56,7 @@ export class EngineClient {
 
   private respawn(): void {
     const gen = ++this.gen;
+    this.restored = null;
     this.onStatus(
       this.crashes ? { kind: "restarting", reason: this.deadReason } : { kind: "starting" },
     );
@@ -66,6 +72,9 @@ export class EngineClient {
         w.terminate();
         return;
       }
+      // The replay put this input — and the edits made on it — back into a
+      // fresh worker, so the page can skip its own reload (restoredInput).
+      this.restored = this.lastLoad;
       this.crashes = 0;
       this.onStatus({ kind: "ready" });
       this.onReady();
@@ -116,7 +125,7 @@ export class EngineClient {
     this.worker?.terminate();
     this.worker = null;
     for (const p of this.pending.values()) {
-      p.rej(Object.assign(new Error("the engine restarted — retry"), { name: "EngineCrash" }));
+      p.rej(crashError());
     }
     this.pending.clear();
     this.crashes += 1;
@@ -140,9 +149,12 @@ export class EngineClient {
   }
 
   private async call(op: string, input: unknown): Promise<unknown> {
+    const g = this.gen;
     await this.readyP;
     const w = this.worker;
-    if (!w) throw Object.assign(new Error("engine is down"), { name: "EngineCrash" });
+    // The ready-wait outlived the worker it belonged to — this call's
+    // generation is gone, so the page retries against the new one.
+    if (!w || g !== this.gen) throw crashError();
     return this.rpc(w, op, input);
   }
 
@@ -152,7 +164,18 @@ export class EngineClient {
     // Only a load that succeeded is worth replaying after a crash.
     this.lastLoad = input;
     this.edits.clear();
+    this.restored = null;
     return out;
+  }
+
+  /**
+   * The input a respawned worker already replayed, or null. When it is the
+   * same object the page was about to load, the reload — and the reset that
+   * comes with it — can be skipped: the worker holds the same project and
+   * the same SQL edits it died with.
+   */
+  restoredInput(): LoadInput | null {
+    return this.restored;
   }
 
   select(spec: string): Promise<SelectOutput> {
@@ -183,11 +206,5 @@ export class EngineClient {
   async revertSql(uid: string): Promise<void> {
     await this.call("revertSql", uid);
     this.edits.delete(uid);
-  }
-
-  dispose(): void {
-    this.gen += 1;
-    this.worker?.terminate();
-    this.worker = null;
   }
 }

@@ -125,6 +125,62 @@ test("a local manifest.json loads in memory only", async ({ page }) => {
   await expect(page.locator("#pg-lint-foot")).toContainText("excerpts cite positions only");
 });
 
+test("re-uploading a manifest replaces the custom project", async ({ page }) => {
+  // While the custom project is active, a second upload must drive the same
+  // reset+reload as a project switch — every count follows the new manifest.
+  await page.goto("/dbtl/playground/");
+  await ready(page);
+  const small = await (await page.request.get("/dbtl/samples/sample/manifest.json")).body();
+  const big = await (await page.request.get("/dbtl/samples/jaffle_finance/manifest.json")).body();
+  await page.locator("#pg-file").setInputFiles({
+    name: "small.json",
+    mimeType: "application/json",
+    buffer: small,
+  });
+  await expect(page.locator("#pg-match-title")).toContainText("matched 30 of 30");
+
+  await page.locator("#pg-file").setInputFiles({
+    name: "big.json",
+    mimeType: "application/json",
+    buffer: big,
+  });
+  await expect(page.locator("#pg-file-hint")).toContainText("big.json — 93 nodes");
+  await expect(page.locator("#pg-sel")).toHaveValue("*");
+  await expect(page.locator("#pg-match-title")).toContainText("matched 93 of 93");
+  await expect(page.locator("#pg-match li[data-id]")).toHaveCount(93);
+});
+
+test("a worker crash restarts the engine and keeps edits", async ({ page }) => {
+  await page.goto("/dbtl/playground/");
+  await ready(page);
+
+  // Open a node and edit its SQL — the badge proves the write committed.
+  await page.locator("#pg-match li[data-id]").first().click();
+  await expect(page.locator("#pg-ed-name")).toContainText("stg_payment__scores");
+  await page.fill("#pg-ed-sql", "select 1 as id");
+  await expect(page.locator("#pg-ed-badge")).toBeVisible();
+
+  // An uncaught error inside the worker is the same signal a wasm trap
+  // sends: the client respawns it and replays the load plus the edits.
+  const worker = page.workers()[0]!;
+  await worker.evaluate(() =>
+    setTimeout(() => {
+      throw new Error("test-induced crash");
+    }),
+  );
+
+  const status = page.locator("#pg-status");
+  await expect(status).toHaveAttribute("data-kind", "restarting");
+  await expect(status).toHaveAttribute("data-kind", "ready", { timeout: 30_000 });
+
+  // The recovered engine kept the project, the open node and the edit.
+  await expect(page.locator("#pg-ed-badge")).toBeVisible();
+  await expect(page.locator("#pg-ed-sql")).toHaveValue("select 1 as id");
+  await page.locator("#pt-sel").click();
+  await page.fill("#pg-sel", "tag:marts");
+  await expect(page.locator("#pg-match-title")).toContainText("matched 9 of 93");
+});
+
 test("nothing on the playground requests an external origin", async ({ page }) => {
   const leaked: string[] = [];
   page.on("request", (r) => {

@@ -6,6 +6,7 @@
 import { esc } from "../../scripts/html.ts";
 import { url } from "../../lib/site.ts";
 import {
+  COLS_EMPTY_HINT,
   columnsBodyHtml,
   columnsCommand,
   CONFIG_TEMPLATE,
@@ -89,7 +90,7 @@ const lintNote = s.built ? "" : `the engine is not built — ${s.reason}`;
   <p class="pg-err" id="pg-err" role="status">
     {s.selectError}
   </p>
-  <p class="pg-status" id="pg-status" role="status">
+  <p class="pg-status" id="pg-status" role="status" data-kind="starting">
     {s.built
       ? "engine: WebAssembly — starts in your browser, nothing leaves it"
       : `engine: ${s.reason}`}
@@ -165,7 +166,11 @@ const lintNote = s.built ? "" : `the engine is not built — ${s.reason}`;
         lintNote ? `<pre class="pg-cli">${esc(lintNote)}</pre>` : lintBodyHtml(s.lint, s.lintError)
       }
     />
-    <div class="pg-lint-foot" id="pg-lint-foot" set:html={lintFootHtml(s.lint)} />
+    <div
+      class="pg-lint-foot"
+      id="pg-lint-foot"
+      set:html={lintFootHtml(s.lint, { extra: s.warnings })}
+    />
   </div>
   <div class="pg-cmd">
     <span>run it locally</span>
@@ -199,13 +204,7 @@ const lintNote = s.built ? "" : `the engine is not built — ${s.reason}`;
         </button>
       </div>
     </div>
-    <div
-      id="pg-cols"
-      set:html={columnsBodyHtml(
-        null,
-        "Pick a node and a column — or pick a node in the Select tab and choose “columns”.",
-      )}
-    />
+    <div id="pg-cols" set:html={columnsBodyHtml(null, COLS_EMPTY_HINT)} />
   </div>
   <div class="pg-cmd">
     <span>run it locally</span>

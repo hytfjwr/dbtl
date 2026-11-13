@@ -13,6 +13,7 @@ import type {
 import { esc } from "./html.ts";
 import { EngineClient, type Status } from "./pg-engine.ts";
 import {
+  COLS_EMPTY_HINT,
   columnOptionsHtml,
   columnsBodyHtml,
   columnsCommand,
@@ -95,6 +96,7 @@ if (ctl && input && linHost) {
     dir,
     (s) => {
       statusEl.textContent = statusText(s);
+      statusEl.dataset.kind = s.kind;
     },
     () => {
       void connect();
@@ -113,6 +115,11 @@ if (ctl && input && linHost) {
         if (!m.ok || !f.ok) throw new Error(`sample '${name}' could not be fetched`);
         return { manifest: await m.text(), files: (await f.json()) as Record<string, string> };
       })();
+      // A failed fetch is dropped, so the next ask retries instead of
+      // replaying the same rejection forever.
+      p.catch(() => {
+        if (sampleCache.get(name) === p) sampleCache.delete(name);
+      });
       sampleCache.set(name, p);
     }
     return p;
@@ -201,7 +208,7 @@ if (ctl && input && linHost) {
 
   const colsHint = (): string => {
     if (S.colsError) return `error: ${S.colsError}`;
-    if (!S.colNode) return "Pick a node and a column — or pick a node in the Select tab.";
+    if (!S.colNode) return COLS_EMPTY_HINT;
     if (S.colCols.length === 0) return `${S.colNode} declares no columns.`;
     if (!S.colCol) return "Pick a column.";
     return "";
@@ -287,6 +294,10 @@ if (ctl && input && linHost) {
     lintTimer = window.setTimeout(() => void refreshLint(), ms);
   };
 
+  // The debounced SQL write-back — always paired with the node and text it
+  // was scheduled for, and cancelled when the pane moves on.
+  let sqlTimer = 0;
+
   const refreshAll = () => {
     void refreshSelection();
     scheduleLint(0);
@@ -305,28 +316,47 @@ if (ctl && input && linHost) {
     }
     connectBusy = true;
     try {
+      // A write still debounce-buffered belongs to the outgoing project, and
+      // the editor shows that project's SQL until the reset — lock it.
+      clearTimeout(sqlTimer);
+      sqlEl.disabled = true;
       const input = await projectInput(S.project);
       if (my !== seqLoad) return;
-      const load = await engine.load(input);
-      if (my !== seqLoad) return;
-      S.total = load.nodes;
-      S.loadWarnings = load.warnings;
-      S.nodesAll = null;
-      S.colNode = null;
-      S.colCol = null;
-      S.colCols = [];
-      S.cols = null;
-      S.picked = null;
-      S.pickedName = "";
-      S.detail = null;
-      S.edited.clear();
-      fillNodePicker();
-      $("#pg-col-col")!.innerHTML = `<option value="">— pick a column —</option>`;
+      // A respawned worker already holds this very input — the replay also
+      // put back the page's edits — so only a real project change pays for
+      // a fresh load and the reset that comes with it.
+      if (engine.restoredInput() !== input) {
+        const load = await engine.load(input);
+        if (my !== seqLoad) return;
+        S.total = load.nodes;
+        S.loadWarnings = load.warnings;
+        S.nodesAll = null;
+        S.colNode = null;
+        S.colCol = null;
+        S.colCols = [];
+        S.colUp = false;
+        S.cols = null;
+        S.colsError = "";
+        S.picked = null;
+        S.pickedName = "";
+        S.detail = null;
+        S.edited.clear();
+        fillNodePicker();
+        $("#pg-col-col")!.innerHTML = `<option value="">— pick a column —</option>`;
+      } else {
+        // The worker replayed the edits but the page's copies are pre-crash
+        // — re-read the open node and the columns target so every pane shows
+        // what the engine holds now.
+        if (S.picked) await pick(S.picked);
+        if (S.colNode) await selectColNode(S.colNode);
+      }
       refreshAll();
     } catch (e) {
-      if (!transient(e)) {
-        statusEl.textContent = `engine: failed — ${msg(e)}`;
-      }
+      // Transient aborts keep the editor locked — the restart's own connect
+      // re-renders it. A real failure restores the state it interrupted.
+      if (transient(e)) return;
+      statusEl.textContent = `engine: failed — ${msg(e)}`;
+      renderDetail();
     } finally {
       connectBusy = false;
       if (connectAgain) {
@@ -340,6 +370,8 @@ if (ctl && input && linHost) {
 
   const pick = async (uid: string | null) => {
     const my = ++seqDet;
+    // A write still debounce-buffered belongs to the node we are leaving.
+    clearTimeout(sqlTimer);
     S.picked = uid;
     if (uid === null) {
       S.detail = null;
@@ -348,6 +380,9 @@ if (ctl && input && linHost) {
       renderSelection();
       return;
     }
+    // The editor still shows the previous node's SQL — lock it until this
+    // node's arrives, so keystrokes can't be captured for the wrong node.
+    sqlEl.disabled = true;
     try {
       const d = await engine.nodeDetail(uid);
       if (my !== seqDet) return;
@@ -389,6 +424,8 @@ if (ctl && input && linHost) {
 
   const selectColNode = async (uid: string) => {
     const my = ++seqCols;
+    // Re-selecting the same node keeps the chosen column when it still exists.
+    const prevCol = S.colNode === uid ? S.colCol : null;
     S.colNode = uid;
     const sel = $<HTMLSelectElement>("#pg-col-node")!;
     sel.value = uid;
@@ -396,7 +433,7 @@ if (ctl && input && linHost) {
       const d = await engine.nodeDetail(uid);
       if (my !== seqCols) return;
       S.colCols = d.columns;
-      S.colCol = d.columns[0] ?? null;
+      S.colCol = prevCol && d.columns.includes(prevCol) ? prevCol : (d.columns[0] ?? null);
       $("#pg-col-col")!.innerHTML = d.columns.length
         ? columnOptionsHtml(d.columns, S.colCol)
         : `<option value="">— no declared columns —</option>`;
@@ -437,9 +474,18 @@ if (ctl && input && linHost) {
 
   // --- events ----------------------------------------------------------------
 
+  // Which example chip, if any, the selector currently equals — SSR ships
+  // the same state as aria-pressed on the chips.
+  const syncEg = () => {
+    $("#pg-eg")!
+      .querySelectorAll("button")
+      .forEach((b) => b.setAttribute("aria-pressed", String(b.textContent === S.spec)));
+  };
+
   input.addEventListener("input", () => {
     S.spec = input.value;
     input.style.width = `${Math.max(1, S.spec.length)}ch`;
+    syncEg();
     void refreshSelection();
     scheduleLint();
   });
@@ -450,13 +496,16 @@ if (ctl && input && linHost) {
     S.spec = b.textContent ?? "";
     input.value = S.spec;
     input.style.width = `${Math.max(1, S.spec.length)}ch`;
+    syncEg();
     void refreshSelection();
     scheduleLint();
   });
 
   // Project switching keeps the upload in memory: leaving the page drops it.
   const setProject = (name: string) => {
-    if (name === S.project) return;
+    // "__custom__" falls through even when already active — a re-uploaded
+    // manifest must drive the same reset+reload as a real switch.
+    if (name === S.project && name !== "__custom__") return;
     if (name === "__custom__" && !S.custom) {
       $<HTMLInputElement>("#pg-file")!.click();
       return;
@@ -471,7 +520,7 @@ if (ctl && input && linHost) {
         b.setAttribute("aria-pressed", String((b as HTMLElement).dataset.p === name)),
       );
     $("#pg-eg")!.innerHTML = (EXAMPLES[name] ?? GENERIC_EXAMPLES)
-      .map((e) => `<button type="button">${esc(e)}</button>`)
+      .map((e) => `<button type="button" aria-pressed="${e === S.spec}">${esc(e)}</button>`)
       .join("");
     void connect();
   };
@@ -504,11 +553,6 @@ if (ctl && input && linHost) {
       btn.hidden = false;
       hint.textContent = `${f.name} — ${out.nodes} nodes, kept in memory only`;
       setProject("__custom__");
-      $("#pg-proj")!
-        .querySelectorAll("button[data-p]")
-        .forEach((b) =>
-          b.setAttribute("aria-pressed", String((b as HTMLElement).dataset.p === "__custom__")),
-        );
     } catch (e) {
       hint.textContent = transient(e) ? "engine restarted — try again" : `${f.name}: ${msg(e)}`;
     }
@@ -553,19 +597,22 @@ if (ctl && input && linHost) {
   );
 
   // Editors: edits land in the engine ~300 ms after typing stops, then re-lint.
-  let sqlTimer = 0;
   sqlEl.addEventListener("input", () => {
-    if (!S.picked) return;
+    // Bind the write to the node and text it was typed for — the timer may
+    // fire after the detail pane moved on.
+    const uid = S.picked;
+    if (!uid) return;
+    const sql = sqlEl.value;
     clearTimeout(sqlTimer);
     sqlTimer = window.setTimeout(() => {
-      const uid = S.picked;
-      if (!uid) return;
       void (async () => {
         try {
-          await engine.replaceSql(uid, sqlEl.value);
+          await engine.replaceSql(uid, sql);
           S.edited.add(uid);
-          $("#pg-ed-badge")!.hidden = false;
-          $<HTMLButtonElement>("#pg-ed-revert")!.disabled = false;
+          if (S.picked === uid) {
+            $("#pg-ed-badge")!.hidden = false;
+            $<HTMLButtonElement>("#pg-ed-revert")!.disabled = false;
+          }
           scheduleLint(0);
           if (S.colNode === uid) void refreshCols();
         } catch (e) {
@@ -577,6 +624,8 @@ if (ctl && input && linHost) {
   $("#pg-ed-revert")!.addEventListener("click", () => {
     const uid = S.picked;
     if (!uid) return;
+    // A still-queued write must not re-dirty the node being reverted.
+    clearTimeout(sqlTimer);
     void (async () => {
       try {
         await engine.revertSql(uid);

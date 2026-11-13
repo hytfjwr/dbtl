@@ -252,12 +252,16 @@ const SGR: Record<number, string> = {
   96: "a-cyan",
 };
 
-/** Bare http(s) URLs become real links, trailing sentence punctuation excluded. */
+/**
+ * Bare http(s) URLs become real links, trailing sentence punctuation
+ * excluded. Takes raw text and escapes each piece itself — escaping first
+ * would let an entity's `;` end up in the trimmed tail and corrupt the href.
+ */
 const linkify = (text: string): string =>
   text.replace(/https?:\/\/[^\s"'<>()]+/g, (m) => {
     const tail = /[.,;:]*$/.exec(m)![0];
     const url = m.slice(0, m.length - tail.length);
-    return `<a href="${url}">${url}</a>${tail}`;
+    return `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>${esc(tail)}`;
   });
 
 // SGR codes that undo a style without touching the rest.
@@ -290,7 +294,7 @@ export function ansiToHtml(ansi: string): string {
       out += `<span class="${classes.join(" ")}">`;
       open = true;
     }
-    out += linkify(esc(t));
+    out += linkify(t);
   };
   const restyle = (next: string[]) => {
     classes = next;
@@ -375,13 +379,17 @@ export function lintFootHtml(
 
 /* --- columns ------------------------------------------------------------- */
 
+/** The columns pane's empty state — one string for SSR and the client. */
+export const COLS_EMPTY_HINT =
+  "Pick a node and a column — or pick a node in the Select tab and choose “columns”.";
+
 /**
  * The columns pane's body: `dbtl columns`' own Markdown table, verbatim.
  * `hint` is the empty-state line (no target picked yet / no columns on it).
  */
 export function columnsBodyHtml(out: ColumnsOutput | null, hint: string): string {
   if (!out) return `<pre class="pg-cli">${esc(hint)}</pre>`;
-  return `<pre class="pg-cli">${linkify(esc(out.markdown))}</pre>`;
+  return `<pre class="pg-cli">${linkify(out.markdown)}</pre>`;
 }
 
 /** `<option>`s for the column-tab node picker. */
