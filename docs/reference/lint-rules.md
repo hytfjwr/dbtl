@@ -137,7 +137,11 @@ A redundant hop: A->B->C while A->C already exists.
 
 **Fix:** drop the redundant direct ref, or move the shared logic into the intermediate model
 
-**Parameters:** none.
+**Parameters:**
+
+| Name | Type | Default | Description |
+| ---- | ---- | ------- | ----------- |
+| `ignore_shared_parents` | list of selectors | `[]` | selectors matching shared parents (the A node) to exempt — e.g. shared dim_* dimensions |
 
 ## `marts_depend_on_source`
 
@@ -456,7 +460,11 @@ A model's final SELECT reads * or t.*.
 
 **Fix:** list the columns the model produces
 
-**Parameters:** none.
+**Parameters:**
+
+| Name | Type | Default | Description |
+| ---- | ---- | ------- | ----------- |
+| `allow_final_star_over_single_cte` | boolean | `false` | exempt a final `select *` whose FROM reads exactly one CTE that names every column explicitly |
 
 ## `hard_coded_references`
 

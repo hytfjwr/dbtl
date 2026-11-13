@@ -291,13 +291,28 @@ pub(super) fn root_models(
 /// One finding per B — `related` is the sorted set `{C} ∪ {A₁, A₂, …}` and
 /// `message` names the offenders, so a B bypassed by several parents shows
 /// once in worklists.
+///
+/// `ignore_shared_parents` (selectors, default empty) exempts Bs whose
+/// shared parents ALL match — the dimensional shape where a fact's models
+/// join the same `dim_*` their shared dimension already provides
+/// (`["dim_*"]`). Exempting by A can't ride `exclude:` — that filters the
+/// flagged node B, never its parent.
 pub(super) fn rejoining_upstream(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
+    config: &LintConfig,
     sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
 ) {
+    // Resolve the ignore set once — the specs were selector-validated at
+    // config load, so each evaluates without error paths.
+    let ignored: BTreeSet<String> = config
+        .str_list_param(LintRule::RejoiningUpstream, "ignore_shared_parents")
+        .expect("the registry declares rejoining_upstream.ignore_shared_parents")
+        .iter()
+        .flat_map(|spec| select(dag, None, spec))
+        .collect();
     for uid in uids {
         let Some(n) = dag.get(uid) else { continue };
         if !is_data_resource(&n.resource_type) || !in_scope(n) {
@@ -328,6 +343,9 @@ pub(super) fn rejoining_upstream(
                     .is_some_and(|a| is_data_resource(&a.resource_type))
             })
             .filter(|a| dag.direct_parents(&c_uid).contains(*a))
+            // `ignore_shared_parents` exempts shared parents matching the
+            // selectors — every A ignored means no bypass left to flag.
+            .filter(|a| !ignored.contains(*a))
             .cloned()
             .collect();
         if a_uids.is_empty() {

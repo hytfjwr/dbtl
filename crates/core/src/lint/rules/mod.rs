@@ -209,7 +209,7 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
             }
             LintRule::RootModels => modeling::root_models(dag, &uids, &in_scope, &sites, &mut out),
             LintRule::RejoiningUpstream => {
-                modeling::rejoining_upstream(dag, &uids, &in_scope, &sites, &mut out)
+                modeling::rejoining_upstream(dag, &uids, &in_scope, config, &sites, &mut out)
             }
             LintRule::MartsDependOnSource => {
                 modeling::marts_depend_on_source(dag, &uids, &in_scope, config, &sites, &mut out)
@@ -271,6 +271,7 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 dag,
                 &uids,
                 &in_scope,
+                config,
                 sql.expect("gated"),
                 &mut unparsed,
                 &mut out,

@@ -212,6 +212,18 @@ pub fn resolve_source(
             (dag, warnings, dir.display().to_string(), true)
         }
     };
+    // The auto-detected manifest gets a staleness probe — an explicit
+    // `--manifest`/`--source` already named the data source deliberately,
+    // but the silent `<project>/target/manifest.json` pick can hide
+    // post-parse edits behind a stale graph. `manifest.is_none()` here IS
+    // the auto-detect case (`--diff git:` never picks a manifest).
+    if manifest.is_none() {
+        if let SourcePath::Manifest(path) = &path {
+            if let Some(w) = stale_manifest_warning(path, &PathBuf::from(project)) {
+                warnings.push(w);
+            }
+        }
+    }
     warn_each("", &warnings);
     let (dag, scope_w) = apply_package_scope(dag, scope, is_source);
     warnings.extend(scope_w);
@@ -222,6 +234,40 @@ pub fn resolve_source(
         warnings,
     })
 }
+
+/// The "auto-detected manifest may be stale" warning — `Some(message)` when
+/// project data files are strictly newer than the manifest dbt last wrote.
+/// The message names the count, the newest file, and the two ways out
+/// (`dbt parse` to rebuild, `--source` for a parse-free load). `None` on a
+/// fresh manifest, an unreadable mtime, or zero newer files — an
+/// unprovable staleness is never a warning, the same rule
+/// `compiled::is_stale` follows. The scan itself is [`fs_stamp`]'s shared
+/// walk minus `target/` (a generated artifact can't make its own
+/// generator stale).
+///
+/// [`fs_stamp`]: crate::watch::fs_stamp
+fn stale_manifest_warning(manifest: &std::path::Path, project: &std::path::Path) -> Option<String> {
+    let manifest_mtime = std::fs::metadata(manifest)
+        .and_then(|m| m.modified())
+        .ok()?;
+    let (count, newest) = crate::watch::project_files_newer_than(project, manifest_mtime);
+    if count == 0 {
+        return None;
+    }
+    // Project-relative paths when possible — the message reads
+    // `target/manifest.json … models/x.sql`, not absolute noise.
+    let rel = |p: &std::path::Path| p.strip_prefix(project).unwrap_or(p).display().to_string();
+    let newest = newest.map(|p| rel(&p)).unwrap_or_default();
+    Some(format!(
+        "{} is older than {} project file{} (newest: {}); \
+         run `dbt parse` to rebuild it, or pass `--source`",
+        rel(manifest),
+        count,
+        if count == 1 { "" } else { "s" },
+        newest,
+    ))
+}
+
 /// Apply the loaded graph's package scope: `All` keeps the manifest's full
 /// contents (installed-package nodes as dependency context); the default
 /// `Root` prunes to the root project — what `--project-only` used to ask for.

@@ -79,15 +79,23 @@ fn with_positions(f: Finding, file: &str, raw: &str, spans: &mut [SpanNote]) -> 
 /// `select_star`: a model's output-producing projection reads `*`/`t.*` —
 /// including a UNION arm and `|> SELECT *`, never a wildcard confined to a
 /// CTE (its outer select enumerates the outputs anyway). `count(*)` is a
-/// function call, not a projection wildcard.
+/// function call, not a projection wildcard. The opt-in
+/// `allow_final_star_over_single_cte` parameter (default `false`) exempts
+/// the `select * from <one CTE>` close whose CTE already enumerates every
+/// column — the wildcard's output is then provably explicit, just spelled
+/// lazily.
 pub(super) fn select_star(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
+    config: &LintConfig,
     sql: &SqlParseResolver,
     unparsed: &mut BTreeSet<String>,
     out: &mut Vec<Finding>,
 ) {
+    let allow_cte_close = config
+        .bool_param(LintRule::SelectStar, "allow_final_star_over_single_cte")
+        .expect("the registry declares select_star.allow_final_star_over_single_cte");
     for uid in uids {
         let Some(n) = dag.get(uid) else { continue };
         if !is_sql_model(dag, n) || !in_scope(n) {
@@ -97,7 +105,7 @@ pub(super) fn select_star(
             record_unparsed(dag, uid, unparsed);
             continue;
         };
-        if !facts.unbounded_wildcard {
+        if !facts.unbounded_wildcard || (allow_cte_close && facts.star_over_single_explicit_cte) {
             continue;
         }
         let mut f = Finding::new(

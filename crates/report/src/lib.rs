@@ -210,10 +210,12 @@ pub struct LintTally {
     /// `LintRule::ALL` order.
     pub skipped: Vec<SkippedRule>,
     /// Models whose SQL exists but wouldn't parse so the SQL rules skipped
-    /// them — the summary's third line, populated from
+    /// them — the summary's third line — carried as their
+    /// [`dbtl_core::display_name`]s in `unique_id` order, populated from
     /// [`dbtl_core::LintOutcome::unparsed`] (each uid once, however many SQL
-    /// rules hit the same parse failure).
-    pub unparsed_models: usize,
+    /// rules hit the same parse failure). The text renderer lists the
+    /// first ten then a `+K more` tail.
+    pub unparsed_models: Vec<String>,
 }
 
 /// The shared report the `check`/`lint` gates serialize into — the

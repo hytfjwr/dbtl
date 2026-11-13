@@ -53,6 +53,12 @@ lint:
         - "stg_legacy_*"
         - "path:legacy"
         - "tag:wip"
+    select_star:
+      allow_final_star_over_single_cte: true   # `select *` closing one
+                                             #   all-explicit-columns CTE is fine
+    rejoining_upstream:
+      ignore_shared_parents: ["dim_*"]   # selector list: exempt shared
+                                         #   parents matching it
   model_fanout_threshold: 5       # compat flat keys; an error if combined
   source_fanout_threshold: 2      #   with the nested param form
   naming_prefixes:                # per-layer merge over the defaults
@@ -94,6 +100,19 @@ A rule entry can set:
 
 Parameters are listed per rule in the [lint rules reference](../reference/lint-rules.md).
 
+### Shared dimensions
+
+A shared dimension feeds both a fact and its downstream, so two rules flag the same shape on purpose. Exempt the dimension — which nodes each key matches differs: `exclude` drops findings on matching nodes (the flagged side), while `ignore_shared_parents` drops matching shared parents (the dim itself).
+
+```yaml
+lint:
+  rules:
+    rejoining_upstream:
+      ignore_shared_parents: ["dim_*"]   # a dim joining at both hops is fine
+    model_fanout:
+      exclude: ["dim_*"]                 # a dim legitimately feeds many marts
+```
+
 ### Suppress rules on one node
 
 A node can suppress rules through its `meta`. dbt's `+meta` inheritance from `dbt_project.yml` applies as usual.
@@ -104,7 +123,10 @@ models:
     meta:
       dbtl:
         ignore: [root_models, naming_conventions]   # or the string "all"
+        reason: "legacy import — tracked in DEC-482"      # optional; for humans
 ```
+
+`dbtl` reads `dbtl.ignore` only — sibling keys like `reason:` are a convention for recording why the suppression exists; the linter ignores them.
 
 ## check
 

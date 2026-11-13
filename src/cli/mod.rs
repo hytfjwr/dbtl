@@ -270,7 +270,9 @@ pub enum Commands {
         /// the project graph — no warehouse or `dbt compile` needed). Rule
         /// enable/disable, thresholds, and naming prefixes come from the
         /// project-local `.dbtl.yml`. With --diff, only violations that did
-        /// not exist in the baseline gate.
+        /// not exist in the baseline gate. Findings suppress per rule via
+        /// `.dbtl.yml`'s `lint.rules.<id>.exclude` (dbt-selector specs) and
+        /// per node via `meta.dbtl.ignore` (rule ids, or `all`).
         #[arg(long)]
         lint: bool,
         /// Fail when the diff carries BREAKING column changes that
@@ -352,7 +354,10 @@ pub enum Commands {
     /// TUI's Lint lens quotes. `.dbtl.yml` supplies rule enables, severities,
     /// thresholds and naming prefixes; `--rules` overrides the selection;
     /// the baseline file freezes known violations; `--diff` narrows the gate
-    /// to violations the baseline doesn't already carry.
+    /// to violations the baseline doesn't already carry. Findings suppress
+    /// per rule via `lint.rules.<id>.exclude` (dbt-selector specs) and per
+    /// node via `meta.dbtl.ignore` (rule ids, or `all`) — both live in the
+    /// project, not on this command line.
     Lint {
         /// Restrict linting to these rules (comma-separated rule names).
         /// The flag is the authoritative rule selector — the file still

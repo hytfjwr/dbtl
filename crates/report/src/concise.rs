@@ -68,7 +68,7 @@ mod tests {
             pre_existing: 0,
             has_diff: false,
             skipped: Vec::new(),
-            unparsed_models: 0,
+            unparsed_models: Vec::new(),
         });
         for (rule, uid, msg, sev, file, line, col) in [
             (

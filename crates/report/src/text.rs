@@ -123,8 +123,9 @@ pub(crate) fn gates_section(report: &Report, ctx: &RenderCtx<'_>) -> String {
 
 /// The lint summary: counted findings split by severity with the file
 /// tally, baselined and `--diff`-suppressed tallies in parentheses, then
-/// the reported/skipped rule line — and the unparsable-SQL line when its
-/// tally lands (the slot is in place; nothing fills it yet).
+/// the reported/skipped rule line — and the unparsable-SQL line naming the
+/// models whose SQL wouldn't parse when [`LintTally::unparsed_models`]
+/// lands (ten shown, a `+K more` tail beyond).
 pub(crate) fn summary_lines(report: &Report, lint: &LintTally, styled: bool) -> String {
     let (mut errors, mut warnings, mut baselined, mut reported_rules) =
         (0usize, 0usize, 0usize, 0usize);
@@ -197,11 +198,21 @@ pub(crate) fn summary_lines(report: &Report, lint: &LintTally, styled: bool) -> 
         second += &format!("; {} skipped ({})", lint.skipped.len(), reasons.join(", "));
     }
     let mut lines = vec![first, second];
-    if lint.unparsed_models > 0 {
-        lines.push(format!(
-            "{} skipped SQL rules (unparsable SQL)",
-            counted(lint.unparsed_models, "model", "models"),
-        ));
+    if !lint.unparsed_models.is_empty() {
+        // Name up to 10 skipped models — a wall of names would bury the
+        // exit-relevant tally; the `+K more` tail keeps the count honest.
+        const SHOWN: usize = 10;
+        let shown = lint.unparsed_models.len().min(SHOWN);
+        let mut line = format!(
+            "{} skipped SQL rules (unparsable SQL): {}",
+            counted(lint.unparsed_models.len(), "model", "models"),
+            lint.unparsed_models[..shown].join(", "),
+        );
+        let hidden = lint.unparsed_models.len() - shown;
+        if hidden > 0 {
+            line += &format!(" +{hidden} more");
+        }
+        lines.push(line);
     }
     lines.join("\n")
 }
@@ -517,7 +528,7 @@ mod tests {
             pre_existing: 0,
             has_diff: false,
             skipped: Vec::new(),
-            unparsed_models: 0,
+            unparsed_models: Vec::new(),
         });
         let yml = "- name: fct_orders\n  columns:\n    - name: order_id\n";
         let sql = "select a,\n       b.*\nfrom t\n";
@@ -606,6 +617,43 @@ mod tests {
              Found 1 error and 1 warning in 2 files\n\
              2 rules reported findings\n",
             "the annotated excerpts + summary render byte-exactly"
+        );
+    }
+
+    /// The unparsed-SQL summary line names the skipped models — up to ten
+    /// in the tally's `unique_id` order, then a `+K more` tail — and stays
+    /// absent when every model's SQL parsed.
+    #[test]
+    fn summary_names_up_to_ten_unparsable_models() {
+        let report = Report::new("p", "source (x)");
+        let lint = |names: Vec<&str>| LintTally {
+            unparsed_models: names.iter().map(|s| s.to_string()).collect(),
+            ..LintTally::default()
+        };
+        // ≤ 10 — every name on the line.
+        assert_eq!(
+            summary_lines(&report, &lint(vec!["a", "b", "c"]), false),
+            "No findings\n\
+             0 rules reported findings\n\
+             3 models skipped SQL rules (unparsable SQL): a, b, c"
+        );
+        // > 10 — the first ten then the hidden count.
+        let names: Vec<String> = (0..13).map(|i| format!("m{i:02}")).collect();
+        let l = LintTally {
+            unparsed_models: names,
+            ..LintTally::default()
+        };
+        assert_eq!(
+            summary_lines(&report, &l, false),
+            "No findings\n\
+             0 rules reported findings\n\
+             13 models skipped SQL rules (unparsable SQL): \
+             m00, m01, m02, m03, m04, m05, m06, m07, m08, m09 +3 more"
+        );
+        // None — no line at all.
+        assert_eq!(
+            summary_lines(&report, &LintTally::default(), false),
+            "No findings\n0 rules reported findings"
         );
     }
 }

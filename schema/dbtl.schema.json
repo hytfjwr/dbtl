@@ -303,6 +303,14 @@
                         "type": "string"
                       },
                       "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    },
+                    "ignore_shared_parents": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "default": [],
+                      "description": "selectors matching shared parents (the A node) to exempt — e.g. shared dim_* dimensions (each item must be a valid selector — same grammar as `exclude:`; `state:` is not allowed)"
                     }
                   }
                 }
@@ -1151,6 +1159,11 @@
                         "type": "string"
                       },
                       "description": "dbt selector strings — findings whose node matches the union are dropped"
+                    },
+                    "allow_final_star_over_single_cte": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "exempt a final `select *` whose FROM reads exactly one CTE that names every column explicitly"
                     }
                   }
                 }
