@@ -36,6 +36,8 @@ export interface SelectedNode {
   name: string;
   resource_type: string;
   materialized: string | null;
+  /** Project-relative file the node is declared in, when known. */
+  path: string | null;
 }
 
 export interface SelectOutput {
@@ -101,6 +103,9 @@ export interface LintOptions {
   /** A dbt selector narrowing findings to matched nodes. */
   selector?: string | null;
   fail_on?: FailOn | null;
+  // There is no baseline input: the run always behaves like `dbtl lint
+  // --no-baseline` — a baseline freezes findings from a real checkout,
+  // and the engine has no filesystem to read one from.
 }
 
 export interface LintOutput {
@@ -154,6 +159,8 @@ interface RawEngine {
   columns(input: string): string;
   replaceSql(input: string): string;
   revertSql(input: string): string;
+  /** Release the wasm-side allocation (wasm-bindgen's generated free). */
+  free(): void;
 }
 
 /**
@@ -223,6 +230,16 @@ export class Engine {
   revertSql(uniqueId: string): ChangeOutput {
     return JSON.parse(this.#raw.revertSql(JSON.stringify({ unique_id: uniqueId }))) as ChangeOutput;
   }
+
+  /**
+   * Free the wasm-side engine. Pages that drop the engine on navigation
+   * can skip this — the allocation dies with the page — but a long-lived
+   * page that loads many manifests should dispose of each engine it
+   * replaces.
+   */
+  dispose(): void {
+    this.#raw.free();
+  }
 }
 
 const isNode =
@@ -236,14 +253,29 @@ function defaultDir(): string {
   return `${env?.BASE_URL ?? "/"}engine/`;
 }
 
+// The module's file names — dir arguments are treated as a prefix and
+// may arrive with or without the trailing slash.
+const JS_NAME = "dbtl_wasm.js";
+const WASM_NAME = "dbtl_wasm_bg.wasm";
+
+function joinUrl(dir: string, name: string): string {
+  return `${dir.endsWith("/") ? dir : `${dir}/`}${name}`;
+}
+
 async function importBrowser(dir: string): Promise<Bindings> {
   let mod: Bindings;
   try {
-    mod = (await import(/* @vite-ignore */ `${dir}dbtl_wasm.js`)) as Bindings;
+    mod = (await import(/* @vite-ignore */ joinUrl(dir, JS_NAME))) as Bindings;
   } catch (e) {
     throw new EngineNotBuiltError(dir, e);
   }
-  await mod.default(`${dir}dbtl_wasm_bg.wasm`);
+  try {
+    await mod.default(joinUrl(dir, WASM_NAME));
+  } catch (e) {
+    // The .js loaded but the .wasm fetch/instantiate failed — a
+    // half-staged public/engine/ reads exactly like "not built".
+    throw new EngineNotBuiltError(dir, e);
+  }
   return mod;
 }
 
@@ -256,12 +288,15 @@ async function importNode(dir: string): Promise<Bindings> {
   const abs = resolve(dir);
   let mod: Bindings;
   try {
-    mod = (await import(pathToFileURL(resolve(abs, "dbtl_wasm.js")).href)) as Bindings;
+    mod = (await import(pathToFileURL(resolve(abs, JS_NAME)).href)) as Bindings;
   } catch (e) {
     throw new EngineNotBuiltError(dir, e);
   }
-  const bytes = await readFile(resolve(abs, "dbtl_wasm_bg.wasm"));
-  mod.initSync({ module: bytes });
+  try {
+    mod.initSync({ module: await readFile(resolve(abs, WASM_NAME)) });
+  } catch (e) {
+    throw new EngineNotBuiltError(dir, e);
+  }
   return mod;
 }
 

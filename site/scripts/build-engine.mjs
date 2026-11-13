@@ -141,16 +141,20 @@ if (process.env.DBTL_SKIP_ENGINE === "1") {
 const version = pinnedWasmBindgen();
 checkTools(version);
 
-const cargo = run("cargo", [
-  "build",
-  "-p",
-  "dbtl-wasm",
-  "--target",
-  "wasm32-unknown-unknown",
-  "--profile",
-  "wasm-release",
-  "--locked",
-]);
+const cargo = run(
+  "cargo",
+  [
+    "build",
+    "-p",
+    "dbtl-wasm",
+    "--target",
+    "wasm32-unknown-unknown",
+    "--profile",
+    "wasm-release",
+    "--locked",
+  ],
+  { cwd: repoRoot },
+);
 if (cargo.r.status !== 0) {
   process.stderr.write(cargo.r.stderr);
   fail("cargo build failed");

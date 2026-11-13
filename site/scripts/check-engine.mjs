@@ -20,9 +20,22 @@ const repoRoot = path.resolve(siteRoot, "..");
 const engineDir = path.join(siteRoot, "public", "engine");
 const samplesDir = path.join(siteRoot, "public", "samples");
 
-// The same two fixtures the Rust parity suite runs — names must match the
-// directories build-engine.mjs staged under public/samples/.
-const SAMPLES = ["jaffle_finance", "sample"];
+// The samples build-engine.mjs staged — whatever directories hold a
+// manifest.json + files.json pair get checked, so the two scripts never
+// keep separate lists.
+function stagedSamples() {
+  if (!fs.existsSync(samplesDir)) return [];
+  return fs
+    .readdirSync(samplesDir, { withFileTypes: true })
+    .filter(
+      (e) =>
+        e.isDirectory() &&
+        fs.existsSync(path.join(samplesDir, e.name, "manifest.json")) &&
+        fs.existsSync(path.join(samplesDir, e.name, "files.json")),
+    )
+    .map((e) => e.name)
+    .sort();
+}
 
 const fail = (msg) => {
   console.error(`check-engine: ${msg}`);
@@ -36,13 +49,27 @@ if (process.env.DBTL_SKIP_ENGINE === "1") {
 if (!fs.existsSync(path.join(engineDir, "dbtl_wasm.js"))) {
   fail(`${engineDir} has no generated module — run scripts/build-engine.mjs first`);
 }
+const SAMPLES = stagedSamples();
+if (SAMPLES.length === 0) {
+  fail(`${samplesDir} has no staged samples — run scripts/build-engine.mjs first`);
+}
 
 // The expected lint bodies — `{text, json}` per sample — from the engine
-// running natively over the fixture data.
-function expected(sample) {
+// running natively over the same staged files the wasm load reads.
+function expected(dir) {
   const run = spawnSync(
     "cargo",
-    ["run", "-q", "--locked", "-p", "dbtl-wasm", "--example", "fixture_lint", sample],
+    [
+      "run",
+      "-q",
+      "--locked",
+      "-p",
+      "dbtl-wasm",
+      "--example",
+      "fixture_lint",
+      path.join(dir, "manifest.json"),
+      path.join(dir, "files.json"),
+    ],
     {
       cwd: repoRoot,
       encoding: "utf8",
@@ -50,12 +77,29 @@ function expected(sample) {
     },
   );
   if (run.error || run.status !== 0) {
-    fail(`fixture_lint ${sample} failed: ${run.error?.message ?? run.stderr}`);
+    fail(`fixture_lint ${dir} failed: ${run.error?.message ?? run.stderr}`);
   }
   return JSON.parse(run.stdout);
 }
 
-const { loadEngine } = await import("../src/engine/index.ts");
+// The loader is TypeScript — imported directly, which needs Node's type
+// stripping (on by default in Node ≥ 23.6 and ≥ 22.18; the site floor,
+// 22.23.4, covers it — older releases fail the engines check anyway).
+let loadEngine;
+try {
+  ({ loadEngine } = await import("../src/engine/index.ts"));
+} catch (e) {
+  if (
+    e &&
+    (e.code === "ERR_UNKNOWN_FILE_EXTENSION" || e.code === "ERR_UNSUPPORTED_ESM_URL_SCHEME")
+  ) {
+    fail(
+      `importing src/engine/index.ts needs Node's TypeScript type stripping ` +
+        `(Node ≥ 23.6 or ≥ 22.18); this Node is ${process.version}`,
+    );
+  }
+  throw e;
+}
 const engine = await loadEngine({ dir: engineDir });
 
 let failures = 0;
@@ -66,7 +110,7 @@ for (const name of SAMPLES) {
   const load = engine.load({ manifest, files });
   if (load.nodes === 0) fail(`${name}: the engine loaded zero nodes`);
   const out = engine.lint({});
-  const want = expected(name);
+  const want = expected(dir);
   for (const key of ["text", "json"]) {
     if (out[key] !== want[key]) {
       console.error(
