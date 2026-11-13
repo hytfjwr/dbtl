@@ -23,9 +23,11 @@
       "parameters": {
         "required_approving_review_count": 0,
         "dismiss_stale_reviews_on_push": false,
+        "required_reviewers": [],
         "require_code_owner_review": false,
         "require_last_push_approval": false,
         "required_review_thread_resolution": false,
+        "require_extra_approval_for_unattributed_changes": true,
         "allowed_merge_methods": ["merge", "squash", "rebase"]
       }
     },
@@ -33,20 +35,11 @@
       "type": "required_status_checks",
       "parameters": {
         "strict_required_status_checks_policy": false,
+        "do_not_enforce_on_create": false,
         "required_status_checks": [
-          { "context": "Lint", "integration_id": 15368 },
-          { "context": "Build & Test (ubuntu-latest)", "integration_id": 15368 },
-          { "context": "Build & Test (windows-latest)", "integration_id": 15368 },
-          { "context": "Build & Test (macos-latest)", "integration_id": 15368 },
-          { "context": "zizmor", "integration_id": 15368 },
-          { "context": "actionlint", "integration_id": 15368 },
-          { "context": "pinact", "integration_id": 15368 },
-          { "context": "MSRV", "integration_id": 15368 },
-          { "context": "Hygiene", "integration_id": 15368 },
-          { "context": "cargo-deny", "integration_id": 15368 },
-          { "context": "Action self-test", "integration_id": 15368 },
-          { "context": "Dogfood E2E", "integration_id": 15368 },
-          { "context": "Docs reference", "integration_id": 15368 }
+          { "context": "CI result", "integration_id": 15368 },
+          { "context": "Security result", "integration_id": 15368 },
+          { "context": "Dogfood result", "integration_id": 15368 }
         ]
       }
     }

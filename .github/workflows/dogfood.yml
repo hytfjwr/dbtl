@@ -15,8 +15,38 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Same classification job as ci.yml — one shared script keeps the scopes
+  # identical across workflows.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+      docs: ${{ steps.classify.outputs.docs }}
+      site: ${{ steps.classify.outputs.site }}
+      docsref: ${{ steps.classify.outputs.docsref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The diff is between the merge commit's two parents — depth 2
+          # keeps the base commit reachable.
+          fetch-depth: 2
+
+      - name: Classify changed paths
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: bash .github/scripts/changed-paths.sh "$EVENT_NAME" | tee -a "$GITHUB_OUTPUT"
+
   action-self-test:
     name: Action self-test
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -120,6 +150,8 @@ jobs:
 
   dogfood-e2e:
     name: Dogfood E2E
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -386,3 +418,27 @@ jobs:
             ${{ runner.temp }}/dogfood/report.json
             ${{ runner.temp }}/dogfood/impact.md
           if-no-files-found: warn
+
+  # The single required check for this workflow: fails when any needed job
+  # failed or was cancelled; change-scoped skips pass.
+  dogfood-result:
+    name: Dogfood result
+    needs:
+      - changes
+      - action-self-test
+      - dogfood-e2e
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Aggregate the required checks
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: bash .github/scripts/aggregate-results.sh
