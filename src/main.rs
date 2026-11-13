@@ -159,6 +159,7 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
             path_prefix,
             docs_dir,
             select,
+            show_suppressed,
             quiet,
         }) => {
             return run_check(
@@ -182,6 +183,7 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
                     path_prefix: path_prefix.as_deref(),
                     docs_dir: docs_dir.as_deref(),
                     select,
+                    show_suppressed: *show_suppressed,
                 },
             );
         }
@@ -199,6 +201,7 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
             list_rules,
             explain,
             select,
+            show_suppressed,
             quiet,
         }) => {
             return run_lint(
@@ -218,6 +221,7 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
                     step_summary: *step_summary,
                     path_prefix: path_prefix.as_deref(),
                     select,
+                    show_suppressed: *show_suppressed,
                 },
             );
         }

@@ -8,6 +8,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Lint suppressions now carry a reason, and reports surface them.
+  `meta.dbtl.ignore` accepts a map form — `ignore: {root_models: "pk
+  enforced upstream", all: "imported model"}` — recording a reason per
+  rule, with `meta.dbtl.reason` as the fallback for the map's `~`
+  entries, the list form, and `"all"`. `.dbtl.yml`'s
+  `lint.rules.<id>.exclude` accepts `{select: <selector>, reason: <why>}`
+  objects alongside bare selector strings. A new `--show-suppressed`
+  flag on `dbtl lint` and `dbtl check` lists the suppressed findings
+  marked with their mechanism and reason (`text`/`concise`/`json`); the
+  `sarif`, `junit`, `codeclimate`, and `github` formats never emit them,
+  and suppressed findings never count toward `--fail-on`, the baseline,
+  or the exit code.
+- The lint report counts suppressed findings and names unparsable models
+  in machine-readable form. The summary line gains `N findings
+  suppressed (K meta.dbtl.ignore, M exclude; J without a reason)` when
+  suppression dropped any, and `--format json` carries
+  `summary.suppressed` (`{total, by: {exclude, meta}, without_reason}`)
+  plus `summary.unparsed_models` (`{count, names}`) — the same set the
+  text summary's "skipped SQL rules" line names.
 - `--vars '<YAML|JSON>'` — a dbt-compatible variables map for source-mode
   parsing, accepted as a global flag on either side of a subcommand. The
   dict outranks `vars.yml` and `dbt_project.yml`'s `vars:` in every

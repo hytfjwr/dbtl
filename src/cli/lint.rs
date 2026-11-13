@@ -114,6 +114,9 @@ pub struct LintArgs<'a> {
     pub path_prefix: Option<&'a str>,
     /// `--select` — the dbt-selector specs findings intersect.
     pub select: &'a [String],
+    /// `--show-suppressed` — list the suppressed findings (with reasons)
+    /// in the human/json outputs.
+    pub show_suppressed: bool,
 }
 
 /// The lint config the query modes (`--list-rules`, `--explain`) print:
@@ -351,6 +354,7 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
                 base_sql: base_resolver.as_ref(),
             },
             selection: selection.as_ref(),
+            show_suppressed: args.show_suppressed,
             read_text: &read_text,
         },
     );

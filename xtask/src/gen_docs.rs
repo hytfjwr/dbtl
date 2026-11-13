@@ -483,8 +483,27 @@ fn dbtl_yml_schema() -> Value {
                 "exclude".into(),
                 json!({
                     "type": "array",
-                    "items": {"type": "string"},
-                    "description": "dbt selector strings — findings whose node matches the union are dropped",
+                    "items": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": ["select"],
+                                "properties": {
+                                    "select": {
+                                        "type": "string",
+                                        "description": "a dbt selector spec (`state:` is not allowed)",
+                                    },
+                                    "reason": {
+                                        "type": ["string", "null"],
+                                        "description": "why the suppression exists — reported by `--show-suppressed`",
+                                    },
+                                },
+                            },
+                        ],
+                    },
+                    "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`",
                 }),
             );
             for p in info.params {
@@ -841,7 +860,7 @@ fn config_markdown(dbtl_schema: &Value) -> String {
     );
     out.push_str("| Key | Type | Description |\n| --- | ---- | ----------- |\n");
     out.push_str("| `severity` | `error` \\| `warn` \\| `off` | The severity findings report at; `off` disables the rule. |\n");
-    out.push_str("| `exclude` | list of strings | dbt selector strings — findings whose node matches the union are dropped. |\n");
+    out.push_str("| `exclude` | list | dbt selector specs — findings whose node matches the union are suppressed. Each item is a bare selector string or `{select: <selector>, reason: <why>}`; the reason reports under `--show-suppressed`. |\n");
     out.push_str(
         "| _rule parameters_ | per-rule | Declared per rule — see the \
          parameters tables in the [lint rules reference](lint-rules.md); an \

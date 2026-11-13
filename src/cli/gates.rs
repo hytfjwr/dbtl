@@ -149,6 +149,9 @@ pub struct CheckArgs<'a> {
     pub docs_dir: Option<&'a str>,
     /// `--select` — the dbt-selector specs every gate intersects.
     pub select: &'a [String],
+    /// `--show-suppressed` — list the suppressed lint findings (with
+    /// reasons) in the human/json outputs.
+    pub show_suppressed: bool,
 }
 
 /// Merge `.dbtl.yml`'s `check:` section with the CLI overrides into the
@@ -644,6 +647,7 @@ impl CheckRun<'_> {
                     base_sql: lint_base_resolver.as_ref(),
                 },
                 selection: self.selection.as_ref(),
+                show_suppressed: self.args.show_suppressed,
                 read_text,
             });
             // `exclude:`/selector-param deprecation notes plus the
@@ -726,10 +730,14 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
     // `.dbtl.yml` owner_meta_key > config.yml's > `owner` — the ONE
     // resolution `dbtl impact` and the TUI `D` modal share.
     let owner_key = owner_meta_key(pc.config.owner_meta_key.as_deref(), true);
-    // `--rules`/`--preset` imply linting (a rule list or a rule set with
-    // nothing to run is a no-op flag, so honour the intent instead).
-    let lint_active =
-        args.lint || !args.rules.is_empty() || args.preset.is_some() || check_cfg.lint;
+    // `--rules`/`--preset`/`--show-suppressed` imply linting (a rule list,
+    // a rule set, or a suppressed-findings listing with nothing to run is
+    // a no-op flag, so honour the intent instead).
+    let lint_active = args.lint
+        || !args.rules.is_empty()
+        || args.preset.is_some()
+        || args.show_suppressed
+        || check_cfg.lint;
 
     // The baseline loads once and feeds EVERYTHING diff-aware — the diff
     // gates, the lint new-violation comparison, and `--select`'s `state:`
@@ -812,6 +820,7 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
         .count();
     report.gates = gates;
     report.summary = Report::summarize(&report.gates);
+    report.lift_lint_summary();
     plan.emit(
         &report,
         "check",

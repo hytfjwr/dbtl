@@ -274,9 +274,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -311,9 +335,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -348,9 +396,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     },
                     "threshold": {
                       "type": "integer",
@@ -391,9 +463,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     },
                     "threshold": {
                       "type": "integer",
@@ -434,9 +530,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -471,9 +591,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     },
                     "ignore_shared_parents": {
                       "type": "array",
@@ -516,9 +660,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -553,9 +721,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     },
                     "resource_types": {
                       "type": "array",
@@ -610,9 +802,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -647,9 +863,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     },
                     "resource_types": {
                       "type": "array",
@@ -699,9 +939,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -736,9 +1000,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -773,9 +1061,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -810,9 +1122,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -847,9 +1183,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -884,9 +1244,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     },
                     "threshold": {
                       "type": "integer",
@@ -927,9 +1311,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     },
                     "threshold": {
                       "type": "integer",
@@ -970,9 +1378,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -1007,9 +1439,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     },
                     "allowed_access": {
                       "type": "array",
@@ -1059,9 +1515,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -1096,9 +1576,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     },
                     "resource_types": {
                       "type": "array",
@@ -1149,9 +1653,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -1186,9 +1714,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     },
                     "keys": {
                       "type": "array",
@@ -1231,9 +1783,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -1268,9 +1844,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -1305,9 +1905,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -1342,9 +1966,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     },
                     "allow_final_star_over_single_cte": {
                       "type": "boolean",
@@ -1384,9 +2032,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     },
                     "ignore": {
                       "type": "array",
@@ -1429,9 +2101,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -1466,9 +2162,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -1503,9 +2223,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     },
                     "patterns": {
                       "type": "array",
@@ -1549,9 +2293,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -1586,9 +2354,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -1623,9 +2415,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     },
                     "layers": {
                       "type": "array",
@@ -1671,9 +2487,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -1708,9 +2548,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -1745,9 +2609,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -1782,9 +2670,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -1819,9 +2731,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }
@@ -1856,9 +2792,33 @@
                     "exclude": {
                       "type": "array",
                       "items": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
                       },
-                      "description": "dbt selector strings — findings whose node matches the union are dropped"
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
                     }
                   }
                 }

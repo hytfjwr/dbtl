@@ -137,9 +137,13 @@ impl GateResult {
         Self::new(id, title, Severity::Error, GateStatus::Skip, message)
     }
 
-    /// The findings that actually count — baselined ones are suppressed.
+    /// The findings that actually count — baselined ones are frozen and
+    /// suppressed ones (`--show-suppressed` lists them on the gate) never
+    /// counted.
     pub fn counted(&self) -> impl Iterator<Item = &Finding> {
-        self.findings.iter().filter(|f| !f.baselined)
+        self.findings
+            .iter()
+            .filter(|f| !f.baselined && f.suppression.is_none())
     }
 
     /// The suffix the text/markdown gate lines print: the gate severity plus
@@ -191,6 +195,47 @@ pub struct ReportSummary {
     pub warnings: usize,
     pub baselined: usize,
     pub skipped: usize,
+    /// Suppressed findings — present only when at least one was dropped
+    /// (additive: a run with none serializes the four fields above only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suppressed: Option<SuppressedSummary>,
+    /// Models the SQL rules couldn't parse — present only when at least
+    /// one model was skipped that way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unparsed_models: Option<UnparsedModels>,
+}
+
+/// The suppressed-findings rollup `summary.suppressed` carries — the total
+/// plus the mechanism breakdown and the count that recorded no reason.
+/// Also the [`LintTally`] shape the text summary line reads.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SuppressedSummary {
+    /// Findings `lint.rules.<id>.exclude` / `meta.dbtl.ignore` dropped —
+    /// they never counted toward the gate.
+    pub total: usize,
+    /// The per-mechanism split.
+    pub by: SuppressedBy,
+    /// How many suppressions recorded no reason.
+    pub without_reason: usize,
+}
+
+/// Per-mechanism suppressed counts inside [`SuppressedSummary`].
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SuppressedBy {
+    /// `.dbtl.yml` `lint.rules.<id>.exclude` selector suppressions.
+    pub exclude: usize,
+    /// Node `meta.dbtl.ignore` suppressions.
+    pub meta: usize,
+}
+
+/// The unparsable-model rollup `summary.unparsed_models` carries — the
+/// same set the text summary's third line names.
+#[derive(Debug, Clone, Serialize)]
+pub struct UnparsedModels {
+    /// `names.len()` echoed for consumers that don't list them.
+    pub count: usize,
+    /// The models' [`dbtl_core::display_name`]s in `unique_id` order.
+    pub names: Vec<String>,
 }
 
 /// The lint-run tallies the `text`/`concise` summary lines need that the
@@ -217,6 +262,10 @@ pub struct LintTally {
     /// rules hit the same parse failure). The text renderer lists the
     /// first ten then a `+K more` tail.
     pub unparsed_models: Vec<String>,
+    /// The suppressed-finding rollup — total, mechanism split, and the
+    /// count carrying no reason. The text summary's fourth line and the
+    /// JSON `summary.suppressed` both read it.
+    pub suppressed: SuppressedSummary,
 }
 
 /// The shared report the `check`/`lint` gates serialize into — the
@@ -278,6 +327,11 @@ impl Report {
         for g in gates {
             let mut counted = 0;
             for f in &g.findings {
+                // Suppressed findings (attached by `--show-suppressed`)
+                // never count — their rollup is `summary.suppressed`.
+                if f.suppression.is_some() {
+                    continue;
+                }
                 if f.baselined {
                     s.baselined += 1;
                 } else {
@@ -297,6 +351,26 @@ impl Report {
             }
         }
         s
+    }
+
+    /// Lift the lint tallies into the serialized summary — the suppressed
+    /// rollup and the unparsable-model list. Call AFTER `Report::summarize`
+    /// and `report.lint` are both set (the rollup counts findings the gate
+    /// list never carries, so `summarize` cannot see them). `dbtl lint`
+    /// and `check --lint` share this so their JSON shapes never diverge.
+    pub fn lift_lint_summary(&mut self) {
+        let Some(lint) = &self.lint else {
+            return;
+        };
+        if lint.suppressed.total > 0 {
+            self.summary.suppressed = Some(lint.suppressed.clone());
+        }
+        if !lint.unparsed_models.is_empty() {
+            self.summary.unparsed_models = Some(UnparsedModels {
+                count: lint.unparsed_models.len(),
+                names: lint.unparsed_models.clone(),
+            });
+        }
     }
 }
 
@@ -507,7 +581,14 @@ impl SourceText {
 /// absent; its findings render position-only.
 pub fn collect_sources(report: &Report, env: &RenderEnv<'_>) -> BTreeMap<String, SourceText> {
     let mut sources = BTreeMap::new();
-    for f in report.gates.iter().flat_map(|g| g.counted()) {
+    // Counted findings AND the suppressed ones `--show-suppressed` lists —
+    // everything the human formats may annotate. Baselined findings stay
+    // out: they render as a count, never a block.
+    for f in report
+        .gates
+        .iter()
+        .flat_map(|g| g.findings.iter().filter(|f| !f.baselined))
+    {
         let Some(loc) = f.location.as_ref() else {
             continue;
         };
@@ -606,6 +687,7 @@ pub(crate) mod samples {
             labels: Vec::new(),
             help: None,
             baselined,
+            suppression: None,
         }
     }
 
@@ -630,6 +712,7 @@ pub(crate) mod samples {
             labels: Vec::new(),
             help: None,
             baselined,
+            suppression: None,
         }
     }
 

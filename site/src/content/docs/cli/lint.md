@@ -18,7 +18,7 @@ Text output is one annotated block per finding. The header names the severity an
 
 Findings in a properties `.yml` (descriptions, tests, freshness, contract columns) point at the `- name:` entry's line and column. A `.sql` finding points at the offending syntax — the wildcard, relation name, joined table, column reference, regex match, trailing semicolon, duplicated output column, unread CTE, or unbounded `ORDER BY` — when the rule can pin it exactly.
 
-A closing tally reads `Found N errors and M warnings in K files`, with `K baselined` or `K pre-existing, not counted` in parentheses when a baseline or `--diff` suppresses findings. It then reports `N rules reported findings; M skipped (need --catalog)` and, when models carried SQL the parser could not read, `N models skipped SQL rules (unparsable SQL): <names>` — up to ten model names, then `+K more`.
+A closing tally reads `Found N errors and M warnings in K files`, with `K baselined` or `K pre-existing, not counted` in parentheses when a baseline or `--diff` suppresses findings. It then reports `N rules reported findings; M skipped (need --catalog)`, `N findings suppressed (K meta.dbtl.ignore, M exclude; J without a reason)` when [suppression](#suppressed-findings) dropped any, and, when models carried SQL the parser could not read, `N models skipped SQL rules (unparsable SQL): <names>` — up to ten model names, then `+K more`.
 
 ```text
 error[public_models_without_contract]: fct_public_api is access: public without an enforced contract
@@ -131,6 +131,19 @@ lint:
 ```
 
 The [project config](../configuration/project-config.md) page covers every `lint:` key: presets, category severities, per-rule severities, parameters, `exclude` selectors, naming prefixes, and the `meta.dbtl.ignore` opt-out on a single node.
+
+## Suppressed findings
+
+Two mechanisms suppress a finding without disabling its rule: `lint.rules.<id>.exclude` selectors in `.dbtl.yml` and `meta.dbtl.ignore` on the node itself. Both can record *why* — an `exclude` entry may carry `reason:` as a `{select, reason}` object, and `meta.dbtl.ignore` takes per-rule reasons in map form with `meta.dbtl.reason` as the fallback. See [Suppress rules on one node](../configuration/project-config.md#suppress-rules-on-one-node).
+
+A suppressed finding never gates: it drops out of the `--fail-on` count, the baseline, the exit code, and the `sarif`/`junit`/`codeclimate`/`github` outputs entirely. It is not invisible, though — the text and JSON summaries always count it (`summary.suppressed` carries the total, the `exclude`/`meta` split, and how many recorded no reason), and `--show-suppressed` lists the findings themselves:
+
+```sh
+dbtl lint --show-suppressed
+dbtl check --lint --show-suppressed    # same listing inside the check report
+```
+
+Under the flag, `text`/`concise` mark each finding `suppressed` with the mechanism and reason (`= suppressed: meta.dbtl.ignore — pk enforced upstream`), and `json` adds `suppressed: true` and a `suppression: {by, reason}` object to the finding. The `json` summary also names the models the SQL rules could not parse under `summary.unparsed_models` (`{count, names}`).
 
 ## Freeze existing violations
 

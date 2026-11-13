@@ -122,14 +122,21 @@ pub struct SkippedRule {
     pub reason: &'static str,
 }
 
-/// What [`run_rules`] produced: every [`Finding`] plus the rules that
-/// didn't run because their required input was missing (disabled rules
-/// appear in NEITHER list — off is not "skipped").
+/// What [`run_rules`] produced: every counted [`Finding`], the findings
+/// suppression dropped, plus the rules that didn't run because their
+/// required input was missing (disabled rules appear in NO list — off is
+/// not "skipped").
 #[derive(Debug, Default)]
 pub struct LintOutcome {
-    /// Every finding the enabled, runnable rules produced, in
-    /// [`LintRule::ALL`]-then-sorted-uid order.
+    /// Every finding the enabled, runnable rules produced that no
+    /// suppression dropped, in [`LintRule::ALL`]-then-sorted-uid order.
     pub findings: Vec<Finding>,
+    /// The findings a `lint.rules.<id>.exclude` spec or a node's
+    /// `meta.dbtl.ignore` suppressed — same order as `findings`, each
+    /// carrying its [`Suppression`] (mechanism + recorded reason). They
+    /// never gate and never join `findings`; surfaces report them through
+    /// the summary tally or `--show-suppressed`.
+    pub suppressed: Vec<Finding>,
     /// Enabled rules whose `requires` weren't satisfied, in
     /// [`LintRule::ALL`] order.
     pub skipped: Vec<SkippedRule>,
@@ -380,9 +387,10 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
     for f in &mut out {
         envelope(dag, config, f);
     }
-    suppress(dag, config, &mut out, &mut notes);
+    let suppressed = suppress(dag, config, &mut out, &mut notes);
     LintOutcome {
         findings: out,
+        suppressed,
         skipped,
         unparsed,
         warnings: notes.into_iter().collect(),
@@ -440,54 +448,96 @@ pub(super) fn envelope(dag: &Dag, config: &LintConfig, f: &mut Finding) {
     }
 }
 
-/// Drop findings suppressed by `lint.rules.<id>.exclude` selectors or by
-/// node `meta: {dbtl: {ignore: ...}}`. Both match on the finding's
-/// `node_uid` — the CHILD side for edge rules — and remove findings whole,
-/// never reordering them. Each `exclude:` spec's evaluation notes (the
-/// `path:` legacy form) join `notes` for the outcome's warning channel.
-fn suppress(dag: &Dag, config: &LintConfig, out: &mut Vec<Finding>, notes: &mut BTreeSet<String>) {
+/// One evaluated `exclude` spec — the uids its selector matched and the
+/// reason it records, kept in declared order so the first match wins.
+type ExcludedSet = (BTreeSet<String>, Option<String>);
+
+/// Split findings suppressed by `lint.rules.<id>.exclude` selectors or by
+/// node `meta: {dbtl: {ignore: ...}}` out of `out` — findings are removed
+/// whole, never reordered, and each lands in the returned vector carrying
+/// its [`Suppression`] record. Both mechanisms match on the finding's
+/// `node_uid` — the CHILD side for edge rules — and a node-local `meta`
+/// suppression wins the `by`/`reason` attribution over a config `exclude`
+/// spec (the more specific scope records); inside `exclude` the first
+/// matching spec in declared order records. Each `exclude:` spec's
+/// evaluation notes (the `path:` legacy form) join `notes` for the
+/// outcome's warning channel.
+fn suppress(
+    dag: &Dag,
+    config: &LintConfig,
+    out: &mut Vec<Finding>,
+    notes: &mut BTreeSet<String>,
+) -> Vec<Finding> {
     // Each rule's exclude spec evaluates ONCE into a uid set (the strings
-    // are a union — `exclude: [a, b]` drops nodes matching a OR b).
-    let excluded: BTreeMap<LintRule, BTreeSet<String>> = LintRule::ALL
+    // are a union — `exclude: [a, b]` drops nodes matching a OR b) — kept
+    // in declared order so the first matching spec's `reason` wins.
+    let excluded: BTreeMap<LintRule, Vec<ExcludedSet>> = LintRule::ALL
         .iter()
         .filter_map(|rule| {
             let specs = config.excludes(*rule);
             if specs.is_empty() {
                 None
             } else {
-                let mut set = BTreeSet::new();
+                let mut sets = Vec::with_capacity(specs.len());
                 for spec in specs {
-                    let (matched, spec_notes) = select_report(dag, None, spec);
-                    set.extend(matched);
+                    let (matched, spec_notes) = select_report(dag, None, &spec.select);
+                    sets.push((matched, spec.reason.clone()));
                     notes.extend(spec_notes);
                 }
-                Some((*rule, set))
+                Some((*rule, sets))
             }
         })
         .collect();
-    out.retain(|f| {
-        !excluded
-            .get(&f.rule)
-            .is_some_and(|s| s.contains(&f.node_uid))
-            && !meta_ignores(dag, &f.node_uid, f.rule)
-    });
+    let mut suppressed = Vec::new();
+    let mut kept = Vec::with_capacity(out.len());
+    for mut f in std::mem::take(out) {
+        let suppression = meta_suppression(dag, &f.node_uid, f.rule)
+            .map(|reason| Suppression {
+                by: SuppressionSource::Meta,
+                reason,
+            })
+            .or_else(|| {
+                excluded.get(&f.rule).and_then(|sets| {
+                    sets.iter()
+                        .find(|(set, _)| set.contains(&f.node_uid))
+                        .map(|(_, reason)| Suppression {
+                            by: SuppressionSource::Exclude,
+                            reason: reason.clone(),
+                        })
+                })
+            });
+        match suppression {
+            Some(s) => {
+                f.suppression = Some(s);
+                suppressed.push(f);
+            }
+            None => kept.push(f),
+        }
+    }
+    *out = kept;
+    suppressed
 }
 
 /// The `meta.dbtl` object's `ignore` member — `Absent` (no `ignore` key;
 /// other `meta.dbtl` keys are the project's own metadata), `"all"`, a list
-/// of rule ids, or a malformed value. [`meta_ignores`] and
-/// [`meta_dbtl_warnings`] read through this one classification so a value
-/// can never suppress by accident and still go unreported.
+/// of rule ids, a `{<rule id>|all: <reason>}` map, or a malformed value.
+/// [`meta_suppression`] and [`meta_dbtl_warnings`] read through this one
+/// classification so a value can never suppress by accident and still go
+/// unreported.
 enum MetaIgnore {
     Absent,
     All,
     List(Vec<String>),
+    /// The reason map: rule id (or `all`) → the recorded reason (`~` = no
+    /// reason of its own — `meta.dbtl.reason` still applies).
+    Map(serde_json::Map<String, serde_json::Value>),
     Malformed,
 }
 
 /// Classify `meta.dbtl`'s `ignore` value: the string `"all"`, a list of id
-/// strings, or `Malformed` — any other scalar, a non-string list item, a
-/// non-list shape.
+/// strings, a `{<rule id>|all: <reason>|~}` map, or `Malformed` — any other
+/// scalar, a non-string list item, a map value that is neither a string
+/// nor `null`, any other shape.
 fn meta_ignore(dbtl: &serde_json::Value) -> MetaIgnore {
     let Some(ignore) = dbtl.get("ignore") else {
         return MetaIgnore::Absent;
@@ -504,37 +554,80 @@ fn meta_ignore(dbtl: &serde_json::Value) -> MetaIgnore {
             }
             MetaIgnore::List(list)
         }
+        // An empty map suppresses nothing — classify it as malformed so
+        // `meta_dbtl_warnings` still says the intended suppression does
+        // nothing, like every other unrecognized shape.
+        serde_json::Value::Object(entries) if entries.is_empty() => MetaIgnore::Malformed,
+        serde_json::Value::Object(entries) => {
+            for value in entries.values() {
+                if !matches!(
+                    value,
+                    serde_json::Value::String(_) | serde_json::Value::Null
+                ) {
+                    return MetaIgnore::Malformed;
+                }
+            }
+            MetaIgnore::Map(entries.clone())
+        }
         _ => MetaIgnore::Malformed,
     }
 }
 
-/// Does node `node_uid`'s `meta.dbtl.ignore` cover `rule`? The `dbtl` entry
-/// is a JSON object (stringified by the `Dag`'s meta normalization):
-/// `{"ignore": ["rule_id", ...]}` suppresses the listed rules, `{"ignore":
-/// "all"}` suppresses every rule. A malformed value suppresses nothing —
-/// suppression is opt-in, never accidental — and the loader already warned
-/// once per node when the manifest built ([`meta_dbtl_warnings`]), so this
+/// Node `node_uid`'s `meta.dbtl` block, classified: the `ignore` shape plus
+/// the `reason` string every suppression on the node falls back to. The
+/// `dbtl` entry is a JSON object (stringified by the `Dag`'s meta
+/// normalization) — a value that fails to re-parse reads as no `dbtl`
+/// block at all, matching [`meta_dbtl_warnings`].
+fn meta_dbtl(dag: &Dag, node_uid: &str) -> Option<(MetaIgnore, Option<String>)> {
+    let raw = dag.detail(node_uid)?.meta.get("dbtl")?;
+    let v = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+    let reason = v.get("reason").and_then(|r| match r {
+        // An empty reason reads as none — a bare `suppressed:` marker with
+        // a dangling dash is worse than no reason at all.
+        serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+        // A scalar `reason:` stringifies like every other meta value.
+        serde_json::Value::Number(_) | serde_json::Value::Bool(_) => Some(r.to_string()),
+        _ => None,
+    });
+    Some((meta_ignore(&v), reason))
+}
+
+/// Does node `node_uid`'s `meta.dbtl.ignore` suppress `rule` — and with
+/// what recorded reason? `{"ignore": ["rule_id", ...]}` suppresses the
+/// listed rules, `{"ignore": "all"}` suppresses every rule, and
+/// `{"ignore": {"rule_id"|"all": <reason>}}` suppresses with a per-key
+/// reason; `meta.dbtl.reason` is the fallback for the list/`"all"` forms
+/// and `~` map values. A malformed value suppresses nothing — suppression
+/// is opt-in, never accidental — and the loader already warned once per
+/// node when the manifest built ([`meta_dbtl_warnings`]), so this
 /// per-finding check stays silent.
-fn meta_ignores(dag: &Dag, node_uid: &str, rule: LintRule) -> bool {
-    let Some(raw) = dag.detail(node_uid).and_then(|d| d.meta.get("dbtl")) else {
-        return false;
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
-        return false;
-    };
-    match meta_ignore(&v) {
-        MetaIgnore::All => true,
-        MetaIgnore::List(ids) => ids.iter().any(|id| id == rule.name()),
-        _ => false,
+fn meta_suppression(dag: &Dag, node_uid: &str, rule: LintRule) -> Option<Option<String>> {
+    let (ignore, fallback) = meta_dbtl(dag, node_uid)?;
+    match ignore {
+        MetaIgnore::All => Some(fallback),
+        MetaIgnore::List(ids) => ids.iter().any(|id| id == rule.name()).then_some(fallback),
+        MetaIgnore::Map(entries) => {
+            // A rule-named key wins over `all` — the specific record is the
+            // more precise reason. `~` values fall back to `meta.dbtl.reason`.
+            let entry = entries.get(rule.name()).or_else(|| entries.get("all"))?;
+            Some(
+                entry
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .or(fallback),
+            )
+        }
+        MetaIgnore::Absent | MetaIgnore::Malformed => None,
     }
 }
 
 /// One load warning per node/source whose `meta.dbtl.ignore` is malformed
-/// — not `"all"`, not a list of known rule ids. The shape means the
-/// suppression the author intended is silently doing nothing (see
-/// [`meta_ignores`]), so it surfaces like any other loader warning — once
-/// per node, not once per finding. Scans the raw manifest so manifest and
-/// source loads warn identically.
+/// — not `"all"`, not a list of rule ids, not a `{rule id|all: reason}`
+/// map. The shape means the suppression the author intended is silently
+/// doing nothing (see [`meta_suppression`]), so it surfaces like any other
+/// loader warning — once per node, not once per finding. Scans the raw
+/// manifest so manifest and source loads warn identically.
 pub(crate) fn meta_dbtl_warnings(manifest: &crate::RawManifest) -> Vec<String> {
     let mut warnings = Vec::new();
     for (uid, meta) in manifest
@@ -564,7 +657,8 @@ pub(crate) fn meta_dbtl_warnings(manifest: &crate::RawManifest) -> Vec<String> {
         };
         match meta_ignore(dbtl) {
             MetaIgnore::Malformed => warnings.push(format!(
-                "{uid}: meta.dbtl.ignore must be \"all\" or a list of lint rule ids"
+                "{uid}: meta.dbtl.ignore must be \"all\", a list of lint rule ids, \
+                 or a {{rule-id|all: reason}} map"
             )),
             MetaIgnore::List(ids) => {
                 let unknown: Vec<&str> = ids
@@ -579,7 +673,38 @@ pub(crate) fn meta_dbtl_warnings(manifest: &crate::RawManifest) -> Vec<String> {
                     ));
                 }
             }
+            MetaIgnore::Map(entries) => {
+                // `all` is a valid key in the map form — everything else
+                // must name a rule id.
+                let unknown: Vec<&str> = entries
+                    .keys()
+                    .map(String::as_str)
+                    .filter(|id| *id != "all" && LintRule::from_name(id).is_none())
+                    .collect();
+                if !unknown.is_empty() {
+                    warnings.push(format!(
+                        "{uid}: meta.dbtl.ignore names unknown lint rule id(s): {}",
+                        unknown.join(", ")
+                    ));
+                }
+            }
             MetaIgnore::Absent | MetaIgnore::All => {}
+        }
+        // `meta.dbtl.reason` is the fallback every map-`~`/list
+        // suppression reads — a map/list value drops silently in
+        // `meta_dbtl`, so say so here like a malformed `ignore`.
+        if let Some(r) = dbtl.get("reason") {
+            if !matches!(
+                r,
+                serde_json::Value::String(_)
+                    | serde_json::Value::Number(_)
+                    | serde_json::Value::Bool(_)
+                    | serde_json::Value::Null
+            ) {
+                warnings.push(format!(
+                    "{uid}: meta.dbtl.reason must be a string or number/bool scalar"
+                ));
+            }
         }
     }
     warnings.sort();

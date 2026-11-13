@@ -2001,6 +2001,410 @@ fn malformed_meta_dbtl_ignore_warns_in_source_mode() {
     );
 }
 
+// ---- suppression reasons -------------------------------------------------------
+
+/// The suppressed findings of a run, keyed `(node_uid, rule)` → the
+/// recorded `(by, reason)` — the shape the report's rollup reads.
+fn suppressed_of(
+    m: &RawManifest,
+    config: &LintConfig,
+) -> std::collections::BTreeMap<(String, LintRule), (SuppressionSource, Option<String>)> {
+    run_rules(LintInput::new(&Dag::build(m), config))
+        .suppressed
+        .into_iter()
+        .map(|f| {
+            let s = f
+                .suppression
+                .expect("a suppressed finding carries its record");
+            ((f.node_uid, f.rule), (s.by, s.reason))
+        })
+        .collect()
+}
+
+#[test]
+fn meta_dbtl_ignore_map_form_suppresses_with_reasons() {
+    // The `{<rule id>|all: <reason>}` map form: a rule-named key suppresses
+    // that rule with its recorded reason, `all` covers every rule, and a
+    // `~` value records no reason of its own.
+    let mk = |name: &str, meta: serde_json::Value| {
+        (
+            format!("model.p.{name}"),
+            RawNode {
+                name: name.into(),
+                resource_type: "model".into(),
+                path: Some(format!("staging/{name}.sql")),
+                meta: meta.as_object().cloned().unwrap_or_default(),
+                ..Default::default()
+            },
+        )
+    };
+    let m = manifest(
+        vec![
+            mk(
+                "stg_a",
+                serde_json::json!({"dbtl": {"ignore": {"root_models": "no parent on purpose"}}}),
+            ),
+            mk(
+                "stg_b",
+                serde_json::json!({"dbtl": {"ignore": {"all": "legacy staging"}}}),
+            ),
+            mk(
+                "stg_c",
+                serde_json::json!({"dbtl": {"ignore": {"root_models": null}}}),
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    let outcome = run_rules(LintInput::new(&Dag::build(&m), &LintConfig::default()));
+    let suppressed = suppressed_of(&m, &LintConfig::default());
+    // stg_a: root_models suppressed with its reason; the other rules on it
+    // still report.
+    assert_eq!(
+        suppressed.get(&("model.p.stg_a".to_string(), LintRule::RootModels)),
+        Some(&(
+            SuppressionSource::Meta,
+            Some("no parent on purpose".to_string())
+        ))
+    );
+    assert!(flagged(&outcome.findings, LintRule::UndocumentedModels).contains(&"model.p.stg_a"));
+    // stg_b: `all` covers every rule with the one reason.
+    assert_eq!(
+        suppressed.get(&("model.p.stg_b".to_string(), LintRule::RootModels)),
+        Some(&(SuppressionSource::Meta, Some("legacy staging".to_string())))
+    );
+    assert_eq!(
+        suppressed.get(&("model.p.stg_b".to_string(), LintRule::UndocumentedModels)),
+        Some(&(SuppressionSource::Meta, Some("legacy staging".to_string())))
+    );
+    // stg_c: `~` records no reason — the finding still suppressed.
+    assert_eq!(
+        suppressed.get(&("model.p.stg_c".to_string(), LintRule::RootModels)),
+        Some(&(SuppressionSource::Meta, None))
+    );
+    // …and the suppressed set is OUT of `findings` — it never gates.
+    assert!(
+        !flagged(&outcome.findings, LintRule::RootModels)
+            .iter()
+            .any(|u| u.starts_with("model.p.stg_")),
+        "suppressed findings never join the counted set"
+    );
+}
+
+#[test]
+fn meta_dbtl_reason_is_the_fallback_for_every_shape() {
+    // `meta.dbtl.reason` fills in where the `ignore` value records no
+    // reason of its own: the list form, `"all"`, and `~` map values all
+    // inherit it; a map value's own reason wins.
+    let mk = |name: &str, meta: serde_json::Value| {
+        (
+            format!("model.p.{name}"),
+            RawNode {
+                name: name.into(),
+                resource_type: "model".into(),
+                path: Some(format!("staging/{name}.sql")),
+                meta: meta.as_object().cloned().unwrap_or_default(),
+                ..Default::default()
+            },
+        )
+    };
+    let m = manifest(
+        vec![
+            mk(
+                "stg_list",
+                serde_json::json!({"dbtl": {"ignore": ["root_models"], "reason": "shared list reason"}}),
+            ),
+            mk(
+                "stg_all",
+                serde_json::json!({"dbtl": {"ignore": "all", "reason": "shared all reason"}}),
+            ),
+            mk(
+                "stg_null",
+                serde_json::json!({"dbtl": {"ignore": {"root_models": null}, "reason": "map fallback"}}),
+            ),
+            mk(
+                "stg_own",
+                serde_json::json!({"dbtl": {"ignore": {"root_models": "own"}, "reason": "map fallback"}}),
+            ),
+            // A rule-named key beats `all` for that rule's reason.
+            mk(
+                "stg_both",
+                serde_json::json!({"dbtl": {"ignore": {"root_models": "specific", "all": "generic"}}}),
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    let suppressed = suppressed_of(&m, &LintConfig::default());
+    let at = |uid: &str, rule: LintRule| suppressed.get(&(uid.to_string(), rule)).cloned();
+    assert_eq!(
+        at("model.p.stg_list", LintRule::RootModels),
+        Some((
+            SuppressionSource::Meta,
+            Some("shared list reason".to_string())
+        ))
+    );
+    assert_eq!(
+        at("model.p.stg_all", LintRule::UndocumentedModels),
+        Some((
+            SuppressionSource::Meta,
+            Some("shared all reason".to_string())
+        ))
+    );
+    assert_eq!(
+        at("model.p.stg_null", LintRule::RootModels),
+        Some((SuppressionSource::Meta, Some("map fallback".to_string())))
+    );
+    assert_eq!(
+        at("model.p.stg_own", LintRule::RootModels),
+        Some((SuppressionSource::Meta, Some("own".to_string())))
+    );
+    assert_eq!(
+        at("model.p.stg_both", LintRule::RootModels),
+        Some((SuppressionSource::Meta, Some("specific".to_string())))
+    );
+    assert_eq!(
+        at("model.p.stg_both", LintRule::UndocumentedModels),
+        Some((SuppressionSource::Meta, Some("generic".to_string())))
+    );
+}
+
+#[test]
+fn exclude_object_form_suppresses_with_reasons() {
+    // `.dbtl.yml`'s `exclude: [{select, reason}]`: bare strings suppress
+    // reasonless, objects carry theirs, and the FIRST matching spec's
+    // reason records. A `meta.dbtl.ignore` on the node wins the `by`
+    // attribution over any exclude spec.
+    let cfg = config_from(
+        "lint:\n  rules:\n    root_models:\n      exclude:\n        - stg_a\n        - {select: stg_*, reason: staging roots}\n        - {select: \"*\", reason: everything}\n    undocumented_models:\n      exclude:\n        - {select: stg_*, reason: staging undocumented}\n",
+    );
+    let mut meta_node = model("stg_meta", "staging/stg_meta.sql");
+    meta_node.1.meta =
+        serde_json::json!({"dbtl": {"ignore": {"undocumented_models": "node reason"}}})
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+    let m = manifest(
+        vec![model("stg_a", "staging/stg_a.sql"), meta_node],
+        vec![],
+        &[],
+    );
+    let outcome = run_rules(LintInput::new(&Dag::build(&m), &cfg));
+    let suppressed = suppressed_of(&m, &cfg);
+    // `stg_a` matches the bare string first — reasonless despite a later
+    // object form also matching (`stg_*`).
+    assert_eq!(
+        suppressed.get(&("model.p.stg_a".to_string(), LintRule::RootModels)),
+        Some(&(SuppressionSource::Exclude, None))
+    );
+    // `stg_meta` matches `stg_*` (the bare `stg_a` doesn't cover it).
+    assert_eq!(
+        suppressed.get(&("model.p.stg_meta".to_string(), LintRule::RootModels)),
+        Some(&(
+            SuppressionSource::Exclude,
+            Some("staging roots".to_string())
+        ))
+    );
+    // meta.dbtl.ignore wins over an exclude spec on the same finding.
+    assert_eq!(
+        suppressed.get(&("model.p.stg_meta".to_string(), LintRule::UndocumentedModels)),
+        Some(&(SuppressionSource::Meta, Some("node reason".to_string())))
+    );
+    // …and the suppressed findings never joined the counted set.
+    assert!(
+        flagged(&outcome.findings, LintRule::RootModels).is_empty(),
+        "every root_models finding suppressed"
+    );
+    assert!(
+        !flagged(&outcome.findings, LintRule::UndocumentedModels)
+            .iter()
+            .any(|u| u.starts_with("model.p.stg_")),
+        "every undocumented_models finding suppressed"
+    );
+}
+
+#[test]
+fn meta_dbtl_ignore_map_warns_on_unknown_ids_and_bad_values() {
+    // The map form is VALID — `{root_models: …}` suppresses and never
+    // warns. An unknown map key warns like an unknown list id (valid keys
+    // still apply); a non-string non-`~` map value is malformed and
+    // suppresses nothing.
+    let mk = |name: &str, meta: serde_json::Value| {
+        (
+            format!("model.p.{name}"),
+            RawNode {
+                name: name.into(),
+                resource_type: "model".into(),
+                path: Some(format!("staging/{name}.sql")),
+                meta: meta.as_object().cloned().unwrap_or_default(),
+                ..Default::default()
+            },
+        )
+    };
+    let m = manifest(
+        vec![
+            mk(
+                "stg_ok",
+                serde_json::json!({"dbtl": {"ignore": {"root_models": "why"}}}),
+            ),
+            mk(
+                "stg_unknown",
+                serde_json::json!({"dbtl": {"ignore": {"bogus_rule": "x", "root_models": "y"}}}),
+            ),
+            mk(
+                "stg_bad",
+                serde_json::json!({"dbtl": {"ignore": {"root_models": 7}}}),
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    let (_dag, warnings) = crate::dag_from_manifest(&m);
+    let meta_warnings: Vec<&String> = warnings
+        .iter()
+        .filter(|w| w.contains("meta.dbtl.ignore"))
+        .collect();
+    assert_eq!(
+        meta_warnings.len(),
+        2,
+        "the valid map never warns; the unknown key and bad value do: {meta_warnings:?}"
+    );
+    assert!(
+        meta_warnings
+            .iter()
+            .any(|w| w.starts_with("model.p.stg_unknown:") && w.contains("bogus_rule")),
+        "unknown map key names the id: {meta_warnings:?}"
+    );
+    assert!(
+        meta_warnings
+            .iter()
+            .any(|w| w.starts_with("model.p.stg_bad:") && w.contains("must be")),
+        "a non-string map value is malformed: {meta_warnings:?}"
+    );
+    let suppressed = suppressed_of(&m, &LintConfig::default());
+    assert_eq!(
+        suppressed.get(&("model.p.stg_ok".to_string(), LintRule::RootModels)),
+        Some(&(SuppressionSource::Meta, Some("why".to_string())))
+    );
+    // The valid key inside a partly-unknown map still applies.
+    assert_eq!(
+        suppressed.get(&("model.p.stg_unknown".to_string(), LintRule::RootModels)),
+        Some(&(SuppressionSource::Meta, Some("y".to_string())))
+    );
+    // The malformed value suppresses nothing.
+    let dag = Dag::build(&m);
+    assert!(
+        flagged(
+            &run_rules(LintInput::new(&dag, &LintConfig::default())).findings,
+            LintRule::RootModels
+        )
+        .contains(&"model.p.stg_bad"),
+        "a malformed map value suppresses nothing"
+    );
+    // An empty `ignore: {}` map is malformed — it suppresses nothing and
+    // warns like every other unrecognized shape.
+    let m = manifest(
+        vec![mk("stg_empty", serde_json::json!({"dbtl": {"ignore": {}}}))],
+        vec![],
+        &[],
+    );
+    let (_dag, warnings) = crate::dag_from_manifest(&m);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.starts_with("model.p.stg_empty:") && w.contains("meta.dbtl.ignore")),
+        "empty ignore map warns: {warnings:?}"
+    );
+}
+
+#[test]
+fn meta_dbtl_reason_non_scalar_warns() {
+    // A map/list `meta.dbtl.reason` drops silently in `meta_dbtl` — warn
+    // at load like a malformed `ignore`, and an empty string reads as no
+    // reason at all (never a dangling `suppressed:` marker).
+    let mk = |name: &str, meta: serde_json::Value| {
+        (
+            format!("model.p.{name}"),
+            RawNode {
+                name: name.into(),
+                resource_type: "model".into(),
+                path: Some(format!("staging/{name}.sql")),
+                meta: meta.as_object().cloned().unwrap_or_default(),
+                ..Default::default()
+            },
+        )
+    };
+    let m = manifest(
+        vec![
+            mk(
+                "stg_badreason",
+                serde_json::json!({"dbtl": {"ignore": "all", "reason": {"ticket": 1}}}),
+            ),
+            mk(
+                "stg_emptyreason",
+                serde_json::json!({"dbtl": {"ignore": "all", "reason": ""}}),
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    let (_dag, warnings) = crate::dag_from_manifest(&m);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.starts_with("model.p.stg_badreason:") && w.contains("meta.dbtl.reason")),
+        "non-scalar reason warns: {warnings:?}"
+    );
+    let suppressed = suppressed_of(&m, &LintConfig::default());
+    assert_eq!(
+        suppressed.get(&("model.p.stg_emptyreason".to_string(), LintRule::RootModels)),
+        Some(&(SuppressionSource::Meta, None)),
+        "an empty reason reads as none"
+    );
+}
+
+#[test]
+fn meta_dbtl_reason_is_a_stringifyable_scalar_in_both_modes() {
+    // `meta.dbtl.reason` survives the meta normalization — the same
+    // `{ignore, reason}` JSON object lands on NodeDetail whether the
+    // manifest or the source loader produced it.
+    let mut node = model("stg_x", "staging/stg_x.sql");
+    node.1.meta =
+        serde_json::json!({"dbtl": {"ignore": {"root_models": "per-rule"}, "reason": "shared"}})
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+    let dag = Dag::build(&manifest(vec![node], vec![], &[]));
+    assert_eq!(
+        dag.detail("model.p.stg_x").unwrap().meta["dbtl"],
+        r#"{"ignore":{"root_models":"per-rule"},"reason":"shared"}"#
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    std::fs::write(
+        dir.path().join("dbt_project.yml"),
+        "name: p\nmodels:\n  p:\n    +meta:\n      dbtl:\n        ignore: {root_models: per-rule}\n        reason: shared\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("models/stg_y.sql"), "select 1").unwrap();
+    let sm = crate::manifest_from_source(dir.path()).unwrap();
+    let sdag = Dag::build(&sm);
+    assert_eq!(
+        sdag.detail("model.p.stg_y").unwrap().meta["dbtl"],
+        r#"{"ignore":{"root_models":"per-rule"},"reason":"shared"}"#
+    );
+    // …and suppression + reason fire identically under source mode.
+    let suppressed = run_rules(LintInput::new(&sdag, &LintConfig::default()))
+        .suppressed
+        .into_iter()
+        .find(|f| f.node_uid == "model.p.stg_y" && f.rule == LintRule::RootModels)
+        .expect("the suppressed root_models finding");
+    let s = suppressed.suppression.expect("the record");
+    assert_eq!(s.by, SuppressionSource::Meta);
+    assert_eq!(s.reason.as_deref(), Some("per-rule"));
+}
+
 // ---- the baseline -------------------------------------------------------------
 
 #[test]

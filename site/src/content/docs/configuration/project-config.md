@@ -53,10 +53,10 @@ lint:
     model_fanout:
       severity: warn              # error | warn | off
       threshold: 5                # declared params only; unknown keys error
-      exclude:                    # dbt selector specs: skip findings on matches
+      exclude:                    # dbt selector specs: suppress findings on matches
         - "stg_legacy_*"
         - "path:models/legacy"
-        - "tag:wip"
+        - {select: "tag:wip", reason: "WIP models ship knowingly"}
     select_star:
       allow_final_star_over_single_cte: true   # `select *` closing one
                                              #   all-explicit-columns CTE is fine

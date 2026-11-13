@@ -239,6 +239,25 @@ fn lint_matches_the_cli_on_the_copied_sample_project() {
     );
 }
 
+/// An object-form exclude spec suppresses the fixture's `unused_models`
+/// finding with a reason — `--show-suppressed` flips the listing, not
+/// the bodies' bytes, so both flag states must match byte for byte.
+#[test]
+fn lint_show_suppressed_and_exclude_reasons_match_the_cli() {
+    let tmp = tempfile::tempdir().unwrap();
+    let m = common::manifest_in(tmp.path());
+    let config = "lint:\n  rules:\n    unused_models:\n      exclude: [{select: \"int_shoppers__combined\", reason: legacy names}]\n";
+    std::fs::write(tmp.path().join(".dbtl.yml"), config).unwrap();
+    let engine = jaffle_engine();
+    let opts = |show_suppressed: bool| LintOptions {
+        config: Some(config.to_string()),
+        show_suppressed,
+        ..LintOptions::default()
+    };
+    assert_lint_parity(&m, &engine, &opts(false), &[]);
+    assert_lint_parity(&m, &engine, &opts(true), &["--show-suppressed"]);
+}
+
 #[test]
 fn lint_matches_the_cli_under_a_selector_and_fail_on() {
     let engine = jaffle_engine();

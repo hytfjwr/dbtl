@@ -18,7 +18,9 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::gates::{CheckConfig, CheckGate, GateParamKind, GateSetting};
-use crate::lint::{Category, LintConfig, LintPreset, LintRule, ParamKind, RuleEnabled, Severity};
+use crate::lint::{
+    Category, ExcludeSpec, LintConfig, LintPreset, LintRule, ParamKind, RuleEnabled, Severity,
+};
 
 /// The conventional project-local config file name: `.dbtl.yml` next to
 /// `dbt_project.yml` (or at the project root above `target/` in manifest
@@ -286,13 +288,16 @@ impl ProjectConfig {
                         // flags use, so a typo'd spec errors here rather than
                         // silently suppressing nothing at evaluation time.
                         for spec in &settings.exclude {
-                            crate::select::validate_selector(spec).map_err(|e| {
-                                format!("lint.rules.{name}.exclude: invalid selector '{spec}': {e}")
+                            crate::select::validate_selector(&spec.select).map_err(|e| {
+                                format!(
+                                    "lint.rules.{name}.exclude: invalid selector '{}': {e}",
+                                    spec.select
+                                )
                             })?;
                             // `state:` needs a diff the lint evaluation
                             // never builds — allowed by the grammar but it
                             // would silently match nothing here.
-                            if crate::select::selector_uses_state(spec) {
+                            if crate::select::selector_uses_state(&spec.select) {
                                 return Err(format!(
                                     "lint.rules.{name}.exclude: 'state:' selectors need a diff; \
                                      rule excludes never have one"
@@ -769,9 +774,11 @@ enum RuleSpec {
 #[derive(Debug, Default)]
 struct RuleSettings {
     severity: Option<SeveritySetting>,
-    /// dbt-selector strings — findings whose `node_uid` matches the union
-    /// are dropped. Wildcard names (`stg_*`), `path:` and `tag:` atoms work.
-    exclude: Vec<String>,
+    /// dbt-selector specs — findings whose `node_uid` matches the union
+    /// are suppressed. Wildcard names (`stg_*`), `path:` and `tag:` atoms
+    /// work; an entry may be the bare selector string or the
+    /// `{select: <selector>, reason: <why>}` object.
+    exclude: Vec<ExcludeSpec>,
     /// Rule-declared params (`threshold`, …) — validated against the
     /// registry's [`ParamSpec`](crate::lint::ParamSpec) at parse so an
     /// undeclared key errors naming the rule and its accepted params.
@@ -804,17 +811,7 @@ fn parse_rule_entry(name: &str, value: &serde_norway::Value) -> Result<RuleSpec,
                         };
                     }
                     "exclude" => {
-                        let items = v.as_sequence().ok_or_else(|| {
-                            format!("lint.rules.{name}.exclude must be a list of selector strings")
-                        })?;
-                        for item in items {
-                            let s = item.as_str().ok_or_else(|| {
-                                format!(
-                                    "lint.rules.{name}.exclude must be a list of selector strings"
-                                )
-                            })?;
-                            settings.exclude.push(s.to_string());
-                        }
+                        settings.exclude = parse_exclude(name, v)?;
                     }
                     _ => {
                         settings.params.insert(key.to_string(), v.clone());
@@ -828,6 +825,70 @@ fn parse_rule_entry(name: &str, value: &serde_norway::Value) -> Result<RuleSpec,
              (severity: error|warn|off, exclude: [selectors], declared params)"
         )),
     }
+}
+
+/// One `exclude:` item — the bare selector string or the
+/// `{select: <selector>, reason: <why>}` object. `reason` is optional and
+/// `~`-able; any other key shape is a config error that names the rule.
+fn parse_exclude(name: &str, value: &serde_norway::Value) -> Result<Vec<ExcludeSpec>, String> {
+    let items = value
+        .as_sequence()
+        .ok_or_else(|| format!("lint.rules.{name}.exclude must be a list of selector strings"))?;
+    let mut specs = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            serde_norway::Value::String(s) => specs.push(ExcludeSpec::new(s)),
+            serde_norway::Value::Mapping(map) => {
+                let mut select = None;
+                let mut reason = None;
+                for (k, v) in map {
+                    match k.as_str() {
+                        Some("select") => {
+                            let s = v.as_str().ok_or_else(|| {
+                                format!(
+                                    "lint.rules.{name}.exclude: 'select' must be a selector string"
+                                )
+                            })?;
+                            select = Some(s.to_string());
+                        }
+                        Some("reason") => {
+                            reason = match v {
+                                serde_norway::Value::Null => None,
+                                _ => Some(
+                                    v.as_str()
+                                        .ok_or_else(|| {
+                                            format!(
+                                        "lint.rules.{name}.exclude: 'reason' must be a string"
+                                    )
+                                        })?
+                                        .to_string(),
+                                )
+                                // An empty reason reads as none — same as
+                                // `meta.dbtl` reason normalization.
+                                .filter(|s| !s.is_empty()),
+                            };
+                        }
+                        _ => {
+                            return Err(format!(
+                                "lint.rules.{name}.exclude entries are selector strings or \
+                                 {{select: <selector>, reason: <why>}} objects"
+                            ));
+                        }
+                    }
+                }
+                let select = select.ok_or_else(|| {
+                    format!("lint.rules.{name}.exclude entries must name a 'select' selector")
+                })?;
+                specs.push(ExcludeSpec { select, reason });
+            }
+            _ => {
+                return Err(format!(
+                    "lint.rules.{name}.exclude must be a list of selector strings"
+                ));
+            }
+        }
+    }
+    Ok(specs)
 }
 
 /// The `severity:` wire value — `off` folds into "no severity" (disabled).
@@ -1066,7 +1127,11 @@ mod tests {
         );
         assert_eq!(
             pc.lint.excludes(LintRule::ModelFanout),
-            &["stg_legacy_*", "path:models/legacy", "tag:wip"]
+            &[
+                ExcludeSpec::new("stg_legacy_*"),
+                ExcludeSpec::new("path:models/legacy"),
+                ExcludeSpec::new("tag:wip"),
+            ]
         );
         assert_eq!(pc.lint.severity(LintRule::SourceFanout), None);
     }
@@ -1403,6 +1468,78 @@ mod tests {
             parse("lint:\n  rules:\n    root_models: {exclude: [\"stg_*\", \"tag:wip\"]}\n")
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn exclude_object_entries_parse_and_validate() {
+        // `{select, reason}` items mix with bare strings; `reason: ~` and a
+        // missing `reason` both read as no reason.
+        let pc = parse(
+            "lint:\n  rules:\n    root_models:\n      exclude:\n        - stg_a\n        - {select: \"stg_*\", reason: staging roots}\n        - {select: \"tag:wip\"}\n        - {select: \"path:legacy\", reason: ~}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            pc.lint.excludes(LintRule::RootModels),
+            &[
+                ExcludeSpec::new("stg_a"),
+                ExcludeSpec {
+                    select: "stg_*".into(),
+                    reason: Some("staging roots".into()),
+                },
+                ExcludeSpec::new("tag:wip"),
+                ExcludeSpec::new("path:legacy"),
+            ]
+        );
+        // Selector validation applies to the `select` field the same way —
+        // invalid grammar and `state:` both error naming the key.
+        let err = parse(
+            "lint:\n  rules:\n    root_models:\n      exclude:\n        - {select: \"foo:bar\", reason: x}\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("lint.rules.root_models.exclude") && err.contains("invalid selector"),
+            "{err}"
+        );
+        let err = parse(
+            "lint:\n  rules:\n    root_models:\n      exclude:\n        - {select: \"state:modified\", reason: x}\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("state:"), "{err}");
+    }
+
+    #[test]
+    fn exclude_object_entries_reject_bad_shapes() {
+        // Every malformed object entry errors naming the key and the
+        // accepted shape — a missing `select`, an unknown key, a non-string
+        // `select` or `reason`, a non-scalar list item.
+        for (yaml, what) in [
+            (
+                "lint:\n  rules:\n    root_models:\n      exclude:\n        - {reason: x}\n",
+                "must name a 'select' selector",
+            ),
+            (
+                "lint:\n  rules:\n    root_models:\n      exclude:\n        - {select: stg, extra: x}\n",
+                "selector strings or {select: <selector>, reason: <why>} objects",
+            ),
+            (
+                "lint:\n  rules:\n    root_models:\n      exclude:\n        - {select: 7}\n",
+                "'select' must be a selector string",
+            ),
+            (
+                "lint:\n  rules:\n    root_models:\n      exclude:\n        - {select: stg, reason: 7}\n",
+                "'reason' must be a string",
+            ),
+            (
+                "lint:\n  rules:\n    root_models:\n      exclude:\n        - 7\n",
+                "must be a list of selector strings",
+            ),
+        ] {
+            let err = parse(yaml).unwrap_err();
+            assert!(
+                err.contains("lint.rules.root_models.exclude") && err.contains(what),
+                "{yaml} → {err}"
+            );
+        }
     }
 
     #[test]

@@ -50,15 +50,18 @@ pub(crate) fn is_lint_gate(gate: &GateResult) -> bool {
     gate.id.starts_with("lint:")
 }
 
-/// The counted lint findings across the `lint:*` gates, in display order:
-/// positioned findings by (file, line, column, rule, node uid), then every
-/// position-less finding by (node uid, rule) — deterministic across runs.
+/// The lint findings across the `lint:*` gates that render as blocks, in
+/// display order: counted findings plus the suppressed ones
+/// `--show-suppressed` attached (baselined findings render as counts,
+/// never blocks) — positioned findings by (file, line, column, rule, node
+/// uid), then every position-less finding by (node uid, rule) —
+/// deterministic across runs.
 pub(crate) fn sorted_lint_findings(report: &Report) -> Vec<&dbtl_core::Finding> {
     let mut findings: Vec<&dbtl_core::Finding> = report
         .gates
         .iter()
         .filter(|g| is_lint_gate(g))
-        .flat_map(|g| g.counted())
+        .flat_map(|g| g.findings.iter().filter(|f| !f.baselined))
         .collect();
     let (mut positioned, mut positionless): (Vec<_>, Vec<_>) = findings
         .drain(..)
@@ -133,6 +136,11 @@ pub(crate) fn summary_lines(report: &Report, lint: &LintTally, styled: bool) -> 
     for g in report.gates.iter().filter(|g| is_lint_gate(g)) {
         let mut reported = false;
         for f in &g.findings {
+            // Suppressed findings (`--show-suppressed`) never count here —
+            // their rollup is the suppressed summary line.
+            if f.suppression.is_some() {
+                continue;
+            }
             if f.baselined {
                 baselined += 1;
                 continue;
@@ -198,6 +206,26 @@ pub(crate) fn summary_lines(report: &Report, lint: &LintTally, styled: bool) -> 
         second += &format!("; {} skipped ({})", lint.skipped.len(), reasons.join(", "));
     }
     let mut lines = vec![first, second];
+    if lint.suppressed.total > 0 {
+        // The mechanism split reads "N meta.dbtl.ignore / M exclude"; the
+        // unreasoned tail only appears when at least one lacks a reason.
+        let mut parts = Vec::new();
+        if lint.suppressed.by.meta > 0 {
+            parts.push(format!("{} meta.dbtl.ignore", lint.suppressed.by.meta));
+        }
+        if lint.suppressed.by.exclude > 0 {
+            parts.push(format!("{} exclude", lint.suppressed.by.exclude));
+        }
+        let mut line = format!(
+            "{} suppressed ({})",
+            counted(lint.suppressed.total, "finding", "findings"),
+            parts.join(", ")
+        );
+        if lint.suppressed.without_reason > 0 {
+            line += &format!("; {} without a reason", lint.suppressed.without_reason);
+        }
+        lines.push(line);
+    }
     if !lint.unparsed_models.is_empty() {
         // Name up to 10 skipped models — a wall of names would bury the
         // exit-relevant tally; the `+K more` tail keeps the count honest.
@@ -284,7 +312,28 @@ fn finding_block(f: &dbtl_core::Finding, ctx: &RenderCtx<'_>) -> String {
     if let Some(note) = note_body(f, ctx) {
         group = group.element(Level::NOTE.message(note));
     }
+    if let Some(suppression) = &f.suppression {
+        group = group.element(
+            Level::NOTE
+                .with_name("suppressed")
+                .message(suppression_label(suppression)),
+        );
+    }
     renderer(ctx).render(&[group])
+}
+
+/// The `= suppressed:` element's body — the mechanism plus the recorded
+/// reason (`meta.dbtl.ignore — pk enforced upstream`), the mechanism
+/// alone when none was recorded.
+pub(crate) fn suppression_label(s: &dbtl_core::Suppression) -> String {
+    let mechanism = match s.by {
+        dbtl_core::SuppressionSource::Meta => "meta.dbtl.ignore",
+        dbtl_core::SuppressionSource::Exclude => "exclude",
+    };
+    match &s.reason {
+        Some(reason) => format!("{mechanism} — {reason}"),
+        None => mechanism.to_string(),
+    }
 }
 
 /// The finding's position element: the source excerpt when its file's
@@ -520,6 +569,7 @@ mod tests {
             has_diff: false,
             skipped: Vec::new(),
             unparsed_models: Vec::new(),
+            suppressed: SuppressedSummary::default(),
         });
         let yml = "- name: fct_orders\n  columns:\n    - name: order_id\n";
         let sql = "select a,\n       b.*\nfrom t\n";

@@ -76,9 +76,14 @@ pub struct RuleOutcome {
 /// pre-existing, with the `fail_on` verdict precomputed — so both commands
 /// see the same "counted findings" by construction.
 pub struct LintGateOutcome {
-    /// Every finding `run_rules` produced (exclude/meta suppression already
-    /// applied), `baselined` marked — in the deterministic run order.
+    /// Every finding `run_rules` produced that no suppression dropped,
+    /// `baselined` marked — in the deterministic run order.
     pub findings: Vec<Finding>,
+    /// The findings `exclude:`/`meta.dbtl.ignore` suppressed — each
+    /// carrying its [`dbtl_core::Suppression`] record (mechanism + reason).
+    /// They never gate; the tally counts them and `--show-suppressed`
+    /// attaches them to their rules' gates.
+    pub suppressed: Vec<Finding>,
     /// Enabled rules that didn't run for a missing input (SQL resolver /
     /// catalog), in `LintRule::ALL` order — `check` prints `SKIP` rows and
     /// `lint` a `skipped:` section; they never count toward the gate.
@@ -128,11 +133,13 @@ pub fn evaluate_lint(
             .with_catalog(aux.catalog),
     );
     let mut findings = outcome.findings;
+    let mut suppressed = outcome.suppressed;
     let skipped = outcome.skipped;
     let mut unparsed = outcome.unparsed;
     let mut warnings: BTreeSet<String> = outcome.warnings.into_iter().collect();
     if let Some(sel) = selection {
         findings.retain(|f| sel.contains(&f.node_uid));
+        suppressed.retain(|f| sel.contains(&f.node_uid));
         // The tally counts models the report's selection could have shown.
         unparsed.retain(|u| sel.contains(u));
     }
@@ -209,6 +216,7 @@ pub fn evaluate_lint(
         fail_on,
         failed: gating > 0,
         findings,
+        suppressed,
         skipped,
         unparsed,
         warnings: warnings.into_iter().collect(),
@@ -222,8 +230,11 @@ pub fn evaluate_lint(
 /// different wordings. Rules evaluated and rules skipped for a missing
 /// input interleave in `LintRule::ALL` order — a skipped rule is a `SKIP`
 /// gate (`SKIP lint <rule>: <reason>` in text, `status: "skip"` in JSON),
-/// informational only, never counted as a failure.
-pub fn lint_gates(dag: &Dag, outcome: &LintGateOutcome) -> Vec<GateResult> {
+/// informational only, never counted as a failure. With `show_suppressed`,
+/// each gate also carries its rule's suppressed findings (flagged by
+/// [`dbtl_core::Finding::suppression`]) — the human formats list them, the
+/// machine formats' `counted()` view never does.
+pub fn lint_gates(dag: &Dag, outcome: &LintGateOutcome, show_suppressed: bool) -> Vec<GateResult> {
     // The shared display naming the findings themselves use — a source is
     // `<source>.<table>`, so two same-named tables from different sources
     // (`raw_a.orders`/`raw_b.orders`) never collapse into one entry.
@@ -253,14 +264,25 @@ pub fn lint_gates(dag: &Dag, outcome: &LintGateOutcome) -> Vec<GateResult> {
         let title = format!("lint {}", ro.rule.name());
         // Every finding the report keeps for this rule: the counted ones plus
         // the baselined ones (marked) — pre-existing findings stay out of the
-        // report entirely (their count is in the pass message).
-        let findings: Vec<Finding> = outcome
+        // report entirely (their count is in the pass message). Suppressed
+        // findings join only under --show-suppressed, appended after the
+        // counted/baselined set.
+        let mut findings: Vec<Finding> = outcome
             .findings
             .iter()
             .enumerate()
             .filter(|(i, f)| f.rule == ro.rule && (ro.counted.contains(i) || f.baselined))
             .map(|(_, f)| f.clone())
             .collect();
+        if show_suppressed {
+            findings.extend(
+                outcome
+                    .suppressed
+                    .iter()
+                    .filter(|f| f.rule == ro.rule)
+                    .cloned(),
+            );
+        }
         match ro.status {
             GateStatus::Pass => {
                 let pass_msg = if outcome.has_diff && (ro.pre_existing > 0 || ro.baselined > 0) {
@@ -350,6 +372,11 @@ pub struct LintRunInputs<'a> {
     pub aux: LintAux<'a>,
     /// The `--select` node set (`None` = the whole run).
     pub selection: Option<&'a BTreeSet<String>>,
+    /// `--show-suppressed` — attach the suppressed findings to their
+    /// rules' gates so the human formats and the json payload list them
+    /// (the summary counts them either way; the machine formats never
+    /// emit them).
+    pub show_suppressed: bool,
     /// Resolve a project-relative `.yml` path into the file's text — the
     /// one source finding positions and report excerpts both read from
     /// (`None` leaves positions unresolved, exactly like an unreadable
@@ -372,7 +399,20 @@ pub fn lint_assembly(inputs: &LintRunInputs<'_>) -> LintAssembly {
         inputs.selection,
     );
     dbtl_core::fill_finding_lines_with(&mut outcome.findings, inputs.dag, inputs.read_text);
-    let gates = lint_gates(inputs.dag, &outcome);
+    dbtl_core::fill_finding_lines_with(&mut outcome.suppressed, inputs.dag, inputs.read_text);
+    let gates = lint_gates(inputs.dag, &outcome, inputs.show_suppressed);
+    let mut suppressed = crate::SuppressedSummary::default();
+    for f in &outcome.suppressed {
+        suppressed.total += 1;
+        match f.suppression.as_ref().map(|s| s.by) {
+            Some(dbtl_core::SuppressionSource::Exclude) => suppressed.by.exclude += 1,
+            Some(dbtl_core::SuppressionSource::Meta) => suppressed.by.meta += 1,
+            None => {}
+        }
+        if f.suppression.as_ref().is_none_or(|s| s.reason.is_none()) {
+            suppressed.without_reason += 1;
+        }
+    }
     let tally = LintTally {
         pre_existing: outcome.rules.iter().map(|r| r.pre_existing).sum(),
         has_diff: outcome.has_diff,
@@ -382,6 +422,7 @@ pub fn lint_assembly(inputs: &LintRunInputs<'_>) -> LintAssembly {
             .iter()
             .map(|u| dbtl_core::display_name(inputs.dag, u))
             .collect(),
+        suppressed,
     };
     LintAssembly {
         gates,
@@ -417,6 +458,7 @@ pub fn lint_report(project: &str, scope: &str, inputs: &LintRunInputs<'_>) -> Li
     report.gates = a.gates;
     report.summary = Report::summarize(&report.gates);
     report.lint = Some(a.tally);
+    report.lift_lint_summary();
     LintRun {
         report,
         gating: a.gating,
@@ -634,6 +676,196 @@ mod tests {
         assert!(!out.failed && out.rules[0].status == GateStatus::Warn);
     }
 
+    /// The inputs every test needs minus the ones it sets — the dag/cfg
+    /// come from the caller's bindings.
+    fn inputs<'a>(
+        dag: &'a Dag,
+        cfg: &'a LintConfig,
+        aux: LintAux<'a>,
+        show_suppressed: bool,
+    ) -> LintRunInputs<'a> {
+        LintRunInputs {
+            dag,
+            cfg,
+            base: None,
+            baseline: None,
+            fail_on: FailOn::Error,
+            aux,
+            selection: None,
+            show_suppressed,
+            read_text: &|_| None,
+        }
+    }
+
+    /// `a` suppressed via `meta.dbtl.ignore`'s map form (a reason), `b`
+    /// via a bare `exclude` spec (none) — the tally splits by mechanism
+    /// and counts the unreasoned one; the gate still passes because
+    /// suppressed findings never count.
+    #[test]
+    fn suppressed_findings_tally_by_mechanism_and_attach_under_show() {
+        let mut a = model("a", "staging/a.sql");
+        a.1.meta = serde_json::json!({"dbtl": {"ignore": {"root_models": "no parent on purpose"}}})
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let dag = Dag::build(&manifest(vec![a, model("b", "staging/b.sql")], &[]));
+        let mut cfg = cfg_only(&[LintRule::RootModels]);
+        cfg.exclude
+            .insert(LintRule::RootModels, vec![dbtl_core::ExcludeSpec::new("b")]);
+        // Without the flag: everything suppressed, the gate passes with no
+        // findings attached, the tally carries the mechanism breakdown.
+        let assembly = lint_assembly(&inputs(&dag, &cfg, no_aux(), false));
+        assert_eq!(assembly.tally.suppressed.total, 2);
+        assert_eq!(assembly.tally.suppressed.by.meta, 1);
+        assert_eq!(assembly.tally.suppressed.by.exclude, 1);
+        assert_eq!(assembly.tally.suppressed.without_reason, 1);
+        let gate = assembly
+            .gates
+            .iter()
+            .find(|g| g.id == "lint:root_models")
+            .expect("the root_models gate");
+        assert_eq!(gate.status, GateStatus::Pass);
+        assert!(
+            gate.findings.is_empty(),
+            "suppressed findings don't attach without the flag"
+        );
+        // With it: the gate lists both, each carrying its mechanism +
+        // reason — and the verdict still doesn't see them.
+        let assembly = lint_assembly(&inputs(&dag, &cfg, no_aux(), true));
+        let gate = assembly
+            .gates
+            .iter()
+            .find(|g| g.id == "lint:root_models")
+            .expect("the root_models gate");
+        assert_eq!(
+            gate.status,
+            GateStatus::Pass,
+            "suppressed findings never gate"
+        );
+        assert_eq!(gate.findings.len(), 2);
+        let sup = |uid: &str| {
+            gate.findings
+                .iter()
+                .find(|f| f.node_uid == uid)
+                .and_then(|f| f.suppression.as_ref())
+                .expect("a suppression record")
+        };
+        let a_rec = sup("model.p.a");
+        assert_eq!(a_rec.by, dbtl_core::SuppressionSource::Meta);
+        assert_eq!(a_rec.reason.as_deref(), Some("no parent on purpose"));
+        let b_rec = sup("model.p.b");
+        assert_eq!(b_rec.by, dbtl_core::SuppressionSource::Exclude);
+        assert_eq!(b_rec.reason, None);
+        assert!(!assembly.failed && assembly.gating == 0);
+    }
+
+    /// The suppressed finding lands in `summary.suppressed` (always) and
+    /// inside `gates[].findings` with `suppressed`/`suppression` (only
+    /// under `--show-suppressed`); the text render marks it with the
+    /// mechanism + reason.
+    #[test]
+    fn suppressed_findings_lift_into_the_json_summary_and_text_marker() {
+        let mut a = model("a", "staging/a.sql");
+        a.1.meta = serde_json::json!({"dbtl": {"ignore": "all", "reason": "legacy model"}})
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let dag = Dag::build(&manifest(vec![a], &[]));
+        let cfg = cfg_only(&[LintRule::RootModels]);
+        let ctx = crate::RenderCtx {
+            command: "lint",
+            path_prefix: None,
+            dag: Some(&dag),
+            sources: None,
+            styled: false,
+        };
+        let run = lint_report("p", "s", &inputs(&dag, &cfg, no_aux(), true));
+        let v = serde_json::to_value(&run.report).unwrap();
+        assert_eq!(v["summary"]["suppressed"]["total"], 1);
+        assert_eq!(v["summary"]["suppressed"]["by"]["meta"], 1);
+        assert_eq!(v["summary"]["suppressed"]["without_reason"], 0);
+        let findings: Vec<&serde_json::Value> = v["gates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["findings"].as_array().unwrap().iter())
+            .collect();
+        let f = findings
+            .iter()
+            .find(|f| f["node_uid"] == "model.p.a")
+            .expect("the suppressed finding lists under --show-suppressed");
+        assert_eq!(f["suppressed"], true);
+        assert_eq!(f["suppression"]["by"], "meta");
+        assert_eq!(f["suppression"]["reason"], "legacy model");
+        // The text render carries the marker + reason.
+        let text = crate::render_report(crate::ReportFormat::Text, &run.report, &ctx);
+        assert!(
+            text.contains("suppressed: meta.dbtl.ignore — legacy model"),
+            "the suppressed marker names mechanism + reason:\n{text}"
+        );
+        // Without the flag the count stays but no finding lists.
+        let run = lint_report("p", "s", &inputs(&dag, &cfg, no_aux(), false));
+        let v = serde_json::to_value(&run.report).unwrap();
+        assert_eq!(v["summary"]["suppressed"]["total"], 1);
+        let findings: Vec<&serde_json::Value> = v["gates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| {
+                g["findings"]
+                    .as_array()
+                    .map(|a| a.iter())
+                    .into_iter()
+                    .flatten()
+            })
+            .collect();
+        assert!(
+            findings.is_empty(),
+            "no findings list without --show-suppressed"
+        );
+        // Machine formats never emit the suppressed finding — even under
+        // `--show-suppressed`, where it rides the gate's findings list.
+        let run = lint_report("p", "s", &inputs(&dag, &cfg, no_aux(), true));
+        for format in [
+            crate::ReportFormat::Sarif,
+            crate::ReportFormat::Junit,
+            crate::ReportFormat::Codeclimate,
+            crate::ReportFormat::Github,
+        ] {
+            let out = crate::render_report(format, &run.report, &ctx);
+            assert!(
+                !out.contains("model.p.a"),
+                "{:?} must not emit the suppressed finding:\n{out}",
+                format
+            );
+        }
+    }
+
+    /// A model the SQL rules couldn't parse lands in
+    /// `summary.unparsed_models` — the same display-name set the text
+    /// summary's third line prints, in `unique_id` order.
+    #[test]
+    fn unparsable_models_lift_into_the_json_summary() {
+        let mut a = model("a", "staging/a.sql");
+        a.1.raw_code = Some("select from".into());
+        let mut b = model("b", "staging/b.sql");
+        b.1.raw_code = Some("select 1".into());
+        let dag = Dag::build(&manifest(vec![a, b], &[]));
+        let cfg = cfg_only(&[LintRule::SelectStar]);
+        let resolver = SqlParseResolver::for_dag(None, &dag);
+        let aux = LintAux {
+            sql: Some(&resolver),
+            ..no_aux()
+        };
+        let run = lint_report("p", "s", &inputs(&dag, &cfg, aux, false));
+        let v = serde_json::to_value(&run.report).unwrap();
+        assert_eq!(v["summary"]["unparsed_models"]["count"], 1);
+        assert_eq!(
+            v["summary"]["unparsed_models"]["names"],
+            serde_json::json!(["a"])
+        );
+    }
+
     /// Two same-named tables in different sources: the gate's node list
     /// qualifies each with its source (`raw_a.orders, raw_b.orders`), where
     /// the old bare-`name` list collapsed both to `orders, orders`. The
@@ -647,7 +879,7 @@ mod tests {
         ));
         let cfg = cfg_only(&[LintRule::UnusedSources]);
         let outcome = evaluate_lint(&dag, &cfg, None, None, FailOn::Error, no_aux(), None);
-        let gates = lint_gates(&dag, &outcome);
+        let gates = lint_gates(&dag, &outcome, false);
         let gate = gates
             .iter()
             .find(|g| g.id == "lint:unused_sources")
