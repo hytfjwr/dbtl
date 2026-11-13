@@ -1444,19 +1444,13 @@
                     "layers": {
                       "type": "array",
                       "items": {
-                        "type": "string",
-                        "enum": [
-                          "staging",
-                          "intermediate",
-                          "marts",
-                          "other"
-                        ]
+                        "type": "string"
                       },
                       "default": [
                         "staging",
                         "intermediate"
                       ],
-                      "description": "model layers the unused check applies to"
+                      "description": "model layers the unused check applies to — a built-in layer or a `lint.naming_prefixes` layer (built-in layers: staging, intermediate, marts, other)"
                     }
                   }
                 }

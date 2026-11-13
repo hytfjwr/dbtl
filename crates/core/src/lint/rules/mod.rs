@@ -457,12 +457,48 @@ fn suppress(dag: &Dag, config: &LintConfig, out: &mut Vec<Finding>) {
     });
 }
 
+/// The `meta.dbtl` object's `ignore` member — `Absent` (no `ignore` key;
+/// other `meta.dbtl` keys are the project's own metadata), `"all"`, a list
+/// of rule ids, or a malformed value. [`meta_ignores`] and
+/// [`meta_dbtl_warnings`] read through this one classification so a value
+/// can never suppress by accident and still go unreported.
+enum MetaIgnore {
+    Absent,
+    All,
+    List(Vec<String>),
+    Malformed,
+}
+
+/// Classify `meta.dbtl`'s `ignore` value: the string `"all"`, a list of id
+/// strings, or `Malformed` — any other scalar, a non-string list item, a
+/// non-list shape.
+fn meta_ignore(dbtl: &serde_json::Value) -> MetaIgnore {
+    let Some(ignore) = dbtl.get("ignore") else {
+        return MetaIgnore::Absent;
+    };
+    match ignore {
+        serde_json::Value::String(s) if s == "all" => MetaIgnore::All,
+        serde_json::Value::Array(ids) => {
+            let mut list = Vec::with_capacity(ids.len());
+            for id in ids {
+                match id.as_str() {
+                    Some(s) => list.push(s.to_string()),
+                    None => return MetaIgnore::Malformed,
+                }
+            }
+            MetaIgnore::List(list)
+        }
+        _ => MetaIgnore::Malformed,
+    }
+}
+
 /// Does node `node_uid`'s `meta.dbtl.ignore` cover `rule`? The `dbtl` entry
 /// is a JSON object (stringified by the `Dag`'s meta normalization):
 /// `{"ignore": ["rule_id", ...]}` suppresses the listed rules, `{"ignore":
 /// "all"}` suppresses every rule. A malformed value suppresses nothing —
-/// suppression is opt-in, never accidental — and unknown rule ids in the
-/// list are ignored (a stale id is not an error).
+/// suppression is opt-in, never accidental — and the loader already warned
+/// once per node when the manifest built ([`meta_dbtl_warnings`]), so this
+/// per-finding check stays silent.
 fn meta_ignores(dag: &Dag, node_uid: &str, rule: LintRule) -> bool {
     let Some(raw) = dag.detail(node_uid).and_then(|d| d.meta.get("dbtl")) else {
         return false;
@@ -470,13 +506,68 @@ fn meta_ignores(dag: &Dag, node_uid: &str, rule: LintRule) -> bool {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
         return false;
     };
-    match v.get("ignore") {
-        Some(serde_json::Value::String(s)) => s == "all",
-        Some(serde_json::Value::Array(ids)) => ids
-            .iter()
-            .any(|id| id.as_str().is_some_and(|s| s == rule.name())),
+    match meta_ignore(&v) {
+        MetaIgnore::All => true,
+        MetaIgnore::List(ids) => ids.iter().any(|id| id == rule.name()),
         _ => false,
     }
+}
+
+/// One load warning per node/source whose `meta.dbtl.ignore` is malformed
+/// — not `"all"`, not a list of known rule ids. The shape means the
+/// suppression the author intended is silently doing nothing (see
+/// [`meta_ignores`]), so it surfaces like any other loader warning — once
+/// per node, not once per finding. Scans the raw manifest so manifest and
+/// source loads warn identically.
+pub(crate) fn meta_dbtl_warnings(manifest: &crate::RawManifest) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for (uid, meta) in manifest
+        .nodes
+        .iter()
+        .map(|(uid, node)| (uid, &node.meta))
+        .chain(manifest.sources.iter().map(|(uid, src)| (uid, &src.meta)))
+    {
+        let Some(dbtl) = meta.get("dbtl") else {
+            continue;
+        };
+        // `meta.dbtl` can itself be a JSON-encoded string (`dbtl:
+        // '{"ignore": …}'`): the suppression reader re-parses the
+        // stringified `detail.meta` value the same way, so mirror it here —
+        // a string that decodes to an object is classified by its
+        // contents, any other string carries no `ignore` at all.
+        let reparsed;
+        let dbtl = match dbtl {
+            serde_json::Value::String(s) => {
+                reparsed = serde_json::from_str::<serde_json::Value>(s).ok();
+                match &reparsed {
+                    Some(v @ serde_json::Value::Object(_)) => v,
+                    _ => continue,
+                }
+            }
+            other => other,
+        };
+        match meta_ignore(dbtl) {
+            MetaIgnore::Malformed => warnings.push(format!(
+                "{uid}: meta.dbtl.ignore must be \"all\" or a list of lint rule ids"
+            )),
+            MetaIgnore::List(ids) => {
+                let unknown: Vec<&str> = ids
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|id| LintRule::from_name(id).is_none())
+                    .collect();
+                if !unknown.is_empty() {
+                    warnings.push(format!(
+                        "{uid}: meta.dbtl.ignore names unknown lint rule id(s): {}",
+                        unknown.join(", ")
+                    ));
+                }
+            }
+            MetaIgnore::Absent | MetaIgnore::All => {}
+        }
+    }
+    warnings.sort();
+    warnings
 }
 
 /// Model parents + source parents of `uid`, split. Neighbours are counted

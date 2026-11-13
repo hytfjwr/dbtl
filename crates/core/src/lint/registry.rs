@@ -665,11 +665,11 @@ pub static REGISTRY: &[RuleInfo] = &[
                   int_pricing. Fix: delete the model — or ref it from the \
                   consumer it was built for.",
         help: "delete the model, or ref it from the consumer it was built for",
-        params: &[ParamSpec::string_list(
+        params: &[ParamSpec::layer_list(
             "layers",
             &["staging", "intermediate"],
-            Some(&["staging", "intermediate", "marts", "other"]),
-            "model layers the unused check applies to",
+            &["staging", "intermediate", "marts", "other"],
+            "model layers the unused check applies to — a built-in layer or a `lint.naming_prefixes` layer",
         )],
         requires: Requires::Graph,
     },
@@ -976,6 +976,24 @@ impl ParamSpec {
             description,
         }
     }
+
+    /// A layer-list parameter — items name model layers: `builtins` is the
+    /// shipped layer set and `lint.naming_prefixes` keys are accepted on
+    /// top, so a project-invented layer can be checked like a built-in
+    /// one. Items land in
+    /// [`LintConfig::list_params`](crate::LintConfig) like a `StringList`.
+    pub const fn layer_list(
+        name: &'static str,
+        default: &'static [&'static str],
+        builtins: &'static [&'static str],
+        description: &'static str,
+    ) -> Self {
+        ParamSpec {
+            name,
+            kind: ParamKind::LayerList { default, builtins },
+            description,
+        }
+    }
 }
 
 /// The value space of a [`ParamSpec`].
@@ -999,6 +1017,14 @@ pub enum ParamKind {
     /// no diff context for it); items land in
     /// `LintConfig::list_params` like a `StringList`.
     SelectorList { default: &'static [&'static str] },
+    /// A list of model-layer names — `builtins` names the shipped layers
+    /// and `lint.naming_prefixes` keys are accepted on top (the config
+    /// parser validates each item against the union); items land in
+    /// `LintConfig::list_params` like a `StringList`.
+    LayerList {
+        default: &'static [&'static str],
+        builtins: &'static [&'static str],
+    },
     /// A `true`/`false` switch with a default used when the config
     /// doesn't set it; values land in `LintConfig::bool_params`.
     Bool { default: bool },
@@ -1052,8 +1078,9 @@ impl RuleInfo {
     /// `(default, allowed)` of the declared list parameter `name`, if any —
     /// `RegexList`/`SelectorList` rows report `allowed: None` (any string
     /// is a candidate; the regex-compile / selector-grammar check is the
-    /// validation). The config parser validates `StringList` items against
-    /// `allowed` and
+    /// validation), `LayerList` rows report `allowed: Some(builtins)` (the
+    /// config parser adds `lint.naming_prefixes` keys on top). The config
+    /// parser validates `StringList` items against `allowed` and
     /// [`LintConfig::str_list_param`](crate::LintConfig::str_list_param)
     /// falls back to `default`, so the registry is the single place both
     /// read.
@@ -1064,6 +1091,12 @@ impl RuleInfo {
         self.params.iter().find_map(|p| match p.kind {
             ParamKind::StringList { default, allowed } if p.name == name => {
                 Some((default, allowed))
+            }
+            // A layer list's `builtins` ARE its fixed-enum set — the
+            // `lint.naming_prefixes` keys add to them at parse, not at
+            // registry level.
+            ParamKind::LayerList { default, builtins } if p.name == name => {
+                Some((default, Some(builtins)))
             }
             ParamKind::RegexList { default } | ParamKind::SelectorList { default }
                 if p.name == name =>

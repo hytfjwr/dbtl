@@ -574,7 +574,7 @@ A model in a checked layer has no downstream.
 
 | Name | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
-| `layers` | list of strings (one of `staging` `intermediate` `marts` `other`) | `[staging, intermediate]` | model layers the unused check applies to |
+| `layers` | list of layer names (`staging` `intermediate` `marts` `other` or a `lint.naming_prefixes` layer) | `[staging, intermediate]` | model layers the unused check applies to — a built-in layer or a `lint.naming_prefixes` layer |
 
 ## `references_deprecated_model`
 
