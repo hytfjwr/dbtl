@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "astro/config";
 import { unified } from "@astrojs/markdown-remark";
+import sitemap from "@astrojs/sitemap";
 import {
   rehypeBlocks,
   rehypeHeadings,
@@ -35,6 +36,13 @@ export default defineConfig({
   trailingSlash: "always",
   build: { format: "directory" },
   devToolbar: { enabled: false },
+  integrations: [
+    sitemap({
+      // The 404 page and the /docs/ redirect hop are not content.
+      filter: (page) =>
+        !page.includes("/404") && new URL(page).pathname !== `${BASE}/docs/`,
+    }),
+  ],
   vite: {
     server: { fs: { allow: [siteRoot, linkOptions.repoRoot] } },
   },

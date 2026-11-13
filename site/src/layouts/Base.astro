@@ -27,10 +27,13 @@ interface Props {
   description: string;
   /** Which header tab is current. */
   section?: "home" | "docs" | "playground";
+  /** Keep the page out of search indexes: robots noindex and no canonical/og:url. */
+  noindex?: boolean;
 }
-const { title, description, section } = Astro.props;
+const { title, description, section, noindex } = Astro.props;
 
 const canonical = new URL(Astro.url.pathname, Astro.site).href;
+const ogImage = new URL(url("og.png"), Astro.site).href;
 // The docs tab opens the first page directly, so the hop through /docs/ never shows.
 const first = (await loadNav()).pages[0];
 const tabs = [
@@ -48,7 +51,18 @@ const tabs = [
     <meta name="color-scheme" content="light dark" />
     <title>{title}</title>
     <meta name="description" content={description} />
-    <link rel="canonical" href={canonical} />
+    {noindex && <meta name="robots" content="noindex" />}
+    {!noindex && <link rel="canonical" href={canonical} />}
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#edeef0" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#12151d" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    {!noindex && <meta property="og:url" content={canonical} />}
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="dbtl" />
+    <meta property="og:image" content={ogImage} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="sitemap" href={url("sitemap-index.xml")} />
     <link rel="icon" href={url("favicon.svg")} type="image/svg+xml" />
     <link rel="apple-touch-icon" href={url("apple-touch-icon.png")} />
     <link rel="preload" href={sansRegular} as="font" type="font/woff2" crossorigin />
