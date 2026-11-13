@@ -236,7 +236,7 @@ fn emit_subst(out: &mut Vec<u8>, segs: &mut Vec<Seg>, src: Range<usize>, bytes: 
 /// Byte-level identifier membership for the word tracker — ASCII letters,
 /// digits, `_`, `$`. Deliberately NOT dialect-shaped: the tracker only
 /// needs to tell a clause keyword from a column's name.
-fn word_byte(c: u8) -> bool {
+pub(super) fn word_byte(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_' || c == b'$'
 }
 
@@ -254,7 +254,7 @@ fn word_byte(c: u8) -> bool {
 /// reads them with the same quote and the dialect's own escape rule;
 /// `x`/`u&` prefixes only count at word start (`xu&'` stays a plain
 /// literal, matching the tokenizer's word-first read).
-struct Lex {
+pub(super) struct Lex {
     /// `\'`/`\"` escape inside a `'…'`/`"…"` string —
     /// `Dialect::supports_string_literal_backslash_escape` (Snowflake,
     /// BigQuery, MySQL, Redshift, ClickHouse, Databricks — not Generic).
@@ -279,11 +279,11 @@ struct Lex {
     hash_comment_space: bool,
     /// `/* /* */ */` nesting — `Dialect::supports_nested_comments`
     /// (Generic, Postgres, ClickHouse, Databricks, DuckDb, MsSql, Spark).
-    nested_comments: bool,
+    pub(super) nested_comments: bool,
     /// `$$…$$`/`$tag$…$tag$` ARE strings — inverted
     /// `Dialect::supports_dollar_placeholder` (SQLite, where a `$x$`
     /// is a parameter, never a quoted string).
-    dollar_quote: bool,
+    pub(super) dollar_quote: bool,
     /// `--` opens a comment only before whitespace —
     /// `Dialect::requires_single_line_comment_whitespace` (MySQL: `--x`
     /// is an expression, not a comment).
@@ -301,7 +301,7 @@ struct Lex {
 }
 
 impl Lex {
-    fn new(dialect: SqlDialect) -> Lex {
+    pub(super) fn new(dialect: SqlDialect) -> Lex {
         let d = dialect.sqlparser();
         Lex {
             string_escape: d.supports_string_literal_backslash_escape(),
@@ -332,7 +332,7 @@ impl Lex {
     /// for `u&`), `E'…'` escapes under escape-constant dialects,
     /// `r'…'`/`b'…'` never do, and an identifier quote (`"` on most
     /// dialects, `` ` `` everywhere) never escapes at all.
-    fn escape_for(&self, b: &[u8], i: usize) -> bool {
+    pub(super) fn escape_for(&self, b: &[u8], i: usize) -> bool {
         let prefixed = |c: u8| -> bool {
             i >= 1 && b[i - 1].eq_ignore_ascii_case(&c) && (i < 2 || !word_byte(b[i - 2]))
         };
@@ -367,20 +367,20 @@ impl Lex {
     /// Does `--` at `b[i]` open a line comment — always, except where the
     /// dialect requires whitespace after the dashes (MySQL: `--x` is an
     /// expression, `-- x` a comment; a trailing `--` at EOF is not one).
-    fn dash_comment_at(&self, b: &[u8], i: usize) -> bool {
+    pub(super) fn dash_comment_at(&self, b: &[u8], i: usize) -> bool {
         b.get(i + 1) == Some(&b'-')
             && (!self.dash_comment_space || b.get(i + 2).is_some_and(|c| c.is_ascii_whitespace()))
     }
 
     /// Does `//` at `b[i]` open a line comment (Snowflake)?
-    fn slash_comment_at(&self, b: &[u8], i: usize) -> bool {
+    pub(super) fn slash_comment_at(&self, b: &[u8], i: usize) -> bool {
         self.slash_comment && b.get(i + 1) == Some(&b'/')
     }
 
     /// Does `#` at `b[i]` open a line comment — the dialect's hash-comment
     /// predicate, including the following-space-or-`!` requirement where
     /// the dialect asks for it.
-    fn hash_comment_at(&self, b: &[u8], i: usize) -> bool {
+    pub(super) fn hash_comment_at(&self, b: &[u8], i: usize) -> bool {
         self.hash_comment
             && (!self.hash_comment_space || matches!(b.get(i + 1), Some(b' ') | Some(b'!')))
     }
@@ -390,7 +390,7 @@ impl Lex {
     /// a bare `q`/`Q` (optionally `n`-prefixed). An identifier ending in
     /// `q` (`sq'…'`) or `nq` (`xnq'…'`) stays a plain `'` literal, as
     /// the tokenizer reads the whole word first.
-    fn q_quote_at(&self, b: &[u8], i: usize) -> bool {
+    pub(super) fn q_quote_at(&self, b: &[u8], i: usize) -> bool {
         if !self.q_quote || i == 0 || !b[i - 1].eq_ignore_ascii_case(&b'q') {
             return false;
         }
@@ -1038,7 +1038,7 @@ impl<'a> Scan<'a> {
 
 /// The index of the line comment's end (the `\n`, or EOF) for the `--`
 /// or `#` opened at `i`.
-fn line_comment_end(b: &[u8], i: usize) -> usize {
+pub(super) fn line_comment_end(b: &[u8], i: usize) -> usize {
     b[i..]
         .iter()
         .position(|&c| c == b'\n')
@@ -1050,7 +1050,7 @@ fn line_comment_end(b: &[u8], i: usize) -> usize {
 /// `supports_nested_comments`) counts inner `/*`/`*/` pairs so
 /// `/* a /* b */ c */` ends at the OUTER close where the dialect sees
 /// one; a flat dialect's first `*/` wins either way.
-fn block_comment_end(b: &[u8], i: usize, nested: bool) -> usize {
+pub(super) fn block_comment_end(b: &[u8], i: usize, nested: bool) -> usize {
     let mut depth = 1usize;
     let mut j = i + 2;
     while j + 1 < b.len() {
@@ -1074,7 +1074,7 @@ fn block_comment_end(b: &[u8], i: usize, nested: bool) -> usize {
 /// the byte after `'` picks the delimiter (`(`/`[`/`<`/`{` pair, else
 /// the byte itself) and the string closes at `enddelim'`. `b.len()`
 /// when unterminated.
-fn q_quote_end(b: &[u8], i: usize) -> usize {
+pub(super) fn q_quote_end(b: &[u8], i: usize) -> usize {
     let Some(&open) = b.get(i + 1) else {
         return b.len();
     };
@@ -1098,7 +1098,7 @@ fn q_quote_end(b: &[u8], i: usize) -> usize {
 /// The index just past the closing quote of the `q`-quoted span opened
 /// at `i` — `\<byte>` counts as escaped only under `escape`, `''`/`""`
 /// doubling always keeps it open. `b.len()` when unterminated.
-fn quoted_end(b: &[u8], i: usize, q: u8, escape: bool) -> usize {
+pub(super) fn quoted_end(b: &[u8], i: usize, q: u8, escape: bool) -> usize {
     let mut j = i + 1;
     while j < b.len() {
         if escape && b[j] == b'\\' {
