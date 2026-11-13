@@ -87,7 +87,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (joins, subqueries, real tables, a `*` inside the CTE, UNION arms)
   still flags.
 - `rejoining_upstream` gained `ignore_shared_parents` (a dbt-selector
-  list, default empty): shared parents (the A node) matching the spec are
+  list, default empty): shared parents (the A node) matching the list are
   exempted, so a dim legitimately joining at both hops stops flagging —
   `exclude:` still matches the flagged hop (B). `state:` selectors are
   rejected at config load; there is no diff to evaluate them against.
