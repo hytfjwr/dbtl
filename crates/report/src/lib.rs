@@ -440,7 +440,9 @@ pub struct SourceText {
 
 impl SourceText {
     pub fn new(text: String) -> Self {
-        let mut line_starts = vec![0];
+        // An empty text has no line 1 — a `(1, 1)` position must report
+        // None, not a zero-width span at offset 0.
+        let mut line_starts = if text.is_empty() { vec![] } else { vec![0] };
         line_starts.extend(
             text.match_indices('\n')
                 .map(|(i, _)| i + 1)
@@ -788,5 +790,18 @@ mod tests {
         );
         assert_eq!(finding_anchor(&unpositioned, None), "models/n.sql");
         assert_eq!(finding_line(&unpositioned), "models/n.sql root_models m");
+    }
+
+    /// An empty source has no line 1 — positions against it report
+    /// `None`, never a zero-width span at offset 0.
+    #[test]
+    fn source_text_empty_has_no_lines() {
+        let st = SourceText::new(String::new());
+        assert_eq!(st.position_byte(1, 1), None);
+        assert_eq!(st.line_span(1), None);
+        let st = SourceText::new("a\nb\n".to_string());
+        assert_eq!(st.position_byte(1, 1), Some(0));
+        assert_eq!(st.line_span(1), Some(0..2));
+        assert_eq!(st.line_span(3), None);
     }
 }

@@ -5345,6 +5345,85 @@ fn fill_finding_lines_quoted_section_keys_still_resolve() {
 }
 
 #[test]
+fn fill_finding_lines_descends_into_anchored_list_keys() {
+    // `columns: &c` anchors the block the deeper lines carry — the
+    // column entry still belongs to the model's `columns:` list and
+    // resolves on its own `- name:` line.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    //      3 models:              6     columns: &c
+    //      4   - name: orders     7       - name: id
+    //      5     description: ok
+    std::fs::write(
+        dir.path().join("models/schema.yml"),
+        "version: 2\n\nmodels:\n  - name: orders\n    description: ok\n    columns: &c\n      - name: id\n",
+    )
+    .unwrap();
+    let mut m = filed_model("orders", "models/orders.sql", Some("models/schema.yml"));
+    m.1.columns =
+        serde_json::Map::from_iter([("id".to_string(), serde_json::json!({"name": "id"}))]);
+    let m = manifest(vec![m], vec![], &[]);
+    let dag = Dag::build(&m);
+    let mut f = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    fill_finding_lines(&mut f, &dag, dir.path());
+    let line = |rule| {
+        f.iter()
+            .find(|x| x.rule == rule && x.node_uid == "model.p.orders")
+            .and_then(|x| x.location.as_ref().and_then(|l| l.line))
+    };
+    assert_eq!(
+        line(LintRule::UndocumentedColumns),
+        Some(7),
+        "the column under an anchored `columns:` list still resolves"
+    );
+}
+
+#[test]
+fn fill_finding_lines_crlf_files_index_the_same() {
+    // CRLF endings: the index counts lines, not bytes — the same model
+    // resolves on the same line with `\r\n` separators.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    std::fs::write(
+        dir.path().join("models/schema.yml"),
+        "version: 2\r\n\r\nmodels:\r\n  - name: orders\r\n    columns:\r\n      - name: id\r\n",
+    )
+    .unwrap();
+    let mut m = filed_model("orders", "models/orders.sql", Some("models/schema.yml"));
+    m.1.columns =
+        serde_json::Map::from_iter([("id".to_string(), serde_json::json!({"name": "id"}))]);
+    let m = manifest(vec![m], vec![], &[]);
+    let dag = Dag::build(&m);
+    let mut f = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    fill_finding_lines(&mut f, &dag, dir.path());
+    let line = |rule| {
+        f.iter()
+            .find(|x| x.rule == rule && x.node_uid == "model.p.orders")
+            .and_then(|x| x.location.as_ref().and_then(|l| l.line))
+    };
+    assert_eq!(line(LintRule::MissingPrimaryKeyTests), Some(4));
+    assert_eq!(line(LintRule::UndocumentedColumns), Some(6));
+}
+
+#[test]
+fn yaml_name_line_skips_folded_scalar_bodies() {
+    // `description: >` folds like `|` — a `- name:` line inside its
+    // body is text, not a declaration.
+    //     1 models:                  5     columns:
+    //     2   - name: a              6       - name: id
+    //     3     description: >       7   - name: ghost
+    //     4       - name: ghost
+    let yml = "models:\n  - name: a\n    description: >\n      - name: ghost\n    columns:\n      - name: id\n  - name: ghost\n";
+    assert_eq!(yaml_name_line(yml, &names(&["ghost"])), Some(7));
+    assert_eq!(
+        yaml_name_line(yml, &names(&["a", "ghost"])),
+        None,
+        "the folded-scalar `- name:` isn't a declaration"
+    );
+    assert_eq!(yaml_name_line(yml, &names(&["a", "id"])), Some(6));
+}
+
+#[test]
 fn fill_finding_lines_with_reads_each_file_once() {
     // However many findings land in one yml, `read_text` resolves it —
     // and its `- name:` index is built — exactly once.

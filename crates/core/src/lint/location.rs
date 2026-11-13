@@ -253,6 +253,10 @@ fn key_tail(trimmed: &str) -> Option<(String, KeyTail)> {
         KeyTail::Container
     } else if value.starts_with('|') || value.starts_with('>') {
         KeyTail::Scalar
+    } else if value.starts_with('&') || value.starts_with('!') {
+        // An anchor/tag names the node whose content the deeper lines
+        // carry (`columns: &c` then `- name: …`) — keep descending.
+        KeyTail::Container
     } else {
         KeyTail::Leaf
     };
