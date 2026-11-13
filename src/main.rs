@@ -303,7 +303,12 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
     // Resolved BEFORE --select below: `state:` selector atoms read
     // `app.diff()`, so the diff must be computed by the time they evaluate.
     if let Some(base) = &cli.diff {
-        let (dag, label) = load_baseline(base, cli.package_scope(), &src.project_dir())?;
+        let (dag, label) = load_baseline(
+            base,
+            cli.package_scope(),
+            &src.project_dir(),
+            src.cli_vars()?.as_ref(),
+        )?;
         app.set_diff_base(dag, label);
         app.ui_state.set_lens(LineageLens::Diff);
     }
@@ -317,8 +322,10 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
         // because the `--diff` baseline loaded above.
         // `--select` starts on the model's TAB — activating it when
         // it is already open, appending one when it is not.
+        let (set, notes) = dbtl::select_report(&app.dag, app.diff(), name);
+        cli::warn_each("", &notes);
         let found = app.open_tab_by_name(name)
-            || dbtl::select(&app.dag, app.diff(), name)
+            || set
                 .iter()
                 .find(|uid| app.dag.get(uid).is_some_and(|n| n.resource_type == "model"))
                 .is_some_and(|uid| app.open_node_as_tab(uid));

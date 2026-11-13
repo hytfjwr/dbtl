@@ -55,7 +55,7 @@ lint:
       threshold: 5                # declared params only; unknown keys error
       exclude:                    # dbt selector specs: suppress findings on matches
         - "stg_legacy_*"
-        - "path:legacy"
+        - "path:models/legacy"
         - {select: "tag:wip", reason: "WIP models ship knowingly"}
     select_star:
       allow_final_star_over_single_cte: true   # `select *` closing one
@@ -101,7 +101,7 @@ A rule entry can set:
 | Key | Meaning |
 | --- | ------- |
 | `severity` | `error`, `warn`, or `off`. `off` disables the rule. |
-| `exclude` | A list of [selectors](../cli/selectors.md), each a bare selector string or a `{select: <selector>, reason: <why>}` object. Findings on matching nodes are suppressed — they never gate and `--show-suppressed` lists them with the reason. `state:` selectors are not allowed (a lint run has no diff baseline). |
+| `exclude` | A list of [selectors](../cli/selectors.md). Findings on matching nodes are dropped. |
 | rule parameters | Declared per rule. An undeclared name is an error. |
 
 Parameters are listed per rule in the [lint rules reference](../reference/lint-rules.md).
@@ -140,16 +140,10 @@ models:
     meta:
       dbtl:
         ignore: [root_models, naming_conventions]   # or the string "all"
-        reason: "legacy import — tracked in DEC-482"      # the fallback reason
+        reason: "legacy import — tracked in DEC-482"      # optional; for humans
 ```
 
-`ignore` takes three shapes:
-
-- `"all"` — suppress every rule on the node.
-- A list of rule ids — suppress those rules.
-- A map of `{<rule-id or all>: <reason>}` — suppress those rules and record a reason per entry. A `~` value records no per-rule reason.
-
-`dbtl.reason` is the fallback reason for `"all"`, the list form, and map entries with `~`. Suppressed findings never gate: they drop out of the count `--fail-on`, the baseline, and the `sarif`/`junit`/`codeclimate`/`github` formats see. The summary still counts them — `N findings suppressed (K meta.dbtl.ignore, M exclude; J without a reason)` — and [`--show-suppressed`](../cli/lint.md#suppressed-findings) lists them with the mechanism and the recorded reason.
+`dbtl` reads `dbtl.ignore` only — sibling keys like `reason:` are a convention for recording why the suppression exists; the linter ignores them.
 
 ## check
 

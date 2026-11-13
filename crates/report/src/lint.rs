@@ -92,6 +92,11 @@ pub struct LintGateOutcome {
     /// reports print — a model that never reached a SQL rule, not a
     /// finding).
     pub unparsed: BTreeSet<String>,
+    /// Evaluation-time warnings from `run_rules` (the `path:` legacy-form
+    /// deprecation notes `exclude:`/selector params surface), merged
+    /// across the current and baseline-side evaluations — sorted, deduped.
+    /// The caller prints them through its own warning channel.
+    pub warnings: Vec<String>,
     /// Per enabled AND RUNNABLE rule, in `LintRule::ALL` order.
     pub rules: Vec<RuleOutcome>,
     /// Counted findings that meet `fail_on` (the gate's numerator — `0`
@@ -131,6 +136,7 @@ pub fn evaluate_lint(
     let mut suppressed = outcome.suppressed;
     let skipped = outcome.skipped;
     let mut unparsed = outcome.unparsed;
+    let mut warnings: BTreeSet<String> = outcome.warnings.into_iter().collect();
     if let Some(sel) = selection {
         findings.retain(|f| sel.contains(&f.node_uid));
         suppressed.retain(|f| sel.contains(&f.node_uid));
@@ -142,14 +148,19 @@ pub fn evaluate_lint(
     }
     let skipped_rules: BTreeSet<LintRule> = skipped.iter().map(|s| s.rule).collect();
     let base_keys: BTreeSet<(LintRule, String, Vec<String>)> = match base {
-        Some(base) => dbtl_core::run_rules(LintInput::new(base, cfg).with_sql(aux.base_sql))
-            .findings
-            .iter()
-            .map(|f| {
-                let (r, n, rel) = f.key();
-                (r, n.to_string(), rel.to_vec())
-            })
-            .collect(),
+        Some(base) => {
+            let base_outcome =
+                dbtl_core::run_rules(LintInput::new(base, cfg).with_sql(aux.base_sql));
+            warnings.extend(base_outcome.warnings);
+            base_outcome
+                .findings
+                .iter()
+                .map(|f| {
+                    let (r, n, rel) = f.key();
+                    (r, n.to_string(), rel.to_vec())
+                })
+                .collect()
+        }
         None => BTreeSet::new(),
     };
     let pre_existing = |f: &Finding| {
@@ -208,6 +219,7 @@ pub fn evaluate_lint(
         suppressed,
         skipped,
         unparsed,
+        warnings: warnings.into_iter().collect(),
         rules,
     }
 }
@@ -336,6 +348,9 @@ pub struct LintAssembly {
     pub fail_on: FailOn,
     /// A counted finding at or above `fail_on` exists.
     pub failed: bool,
+    /// Evaluation-time warnings — selector deprecation notes and the like,
+    /// surfaced on stderr/the notice feed by the caller.
+    pub warnings: Vec<String>,
 }
 
 /// The inputs [`lint_assembly`]/[`lint_report`] evaluate — the run's dag
@@ -415,6 +430,7 @@ pub fn lint_assembly(inputs: &LintRunInputs<'_>) -> LintAssembly {
         gating: outcome.gating,
         fail_on: outcome.fail_on,
         failed: outcome.failed,
+        warnings: outcome.warnings,
     }
 }
 
@@ -429,6 +445,9 @@ pub struct LintRun {
     pub fail_on: FailOn,
     /// A counted finding at or above `fail_on` exists.
     pub failed: bool,
+    /// Evaluation-time warnings — selector deprecation notes and the like,
+    /// surfaced on stderr/the notice feed by the caller.
+    pub warnings: Vec<String>,
 }
 
 /// The whole `dbtl lint` evaluation as a [`Report`]: [`lint_assembly`]'s
@@ -445,6 +464,7 @@ pub fn lint_report(project: &str, scope: &str, inputs: &LintRunInputs<'_>) -> Li
         gating: a.gating,
         fail_on: a.fail_on,
         failed: a.failed,
+        warnings: a.warnings,
     }
 }
 

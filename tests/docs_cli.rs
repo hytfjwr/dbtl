@@ -796,7 +796,10 @@ fn select_generates_only_the_selected_pages() {
 fn select_and_exclude_compose_as_include_then_subtract() {
     let out = temp_out("select_excl");
     let _ = std::fs::remove_dir_all(&out);
-    let r = run_docs_sample(&out, &["--select", "path:marts", "--exclude", "fct_*"]);
+    let r = run_docs_sample(
+        &out,
+        &["--select", "path:models/marts", "--exclude", "fct_*"],
+    );
     assert!(r.status.success(), "stderr: {}", lossy(&r.stderr));
     let files = generated_files(&out);
     for keep in [
@@ -815,7 +818,10 @@ fn select_and_exclude_compose_as_include_then_subtract() {
         "the fct_* exclusion subtracted: {files:?}"
     );
     let readme = std::fs::read_to_string(out.join("README.md")).unwrap();
-    assert!(readme.contains("Selection: `path:marts`"), "{readme}");
+    assert!(
+        readme.contains("Selection: `path:models/marts`"),
+        "{readme}"
+    );
     assert!(readme.contains("Excluding: `fct_*`"), "{readme}");
     let _ = std::fs::remove_dir_all(&out);
 }
@@ -824,7 +830,7 @@ fn select_and_exclude_compose_as_include_then_subtract() {
 fn exclude_alone_subtracts_from_the_whole_graph() {
     let out = temp_out("exclude_only");
     let _ = std::fs::remove_dir_all(&out);
-    let r = run_docs_sample(&out, &["--exclude", "path:staging"]);
+    let r = run_docs_sample(&out, &["--exclude", "path:models/staging"]);
     assert!(r.status.success(), "stderr: {}", lossy(&r.stderr));
     let files = generated_files(&out);
     // The staging models' pages are gone; the marts set stays complete.
@@ -832,7 +838,7 @@ fn exclude_alone_subtracts_from_the_whole_graph() {
     assert!(files.contains(&"models/model.sample.fct_orders.md".to_string()));
     let readme = std::fs::read_to_string(out.join("README.md")).unwrap();
     assert!(
-        readme.contains("Excluding: `path:staging`") && !readme.contains("Selection:"),
+        readme.contains("Excluding: `path:models/staging`") && !readme.contains("Selection:"),
         "only the Excluding line prints: {readme}"
     );
     let _ = std::fs::remove_dir_all(&out);

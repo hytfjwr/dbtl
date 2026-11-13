@@ -3,11 +3,28 @@ use super::*;
 /// `Vars` straight from maps — `file` models vars.yml's `vars:` map (the
 /// `+enabled` render table), `project` models dbt_project.yml's `vars:`
 /// map (the node-render table when no vars.yml exists); `proj` is the
-/// `name:` `vars: <proj>:` scopes under.
+/// `name:` `vars: <proj>:` scopes under. No `--vars` (the empty CLI map).
 fn test_vars(file: serde_json::Value, project: serde_json::Value, proj: &str) -> Vars {
     Vars::from_maps(
         file.as_object().cloned().unwrap_or_default(),
         project.as_object().cloned().unwrap_or_default(),
+        serde_json::Map::new(),
+        proj,
+    )
+}
+
+/// The same with a `--vars` map — dbt's highest-precedence lookups in
+/// both scopes.
+fn test_vars_cli(
+    file: serde_json::Value,
+    project: serde_json::Value,
+    cli: serde_json::Value,
+    proj: &str,
+) -> Vars {
+    Vars::from_maps(
+        file.as_object().cloned().unwrap_or_default(),
+        project.as_object().cloned().unwrap_or_default(),
+        cli.as_object().cloned().unwrap_or_default(),
         proj,
     )
 }
@@ -891,6 +908,16 @@ fn tree_enabled_resolves_var_forms_like_dbt() {
     assert_eq!(enabled, None, "'false' fails as_bool → unresolvable");
     assert_eq!(w.len(), 1, "{w:?}");
     assert!(w[0].contains("models.p"), "the level is named: {w:?}");
+    // Comparison/logic shapes resolve through the same project scope.
+    assert_eq!(tree("\"{{ not var('flag_true') }}\"").0, Some(false));
+    assert_eq!(
+        tree("\"{{ var('flag_true') and var('flag_false') }}\"").0,
+        Some(false)
+    );
+    assert_eq!(
+        tree("\"{{ var('missing', 'a') == 'a' and var('flag_true') }}\"").0,
+        Some(true)
+    );
     // Everything dbt's enabled validation would reject — a plain 'false'
     // string, a number, another expression, an unresolvable var — keeps
     // the node enabled with the same once-per-level warning.
@@ -898,8 +925,9 @@ fn tree_enabled_resolves_var_forms_like_dbt() {
         "'false'",
         "0",
         "\"{{ env_var('X') }}\"",
-        "\"{{ not var('flag_true') }}\"",
+        "\"{{ target.name }}\"",
         "\"{{ var('missing') }}\"",
+        "\"{{ var('s_lower') }}\"",
     ] {
         let (enabled, w) = tree(bad);
         assert_eq!(enabled, None, "{bad}");
@@ -976,13 +1004,240 @@ fn disabled_resolves_var_forms_like_dbt() {
         assert!(w[0].contains("models/m.sql"), "the file is named: {w:?}");
         assert!(w[0].contains("enabled="), "the config is named: {w:?}");
     }
-    // An unresolvable later value can't override an earlier `false`.
+    // The LAST `enabled=` decides: an unresolvable later value is a
+    // boolean-validation error in dbt — it can't fall back to an earlier
+    // proven `false`, so the node stays enabled with a warning.
     let (d, w) = disabled(
         "{{ config(enabled=false) }}\n{{ config(enabled=var('missing')) }}",
         &vars,
     );
-    assert!(d);
+    assert!(!d);
     assert_eq!(w.len(), 1, "{w:?}");
+    // A bare `config(` outside `{{ }}` is SQL text to dbt — never a call.
+    let (d, w) = disabled("select 1 -- config(enabled=false)", &vars);
+    assert!(!d);
+    assert!(w.is_empty(), "{w:?}");
+    // …but `{{ }}` inside a `--` comment still executes (Jinja first).
+    let (d, _) = disabled("select 1 -- {{ config(enabled=false) }}", &vars);
+    assert!(d);
+}
+
+// ---- enabled expression evaluator (comparisons, logic, membership) ----------
+
+/// `node_enabled` outcomes for one `config(enabled=<expr>)` — the shared
+/// evaluator's node-scope entry.
+fn enabled_expr(expr: &str, vars: &Vars) -> Option<bool> {
+    vars.node_enabled(expr)
+}
+
+#[test]
+fn enabled_expr_comparisons_resolve_like_python() {
+    let vars = test_vars(
+        serde_json::json!({}),
+        serde_json::json!({
+            "ver": "v1", "alt": "v2", "n": 3, "t": true, "f": false,
+            "empty": "", "lst": ["a", "b"], "truthy_str": "False",
+        }),
+        "p",
+    );
+    for (expr, want) in [
+        // Equality — the issue's driving shapes.
+        ("var('ver') == 'v1'", Some(true)),
+        ("var('ver') == var('alt')", Some(false)),
+        ("var('ver') != 'v1'", Some(false)),
+        ("var('missing', 'v1') == 'v1'", Some(true)),
+        ("var('missing') == 'v1'", Some(false)), // None == 'v1'
+        ("var('missing') != 'v1'", Some(true)),  // None != 'v1'
+        ("var('missing') == var('missing2')", Some(true)), // None == None
+        // Python equality: 0/1 compare equal to False/True, 'True' is not True.
+        ("1 == true", Some(true)),
+        ("0 == false", Some(true)),
+        ("var('n') == true", Some(false)), // 3 != 1
+        ("'True' == true", Some(false)),
+        ("'v1' == 'v1'", Some(true)),
+        // Ordering — same-type pairs only.
+        ("var('n') > 2", Some(true)),
+        ("var('n') >= 3 and var('n') < 4", Some(true)),
+        ("'a' < 'b'", Some(true)),
+        ("var('ver') < 'w'", Some(true)),
+        // Chained comparisons — pairwise `and`, middle evaluated once.
+        ("1 < var('n') <= 3", Some(true)),
+        ("1 < var('n') < 3", Some(false)),
+        ("var('n') == 3 == var('n')", Some(true)),
+        // Membership — list, substring, dict key.
+        ("'a' in var('lst')", Some(true)),
+        ("'x' in var('lst')", Some(false)),
+        ("'x' not in var('lst')", Some(true)),
+        ("'v' in 'v1'", Some(true)),
+        ("var('ver') in ['v1', 'v2']", Some(true)),
+        ("'k' in {'k': 1}", Some(true)),
+        ("'k' not in {'k': 1}", Some(false)),
+        // and/or/not — Python truthiness and operand VALUES.
+        ("var('f') and var('ver') == 'v1'", Some(false)),
+        ("var('t') and var('ver') == 'v1'", Some(true)),
+        ("var('f') or var('ver') == 'v1'", Some(true)),
+        ("not var('f')", Some(true)),
+        ("not var('t') and var('t')", Some(false)),
+        ("not var('ver') == 'v1'", Some(false)), // not (ver == 'v1')
+        ("not not var('t')", Some(true)),
+        // Empty string falsy; a NON-empty string ('False' included) truthy.
+        ("var('empty') and true", None), // '' and true → '' — not a bool
+        ("var('empty') or false", Some(false)),
+        ("var('truthy_str') and true", Some(true)),
+        ("0 and true", None), // 0 and true → 0 — not a bool
+        ("0 or true", Some(true)),
+        // Parens regroup past precedence.
+        ("(var('f') or var('t')) and var('f')", Some(false)),
+        ("var('f') or (var('t') and var('f'))", Some(false)),
+        ("(1 == 1) == true", Some(true)),
+        // `| as_bool` — bools and 'True'/'False' only.
+        ("var('truthy_str') | as_bool", Some(false)), // 'False' → False
+        ("var('t') | as_bool", Some(true)),
+        ("var('empty') | as_bool", None), // literal_eval fails
+        ("var('n') | as_bool", None),     // literal_eval(3) → int
+        ("true | as_bool", Some(true)),
+        // Unprovable — a type error, an unsupported call/filter/attr.
+        ("var('n') < 'x'", None),     // int < str → TypeError
+        ("var('missing') < 2", None), // None < 2 → TypeError
+        ("1 in 2", None),             // `in` a non-container → TypeError
+        ("var('n') in 'abc'", None),  // non-str needle in a str → TypeError
+        ("env_var('X')", None),
+        ("var('ver').upper()", None),
+        ("target.name", None),
+        ("my_macro()", None),
+        ("var('ver') | upper", None),
+        ("var('ver')[0]", None),
+        // Syntax that never reaches evaluation.
+        ("", None),
+        ("var('ver' ==", None),
+        ("var()", None),
+        ("var('a', 'b', 'c')", None),
+        ("var(1)", None),
+        ("1 + 1", None), // arithmetic is outside the subset
+        ("var('t') ? 'a' : 'b'", None),
+    ] {
+        assert_eq!(enabled_expr(expr, &vars), want, "{expr}");
+    }
+    // and/or return OPERAND values (a non-bool result fails validation —
+    // `0 or ''` resolves to `''`, not a bool).
+    assert_eq!(enabled_expr("var('f') or ''", &vars), None); // '' is not a bool
+    assert_eq!(enabled_expr("0 and var('t')", &vars), None); // result 0
+    assert_eq!(enabled_expr("1 and var('t')", &vars), Some(true)); // result True
+}
+
+#[test]
+fn cli_vars_outrank_every_var_source_in_both_scopes() {
+    // `--vars` beats vars.yml in the project-file scope AND vars.yml,
+    // `vars: <p>:` and top-level `vars:` in the node scope — verified
+    // against real dbt 1.12.6.
+    let vars = test_vars_cli(
+        serde_json::json!({
+            "file_flag": true, "shared": "file", "nested": "top",
+            "p": {"scoped": false, "nested": "scoped_file"},
+        }),
+        serde_json::json!({
+            "proj_flag": false, "shared": "proj", "nested": "proj_top",
+            "p": {"scoped": true, "nested": "scoped_proj"},
+        }),
+        serde_json::json!({"cli_flag": true, "shared": "cli", "file_flag": false}),
+        "p",
+    );
+    // Project scope (`+enabled`): cli > file — `vars:` stays invisible.
+    assert_eq!(
+        vars.tree_enabled(&serde_json::json!("{{ var('file_flag') }}")),
+        Some(false),
+        "cli overrides vars.yml"
+    );
+    assert_eq!(
+        vars.tree_enabled(&serde_json::json!("{{ var('cli_flag', false) }}")),
+        Some(true),
+        "a cli-only key resolves in the project scope"
+    );
+    assert_eq!(
+        vars.tree_enabled(&serde_json::json!("{{ var('shared') == 'cli' }}")),
+        Some(true),
+        "cli overrides vars.yml in the project scope too"
+    );
+    assert_eq!(
+        vars.tree_enabled(&serde_json::json!("{{ var('shared') }}")),
+        None,
+        "'cli' is not a bool → enabled validation fails"
+    );
+    // Node scope (`config()`/schema.yml): cli > scoped > top-level — the
+    // whole chain inside the effective table (vars.yml here, so `vars:` —
+    // `proj_flag` and ITS scoped entries — stays invisible).
+    assert_eq!(enabled_expr("var('shared')", &vars), None); // 'cli' is not a bool
+    assert_eq!(enabled_expr("var('shared') == 'cli'", &vars), Some(true));
+    assert_eq!(enabled_expr("var('scoped')", &vars), Some(false));
+    assert_eq!(
+        enabled_expr("var('nested') == 'scoped_file'", &vars),
+        Some(true),
+        "the scoped entry beats the table's top level"
+    );
+    assert_eq!(
+        enabled_expr("var('cli_flag')", &vars),
+        Some(true),
+        "cli wins over every node-scope channel"
+    );
+    assert_eq!(enabled_expr("var('file_flag')", &vars), Some(false));
+    assert_eq!(enabled_expr("var('proj_flag')", &vars), None);
+    // A scoped SECTION inside --vars does NOT reach var() (verified on
+    // 1.12.6) — only top-level keys count.
+    let vars = test_vars_cli(
+        serde_json::json!({}),
+        serde_json::json!({}),
+        serde_json::json!({"p": {"scoped": false}}),
+        "p",
+    );
+    assert_eq!(enabled_expr("var('scoped', true)", &vars), Some(true));
+}
+
+#[test]
+fn cli_vars_parse_accepts_dbt_style_yaml_and_json() {
+    // YAML flow and block dicts (dbt's spelling) and JSON (a YAML subset).
+    let v = CliVars::parse("{a: 1, b: 'x'}").unwrap();
+    assert_eq!(v.vars()["a"], serde_json::json!(1));
+    assert_eq!(v.vars()["b"], serde_json::json!("x"));
+    assert_eq!(v.raw(), "{a: 1, b: 'x'}");
+    let v = CliVars::parse("a: 1\nb: true\n").unwrap();
+    assert_eq!(v.vars()["b"], serde_json::json!(true));
+    let v = CliVars::parse(r#"{"a": {"nested": [1, 2]}}"#).unwrap();
+    assert_eq!(v.vars()["a"], serde_json::json!({"nested": [1, 2]}));
+    // dbt rejects a non-dict --vars — so do we.
+    for bad in ["[1, 2]", "'a string'", "1", "{unclosed: ["] {
+        assert!(CliVars::parse(bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn schema_enabled_uses_the_node_scope_like_dbt() {
+    // A `config.enabled:`/`enabled:` yml scalar is rendered inside the
+    // node's context — cli > `vars: <p>:` > top-level (vars.yml here) —
+    // and must be ONE `{{ }}` block resolving to a bool.
+    let vars = test_vars(
+        serde_json::json!({"flag": true, "p": {"scoped": false}}),
+        serde_json::json!({}),
+        "p",
+    );
+    assert_eq!(
+        vars.schema_enabled(&serde_json::json!("{{ var('scoped', true) }}")),
+        Some(false)
+    );
+    assert_eq!(
+        vars.schema_enabled(&serde_json::json!("{{ var('flag') and false }}")),
+        Some(false)
+    );
+    assert_eq!(vars.schema_enabled(&serde_json::json!(false)), Some(false));
+    // Non-rendered scalars keep their type → not a bool.
+    for v in [
+        serde_json::json!("false"),
+        serde_json::json!("True"),
+        serde_json::json!(0),
+        serde_json::json!(null),
+        serde_json::json!("{{ var('flag') }} and then some"),
+    ] {
+        assert_eq!(vars.schema_enabled(&v), None, "{v}");
+    }
 }
 
 // ---- Vars::load + warning-path coverage -------------------------------------
@@ -1003,6 +1258,7 @@ fn vars_load_warns_once_and_vars_yml_wins_when_both_declared() {
     let vars = Vars::load(
         dir.path(),
         &test_project(serde_json::json!({"flag": true})),
+        None,
         &mut w,
     );
     assert_eq!(w.len(), 1, "{w:?}");
@@ -1024,6 +1280,7 @@ fn vars_load_warns_once_and_vars_yml_wins_when_both_declared() {
     let vars = Vars::load(
         dir.path(),
         &test_project(serde_json::json!({"flag": true})),
+        None,
         &mut w,
     );
     assert!(w.is_empty(), "{w:?}");
@@ -1035,7 +1292,12 @@ fn vars_load_warns_on_malformed_vars_sources() {
     let dir = tempfile::tempdir().unwrap();
     // A non-mapping `vars:` in dbt_project.yml → warning, vars ignored.
     let mut w = Vec::new();
-    let vars = Vars::load(dir.path(), &test_project(serde_json::json!([1, 2])), &mut w);
+    let vars = Vars::load(
+        dir.path(),
+        &test_project(serde_json::json!([1, 2])),
+        None,
+        &mut w,
+    );
     assert_eq!(w.len(), 1, "{w:?}");
     assert!(
         w[0].contains("vars:") && w[0].contains("not a mapping"),
@@ -1048,6 +1310,7 @@ fn vars_load_warns_on_malformed_vars_sources() {
     let vars = Vars::load(
         dir.path(),
         &test_project(serde_json::json!({"flag": false})),
+        None,
         &mut w,
     );
     assert!(
@@ -1063,7 +1326,12 @@ fn vars_load_warns_on_malformed_vars_sources() {
     // A non-mapping `vars:` inside vars.yml → the same ignored-vars warning.
     std::fs::write(dir.path().join("vars.yml"), "vars: not-a-map\n").unwrap();
     let mut w = Vec::new();
-    Vars::load(dir.path(), &test_project(serde_json::json!({})), &mut w);
+    Vars::load(
+        dir.path(),
+        &test_project(serde_json::json!({})),
+        None,
+        &mut w,
+    );
     assert!(
         w.iter()
             .any(|s| s.contains("vars.yml") && s.contains("not a mapping")),
@@ -1086,7 +1354,7 @@ fn manifest_dedups_a_shared_unresolvable_tree_enabled_warning() {
     for m in ["a", "b"] {
         std::fs::write(dir.path().join(format!("models/grp/{m}.sql")), "select 1\n").unwrap();
     }
-    let (manifest, w) = manifest_from_source_with_warnings(dir.path()).unwrap();
+    let (manifest, w) = manifest_from_source_with_warnings(dir.path(), None).unwrap();
     let enabled_warns: Vec<_> = w.iter().filter(|s| s.contains("'+enabled'")).collect();
     assert_eq!(enabled_warns.len(), 1, "{w:?}");
     assert!(enabled_warns[0].contains("models.p.grp"), "{w:?}");
@@ -1099,31 +1367,86 @@ fn manifest_dedups_a_shared_unresolvable_tree_enabled_warning() {
 }
 
 #[test]
-fn sources_tree_walk_does_not_warn_on_enabled() {
-    // `+enabled` is not applied on `sources:` (meta-only walk) — passing
-    // no var scope keeps it a silent read: no warning noise on a key
-    // dbtl ignores, unresolvable or not.
+fn sources_tree_enabled_disables_like_the_other_trees() {
+    // `sources:` `+enabled` is applied (dbt disables `source.p.s.t` by
+    // fqn) — the same var-scoped evaluation as `models:`/`seeds:`.
+    let vars = test_vars(
+        serde_json::json!({"flag": true}),
+        serde_json::json!({}),
+        "p",
+    );
     let mut w = Vec::new();
     let cfg = resolve_tree_config(
         &serde_json::json!({"p": {"+enabled": "{{ var('flag') }}"}}),
         &["p".to_string()],
         "sources".to_string(),
         &mut w,
-        None,
+        Some(&vars),
     );
-    assert_eq!(cfg.enabled, None);
+    assert_eq!(cfg.enabled, Some(true));
     assert!(w.is_empty(), "{w:?}");
-    // A native bool still lands on the (unapplied) field — same as
-    // before the var evaluator existed.
     let cfg = resolve_tree_config(
         &serde_json::json!({"p": {"+enabled": false}}),
         &["p".to_string()],
         "sources".to_string(),
         &mut w,
-        None,
+        Some(&vars),
     );
     assert_eq!(cfg.enabled, Some(false));
     assert!(w.is_empty(), "{w:?}");
+    // Unresolvable → warn once, stays enabled (never a silent disable).
+    let cfg = resolve_tree_config(
+        &serde_json::json!({"p": {"+enabled": "{{ var('missing') }}"}}),
+        &["p".to_string()],
+        "sources".to_string(),
+        &mut w,
+        Some(&vars),
+    );
+    assert_eq!(cfg.enabled, None);
+    assert_eq!(w.len(), 1, "{w:?}");
+}
+
+#[test]
+fn malformed_enabled_tails_warn_instead_of_disabling() {
+    // A `and`/`or` rhs that fails to parse is a syntax error in dbt — the
+    // expression is unprovable, so the node stays enabled with a warning
+    // rather than silently dropping.
+    let vars = test_vars(serde_json::json!({"x": false}), serde_json::json!({}), "p");
+    for expr in [
+        "var('x') and",
+        "var('x') and var('y'",
+        "var('x') or",
+        "var('x') not",
+    ] {
+        assert_eq!(enabled_expr(expr, &vars), None, "{expr}");
+    }
+    // `()` is a legal empty tuple — `False and ()` short-circuits to
+    // `False` in Python too.
+    assert_eq!(enabled_expr("var('x') and ()", &vars), Some(false));
+    // `is` tests: a missing var is Undefined → `is defined` is `False`,
+    // `is not defined`/`is none` are `True`; a present var flips them.
+    assert_eq!(
+        enabled_expr("var('missing') is defined", &vars),
+        Some(false)
+    );
+    assert_eq!(
+        enabled_expr("var('missing') is not defined", &vars),
+        Some(true)
+    );
+    assert_eq!(enabled_expr("var('missing') is none", &vars), Some(true));
+    assert_eq!(enabled_expr("var('x') is defined", &vars), Some(true));
+    assert_eq!(enabled_expr("var('x') is none", &vars), Some(false));
+    assert_eq!(enabled_expr("var('x') is boolean", &vars), Some(true));
+    assert_eq!(enabled_expr("var('x') is number", &vars), Some(false));
+    assert_eq!(enabled_expr("not var('x') is defined", &vars), Some(false));
+    // A rhs that can't be resolved to a value (`env_var`/`target` calls)
+    // makes the whole expression unprovable — enabled + warning, never a
+    // silent disable.
+    assert_eq!(
+        enabled_expr("var('x') and env_var('Y') == '1'", &vars),
+        None
+    );
+    assert_eq!(enabled_expr("var('x') and target.name == 'p'", &vars), None);
 }
 
 // -- Jinja branch structure --------------------------------------------------
@@ -1544,7 +1867,7 @@ fn data_paths_and_seed_paths_both_declared_warns_and_prefers_seed_paths() {
     .unwrap();
     std::fs::write(dir.path().join("seeds/a.csv"), "id\n1\n").unwrap();
     std::fs::write(dir.path().join("data/b.csv"), "id\n1\n").unwrap();
-    let (m, w) = manifest_from_source_with_warnings(dir.path()).unwrap();
+    let (m, w) = manifest_from_source_with_warnings(dir.path(), None).unwrap();
     // Declaring both is a dbt error — degraded to a warning here, with
     // `seed-paths` winning.
     assert!(
@@ -1648,7 +1971,7 @@ fn macro_invocations_add_ref_and_source_edges() {
         )],
         Some(SHOP_SCHEMA),
     );
-    let (m, _w) = manifest_from_source_with_warnings(dir.path()).unwrap();
+    let (m, _w) = manifest_from_source_with_warnings(dir.path(), None).unwrap();
     let parents = |uid: &str| m.parent_map.get(uid).cloned().unwrap_or_default();
     assert_eq!(parents("model.p.m1"), vec!["source.p.shop.orders"]);
     assert_eq!(parents("model.p.m2"), vec!["source.p.shop.customers"]);
@@ -1744,7 +2067,7 @@ fn macro_param_defaults_bind_in_the_callee_frame() {
         )],
         Some(SHOP_SCHEMA),
     );
-    let (m, _w) = manifest_from_source_with_warnings(dir.path()).unwrap();
+    let (m, _w) = manifest_from_source_with_warnings(dir.path(), None).unwrap();
     let parents = |uid: &str| m.parent_map.get(uid).cloned().unwrap_or_default();
     assert_eq!(parents("model.p.m1"), vec!["source.p.shop.orders"]);
     assert!(m.unresolved_adjacent.is_empty());

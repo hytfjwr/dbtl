@@ -30,7 +30,12 @@ pub fn run_impact(
     validate_selector_specs(select, "--select")?;
     let scope = src.scope;
     let resolved = src.resolve()?;
-    let (base, label) = load_baseline(diff_path, scope, &src.project_dir())?;
+    let (base, label) = load_baseline(
+        diff_path,
+        scope,
+        &src.project_dir(),
+        src.cli_vars()?.as_ref(),
+    )?;
     // `.dbtl.yml` (resolved next to the input, the same probe `check` uses)
     // supplies `owner_meta_key` and the changed-hubs threshold — so `dbtl
     // impact` and `dbtl check`'s hub gate can't disagree.
@@ -48,7 +53,8 @@ pub fn run_impact(
     let selection = if select.is_empty() {
         None
     } else {
-        let sel = selector_set(&resolved.dag, Some(&diff), select);
+        let (sel, notes) = selector_set_report(&resolved.dag, Some(&diff), select);
+        warn_each("", &notes);
         if sel.is_empty() {
             eprintln!("warning: --select '{}' matched no nodes", select.join(" "));
         }
@@ -266,6 +272,9 @@ struct CheckRun<'a> {
     diff: Option<dbtl::DagDiff>,
     /// The `--select` uid set every gate intersects (`None` = whole run).
     selection: Option<BTreeSet<String>>,
+    /// Deprecation notes the `--select` evaluation emitted — merged with
+    /// the lint assembly's so a shared spec warns once.
+    select_notes: Vec<String>,
 }
 
 impl CheckRun<'_> {
@@ -641,8 +650,18 @@ impl CheckRun<'_> {
                 show_suppressed: self.args.show_suppressed,
                 read_text,
             });
+            // `exclude:`/selector-param deprecation notes plus the
+            // `--select` notes — deduplicated: a spec shared between the
+            // two channels warns once.
+            let mut notes: BTreeSet<String> = self.select_notes.iter().cloned().collect();
+            notes.extend(assembly.warnings.iter().cloned());
+            warn_each("", &notes.into_iter().collect::<Vec<_>>());
             gates.extend(assembly.gates);
             report.lint = Some(assembly.tally);
+        } else {
+            // No lint stage — the `--select` notes still print here rather
+            // than never.
+            warn_each("", &self.select_notes);
         }
         Ok(())
     }
@@ -725,7 +744,12 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
     // atoms — and the DagDiff is computed once through the same resolver
     // pair `dbtl impact` uses, so all three see the identical change set.
     let base_ctx = match src.diff {
-        Some(d) => Some(load_baseline(d, scope, &src.project_dir())?),
+        Some(d) => Some(load_baseline(
+            d,
+            scope,
+            &src.project_dir(),
+            src.cli_vars()?.as_ref(),
+        )?),
         None => None,
     };
     let diff = match &base_ctx {
@@ -738,10 +762,12 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
     // it. `docs_drift` deliberately ignores it — a docs freshness
     // comparison is whole-set by definition. An empty match warns and
     // runs on (a gate on zero nodes passes).
+    let mut select_notes: Vec<String> = Vec::new();
     let selection = if args.select.is_empty() {
         None
     } else {
-        let sel = selector_set(dag, diff.as_ref(), args.select);
+        let (sel, notes) = selector_set_report(dag, diff.as_ref(), args.select);
+        select_notes = notes;
         if sel.is_empty() {
             eprintln!(
                 "warning: --select '{}' matched no nodes",
@@ -770,6 +796,7 @@ pub fn run_check(src: &DataSourceArgs, args: &CheckArgs<'_>) -> Result<(), CliEr
         base_ctx,
         diff,
         selection,
+        select_notes,
     };
     run.coverage_gates(&mut gates);
     run.diff_gates(&mut gates, &mut report);

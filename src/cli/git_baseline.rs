@@ -31,6 +31,7 @@ pub(super) fn load(
     project_dir: &Path,
     rev: &str,
     scope: dbtl::PackageScope,
+    vars: Option<&dbtl::CliVars>,
 ) -> Result<(dbtl::Dag, String), CliError> {
     // `-<anything>` would reach git as a flag, not a rev (`--diff git:-p`
     // failing inside git's own flag parser is worse than a usage error);
@@ -96,7 +97,7 @@ pub(super) fn load(
             }
         )));
     }
-    let (dag, warnings) = load_dag_from_source_with_warnings(tmp.path())
+    let (dag, warnings) = load_dag_from_source_with_warnings(tmp.path(), vars)
         .with_context(|| format!("--diff: failed to parse revision '{rev}' as a dbt project"))
         .input()?;
     warn_each(" (--diff baseline)", &warnings);

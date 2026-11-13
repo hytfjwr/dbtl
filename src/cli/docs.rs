@@ -73,7 +73,7 @@ pub fn run_docs(src: &DataSourceArgs, args: &DocsArgs) -> Result<(), CliError> {
     // the same change set the impact report counts.
     let diff = match src.diff {
         Some(d) => {
-            let (base, _) = load_baseline(d, scope, &src.project_dir())?;
+            let (base, _) = load_baseline(d, scope, &src.project_dir(), src.cli_vars()?.as_ref())?;
             Some(selector_diff(src, &resolved, &base)?)
         }
         None => None,
@@ -83,12 +83,15 @@ pub fn run_docs(src: &DataSourceArgs, args: &DocsArgs) -> Result<(), CliError> {
     // still writes the README — with a warning on stderr.
     let selecting = !args.select.is_empty() || !args.exclude.is_empty();
     let selected = if selecting {
-        let mut set: BTreeSet<String> = if args.select.is_empty() {
-            dag.nodes().keys().cloned().collect()
+        let (mut set, notes) = if args.select.is_empty() {
+            (dag.nodes().keys().cloned().collect(), Vec::new())
         } else {
-            selector_set(dag, diff.as_ref(), args.select)
+            selector_set_report(dag, diff.as_ref(), args.select)
         };
-        for uid in selector_set(dag, diff.as_ref(), args.exclude) {
+        let (excluded, exclude_notes) = selector_set_report(dag, diff.as_ref(), args.exclude);
+        let notes: BTreeSet<String> = notes.into_iter().chain(exclude_notes).collect();
+        warn_each("", &notes.into_iter().collect::<Vec<_>>());
+        for uid in excluded {
             set.remove(&uid);
         }
         if set.is_empty() {

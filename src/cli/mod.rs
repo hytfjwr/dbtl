@@ -103,6 +103,17 @@ pub struct Cli {
     /// `global` so it works before OR after a subcommand.
     #[arg(long, global = true)]
     pub diff: Option<String>,
+    /// Variables for source-mode parsing, spelled like dbt's `--vars`: a
+    /// YAML or JSON dict, e.g. '{my_var: my_value}'. The map outranks every
+    /// file-declared var source (vars.yml, dbt_project.yml's `vars:`) in
+    /// BOTH renders that decide `enabled` — the project file's `+enabled`
+    /// keys and each node's `config()`/schema.yml values — and it applies
+    /// to every source-mode load the run performs (the graph, a `--diff`
+    /// baseline read from source, TUI reloads). Ignored with a warning in
+    /// manifest mode (the manifest already carries dbt's rendered values).
+    /// `global` so it works before OR after a subcommand.
+    #[arg(long, global = true, value_name = "YAML|JSON")]
+    pub vars: Option<String>,
     /// Path to a dbt run_results.json (the last run's per-node status +
     /// execution_time). Adds the RunStatus/RunTime lenses, a `run n/m @date`
     /// status chip, and the runtime-weighted critical path in the `S` stats
@@ -472,7 +483,7 @@ pub enum Commands {
     },
     /// List the nodes a dbt selector matches, one per line — the
     /// non-interactive answer to "what does this spec select?" (`dbtl ls
-    /// 'tag:nightly'`, `dbtl ls '2+fct_orders' --exclude path:staging`).
+    /// 'tag:nightly'`, `dbtl ls '2+fct_orders' --exclude path:models/staging`).
     /// `state:` selectors need `--diff`; note they are resolved by dbtl's
     /// own comparison (the SQL, config, column, and macro changes dbtl can
     /// read) — the set may not match dbt's `state:modified`.

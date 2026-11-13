@@ -16,6 +16,7 @@ Global flags parse on either side of a subcommand — but a subcommand only hono
 | `--source` | `<SOURCE>` | — | — | Path to a dbt project dir, parsed from source with no compile (forces source mode) |
 | `--project` | `<PROJECT>` | — | `.` | dbt project dir for auto-detect: prefer <dir>/target/manifest.json, else parse source |
 | `--diff` | `<DIFF>` | — | — | Baseline to diff against: a manifest.json file, a dbt project dir (its target/manifest.json if compiled, else parsed from source), or `git:<rev>` — the project's committed files at that git revision, parsed from source (the current side then parses source too, so loader differences never read as changes). Adds the Diff lens (added/modified tints), the `D` summary modal, and a status diff chip; `impact` requires it and `check` uses it for its diff gates. `global` so it works before OR after a subcommand |
+| `--vars` | `<YAML\|JSON>` | — | — | Variables for source-mode parsing, spelled like dbt's `--vars`: a YAML or JSON dict, e.g. '{my_var: my_value}'. The map outranks every file-declared var source (vars.yml, dbt_project.yml's `vars:`) in BOTH renders that decide `enabled` — the project file's `+enabled` keys and each node's `config()`/schema.yml values — and it applies to every source-mode load the run performs (the graph, a `--diff` baseline read from source, TUI reloads). Ignored with a warning in manifest mode (the manifest already carries dbt's rendered values). `global` so it works before OR after a subcommand |
 | `--run-results` | `<RUN_RESULTS>` | — | — | Path to a dbt run_results.json (the last run's per-node status + execution_time). Adds the RunStatus/RunTime lenses, a `run n/m @date` status chip, and the runtime-weighted critical path in the `S` stats modal. Default: auto-detect target/run_results.json next to the data source — a missing file just means no run data, never an error. `docs` also accepts it (the `last run` page bullet — an explicit path there is REQUIRED); every other subcommand rejects it. `global` so it parses before OR after a subcommand |
 | `--catalog` | `<CATALOG>` | — | — | Path to a dbt catalog.json (the `dbt docs generate` side-map: real column types, row counts, byte sizes — and the top column-list tier for column-level lineage). Default: auto-detect target/catalog.json next to the data source — a missing file just means no catalog data, never an error. `docs` accepts it too — as an explicit REQUIRED path: docs never auto-detects it (the `.dbtl.yml` `docs.catalog` opt-in reads the default sibling instead). `global` so it works before OR after a subcommand |
 | `--include-packages` | — | — | `false` | Include nodes installed from dbt packages (`dbt deps` / `packages.yml`) in the graph: manifest mode's compiled `nodes` map mixes them in. They appear in the model list, lineage, docs pages, and `--diff` baselines as dependency context — but every aggregate metric (coverage / orphans / stats / docs summary / `dbtl check` / the PR-impact risk flags) still counts the root project only. Source mode never parses `dbt_packages`, so the flag is a no-op there (with a warning). `global` so it works before OR after a subcommand (`dbtl --include-packages check` ≡ `dbtl check --include-packages`) |
@@ -61,7 +62,7 @@ Usage: dbtl docs [OPTIONS] --out <OUT>
 | `--exclude` | `<SELECTOR>` (repeatable) | — | — | Subtract nodes matching a spec from the generated set — applied after `--select` (with none, the whole graph minus exclusions generates). Same selector grammar; repeatable |
 | `-h` `--help` | — | — | — | Print help |
 
-Accepts global flags: `--manifest`, `--source`, `--project`, `--include-packages`, `--diff`, `--run-results`, `--catalog`, `--sql-dialect`.
+Accepts global flags: `--manifest`, `--source`, `--project`, `--include-packages`, `--diff`, `--vars`, `--run-results`, `--catalog`, `--sql-dialect`.
 
 ### `dbtl impact`
 
@@ -78,7 +79,7 @@ Usage: dbtl impact [OPTIONS]
 | `--select` | `<SELECTOR>` (repeatable) | — | — | Restrict the report to changed nodes matching a dbt selector — the grammar of `dbtl ls` (`tag:x`, `path:y`, `+name+`, `state:modified`, …), NOT the TUI's `--select`, which opens one model's tab. `state:` atoms compare against the `--diff` baseline. Repeatable — specs union |
 | `-h` `--help` | — | — | — | Print help (see a summary with '-h') |
 
-Accepts global flags: `--manifest`, `--source`, `--project`, `--include-packages`, `--diff`, `--catalog`, `--sql-dialect`.
+Accepts global flags: `--manifest`, `--source`, `--project`, `--include-packages`, `--diff`, `--vars`, `--catalog`, `--sql-dialect`.
 
 ### `dbtl check`
 
@@ -111,7 +112,7 @@ Usage: dbtl check [OPTIONS]
 | `--quiet` | — | — | `false` | Suppress the per-check report on stdout; only the exit code matters |
 | `-h` `--help` | — | — | — | Print help (see a summary with '-h') |
 
-Accepts global flags: `--manifest`, `--source`, `--project`, `--include-packages`, `--diff`, `--catalog`, `--sql-dialect`.
+Accepts global flags: `--manifest`, `--source`, `--project`, `--include-packages`, `--diff`, `--vars`, `--catalog`, `--sql-dialect`.
 
 ### `dbtl lint`
 
@@ -140,11 +141,11 @@ Usage: dbtl lint [OPTIONS]
 | `--quiet` | — | — | `false` | Suppress the report on stdout; only the exit code matters |
 | `-h` `--help` | — | — | — | Print help (see a summary with '-h') |
 
-Accepts global flags: `--manifest`, `--source`, `--project`, `--include-packages`, `--diff`, `--catalog`, `--sql-dialect`.
+Accepts global flags: `--manifest`, `--source`, `--project`, `--include-packages`, `--diff`, `--vars`, `--catalog`, `--sql-dialect`.
 
 ### `dbtl ls`
 
-List the nodes a dbt selector matches, one per line — the non-interactive answer to "what does this spec select?" (`dbtl ls 'tag:nightly'`, `dbtl ls '2+fct_orders' --exclude path:staging`). `state:` selectors need `--diff`; note they are resolved by dbtl's own comparison (the SQL, config, column, and macro changes dbtl can read) — the set may not match dbt's `state:modified`
+List the nodes a dbt selector matches, one per line — the non-interactive answer to "what does this spec select?" (`dbtl ls 'tag:nightly'`, `dbtl ls '2+fct_orders' --exclude path:models/staging`). `state:` selectors need `--diff`; note they are resolved by dbtl's own comparison (the SQL, config, column, and macro changes dbtl can read) — the set may not match dbt's `state:modified`
 
 ```text
 Usage: dbtl ls [OPTIONS] <SELECTOR>...
@@ -157,7 +158,7 @@ Usage: dbtl ls [OPTIONS] <SELECTOR>...
 | `--output` | `names` \| `uids` \| `selector` \| `json` | — | `names` | Output shape: `names` (node names, one per line), `uids` (unique_ids), `selector` (one space-separated line of buildable model names for `dbt build --select`), `json` (one object per node) |
 | `-h` `--help` | — | — | — | Print help (see a summary with '-h') |
 
-Accepts global flags: `--manifest`, `--source`, `--project`, `--include-packages`, `--diff`.
+Accepts global flags: `--manifest`, `--source`, `--project`, `--include-packages`, `--diff`, `--vars`.
 
 ### `dbtl columns`
 
@@ -175,7 +176,7 @@ Usage: dbtl columns [OPTIONS] <TARGET>
 | `--format` | `markdown` \| `json` | — | `markdown` | Output format: `markdown` (default) or `json` |
 | `-h` `--help` | — | — | — | Print help (see a summary with '-h') |
 
-Accepts global flags: `--manifest`, `--source`, `--project`, `--include-packages`, `--catalog`, `--sql-dialect`.
+Accepts global flags: `--manifest`, `--source`, `--project`, `--include-packages`, `--vars`, `--catalog`, `--sql-dialect`.
 
 ### `dbtl completions`
 

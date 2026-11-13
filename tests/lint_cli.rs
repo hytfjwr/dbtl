@@ -1835,7 +1835,7 @@ fn dbtl_yml_exclude_selectors_suppress_matching_findings() {
     std::fs::copy(sample_manifest_path(), &m).unwrap();
     std::fs::write(
         tmp.path().join(".dbtl.yml"),
-        "lint:\n  rules:\n    naming_conventions:\n      exclude: [\"path:marts\"]\n",
+        "lint:\n  rules:\n    naming_conventions:\n      exclude: [\"path:models/marts\"]\n",
     )
     .unwrap();
     let out = lint_on(&m, &["--rules", "naming_conventions"]);
@@ -2046,5 +2046,31 @@ fn json_summary_names_the_unparsable_models() {
         serde_json::json!({"count": 1, "names": ["m_broken"]}),
         "the unparsable set lists by name: {}",
         json["summary"]
+    );
+}
+
+#[test]
+fn dbtl_yml_exclude_legacy_path_form_warns_once() {
+    // A resource-relative `path:` in `.dbtl.yml` still suppresses (the
+    // compat path keeps working) but reports the deprecation on stderr —
+    // one line even when several marts findings were suppressed by it.
+    let tmp = tempfile::tempdir().unwrap();
+    let m = manifest_in(tmp.path());
+    std::fs::copy(sample_manifest_path(), &m).unwrap();
+    std::fs::write(
+        tmp.path().join(".dbtl.yml"),
+        "lint:\n  rules:\n    naming_conventions:\n      exclude: [\"path:marts\"]\n",
+    )
+    .unwrap();
+    let out = lint_on(&m, &["--rules", "naming_conventions"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let err = stderr(&out);
+    let warnings: Vec<&str> = err.lines().filter(|l| l.starts_with("warning: ")).collect();
+    assert_eq!(
+        warnings,
+        ["warning: selector 'path:marts' uses the deprecated \
+         resource-relative path form — write it project-relative \
+         instead: 'path:models/marts'"],
+        "stderr: {err}"
     );
 }

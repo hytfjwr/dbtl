@@ -43,8 +43,8 @@ use crate::ui::theme::{self, Theme};
 use crate::{
     build_filtered_model_list, build_model_list, build_model_list_grouped, compute_diff_with,
     coverage_gap, default_run_results_path, load_dag_from_source_with_warnings,
-    load_dag_with_warnings, resolve_catalog_path, ColumnRef, Dag, DagDiff, ModelList, NodeDetail,
-    NodeInfo, RunResults, SortMode, SqlDialect, SqlParseResolver, UiState,
+    load_dag_with_warnings, resolve_catalog_path, CliVars, ColumnRef, Dag, DagDiff, ModelList,
+    NodeDetail, NodeInfo, RunResults, SortMode, SqlDialect, SqlParseResolver, UiState,
 };
 
 mod analysis;
@@ -302,6 +302,11 @@ pub struct App {
     pub(crate) home_stamp: u64,
     /// Where the `Dag` came from, so reload re-reads the same source.
     source: DataSource,
+    /// The `--vars` map source-mode loads render `enabled` against —
+    /// `None` in manifest mode. `reload` re-feeds it to the source
+    /// loader and the `P` `dbt parse` effect passes its raw text through
+    /// as dbt's own `--vars`.
+    cli_vars: Option<CliVars>,
     /// dbt project root (`<root>/target/manifest.json` → `<root>`, or the project
     /// dir in source mode), used to resolve a model's `original_file_path` for
     /// the `$EDITOR` jump.
@@ -470,14 +475,30 @@ impl App {
     /// Build the app from a `Dag` loaded from a compiled manifest at `manifest_path`.
     pub fn new(dag: Dag, manifest_path: PathBuf) -> Self {
         let project_root = derive_project_root(&manifest_path);
-        App::with_source(dag, DataSource::Manifest(manifest_path), project_root)
+        App::with_source(dag, DataSource::Manifest(manifest_path), project_root).with_cli_vars(None)
     }
 
     /// Build the app from a `Dag` parsed from a dbt project directory (source
-    /// mode). The project dir is itself the root for resolving file paths.
-    pub fn from_source(dag: Dag, project_dir: PathBuf) -> Self {
+    /// mode). The project dir is itself the root for resolving file paths;
+    /// `vars` is the `--vars` map the load (and every later reload/`dbt
+    /// parse`) renders `enabled` against.
+    pub fn from_source(dag: Dag, project_dir: PathBuf, vars: Option<CliVars>) -> Self {
         let project_root = project_dir.clone();
-        App::with_source(dag, DataSource::Project(project_dir), project_root)
+        App::with_source(dag, DataSource::Project(project_dir), project_root).with_cli_vars(vars)
+    }
+
+    /// Post-construction `cli_vars` fill — keeps [`with_source`] free of
+    /// the parse-input detail (it has no use for it).
+    fn with_cli_vars(mut self, vars: Option<CliVars>) -> Self {
+        self.cli_vars = vars;
+        self
+    }
+
+    /// The `--vars` map this app's source-mode loads render against —
+    /// `None` in manifest mode. `P` (`dbt parse`) takes its raw text as
+    /// dbt's own `--vars`.
+    pub fn cli_vars(&self) -> Option<&CliVars> {
+        self.cli_vars.as_ref()
     }
 
     fn with_source(dag: Dag, source: DataSource, project_root: PathBuf) -> Self {
@@ -533,10 +554,18 @@ impl App {
         // startup/reload, so `requires: Sql` rules come back `skipped`. No
         // `.with_dialect` needed at construction — a `--sql-dialect` pin
         // lands later via `set_sql_dialect`, which recomputes these.
-        let lint_findings = crate::run_rules(
+        let lint_outcome = crate::run_rules(
             crate::LintInput::new(&dag, &lint_config).with_catalog(catalog.as_deref()),
-        )
-        .findings;
+        );
+        // Selector-form warnings from the evaluation (a `.dbtl.yml`
+        // `exclude:` still on the legacy `path:` spelling) join the startup
+        // notice with the config-load warnings — one toast, never dropped.
+        let lint_notice = match (lint_notice, lint_outcome.warnings.is_empty()) {
+            (n, true) => n,
+            (None, false) => Some(format!("warning: {}", lint_outcome.warnings.join("; "))),
+            (Some(t), false) => Some(format!("{t}; {}", lint_outcome.warnings.join("; "))),
+        };
+        let lint_findings = lint_outcome.findings;
         // The first tab roots on the list head — the same model `selected` 0
         // pointed at before tabs existed.
         let first_root = model_list.models.first().map(|n| n.unique_id.clone());
@@ -590,6 +619,7 @@ impl App {
             home_scroll: 0,
             home_stamp: 0,
             source,
+            cli_vars: None,
             project_root,
             generation: 0,
             diff_base: None,

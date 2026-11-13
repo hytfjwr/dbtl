@@ -155,17 +155,19 @@ fn name_value_columns(line: &str) -> Option<(u32, u32)> {
 /// `[model, column]` — the model's entry, then the column's under
 /// `columns:`. `None` on any mismatch — no guesses.
 ///
-/// This is an indentation walk over yml LINES, not a parser: it ignores
-/// blank/comment lines and nested content between the entries it wants —
-/// enough for the `- name:` chains a dbt properties file actually nests.
+/// This searches the whole file: `names[0]` may match a `- name:` entry
+/// anywhere (any section, any depth), each deeper name inside the
+/// previous match's block. It ignores blank/comment lines, `|`/`>` block
+/// scalar text, and the content between the entries it wants — enough
+/// for the `- name:` chains a dbt properties file actually nests.
 pub fn yaml_name_span(text: &str, names: &[String]) -> Option<(u32, u32, u32)> {
     if names.is_empty() {
         return None;
     }
-    let lines: Vec<&str> = text.lines().collect();
-    let i = descend(&lines, names, 0, None)?;
-    let (column, end_column) = name_value_columns(lines[i])?;
-    Some((i as u32 + 1, column, end_column))
+    let index = YamlIndex::parse(text);
+    let i = index.descend(names, 0, usize::MAX)?;
+    let e = &index.entries[i];
+    Some((e.line as u32 + 1, e.column, e.end_column))
 }
 
 /// The 1-based LINE the chain `names` resolves to — `None` on any
@@ -175,48 +177,318 @@ pub fn yaml_name_line(text: &str, names: &[String]) -> Option<u32> {
     yaml_name_span(text, names).map(|(line, _, _)| line)
 }
 
-/// Search `lines[from..]` for `- name: names[0]` entries indented deeper
-/// than `parent_indent`, then recurse for the rest of the chain inside the
-/// match's block. Returns the LAST name's line index (0-based).
-/// `parent_indent` bounds the search: a content line at or below it means
-/// the enclosing block ended and candidates stop. `None` (the file top
-/// level) scans to EOF.
-fn descend(
-    lines: &[&str],
-    names: &[String],
-    from: usize,
-    parent_indent: Option<usize>,
-) -> Option<usize> {
-    let mut i = from;
-    while i < lines.len() {
-        let line = lines[i];
-        let trimmed = line.trim_start();
-        i += 1;
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let indent = line.len() - trimmed.len();
-        if parent_indent.is_some_and(|p| indent <= p) {
-            return None;
-        }
-        if name_value_range(trimmed).is_none_or(|r| trimmed[r] != names[0]) {
-            continue;
-        }
-        if names.len() == 1 {
-            return Some(i - 1);
-        }
-        if let Some(found) = descend(lines, &names[1..], i, Some(indent)) {
-            return Some(found);
-        }
-        // The chain didn't resolve inside this match's block — fall through
-        // to the next same-name entry at this level.
-    }
-    None
+/// One `- name:` entry from the [`YamlIndex`] pass: the value and its
+/// position, the `key:` list it directly sits in (`list_key` —
+/// `models`/`sources` for a top-level item, `tables`/`columns` below a
+/// name), the entry it nests under (`parent`), and the entries nested
+/// directly under it (`children`). `block_end` is the first content line
+/// at or below the entry's indent — where its block ends (0-based,
+/// exclusive).
+struct YamlEntry {
+    name: String,
+    line: usize,
+    column: u32,
+    end_column: u32,
+    block_end: usize,
+    parent: Option<usize>,
+    list_key: Option<String>,
+    children: Vec<usize>,
 }
 
-/// The `- name:` chain [`yaml_name_span`] descends for `f` — see the
-/// function's doc for the per-rule shapes. `None` when the node vanished.
-fn name_chain(dag: &Dag, f: &Finding) -> Option<Vec<String>> {
+/// An open block on the parse stack: a `key:` that opened a map or list
+/// (`Key` — its `name` becomes the `list_key`/`section` of what nests
+/// inside), a `- ` list item (`Item` — `entry` is set only for a
+/// `- name:` item), or a `|`/`>` block scalar (`Scalar` — every deeper
+/// line is literal text, never a `- name:`).
+enum Frame {
+    Key { indent: usize, name: String },
+    Item { indent: usize, entry: Option<usize> },
+    Scalar { indent: usize },
+}
+
+impl Frame {
+    fn indent(&self) -> usize {
+        match *self {
+            Frame::Key { indent, .. } | Frame::Item { indent, .. } | Frame::Scalar { indent } => {
+                indent
+            }
+        }
+    }
+}
+
+/// What follows a `key:` — an empty value (the key opens a container),
+/// a `|`/`>` block scalar opener, or an inline value (a leaf, no block).
+enum KeyTail {
+    Container,
+    Scalar,
+    Leaf,
+}
+
+/// `key: <tail>` where `key` is a bare word (the shape dbt properties
+/// keys take: `models`, `tables`, `columns`, `config`, `+meta`, …) —
+/// a quoted key answers with its unquoted name (`"models":` declares
+/// `models` exactly like `models:`), while flow-prefixed keys simply
+/// don't parse and stay plain lines.
+fn key_tail(trimmed: &str) -> Option<(String, KeyTail)> {
+    let (key, rest) = trimmed.split_once(':')?;
+    let key = key.trim_end();
+    let key = if key.len() >= 2
+        && ((key.starts_with('"') && key.ends_with('"'))
+            || (key.starts_with('\'') && key.ends_with('\'')))
+    {
+        &key[1..key.len() - 1]
+    } else {
+        key
+    };
+    if key.is_empty()
+        || key.starts_with('-')
+        || !key
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '+' | '-'))
+    {
+        return None;
+    }
+    let value = rest.trim_start();
+    let tail = if value.is_empty() || value.starts_with('#') {
+        KeyTail::Container
+    } else if value.starts_with('|') || value.starts_with('>') {
+        KeyTail::Scalar
+    } else if value.starts_with('&') || value.starts_with('!') {
+        // An anchor/tag names the node whose content the deeper lines
+        // carry (`columns: &c` then `- name: …`) — keep descending.
+        KeyTail::Container
+    } else {
+        KeyTail::Leaf
+    };
+    Some((key.to_string(), tail))
+}
+
+/// Every `- name:` entry in a properties `.yml`, built in ONE pass over
+/// its lines: `entries` holds them in file order with position and
+/// nesting, `tops` maps each top-level section key (`models`, `sources`,
+/// `seeds`, `exposures`, …) to the `- name:` items directly inside it,
+/// and `line_of` maps a 0-based line to its entry for the pinned-line
+/// column lift. [`fill_finding_lines_with`] builds one per file so a
+/// finding's lookup never rescans the text.
+struct YamlIndex {
+    entries: Vec<YamlEntry>,
+    tops: HashMap<String, Vec<usize>>,
+    line_of: HashMap<usize, usize>,
+}
+
+impl YamlIndex {
+    /// Single indentation walk over `text`: `- name:` entries record
+    /// their `key:` list and `- name:` parent, `key:`/`Scalar` frames
+    /// only bound blocks — same depth rules the line scan used (a
+    /// content line at or below an indent ends that block), plus one
+    /// correction: `|`/`>` scalar bodies no longer read as `- name:`.
+    fn parse(text: &str) -> Self {
+        let mut index = YamlIndex {
+            entries: Vec::new(),
+            tops: HashMap::new(),
+            line_of: HashMap::new(),
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        let mut stack: Vec<Frame> = Vec::new();
+        fn close(stack: &mut Vec<Frame>, entries: &mut [YamlEntry], line: usize) {
+            if let Some(Frame::Item { entry: Some(e), .. }) = stack.pop() {
+                entries[e].block_end = line;
+            }
+        }
+        for (i, &line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let indent = line.len() - trimmed.len();
+            // Inside a `|`/`>` scalar body the deeper lines are text.
+            if matches!(stack.last(), Some(Frame::Scalar { indent: s }) if indent > *s) {
+                continue;
+            }
+            let item = trimmed
+                .strip_prefix('-')
+                .filter(|r| r.is_empty() || r.starts_with(|c: char| c.is_whitespace()));
+            if let Some(rest) = item {
+                // A sibling item at this indent ends the open items and
+                // any deeper frames — but a `key:` AT this indent is the
+                // container these items belong to (yaml allows
+                // `columns:` then `- name:` at the same indent).
+                while let Some(top) = stack.last() {
+                    let pop = match top {
+                        Frame::Key { indent: k, .. } => *k > indent,
+                        _ => top.indent() >= indent,
+                    };
+                    if !pop {
+                        break;
+                    }
+                    close(&mut stack, &mut index.entries, i);
+                }
+                // `- name: <v>` is a declaration entry — unless the
+                // "name" opens a `|`/`>` scalar, which names nothing.
+                let entry = name_value_range(trimmed)
+                    .filter(|r| !trimmed[r.clone()].starts_with(['|', '>']))
+                    .map(|range| {
+                        let cols = name_value_columns(line);
+                        index.push_entry(&stack, &trimmed[range], i, cols)
+                    });
+                stack.push(Frame::Item { indent, entry });
+                // `- <key>: |` / `- |` open a scalar deeper lines feed.
+                let rest = rest.trim_start();
+                let scalar = rest.starts_with(['|', '>'])
+                    || matches!(key_tail(rest), Some((_, KeyTail::Scalar)));
+                if scalar {
+                    stack.push(Frame::Scalar {
+                        indent: line.len() - rest.len(),
+                    });
+                }
+                continue;
+            }
+            // Any other content line ends every block at or below it.
+            while matches!(stack.last(), Some(f) if f.indent() >= indent) {
+                close(&mut stack, &mut index.entries, i);
+            }
+            match key_tail(trimmed) {
+                Some((name, KeyTail::Container)) => stack.push(Frame::Key { indent, name }),
+                Some((_, KeyTail::Scalar)) => stack.push(Frame::Scalar { indent }),
+                _ => {}
+            }
+        }
+        // Items never closed end at EOF.
+        for frame in &stack {
+            if let Frame::Item { entry: Some(e), .. } = frame {
+                index.entries[*e].block_end = lines.len();
+            }
+        }
+        index.line_of = index
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.line, i))
+            .collect();
+        for (i, e) in index.entries.iter().enumerate() {
+            // A top-level `- name:` item's own `key:` IS the section —
+            // anything nested has a `parent` and answers a deeper step.
+            if e.parent.is_none() {
+                if let Some(key) = &e.list_key {
+                    index.tops.entry(key.clone()).or_default().push(i);
+                }
+            }
+        }
+        index
+    }
+
+    /// Record one `- name:` entry at `line` (0-based): `parent` is the
+    /// nearest enclosing `- name:` item on the stack, `list_key` the
+    /// nearest enclosing `key:` (`sources`/`tables`/`columns`/…).
+    /// Returns the entry's index.
+    fn push_entry(
+        &mut self,
+        stack: &[Frame],
+        name: &str,
+        line: usize,
+        cols: Option<(u32, u32)>,
+    ) -> usize {
+        let parent = stack.iter().rev().find_map(|f| match f {
+            Frame::Item { entry: Some(e), .. } => Some(*e),
+            _ => None,
+        });
+        let list_key = stack.iter().rev().find_map(|f| match f {
+            Frame::Key { name, .. } => Some(name.clone()),
+            _ => None,
+        });
+        let (column, end_column) = cols.unwrap_or((0, 0));
+        let i = self.entries.len();
+        self.entries.push(YamlEntry {
+            name: name.to_string(),
+            line,
+            column,
+            end_column,
+            block_end: usize::MAX,
+            parent,
+            list_key,
+            children: Vec::new(),
+        });
+        if let Some(p) = parent {
+            self.entries[p].children.push(i);
+        }
+        i
+    }
+
+    /// The whole-file chain walk [`yaml_name_span`] runs: `- name:
+    /// names[0]` candidates in file order (`entries[from..]` while still
+    /// inside `bound`), each deeper name inside the match's block —
+    /// falling through to the next same-name entry when a match's
+    /// subtree can't complete the chain.
+    fn descend(&self, names: &[String], from: usize, bound: usize) -> Option<usize> {
+        let mut i = from;
+        while i < self.entries.len() && self.entries[i].line < bound {
+            if self.entries[i].name == names[0] {
+                if names.len() == 1 {
+                    return Some(i);
+                }
+                if let Some(found) = self.descend(&names[1..], i + 1, self.entries[i].block_end) {
+                    return Some(found);
+                }
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// A `- name:` chain scoped to ONE top-level section: `steps[0]`
+    /// resolves only among that section's direct items (`tops`), each
+    /// deeper step among the entry's `children` sitting in the step's
+    /// `list_key`. A model `orders` therefore never matches a source
+    /// table of the same name — and a chain that doesn't resolve leaves
+    /// the position unset rather than guessing.
+    fn lookup(&self, lookup: &YamlLookup) -> Option<(u32, u32, u32)> {
+        let (_, first) = lookup.steps.first()?;
+        for &i in self.tops.get(&lookup.section)? {
+            if self.entries[i].name != *first {
+                continue;
+            }
+            if let Some(last) = self.resolve(i, &lookup.steps[1..]) {
+                let e = &self.entries[last];
+                return Some((e.line as u32 + 1, e.column, e.end_column));
+            }
+        }
+        None
+    }
+
+    /// Descend `steps` under `entries[at]` — each step among its direct
+    /// `children` in `list_key`, backtracking to the next same-name
+    /// sibling when a subtree can't complete the chain.
+    fn resolve(&self, at: usize, steps: &[(String, String)]) -> Option<usize> {
+        let Some((list_key, name)) = steps.first() else {
+            return Some(at);
+        };
+        for &c in &self.entries[at].children {
+            let e = &self.entries[c];
+            if e.list_key.as_deref() == Some(list_key.as_str()) && e.name == *name {
+                if let Some(found) = self.resolve(c, &steps[1..]) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+}
+
+/// The `- name:` chain a finding resolves inside ONE top-level section:
+/// `section` is the properties key the node kind declares under —
+/// `models`/`seeds`/`snapshots`/`exposures`/`sources`/`metrics`/… — and
+/// `steps` the `(list_key, name)` pairs to descend, each entry required
+/// to sit directly inside that list (`sources` → `tables` → `columns`,
+/// `models` → `columns`, `versions`-housed `columns` answer as the
+/// model's children since `- v:` items are no `- name:`).
+struct YamlLookup {
+    section: String,
+    steps: Vec<(String, String)>,
+}
+
+/// The [`YamlLookup`] `f` resolves — see [`YamlIndex::lookup`] for the
+/// section and step shapes. `None` when the node vanished.
+fn name_chain(dag: &Dag, f: &Finding) -> Option<YamlLookup> {
     let n = dag.get(&f.node_uid)?;
     if n.resource_type == "source" {
         // `source.<pkg>.<source>.<table>` — the two declaring names, plus
@@ -228,17 +500,28 @@ fn name_chain(dag: &Dag, f: &Finding) -> Option<Vec<String>> {
         parts.next()?;
         let source = parts.next()?;
         let table = parts.next()?;
-        let mut chain = vec![source.to_string(), table.to_string()];
+        let mut steps = vec![
+            ("sources".to_string(), source.to_string()),
+            ("tables".to_string(), table.to_string()),
+        ];
         if let Some(column) = offending_column(dag, f) {
-            chain.push(column);
+            steps.push(("columns".to_string(), column));
         }
-        return Some(chain);
+        return Some(YamlLookup {
+            section: "sources".to_string(),
+            steps,
+        });
     }
-    let mut chain = vec![n.name.clone()];
+    let section = match n.resource_type.as_str() {
+        "saved_query" => "saved_queries".to_string(),
+        "analysis" => "analyses".to_string(),
+        rt => format!("{rt}s"),
+    };
+    let mut steps = vec![(section.clone(), n.name.clone())];
     if let Some(column) = offending_column(dag, f) {
-        chain.push(column);
+        steps.push(("columns".to_string(), column));
     }
-    Some(chain)
+    Some(YamlLookup { section, steps })
 }
 
 /// The FIRST column a finding's message lists, for the rules that flag
@@ -301,7 +584,9 @@ pub fn fill_finding_lines_with(
     dag: &Dag,
     read_text: &dyn Fn(&str) -> Option<String>,
 ) {
-    let mut texts: HashMap<String, Option<String>> = HashMap::new();
+    // The `- name:` index per file — resolved once (the `read_text` call
+    // AND the line walk), then shared by every finding that lands in it.
+    let mut indexes: HashMap<String, Option<YamlIndex>> = HashMap::new();
     for f in findings.iter_mut() {
         let Some(loc) = f.location.as_ref() else {
             continue;
@@ -312,25 +597,24 @@ pub fn fill_finding_lines_with(
         }
         // The chain resolves only an unpinned line — a pinned one takes
         // its columns from its own `- name:` value instead.
-        let names = if loc.line.is_none() {
+        let lookup = if loc.line.is_none() {
             name_chain(dag, f)
         } else {
             None
         };
-        let text = texts
+        let index = indexes
             .entry(file.clone())
-            .or_insert_with(|| read_text(&file));
-        let Some(text) = text.as_deref() else {
+            .or_insert_with(|| read_text(&file).map(|text| YamlIndex::parse(&text)));
+        let Some(index) = index.as_ref() else {
             continue;
         };
         let loc = f.location.as_mut().expect("checked above");
         let span = match loc.line {
-            Some(line) => text
-                .lines()
-                .nth(line as usize - 1)
-                .and_then(name_value_columns)
-                .map(|(column, end_column)| (line, column, end_column)),
-            None => names.and_then(|names| yaml_name_span(text, &names)),
+            Some(line) => line
+                .checked_sub(1)
+                .and_then(|l| index.line_of.get(&(l as usize)))
+                .map(|&e| (line, index.entries[e].column, index.entries[e].end_column)),
+            None => lookup.as_ref().and_then(|lk| index.lookup(lk)),
         };
         if let Some((line, column, end_column)) = span {
             loc.line.get_or_insert(line);

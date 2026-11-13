@@ -125,6 +125,9 @@ pub struct SelectOutput {
     /// Matched nodes, sorted by `unique_id` — the same order
     /// `ls --output uids` prints.
     pub nodes: Vec<SelectedNode>,
+    /// Evaluation notes — the `path:` legacy resource-relative form a
+    /// spec still uses (the deprecation warning `ls` prints to stderr).
+    pub warnings: Vec<String>,
 }
 
 /// The node-detail payload the SQL editor and column listing need.
@@ -434,12 +437,13 @@ impl Engine {
                 "a 'state:' selector needs --diff to name the baseline it compares against",
             ));
         }
-        let selected = dbtl_core::select(&self.dag, None, spec);
+        let (selected, warnings) = dbtl_core::select_report(&self.dag, None, spec);
         Ok(SelectOutput {
             nodes: selected
                 .iter()
                 .map(|uid| SelectedNode::new(&self.dag, uid))
                 .collect(),
+            warnings,
         })
     }
 
@@ -566,6 +570,7 @@ impl Engine {
         let selection = match &input.selector {
             Some(spec) => {
                 let selected = self.select_labeled(spec, "--select")?;
+                warnings.extend(selected.warnings.iter().cloned());
                 let set: BTreeSet<String> =
                     selected.nodes.iter().map(|n| n.unique_id.clone()).collect();
                 if set.is_empty() {
@@ -596,6 +601,12 @@ impl Engine {
                 read_text: &read_text,
             },
         );
+        // `.dbtl.yml` `exclude:`/selector-param deprecation notes — the same
+        // non-fatal-warning channel the config-load warnings ride. A spec
+        // shared between `--select` and an `exclude:` notes once.
+        warnings.extend(run.warnings.iter().cloned());
+        let mut seen = BTreeSet::new();
+        warnings.retain(|w| seen.insert(w.clone()));
         let env = RenderEnv {
             dag: &self.dag,
             read_text: &read_text,

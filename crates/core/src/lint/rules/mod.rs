@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 
 use super::*;
-use crate::select::select;
+use crate::select::select_report;
 use crate::SqlDialect;
 use crate::{Catalog, SqlParseResolver};
 
@@ -146,6 +146,13 @@ pub struct LintOutcome {
     /// `BTreeSet`; `forbidden_patterns` (a raw-text rule) never
     /// contributes, and neither do models that simply HAVE no SQL.
     pub unparsed: BTreeSet<String>,
+    /// Evaluation-time warnings — currently the `path:` legacy
+    /// resource-relative form surfacing through a rule's `exclude:` or a
+    /// selector parameter — deduplicated and sorted (each distinct
+    /// deprecated spec warns once per lint evaluation, no matter how many
+    /// rules read it). Every surface prints them through its own warning
+    /// channel.
+    pub warnings: Vec<String>,
 }
 
 /// Evaluate the enabled rules over the input's dag and return every
@@ -177,6 +184,9 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
     // Models whose SQL exists but wouldn't parse for a `Requires::Sql`
     // rule — one uid per model regardless of how many SQL rules asked.
     let mut unparsed = BTreeSet::new();
+    // Selector deprecation notes — a `BTreeSet` dedupes the same
+    // `path:`-form warning across rules/excludes and sorts the result.
+    let mut notes = BTreeSet::new();
     for rule in LintRule::ALL {
         if !config.enabled(rule) {
             continue;
@@ -216,9 +226,9 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 modeling::model_fanout(dag, &uids, &in_scope, config, &mut out)
             }
             LintRule::RootModels => modeling::root_models(dag, &uids, &in_scope, &sites, &mut out),
-            LintRule::RejoiningUpstream => {
-                modeling::rejoining_upstream(dag, &uids, &in_scope, config, &sites, &mut out)
-            }
+            LintRule::RejoiningUpstream => modeling::rejoining_upstream(
+                dag, &uids, &in_scope, config, &sites, &mut out, &mut notes,
+            ),
             LintRule::MartsDependOnSource => {
                 modeling::marts_depend_on_source(dag, &uids, &in_scope, config, &sites, &mut out)
             }
@@ -252,7 +262,9 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 performance::exposure_parents_materializations(dag, &uids, &in_scope, &mut out)
             }
             LintRule::ExposuresDependentOnPrivateModels => {
-                governance::exposures_dependent_on_private_models(dag, &uids, &in_scope, &mut out)
+                governance::exposures_dependent_on_private_models(
+                    dag, &uids, &in_scope, config, &mut out,
+                )
             }
             LintRule::UndocumentedSources => {
                 documentation::undocumented_sources(dag, &uids, &in_scope, &mut out)
@@ -375,12 +387,13 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
     for f in &mut out {
         envelope(dag, config, f);
     }
-    let suppressed = suppress(dag, config, &mut out);
+    let suppressed = suppress(dag, config, &mut out, &mut notes);
     LintOutcome {
         findings: out,
         suppressed,
         skipped,
         unparsed,
+        warnings: notes.into_iter().collect(),
     }
 }
 
@@ -446,8 +459,15 @@ type ExcludedSet = (BTreeSet<String>, Option<String>);
 /// `node_uid` — the CHILD side for edge rules — and a node-local `meta`
 /// suppression wins the `by`/`reason` attribution over a config `exclude`
 /// spec (the more specific scope records); inside `exclude` the first
-/// matching spec in declared order records.
-fn suppress(dag: &Dag, config: &LintConfig, out: &mut Vec<Finding>) -> Vec<Finding> {
+/// matching spec in declared order records. Each `exclude:` spec's
+/// evaluation notes (the `path:` legacy form) join `notes` for the
+/// outcome's warning channel.
+fn suppress(
+    dag: &Dag,
+    config: &LintConfig,
+    out: &mut Vec<Finding>,
+    notes: &mut BTreeSet<String>,
+) -> Vec<Finding> {
     // Each rule's exclude spec evaluates ONCE into a uid set (the strings
     // are a union — `exclude: [a, b]` drops nodes matching a OR b) — kept
     // in declared order so the first matching spec's `reason` wins.
@@ -460,7 +480,9 @@ fn suppress(dag: &Dag, config: &LintConfig, out: &mut Vec<Finding>) -> Vec<Findi
             } else {
                 let mut sets = Vec::with_capacity(specs.len());
                 for spec in specs {
-                    sets.push((select(dag, None, &spec.select), spec.reason.clone()));
+                    let (matched, spec_notes) = select_report(dag, None, &spec.select);
+                    sets.push((matched, spec.reason.clone()));
+                    notes.extend(spec_notes);
                 }
                 Some((*rule, sets))
             }
