@@ -379,6 +379,15 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
                 &mut unparsed,
                 &mut out,
             ),
+            LintRule::UndocumentedExposures => {
+                documentation::undocumented_exposures(dag, &uids, &in_scope, &mut out)
+            }
+            LintRule::ModelTooLong => {
+                structure::model_too_long(dag, &uids, &in_scope, config, &mut out)
+            }
+            LintRule::LayerMaterializations => {
+                performance::layer_materializations(dag, &uids, &in_scope, config, &mut out)
+            }
         }
     }
     // The envelope fields are filled in ONE place — the severity the config
@@ -635,6 +644,7 @@ pub(crate) fn meta_dbtl_warnings(manifest: &crate::RawManifest) -> Vec<String> {
         .iter()
         .map(|(uid, node)| (uid, &node.meta))
         .chain(manifest.sources.iter().map(|(uid, src)| (uid, &src.meta)))
+        .chain(manifest.exposures.iter().map(|(uid, exp)| (uid, &exp.meta)))
     {
         let Some(dbtl) = meta.get("dbtl") else {
             continue;

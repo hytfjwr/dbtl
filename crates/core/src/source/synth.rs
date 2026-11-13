@@ -961,6 +961,18 @@ impl Synthesis {
                 }
                 deps.sort();
                 deps.dedup();
+                // `meta:` and `config: meta:` merge per top-level key with
+                // config winning — the same precedence a model entry's meta
+                // follows (verified: real dbt accepts both spellings on an
+                // exposure together — no parse error — and records the merged
+                // map at the exposure's top level).
+                let what = format!("exposure '{}'", exp.name);
+                let mut meta = meta_map(&exp.meta, &mut self.warnings, &what);
+                meta.extend(meta_map(
+                    &exp.config.meta,
+                    &mut self.warnings,
+                    &format!("{what} config"),
+                ));
                 self.exposures.insert(
                     uid,
                     RawExposure {
@@ -981,6 +993,7 @@ impl Synthesis {
                             nodes: deps,
                             macros: vec![],
                         },
+                        meta,
                     },
                 );
             }

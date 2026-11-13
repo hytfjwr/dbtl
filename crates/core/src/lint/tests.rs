@@ -126,11 +126,33 @@ fn findings_of(m: &RawManifest, config: &LintConfig) -> Vec<Finding> {
 }
 
 #[test]
-fn default_config_enables_every_rule() {
+fn default_config_enables_the_registry_default_set() {
+    // The `standard` preset resolves the registry's `default_enabled` set —
+    // opt-in rules ship `default_enabled: false` and stay off until a
+    // config (or the `strict` preset) reaches for them.
     let cfg = LintConfig::default();
     for rule in LintRule::ALL {
-        assert!(cfg.enabled(rule), "{} must default to enabled", rule.name());
+        assert_eq!(
+            cfg.enabled(rule),
+            rule.info().default_enabled,
+            "{}'s default enablement",
+            rule.name()
+        );
     }
+    // The opt-in set the registry ships today — a pinned list so adding a
+    // fourth default-off rule is a deliberate edit, not drift.
+    assert_eq!(
+        LintRule::ALL
+            .iter()
+            .filter(|r| !r.info().default_enabled)
+            .map(|r| r.name())
+            .collect::<Vec<_>>(),
+        vec![
+            "undocumented_exposures",
+            "model_too_long",
+            "layer_materializations"
+        ]
+    );
     assert_eq!(
         cfg.int_param(LintRule::ModelFanout, "threshold"),
         Some(crate::PR_HUB_MIN_DOWNSTREAM)
@@ -1180,7 +1202,7 @@ fn registry_rows_match_all_one_for_one_in_order() {
 
 #[test]
 fn registry_rows_carry_the_fixed_metadata() {
-    // The 40 ids are a fixed contract — config keys, --rules args and the
+    // The 43 ids are a fixed contract — config keys, --rules args and the
     // baseline format all rely on them. The original structure rules lead;
     // rules added later append in the registry's order so the emitted
     // sequence stays stable.
@@ -1228,6 +1250,9 @@ fn registry_rows_carry_the_fixed_metadata() {
             "duplicate_output_columns",
             "unused_cte",
             "order_by_without_limit",
+            "undocumented_exposures",
+            "model_too_long",
+            "layer_materializations",
         ]
     );
     // Only rules that represent a broken guarantee or a build failure
@@ -1363,6 +1388,31 @@ fn registry_params_are_the_declared_config_keys_with_matching_defaults() {
                     assert!(
                         default.iter().all(|d| builtins.contains(d)),
                         "{}.{}'s default sits outside its built-in layer set",
+                        row.id,
+                        p.name
+                    );
+                }
+                ParamKind::LayerMap { default, builtins } => {
+                    assert_eq!(
+                        LintConfig::default().map_param(row.rule, p.name),
+                        Some(
+                            default
+                                .iter()
+                                .map(|(l, vs)| {
+                                    (
+                                        l.to_string(),
+                                        vs.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                                    )
+                                })
+                                .collect()
+                        ),
+                        "{}.{}",
+                        row.id,
+                        p.name
+                    );
+                    assert!(
+                        default.iter().all(|(l, _)| builtins.contains(l)),
+                        "{}.{}'s default names a layer outside its built-in set",
                         row.id,
                         p.name
                     );
@@ -8031,9 +8081,8 @@ fn missing_inputs_report_skipped_rules_not_findings() {
 #[test]
 fn presets_define_the_base_rule_set() {
     // minimal = exactly the error-default rules; standard = the registry's
-    // `default_enabled` set; strict = everything (they agree while every
-    // shipped rule is default-enabled — the distinction only matters when
-    // an opt-in rule ships).
+    // `default_enabled` set; strict = everything — the three opt-in rules
+    // included.
     let minimal: Vec<_> = LintRule::ALL
         .iter()
         .copied()
@@ -8060,23 +8109,32 @@ fn presets_define_the_base_rule_set() {
             .filter(|r| r.info().default_enabled)
             .collect::<Vec<_>>()
     );
-    assert_eq!(standard.len(), LintRule::ALL.len());
+    // standard sits strictly below ALL while opt-in rules ship.
+    assert!(standard.len() < LintRule::ALL.len());
     assert!(LintRule::ALL
         .iter()
         .all(|r| LintPreset::Strict.enables(r.info())));
     // …and an opt-in rule is off under minimal/standard, on under strict.
-    let mut opt_in = *LintRule::SelectStar.info();
-    opt_in.default_enabled = false;
-    assert!(!LintPreset::Minimal.enables(&opt_in));
-    assert!(!LintPreset::Standard.enables(&opt_in));
-    assert!(LintPreset::Strict.enables(&opt_in));
-    // The config layer reads the same predicates: `strict` runs it,
+    for opt_in in [
+        LintRule::UndocumentedExposures,
+        LintRule::ModelTooLong,
+        LintRule::LayerMaterializations,
+    ] {
+        assert!(!LintPreset::Minimal.enables(opt_in.info()));
+        assert!(!LintPreset::Standard.enables(opt_in.info()));
+        assert!(LintPreset::Strict.enables(opt_in.info()));
+        assert!(!LintConfig::default().enabled(opt_in));
+    }
+    // The config layer reads the same predicates: `strict` runs them,
     // `standard` doesn't.
     let cfg = LintConfig {
         preset: LintPreset::Strict,
         ..LintConfig::default()
     };
     assert!(cfg.enabled(LintRule::SelectStar));
+    assert!(cfg.enabled(LintRule::UndocumentedExposures));
+    assert!(cfg.enabled(LintRule::ModelTooLong));
+    assert!(cfg.enabled(LintRule::LayerMaterializations));
     // A `minimal` config still runs the error-default rules at their
     // registry severity.
     let cfg = LintConfig {
@@ -9129,5 +9187,446 @@ fn lint_input_dialect_follows_the_resolver_then_the_override() {
             .dialect,
         SqlDialect::Snowflake,
         "a None pin changes nothing"
+    );
+}
+
+// ---- required_meta_keys.resource_types ----------------------------------------
+
+/// A `seed`/`snapshot` node literal — `required_meta_keys` widens to them.
+fn node_of(name: &str, resource_type: &str, path: &str) -> (String, RawNode) {
+    (
+        format!("{resource_type}.p.{name}"),
+        RawNode {
+            name: name.into(),
+            resource_type: resource_type.into(),
+            path: Some(path.into()),
+            ..Default::default()
+        },
+    )
+}
+
+#[test]
+fn required_meta_keys_resource_types_defaults_to_models_only() {
+    // A meta-less exposure / source / seed / snapshot sit next to a
+    // meta-less model: with no `resource_types` the rule still answers on
+    // models alone — the shipped `[model]` default.
+    let mut m = manifest(
+        vec![
+            model("stg_bare", "staging/stg_bare.sql"),
+            node_of("raw_seed", "seed", "seeds/raw_seed.csv"),
+            node_of("snap", "snapshot", "snapshots/snap.sql"),
+        ],
+        vec![source("s.raw")],
+        &[],
+    );
+    m.exposures.extend([exposure("exp")]);
+    let cfg = config_from("lint:\n  rules:\n    required_meta_keys: {keys: [owner]}\n");
+    let f = findings_of(&m, &cfg);
+    assert_eq!(
+        flagged(&f, LintRule::RequiredMetaKeys),
+        vec!["model.p.stg_bare"],
+        "the default resource_types is [model] — nothing else is checked"
+    );
+}
+
+#[test]
+fn required_meta_keys_resource_types_widens_to_each_kind() {
+    // Every kind in the allowed set participates: the tagged exposure and
+    // source carry `owner` (meta present is present, any value), the seed,
+    // snapshot, bare source and bare exposure don't.
+    let mut with_meta = source("s.tagged");
+    with_meta.1.meta = serde_json::json!({"owner": "t"})
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let mut exp_tagged = exposure("exp_tagged");
+    exp_tagged.1.meta = serde_json::json!({"owner": "t"})
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let mut stg_tagged = model("stg_tagged", "staging/stg_tagged.sql");
+    stg_tagged.1.meta = serde_json::json!({"owner": "t"})
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let mut m = manifest(
+        vec![
+            stg_tagged,
+            node_of("raw_seed", "seed", "seeds/raw_seed.csv"),
+            node_of("snap", "snapshot", "snapshots/snap.sql"),
+        ],
+        vec![with_meta, source("s.bare")],
+        &[],
+    );
+    m.exposures.extend([exp_tagged, exposure("exp_bare")]);
+    let cfg = config_from(
+        "lint:\n  rules:\n    required_meta_keys: {keys: [owner], resource_types: [model, seed, snapshot, source, exposure]}\n",
+    );
+    let f = findings_of(&m, &cfg);
+    let mut got = flagged(&f, LintRule::RequiredMetaKeys);
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec![
+            "exposure.p.exp_bare",
+            "seed.p.raw_seed",
+            "snapshot.p.snap",
+            "source.p.s.bare",
+        ],
+        "every listed kind is checked against the merged meta it carries"
+    );
+    // Narrowing back to a subset re-scopes — exposures alone.
+    let cfg = config_from(
+        "lint:\n  rules:\n    required_meta_keys: {keys: [owner], resource_types: [exposure]}\n",
+    );
+    let f = findings_of(&m, &cfg);
+    assert_eq!(
+        flagged(&f, LintRule::RequiredMetaKeys),
+        vec!["exposure.p.exp_bare"],
+        "resource_types: [exposure] checks exposures alone"
+    );
+}
+
+#[test]
+fn exposure_meta_lands_on_node_detail_in_both_modes() {
+    // The manifest wire's `exposure.meta` is dbt's merged map — source mode
+    // must land the identical merge (top-level `meta:` under `config.meta`,
+    // per key) so `required_meta_keys` reads the same dict either way.
+    let mut exp = exposure("exp");
+    exp.1.meta = serde_json::json!({"owner": "cfg_wins", "team": "t"})
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let mut m = manifest(vec![model("stg_a", "staging/stg_a.sql")], vec![], &[]);
+    m.exposures.extend([exp]);
+    let dag = Dag::build(&m);
+    let meta = &dag.detail("exposure.p.exp").unwrap().meta;
+    assert_eq!(meta["owner"], "cfg_wins");
+    assert_eq!(meta["team"], "t");
+
+    // Source mode: an `exposures:` entry with both spellings — `config:
+    // meta:` wins per key, non-conflicting top-level keys survive, and a
+    // `required_meta_keys` run on it behaves identically to the manifest
+    // side.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    std::fs::write(dir.path().join("dbt_project.yml"), "name: p\nprofile: p\n").unwrap();
+    std::fs::write(dir.path().join("models/stg_a.sql"), "select 1").unwrap();
+    std::fs::write(
+        dir.path().join("models/exposures.yml"),
+        "version: 2\nexposures:\n  - name: exp\n    type: dashboard\n    depends_on:\n      - ref('stg_a')\n    owner:\n      name: t\n    meta:\n      owner: top_level\n      team: t\n    config:\n      meta:\n        owner: cfg_wins\n",
+    )
+    .unwrap();
+    let sm = crate::manifest_from_source(dir.path()).unwrap();
+    let sdag = Dag::build(&sm);
+    let meta = &sdag.detail("exposure.p.exp").unwrap().meta;
+    assert_eq!(meta["owner"], "cfg_wins", "config.meta wins per key");
+    assert_eq!(
+        meta["team"], "t",
+        "a non-conflicting top-level key survives"
+    );
+    // The identical finding answers off both dags.
+    let cfg = config_from(
+        "lint:\n  rules:\n    required_meta_keys: {keys: [owner, domain], resource_types: [exposure]}\n",
+    );
+    let m_f = findings_of(&m, &cfg);
+    let s_f = run_rules(LintInput::new(&sdag, &cfg)).findings;
+    for f in [&m_f, &s_f] {
+        let hit = f
+            .iter()
+            .find(|f| f.rule == LintRule::RequiredMetaKeys)
+            .unwrap_or_else(|| panic!("required_meta_keys must fire: {f:?}"));
+        assert_eq!(hit.node_uid, "exposure.p.exp");
+        assert!(
+            hit.message.contains("domain"),
+            "only `domain` is missing from the merged meta: {}",
+            hit.message
+        );
+    }
+}
+
+// ---- undocumented_exposures ---------------------------------------------------
+
+#[test]
+fn undocumented_exposures_is_opt_in_and_flags_blank_descriptions() {
+    let mut documented = exposure("exp_documented");
+    documented.1.description = Some("What the dashboard answers".into());
+    let mut blank = exposure("exp_blank");
+    blank.1.description = Some("   ".into());
+    let mut m = manifest(vec![model("stg_a", "staging/stg_a.sql")], vec![], &[]);
+    m.exposures
+        .extend([documented, blank, exposure("exp_missing")]);
+    // The shipped default leaves the rule off — a missing description is
+    // not yet a finding.
+    let f = findings_of(&m, &LintConfig::default());
+    assert!(
+        flagged(&f, LintRule::UndocumentedExposures).is_empty(),
+        "opt-in: the default config stays silent"
+    );
+    let cfg = config_from("lint:\n  rules:\n    undocumented_exposures: true\n");
+    let f = findings_of(&m, &cfg);
+    let mut got = flagged(&f, LintRule::UndocumentedExposures);
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec!["exposure.p.exp_blank", "exposure.p.exp_missing"],
+        "missing and whitespace-only descriptions both flag; documented doesn't"
+    );
+    // …and the strict preset switches it on the same way.
+    let cfg = LintConfig {
+        preset: LintPreset::Strict,
+        ..LintConfig::default()
+    };
+    let f = findings_of(&m, &cfg);
+    assert_eq!(
+        flagged(&f, LintRule::UndocumentedExposures).len(),
+        2,
+        "strict runs the opt-in rule"
+    );
+}
+
+// ---- model_too_long -----------------------------------------------------------
+
+/// A SQL file of `counted` non-blank lines.
+fn sql_of(counted: usize) -> String {
+    (0..counted)
+        .map(|i| format!("select {i} as c{i}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn model_too_long_is_opt_in_and_counts_content_lines() {
+    // Four counted lines: the raw file is padded with blanks, a one-line
+    // `{# #}` comment, and a multi-line comment block — none of which
+    // count.
+    let raw = "\
+{# a header comment #}
+\n\
+{# a comment
+   spanning lines #}\n\
+select 1 as a\n\
+\n\
+   \n\
+select 2 as b\n\
+{# trailing comment #}\n\
+select 3 as c\n\
+select 4 as d\n";
+    let m = manifest(
+        vec![
+            sited_model("long_model", "models/marts/long_model.sql", raw),
+            sited_model(
+                "short_model",
+                "models/marts/short_model.sql",
+                "select 1\nselect 2\n",
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    // Off under the shipped default.
+    let f = findings_of(&m, &LintConfig::default());
+    assert!(
+        flagged(&f, LintRule::ModelTooLong).is_empty(),
+        "opt-in: the default config stays silent"
+    );
+    // max_lines 4 → exactly at the budget is clean (only OVER flags).
+    let cfg = config_from("lint:\n  rules:\n    model_too_long: {max_lines: 4}\n");
+    let f = findings_of(&m, &cfg);
+    assert!(
+        flagged(&f, LintRule::ModelTooLong).is_empty(),
+        "at max_lines exactly is under the bar"
+    );
+    // max_lines 3 → long_model crosses on its fourth counted line.
+    let cfg = config_from("lint:\n  rules:\n    model_too_long: {max_lines: 3}\n");
+    let f = findings_of(&m, &cfg);
+    assert_eq!(
+        flagged(&f, LintRule::ModelTooLong),
+        vec!["model.p.long_model"],
+        "only the over-budget file flags"
+    );
+    let hit = finding_of(&f, LintRule::ModelTooLong, "model.p.long_model");
+    assert!(
+        hit.message.contains("4 counted lines") && hit.message.contains("max_lines budget of 3"),
+        "the message reports the true count over the budget: {}",
+        hit.message
+    );
+    // The position is the (max_lines + 1)-th COUNTED line — the raw file's
+    // last line here — never a line-1 guess.
+    let loc = hit.location.as_ref().expect("a position lands");
+    assert_eq!(loc.file.as_str(), "models/marts/long_model.sql");
+    assert_eq!(
+        loc.line,
+        Some(11),
+        "the fourth counted line is raw line 11 (comments and blanks didn't count)"
+    );
+}
+
+#[test]
+fn model_too_long_skips_python_models_and_missing_sql() {
+    let mut py = model("py_model", "marts/py_model.py");
+    py.1.language = Some("python".into());
+    py.1.original_file_path = Some("models/marts/py_model.py".into());
+    let mut sql_node = sited_model("sqlless", "models/marts/sqlless.sql", "x");
+    sql_node.1.raw_code = None;
+    let m = manifest(vec![py, sql_node], vec![], &[]);
+    let cfg = config_from("lint:\n  rules:\n    model_too_long: {max_lines: 1}\n");
+    let f = findings_of(&m, &cfg);
+    assert!(
+        flagged(&f, LintRule::ModelTooLong).is_empty(),
+        "a python model and a model without raw SQL are never judged"
+    );
+    // A real 300-line default budget stays silent for ordinary files.
+    let cfg = config_from("lint:\n  rules:\n    model_too_long: true\n");
+    let m = manifest(
+        vec![sited_model(
+            "ordinary",
+            "models/marts/ordinary.sql",
+            &sql_of(50),
+        )],
+        vec![],
+        &[],
+    );
+    let f = findings_of(&m, &cfg);
+    assert!(
+        flagged(&f, LintRule::ModelTooLong).is_empty(),
+        "the default max_lines is 300"
+    );
+}
+
+// ---- layer_materializations ---------------------------------------------------
+
+/// A model literal under `path` carrying `config.materialized` — the layer
+/// resolves off the path's first dir (or the name prefix), the shape off
+/// the config.
+fn mat_model_in(name: &str, path: &str, materialized: &str) -> (String, RawNode) {
+    (
+        format!("model.p.{name}"),
+        RawNode {
+            name: name.into(),
+            resource_type: "model".into(),
+            path: Some(path.into()),
+            config: crate::manifest::RawConfig {
+                materialized: Some(materialized.into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+}
+
+#[test]
+fn layer_materializations_is_opt_in_and_flags_disallowed_shapes() {
+    // staging table + marts ephemeral violate the shipped defaults; a
+    // staging view and an incremental marts model conform; `other`-layer
+    // and unmaterialized models are unchecked.
+    let m = manifest(
+        vec![
+            mat_model_in("stg_persisted", "staging/stg_persisted.sql", "table"),
+            mat_model_in("stg_view", "staging/stg_view.sql", "view"),
+            mat_model_in("fct_ephemeral", "marts/fct_ephemeral.sql", "ephemeral"),
+            mat_model_in("fct_incr", "marts/fct_incr.sql", "incremental"),
+            mat_model_in("ops_table", "ops/ops_table.sql", "table"),
+            model("fct_unmat", "marts/fct_unmat.sql"),
+        ],
+        vec![],
+        &[],
+    );
+    // Off under the shipped default.
+    let f = findings_of(&m, &LintConfig::default());
+    assert!(
+        flagged(&f, LintRule::LayerMaterializations).is_empty(),
+        "opt-in: the default config stays silent"
+    );
+    let cfg = config_from("lint:\n  rules:\n    layer_materializations: true\n");
+    let f = findings_of(&m, &cfg);
+    let mut got = flagged(&f, LintRule::LayerMaterializations);
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec!["model.p.fct_ephemeral", "model.p.stg_persisted"],
+        "the defaults allow staging view/ephemeral, marts table/incremental/view; \
+         'other' and materialization-less models are unchecked"
+    );
+}
+
+#[test]
+fn layer_materializations_reports_layer_shape_and_allowed_set() {
+    let m = manifest(
+        vec![mat_model_in(
+            "stg_persisted",
+            "staging/stg_persisted.sql",
+            "table",
+        )],
+        vec![],
+        &[],
+    );
+    let cfg = config_from("lint:\n  rules:\n    layer_materializations: true\n");
+    let f = findings_of(&m, &cfg);
+    let hit = finding_of(&f, LintRule::LayerMaterializations, "model.p.stg_persisted");
+    assert_eq!(
+        hit.message,
+        "staging model stg_persisted materializes as 'table' (allowed: view, ephemeral)",
+        "the message names the layer, the shape, and the allowed list"
+    );
+}
+
+#[test]
+fn layer_materializations_allowed_overlays_one_layer_at_a_time() {
+    // `allowed: {staging: [table]}` turns the staging policy on its head —
+    // while marts keeps the shipped default (per-layer merge, not a
+    // whole-map replace), and a layer mapped to `[]` is unchecked like a
+    // `naming_prefixes` empty list.
+    let m = manifest(
+        vec![
+            mat_model_in("stg_view", "staging/stg_view.sql", "view"),
+            mat_model_in("stg_table", "staging/stg_table.sql", "table"),
+            mat_model_in("fct_eph", "marts/fct_eph.sql", "ephemeral"),
+        ],
+        vec![],
+        &[],
+    );
+    let cfg =
+        config_from("lint:\n  rules:\n    layer_materializations: {allowed: {staging: [table]}}\n");
+    let f = findings_of(&m, &cfg);
+    let mut got = flagged(&f, LintRule::LayerMaterializations);
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec!["model.p.fct_eph", "model.p.stg_view"],
+        "staging flipped to table-only; marts kept its default (ephemeral still flags)"
+    );
+    // `{staging: []}` opts staging out of the check entirely.
+    let cfg =
+        config_from("lint:\n  rules:\n    layer_materializations: {allowed: {staging: []}}\n");
+    let f = findings_of(&m, &cfg);
+    assert_eq!(
+        flagged(&f, LintRule::LayerMaterializations),
+        vec!["model.p.fct_eph"],
+        "an empty allowed list means 'no policy' for that layer"
+    );
+}
+
+#[test]
+fn layer_materializations_reads_custom_naming_prefix_layers() {
+    // A `lint.naming_prefixes` layer is a valid `allowed` key — the layer
+    // resolves the same way `lint_model_type` does (prefix first, then
+    // directory).
+    let m = manifest(
+        vec![
+            mat_model_in("sem_view", "semantic/sem_view.sql", "view"),
+            mat_model_in("sem_table", "semantic/sem_table.sql", "table"),
+        ],
+        vec![],
+        &[],
+    );
+    let cfg = config_from(
+        "lint:\n  naming_prefixes: {semantic: [sem_]}\n  rules:\n    layer_materializations: {allowed: {semantic: [table]}}\n",
+    );
+    let f = findings_of(&m, &cfg);
+    assert_eq!(
+        flagged(&f, LintRule::LayerMaterializations),
+        vec!["model.p.sem_view"],
+        "the custom layer's allowed list applies to prefix-matched models"
     );
 }

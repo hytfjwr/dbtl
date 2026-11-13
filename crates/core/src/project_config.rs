@@ -473,6 +473,57 @@ impl ProjectConfig {
                                     .or_default()
                                     .insert(param, list);
                             }
+                            ParamKind::LayerMap { builtins, .. } => {
+                                let entries = value.as_mapping().ok_or_else(|| {
+                                    format!(
+                                        "lint.rules.{name}.{param} must be a mapping of layer \
+                                         names to lists of strings"
+                                    )
+                                })?;
+                                let mut map = BTreeMap::new();
+                                for (layer, list) in entries {
+                                    let layer = layer.as_str().ok_or_else(|| {
+                                        format!(
+                                            "lint.rules.{name}.{param}: layer names must be strings"
+                                        )
+                                    })?;
+                                    // Built-in layer names plus whatever
+                                    // layers the merged `lint.naming_prefixes`
+                                    // map declares (merged above, before this
+                                    // loop, so a custom layer can carry a
+                                    // policy like a built-in one).
+                                    if !builtins.contains(&layer)
+                                        && !lint.naming_prefixes.contains_key(layer)
+                                    {
+                                        return Err(format!(
+                                            "lint.rules.{name}.{param}: '{layer}' is not a valid layer \
+                                             (valid: {}, or a layer named in lint.naming_prefixes)",
+                                            builtins.join(", ")
+                                        ));
+                                    }
+                                    let items = list.as_sequence().ok_or_else(|| {
+                                        format!(
+                                            "lint.rules.{name}.{param}.{layer} must be a list of strings"
+                                        )
+                                    })?;
+                                    let mut vals = Vec::with_capacity(items.len());
+                                    for item in items {
+                                        let s = item.as_str().ok_or_else(|| {
+                                            format!(
+                                                "lint.rules.{name}.{param}.{layer} must be a list of strings"
+                                            )
+                                        })?;
+                                        if s.trim().is_empty() {
+                                            return Err(format!(
+                                                "lint.rules.{name}.{param}.{layer}: entries must be non-empty"
+                                            ));
+                                        }
+                                        vals.push(s.to_string());
+                                    }
+                                    map.insert(layer.to_string(), vals);
+                                }
+                                lint.map_params.entry(rule).or_default().insert(param, map);
+                            }
                             ParamKind::Bool { .. } => {
                                 let v = value.as_bool().ok_or_else(|| {
                                     format!("lint.rules.{name}.{param} must be true or false")
@@ -1328,6 +1379,82 @@ mod tests {
         assert_eq!(
             pc.lint.str_list_param(LintRule::RequiredMetaKeys, "keys"),
             Some(vec![])
+        );
+    }
+
+    #[test]
+    fn layer_map_params_parse_and_validate_layers() {
+        let pc =
+            parse("lint:\n  rules:\n    layer_materializations: {allowed: {staging: [table]}}\n")
+                .unwrap();
+        // The configured layer replaces only its own row — the other
+        // shipped defaults survive the per-layer merge.
+        let allowed = pc
+            .lint
+            .map_param(LintRule::LayerMaterializations, "allowed")
+            .unwrap();
+        assert_eq!(allowed["staging"], vec!["table".to_string()]);
+        assert_eq!(
+            allowed["marts"],
+            vec![
+                "table".to_string(),
+                "incremental".to_string(),
+                "view".to_string()
+            ]
+        );
+        // A `lint.naming_prefixes` layer is a valid key — the prefix map
+        // merges before the rule params validate.
+        let pc = parse(
+            "lint:\n  naming_prefixes: {semantic: [sem_]}\n  rules:\n    layer_materializations: {allowed: {semantic: [table]}}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            pc.lint
+                .map_param(LintRule::LayerMaterializations, "allowed")
+                .unwrap()["semantic"],
+            vec!["table".to_string()]
+        );
+        // A non-mapping value names the shape the param wants.
+        let err =
+            parse("lint:\n  rules:\n    layer_materializations: {allowed: [table]}\n").unwrap_err();
+        assert!(
+            err.contains("lint.rules.layer_materializations.allowed must be a mapping of layer names to lists of strings"),
+            "{err}"
+        );
+        // A layer outside the built-ins and `lint.naming_prefixes` errors
+        // naming the valid set.
+        let err =
+            parse("lint:\n  rules:\n    layer_materializations: {allowed: {bogus: [table]}}\n")
+                .unwrap_err();
+        assert!(
+            err.contains("'bogus' is not a valid layer") && err.contains("staging"),
+            "{err}"
+        );
+        // Each layer maps to a list of non-empty strings — a scalar, a
+        // non-string item, and a blank item each error at the layer key.
+        for (yaml, what) in [
+            (
+                "lint:\n  rules:\n    layer_materializations: {allowed: {staging: table}}\n",
+                "lint.rules.layer_materializations.allowed.staging must be a list of strings",
+            ),
+            (
+                "lint:\n  rules:\n    layer_materializations: {allowed: {staging: [1]}}\n",
+                "lint.rules.layer_materializations.allowed.staging must be a list of strings",
+            ),
+            (
+                "lint:\n  rules:\n    layer_materializations: {allowed: {staging: [\"\"]}}\n",
+                "lint.rules.layer_materializations.allowed.staging: entries must be non-empty",
+            ),
+        ] {
+            let err = parse(yaml).unwrap_err();
+            assert!(err.contains(what), "{yaml} → {err}");
+        }
+        // A non-string layer name errors too.
+        let err = parse("lint:\n  rules:\n    layer_materializations: {allowed: {1: [table]}}\n")
+            .unwrap_err();
+        assert!(
+            err.contains("lint.rules.layer_materializations.allowed: layer names must be strings"),
+            "{err}"
         );
     }
 

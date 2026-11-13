@@ -1748,7 +1748,24 @@
                         "type": "string"
                       },
                       "default": [],
-                      "description": "meta keys every model must declare"
+                      "description": "meta keys every checked resource must declare"
+                    },
+                    "resource_types": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "model",
+                          "seed",
+                          "snapshot",
+                          "source",
+                          "exposure"
+                        ]
+                      },
+                      "default": [
+                        "model"
+                      ],
+                      "description": "resource kinds the meta-key requirement applies to"
                     }
                   }
                 }
@@ -2819,6 +2836,222 @@
                         ]
                       },
                       "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
+                    }
+                  }
+                }
+              ]
+            },
+            "undocumented_exposures": {
+              "description": "an exposure has no description",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
+                    }
+                  }
+                }
+              ]
+            },
+            "model_too_long": {
+              "description": "a model's SQL file runs past the configured line budget",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
+                    },
+                    "max_lines": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "default": 300,
+                      "description": "maximum counted lines before a model flags — blank lines and Jinja-comment-only lines never count"
+                    }
+                  }
+                }
+              ]
+            },
+            "layer_materializations": {
+              "description": "a model's materialization isn't allowed for its layer",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
+                    },
+                    "allowed": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "default": {
+                        "staging": [
+                          "view",
+                          "ephemeral"
+                        ],
+                        "intermediate": [
+                          "view",
+                          "ephemeral",
+                          "table",
+                          "incremental"
+                        ],
+                        "marts": [
+                          "table",
+                          "incremental",
+                          "view"
+                        ]
+                      },
+                      "description": "materializations each layer permits — a layer not listed is unchecked, and `lint.naming_prefixes` layer names are valid keys (built-in layers: staging, intermediate, marts, other)"
                     }
                   }
                 }

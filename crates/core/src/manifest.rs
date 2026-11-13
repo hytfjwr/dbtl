@@ -365,6 +365,11 @@ pub struct RawExposure {
     /// so a synthesized manifest (source mode) only needs to fill this.
     #[serde(default)]
     pub depends_on: RawDependsOn,
+    /// The exposure's `meta` dictionary. Real manifests record the merged
+    /// result at the exposure top level — the YAML entry's `meta:` with its
+    /// `config: meta:` overlaid per key — so only this field is read.
+    #[serde(default)]
+    pub meta: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A semantic-layer resource (`semantic_models` / `metrics` / `saved_queries`)

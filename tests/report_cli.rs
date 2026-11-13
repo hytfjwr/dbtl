@@ -178,12 +178,14 @@ fn check_format_junit_is_wellformed_xml() {
     let stdout = stdout(&out);
     assert!(stdout.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
     assert!(stdout.ends_with("</testsuite>\n</testsuites>\n"));
-    // One testcase per gate: coverage + every enabled lint rule.
+    // One testcase per gate: coverage + every ENABLED lint rule (the
+    // opt-in rules ship `default_enabled: false` and emit no testcase
+    // until a config reaches for them).
     let cases = stdout.matches("<testcase").count();
     assert_eq!(
         cases,
-        1 + dbtl::REGISTRY.len(),
-        "coverage + all lint rules: {stdout}"
+        1 + dbtl::REGISTRY.iter().filter(|r| r.default_enabled).count(),
+        "coverage + all enabled lint rules: {stdout}"
     );
     // Every FAIL gate is a `<failure>` testcase carrying its findings —
     // only missing_primary_key_tests still gates by default on the fixture.

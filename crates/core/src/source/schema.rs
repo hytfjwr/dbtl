@@ -215,6 +215,12 @@ pub(super) struct SchemaExposure {
     pub(super) owner: SchemaExposureOwner,
     #[serde(default)]
     pub(super) config: SchemaConfig,
+    /// Top-level `meta:` dict — merged under `config.meta` per key, the
+    /// same precedence a model entry's `meta:` follows (verified against
+    /// real dbt: exposures accept both spellings together and record the
+    /// merged map, config winning, on the wire).
+    #[serde(default)]
+    pub(super) meta: serde_json::Value,
     #[serde(default, deserialize_with = "de_string_vec")]
     pub(super) depends_on: Vec<String>,
 }
