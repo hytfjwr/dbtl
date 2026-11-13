@@ -22,26 +22,12 @@
 mod common;
 
 use common::{
-    copy_tree, dbtl_cmd, fixture_path, manifest_path, sample_manifest_path, SAMPLE_PROJECT,
+    copy_tree, fixture_path, manifest_path, run, sample_manifest_path, stderr, stdout,
+    SAMPLE_PROJECT,
 };
 use dbtl_wasm::engine::{ColumnsInput, Engine, LineageInput, LintOptions, LoadInput};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-
-fn run(args: &[&str]) -> std::process::Output {
-    let mut cmd: Command = dbtl_cmd();
-    cmd.args(args);
-    cmd.stdin(std::process::Stdio::null());
-    cmd.output().expect("run dbtl")
-}
-
-fn stdout(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-fn stderr(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
-}
 
 /// stderr's `warning:`/`warning (scope):` lines as the texts the engine
 /// carries in its `warnings` vectors — prefixes dropped, order kept.

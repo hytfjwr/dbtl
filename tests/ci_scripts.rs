@@ -10,6 +10,7 @@
 
 mod common;
 
+use common::{stderr, stdout};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -18,13 +19,6 @@ const ROOT: &str = env!("CARGO_MANIFEST_DIR");
 
 fn script(name: &str) -> PathBuf {
     Path::new(ROOT).join(".github/scripts").join(name)
-}
-
-fn stdout(out: &Output) -> String {
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-fn stderr(out: &Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
 /// The `key=value` lines a script prints, as a map.

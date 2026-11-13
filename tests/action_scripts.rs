@@ -9,6 +9,9 @@
 
 #![cfg(unix)]
 
+mod common;
+
+use common::{lines, stderr, stdout};
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -23,13 +26,6 @@ fn bash(body: &str) -> Output {
         .arg(format!("{ROOT}/action/lib.sh"))
         .output()
         .expect("spawn bash")
-}
-
-fn stdout(out: &Output) -> String {
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-fn stderr(out: &Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
 // ---- version resolution ----------------------------------------------------
@@ -283,11 +279,6 @@ fn base_explicit_input_wins_but_must_not_look_like_a_flag() {
 }
 
 // ---- args splitting ----------------------------------------------------------
-
-/// The function's stdout as owned lines.
-fn lines(out: &Output) -> Vec<String> {
-    stdout(out).lines().map(str::to_string).collect()
-}
 
 #[test]
 fn split_args_splits_on_whitespace() {

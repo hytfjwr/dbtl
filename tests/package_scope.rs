@@ -30,12 +30,12 @@
 //! `stg_metrics` when the package consumer is out of scope.
 
 mod common;
-use common::dbtl_cmd;
-use std::collections::{BTreeMap, BTreeSet};
+use common::{consistency::node_map, dbtl_cmd, run};
+use std::collections::BTreeSet;
 
 use dbtl::{
     build_model_list, coverage_counts, generate_docs, layer_violation_edges, load_dag,
-    load_dag_from_source, Dag, NodeInfo, PackageScope, SortMode,
+    load_dag_from_source, Dag, PackageScope, SortMode,
 };
 
 const MANIFEST: &str = concat!(
@@ -64,13 +64,6 @@ fn source_dag() -> Dag {
     load_dag_from_source(PROJECT).expect("packages project parses")
 }
 
-fn node_map(dag: &Dag) -> BTreeMap<String, NodeInfo> {
-    dag.nodes()
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect()
-}
-
 /// Root-project orphan model names — the predicate the stats dashboard and
 /// the docs README share (`is_root_project && model && direct_down == 0`).
 fn orphan_names(dag: &Dag) -> Vec<&str> {
@@ -90,18 +83,6 @@ fn readme_of(files: &[(String, String)]) -> String {
         .find(|(p, _)| p == "README.md")
         .map(|(_, c)| c.clone())
         .expect("generated set contains README.md")
-}
-
-fn run(args: &[&str]) -> std::process::Output {
-    dbtl_cmd()
-        .args(args)
-        // stdin must not be a TTY: a bare invocation (no subcommand) reaches
-        // the interactive TUI, and an inherited terminal would park the child
-        // on the event loop forever. Null stdin makes the TTY probe fail so
-        // the binary exits after printing its startup warnings.
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("failed to run dbtl")
 }
 
 /// A minimal manifest.json body: `nodes` + `sources` + the two adjacency maps

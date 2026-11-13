@@ -10,7 +10,7 @@
 
 mod common;
 use common::{
-    dbtl_cmd, sample_manifest_path as fixture_manifest, SAMPLE_MANIFEST as MANIFEST,
+    run, sample_manifest_path as fixture_manifest, SAMPLE_MANIFEST as MANIFEST,
     SAMPLE_PROJECT as PROJECT,
 };
 use std::collections::BTreeSet;
@@ -20,16 +20,6 @@ use dbtl::{
     ColumnLineage, ColumnRef, ColumnResolver, Dag, NameMatchResolver, RawManifest, RawNode,
     SqlParseResolver,
 };
-
-fn run(args: &[&str]) -> std::process::Output {
-    dbtl_cmd()
-        .args(args)
-        // Null stdin keeps a bare (no-subcommand) invocation from seeing the
-        // test runner's TTY and parking on the interactive event loop.
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("failed to run dbtl")
-}
 
 fn model(name: &str) -> String {
     format!("model.sample.{name}")

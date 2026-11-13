@@ -10,33 +10,11 @@
 
 mod common;
 
-use common::{copy_tree, dbtl_cmd, fixture_path};
+use common::{copy_tree, fixture_path, run, stamp, stderr};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 const PROJECT: &str = "compiled_project";
-
-fn run(args: &[&str]) -> std::process::Output {
-    dbtl_cmd()
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("failed to run dbtl")
-}
-
-fn stderr(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
-}
-
-/// Set a file's mtime (Rust ≥1.75 `File::set_modified`).
-fn stamp(path: &Path, t: SystemTime) {
-    std::fs::File::options()
-        .write(true)
-        .open(path)
-        .unwrap()
-        .set_modified(t)
-        .unwrap();
-}
 
 /// Stamp every project file the probe could count — everything outside
 /// `target/` (the probe reads `.sql`/`.py`/`.yml`/`.yaml`/`.csv`; stamping

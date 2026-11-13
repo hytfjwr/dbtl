@@ -6,42 +6,16 @@
 
 mod common;
 
-use common::{dbtl_cmd, manifest_path as fixture_manifest, sample_manifest_path, SAMPLE_PROJECT};
+use common::{
+    dbtl, manifest_in, manifest_path as fixture_manifest, run, sample_manifest_path, stderr,
+    stdout, SAMPLE_PROJECT,
+};
 use std::path::{Path, PathBuf};
-
-fn run(args: &[&str]) -> std::process::Output {
-    dbtl_cmd()
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("failed to run dbtl")
-}
 
 /// `run` with the working dir pinned — query-mode tests need an empty
 /// directory so auto-detect can't find a data source.
 fn run_in(dir: &Path, args: &[&str]) -> std::process::Output {
-    dbtl_cmd()
-        .args(args)
-        .current_dir(dir)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("failed to run dbtl")
-}
-
-fn out_text(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-fn stderr(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
-}
-
-/// Copy the fixture manifest into `dir` and return its path — tests that
-/// place `.dbtl.yml` / baseline files need an owned directory to write in
-/// (the config lives next to the data source).
-fn manifest_in(dir: &Path) -> PathBuf {
-    let dst = dir.join("manifest.json");
-    std::fs::copy(fixture_manifest(), &dst).unwrap();
-    dst
+    dbtl(args).current_dir(dir).output().expect("run dbtl")
 }
 
 fn lint_on(manifest: &Path, extra: &[&str]) -> std::process::Output {
@@ -65,7 +39,7 @@ fn error_findings_exit_one_and_warn_only_exits_zero() {
         "error findings fail by default, stderr: {}",
         stderr(&out)
     );
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     assert!(stdout.contains("error["), "verdict line: {stdout}");
 
     // Downgrade every firing rule to warn → only warnings remain → pass.
@@ -81,7 +55,7 @@ fn error_findings_exit_one_and_warn_only_exits_zero() {
         "warn-only findings report but pass, stderr: {}",
         stderr(&out)
     );
-    let text = out_text(&out);
+    let text = common::stdout(&out);
     assert!(text.contains("warning["), "verdict line: {text}");
     // …but `--fail-on warn` fails on them again.
     let out = lint_on(&m, &["--fail-on", "warn"]);
@@ -164,7 +138,7 @@ fn warn_findings_report_with_their_severity() {
     .unwrap();
     let out = lint_on(&m, &[]);
     assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     // The finding header carries the configured severity tag…
     assert!(
         stdout.contains("warning[direct_join_to_source]:"),
@@ -409,9 +383,9 @@ fn write_baseline_freezes_every_finding_then_passes() {
         stderr(&out)
     );
     assert!(
-        out_text(&out).contains("wrote") && out_text(&out).contains("finding(s)"),
+        stdout(&out).contains("wrote") && stdout(&out).contains("finding(s)"),
         "the write message: {}",
-        out_text(&out)
+        stdout(&out)
     );
 
     // The written file makes every finding baselined → clean pass.
@@ -427,7 +401,7 @@ fn write_baseline_freezes_every_finding_then_passes() {
         "baselined findings don't fail, stderr: {}",
         stderr(&out)
     );
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     assert!(stdout.contains("baselined"), "the count shows: {stdout}");
 
     // `--no-baseline` brings the findings back.
@@ -532,7 +506,7 @@ fn check_and_lint_count_the_same_findings() {
     let out = lint_on(&m, &["--format", "json"]);
     assert_eq!(out.status.code(), Some(1));
     let lint_json: serde_json::Value =
-        serde_json::from_str(&out_text(&out)).expect("lint stdout is pure JSON");
+        serde_json::from_str(&stdout(&out)).expect("lint stdout is pure JSON");
     let mut lint_counted: Vec<(String, String)> = lint_json["gates"]
         .as_array()
         .unwrap()
@@ -565,7 +539,7 @@ fn check_and_lint_count_the_same_findings() {
     ]);
     assert_eq!(out.status.code(), Some(1));
     let check_json: serde_json::Value =
-        serde_json::from_str(&out_text(&out)).expect("check stdout is pure JSON");
+        serde_json::from_str(&stdout(&out)).expect("check stdout is pure JSON");
     let mut check_counted: Vec<(String, String)> = check_json["gates"]
         .as_array()
         .unwrap()
@@ -609,7 +583,7 @@ fn baseline_file_and_diff_compose_at_the_cli() {
         "baselined findings don't count, stderr: {}",
         stderr(&out)
     );
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     assert!(
         stdout.contains("No findings") && stdout.contains("baselined"),
         "the baselined count reports under --diff: {stdout}"
@@ -623,7 +597,7 @@ fn baseline_file_and_diff_compose_at_the_cli() {
     let out = lint_on(&m, &["--diff", m.to_str().unwrap(), "--no-baseline"]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
     assert!(
-        out_text(&out).contains("pre-existing"),
+        common::stdout(&out).contains("pre-existing"),
         "without the file, the diff's pre-existing count reports"
     );
     // `check --lint --diff` reads the same file and lands on the same
@@ -638,7 +612,7 @@ fn baseline_file_and_diff_compose_at_the_cli() {
     ]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
     assert!(
-        out_text(&out).contains("baselined"),
+        common::stdout(&out).contains("baselined"),
         "check reports the baselined count too"
     );
 }
@@ -655,7 +629,7 @@ fn diff_counts_only_new_violations() {
         "no new violations pass, stderr: {}",
         stderr(&out)
     );
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     assert!(
         stdout.contains("No findings") && stdout.contains("pre-existing"),
         "the diff wording: {stdout}"
@@ -674,7 +648,7 @@ fn list_rules_prints_one_row_per_registry_rule() {
         "query mode needs no data source, stderr: {}",
         stderr(&out)
     );
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     let rows: Vec<&str> = stdout
         .lines()
         .skip(1) // the header
@@ -715,7 +689,7 @@ fn list_rules_shows_configured_severities() {
     // the data itself — --manifest only decides where .dbtl.yml lives.
     let out = lint_on(&m, &["--list-rules"]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     let row = |name: &str| {
         stdout
             .lines()
@@ -737,7 +711,7 @@ fn explain_prints_the_registry_entry_and_effective_values() {
     .unwrap();
     let out = lint_on(&m, &["--explain", "model_fanout"]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     for heading in [
         "id: model_fanout",
         "category:",
@@ -778,7 +752,7 @@ fn json_output_is_machine_readable_and_stdout_clean() {
     let m = fixture_manifest();
     let out = lint_on(&m, &["--format", "json"]);
     assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     let json: serde_json::Value =
         serde_json::from_str(&stdout).expect("stdout is pure JSON — no log lines mixed in");
     assert_eq!(json["schema"], "dbtl.report/v1", "the schema marker");
@@ -837,7 +811,7 @@ fn text_output_is_deterministic_across_runs() {
     assert_eq!(a.stdout, b.stdout, "same input → byte-identical stdout");
     // One annotated block per counted finding — `severity[rule]: message`
     // over a position line + fix footer.
-    let stdout = out_text(&a);
+    let stdout = stdout(&a);
     assert!(
         stdout.contains("error[missing_primary_key_tests]:"),
         "finding blocks: {stdout}"
@@ -851,17 +825,17 @@ fn no_format_invents_a_line_one_for_file_scoped_findings() {
     // stand-ins are the documented exception, covered by their own
     // tests).
     let m = fixture_manifest();
-    let text = out_text(&lint_on(&m, &["--format", "text"]));
+    let text = stdout(&lint_on(&m, &["--format", "text"]));
     assert!(
         !text.contains(".sql:1") && !text.contains(".yml:1"),
         "no :1 anchor in text: {text}"
     );
-    let github = out_text(&lint_on(&m, &["--format", "github"]));
+    let github = stdout(&lint_on(&m, &["--format", "github"]));
     assert!(
         !github.contains("line=1,") && !github.contains(",line=1"),
         "no line=1 prop in github annotations: {github}"
     );
-    let json = out_text(&lint_on(&m, &["--format", "json"]));
+    let json = stdout(&lint_on(&m, &["--format", "json"]));
     assert!(
         !json.contains("\"line\":1") && !json.contains("\"line\": 1"),
         "no \"line\": 1 in the json report"
@@ -892,7 +866,7 @@ fn check_lint_gate_is_severity_aware() {
         "never reports without failing, stderr: {}",
         stderr(&out)
     );
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     assert!(
         stdout.lines().any(|l| l.starts_with("WARN coverage")),
         "coverage demoted to WARN: {stdout}"
@@ -916,7 +890,7 @@ fn check_lint_gate_is_severity_aware() {
         "warn-only findings pass under the default, stderr: {}",
         stderr(&out)
     );
-    let text = out_text(&out);
+    let text = common::stdout(&out);
     assert!(text.contains("WARN lint "), "WARN line: {text}");
     let out = run(&[
         "check",
@@ -932,7 +906,7 @@ fn check_lint_gate_is_severity_aware() {
         "warn gates under --fail-on warn, stderr: {}",
         stderr(&out)
     );
-    assert!(out_text(&out).contains("FAIL lint "), "FAIL line");
+    assert!(common::stdout(&out).contains("FAIL lint "), "FAIL line");
 }
 
 #[test]
@@ -953,8 +927,7 @@ fn check_json_carries_warn_statuses_and_finding_fields() {
         "json",
     ]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
-    let json: serde_json::Value =
-        serde_json::from_str(&out_text(&out)).expect("stdout is pure JSON");
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("stdout is pure JSON");
     assert!(
         json["summary"]["warnings"].as_u64().unwrap_or(0) > 0,
         "WARN gates count in the summary: {json}"
@@ -1016,7 +989,7 @@ fn catalog_rules_skip_without_a_catalog_and_report_with_one() {
     // report as SKIP gates instead of running — never a failure.
     let out = lint_on(&m, &["--fail-on", "never"]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
-    let text = out_text(&out);
+    let text = stdout(&out);
     assert!(
         text.contains("3 skipped (need --catalog)"),
         "the skipped-rule tally lands on the summary line: {text}"
@@ -1027,9 +1000,9 @@ fn catalog_rules_skip_without_a_catalog_and_report_with_one() {
     let out = lint_on(&m, &["--fail-on", "never"]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
     assert!(
-        !out_text(&out).contains("skipped"),
+        !stdout(&out).contains("skipped"),
         "with a catalog nothing skips: {}",
-        out_text(&out)
+        stdout(&out)
     );
 }
 
@@ -1051,7 +1024,7 @@ fn check_reports_skipped_lint_rules_as_skip_rows() {
         "skips never fail the run, stderr: {}",
         stderr(&out)
     );
-    let text = out_text(&out);
+    let text = stdout(&out);
     assert!(
         text.contains("SKIP lint warehouse_type_drift:"),
         "the SKIP verdict line: {text}"
@@ -1067,7 +1040,7 @@ fn check_reports_skipped_lint_rules_as_skip_rows() {
         "json",
     ]);
     let json: serde_json::Value =
-        serde_json::from_str(&out_text(&out)).expect("check stdout is pure JSON");
+        serde_json::from_str(&stdout(&out)).expect("check stdout is pure JSON");
     let skip = json["gates"]
         .as_array()
         .unwrap()
@@ -1083,7 +1056,7 @@ fn check_reports_skipped_lint_rules_as_skip_rows() {
     // counts them as skipped, never as failures.
     let out = lint_on(&m, &["--format", "json", "--fail-on", "never"]);
     let json: serde_json::Value =
-        serde_json::from_str(&out_text(&out)).expect("lint stdout is pure JSON");
+        serde_json::from_str(&stdout(&out)).expect("lint stdout is pure JSON");
     let gates = json["gates"].as_array().expect("gates array");
     assert!(
         gates
@@ -1158,9 +1131,9 @@ fn check_diff_marks_pre_existing_findings() {
     ]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
     assert!(
-        out_text(&out).contains("pre-existing"),
+        stdout(&out).contains("pre-existing"),
         "self-diff suppresses every finding: {}",
-        out_text(&out)
+        stdout(&out)
     );
 }
 
@@ -1198,7 +1171,7 @@ fn lint_prints_the_yml_line_and_column_for_column_findings() {
         "--rules",
         "undocumented_columns",
     ]);
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     // `- name: id` is line 7 and the `id` value sits at column 15.
     assert!(
         stdout.contains("models/schema.yml:7:15"),
@@ -1225,7 +1198,7 @@ fn check_json_findings_carry_the_yml_span_and_metadata() {
         "json",
     ]);
     let json: serde_json::Value =
-        serde_json::from_str(&out_text(&out)).expect("check stdout is pure JSON");
+        serde_json::from_str(&stdout(&out)).expect("check stdout is pure JSON");
     let finding = json["gates"]
         .as_array()
         .unwrap()
@@ -1270,7 +1243,7 @@ fn lint_select_star_points_at_the_wildcard_in_the_model_file() {
     let column = raw[..at].rsplit('\n').next().unwrap().chars().count() + 1;
 
     let out = run(&["lint", "--source", SAMPLE_PROJECT, "--rules", "select_star"]);
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     assert!(
         stdout.contains(&format!("models/marts/fct_orders.sql:{line}:{column}")),
         "the finding anchors at the wildcard (computed {line}:{column}): {stdout}"
@@ -1287,7 +1260,7 @@ fn lint_select_star_points_at_the_wildcard_in_the_model_file() {
         "json",
     ]);
     let json: serde_json::Value =
-        serde_json::from_str(&out_text(&out)).expect("lint stdout is pure JSON");
+        serde_json::from_str(&common::stdout(&out)).expect("lint stdout is pure JSON");
     let finding = json["gates"]
         .as_array()
         .unwrap()
@@ -1328,7 +1301,7 @@ fn lint_select_restricts_findings_to_the_selection() {
         "no fct_* node violates the prefix rule, stderr: {}",
         stderr(&out)
     );
-    assert!(out_text(&out).contains("No findings"));
+    assert!(stdout(&out).contains("No findings"));
 
     let out = lint_on(
         &m,
@@ -1337,7 +1310,7 @@ fn lint_select_restricts_findings_to_the_selection() {
     // naming_conventions reports at warn — the finding prints but can't
     // fail the run under the default fail_on=error.
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     assert!(
         stdout.contains("warning[naming_conventions]:") && stdout.contains("cll_demo"),
         "only the selected node's finding, got: {stdout}"

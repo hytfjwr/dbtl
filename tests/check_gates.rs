@@ -6,33 +6,9 @@
 
 mod common;
 use common::{
-    dbtl_cmd, manifest_path as fixture_manifest, sample_manifest_path as sample_manifest,
+    manifest_path as fixture_manifest, run, run_env, sample_manifest_path as sample_manifest,
+    stderr, stdout,
 };
-
-fn run(args: &[&str]) -> std::process::Output {
-    dbtl_cmd()
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("failed to run dbtl")
-}
-
-fn run_env(args: &[&str], envs: &[(&str, &std::path::Path)]) -> std::process::Output {
-    let mut cmd = dbtl_cmd();
-    cmd.args(args);
-    cmd.stdin(std::process::Stdio::null());
-    for (k, v) in envs {
-        cmd.env(k, v);
-    }
-    cmd.output().expect("failed to run dbtl")
-}
-
-fn stdout(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-fn stderr(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
-}
 
 /// A tempdir holding a copy of the sample manifest plus a `.dbtl.yml` —
 /// the auto-detect binds the config to the manifest's directory.

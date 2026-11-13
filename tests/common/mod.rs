@@ -47,6 +47,12 @@ pub fn fixture_path(rel: &str) -> PathBuf {
         .join(rel)
 }
 
+/// The repository root — suites covering repo files outside
+/// `tests/fixtures/` (docs, CI scripts, the changelog) anchor paths here.
+pub fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
 /// The fixture manifest as a `PathBuf` (CLI-spawning suites want paths).
 pub fn manifest_path() -> PathBuf {
     fixture_path("manifest.json")
@@ -57,6 +63,15 @@ pub fn sample_manifest_path() -> PathBuf {
     fixture_path("sample_manifest.json")
 }
 
+/// Copy the fixture manifest into `dir` as `manifest.json` and return its
+/// path — `.dbtl.yml` auto-detects beside the data source, so
+/// config-driven suites need an owned directory.
+pub fn manifest_in(dir: &std::path::Path) -> PathBuf {
+    let dst = dir.join("manifest.json");
+    std::fs::copy(manifest_path(), &dst).unwrap();
+    dst
+}
+
 /// Load the fixture manifest into a `Dag`.
 pub fn fixture_dag() -> dbtl::Dag {
     dbtl::load_dag(FIXTURE_MANIFEST).expect("fixture manifest must load")
@@ -65,6 +80,50 @@ pub fn fixture_dag() -> dbtl::Dag {
 /// A `Command` bound to the `dbtl` binary cargo just built.
 pub fn dbtl_cmd() -> Command {
     Command::new(env!("CARGO_BIN_EXE_dbtl"))
+}
+
+/// `dbtl <args>` as a configurable `Command`: stdin nulled — a bare
+/// (subcommand-less) invocation's TTY probe then fails instead of parking
+/// on the test runner's terminal — and the sealed git env applied: a
+/// `--diff git:`/`state:` run's spawned `git` must see the same isolation
+/// the test commits ran under. Callers needing `.env`/`.current_dir`/
+/// piped-stdio control chain this; everyone else uses [`run`].
+pub fn dbtl(args: &[&str]) -> Command {
+    let mut cmd = dbtl_cmd();
+    cmd.args(args);
+    cmd.stdin(std::process::Stdio::null());
+    git_isolated_env(&mut cmd);
+    cmd
+}
+
+/// Run `dbtl <args>` to completion and collect its output.
+pub fn run(args: &[&str]) -> std::process::Output {
+    dbtl(args).output().expect("run dbtl")
+}
+
+/// [`run`] with extra env vars scoped to the child — the only safe way to
+/// point e.g. `XDG_CONFIG_HOME` at a fixture dir.
+pub fn run_env(args: &[&str], envs: &[(&str, &std::path::Path)]) -> std::process::Output {
+    let mut cmd = dbtl(args);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    cmd.output().expect("run dbtl")
+}
+
+/// stdout of a finished `Output` as an owned String.
+pub fn stdout(out: &std::process::Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// stderr of a finished `Output` as an owned String.
+pub fn stderr(out: &std::process::Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+/// stdout as owned lines.
+pub fn lines(out: &std::process::Output) -> Vec<String> {
+    stdout(out).lines().map(str::to_string).collect()
 }
 
 // ---- temporary git repositories -------------------------------------------
@@ -224,4 +283,16 @@ pub fn copy_tree(src: &std::path::Path, dst: &std::path::Path) {
             std::fs::copy(e.path(), &to).unwrap();
         }
     }
+}
+
+/// Set a file's mtime (Rust ≥1.75 `File::set_modified`) — staleness tests
+/// stamp explicitly: a CI checkout doesn't preserve mtimes, and `fs::copy`
+/// stamps the copy time.
+pub fn stamp(path: &std::path::Path, t: std::time::SystemTime) {
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(t)
+        .unwrap();
 }
