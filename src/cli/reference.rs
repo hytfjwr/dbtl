@@ -8,11 +8,11 @@ use std::collections::BTreeMap;
 use std::io::Write;
 
 use anyhow::Context;
-use clap::{Arg, ArgAction, Command, CommandFactory};
+use clap::{Arg, ArgAction, Command};
 
 use super::exit::ExitKind;
 use super::flags::GLOBAL_FLAG_COMMANDS;
-use super::{exit_code, Cli, CliError};
+use super::{exit_code, CliError};
 
 /// The generated-file banner every `gen-docs` output carries.
 pub const GENERATED_MARKER: &str =
@@ -29,10 +29,11 @@ pub fn run_cli_reference() -> Result<(), CliError> {
 
 /// Render the whole reference document.
 fn cli_reference_markdown() -> String {
-    let mut cmd = Cli::command();
-    // `build` propagates the `global = true` args into every subcommand and
-    // installs the auto `-h`/`--version` args — the same model parsing sees.
-    cmd.build();
+    // The shared construction: built (globals propagated into every
+    // subcommand, the auto `-h`/`--version` args installed) and pruned —
+    // the same model `--help`, the completions script, and the man page
+    // all describe.
+    let cmd = super::command();
 
     let mut out = String::new();
     out.push_str(GENERATED_MARKER);
@@ -63,6 +64,20 @@ fn cli_reference_markdown() -> String {
         }
         out.push_str(&arg_row(arg));
     }
+
+    // The accepted --sql-dialect spellings come from the parser's own NAMES
+    // table — the same list `parse_name` reads — so the doc can never
+    // advertise a value the flag would reject.
+    out.push_str(&format!(
+        "\n`--sql-dialect` accepts these spellings (case-insensitive): {}. \
+         `auto` reads the manifest's `adapter_type`; a source-mode load has \
+         none and parses as `generic`.\n",
+        dbtl::SqlDialect::NAMES
+            .iter()
+            .map(|n| format!("`{n}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
 
     out.push_str("\n## TUI flags\n\n");
     out.push_str(

@@ -1,6 +1,6 @@
 ---
 title: Check and impact
-description: Gate pull requests with dbtl check, report their blast radius with dbtl impact, and render the verdict in seven formats.
+description: Gate pull requests with dbtl check, report their blast radius with dbtl impact, and render the verdict in eight formats.
 ---
 
 `dbtl impact` and `dbtl check` are the two non-interactive subcommands for pull request review. Neither needs a TTY. Both compute the same diff payload that the TUI's `D` diff modal shows, so a CI comment cannot disagree with the screen.
@@ -26,7 +26,7 @@ dbtl impact --diff git:main --select 'tag:marts+'               # only matching 
 
 ## dbtl check
 
-`dbtl check` prints one `PASS`, `WARN`, `FAIL`, or `SKIP` line per gate. It exits 1 when any gate fails at or above `--fail-on`. With `--lint`, the findings print first as annotated blocks — position, source excerpt, and fix links (see [dbtl lint](lint.md) for the block shape) — then the gate rows, with clean lint rules collapsed into one `PASS lint` row, and the lint tally at the end.
+`dbtl check` prints one `PASS`, `WARN`, `FAIL`, or `SKIP` line per gate. It exits 1 when any gate fails at or above `--fail-on`. With `--lint`, the findings print first as annotated blocks — position, source excerpt, and fix links (see [dbtl lint](lint.md) for the block shape) — then the gate rows, with clean lint rules collapsed into one `PASS lint` row, and the lint tally at the end. The gate rows below are `dbtl check --lint --source tests/fixtures/sample_project` on the repository's sample fixture.
 
 ```text
 scope: root project only
@@ -40,10 +40,12 @@ FAIL lint public_models_without_contract: 1 finding
 WARN lint select_star: 6 findings
 SKIP lint warehouse_type_drift: requires graph + catalog input
 SKIP lint columns_missing_in_warehouse: requires graph + catalog input
-PASS lint: 15 rules clean
+…
+SKIP lint undeclared_warehouse_columns: requires graph + catalog input
+PASS lint: 20 rules clean
 
-Found 10 errors and 36 warnings in 21 files
-16 rules reported findings; 2 skipped (need --catalog)
+Found 10 errors and 38 warnings in 21 files
+17 rules reported findings; 3 skipped (need --catalog)
 ```
 
 ```sh

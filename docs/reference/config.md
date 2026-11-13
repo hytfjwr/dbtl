@@ -31,6 +31,7 @@ Looked up beside the data source: the project directory in source mode; in manif
 | `check` | object | — | `check:` — gate severities/parameters and whether the lint gates fold into `dbtl check`. |
 | `docs` | object | — | `docs:` — generated-docs options. |
 | `owner_meta_key` | string | `owner` | The `meta:` key the affected-owners report reads (default `owner`; wins over `config.yml`'s `owner_meta_key`). |
+
 Any other top-level key is allowed but ignored (it produces a warning).
 
 ### `lint:`

@@ -41,7 +41,7 @@ The report lists:
 - a ready-to-run `dbt build --select …`
 - risk flags
 
-In the report, `e` exports it as Markdown and `y` copies the suggested `dbt build --select` command, narrowed by the changed columns. `Y` copies the wide version. `j` and `k` scroll, and `Esc`, `Enter`, or `q` closes it.
+In the report, `e` exports it as Markdown to `<project>_pr_impact.md` in the current directory, and `y` copies the suggested `dbt build --select` command, narrowed by the changed columns. `Y` copies the wide version. `j` and `k` scroll, and `Esc`, `Enter`, or `q` closes it.
 
 To read a different `meta` key for owners, set `owner_meta_key` in your [user config](../configuration/user-config.md) or in the project's `.dbtl.yml`.
 

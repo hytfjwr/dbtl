@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Command, CommandFactory, Parser, Subcommand};
 
 use dbtl::app::App;
 use dbtl::{load_dag_from_source_with_warnings, load_dag_with_warnings, ColumnResolver};
@@ -609,6 +609,20 @@ impl From<ColorArg> for anstream::ColorChoice {
             ColorArg::Never => anstream::ColorChoice::Never,
         }
     }
+}
+
+/// The complete clap [`Command`] for `dbtl`: built (the `global = true`
+/// args propagated into every subcommand) then pruned per
+/// `GLOBAL_FLAG_COMMANDS`, so each subcommand's `--help` advertises only
+/// the global flags it actually honors — the same set `check_flag_usage`
+/// accepts at dispatch. Hidden args still parse; `main`, `completions`,
+/// `man`, and `cli-reference` all share this construction so help,
+/// completions, and the generated reference agree.
+pub fn command() -> Command {
+    let mut cmd = Cli::command();
+    cmd.build();
+    flags::hide_unconsumed_globals(&mut cmd);
+    cmd
 }
 
 /// The package scope the CLI asks for (`--include-packages` ⇒ `All`, else the

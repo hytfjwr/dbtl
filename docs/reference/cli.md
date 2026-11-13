@@ -21,6 +21,8 @@ Global flags parse on either side of a subcommand — but a subcommand only hono
 | `--include-packages` | — | — | `false` | Include nodes installed from dbt packages (`dbt deps` / `packages.yml`) in the graph: manifest mode's compiled `nodes` map mixes them in. They appear in the model list, lineage, docs pages, and `--diff` baselines as dependency context — but every aggregate metric (coverage / orphans / stats / docs summary / `dbtl check` / the PR-impact risk flags) still counts the root project only. Source mode never parses `dbt_packages`, so the flag is a no-op there (with a warning). `global` so it works before OR after a subcommand (`dbtl --include-packages check` ≡ `dbtl check --include-packages`) |
 | `--sql-dialect` | `<DIALECT>` | — | — | SQL dialect for parser-based column lineage: `auto` reads the manifest's adapter_type (source mode has none → generic); any other value pins the dialect for every model (`generic`, `postgres`, `snowflake`, `bigquery`, `mysql`, `sqlite`, `duckdb`, `spark`, …). `global` so `dbtl columns` and `dbtl docs` accept it too |
 
+`--sql-dialect` accepts these spellings (case-insensitive): `ansi`, `auto`, `big_query`, `bigquery`, `bq`, `clickhouse`, `databricks`, `duckdb`, `fabric`, `generic`, `hive`, `hive2`, `mariadb`, `mssql`, `mysql`, `oracle`, `pg`, `postgres`, `postgresql`, `redshift`, `snowflake`, `spark`, `sparksql`, `sqlite`, `sqlite3`, `sqlserver`, `teradata`, `tsql`. `auto` reads the manifest's `adapter_type`; a source-mode load has none and parses as `generic`.
+
 ## TUI flags
 
 Top-level flags that configure the interactive app. An explicit occurrence next to a subcommand is a usage error (exit 2).
@@ -176,7 +178,7 @@ Accepts global flags: `--manifest`, `--source`, `--project`, `--include-packages
 Print a shell completion script to stdout and exit — reads no data source and accepts no global flags, so it runs anywhere (the release packaging generates the shipped `completions/` files with it)
 
 ```text
-Usage: dbtl completions [OPTIONS] <SHELL>
+Usage: dbtl completions <SHELL>
 ```
 
 | Flag | Value | Env | Default | Description |

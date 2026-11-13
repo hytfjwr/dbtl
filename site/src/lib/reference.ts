@@ -36,6 +36,7 @@ const DESCRIPTIONS: Record<string, string> = {
   keybindings: "Every key in the dbtl terminal UI, grouped by mode.",
   "lint-rules": "Every lint rule: why it exists, an example, and its parameters.",
   config: "Every key of .dbtl.yml and of the user config.yml.",
+  themes: "Every colour role a dbtl theme file may set, and the built-in presets.",
   changelog: "What changed in each dbtl release, newest first.",
 };
 

@@ -7,13 +7,12 @@
 use std::io::{self, Write};
 
 use anyhow::Context;
-use clap::CommandFactory;
 
-use super::{Cli, CliError};
+use super::CliError;
 
 /// Write the completion script for `shell` to stdout.
 pub fn run_completions(shell: clap_complete::Shell) -> Result<(), CliError> {
-    let mut cmd = Cli::command();
+    let mut cmd = super::command();
     let mut out = io::stdout().lock();
     clap_complete::generate(shell, &mut cmd, "dbtl", &mut out);
     out.flush()
@@ -25,7 +24,7 @@ pub fn run_completions(shell: clap_complete::Shell) -> Result<(), CliError> {
 /// Its SUBCOMMANDS section is generated from the same `Commands` enum the
 /// dispatch reads, so the page can't drift from the real CLI.
 pub fn run_man() -> Result<(), CliError> {
-    let man = clap_mangen::Man::new(Cli::command());
+    let man = clap_mangen::Man::new(super::command());
     let mut out = io::stdout().lock();
     man.render(&mut out)
         .context("failed to render the man page")?;

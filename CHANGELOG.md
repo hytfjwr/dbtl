@@ -17,6 +17,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `var()`-gated `enabled` no longer lists models dbt parks disabled; a
   value dbt's boolean validation would reject keeps the node enabled
   with a warning naming the file or tree level.
+- Subcommand `--help` no longer advertises global flags the subcommand
+  does not accept — `dbtl ls --help`, for example, omits `--catalog` and
+  `--run-results`. Passing one explicitly still fails with the usage
+  error naming the unsupported flag.
+- Documentation drift corrected across the site and README: the lint
+  example tallies match the sample project (10 errors / 38 warnings /
+  17 rules / 3 skipped), the report-format count is eight, `o` opens the
+  model's file in `$VISUAL` (falling back to `$EDITOR`), the model list
+  drawer covers widths 50–79, scrolling modals describe their real close
+  keys, and lint rules are grouped by the registry's own categories.
+
+### Added
+
+- `SECURITY.md` with private vulnerability-reporting instructions.
+- A generated `docs/reference/themes.md` page lists every theme role a
+  custom theme file may set, sourced from the same table the parser
+  accepts, and the CLI reference now lists the accepted `--sql-dialect`
+  spellings. Undocumented features covered: `e` export file names, the
+  `Cmd-` key terminal requirement, bare-`dbtl` non-TTY behaviour, and
+  the `--watch` poll interval and watched file set.
+- `tests/doc_links.rs` now scans `site/src/content/docs/**` too — `dbtl`
+  invocations in fenced blocks and inline code are checked against the
+  flags each subcommand actually accepts.
+>>>>>>> 6dc8cc2 (docs: correct stale facts and fill in undocumented features)
 
 ## [0.6.3] - 2026-11-13
 

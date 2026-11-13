@@ -68,6 +68,33 @@ pub const TUI_ONLY_FLAGS: &[&str] = &[
 #[cfg(test)]
 const IGNORED_FLAG_EXEMPT: &[&str] = &["project_only"];
 
+/// Hide, inside an already-BUILT [`clap::Command`], each global flag a
+/// subcommand does not consume per [`GLOBAL_FLAG_COMMANDS`] — so `--help`
+/// advertises exactly the flag set [`check_flag_usage`] honors. `build`
+/// propagates the `global = true` args into every subcommand (hiding
+/// before it would either miss the copies or panic `mut_arg`); the args
+/// stay in the model afterwards, so a hidden flag still parses and is
+/// then rejected with the explicit "not supported" usage error.
+pub fn hide_unconsumed_globals(cmd: &mut clap::Command) {
+    for sub in cmd.get_subcommands_mut() {
+        let hidden: std::collections::BTreeSet<&str> = GLOBAL_FLAG_COMMANDS
+            .iter()
+            .filter(|(_, commands)| !commands.contains(&sub.get_name()))
+            .map(|(flag, _)| *flag)
+            .collect();
+        if hidden.is_empty() {
+            continue;
+        }
+        *sub = std::mem::take(sub).mut_args(|arg| {
+            if hidden.contains(arg.get_id().as_str()) {
+                arg.hide(true)
+            } else {
+                arg
+            }
+        });
+    }
+}
+
 /// Reject explicitly supplied flags the dispatched subcommand ignores:
 /// global flags outside its [`GLOBAL_FLAG_COMMANDS`] row, and the
 /// [`TUI_ONLY_FLAGS`] set. Exits are usage errors — the invocation could

@@ -21,7 +21,7 @@ To install `dbtl` and open your first project, start with [Installation](install
 
 ### No compile, no browser
 
-`dbtl` builds lineage from `dbt_project.yml`, model `.sql` files (`ref()` and `source()`) and `schema.yml`. It is a single static binary and runs entirely in the terminal, including over SSH. See the [quick start](quick-start.md) for the data sources it reads.
+`dbtl` builds lineage from `dbt_project.yml`, model `.sql` files (`ref()` and `source()`) and `schema.yml`. It is a single self-contained binary — the Linux musl builds are fully static — and runs entirely in the terminal, including over SSH. See the [quick start](quick-start.md) for the data sources it reads.
 
 ### Navigate the graph
 

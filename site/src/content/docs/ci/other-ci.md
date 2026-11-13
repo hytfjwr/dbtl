@@ -51,7 +51,7 @@ The report flags in that step:
 - `--step-summary` appends the Markdown report to `GITHUB_STEP_SUMMARY`.
 - `--path-prefix` rewrites paths in `github`, `sarif`, and `codeclimate` output, for a project in a repository subdirectory.
 
-All seven formats are listed under [Report formats](../cli/check-and-impact.md#report-formats). To compare against a git revision, the checkout needs history. See [Git diffs and baselines](../cli/check-and-impact.md#git-diffs-and-baselines).
+All eight formats are listed under [Report formats](../cli/check-and-impact.md#report-formats). To compare against a git revision, the checkout needs history. See [Git diffs and baselines](../cli/check-and-impact.md#git-diffs-and-baselines).
 
 ## GitLab
 

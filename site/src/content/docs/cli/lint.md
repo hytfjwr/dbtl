@@ -36,9 +36,11 @@ warning[select_star]: fct_daily_orders's final SELECT uses select * / t.*
 
 …
 
-Found 10 errors and 36 warnings in 21 files
-16 rules reported findings; 3 skipped (need --catalog)
+Found 10 errors and 38 warnings in 21 files
+17 rules reported findings; 3 skipped (need --catalog)
 ```
+
+The tally above is `dbtl lint --source tests/fixtures/sample_project` on the repository's sample fixture — yours will differ.
 
 `--format concise` prints the same findings as `file[:line[:column]]: severity[rule] message` one-liners for editors and grep.
 
@@ -63,14 +65,7 @@ One findings list feeds every surface, so the numbers cannot drift apart:
 
 ## The rule set
 
-The rules span:
-
-- graph structure (`model_fanout`, `root_models`, `layer_violation`, and more)
-- governance (`missing_primary_key_tests`, `naming_conventions`, `public_models_without_contract`, `references_deprecated_model`, and more)
-- documentation and metadata (`undocumented_models`, `undocumented_columns`, `required_meta_keys`, and more)
-- source and performance checks (`unused_sources`, `unused_models`, `incremental_without_unique_key`, and more)
-- SQL-content checks (`select_star`, `hard_coded_references`, `cartesian_join`, `trailing_semicolon`, `duplicate_output_columns`, `unused_cte`, `order_by_without_limit`, and more)
-- warehouse drift checks against `catalog.json` (`warehouse_type_drift`, `columns_missing_in_warehouse`, `undeclared_warehouse_columns`)
+Every rule belongs to one category: `modeling`, `testing`, `governance`, `documentation`, `structure`, `performance`, `sql`, or `warehouse` — the `warehouse` rules run against `catalog.json` and are skipped without one.
 
 The [lint rules reference](../reference/lint-rules.md) lists every rule with its category, default severity, inputs, rationale, fix guidance, and parameters.
 
