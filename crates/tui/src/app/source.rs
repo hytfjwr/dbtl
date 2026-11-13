@@ -173,12 +173,9 @@ impl App {
             }
         }
         self.resolve_owner_meta_key();
-        self.lint_findings = crate::run_rules(
-            crate::LintInput::new(&self.dag, &self.lint_config)
-                .with_catalog(self.catalog.as_deref())
-                .with_dialect(self.sql_dialect),
-        )
-        .findings;
+        let lint_outcome = self.lint_outcome();
+        warnings.extend(lint_outcome.warnings.iter().cloned());
+        self.lint_findings = lint_outcome.findings;
         self.filter = None;
         self.mode = self.idle_mode();
         // Any yank-menu context stashed against the OLD graph dies here too.

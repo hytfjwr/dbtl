@@ -14,7 +14,7 @@ description: The dbt selector grammar that dbtl uses in the TUI search, --select
 | `+name`, `name+`, `+name+` | Add all upstream nodes, all downstream nodes, or both. |
 | `N+name` | A number before `+` limits the expansion to that many hops, for example `2+fct_orders`. |
 | `tag:x` | Nodes with the tag. |
-| `path:x` | Nodes whose path, as dbt records it in the manifest, contains `x`. A model's path is relative to its model directory, for example `marts/fct_orders.sql`. It is a substring match, so `path:marts` also matches `stg_marts.sql`. |
+| `path:x` | Nodes whose project-root-relative path matches `x`, like dbt's `path` selector: `x` is compared to the node's `original_file_path` and every ancestor directory of it, and to the node's `patch_path` (the `.yml` that configures it — matched itself, not its ancestors). `x` may be a glob (`*`, `?`, `[a-z]` never cross `/`; a whole-segment `**` spans directories), so `path:models/marts` selects everything under `models/marts` and `path:models/**/stg*` reaches every `stg*` file at any depth. The old resource-relative form (`path:marts` for `models/marts/fct_orders.sql`) still matches but prints a deprecation warning — write it project-relative. |
 | `config.materialized:x` | Nodes with the materialization. |
 | `exposure:x` | The named exposure and every node upstream of it. |
 | `meta:key` | Nodes where the `meta` key exists. |
@@ -29,8 +29,8 @@ Examples:
 tag:nightly                      # every node tagged nightly
 +fct_orders                      # fct_orders and everything upstream of it
 2+fct_orders                     # fct_orders and two hops upstream
-path:marts+                      # nodes whose path contains marts, and their downstream
-config.materialized:table,path:marts   # tables whose path contains marts
+path:models/marts+               # nodes under models/marts, and their downstream
+config.materialized:table,path:models/marts   # tables under models/marts
 meta:owner=alice                 # nodes whose owner meta is alice
 state:modified+                  # changed nodes and their downstream
 fct_*                            # a glob
@@ -59,7 +59,7 @@ The `--select` flag on subcommands and the `--select` flag on the TUI take diffe
 `--exclude <SELECTOR>` subtracts the nodes a spec matches. It applies after every inclusion term. Each occurrence takes exactly one spec, so a following positional argument is never swallowed.
 
 ```sh
-dbtl ls '2+fct_orders' --exclude path:staging
+dbtl ls '2+fct_orders' --exclude path:models/staging
 dbtl docs --out ./dbt-docs --exclude 'tag:legacy'
 ```
 

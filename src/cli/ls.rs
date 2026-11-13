@@ -51,8 +51,12 @@ pub fn run_ls(
     if any_state {
         eprintln!("{STATE_NOTE}");
     }
-    let mut selected = selector_set(dag, diff.as_ref(), selector);
-    for uid in selector_set(dag, diff.as_ref(), exclude) {
+    let (mut selected, notes) = selector_set_report(dag, diff.as_ref(), selector);
+    let (excluded, exclude_notes) = selector_set_report(dag, diff.as_ref(), exclude);
+    // One `warning:` line per distinct deprecated spec across both lists.
+    let notes: BTreeSet<String> = notes.into_iter().chain(exclude_notes).collect();
+    warn_each("", &notes.into_iter().collect::<Vec<_>>());
+    for uid in excluded {
         selected.remove(&uid);
     }
     let mut out = String::new();

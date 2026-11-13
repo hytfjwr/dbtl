@@ -78,7 +78,9 @@ pub(super) fn meta_strings(
 /// Normalize `config.unique_key` to `Vec<String>`: dbt accepts a bare string
 /// (`unique_key: id`) or a string list (`unique_key: [a, b]`) and keeps that
 /// declared shape on the wire. Anything else (null, numbers, a map) is
-/// unconfigured → empty.
+/// unconfigured → empty; blank entries (`""`, `"  "`) are dbt's own
+/// "unset" spellings and drop out the same way, so an incremental model
+/// with `unique_key: ''` still counts as unconfigured.
 pub(super) fn unique_key_from(value: &Option<serde_json::Value>) -> Vec<String> {
     match value {
         Some(serde_json::Value::String(s)) => vec![s.clone()],
@@ -88,6 +90,16 @@ pub(super) fn unique_key_from(value: &Option<serde_json::Value>) -> Vec<String> 
             .collect(),
         _ => Vec::new(),
     }
+    .into_iter()
+    .filter(|s| !s.trim().is_empty())
+    .collect()
+}
+
+/// Normalize `\` to `/` — manifests produced on Windows carry
+/// backslash-separated paths, and every matcher treats `/` as the
+/// separator.
+pub(super) fn norm_seps(p: &str) -> String {
+    p.replace('\\', "/")
 }
 
 /// Strip the `<package>://` scheme off a manifest `patch_path`
@@ -95,12 +107,9 @@ pub(super) fn unique_key_from(value: &Option<serde_json::Value>) -> Vec<String> 
 /// comparable with `original_file_path` — the same project-relative
 /// convention source mode emits when it records the declaring `.yml`.
 pub(super) fn project_rel_patch_path(patch_path: &Option<String>) -> Option<String> {
-    patch_path.as_deref().map(|p| {
-        p.split_once("://")
-            .map(|(_, rest)| rest)
-            .unwrap_or(p)
-            .to_string()
-    })
+    patch_path
+        .as_deref()
+        .map(|p| norm_seps(p.split_once("://").map(|(_, rest)| rest).unwrap_or(p)))
 }
 
 /// Keep a freshness threshold only when it carries a real `count` — dbt
@@ -139,7 +148,7 @@ pub(super) fn detail_from_node(node: &RawNode) -> NodeDetail {
         tags: node.tags.clone(),
         description: clean_desc(&node.description),
         columns: columns_from(&node.columns),
-        original_file_path: node.original_file_path.clone(),
+        original_file_path: node.original_file_path.as_deref().map(norm_seps),
         patch_path: project_rel_patch_path(&node.patch_path),
         package_name: node.package_name.clone(),
         access: node.access.clone(),

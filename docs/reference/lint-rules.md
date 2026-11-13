@@ -34,7 +34,7 @@
 | [`too_many_joins`](#too_many_joins) | modeling | warn | off | on | on | graph | a model directly depends on too many data resources |
 | [`chained_views`](#chained_views) | performance | warn | off | on | on | graph | a chain of consecutive view/ephemeral models is too long |
 | [`exposure_parents_materializations`](#exposure_parents_materializations) | performance | warn | off | on | on | graph | an exposure directly depends on a source or a view/ephemeral model |
-| [`exposures_dependent_on_private_models`](#exposures_dependent_on_private_models) | governance | warn | off | on | on | graph | an exposure depends on a private/protected model |
+| [`exposures_dependent_on_private_models`](#exposures_dependent_on_private_models) | governance | warn | off | on | on | graph | an exposure depends on a model outside the allowed access levels |
 | [`undocumented_sources`](#undocumented_sources) | documentation | warn | off | on | on | graph | a source has no description |
 | [`undocumented_columns`](#undocumented_columns) | documentation | warn | off | on | on | graph | a model has declared columns without descriptions |
 | [`model_directories`](#model_directories) | structure | warn | off | on | on | graph | a model's name prefix and directory point at different layers |
@@ -109,7 +109,7 @@ Category: `modeling` · Default severity: `warn` · Inputs: graph
 
 A model directly feeds too many leaf models.
 
-**Why:** A hub model that feeds many leaf models concentrates risk: one bad change fans out to every downstream report, and the hub's name gives no hint of which consumers break. Split the hub along ownership lines so each branch has a clear contract.
+**Why:** A hub model that feeds many leaf models concentrates risk: one bad change fans out to every downstream report, and the hub's name gives no hint of which consumers break. A leaf is a model with no data-resource children — a model read only by an exposure or the semantic layer still counts as one. Split the hub along ownership lines so each branch has a clear contract.
 
 **Example:** int_customers feeds fct_orders, fct_returns, rpt_cohorts, rpt_ltv and dim_customers. Fix: introduce narrower intermediates per domain instead of one grab-bag hub.
 
@@ -141,7 +141,7 @@ Category: `modeling` · Default severity: `warn` · Inputs: graph
 
 A redundant hop: A->B->C while A->C already exists.
 
-**Why:** Re-reading an upstream model when a direct edge already exists means the intermediate node adds nothing — it just duplicates a dependency. The extra hop slows builds and muddies the graph's intent.
+**Why:** Re-reading an upstream model when a direct edge already exists means the intermediate node adds nothing — it just duplicates a dependency. The extra hop slows builds and muddies the graph's intent. Only data-carrying children count as uses: an exposure, metric, or `semantic_models:` entry also reading B is a consumer endpoint that can't carry data onward — the message names them so the verdict doesn't look like "nothing reads B".
 
 **Example:** fct_orders refs int_pricing, and int_pricing's only other parent stg_orders is also refed directly by fct_orders. Fix: drop the redundant stg_orders ref or move the shared logic into int_pricing.
 
@@ -224,7 +224,7 @@ Category: `structure` · Default severity: `warn` · Inputs: graph
 
 A model's name misses its layer's prefix.
 
-**Why:** Layer prefixes let a reader know a model's role before opening it — and let rules like marts_depend_on_source classify the DAG at all. A marts model named stg_x is checked against the wrong policy or none at all.
+**Why:** Layer prefixes let a reader know a model's role before opening it — and let rules like marts_depend_on_source classify the DAG at all. A marts model named stg_x is checked against the wrong policy or none at all. The layer is read prefix-first, then by directory — the opposite of layer_violation's directory-only classification.
 
 **Example:** models/marts/orders.sql is named `orders` but marts expects a fct_/dim_/rpt_ prefix. Fix: rename to fct_orders (or widen `lint.naming_prefixes.marts` in .dbtl.yml).
 
@@ -238,7 +238,7 @@ Category: `modeling` · Default severity: `warn` · Inputs: graph
 
 A backward edge between logical layers.
 
-**Why:** Layers exist so data flows one way: staging cleans, intermediate composes, marts serve. An edge that jumps backward makes the layer boundaries meaningless and turns refactors into guesswork.
+**Why:** Layers exist so data flows one way: staging cleans, intermediate composes, marts serve. An edge that jumps backward makes the layer boundaries meaningless and turns refactors into guesswork. Models classify by DIRECTORY alone here — the same read the TUI's LayerViolation lens, the stats worklist, and PR impact risk share — while the other layer rules (naming_conventions, model_directories, marts_depend_on_source, unused_models) classify prefix-first, then by directory.
 
 **Example:** stg_orders refs fct_payments (staging reading a mart). Fix: move the shared logic upstream — staging should never need a marts model.
 
@@ -342,15 +342,19 @@ An exposure directly depends on a source or a view/ephemeral model.
 
 Category: `governance` · Default severity: `warn` · Inputs: graph
 
-An exposure depends on a private/protected model.
+An exposure depends on a model outside the allowed access levels.
 
-**Why:** Private and protected access levels mark a model as internal — ref-able only inside its group or project. Declaring an external consumer on an internal model advertises a dependency that violates the access contract's intent.
+**Why:** Private and protected access levels mark a model as internal — ref-able only inside its group or project — and dbt defaults a model with no `access:` declaration to `protected`. Declaring an external consumer on an internal model advertises a dependency that violates the access contract's intent. Projects that never declare `access` can either widen `allowed_access` to `[public, protected]` (treating dbt's default as intended) or disable the rule.
 
 **Example:** the finance dashboard depends on dim_salaries (access: private). Fix: publish a public mart for the dashboard, or narrow the exposure's depends_on.
 
 **Fix:** publish a public mart for the exposure, or narrow the exposure's depends_on
 
-**Parameters:** none.
+**Parameters:**
+
+| Name | Type | Default | Description |
+| ---- | ---- | ------- | ----------- |
+| `allowed_access` | list of strings (one of `public` `protected` `private`) | `[public]` | access levels an exposure's model parents may declare — dbt defaults undeclared models to `protected`, so projects without explicit `access:` should add `protected` here or disable the rule |
 
 ## `undocumented_sources`
 
@@ -390,7 +394,7 @@ Category: `structure` · Default severity: `warn` · Inputs: graph
 
 A model's name prefix and directory point at different layers.
 
-**Why:** Layer conventions only work when the file location and the name tell the same story. A marts-prefixed model inside staging/ (or the reverse) is filed where nobody looks for it — and folder-scoped config applies to the wrong layer.
+**Why:** Layer conventions only work when the file location and the name tell the same story. A marts-prefixed model inside staging/ (or the reverse) is filed where nobody looks for it — and folder-scoped config applies to the wrong layer. The check is deliberately conservative: when either side is unclassifiable (no recognized prefix or a directory outside the layer set), no violation is reported. Models classify prefix-first, then by directory — the opposite order from layer_violation, which reads the directory alone (the same classification the TUI's LayerViolation lens and PR impact risk share).
 
 **Example:** models/staging/fct_orders.sql. Fix: move the file to models/marts/, or rename it stg_* if it truly belongs to staging.
 

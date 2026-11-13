@@ -33,9 +33,42 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `language` (only when it is not `sql`), `incremental_strategy`,
   `deprecation_date`, and `constraints`. The `dbtl docs` node pages carry
   the same four fields as conditional heading bullets.
+- `exposures_dependent_on_private_models` accepts an `allowed_access`
+  list (`public`/`protected`/`private`, default `[public]`): only model
+  parents whose declared `access` sits outside the list flag. Projects
+  that never write `access:` — where dbt defaults every model to
+  `protected` — can widen it to `[public, protected]`, and an explicitly
+  empty list disables the judgment entirely.
 
 ### Changed
 
+- `path:` selectors now follow dbt's `PathSelectorMethod`: the value is a
+  project-root-relative path or glob matched against the node's
+  `original_file_path` or any ancestor directory of it, or against the
+  node's `patch_path` itself — so `path:models/marts` selects everything
+  under that directory (sources and exposures included, whose declaring
+  `.yml` IS their `original_file_path`), `path:models/**/schema.yml`
+  reaches the nodes a `.yml` patches, and `path:models/**/stg*` reaches
+  `stg*` files at any depth (`*`/`?`/classes never cross `/`). The old
+  substring read is gone (`path:marts` no longer matches
+  `stg_marts.sql`); the resource-relative form still matches for
+  compatibility but prints a one-time deprecation warning naming the
+  project-relative rewrite — on `ls`/`lint`/`docs`/`check`, `.dbtl.yml`
+  `exclude:` entries, and in the TUI's notice feed.
+- `exposures_dependent_on_private_models` findings now name each parent's
+  declared `access` value and the configured allow-list, since the rule
+  judges "outside `allowed_access`" rather than "private" — including
+  `protected` parents, which the dbt access default makes common.
+- `rejoining_upstream` findings name B's non-data consumers in the
+  message (`… (also read by exposure dash; endpoint consumers do not
+  count as uses)`) when an exposure, metric, saved query, or
+  `semantic_models:` entry also reads the bypassed hop — so "redundant
+  hop" can't be read as "nothing consumes it". The judgment itself is
+  unchanged: endpoints still don't count as data uses.
+- `model_directories`, `naming_conventions`, and `unused_models` document
+  that they classify a model prefix-first, then by directory, while
+  `layer_violation` classifies edges directory-only — the long-standing
+  semantics, now spelled out in `--explain`/docs instead of implied.
 - `cartesian_join` no longer flags an explicit `CROSS JOIN` — the
   intentional spelling of a Cartesian product. Only conditionless joins
   report now: a bare `JOIN`, a comma-separated `FROM a, b` with no
@@ -57,6 +90,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sources) survive, and a value that cannot be proven `false` keeps the
   resource enabled with one warning — matching dbt's `disabled` parking
   only on a proven `false`.
+- `model_fanout` no longer stops counting leaf children the moment one of
+  them feeds an endpoint resource: a leaf is now a model with no
+  data-resource children of its own, so a reporting model read only by an
+  exposure, metric, saved query, or `semantic_models:` entry still counts
+  toward the hub's fan-out.
+- Empty and whitespace-only `unique_key` values no longer count as
+  configured: a scalar `unique_key: ""`, a list of blanks, and the valid
+  entries in a mixed list now resolve the same way dbt treats them — the
+  first two read as unconfigured (so `incremental_without_unique_key`
+  still flags them), the third keeps only the real keys.
 - A model whose SQL nests deeper than a small stack can walk — tens of
   thousands of `AND`/`||` terms or `UNION ALL` arms — no longer aborts
   `dbtl lint` (and CLL) with a stack overflow: a lexical depth bound
@@ -139,6 +182,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Source mode also accepts the `config({...})` positional-dict spelling of
   `config()` kwargs (same ordered last-wins/merge semantics) and the
   deprecated `data-paths` alias for `seed-paths` (declaring both warns).
+- `dbtl lint --source` on large projects is much faster: each `.yml` is
+  read and scanned for `- name:` entries once instead of once per
+  finding, and excerpts slice only the annotated lines. A finding's
+  line lookup is also section-aware now, so a model and a source table
+  sharing a name no longer resolve to the wrong `- name:` entry.
 - `duplicate_output_columns` no longer flags colliding names an un-aliased
   expression merely derives (`sum(a), sum(b)` → `sum`/`sum`, `count(*)`,
   `CASE`, `a::int` → `a`): only Postgres and Redshift actually assign such

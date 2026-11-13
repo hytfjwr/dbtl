@@ -15,7 +15,7 @@ stg_customers
 ```
 
 ```sh
-dbtl ls 'config.materialized:table,path:marts' --output selector
+dbtl ls 'config.materialized:table,path:models/marts' --output selector
 ```
 
 ```text
@@ -27,7 +27,7 @@ The `selector` output is ready to paste into `dbt build --select`.
 ```sh
 dbtl ls 'state:modified+' --diff git:main          # a branch's blast radius
 dbtl ls 'fct_*' --output json                      # [{unique_id, name, ...}]
-dbtl ls '2+fct_orders' --exclude path:staging      # subtract after the union
+dbtl ls '2+fct_orders' --exclude path:models/staging      # subtract after the union
 ```
 
 ## Selectors

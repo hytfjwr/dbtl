@@ -313,41 +313,61 @@ fn position_element<'a>(f: &'a dbtl_core::Finding, ctx: &'a RenderCtx<'a>) -> El
 
 /// The excerpt the finding's position underlines — `None` unless the
 /// location carries a line+column AND `ctx.sources` has the file's text
-/// AND the span pins inside it.
+/// AND the span pins inside it. The snippet carries only the lines the
+/// annotations touch — the renderer folds unannotated lines anyway, so
+/// a large `.yml` isn't re-indexed for every finding that lands in it.
 fn snippet<'a>(
     f: &'a dbtl_core::Finding,
     ctx: &'a RenderCtx<'a>,
 ) -> Option<Snippet<'a, annotate_snippets::Annotation<'a>>> {
     let loc = f.location.as_ref()?;
     let _ = (loc.line?, loc.column?);
-    let text = ctx.sources?.get(&loc.file)?.as_str();
-    let mut primary = AnnotationKind::Primary.span(primary_span(text, loc)?);
+    let src = ctx.sources?.get(&loc.file)?;
+    let primary = primary_span(src, loc)?;
+    let mut first = src.line_of_byte(primary.start);
+    let mut last = src.line_of_byte(primary.end);
+    let mut labels = Vec::new();
+    for l in &f.labels {
+        if let Some(span) = label_span(src, l) {
+            first = first.min(src.line_of_byte(span.start));
+            last = last.max(src.line_of_byte(span.end));
+            labels.push((span, l));
+        }
+    }
+    let start = src.line_span(first)?.start;
+    let end = src.line_span(last)?.end;
+    let text = &src.text[start..end];
+    let mut primary = AnnotationKind::Primary.span(primary.start - start..primary.end - start);
     if let Some(label) = f.label.clone() {
         primary = primary.label(label);
     }
     let mut s = Snippet::source(text)
+        .line_start(first as usize)
         .path(loc.file.clone())
         .annotation(primary);
-    for l in &f.labels {
-        if let Some(span) = label_span(text, l) {
-            s = s.annotation(AnnotationKind::Context.span(span).label(l.message.clone()));
-        }
+    for (span, l) in labels {
+        s = s.annotation(
+            AnnotationKind::Context
+                .span(span.start - start..span.end - start)
+                .label(l.message.clone()),
+        );
     }
     Some(s)
 }
 
-/// The byte range the finding's position covers inside `text`: the full
+/// The byte range the finding's position covers inside `src`: the full
 /// `(line, column)`–`(end_line, end_column)` span when both ends pin,
 /// else the single char under the start — `None` only when the start
 /// itself can't be pinned (a position that doesn't exist underlines
 /// nothing).
-fn primary_span(text: &str, loc: &dbtl_core::Location) -> Option<Range<usize>> {
+fn primary_span(src: &SourceText, loc: &dbtl_core::Location) -> Option<Range<usize>> {
     let (line, column) = (loc.line?, loc.column?);
-    let start = position_byte(text, line, column)?;
-    let point = position_byte(text, line, column + 1)
-        .unwrap_or_else(|| start + text[start..].chars().next().map_or(0, |c| c.len_utf8()));
+    let start = src.position_byte(line, column)?;
+    let point = src
+        .position_byte(line, column + 1)
+        .unwrap_or_else(|| start + src.text[start..].chars().next().map_or(0, |c| c.len_utf8()));
     let end = match (loc.end_line, loc.end_column) {
-        (Some(el), Some(ec)) => position_byte(text, el, ec).filter(|e| *e > start),
+        (Some(el), Some(ec)) => src.position_byte(el, ec).filter(|e| *e > start),
         _ => None,
     };
     Some(start..end.unwrap_or(point))
@@ -357,59 +377,30 @@ fn primary_span(text: &str, loc: &dbtl_core::Location) -> Option<Range<usize>> {
 /// `(end_line, end_column)` span (defaulting the end to one char past the
 /// start when only the start is given), else the whole line when the
 /// label is line-level.
-fn label_span(text: &str, l: &dbtl_core::Label) -> Option<Range<usize>> {
+fn label_span(src: &SourceText, l: &dbtl_core::Label) -> Option<Range<usize>> {
     match l.column {
         Some(c) => {
             let end = match (l.end_line, l.end_column) {
                 (Some(el), Some(ec)) => (el, ec),
                 _ => (l.line, c + 1),
             };
-            span_between(text, (l.line, c), end)
+            span_between(src, (l.line, c), end)
         }
-        None => line_byte_range(text, l.line),
+        None => src.line_span(l.line),
     }
 }
 
 /// The byte range `(line, column)`–`(end_line, end_column)` covers inside
-/// `text` — all positions 1-based `char`s, the end exclusive — `None`
+/// `src` — all positions 1-based `char`s, the end exclusive — `None`
 /// when either end can't be pinned exactly or the range would be empty.
-fn span_between(text: &str, (sl, sc): (u32, u32), (el, ec): (u32, u32)) -> Option<Range<usize>> {
-    let start = position_byte(text, sl, sc)?;
-    let end = position_byte(text, el, ec)?;
+fn span_between(
+    src: &SourceText,
+    (sl, sc): (u32, u32),
+    (el, ec): (u32, u32),
+) -> Option<Range<usize>> {
+    let start = src.position_byte(sl, sc)?;
+    let end = src.position_byte(el, ec)?;
     (end > start).then_some(start..end)
-}
-
-/// The byte range of whole `line` — for a line-level label (no column).
-fn line_byte_range(text: &str, line: u32) -> Option<Range<usize>> {
-    let start = position_byte(text, line, 1)?;
-    let end = position_byte(text, line + 1, 1).unwrap_or(text.len());
-    (end > start).then_some(start..end)
-}
-
-/// The byte offset of 1-based `(line, column)` inside `text` — columns
-/// count `char`s like every other position in the report — `None` when
-/// the line doesn't exist or the column sits past its end. Both `\n` and
-/// `\r\n` line endings are handled (the `\r` stays part of its line).
-fn position_byte(text: &str, line: u32, column: u32) -> Option<usize> {
-    if line == 0 || column == 0 {
-        return None;
-    }
-    let mut offset = 0usize;
-    for (current, l) in (1u32..).zip(text.split_inclusive('\n')) {
-        if current == line {
-            if column == 1 {
-                return Some(offset);
-            }
-            let body = l.strip_suffix('\n').unwrap_or(l);
-            let mut chars = body.chars();
-            for _ in 1..column {
-                offset += chars.next()?.len_utf8();
-            }
-            return Some(offset);
-        }
-        offset += l.len();
-    }
-    None
 }
 
 /// The `= note:` body — the related node names the message doesn't
@@ -504,18 +495,18 @@ mod tests {
     /// across `\n` and `\r\n` endings, and refuses out-of-range positions.
     #[test]
     fn position_byte_pins_char_columns() {
-        let text = "a\r\nb\u{00e9}c\nd\n";
-        assert_eq!(position_byte(text, 1, 1), Some(0));
-        assert_eq!(position_byte(text, 2, 1), Some(3), "past the \\r\\n");
+        let text = SourceText::new("a\r\nb\u{00e9}c\nd\n".to_string());
+        assert_eq!(text.position_byte(1, 1), Some(0));
+        assert_eq!(text.position_byte(2, 1), Some(3), "past the \\r\\n");
         assert_eq!(
-            position_byte(text, 2, 3),
+            text.position_byte(2, 3),
             Some(6),
             "é is one char, two bytes"
         );
-        assert_eq!(position_byte(text, 3, 1), Some(8));
-        assert_eq!(position_byte(text, 4, 1), None, "no fourth line's start");
-        assert_eq!(position_byte(text, 1, 5), None, "past the line end");
-        assert_eq!(position_byte(text, 0, 1), None);
+        assert_eq!(text.position_byte(3, 1), Some(8));
+        assert_eq!(text.position_byte(4, 1), None, "no fourth line's start");
+        assert_eq!(text.position_byte(1, 5), None, "past the line end");
+        assert_eq!(text.position_byte(0, 1), None);
     }
 
     /// A synthetic yml+sql finding set renders the byte-exact excerpt
@@ -584,8 +575,14 @@ mod tests {
         r.gates[1].findings.push(f);
 
         let mut sources = std::collections::BTreeMap::new();
-        sources.insert("models/marts/schema.yml".to_string(), yml.to_string());
-        sources.insert("models/staging/stg_orders.sql".to_string(), sql.to_string());
+        sources.insert(
+            "models/marts/schema.yml".to_string(),
+            SourceText::new(yml.to_string()),
+        );
+        sources.insert(
+            "models/staging/stg_orders.sql".to_string(),
+            SourceText::new(sql.to_string()),
+        );
         let ctx = RenderCtx {
             command: "lint",
             path_prefix: None,

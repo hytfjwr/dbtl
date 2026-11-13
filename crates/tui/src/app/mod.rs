@@ -554,10 +554,18 @@ impl App {
         // startup/reload, so `requires: Sql` rules come back `skipped`. No
         // `.with_dialect` needed at construction — a `--sql-dialect` pin
         // lands later via `set_sql_dialect`, which recomputes these.
-        let lint_findings = crate::run_rules(
+        let lint_outcome = crate::run_rules(
             crate::LintInput::new(&dag, &lint_config).with_catalog(catalog.as_deref()),
-        )
-        .findings;
+        );
+        // Selector-form warnings from the evaluation (a `.dbtl.yml`
+        // `exclude:` still on the legacy `path:` spelling) join the startup
+        // notice with the config-load warnings — one toast, never dropped.
+        let lint_notice = match (lint_notice, lint_outcome.warnings.is_empty()) {
+            (n, true) => n,
+            (None, false) => Some(format!("warning: {}", lint_outcome.warnings.join("; "))),
+            (Some(t), false) => Some(format!("{t}; {}", lint_outcome.warnings.join("; "))),
+        };
+        let lint_findings = lint_outcome.findings;
         // The first tab roots on the list head — the same model `selected` 0
         // pointed at before tabs existed.
         let first_root = model_list.models.first().map(|n| n.unique_id.clone());
