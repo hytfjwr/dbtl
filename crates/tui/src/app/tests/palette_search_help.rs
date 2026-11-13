@@ -610,6 +610,7 @@ fn help_records_the_opening_mode_for_section_order() {
         col_counts: std::collections::BTreeMap::new(),
         stale: false,
         name_match: false,
+        lint: vec![],
         scroll: 0,
     });
     apply_action(&mut a, Action::HelpToggle);
@@ -698,6 +699,7 @@ fn help_close_restores_the_underlying_modal() {
         col_counts: std::collections::BTreeMap::new(),
         stale: false,
         name_match: false,
+        lint: vec![],
         scroll: 7,
     });
     a.mode = detail.clone();
@@ -905,4 +907,47 @@ fn search_history_recall_reruns_selector_and_fulltext_queries() {
     apply_action(&mut a, Action::SearchMove(Direction::Up));
     let (q, _) = search_state(&a);
     assert_eq!(q, "!tag:nightly");
+}
+
+#[test]
+fn search_fulltext_reaches_the_compiled_sql() {
+    // `?demo.raw.events` exists ONLY in stg_one's compiled expansion — the
+    // raw SQL says `{{ source('raw', 'events') }}`, so a raw-only `?` can
+    // never find it. The compiled fixture's manifest carries no
+    // `compiled_code` for stg_one: the `target/compiled/` sibling fallback
+    // serves the blob, so the search must consult `Dag::compiled_code`,
+    // not a manifest-only field.
+    const COMPILED: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/compiled_project/target/manifest.json"
+    );
+    let dag = load_dag(COMPILED).expect("compiled fixture loads");
+    let mut a = App::new(dag, PathBuf::from(COMPILED));
+    apply_action(&mut a, Action::SearchOpen);
+    for c in "?demo.raw.events".chars() {
+        apply_action(&mut a, Action::SearchType(c));
+    }
+    let names: Vec<_> = a
+        .active_list()
+        .models
+        .iter()
+        .map(|n| n.unique_id.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["model.compiled_demo.stg_one"],
+        "the compiled-only needle matches via Dag::compiled_code"
+    );
+    // Case-insensitive like the rest of full-text (the blob is stored
+    // lowered — `DEMO.RAW` must hit the same node).
+    apply_action(&mut a, Action::SearchCancel);
+    apply_action(&mut a, Action::SearchOpen);
+    for c in "?DEMO.RAW.EVENTS".chars() {
+        apply_action(&mut a, Action::SearchType(c));
+    }
+    assert_eq!(
+        a.active_list().models.len(),
+        1,
+        "the match is case-insensitive"
+    );
 }

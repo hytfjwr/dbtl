@@ -19,7 +19,7 @@ On a project with hundreds of models, scrolling the list is the slow path. `dbtl
    dbtl --select 'fct_*'
    ```
 
-2. **Search instead of scrolling.** With the list focused, `/` filters by name. A `?` prefix searches descriptions, columns, and raw SQL; a `!` prefix filters by dbt selector:
+2. **Search instead of scrolling.** With the list focused, `/` filters by name. A `?` prefix searches descriptions, columns, and raw or compiled SQL; a `!` prefix filters by dbt selector:
 
    ```text
    !tag:nightly

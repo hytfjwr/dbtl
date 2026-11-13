@@ -20,7 +20,7 @@ Press `/` on the [home tab](interface.md#home-tab) to search models from there.
 
 ### Full-text search
 
-Start the query with `?` to search descriptions, column names, and raw SQL instead of model names.
+Start the query with `?` to search descriptions, column names, and both raw and compiled SQL instead of model names — so a relation name that only exists after `ref()`/`source()` expansion (`db.schema.table`) is findable too.
 
 ```text
 ?customer_id
