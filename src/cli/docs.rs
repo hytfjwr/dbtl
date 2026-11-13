@@ -73,7 +73,7 @@ pub fn run_docs(src: &DataSourceArgs, args: &DocsArgs) -> Result<(), CliError> {
     // the same change set the impact report counts.
     let diff = match src.diff {
         Some(d) => {
-            let (base, _) = load_baseline(d, scope, &src.project_dir())?;
+            let (base, _) = load_baseline(d, scope, &src.project_dir(), src.cli_vars()?.as_ref())?;
             Some(selector_diff(src, &resolved, &base)?)
         }
         None => None,

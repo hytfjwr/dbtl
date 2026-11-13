@@ -294,7 +294,12 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
         )?
     };
     let base = match src.diff {
-        Some(d) => Some(load_baseline(d, src.scope, &src.project_dir())?),
+        Some(d) => Some(load_baseline(
+            d,
+            src.scope,
+            &src.project_dir(),
+            src.cli_vars()?.as_ref(),
+        )?),
         None => None,
     };
     let base_resolver = base

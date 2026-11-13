@@ -52,6 +52,7 @@ These flags work on either side of the subcommand. `dbtl --manifest m.json check
 | ---- | ------- |
 | `--manifest`, `--source`, `--project` | Choose the data source (above). |
 | `--diff <BASELINE>` | Compare against a baseline: a `manifest.json`, a dbt project directory, or `git:<rev>`. |
+| `--vars '<YAML\|JSON>'` | Variables for source-mode parsing, spelled like dbt's `--vars` — a YAML or JSON dict such as `{my_var: my_value}`. The map outranks `vars.yml` and `dbt_project.yml`'s `vars:` everywhere `enabled` renders: the project's `+enabled` keys, in-file `config()`, and schema files. It applies to every source-mode load in the run — the graph, a source-parsed `--diff` baseline, and TUI reloads. Manifest mode warns and ignores it (the manifest already carries dbt's rendered values). |
 | `--run-results <PATH>` | Use this `run_results.json` instead of the one found next to the data source. |
 | `--catalog <PATH>` | Use this `catalog.json` instead of the one found next to the data source. |
 | `--include-packages` | Include nodes installed from dbt packages in the graph. |

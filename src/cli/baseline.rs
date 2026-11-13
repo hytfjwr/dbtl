@@ -13,23 +13,30 @@ use super::*;
 ///
 /// The same package `scope` as the current graph is applied, so both sides
 /// of the diff agree on the node set (a baseline manifest carrying
-/// installed packages is pruned the same way). Every failure is an input
-/// error — a named baseline that could not be read — except an obviously
-/// invalid `<rev>` (a `-`-leading value would reach git as a flag), which
-/// is a usage error.
+/// installed packages is pruned the same way). `vars` is the same `--vars`
+/// map the current source resolved with — a source-parsed baseline
+/// renders `enabled` against it identically; a manifest baseline ignores
+/// it with the one shared warning. Every failure is an input error — a
+/// named baseline that could not be read — except an obviously invalid
+/// `<rev>` (a `-`-leading value would reach git as a flag), which is a
+/// usage error.
 pub fn load_baseline(
     path: &str,
     scope: dbtl::PackageScope,
     project_dir: &std::path::Path,
+    vars: Option<&dbtl::CliVars>,
 ) -> Result<(dbtl::Dag, String), CliError> {
     if let Some(rev) = path.strip_prefix("git:") {
-        return git_baseline::load(project_dir, rev, scope);
+        return git_baseline::load(project_dir, rev, scope, vars);
     }
     let p = PathBuf::from(path);
     if p.is_file() {
-        let (dag, warnings) = load_dag_with_warnings(&p)
+        let (dag, mut warnings) = load_dag_with_warnings(&p)
             .with_context(|| format!("--diff: failed to load {path}"))
             .input()?;
+        if vars.is_some() {
+            warnings.push(vars_ignored_warning());
+        }
         warn_each(" (--diff baseline)", &warnings);
         return Ok((apply_package_scope(dag, scope, false).0, path.to_string()));
     }
@@ -40,9 +47,12 @@ pub fn load_baseline(
             .map(|target| target.join("manifest.json"))
             .filter(|m| m.is_file());
         if let Some(manifest) = manifest {
-            let (dag, warnings) = load_dag_with_warnings(&manifest)
+            let (dag, mut warnings) = load_dag_with_warnings(&manifest)
                 .with_context(|| format!("--diff: failed to load {}", manifest.display()))
                 .input()?;
+            if vars.is_some() {
+                warnings.push(vars_ignored_warning());
+            }
             warn_each(" (--diff baseline)", &warnings);
             return Ok((
                 apply_package_scope(dag, scope, false).0,
@@ -50,7 +60,7 @@ pub fn load_baseline(
             ));
         }
         if p.join("dbt_project.yml").is_file() {
-            let (dag, warnings) = load_dag_from_source_with_warnings(&p)
+            let (dag, warnings) = load_dag_from_source_with_warnings(&p, vars)
                 .with_context(|| format!("--diff: failed to parse project {path}"))
                 .input()?;
             warn_each(" (--diff baseline)", &warnings);
@@ -126,7 +136,7 @@ mod tests {
         // The working tree gains a second model the baseline lacks.
         write(&repo, "models/new.sql", "select 2 as id\n");
 
-        let (base, label) = load_baseline("git:HEAD", dbtl::PackageScope::Root, &repo)
+        let (base, label) = load_baseline("git:HEAD", dbtl::PackageScope::Root, &repo, None)
             .expect("the git baseline loads");
         assert_eq!(label, "git:HEAD");
         assert!(
@@ -139,7 +149,7 @@ mod tests {
         );
 
         // A `-`-leading rev is a usage error before git sees it.
-        let err = load_baseline("git:-p", dbtl::PackageScope::Root, &repo)
+        let err = load_baseline("git:-p", dbtl::PackageScope::Root, &repo, None)
             .expect_err("a flag-shaped rev is rejected");
         assert_eq!(err.kind(), Some(super::exit::ExitKind::Usage));
     }

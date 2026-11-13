@@ -26,3 +26,36 @@ models:
         tests:
           - unique
           - not_null
+  - name: fct_region_gate
+    description: "Regional shipment rollup — every region except emea"
+    columns:
+      - name: order_id
+        tests:
+          - unique: {config: {enabled: "{{ var('strict_event_check', false) }}"}}
+          - not_null
+      - name: customer_id
+      - name: order_total
+  - name: fct_bool_chain
+    description: "Event rollup gated on alerts plus the us region"
+    columns:
+      - name: event_id
+        tests:
+          - unique
+          - not_null
+      - name: shipment_id
+      - name: event_type
+      - name: occurred_at
+  - name: fct_gate_report
+    description: "Carrier rollup whose `enabled` lives in this schema entry"
+    config:
+      # A Jinja `enabled` at the MODEL's schema `config:` — the whole file
+      # must still parse (descriptions, columns, tests) even though the
+      # value is a string real dbt renders natively.
+      enabled: "{{ var('alerts_enabled') }}"
+    columns:
+      - name: carrier_id
+        tests:
+          - unique
+          - not_null
+      - name: carrier_name
+      - name: carrier_rating

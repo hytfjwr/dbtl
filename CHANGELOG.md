@@ -8,6 +8,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `--vars '<YAML|JSON>'` — a dbt-compatible variables map for source-mode
+  parsing, accepted as a global flag on either side of a subcommand. The
+  dict outranks `vars.yml` and `dbt_project.yml`'s `vars:` in every
+  `enabled` render scope (the project file's `+enabled` keys, in-file
+  `config()`, and schema files) and applies to every source-mode load
+  the run performs: the graph, source-parsed `--diff` baselines
+  (including `git:<rev>`), TUI reloads, and the `P` `dbt parse` handoff
+  (which forwards the same text verbatim). Manifest mode ignores it with
+  a warning.
+- Source mode evaluates the broader `enabled` expressions real dbt
+  accepts — `==`/`!=`/comparisons, `and`/`or`/`not` (with Python's
+  operand-returning semantics), `in` over literal lists, parentheses,
+  literals, `var('name'[, default])`, and `| as_bool` — through one
+  shared evaluator used by in-file `config(enabled=)`, `+enabled` tree
+  keys, schema `enabled:`/`config.enabled`, and generic-test `enabled`
+  alike.
 - Lint rule-set presets and category severities. `lint.preset: minimal|standard|strict` in `.dbtl.yml` (or `--preset` on `dbtl lint` and `dbtl check`) picks the base rule set a run starts from: `minimal` runs only the error-default rules, `standard` (the shipped default) runs every default-enabled rule, and `strict` runs the whole registry. `lint.categories: {<category>: error|warn|off}` pins a whole category above the preset and below `lint.rules.<id>`; `--rules` remains the authoritative selector above all of them. `--list-rules` shows the resolved severity/enablement under the active config alongside per-preset membership, and `--explain` reports the effective values.
 - `?` full-text search now matches compiled SQL in addition to raw SQL,
   descriptions, and column names, so a `ref()`/`source()` target that only
@@ -67,6 +83,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A schema file whose `enabled:`/`config.enabled:` value is a `{{ … }}`
+  Jinja string no longer drops the whole file: the raw value now
+  evaluates through the shared expression evaluator at the right stage,
+  so the file's other declarations (descriptions, columns, tests,
+  sources) survive, and a value that cannot be proven `false` keeps the
+  resource enabled with one warning — matching dbt's `disabled` parking
+  only on a proven `false`.
 - `model_fanout` no longer stops counting leaf children the moment one of
   them feeds an endpoint resource: a leaf is now a model with no
   data-resource children of its own, so a reporting model read only by an

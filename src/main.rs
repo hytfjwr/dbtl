@@ -299,7 +299,12 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
     // Resolved BEFORE --select below: `state:` selector atoms read
     // `app.diff()`, so the diff must be computed by the time they evaluate.
     if let Some(base) = &cli.diff {
-        let (dag, label) = load_baseline(base, cli.package_scope(), &src.project_dir())?;
+        let (dag, label) = load_baseline(
+            base,
+            cli.package_scope(),
+            &src.project_dir(),
+            src.cli_vars()?.as_ref(),
+        )?;
         app.set_diff_base(dag, label);
         app.ui_state.set_lens(LineageLens::Diff);
     }

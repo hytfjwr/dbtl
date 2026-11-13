@@ -624,7 +624,7 @@ fn malformed_dbtl_yml_warns_via_notice_in_both_modes() {
     let proj = tempfile::tempdir().unwrap();
     std::fs::write(proj.path().join(".dbtl.yml"), "lint: [nope]\n").unwrap();
     let dag = load_dag(FIXTURE).unwrap();
-    let mut a = App::from_source(dag, proj.path().to_path_buf());
+    let mut a = App::from_source(dag, proj.path().to_path_buf(), None);
     a.append_notice("Source mode: lineage is inferred");
     let note = a.take_notice().expect("source mode warns once");
     assert!(note.contains(".dbtl.yml"), "lint warning kept: {note}");

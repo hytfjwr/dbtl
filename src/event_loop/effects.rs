@@ -74,8 +74,23 @@ pub(super) fn run_dbt_parse(terminal: &mut DefaultTerminal, app: &mut App) -> Re
     set_keyboard_enhancement(false);
     set_mouse_capture(false);
     ratatui::restore();
-    println!("dbtl: running `dbt parse` in {} ...", root.display());
-    let status = dbt_command(&dbt).arg("parse").current_dir(&root).status();
+    // `--vars` rides verbatim — dbt parses the same text `--vars` the launch
+    // took, so the generated manifest's `enabled`/rendered values match the
+    // source-mode graph the app is replacing.
+    let mut cmd = dbt_command(&dbt);
+    cmd.arg("parse");
+    let vars = app.cli_vars().map(|v| v.raw().to_string());
+    if let Some(v) = &vars {
+        cmd.arg("--vars").arg(v);
+    }
+    println!(
+        "dbtl: running `dbt parse{}` in {} ...",
+        vars.as_deref()
+            .map(|v| format!(" --vars '{v}'"))
+            .unwrap_or_default(),
+        root.display()
+    );
+    let status = cmd.current_dir(&root).status();
     *terminal = ratatui::try_init().context("failed to re-init terminal after dbt parse")?;
     set_keyboard_enhancement(true);
     set_mouse_capture(true);

@@ -73,6 +73,13 @@ sources:
         config: {loaded_at_field: cleared_cfg_ts}
         freshness: null
         description: "Append-only feed"
+      # `| as_bool` in a table's `config.enabled` — the YAML `{{ }}` render
+      # is native, so the filter coerces the string var: vars.yml's
+      # "False" parks the table; `--vars '{telematics_flag: "True"}'`
+      # coerces to true and revives it.
+      - name: gps_pings
+        description: "Vehicle telematics ping feed"
+        config: {enabled: "{{ var('telematics_flag', 'False') | as_bool }}"}
       # Macro-carried reads — each table below is consumed by exactly one
       # model through a project macro (never a literal `source()` in the
       # model's own SQL), so `unused_sources` must count them as used in
