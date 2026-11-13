@@ -21,7 +21,9 @@
 
 mod common;
 
-use common::{copy_tree, dbtl_cmd, manifest_path, sample_manifest_path, SAMPLE_PROJECT};
+use common::{
+    copy_tree, dbtl_cmd, fixture_path, manifest_path, sample_manifest_path, SAMPLE_PROJECT,
+};
 use dbtl_wasm::engine::{ColumnsInput, Engine, LineageInput, LintOptions, LoadInput};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -39,6 +41,20 @@ fn stdout(out: &std::process::Output) -> String {
 }
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+/// stderr's `warning:`/`warning (scope):` lines as the texts the engine
+/// carries in its `warnings` vectors — prefixes dropped, order kept.
+fn cli_warnings(err: &str) -> Vec<String> {
+    err.lines()
+        .filter_map(|l| {
+            if let Some(w) = l.strip_prefix("warning (scope): ") {
+                Some(format!("(scope) {w}"))
+            } else {
+                l.strip_prefix("warning: ").map(str::to_string)
+            }
+        })
+        .collect()
 }
 
 /// Every `.yml`/`.yaml` under `root`, keyed by its `/`-separated
@@ -422,4 +438,287 @@ fn lineage_roots_unions_the_neighborhoods() {
         .grid
         .to_text();
     assert_eq!(out.rows.join("\n"), want);
+}
+
+// ---- `ls --format json` row parity (including `path`) --------------------
+
+/// The select rows match `ls --format json` field for field — the engine's
+/// `SelectedNode` is the same five columns the CLI prints.
+#[test]
+fn select_matches_ls_json_rows() {
+    let engine = jaffle_engine();
+    for spec in ["tag:marts", "fct_*", "*"] {
+        let cli = run(&[
+            "ls",
+            spec,
+            "--manifest",
+            manifest_path().to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+        assert!(cli.status.success(), "ls stderr: {}", stderr(&cli));
+        let want: Vec<serde_json::Value> =
+            serde_json::from_str(&stdout(&cli)).expect("ls json parses");
+        let got = engine.select(spec).expect("select runs").nodes;
+        assert_eq!(got.len(), want.len(), "row count for '{spec}'");
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert_eq!(g.unique_id, w["unique_id"], "{spec}");
+            assert_eq!(g.name, w["name"], "{spec}");
+            assert_eq!(g.resource_type, w["resource_type"], "{spec}");
+            assert_eq!(
+                g.materialized.as_deref(),
+                w["materialized"].as_str(),
+                "{spec} {g:?}"
+            );
+            assert_eq!(g.path.as_deref(), w["path"].as_str(), "{spec} {g:?}");
+        }
+    }
+}
+
+// ---- warnings parity: the stderr lines reports mirror --------------------
+
+/// `lint --select` on an empty match warns — the line lands in
+/// `LintOutput::warnings` exactly as the CLI prints it, prefix aside.
+#[test]
+fn lint_select_no_match_warns_like_the_cli() {
+    let engine = jaffle_engine();
+    let m = manifest_path();
+    for spec in ["zzz_no_match", "tag:no_such_tag"] {
+        let cli = run(&[
+            "lint",
+            "--manifest",
+            m.to_str().unwrap(),
+            "--select",
+            spec,
+            "--format",
+            "json",
+        ]);
+        let out = engine
+            .lint(&LintOptions {
+                selector: Some(spec.to_string()),
+                ..LintOptions::default()
+            })
+            .expect("engine lint runs");
+        assert_eq!(cli.status.code(), Some(out.exit_code), "{spec}");
+        assert_eq!(
+            cli_warnings(&stderr(&cli)),
+            out.warnings,
+            "warning texts for '{spec}'"
+        );
+        assert_eq!(
+            out.warnings,
+            vec![format!("--select '{spec}' matched no nodes")],
+            "{spec}"
+        );
+    }
+}
+
+/// An unknown top-level `.dbtl.yml` key warns on the CLI's stderr — the
+/// same warning list `LintOptions::config` produces.
+#[test]
+fn lint_config_warnings_match_the_cli() {
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = sample_project_dir(&tmp);
+    let config = "this_key_does_not_exist: true\n";
+    std::fs::write(proj.join(".dbtl.yml"), config).unwrap();
+    let cli = run(&[
+        "lint",
+        "--manifest",
+        proj.join("target/manifest.json").to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let engine = sample_engine();
+    let out = engine
+        .lint(&LintOptions {
+            config: Some(config.to_string()),
+            ..LintOptions::default()
+        })
+        .expect("engine lint runs");
+    assert_eq!(cli.status.code(), Some(out.exit_code));
+    assert_eq!(cli_warnings(&stderr(&cli)), out.warnings);
+    assert_eq!(
+        out.warnings,
+        vec!["ignoring unknown top-level key 'this_key_does_not_exist' in .dbtl.yml"]
+    );
+}
+
+/// A model with no resolvable SQL drops its CLL to the name-match
+/// approximation — the stderr notice is `ColumnsOutput::warnings`.
+#[test]
+fn columns_fallback_warning_matches_stderr() {
+    // stg_orders' SQL present but unparseable → the closure resolves it
+    // by name-match (a node with NO SQL resolves silently instead).
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(sample_manifest_path()).unwrap()).unwrap();
+    let node = manifest["nodes"]["model.sample.stg_orders"]
+        .as_object_mut()
+        .expect("stg_orders");
+    node["raw_code"] = serde_json::Value::String("this is not sql".to_string());
+    node.remove("compiled_code");
+    let text = serde_json::to_string(&manifest).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let mp = tmp.path().join("manifest.json");
+    std::fs::write(&mp, &text).unwrap();
+
+    let (engine, _) = Engine::load(&LoadInput {
+        manifest: text,
+        files: yml_files(Path::new(SAMPLE_PROJECT)),
+        ..LoadInput::default()
+    })
+    .expect("edited manifest loads");
+    for target in ["fct_orders.id", "stg_orders.id"] {
+        let cli = run(&[
+            "columns",
+            "--manifest",
+            mp.to_str().unwrap(),
+            target,
+            "--upstream",
+        ]);
+        assert!(cli.status.success(), "{target} stderr: {}", stderr(&cli));
+        let out = engine
+            .columns(&ColumnsInput {
+                target: target.to_string(),
+                upstream: true,
+            })
+            .expect("engine columns runs");
+        assert_eq!(stderr(&cli).trim(), out.warnings.join("\n"), "{target}");
+        assert!(
+            !out.warnings.is_empty(),
+            "{target}: the stripped SQL must trigger the fallback"
+        );
+    }
+}
+
+// ---- package scope: include_packages + the scope warnings ----------------
+
+/// The packages fixture under both scopes: `ls` uid sets match
+/// `ls --include-packages`, and `load`'s warnings are the CLI's stderr
+/// lines — including the ambiguous-root `(scope)` line a project-name-less
+/// multi-package manifest produces.
+#[test]
+fn package_scope_matches_the_cli() {
+    let path = fixture_path("packages_manifest.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+
+    // --include-packages keeps the installed package's nodes.
+    let (all, _) = Engine::load(&LoadInput {
+        manifest: text.clone(),
+        include_packages: true,
+        ..LoadInput::default()
+    })
+    .expect("packages manifest loads");
+    let cli = run(&[
+        "ls",
+        "*",
+        "--manifest",
+        path.to_str().unwrap(),
+        "--include-packages",
+        "--output",
+        "uids",
+    ]);
+    assert!(cli.status.success(), "ls stderr: {}", stderr(&cli));
+    let want: Vec<String> = stdout(&cli).lines().map(str::to_string).collect();
+    let got: Vec<String> = all
+        .select("*")
+        .expect("select")
+        .nodes
+        .iter()
+        .map(|n| n.unique_id.clone())
+        .collect();
+    assert_eq!(got, want);
+    assert!(want.iter().any(|u| u.starts_with("model.audit_tools.")));
+
+    // A pre-dbt-1.6 manifest (no metadata.project_name) with multiple
+    // packages makes the root a guess — the scope says so on stderr.
+    let mut bare: serde_json::Value = serde_json::from_str(&text).unwrap();
+    bare["metadata"]
+        .as_object_mut()
+        .unwrap()
+        .remove("project_name");
+    let bare_text = serde_json::to_string(&bare).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let bp = tmp.path().join("manifest.json");
+    std::fs::write(&bp, &bare_text).unwrap();
+
+    for include in [false, true] {
+        let mut args = vec![
+            "ls",
+            "*",
+            "--manifest",
+            bp.to_str().unwrap(),
+            "--output",
+            "uids",
+        ];
+        if include {
+            args.push("--include-packages");
+        }
+        let cli = run(&args);
+        assert!(cli.status.success(), "ls stderr: {}", stderr(&cli));
+        let (engine, load) = Engine::load(&LoadInput {
+            manifest: bare_text.clone(),
+            include_packages: include,
+            ..LoadInput::default()
+        })
+        .expect("bare manifest loads");
+        let got: Vec<String> = engine
+            .select("*")
+            .expect("select")
+            .nodes
+            .iter()
+            .map(|n| n.unique_id.clone())
+            .collect();
+        let want: Vec<String> = stdout(&cli).lines().map(str::to_string).collect();
+        assert_eq!(got, want, "include_packages={include}");
+        assert_eq!(
+            cli_warnings(&stderr(&cli)),
+            load.warnings,
+            "load warnings (include_packages={include})"
+        );
+        assert!(
+            load.warnings.iter().any(|w| w.starts_with("(scope)")),
+            "the ambiguous-root guess must warn (include_packages={include})"
+        );
+    }
+}
+
+/// Two kept nodes sharing a name make the `<model>` segment ambiguous —
+/// the same `pass the unique_id` bail the CLI reports.
+#[test]
+fn columns_ambiguous_model_errors_like_the_cli() {
+    let mut manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(fixture_path("packages_manifest.json")).unwrap(),
+    )
+    .unwrap();
+    // A second `stg_orders` in the installed package — visible only under
+    // --include-packages.
+    manifest["nodes"]["model.audit_tools.audit_events"]["name"] =
+        serde_json::Value::String("stg_orders".to_string());
+    let text = serde_json::to_string(&manifest).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let mp = tmp.path().join("manifest.json");
+    std::fs::write(&mp, &text).unwrap();
+
+    let (engine, _) = Engine::load(&LoadInput {
+        manifest: text,
+        include_packages: true,
+        ..LoadInput::default()
+    })
+    .expect("dup-name manifest loads");
+    let cli = run(&[
+        "columns",
+        "--manifest",
+        mp.to_str().unwrap(),
+        "--include-packages",
+        "stg_orders.id",
+    ]);
+    let err = engine
+        .columns(&ColumnsInput {
+            target: "stg_orders.id".to_string(),
+            upstream: false,
+        })
+        .expect_err("an ambiguous model errors");
+    assert_eq!(cli.status.code(), Some(2));
+    assert_eq!(stderr(&cli).trim(), format!("error: {err}"));
+    assert!(err.message.contains("is ambiguous"), "message: {err}");
 }
