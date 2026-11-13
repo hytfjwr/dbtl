@@ -38,7 +38,7 @@ use sqlparser::ast::{
 };
 use sqlparser::tokenizer::Span;
 
-use super::ast::{bare_parts, join_constraint, norm_ident, object_name_parts};
+use super::ast::{join_constraint, norm_ident, object_name_parts};
 use super::jinja::{generated_name, RenderedSql};
 
 /// The relation/join facts a query's FROM/JOIN clauses carry — see the
@@ -264,17 +264,27 @@ fn scan_set_expr(e: &SetExpr, scope: &ScanScope, out: &mut RelationScan<'_>) {
             }
         }
         // `TABLE [sch.]name` reads the whole relation — a written name like
-        // any FROM item (CTE names are unqualified and stay in scope).
+        // any FROM item (CTE names are unqualified and stay in scope). A
+        // `TABLE 'file.ext'` literal is the same explicit file read as
+        // `FROM 'file.ext'` — its `'` quote marks it, so no relation is
+        // recorded.
         SetExpr::Table(t) => {
-            let mut parts: Vec<String> = Vec::new();
-            if let Some(s) = &t.schema_name {
-                parts.push(norm_ident(s));
+            if t.schema_name
+                .iter()
+                .chain(&t.table_name)
+                .all(|i| i.quote_style != Some('\''))
+            {
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(s) = &t.schema_name {
+                    parts.push(norm_ident(s));
+                }
+                if let Some(n) = &t.table_name {
+                    parts.push(norm_ident(n));
+                }
+                let span =
+                    Span::union_iter(t.schema_name.iter().chain(&t.table_name).map(|i| i.span));
+                record_name(span, &parts, scope, out);
             }
-            if let Some(n) = &t.table_name {
-                parts.push(norm_ident(n));
-            }
-            let span = Span::union_iter(t.schema_name.iter().chain(&t.table_name).map(|i| i.span));
-            record_name(span, &parts, scope, out);
         }
         // Insert/Update/Delete/Merge bodies aren't a model's SELECT — the
         // resolver ignores them too.
@@ -322,9 +332,9 @@ fn bound_names(twj: &TableWithJoins) -> BTreeSet<String> {
 
 /// Whether this factor names a bound name as its first part —
 /// `t.arr` in `FROM t, t.arr` reads `t`'s array column, not a relation
-/// `t.arr`. Only a multi-part `Table` name or a `TableFunction` carrying
-/// a bare compound expression can carry that shape, and `bound` must
-/// actually hold the first part.
+/// `t.arr`. Only a multi-part `Table` name can carry that shape, and
+/// `bound` must actually hold the first part. (Functionish factors never
+/// reach here — callers check `functionish_factor` first.)
 fn correlated_factor(factor: &TableFactor, bound: &BTreeSet<String>) -> bool {
     if bound.is_empty() {
         return false;
@@ -333,10 +343,6 @@ fn correlated_factor(factor: &TableFactor, bound: &BTreeSet<String>) -> bool {
         TableFactor::Table {
             name, args: None, ..
         } => object_name_parts(name),
-        TableFactor::TableFunction { expr, .. } => match bare_parts(expr) {
-            Some(p) => p,
-            None => return false,
-        },
         _ => return false,
     };
     parts.len() > 1 && bound.contains(&parts[0])
@@ -355,6 +361,18 @@ fn file_name(name: &ObjectName) -> bool {
 /// Whether this factor is a file literal — see [`file_name`].
 fn file_relation(factor: &TableFactor) -> bool {
     matches!(factor, TableFactor::Table { name, .. } if file_name(name))
+}
+
+/// Whether this factor is the one-row `dual` constructor — a product
+/// against `dual` yields no extra rows, so it isn't a cartesian foot-gun
+/// (matching `record_name`'s exemption; a qualified `x.dual` names a
+/// real relation and still counts).
+fn dual_relation(factor: &TableFactor) -> bool {
+    let TableFactor::Table { name, .. } = factor else {
+        return false;
+    };
+    let parts = object_name_parts(name);
+    parts.len() == 1 && parts[0].eq_ignore_ascii_case("dual")
 }
 
 fn scan_select(sel: &Select, scope: &ScanScope, out: &mut RelationScan<'_>) {
@@ -385,14 +403,15 @@ fn scan_select(sel: &Select, scope: &ScanScope, out: &mut RelationScan<'_>) {
         // products aren't the foot-gun shape the rule targets.
         // Lateral/UNNEST factors are per-row expansions, not products,
         // same as the JOIN-arm rule; a file literal is an explicit
-        // external read; and a factor headed by an earlier-bound name
-        // (`t.arr` correlating this level's `t`) is a value read, not a
-        // second relation.
+        // external read; bare `dual` yields one row, not a product; and
+        // a factor headed by an earlier-bound name (`t.arr` correlating
+        // this level's `t`) is a value read, not a second relation.
         if i > 0
             && sel.selection.is_none()
             && !(functionish_factor(&twj.relation)
                 || marked_factor(&twj.relation)
                 || file_relation(&twj.relation)
+                || dual_relation(&twj.relation)
                 || correlated_factor(&twj.relation, &seen))
         {
             // A `,` a `{% elif %}`/`{% else %}` arm split emitted is
@@ -549,12 +568,13 @@ fn scan_join(j: &Join, scope: &ScanScope, out: &mut RelationScan<'_>) {
     // conditioned match) never count — and neither does a join TARGET
     // that isn't a relation at all: UNNEST / table functions / lateral
     // applies are per-row, not products; a file literal is an explicit
-    // read; a name headed by a bound name (`t.arr` where `t` joined
-    // earlier) is a value read.
+    // read; bare `dual` yields one row, not a product; a name headed by
+    // a bound name (`t.arr` where `t` joined earlier) is a value read.
     let unconditional = !matches!(j.join_operator, JoinOperator::CrossJoin(_))
         && !functionish_factor(&j.relation)
         && !marked_factor(&j.relation)
         && !file_relation(&j.relation)
+        && !dual_relation(&j.relation)
         && !correlated_factor(&j.relation, &scope.bound)
         && !matches!(j.join_operator, JoinOperator::AsOf { .. })
         && match join_constraint(j) {

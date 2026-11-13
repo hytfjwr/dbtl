@@ -719,18 +719,26 @@ fn marked_relations_skips_files_metadata_and_correlated_names() {
 fn sql_facts_skips_cross_correlated_and_file_factors() {
     // The judged side sees the same exclusions the marked scan does: an
     // explicit `CROSS JOIN`, a factor headed by a bound name (`t.arr`),
-    // and a `'file'` literal are never products — `b.u` still is.
+    // a `'file'` literal, and the one-row `dual` are never products —
+    // `b.u` and the qualified `sys.dual` still are.
     let dag = Dag::build(&manifest(
         vec![
             raw_model("model.t.cross", "select * from a.t cross join b.u", &[]),
             raw_model("model.t.corr", "select t.id from a.t t, t.arr", &[]),
             raw_model("model.t.file", "select * from a.t, 'f.csv'", &[]),
+            raw_model("model.t.dual", "select * from a.t, dual", &[]),
             raw_model("model.t.comma", "select * from a.t, b.u", &[]),
+            raw_model("model.t.qdual", "select * from a.t, sys.dual", &[]),
         ],
         &[],
     ));
     let r = resolver();
-    for uid in ["model.t.cross", "model.t.corr", "model.t.file"] {
+    for uid in [
+        "model.t.cross",
+        "model.t.corr",
+        "model.t.file",
+        "model.t.dual",
+    ] {
         let f = r.sql_facts(&dag, uid).unwrap();
         assert!(
             f.cartesian.is_empty() && f.cartesian_count == 0,
@@ -741,6 +749,10 @@ fn sql_facts_skips_cross_correlated_and_file_factors() {
     let f = r.sql_facts(&dag, "model.t.comma").unwrap();
     assert_eq!(f.cartesian_count, 1);
     assert_eq!(f.cartesian, vec!["b.u".to_string()]);
+    // A qualified `sys.dual` names a real relation — still a product.
+    let f = r.sql_facts(&dag, "model.t.qdual").unwrap();
+    assert_eq!(f.cartesian_count, 1);
+    assert_eq!(f.cartesian, vec!["sys.dual".to_string()]);
 }
 
 #[test]
