@@ -21,10 +21,10 @@ Releases are almost fully automated. The flow is:
 `--version` can never disagree with the tag), then calls the reusable build
 workflow (`.github/workflows/release-build.yml`) once per target. The per-OS
 archives it produces are the ones listed on the
-[installation page](site/src/content/docs/getting-started/installation.md),
-plus `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` builds for
-the Homebrew tap. The musl builds are fully static — the job fails if the
-ELF requests a dynamic loader.
+[installation page](site/src/content/docs/getting-started/installation.md);
+the Homebrew tap's formula downloads those same GNU-Linux archives. The musl
+builds are fully static — the job fails if the ELF requests a dynamic
+loader.
 
 Every archive contains the binary, `LICENSE`, `README.md`, the generated
 shell completions (`completions/`), and the man page (`man/dbtl.1`). The
