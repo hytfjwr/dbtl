@@ -114,6 +114,9 @@ If you add a job that must gate merges, add it to the aggregate's `needs` —
 `tests/ci_scripts.rs` fails when a job sits outside every aggregate's
 `needs` without being declared report-only.
 
+Shell scripts are linted in CI — `bash .github/scripts/run-shellcheck.sh`
+reproduces the job locally (needs `shellcheck` on PATH).
+
 ## Testing notes
 
 - Integration tests live in `tests/` (unit tests in each member crate's

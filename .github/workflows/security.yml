@@ -12,6 +12,14 @@ on:
 
 permissions: {}
 
+env:
+  # One pin for every job that runs shellcheck — the lint job and
+  # actionlint, which shells out to `shellcheck` for workflow `run:` bodies.
+  SHELLCHECK_VERSION: v0.11.0
+  # SHA-256 of shellcheck-v0.11.0.linux.x86_64.tar.xz. Upstream publishes no
+  # checksums file, so the digest is pinned here and verified on install.
+  SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -73,8 +81,55 @@ jobs:
       - name: Add Go bin to PATH
         run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
+      # actionlint lints workflow `run:` bodies through the `shellcheck` it
+      # finds on PATH — put the pinned one first so both jobs lint with the
+      # same version.
+      - name: Restore cached shellcheck
+        id: cache-shellcheck
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/dbtl-shellcheck
+          key: shellcheck-${{ runner.os }}-${{ env.SHELLCHECK_VERSION }}
+
+      - name: Install shellcheck
+        if: steps.cache-shellcheck.outputs.cache-hit != 'true'
+        run: bash .github/scripts/install-shellcheck.sh "$HOME/.cache/dbtl-shellcheck"
+
+      - name: Add shellcheck to PATH
+        run: echo "$HOME/.cache/dbtl-shellcheck" >> "$GITHUB_PATH"
+
       - name: Run actionlint
         run: actionlint -color
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Restore cached shellcheck
+        id: cache-shellcheck
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/dbtl-shellcheck
+          key: shellcheck-${{ runner.os }}-${{ env.SHELLCHECK_VERSION }}
+
+      - name: Install shellcheck
+        if: steps.cache-shellcheck.outputs.cache-hit != 'true'
+        run: bash .github/scripts/install-shellcheck.sh "$HOME/.cache/dbtl-shellcheck"
+
+      - name: Add shellcheck to PATH
+        run: echo "$HOME/.cache/dbtl-shellcheck" >> "$GITHUB_PATH"
+
+      - name: Lint shell scripts
+        run: bash .github/scripts/run-shellcheck.sh
 
   pinact:
     name: pinact
@@ -176,6 +231,7 @@ jobs:
     needs:
       - zizmor
       - actionlint
+      - shellcheck
       - pinact
       - cargo-deny
     if: always()
