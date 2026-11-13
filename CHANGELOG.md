@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-11-13
+
 ### Changed
 
 - The docs site is easier to drive with a keyboard and assistive tech:
@@ -587,7 +589,8 @@ Maintenance release — dependency updates only.
 - Initial release: a terminal UI for dbt model lineage, from a compiled
   `target/manifest.json` or straight from project source.
 
-[Unreleased]: https://github.com/hytfjwr/dbtl/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/hytfjwr/dbtl/compare/v0.6.4...HEAD
+[0.6.4]: https://github.com/hytfjwr/dbtl/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/hytfjwr/dbtl/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/hytfjwr/dbtl/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/hytfjwr/dbtl/compare/v0.6.0...v0.6.1
