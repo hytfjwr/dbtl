@@ -16,12 +16,25 @@
 // level it counts operator units — punctuation runs and operator
 // keywords — in each "segment" (a run cut by a clause keyword, `,`,
 // `;`, or a set operator), plus the set operators themselves; `(`
-// opens a fresh level that `)` folds back. The peak
-// `level + segment + set` upper-bounds real tree depth: every
-// depth-adding construct (an infix/prefix/postfix op, a nested paren,
-// a set-op arm) contributes at least one counted unit while operands
-// contribute none — so over-limit text is handed back exactly like a
-// parse error and lands on the name-match / `unparsed` path.
+// opens a fresh level that `)` folds back into its parent as
+// `1 + inner` of operand depth, mirroring the `Nested`/`Subquery`
+// node it parses to. The peak `level + segment + set + operand`
+// upper-bounds real tree depth: every depth-adding construct (an
+// infix/prefix/postfix op, a nested group, a set-op arm) contributes
+// at least one counted unit while operands contribute none — so
+// over-limit text is handed back exactly like a parse error and lands
+// on the name-match / `unparsed` path.
+//
+// Two subtleties keep the estimate honest:
+//
+// - A keyword is only a boundary IN INFIX POSITION. Where an operand
+//   is expected, the parser reads even a reserved word as a plain
+//   identifier — `x + where + y` is one unbroken `+` chain — so
+//   clause/set words cut segments (and set ops count) only after an
+//   operand; in operand position they count one unit instead.
+// - A `)`'s inner depth must add into the PARENT level (the paren
+//   group's operand depth), not just the global peak — otherwise
+//   chains spread across nested levels under-count quadratically.
 //
 // Counts are approximations by design and only err toward depth: a
 // `between`'s `and`, a `cast`'s `as`, or a call's `f(` paren may count
@@ -48,11 +61,12 @@ use super::jinja::{
 const MAX_DEPTH: usize = 512;
 
 /// Keywords that open a fresh segment — clause and statement
-/// boundaries, `CASE` delimiters, alias/constraint markers. Each one is
-/// a hard keyword that can never appear inside an expression, so a
-/// false entry only ever splits a segment (mildly under-counting what
-/// follows); a word that CAN sit inside one — `if`, `left`, `set`,
-/// `key`, `partition`, `first`… — is deliberately absent.
+/// boundaries, `CASE` delimiters, alias/constraint markers — consulted
+/// only in infix position (the scanner's `prev_operand` gate): after an
+/// operand a non-operator word can only be an alias or a boundary, and
+/// either way the expression ended. In operand position the parser
+/// reads these same words as plain identifiers, so they count a unit
+/// like any operator keyword instead of cutting.
 const SEGMENT_END: &[&[u8]] = &[
     b"action",
     b"alter",
@@ -217,10 +231,40 @@ const SET_OP: &[&[u8]] = &[b"except", b"intersect", b"minus", b"union"];
 /// the list stays generous: an entry that turns out to be an operand
 /// merely over-counts toward depth.
 const OP_WORD: &[&[u8]] = &[
-    b"all", b"and", b"any", b"at", b"between", b"case", b"collate", b"div", b"escape", b"exists",
-    b"filter", b"glob", b"ilike", b"in", b"is", b"isnull", b"like", b"match", b"member", b"mod",
-    b"not", b"notnull", b"or", b"over", b"prior", b"regexp", b"rlike", b"similar", b"some",
-    b"sounds", b"within", b"xor",
+    b"all",
+    b"and",
+    b"any",
+    b"at",
+    b"between",
+    b"case",
+    b"collate",
+    b"div",
+    b"escape",
+    b"exists",
+    b"filter",
+    b"glob",
+    b"ilike",
+    b"in",
+    b"is",
+    b"isnull",
+    b"like",
+    b"match",
+    b"member",
+    b"mod",
+    b"not",
+    b"notnull",
+    b"operator",
+    b"or",
+    b"over",
+    b"overlaps",
+    b"prior",
+    b"regexp",
+    b"rlike",
+    b"similar",
+    b"some",
+    b"sounds",
+    b"within",
+    b"xor",
 ];
 
 /// Punctuation bytes that glue into one operator run (`->>`, `::`,
@@ -260,6 +304,10 @@ struct Level {
     peak: usize,
     /// Set operators seen at this level.
     set: usize,
+    /// The deepest closed `( … )` operand — real depth adds the
+    /// operand's inner tree BELOW the level's own spine, so it counts
+    /// as `1 + inner` once per level, not once per group.
+    operand: usize,
 }
 
 impl Level {
@@ -291,53 +339,85 @@ fn too_deep(sql: &str, dialect: SqlDialect) -> bool {
     let bracket_ident = dialect.sqlparser().is_delimited_identifier_start('[');
     let b = sql.as_bytes();
     let mut levels = vec![Level::default()];
-    // The peak `level + segment + set` seen — folded at `)` and EOF.
+    // The peak `level + segment + set + operand` seen — folded at `)`
+    // and EOF.
     let mut bound = 0usize;
+    // Does the previous significant token end an operand — an
+    // identifier, literal, `)`, or closing quote? A clause/set keyword
+    // is a real boundary only in infix position: the parser reads a
+    // keyword where an operand is expected as a plain identifier, so
+    // `x + where + y` is one unbroken `+` chain and cutting on `where`
+    // would under-count the spine it sits in.
+    let mut prev_operand = false;
     let mut i = 0usize;
     while i < b.len() {
         let l = levels.len() - 1;
         match b[i] {
             // Comments and literals carry no operators — the same
-            // dialect-derived ends the render scan trusts.
+            // dialect-derived ends the render scan trusts. Comments are
+            // transparent to `prev_operand`; every quoted thing is an
+            // operand.
             b'-' if lex.dash_comment_at(b, i) => i = line_comment_end(b, i),
             b'/' if lex.slash_comment_at(b, i) => i = line_comment_end(b, i),
             b'/' if b.get(i + 1) == Some(&b'*') => i = block_comment_end(b, i, lex.nested_comments),
             b'#' if lex.hash_comment_at(b, i) => i = line_comment_end(b, i),
-            b'\'' if lex.q_quote_at(b, i) => i = q_quote_end(b, i),
-            q @ (b'\'' | b'"' | b'`') => i = quoted_end(b, i, q, lex.escape_for(b, i)),
-            b'[' if bracket_ident => i = quoted_end(b, i, b']', false),
+            b'\'' if lex.q_quote_at(b, i) => {
+                i = q_quote_end(b, i);
+                prev_operand = true;
+            }
+            q @ (b'\'' | b'"' | b'`') => {
+                i = quoted_end(b, i, q, lex.escape_for(b, i));
+                prev_operand = true;
+            }
+            b'[' if bracket_ident => {
+                i = quoted_end(b, i, b']', false);
+                prev_operand = true;
+            }
             b'$' if lex.dollar_quote => match dollar_quote_open(b, i) {
                 Some(dlen) => {
                     let from = i + dlen;
                     i = dollar_quote_close(b, from, &b[i..from]).map_or(b.len(), |c| c + dlen);
+                    prev_operand = true;
                 }
                 // `$1`/identifier `$` — the word arm absorbs it.
                 None => i += 1,
             },
             b'(' => {
                 levels.push(Level::default());
+                prev_operand = false;
                 i += 1;
             }
             b')' => {
                 levels[l].cut();
-                bound = bound.max(l + levels[l].peak + levels[l].set);
+                let total = levels[l].peak + levels[l].set + levels[l].operand;
+                bound = bound.max(l + total);
                 if l > 0 {
+                    // The closed group is one operand below the parent:
+                    // `Nested(inner)` sits 1 + inner deep on the
+                    // parent's spine.
                     levels.pop();
+                    levels[l - 1].operand = levels[l - 1].operand.max(1 + total);
                 }
+                prev_operand = true;
                 i += 1;
             }
             // Non-ASCII is operand material — part of a UTF-8
             // identifier or literal the quote arms didn't claim — and
             // never an operator byte.
-            c if !c.is_ascii() => i += 1,
+            c if !c.is_ascii() => {
+                prev_operand = true;
+                i += 1;
+            }
             b',' => {
                 levels[l].cut();
+                prev_operand = false;
                 i += 1;
             }
             // `;` ends the statement: the segment AND the set chain.
             b';' => {
                 levels[l].cut();
                 levels[l].set = 0;
+                prev_operand = false;
                 i += 1;
             }
             c if word_byte(c) => {
@@ -347,13 +427,29 @@ fn too_deep(sql: &str, dialect: SqlDialect) -> bool {
                 }
                 let w = &b[i..j];
                 let lv = &mut levels[l];
-                if word_in(w, SET_OP) {
-                    lv.cut();
-                    lv.set += 1;
-                } else if word_in(w, SEGMENT_END) {
-                    lv.cut();
-                } else if word_in(w, OP_WORD) {
-                    lv.seg += 1;
+                if prev_operand {
+                    // Infix position: an operator or boundary keyword
+                    // ends the operand; any other word is an alias,
+                    // which IS operand material — infix position holds.
+                    if word_in(w, SET_OP) {
+                        lv.cut();
+                        lv.set += 1;
+                        prev_operand = false;
+                    } else if word_in(w, SEGMENT_END) {
+                        lv.cut();
+                        prev_operand = false;
+                    } else if word_in(w, OP_WORD) {
+                        lv.seg += 1;
+                        prev_operand = false;
+                    }
+                } else {
+                    // Operand position: the parser reads even a reserved
+                    // word as an identifier, so it can only over-count —
+                    // charge one unit for a listed keyword, zero for a
+                    // plain name, then the token IS an operand.
+                    lv.seg += (word_in(w, OP_WORD) || word_in(w, SET_OP) || word_in(w, SEGMENT_END))
+                        as usize;
+                    prev_operand = true;
                 }
                 i = j;
             }
@@ -366,13 +462,18 @@ fn too_deep(sql: &str, dialect: SqlDialect) -> bool {
                 }
                 if b[i..j].iter().any(|&c| c != b'.') {
                     levels[l].seg += 1;
+                    prev_operand = false;
+                } else {
+                    // `.`/`..` continue the operand they ride on.
+                    i = j;
+                    continue;
                 }
                 i = j;
             }
             _ => i += 1,
         }
         let lv = levels.last().unwrap();
-        bound = bound.max(levels.len() - 1 + lv.seg.max(lv.peak) + lv.set);
+        bound = bound.max(levels.len() - 1 + lv.seg.max(lv.peak) + lv.set + lv.operand);
         if bound > MAX_DEPTH {
             return true;
         }
@@ -431,6 +532,54 @@ mod tests {
     #[test]
     fn deep_parentheses_trip() {
         let sql = format!("select {}1{}", "(".repeat(600), ")".repeat(600));
+        assert!(deep(&sql));
+    }
+
+    #[test]
+    fn chains_spread_across_parens_add_up() {
+        // An `and` inside each of ~40 nested parens — real depth is the
+        // SUM along the spine (~80), not any one level's count.
+        let mut sql = "select ".to_string();
+        for _ in 0..40 {
+            sql.push_str("1 and (");
+        }
+        sql.push('1');
+        sql.push_str(&")".repeat(40));
+        // 40 levels × ~2 units each: ~80 — under the bound, sane.
+        assert!(!deep(&sql));
+
+        // The same shape at ~15 ops per level: ~640 real depth.
+        let mut sql = "select ".to_string();
+        for _ in 0..40 {
+            sql.push_str(&"1 and ".repeat(15));
+            sql.push('(');
+        }
+        sql.push('1');
+        sql.push_str(&")".repeat(40));
+        assert!(deep(&sql));
+    }
+
+    #[test]
+    fn keywords_in_operand_position_do_not_cut() {
+        // `where` between `+`s parses as an identifier — the `+` chain
+        // runs straight through it.
+        let sql = format!(
+            "select {}",
+            (0..600)
+                .map(|i| if i % 2 == 0 { "1" } else { "where" })
+                .collect::<Vec<_>>()
+                .join(" + ")
+        );
+        assert!(deep(&sql));
+    }
+
+    #[test]
+    fn word_infix_chains_trip() {
+        // `overlaps` (all dialects) and `operator(pg.op)` (PG/Generic)
+        // are infix operators spelled as words.
+        let sql = format!("select {}", vec!["a"; 600].join(" overlaps "));
+        assert!(deep(&sql));
+        let sql = format!("select {}", vec!["a"; 600].join(" operator(pg.+) "));
         assert!(deep(&sql));
     }
 
