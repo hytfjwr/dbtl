@@ -445,6 +445,145 @@ fn prune_empty_listing_is_a_no_op() {
     assert!(victims.is_empty());
 }
 
+// ---- run-shellcheck.sh -----------------------------------------------------
+
+fn run_shellcheck(args: &[&str]) -> Output {
+    Command::new("bash")
+        .arg(script("run-shellcheck.sh"))
+        .args(args)
+        .output()
+        .expect("run run-shellcheck.sh")
+}
+
+/// Every tracked `*.sh` is a lint target, and every reported target is a
+/// real file that is shell by name or by shebang.
+#[test]
+fn lint_targets_cover_every_tracked_script() {
+    let expected = common::git(Path::new(ROOT))
+        .args(["ls-files", "--", "*.sh"])
+        .out();
+    let out = run_shellcheck(&["--print-targets"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let targets: BTreeSet<String> = stdout(&out).lines().map(String::from).collect();
+    for f in expected.lines() {
+        assert!(targets.contains(f), "{f} must be a lint target");
+    }
+    for t in &targets {
+        let p = Path::new(ROOT).join(t);
+        assert!(p.is_file(), "reported target {t} must exist");
+        if !t.ends_with(".sh") {
+            let first = std::fs::read_to_string(&p)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            assert!(
+                first.starts_with("#!"),
+                "{t} is a lint target but has no shebang"
+            );
+        }
+    }
+}
+
+/// The target scan is enumeration, not a list: a tracked file with a shell
+/// shebang joins the set whatever its name, an untracked file never does.
+#[test]
+fn lint_targets_follow_the_shebang_not_the_extension() {
+    let repo = common::GitRepo::init();
+    repo.write("x.sh", "echo hi\n");
+    repo.write("tool", "#!/usr/bin/env bash\necho hi\n");
+    repo.write("helper", "#!/bin/sh\necho hi\n");
+    repo.write("envs", "#!/usr/bin/env -S bash\necho hi\n");
+    repo.write("note", "#!/usr/bin/env python3\nprint()\n");
+    repo.write("x.ps1", "#!/usr/bin/env pwsh\nWrite-Output hi\n");
+    repo.write("x.fish", "#!/usr/bin/env fish\necho hi\n");
+    repo.write("plain.txt", "not a script\n");
+    repo.write("untracked.sh", "echo hi\n");
+    repo.commit(
+        &[
+            "x.sh",
+            "tool",
+            "helper",
+            "envs",
+            "note",
+            "x.ps1",
+            "x.fish",
+            "plain.txt",
+        ],
+        "seed",
+    );
+
+    let out = Command::new("bash")
+        .arg(script("run-shellcheck.sh"))
+        .arg("--print-targets")
+        .arg(&repo.root)
+        .output()
+        .expect("run run-shellcheck.sh");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let targets: BTreeSet<String> = stdout(&out).lines().map(String::from).collect();
+    assert_eq!(
+        targets,
+        set(&["x.sh", "tool", "helper", "envs"]),
+        "tracked .sh plus shell-shebang files, nothing else"
+    );
+}
+
+/// The composite action's `run:` values are linted as snippets — each
+/// extracted command must be a complete single line.
+#[test]
+fn extract_runs_pulls_each_action_step_command() {
+    let action = Path::new(ROOT).join("action.yml");
+    let out = run_shellcheck(&["--extract-runs", action.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let body = stdout(&out);
+    let snippets: Vec<&str> = body
+        .lines()
+        .map(|l| l.split_once('\t').expect("LINE<TAB>command").1)
+        .collect();
+    assert!(
+        snippets.len() >= 4,
+        "the action's script-calling steps must be extracted: {snippets:?}"
+    );
+    for text in &snippets {
+        assert!(!text.is_empty(), "an extracted run: must not be empty");
+        assert!(
+            !text.starts_with('|') && !text.starts_with('>'),
+            "a block scalar must never reach linting: {text}"
+        );
+    }
+}
+
+/// A multi-line `run:` can't be reconstructed faithfully in shell — the
+/// extractor fails closed and tells the author to move it into a tracked
+/// script instead.
+#[test]
+fn extract_runs_rejects_multiline_blocks() {
+    for (name, body) in [
+        (
+            "block scalar",
+            "runs:\n  steps:\n    - run: |\n        echo a\n        echo b\n",
+        ),
+        (
+            "folded scalar",
+            "runs:\n  steps:\n    - run: >-\n        echo a\n",
+        ),
+        ("empty run", "runs:\n  steps:\n    - run:\n"),
+        ("continuation", "runs:\n  steps:\n    - run: echo a &&\n"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("action.yml");
+        std::fs::write(&f, body).unwrap();
+        let out = run_shellcheck(&["--extract-runs", f.to_str().unwrap()]);
+        assert!(!out.status.success(), "{name} must fail: {}", stdout(&out));
+        assert!(
+            stderr(&out).contains("multi-line"),
+            "{name} must explain the failure: {}",
+            stderr(&out)
+        );
+    }
+}
+
 // ---- workflow contract -----------------------------------------------------
 
 fn workflow(name: &str) -> serde_norway::Value {
@@ -699,8 +838,9 @@ fn hygiene_runs_only_the_spell_check_without_code() {
 
 // ---- lint ------------------------------------------------------------------
 
-/// `shellcheck` over the CI scripts — CI guarantees it (ubuntu-latest ships
-/// it); locally it is optional, same policy as the action scripts.
+/// `shellcheck` over every tracked script and the composite action's run:
+/// snippets — the same pass the workflow job runs. CI guarantees shellcheck
+/// (ubuntu-latest ships it); locally it is optional.
 #[test]
 fn shellcheck_passes_on_the_ci_scripts() {
     if Command::new("shellcheck")
@@ -710,19 +850,10 @@ fn shellcheck_passes_on_the_ci_scripts() {
     {
         return;
     }
-    for name in [
-        "changed-paths.sh",
-        "aggregate-results.sh",
-        "prune-caches.sh",
-    ] {
-        let out = Command::new("shellcheck")
-            .arg(script(name))
-            .output()
-            .expect("run shellcheck");
-        assert!(
-            out.status.success(),
-            "shellcheck {name}:\n{}",
-            String::from_utf8_lossy(&out.stdout)
-        );
-    }
+    let out = run_shellcheck(&[]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
