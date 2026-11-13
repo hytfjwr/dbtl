@@ -69,7 +69,7 @@ Five built-in presets, live switching with `Ctrl-t`, and your own YAML theme fil
 
 ### One selector grammar everywhere
 
-The dbt selector language (`tag:`, `path:`, `config.materialized:`, `meta:`, `exposure:`, `state:`, hops, globs, unions, intersections) drives `dbtl ls`, the TUI's `!` search, and `--select` and `--exclude` on `check`, `lint`, `impact`, and `docs`. A spec means the same set in every context. See [Selector syntax](../cli/selectors.md).
+The dbt selector language (`tag:`, `path:`, `config.materialized:`, `meta:`, `exposure:`, `state:`, hops, globs, unions, intersections) drives `dbtl ls`, the TUI's `!` search, and `--select` on `check`, `lint`, `impact`, and `docs` — `docs` and `ls` also take `--exclude`. A spec means the same set in every context. See [Selector syntax](../cli/selectors.md).
 
 ### Docs that match the screen
 

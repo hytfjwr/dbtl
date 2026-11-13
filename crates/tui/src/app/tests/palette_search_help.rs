@@ -52,15 +52,17 @@ fn palette_confirm_propagates_quit_outcome() {
 
 #[test]
 fn palette_confirm_propagates_editor_effect() {
-    // Choosing "open SQL in $EDITOR" must yield the editor Effect. A model
-    // with a resolvable file path is selected first so the effect is produced.
+    // Choosing "open the model's file in $VISUAL or $EDITOR" must yield
+    // the editor Effect. A model with a resolvable file path is selected
+    // first so the effect is produced.
     let mut a = app();
     a.select_by_unique_id("model.jaffle_finance.pos_txn");
     apply_action(&mut a, Action::PaletteOpen);
     for c in "$EDITOR".chars() {
         apply_action(&mut a, Action::SearchType(c));
     }
-    // The OpenEditor row's help is "open SQL in $EDITOR".
+    // The OpenEditor row's help is "open the model's file in $VISUAL or
+    // $EDITOR" — the query lands on its trailing `$EDITOR`.
     assert!(
         palette_candidates("$EDITOR")
             .iter()

@@ -26,6 +26,7 @@ fn markdown_files() -> Vec<PathBuf> {
         root.join("CHANGELOG.md"),
         root.join("CONTRIBUTING.md"),
         root.join("RELEASING.md"),
+        root.join("SECURITY.md"),
         root.join(".github/PULL_REQUEST_TEMPLATE.md"),
     ];
     collect_md(&root.join("docs"), &mut files);

@@ -24,9 +24,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Documentation drift corrected across the site and README: the lint
   example tallies match the sample project (10 errors / 38 warnings /
   17 rules / 3 skipped), the report-format count is eight, `o` opens the
-  model's file in `$VISUAL` (falling back to `$EDITOR`), the model list
-  drawer covers widths 50–79, scrolling modals describe their real close
-  keys, and lint rules are grouped by the registry's own categories.
+  model's file in `$VISUAL` (falling back to `$EDITOR`), `r` reloads the
+  data source, the model list drawer covers widths 50–79, scrolling
+  modals describe their real close keys, and lint rules are grouped by
+  the registry's own categories.
 
 ### Added
 
@@ -40,7 +41,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `tests/doc_links.rs` now scans `site/src/content/docs/**` too — `dbtl`
   invocations in fenced blocks and inline code are checked against the
   flags each subcommand actually accepts.
->>>>>>> 6dc8cc2 (docs: correct stale facts and fill in undocumented features)
 
 ## [0.6.3] - 2026-11-13
 
