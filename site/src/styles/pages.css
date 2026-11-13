@@ -735,42 +735,179 @@ code.nw {
   color: var(--text-muted);
   line-height: 1.6;
 }
+.pg-match li[data-id] {
+  cursor: pointer;
+}
+.pg-match li[data-id]:hover,
+.pg-match li.cur {
+  background: var(--sunken);
+}
 .pg-lin {
   display: flex;
   --pane-bg: var(--sunken);
   min-height: 400px;
 }
-.pg-lint {
+.pg-lint,
+.pg-cols {
   margin-top: var(--sp-5);
   --pane-bg: var(--sunken);
   padding: 18px 0 6px;
   font: var(--fs-2)/1.6 var(--font-mono);
 }
-.pg-lint .f {
-  display: grid;
-  grid-template-columns: 56px minmax(0, 230px) minmax(0, 1fr);
-  gap: 0 var(--sp-3);
-  padding: 7px 16px;
-  border-top: 1px solid var(--line);
-}
-.pg-lint .f .msg {
-  grid-column: 2/-1;
-  color: var(--text-muted);
-  font-size: var(--fs-1);
-}
-.pg-lint .f .node {
-  color: var(--text-muted);
-  overflow-wrap: anywhere;
-}
-.pg-lint .sum {
-  padding: 10px 16px 6px;
-  border-top: 1px solid var(--line);
-  color: var(--text-muted);
-  font-size: var(--fs-1);
-}
-.pg-lint .cmdline {
+.pg-lint .cmdline,
+.pg-cols .cmdline {
   padding: 0 16px 10px;
   color: var(--text-muted);
+}
+.pg-cli {
+  margin: 0;
+  padding: 0 16px 12px;
+  font: var(--art-size)/1.55 var(--font-art);
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--text-muted);
+}
+.pg-cli a {
+  color: var(--info);
+}
+.pg-cli .a-b {
+  font-weight: 600;
+}
+.pg-cli .a-dim {
+  color: var(--dim);
+}
+.pg-cli .a-i {
+  font-style: italic;
+}
+.pg-cli .a-u {
+  text-decoration: underline;
+}
+.pg-cli .a-red {
+  color: var(--danger);
+}
+.pg-cli .a-yellow {
+  color: var(--warn);
+}
+.pg-cli .a-green {
+  color: var(--ok);
+}
+.pg-cli .a-blue {
+  color: var(--info);
+}
+.pg-cli .a-magenta {
+  color: var(--c-incremental);
+}
+.pg-cli .a-cyan {
+  color: var(--c-snapshot);
+}
+.pg-lint-foot {
+  padding: 6px 16px 8px;
+  border-top: 1px solid var(--line);
+  font: var(--fs-1)/1.7 var(--font-mono);
+  color: var(--text-muted);
+}
+.pg-lint-foot p {
+  margin: 0;
+}
+.pg-lint-foot .w {
+  color: var(--warn);
+}
+.pg-lint-foot .e {
+  color: var(--danger);
+}
+.pg-col-row {
+  padding: 0 16px 10px;
+}
+.pg-col-row select {
+  max-width: 240px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface-hi);
+  color: var(--text);
+  font: var(--fs-2) var(--font-mono);
+  padding: 3px 8px;
+}
+.pg-status,
+.pg-hint {
+  font: var(--fs-1)/1.7 var(--font-mono);
+  color: var(--text-faint);
+  margin: 0;
+}
+.pg-ctl.over {
+  outline: 1px dashed var(--line-strong);
+  outline-offset: -7px;
+}
+.pg-edit {
+  margin-top: var(--sp-5);
+  padding-bottom: var(--sp-4);
+}
+.pg-ed {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-4);
+  padding: 0 var(--sp-4);
+}
+.pg-ed-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding-bottom: var(--sp-2);
+  font: var(--fs-1)/1.7 var(--font-mono);
+  color: var(--text-faint);
+}
+.pg-ed-head b {
+  color: var(--text);
+  font-weight: 500;
+}
+.pg-ed-tools {
+  margin-left: auto;
+  display: flex;
+  gap: var(--sp-2);
+}
+.pg-ed-tools button {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface-hi);
+  color: var(--text-muted);
+  font: var(--fs-1)/1.6 var(--font-mono);
+  padding: 1px 8px;
+}
+.pg-ed-tools button:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+.pg-ed-tools button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.pg-badge {
+  font-style: normal;
+  color: var(--accent-text);
+  border: 1px solid var(--band);
+  border-radius: 4px;
+  padding: 0 6px;
+}
+.pg-ed textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font: var(--fs-1)/1.55 var(--font-mono);
+  background: var(--sunken);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--sp-2) var(--sp-3);
+}
+.pg-ed textarea:focus {
+  outline: 0;
+  border-color: var(--accent-text);
+  box-shadow: 0 0 0 1px var(--accent-text);
+}
+.pg-ed textarea:disabled {
+  color: var(--text-faint);
+}
+.pg-ed .pg-hint {
+  padding-top: var(--sp-2);
 }
 .pg-cmd {
   display: flex;

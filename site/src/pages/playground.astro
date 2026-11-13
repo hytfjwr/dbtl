@@ -5,14 +5,15 @@ import Base from "../layouts/Base.astro";
 
 <Base
   title="Playground - dbtl"
-  description="Try dbt selectors in the browser on a sample project."
+  description="Selectors, lineage, lint and column lineage in the browser — the real dbtl engine compiled to WebAssembly. Nothing is uploaded."
   section="playground"
 >
   <div class="wrap pg vt-page" data-pagefind-body data-pagefind-meta="section:Playground">
     <h1>Playground</h1>
     <p class="lead">
-      Type a dbt selector and see which nodes it picks. It runs in your browser on a sample project,
-      so nothing is uploaded.
+      The real dbtl engine — the Rust code, compiled to WebAssembly — runs in your browser. Match
+      dbt selectors, read the lineage, lint like the CLI, trace column lineage, edit a model's SQL
+      or the .dbtl.yml and re-lint, or drop in your own manifest.json. Nothing is uploaded.
     </p>
     <Playground />
   </div>

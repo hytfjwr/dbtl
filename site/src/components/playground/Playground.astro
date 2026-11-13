@@ -1,52 +1,58 @@
 ---
-// The playground in its first state. The page works without script as a static result for the
-// starting selector; playground.ts makes the input, the chips and the tabs live.
-import graph from "../../data/graph.json";
-import lintJaffle from "../../data/lint-jaffle_finance.json";
-import lintSample from "../../data/lint-sample.json";
+// The playground in its first state: the real engine runs in Node at build
+// time and renders the starting selector's match list, lineage and lint
+// report. playground.ts then loads the same engine (as WebAssembly, in a
+// worker) and makes the input, the chips, the tabs and the editors live.
 import { esc } from "../../scripts/html.ts";
-import { layout, stageHtml } from "../../scripts/lineage.ts";
+import { url } from "../../lib/site.ts";
 import {
-  command,
-  drawn,
+  COLS_EMPTY_HINT,
+  columnsBodyHtml,
+  columnsCommand,
+  CONFIG_TEMPLATE,
   EXAMPLES,
-  lineageNote,
-  lineageStyle,
-  lintHtml,
+  lintBodyHtml,
+  lintCommand,
+  lintCount,
+  lintFootHtml,
+  lsCommand,
   matchedHtml,
   matchedTitle,
-  PROJECTS,
-  run,
-} from "../../scripts/playground-view.ts";
-import { toProject, type LintData, type RawSample } from "../../scripts/samples.ts";
+  SAMPLES,
+  stageHtml,
+} from "../../scripts/pg-render.ts";
+import { initialState } from "../../scripts/pg-ssr.ts";
 
-const lintByProject: Record<string, LintData> = {
-  sample: lintSample as LintData,
-  jaffle_finance: lintJaffle as LintData,
-};
-
-const name = PROJECTS[0]!;
-const project = toProject((graph as unknown as Record<string, RawSample>)[name]!);
-const lint = lintByProject[name]!;
-const spec = EXAMPLES[name]![0]!;
-const outcome = run(project, spec);
-const note = lineageNote(project, outcome, spec);
-const L = layout(drawn(project, outcome.hit));
-const lineage = note === null ? stageHtml(L, lineageStyle(outcome.hit, null)(L)) : "";
-const linted = lintHtml(lint, outcome.hit, outcome, spec);
+const s = await initialState();
+const hit = new Map(s.matched.map((n) => [n.unique_id, n.name] as const));
+const lineage = s.lineage ? stageHtml(s.lineage, { hit }) : "";
+const note = !s.built
+  ? `the engine is not built — ${s.reason}`
+  : s.selectError
+    ? "The selector is not valid."
+    : "";
+const lintNote = s.built ? "" : `the engine is not built — ${s.reason}`;
 ---
 
-<div class="pane pg-ctl" data-pagefind-ignore>
+<div class="pane pg-ctl" data-pagefind-ignore data-engine-dir={url("engine/")} id="pg-drop">
   <p class="pane-title">input</p>
   <div class="pg-row">
     <span class="lab">project</span>
     <div class="seg" id="pg-proj" role="group" aria-label="Sample project">
-      {PROJECTS.map((k) => (
-        <button type="button" data-p={k} aria-pressed={k === name}>
+      {SAMPLES.map((k) => (
+        <button type="button" data-p={k} aria-pressed={k === s.project}>
           {k}
         </button>
       ))}
+      <button type="button" data-p="__custom__" id="pg-custom" aria-pressed="false" hidden />
+      <button type="button" id="pg-pick" title="Load a manifest.json from this machine">
+        manifest.json…
+      </button>
+      <input id="pg-file" type="file" accept=".json,application/json" hidden />
     </div>
+    <span class="pg-hint" id="pg-file-hint">
+      or drop a manifest.json on this pane — nothing is uploaded
+    </span>
   </div>
   <div class="pg-row">
     <span class="lab">selector</span>
@@ -58,8 +64,8 @@ const linted = lintHtml(lint, outcome.hit, outcome, spec);
         id="pg-sel"
         type="text"
         size="12"
-        value={spec}
-        style={`width:${Math.max(1, spec.length)}ch`}
+        value={s.spec}
+        style={`width:${Math.max(1, s.spec.length)}ch`}
         spellcheck="false"
         autocomplete="off"
         autocapitalize="off"
@@ -74,23 +80,28 @@ const linted = lintHtml(lint, outcome.hit, outcome, spec);
   <div class="pg-row">
     <span class="lab">try</span>
     <div class="seg" id="pg-eg">
-      {EXAMPLES[name]!.map((e) => (
-        <button type="button" aria-pressed={e === spec}>
+      {(EXAMPLES[s.project] ?? []).map((e) => (
+        <button type="button" aria-pressed={e === s.spec}>
           {e}
         </button>
       ))}
     </div>
   </div>
   <p class="pg-err" id="pg-err" role="status">
-    {outcome.error}
+    {s.selectError}
+  </p>
+  <p class="pg-status" id="pg-status" role="status" data-kind="starting">
+    {s.built
+      ? "engine: WebAssembly — starts in your browser, nothing leaves it"
+      : `engine: ${s.reason}`}
   </p>
 </div>
 
 <div class="pg-tabs" role="tablist" aria-label="Output" data-pagefind-ignore>
-  <button role="tab" type="button" id="pt-lin" aria-controls="pp-lin" aria-selected="true">
-    {"Lineage"}
-    <span class="cnt" id="pc-lin">
-      {outcome.hit.size}
+  <button role="tab" type="button" id="pt-sel" aria-controls="pp-sel" aria-selected="true">
+    {"Select"}
+    <span class="cnt" id="pc-sel">
+      {s.matched.length}
     </span>
   </button>
   <button
@@ -101,43 +112,161 @@ const linted = lintHtml(lint, outcome.hit, outcome, spec);
     aria-selected="false"
     tabindex="-1"
   >
-    {"Lint findings"}
+    {"Lint"}
     <span class="cnt" id="pc-lint">
-      {linted.count}
+      {lintCount(s.lint)}
     </span>
+  </button>
+  <button
+    role="tab"
+    type="button"
+    id="pt-cols"
+    aria-controls="pp-cols"
+    aria-selected="false"
+    tabindex="-1"
+  >
+    {"Columns"}
   </button>
 </div>
 
-<div role="tabpanel" id="pp-lin" aria-labelledby="pt-lin" data-pagefind-ignore>
+<div role="tabpanel" id="pp-sel" aria-labelledby="pt-sel" data-pagefind-ignore>
   <div class="pg-out">
     <div class="pane pg-match">
-      <p class="pane-title" id="pg-match-title" set:html={matchedTitle(project, outcome)} />
-      <ol id="pg-match" set:html={matchedHtml(project, outcome, spec, null)} />
+      <p
+        class="pane-title"
+        id="pg-match-title"
+        set:html={matchedTitle(s.total, s.matched.length)}
+      />
+      <ol id="pg-match" set:html={matchedHtml(s.matched, { spec: s.spec, error: s.selectError })} />
     </div>
     <div class="pane pg-lin">
-      <p class="pane-title" id="pg-lin-title" set:html={`lineage: <b>${esc(project.name)}</b>`} />
+      <p class="pane-title" id="pg-lin-title" set:html={`lineage: <b>${esc(s.project)}</b>`} />
       <div class="lin-scroll" tabindex="0" aria-label="Lineage with matched nodes highlighted">
         <div class="lin-host" id="pg-lin">
-          <Fragment set:html={lineage} />
-          {note !== null && <p class="pg-note">{note}</p>}
+          {lineage ? <Fragment set:html={lineage} /> : <p class="pg-note">{note}</p>}
         </div>
       </div>
     </div>
+  </div>
+  <div class="pg-cmd">
+    <span>run it locally</span>
+    <code id="pg-cmd">{lsCommand(s.spec)}</code>
+    <button class="copy" type="button" data-copy-from="#pg-cmd">
+      copy
+    </button>
   </div>
 </div>
 <div role="tabpanel" id="pp-lint" aria-labelledby="pt-lint" hidden data-pagefind-ignore>
   <div class="pane pg-lint">
     <p class="pane-title">dbtl lint</p>
-    <div id="pg-lint" set:html={linted.html} />
+    <div class="cmdline" id="pg-lint-cmd">{`$ ${lintCommand(s.spec)}`}</div>
+    <div
+      id="pg-lint"
+      set:html={
+        lintNote ? `<pre class="pg-cli">${esc(lintNote)}</pre>` : lintBodyHtml(s.lint, s.lintError)
+      }
+    />
+    <div
+      class="pg-lint-foot"
+      id="pg-lint-foot"
+      set:html={lintFootHtml(s.lint, { extra: s.warnings })}
+    />
+  </div>
+  <div class="pg-cmd">
+    <span>run it locally</span>
+    <code id="pg-lcmd">{lintCommand(s.spec)}</code>
+    <button class="copy" type="button" data-copy-from="#pg-lcmd">
+      copy
+    </button>
+    <span class="pg-hint">
+      in your dbt project, after <code>dbt parse</code>
+    </span>
+  </div>
+</div>
+<div role="tabpanel" id="pp-cols" aria-labelledby="pt-cols" hidden data-pagefind-ignore>
+  <div class="pane pg-cols">
+    <p class="pane-title">dbtl columns</p>
+    <div class="pg-row pg-col-row">
+      <span class="cmdline">$</span>
+      <select id="pg-col-node" aria-label="Node">
+        <option value="">— pick a node —</option>
+      </select>
+      <span class="cmdline">.</span>
+      <select id="pg-col-col" aria-label="Column">
+        <option value="">— pick a column —</option>
+      </select>
+      <div class="seg" id="pg-col-dir" role="group" aria-label="Direction">
+        <button type="button" data-d="down" aria-pressed="true">
+          downstream
+        </button>
+        <button type="button" data-d="up" aria-pressed="false">
+          upstream
+        </button>
+      </div>
+    </div>
+    <div id="pg-cols" set:html={columnsBodyHtml(null, COLS_EMPTY_HINT)} />
+  </div>
+  <div class="pg-cmd">
+    <span>run it locally</span>
+    <code id="pg-ccmd">{columnsCommand("", false)}</code>
+    <button class="copy" type="button" data-copy-from="#pg-ccmd">
+      copy
+    </button>
   </div>
 </div>
 
-<div class="pg-cmd" data-pagefind-ignore>
-  <span>run it locally</span>
-  <code id="pg-cmd">{command(spec)}</code>
-  <button class="copy" type="button" data-copy-from="#pg-cmd">
-    copy
-  </button>
+<div class="pane pg-edit" data-pagefind-ignore>
+  <p class="pane-title">edit</p>
+  <div class="pg-ed">
+    <div class="pg-ed-sql">
+      <div class="pg-ed-head">
+        <b id="pg-ed-name">—</b>
+        <span id="pg-ed-kind" />
+        <i class="pg-badge" id="pg-ed-badge" hidden>
+          edited
+        </i>
+        <span class="pg-ed-tools">
+          <button type="button" id="pg-ed-cols" disabled>
+            columns →
+          </button>
+          <button type="button" id="pg-ed-revert" disabled>
+            reset
+          </button>
+        </span>
+      </div>
+      <textarea
+        id="pg-ed-sql"
+        spellcheck="false"
+        rows="12"
+        aria-label="Selected model SQL"
+        disabled
+      ></textarea>
+      <p class="pg-hint" id="pg-ed-hint">
+        Pick a node in the Select tab to see its SQL. Edited SQL is re-analyzed as raw SQL — the
+        manifest's compiled SQL is dropped for it.
+      </p>
+    </div>
+    <div class="pg-ed-cfg">
+      <div class="pg-ed-head">
+        <b>.dbtl.yml</b>
+        <i class="pg-badge" id="pg-cfg-badge" hidden>
+          edited
+        </i>
+        <span class="pg-ed-tools">
+          <button type="button" id="pg-cfg-revert" disabled>
+            reset
+          </button>
+        </span>
+      </div>
+      <textarea
+        id="pg-cfg"
+        spellcheck="false"
+        rows="12"
+        aria-label=".dbtl.yml contents"
+      >{CONFIG_TEMPLATE}</textarea>
+      <p class="pg-err" id="pg-cfg-err" role="status" />
+    </div>
+  </div>
 </div>
 
 <script>
