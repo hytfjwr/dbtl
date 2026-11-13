@@ -9426,6 +9426,42 @@ fn undocumented_exposures_is_opt_in_and_flags_blank_descriptions() {
     );
 }
 
+#[test]
+fn undocumented_exposures_position_lands_on_the_name_entry() {
+    // `fill_finding_lines` resolves the exposure's `- name:` entry inside
+    // the `exposures:` section — a same-named model in the SAME file can't
+    // cross-answer.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    //      1 version: 2               6     type: dashboard
+    //      2                         7     depends_on:
+    //      3 models:                 8       - ref('stg_a')
+    //      4   - name: churn_note    9     owner: {name: t}
+    //      5 exposures:
+    //      6   - name: churn_note   ← line 6 is the answer, not line 4
+    std::fs::write(
+        dir.path().join("models/exposures.yml"),
+        "version: 2\n\nmodels:\n  - name: churn_note\nexposures:\n  - name: churn_note\n    type: dashboard\n    depends_on:\n      - ref('stg_a')\n    owner: {name: t}\n",
+    )
+    .unwrap();
+    let mut e = exposure("churn_note");
+    e.1.original_file_path = Some("models/exposures.yml".into());
+    let mut m = manifest(vec![model("stg_a", "staging/stg_a.sql")], vec![], &[]);
+    m.exposures.extend([e]);
+    let dag = Dag::build(&m);
+    let cfg = config_from("lint:\n  rules:\n    undocumented_exposures: true\n");
+    let mut f = run_rules(LintInput::new(&dag, &cfg)).findings;
+    fill_finding_lines(&mut f, &dag, dir.path());
+    let hit = finding_of(&f, LintRule::UndocumentedExposures, "exposure.p.churn_note");
+    let loc = hit.location.as_ref().expect("a position lands");
+    assert_eq!(loc.file.as_str(), "models/exposures.yml");
+    assert_eq!(
+        loc.line,
+        Some(6),
+        "the `- name:` line inside the exposures: section, not the models: decoy"
+    );
+}
+
 // ---- model_too_long -----------------------------------------------------------
 
 /// A SQL file of `counted` non-blank lines.
@@ -9532,6 +9568,30 @@ fn model_too_long_skips_python_models_and_missing_sql() {
     assert!(
         flagged(&f, LintRule::ModelTooLong).is_empty(),
         "the default max_lines is 300"
+    );
+}
+
+#[test]
+fn model_too_long_edge_files_count_correctly() {
+    // A comment-only file counts zero lines (never flags, even at
+    // max_lines 1) and an unterminated final line still counts.
+    let comment_only = sited_model(
+        "comment_only",
+        "models/marts/comment_only.sql",
+        "{# nothing #}\n{# but\n   comments #}\n",
+    );
+    let no_trailing_nl = sited_model(
+        "no_nl",
+        "models/marts/no_nl.sql",
+        "select 1\nselect 2", // 2 counted lines, no trailing \n
+    );
+    let m = manifest(vec![comment_only, no_trailing_nl], vec![], &[]);
+    let cfg = config_from("lint:\n  rules:\n    model_too_long: {max_lines: 1}\n");
+    let f = findings_of(&m, &cfg);
+    assert_eq!(
+        flagged(&f, LintRule::ModelTooLong),
+        vec!["model.p.no_nl"],
+        "comment-only counts 0 lines; the unterminated tail still counts"
     );
 }
 

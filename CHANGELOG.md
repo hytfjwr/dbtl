@@ -10,9 +10,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Three opt-in lint rules — `undocumented_exposures`, `model_too_long`
   (`max_lines`, default 300), and `layer_materializations` (per-layer
-  `allowed` map) — plus `required_meta_keys.resource_types` widening its
-  target set to seeds, snapshots, sources, and exposures. All are off
-  under `standard` and on under `strict`.
+  `allowed` map) — all off under `standard` and on under `strict` — plus
+  `required_meta_keys.resource_types` widening its target set to seeds,
+  snapshots, sources, and exposures.
 - Lint suppressions now carry a reason, and reports surface them.
   `meta.dbtl.ignore` accepts a map form — `ignore: {root_models: "pk
   enforced upstream", all: "imported model"}` — recording a reason per
