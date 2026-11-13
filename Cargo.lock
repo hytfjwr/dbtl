@@ -526,7 +526,7 @@ dependencies = [
 
 [[package]]
 name = "dbtl"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anstream",
  "anyhow",
@@ -551,7 +551,7 @@ dependencies = [
 
 [[package]]
 name = "dbtl-core"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "regex",
@@ -566,7 +566,7 @@ dependencies = [
 
 [[package]]
 name = "dbtl-docs"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "dbtl-core",
  "dbtl-tui",
@@ -575,7 +575,7 @@ dependencies = [
 
 [[package]]
 name = "dbtl-report"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "annotate-snippets",
  "anstyle",
@@ -586,7 +586,7 @@ dependencies = [
 
 [[package]]
 name = "dbtl-tui"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "dbtl-core",
@@ -601,7 +601,7 @@ dependencies = [
 
 [[package]]
 name = "dbtl-wasm"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "dbtl-core",
  "dbtl-report",
@@ -2659,7 +2659,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "clap",
