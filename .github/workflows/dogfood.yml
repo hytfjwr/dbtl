@@ -452,6 +452,32 @@ jobs:
             ${{ runner.temp }}/dogfood/impact.md
           if-no-files-found: warn
 
+  # Housekeeping, never a gate: once Release build has saved its fresh
+  # generation on a main push, drop every older generation of the `release`
+  # series so the Actions cache stays inside its budget.
+  cache-prune:
+    name: Prune old cache generations
+    needs:
+      - changes
+      - release-build
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # Deleting cache entries needs the actions scope.
+      actions: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prune old generations of this workflow's caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/prune-caches.sh v0-rust-release-
+
   # The single required check for this workflow: fails when any needed job
   # failed or was cancelled; change-scoped skips pass.
   dogfood-result:

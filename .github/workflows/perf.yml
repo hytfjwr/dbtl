@@ -479,6 +479,32 @@ jobs:
           path: ${{ runner.temp }}/perf-bin
           key: ${{ steps.key.outputs.key }}
 
+  # Housekeeping, never a gate: once the prebuild has saved on a main push,
+  # drop older `perf` generations. The perf-bin-* bundles are keyed by the
+  # input SHA rather than generational — keep the newest few so recent
+  # merge bases still find their binaries.
+  cache-prune:
+    name: Prune old cache generations
+    needs: perf-prebuild
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # Deleting cache entries needs the actions scope.
+      actions: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prune old generations of this workflow's caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP_OTHER: "10"
+        run: bash .github/scripts/prune-caches.sh v0-rust-perf- perf-bin-
+
   # The ignored `perf_*` tests under a release build — a smoke budget per
   # workload, run against main daily so a pathological regression surfaces
   # even without a PR touching it.
