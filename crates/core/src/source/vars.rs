@@ -392,10 +392,7 @@ impl<'a> EnabledExpr<'a, '_> {
             };
             let cur = self.parse_postfix()?;
             if ok {
-                match self.compare(op, &prev, &cur) {
-                    Some(b) => ok = b,
-                    None => return None,
-                }
+                ok = self.compare(op, &prev, &cur)?;
             }
             prev = cur;
             chained = true;

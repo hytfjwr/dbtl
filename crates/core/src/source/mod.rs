@@ -39,7 +39,7 @@
 //!   sources included) drops the node, like dbt parking it under
 //!   `disabled` — a generic test's `enabled:`/`config.enabled` likewise
 //!   drops the test. Enabled values evaluate through ONE shared
-//!   expression evaluator ([`vars`]): literals, `var('name'[, default])`,
+//!   expression evaluator (`vars`): literals, `var('name'[, default])`,
 //!   `==`/`!=`/`<=`-style comparisons, `and`/`or`/`not` with Python's
 //!   operand-returning semantics (a non-boolean result is unproven — the
 //!   resource stays enabled with a warning, since only a proven `false`
