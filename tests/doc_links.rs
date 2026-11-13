@@ -10,11 +10,7 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use common::{dbtl_cmd, manifest_path};
-
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
+use common::{dbtl_cmd, manifest_path, repo_root};
 
 /// The Markdown files whose links are part of the public surface: the
 /// top-level docs plus everything under docs/ (hand-written and generated)

@@ -5,31 +5,10 @@
 
 mod common;
 
-use common::{dbtl_cmd, fixture_path, manifest_path as fixture_manifest};
+use common::{
+    dbtl_cmd, fixture_path, manifest_in, manifest_path as fixture_manifest, run, stderr, stdout,
+};
 use std::path::{Path, PathBuf};
-
-fn run(args: &[&str]) -> std::process::Output {
-    dbtl_cmd()
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("failed to run dbtl")
-}
-
-fn out_text(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-fn stderr(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
-}
-
-/// Copy the fixture manifest into `dir` — tests that place `.dbtl.yml` or
-/// report files beside the data source need an owned directory.
-fn manifest_in(dir: &Path) -> PathBuf {
-    let dst = dir.join("manifest.json");
-    std::fs::copy(fixture_manifest(), &dst).unwrap();
-    dst
-}
 
 fn check_on(manifest: &Path, extra: &[&str]) -> std::process::Output {
     let mut args: Vec<&str> = vec!["check", "--manifest"];
@@ -45,7 +24,7 @@ fn check_default_format_is_the_text_line_report() {
     let m = fixture_manifest();
     let out = check_on(&m, &[]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     assert!(stdout.starts_with("scope: root project only\n"));
     assert!(
         stdout.lines().any(|l| l.starts_with("PASS coverage:")),
@@ -61,7 +40,7 @@ fn check_format_markdown_is_real_markdown() {
     let m = fixture_manifest();
     let out = check_on(&m, &["--lint", "--format", "markdown"]);
     assert_eq!(out.status.code(), Some(1), "lint trips the gate");
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     assert!(
         stdout.starts_with("<!-- dbtl:report -->\n"),
         "the marker leads the document: {stdout}"
@@ -87,7 +66,7 @@ fn check_format_markdown_is_real_markdown() {
 fn check_format_json_is_the_report_document() {
     let m = fixture_manifest();
     let out = check_on(&m, &["--lint", "--format", "json"]);
-    let v: serde_json::Value = serde_json::from_str(&out_text(&out)).expect("stdout is pure JSON");
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("stdout is pure JSON");
     assert_eq!(v["schema"], "dbtl.report/v1");
     assert_eq!(v["project"], "jaffle_finance");
     assert_eq!(v["scope"], "root project only");
@@ -108,7 +87,7 @@ fn check_json_embeds_the_diff_report_under_diff() {
     let m = fixture_manifest();
     let out = check_on(&m, &["--format", "json", "--diff", m.to_str().unwrap()]);
     assert!(out.status.success(), "self-diff passes: {}", stderr(&out));
-    let v: serde_json::Value = serde_json::from_str(&out_text(&out)).expect("json");
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
     // `impact` is the same DiffReport `dbtl impact` prints — the baseline
     // label and the pr-impact block are both inside it.
     let impact = &v["impact"];
@@ -122,7 +101,7 @@ fn check_format_github_emits_workflow_commands() {
     let m = fixture_manifest();
     let out = check_on(&m, &["--lint", "--format", "github"]);
     assert_eq!(out.status.code(), Some(1));
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     // A file-bound annotation carries file/title — `line` rides along only
     // when the finding's position is actually known, never a guessed 1;
     // graph findings pin the call site (line 4, columns 18–58 = the
@@ -145,7 +124,7 @@ fn check_format_github_emits_workflow_commands() {
 fn check_format_sarif_is_a_valid_210_document() {
     let m = fixture_manifest();
     let out = check_on(&m, &["--lint", "--format", "sarif"]);
-    let v: serde_json::Value = serde_json::from_str(&out_text(&out)).expect("sarif parses");
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("sarif parses");
     assert_eq!(v["version"], "2.1.0");
     assert_eq!(
         v["$schema"], "https://json.schemastore.org/sarif-2.1.0.json",
@@ -177,7 +156,7 @@ fn check_format_sarif_is_a_valid_210_document() {
 /// carries — the oracle every finding-listing format must match.
 fn counted_findings(m: &Path) -> usize {
     let out = check_on(m, &["--lint", "--format", "json"]);
-    let v: serde_json::Value = serde_json::from_str(&out_text(&out)).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
     v["gates"]
         .as_array()
         .unwrap()
@@ -196,7 +175,7 @@ fn counted_findings(m: &Path) -> usize {
 fn check_format_junit_is_wellformed_xml() {
     let m = fixture_manifest();
     let out = check_on(&m, &["--lint", "--format", "junit"]);
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     assert!(stdout.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
     assert!(stdout.ends_with("</testsuite>\n</testsuites>\n"));
     // One testcase per gate: coverage + every enabled lint rule.
@@ -229,7 +208,7 @@ fn check_format_junit_is_wellformed_xml() {
 fn check_format_codeclimate_is_an_issue_array() {
     let m = fixture_manifest();
     let out = check_on(&m, &["--lint", "--format", "codeclimate"]);
-    let v: serde_json::Value = serde_json::from_str(&out_text(&out)).expect("codeclimate parses");
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("codeclimate parses");
     let issues = v.as_array().expect("a top-level array");
     assert_eq!(issues.len(), counted_findings(&m));
     let first = &issues[0];
@@ -271,7 +250,7 @@ fn report_writes_multiple_formats_matching_stdout() {
     assert_eq!(out.status.code(), Some(1), "the gates still gate");
     // The stdout format is text; the files carry their own formats — the
     // exact bytes `--format` would print.
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     assert!(stdout.contains("scope: root project only"));
     let file_json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
@@ -282,7 +261,7 @@ fn report_writes_multiple_formats_matching_stdout() {
     // Byte-equality with the same format on stdout.
     let out2 = check_on(&m, &["--lint", "--format", "json"]);
     assert_eq!(
-        out_text(&out2),
+        common::stdout(&out2),
         std::fs::read_to_string(&json_path).unwrap(),
         "--report json matches --format json stdout"
     );
@@ -428,7 +407,7 @@ fn path_prefix_does_not_reach_concise_lines() {
         ],
     );
     assert_eq!(out.status.code(), Some(1), "lint still gates");
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     let file = std::fs::read_to_string(&concise).unwrap();
     for (label, body) in [("stdout", &stdout), ("--report concise:", &file)] {
         let line = body
@@ -469,9 +448,9 @@ fn docs_dir_gate_passes_on_fresh_docs() {
         stderr(&out)
     );
     assert!(
-        out_text(&out).contains("PASS docs drift:"),
+        stdout(&out).contains("PASS docs drift:"),
         "the gate reports: {}",
-        out_text(&out)
+        stdout(&out)
     );
 }
 
@@ -511,7 +490,7 @@ fn docs_dir_gate_reports_the_same_differences_as_docs_check() {
         "--check",
     ]);
     assert_eq!(out.status.code(), Some(1));
-    let docs_stdout = out_text(&out);
+    let docs_stdout = stdout(&out);
     assert!(docs_stdout.contains("changed: README.md"));
     assert!(docs_stdout.contains(&page_name));
     assert!(
@@ -525,7 +504,7 @@ fn docs_dir_gate_reports_the_same_differences_as_docs_check() {
         &["--docs-dir", docs.to_str().unwrap(), "--format", "json"],
     );
     assert_eq!(out.status.code(), Some(1), "the drift gates");
-    let v: serde_json::Value = serde_json::from_str(&out_text(&out)).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
     let gate = v["gates"]
         .as_array()
         .unwrap()
@@ -574,7 +553,7 @@ fn impact_report_writes_the_same_bytes_as_stdout() {
     ]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     assert_eq!(
-        out_text(&out),
+        stdout(&out),
         std::fs::read_to_string(&md_path).unwrap(),
         "the markdown file is the stdout document"
     );
@@ -656,7 +635,7 @@ fn concise_is_one_greppable_line_per_finding() {
         "concise",
     ]);
     assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     assert!(
         stdout
             .contains("models/marts/schema.yml:4:11: error[missing_primary_key_tests] fct_orders"),
@@ -684,7 +663,7 @@ fn concise_lines_match_the_json_finding_set() {
         "--format",
         "concise",
     ]);
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     let concise_count = stdout
         .lines()
         .filter(|l| l.contains("[") && !l.starts_with("Found") && !l.starts_with("No findings"))
@@ -705,7 +684,7 @@ fn lint_on_json(m: &Path) -> String {
         "--format",
         "json",
     ]);
-    out_text(&out)
+    stdout(&out)
 }
 
 // ---- --color + ANSI discipline -------------------------------------------------
@@ -726,9 +705,9 @@ fn color_flag_and_env_control_the_ansi() {
         "always",
     ]);
     assert!(
-        out_text(&out).contains(ESC),
+        stdout(&out).contains(ESC),
         "always forces styling: {}",
-        out_text(&out)
+        stdout(&out)
     );
     // `--color never` stays plain — and it beats the environment's force.
     let out = dbtl_cmd()
@@ -744,7 +723,7 @@ fn color_flag_and_env_control_the_ansi() {
         .output()
         .expect("run");
     assert!(
-        !out_text(&out).contains(ESC),
+        !stdout(&out).contains(ESC),
         "never wins over CLICOLOR_FORCE"
     );
     // Under `auto` the environment speaks: CLICOLOR_FORCE colors a piped
@@ -756,9 +735,9 @@ fn color_flag_and_env_control_the_ansi() {
         .output()
         .expect("run");
     assert!(
-        out_text(&out).contains(ESC),
+        stdout(&out).contains(ESC),
         "auto honors CLICOLOR_FORCE: {}",
-        out_text(&out)
+        stdout(&out)
     );
     let out = dbtl_cmd()
         .args(["lint", "--manifest", m.to_str().unwrap()])
@@ -768,7 +747,7 @@ fn color_flag_and_env_control_the_ansi() {
         .output()
         .expect("run");
     assert!(
-        !out_text(&out).contains(ESC),
+        !stdout(&out).contains(ESC),
         "NO_COLOR beats the force under auto"
     );
     // A bogus value is a usage error — the flag is closed-world.
@@ -800,7 +779,7 @@ fn ansi_never_reaches_machine_formats_or_report_files() {
         "--report",
         &format!("json:{}", json.display()),
     ]);
-    assert!(out_text(&out).contains(ESC), "stdout is styled");
+    assert!(stdout(&out).contains(ESC), "stdout is styled");
     for file in [&txt, &json] {
         let body = std::fs::read_to_string(file).unwrap();
         assert!(!body.contains(ESC), "{} carries no ANSI", file.display());
@@ -823,10 +802,7 @@ fn ansi_never_reaches_machine_formats_or_report_files() {
             "--color",
             "always",
         ]);
-        assert!(
-            !out_text(&out).contains(ESC),
-            "{fmt} stdout carries no ANSI"
-        );
+        assert!(!stdout(&out).contains(ESC), "{fmt} stdout carries no ANSI");
     }
 }
 
@@ -846,7 +822,7 @@ fn text_report_underlines_the_declaring_source_line() {
         "missing_primary_key_tests",
     ]);
     assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
-    let stdout = out_text(&out);
+    let stdout = stdout(&out);
     for needle in [
         "error[missing_primary_key_tests]: fct_orders",
         "--> models/marts/schema.yml:4:11",

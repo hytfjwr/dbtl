@@ -4,52 +4,15 @@
 
 mod common;
 use common::{
-    dbtl_cmd, manifest_path as fixture_manifest, sample_manifest_path as sample_manifest,
-    SAMPLE_PROJECT,
+    copy_tree, manifest_path as fixture_manifest, run, run_env,
+    sample_manifest_path as sample_manifest, SAMPLE_PROJECT,
 };
 use std::path::PathBuf;
-
-fn run(args: &[&str]) -> std::process::Output {
-    dbtl_cmd()
-        .args(args)
-        // Null stdin keeps a bare (no-subcommand) invocation from seeing the
-        // test runner's TTY and parking on the interactive event loop.
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("failed to run dbtl")
-}
-
-/// Same as [`run`] with extra env vars scoped to the child process — the only
-/// safe way to point `~/.config/dbtl/config.yml` at a fixture.
-fn run_env(args: &[&str], envs: &[(&str, &std::path::Path)]) -> std::process::Output {
-    let mut cmd = dbtl_cmd();
-    cmd.args(args);
-    cmd.stdin(std::process::Stdio::null());
-    for (k, v) in envs {
-        cmd.env(k, v);
-    }
-    cmd.output().expect("failed to run dbtl")
-}
 
 /// The source-mode dbt project fixture (`stg_orders -> fct_orders ->
 /// agg_country_orders`, plus the `orders_dashboard` exposure).
 fn sample_project() -> PathBuf {
     PathBuf::from(SAMPLE_PROJECT)
-}
-
-/// A recursive directory copy — `std::fs` has none, and the diff tests need
-/// an editable twin of the fixture (same `name: sample` → same unique_ids).
-fn copy_dir(src: &std::path::Path, dst: &std::path::Path) {
-    std::fs::create_dir_all(dst).unwrap();
-    for e in std::fs::read_dir(src).unwrap() {
-        let e = e.unwrap();
-        let to = dst.join(e.file_name());
-        if e.file_type().unwrap().is_dir() {
-            copy_dir(&e.path(), &to);
-        } else {
-            std::fs::copy(e.path(), &to).unwrap();
-        }
-    }
 }
 
 /// The `- name: status` block inside `stg_orders`'s declared columns — the
@@ -570,7 +533,7 @@ fn check_lint_dbtl_yml_disables_rules() {
 /// `select o.*` no longer carries one in: the broken consumer.
 fn project_without_stg_status(tmp: &tempfile::TempDir) -> PathBuf {
     let proj = tmp.path().join("proj");
-    copy_dir(&sample_project(), &proj);
+    copy_tree(&sample_project(), &proj);
     let schema = proj.join("models/staging/schema.yml");
     let text = std::fs::read_to_string(&schema).unwrap();
     assert!(
@@ -674,7 +637,7 @@ fn impact_narrow_selector_keeps_fanout_for_column_invisible_sql() {
     // alone would leave fct_orders (and everything downstream) stale.
     let tmp = tempfile::tempdir().unwrap();
     let proj = tmp.path().join("proj");
-    copy_dir(&sample_project(), &proj);
+    copy_tree(&sample_project(), &proj);
     let sql = proj.join("models/staging/stg_orders.sql");
     let text = std::fs::read_to_string(&sql).unwrap();
     std::fs::write(&sql, format!("{text}\nwhere disabled_flag = true\n")).unwrap();
@@ -733,7 +696,7 @@ fn check_no_breaking_passes_when_nothing_dangles() {
     // same copy shape: only stg_orders.id's declared type changes.
     let tmp = tempfile::tempdir().unwrap();
     let proj = tmp.path().join("proj");
-    copy_dir(&sample_project(), &proj);
+    copy_tree(&sample_project(), &proj);
     let schema = proj.join("models/staging/schema.yml");
     let text = std::fs::read_to_string(&schema).unwrap();
     std::fs::write(
@@ -790,7 +753,7 @@ fn check_no_breaking_rename_prints_old_to_new() {
     // shows the migration to ask for.
     let tmp = tempfile::tempdir().unwrap();
     let proj = tmp.path().join("proj");
-    copy_dir(&sample_project(), &proj);
+    copy_tree(&sample_project(), &proj);
     let schema = proj.join("models/staging/schema.yml");
     let text = std::fs::read_to_string(&schema).unwrap();
     std::fs::write(
@@ -831,7 +794,7 @@ fn check_no_breaking_rename_prints_old_to_new() {
 /// the two-node change set the selection tests narrow against.
 fn two_changed_project(tmp: &tempfile::TempDir) -> PathBuf {
     let proj = tmp.path().join("proj");
-    copy_dir(&sample_project(), &proj);
+    copy_tree(&sample_project(), &proj);
     for rel in [
         "models/staging/stg_orders.sql",
         "models/marts/dim_customers.sql",

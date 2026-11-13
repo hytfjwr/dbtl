@@ -5,6 +5,9 @@
 //! resolution tier. Stale/fresh cases need controlled mtimes, so they copy the
 //! fixture into a tempdir and stamp the files explicitly.
 
+mod common;
+
+use common::{copy_tree, stamp};
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -113,30 +116,6 @@ fn deterministic_loading() {
 }
 
 // ---- stale detection (tempdir + controlled mtimes) -------------------------
-
-/// Recursively copy a directory tree (the fixture) into `dst`.
-fn copy_tree(src: &Path, dst: &Path) {
-    fs::create_dir_all(dst).unwrap();
-    for entry in fs::read_dir(src).unwrap() {
-        let entry = entry.unwrap();
-        let to = dst.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_tree(&entry.path(), &to);
-        } else {
-            fs::copy(entry.path(), &to).unwrap();
-        }
-    }
-}
-
-/// Set a file's mtime to an absolute instant (Rust ≥1.75 `File::set_modified`).
-fn stamp(path: &Path, t: SystemTime) {
-    fs::File::options()
-        .write(true)
-        .open(path)
-        .unwrap()
-        .set_modified(t)
-        .unwrap();
-}
 
 /// Copy the fixture into a tempdir and stamp the two files that decide
 /// `stg_one`'s freshness: `src_newer` true → stale, false → fresh.

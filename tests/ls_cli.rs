@@ -7,32 +7,10 @@
 mod common;
 
 use common::{
-    dbtl_cmd, git_isolated_env, manifest_path as fixture_manifest, sample_manifest_path, GitRepo,
-    SAMPLE_PROJECT,
+    dbtl, lines, manifest_path as fixture_manifest, run, sample_manifest_path, stderr, stdout,
+    GitRepo, SAMPLE_PROJECT,
 };
 use std::path::Path;
-use std::process::Command;
-
-/// `dbtl` with a nulled stdin and the sealed git env (`ls --diff git:` spawns
-/// `git` — its child must see the same isolation the test commits ran under).
-fn dbtl(args: &[&str]) -> Command {
-    let mut cmd = dbtl_cmd();
-    cmd.args(args);
-    cmd.stdin(std::process::Stdio::null());
-    git_isolated_env(&mut cmd);
-    cmd
-}
-
-fn run(args: &[&str]) -> std::process::Output {
-    dbtl(args).output().expect("run dbtl")
-}
-
-fn stdout(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-fn stderr(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
-}
 
 /// `dbtl ls <specs> --manifest <SAMPLE> <extra...>`.
 fn ls(specs: &[&str], extra: &[&str]) -> std::process::Output {
@@ -43,10 +21,6 @@ fn ls(specs: &[&str], extra: &[&str]) -> std::process::Output {
     args.extend(extra.iter().map(|s| s.to_string()));
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     run(&refs)
-}
-
-fn lines(out: &std::process::Output) -> Vec<String> {
-    stdout(out).lines().map(|l| l.to_string()).collect()
 }
 
 // ---- listings: unions, intersections, hops, atoms --------------------------

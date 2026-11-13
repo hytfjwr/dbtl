@@ -7,28 +7,16 @@
 mod common;
 
 use common::{
-    dbtl_cmd, manifest_path as fixture_manifest, sample_manifest_path as sample_manifest,
-    SAMPLE_PROJECT,
+    dbtl, dbtl_cmd, manifest_path as fixture_manifest, run,
+    sample_manifest_path as sample_manifest, stderr, stdout, SAMPLE_PROJECT,
 };
 use std::path::{Path, PathBuf};
-
-fn run(args: &[&str]) -> std::process::Output {
-    dbtl_cmd()
-        .args(args)
-        // Null stdin keeps a bare (no-subcommand) invocation from seeing the
-        // test runner's TTY and parking on the interactive event loop.
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("failed to run dbtl")
-}
 
 /// Spawn + poll `try_wait`, killing a child that parks (the pattern
 /// `package_scope.rs` uses for TUI-startup paths — a console-having host
 /// could otherwise block forever on the interactive event loop).
 fn spawn_and_wait(args: &[&str]) -> std::process::Output {
-    let mut child = dbtl_cmd()
-        .args(args)
-        .stdin(std::process::Stdio::null())
+    let mut child = dbtl(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -44,13 +32,6 @@ fn spawn_and_wait(args: &[&str]) -> std::process::Output {
         child.kill().expect("kill parked child");
     }
     child.wait_with_output().expect("collect child output")
-}
-
-fn stderr(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
-}
-fn stdout(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 // ---- exit code 0 / 1: success and gate failures -------------------------

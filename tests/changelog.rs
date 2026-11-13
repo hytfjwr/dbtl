@@ -2,11 +2,9 @@
 //! on top, dated `## [X.Y.Z]` sections newest-first, and a footer compare
 //! link per section — including one for the workspace version.
 
-use std::path::PathBuf;
+mod common;
 
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
+use common::repo_root;
 
 fn changelog() -> String {
     std::fs::read_to_string(repo_root().join("CHANGELOG.md")).unwrap()

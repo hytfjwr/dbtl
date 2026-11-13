@@ -7,30 +7,8 @@
 //! a `-`-leading rev, `git` absent from `PATH`).
 
 mod common;
-use common::{copy_tree, dbtl_cmd, git_isolated_env, GitRepo, SAMPLE_PROJECT};
+use common::{copy_tree, dbtl, run, stderr, stdout, GitRepo, SAMPLE_PROJECT};
 use std::path::Path;
-use std::process::Command;
-
-/// `dbtl` with the sealed git config (its spawned `git` children must see
-/// the same isolation the test commits ran under) and a nulled stdin.
-fn dbtl(args: &[&str]) -> Command {
-    let mut cmd = dbtl_cmd();
-    cmd.args(args);
-    cmd.stdin(std::process::Stdio::null());
-    git_isolated_env(&mut cmd);
-    cmd
-}
-
-fn run(args: &[&str]) -> std::process::Output {
-    dbtl(args).output().expect("run dbtl")
-}
-
-fn stdout(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-fn stderr(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
-}
 
 /// A repo holding the sample project at `rel`, committed twice: the
 /// fixture verbatim (the baseline revision) and then with
