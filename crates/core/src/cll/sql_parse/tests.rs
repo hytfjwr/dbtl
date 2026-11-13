@@ -2355,6 +2355,82 @@ fn jinja_parse_recovers_loop_separators_and_exclusive_arms() {
 }
 
 #[test]
+fn jinja_arm_splits_where_a_comma_cannot_parse_render_a_space() {
+    // `,` needs a completed item or expression before it — after an
+    // operand-expecting keyword, an operator, `(`, or nothing at all it
+    // is guaranteed-invalid, so the split emits whitespace and the
+    // arms' text concatenates instead.
+    for (sql, rendered) in [
+        // Empty arm 0 — `select ,a`/`from ,t` fail where the space
+        // render parses.
+        (
+            "select {% if x %}{% else %}a{% endif %} from t",
+            "select   a  from t",
+        ),
+        (
+            "select * from {% if x %}{% else %}t{% endif %}",
+            "select * from   t ",
+        ),
+        // `a +` can't precede `,` — `a +  b` reads as one expression.
+        (
+            "select {% if x %}a +{% else %}b{% endif %} from t",
+            "select  a + b  from t",
+        ),
+        // `and`/`limit` need their operand — `and ,b`/`limit ,10` fail
+        // where `and  b`/`limit  10` parse.
+        (
+            "select id from t where a > 0 and {% if x %}{% else %}b > 0{% endif %}",
+            "select id from t where a > 0 and   b > 0 ",
+        ),
+        (
+            "select id from t limit {% if x %}{% else %}10{% endif %}",
+            "select id from t limit   10 ",
+        ),
+        // `end` completes a CASE — `end , b` IS a valid list split.
+        (
+            "select case when p then 1 end {% if x %}{% else %}b{% endif %} from t",
+            "select case when p then 1 end  ,b  from t",
+        ),
+    ] {
+        assert_eq!(render_jinja(sql, SqlDialect::Generic), rendered, "{sql:?}");
+        assert!(
+            jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic).is_some(),
+            "{sql:?} parses"
+        );
+    }
+}
+
+#[test]
+fn jinja_comment_commas_never_read_as_written_separators() {
+    // A `{# … #}` inside the `{% else %}from` gap can't leak into the
+    // render — Jinja drops it.
+    assert_eq!(
+        render_jinja(
+            "select * {% if x %} from a.t {% else %}{# c #} from b.u {% endif %}",
+            SqlDialect::Generic
+        ),
+        "select *   from a.t ,   b.u  "
+    );
+    // A `,` inside a comment in an arm body is text, not a written
+    // comma join — the branch comma alone separates the arms.
+    let dag = Dag::build(&manifest(
+        vec![
+            model("model.t.a", "select 1", &["id"]),
+            model("model.t.b", "select 1", &["id"]),
+            raw_model(
+                "model.t.m",
+                "select t.id from {% if x %}{{ ref('a') }} t{% else %}/* , */ {{ ref('b') }} t{% endif %}",
+                &[],
+            ),
+        ],
+        &[("model.t.a", "model.t.m"), ("model.t.b", "model.t.m")],
+    ));
+    let r = resolver();
+    assert!(!r.is_fallback("model.t.m"));
+    assert!(r.sql_facts(&dag, "model.t.m").unwrap().cartesian.is_empty());
+}
+
+#[test]
 fn jinja_block_body_models_resolve_the_surrounding_sql() {
     // The block body never reaches the render — the model resolves
     // against the SQL around it, not a phantom first statement.

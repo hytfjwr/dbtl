@@ -41,10 +41,16 @@
 //! Jinja handling (raw-SQL fallback only — compiled SQL is already
 //! rendered): `{{ ref('x') }}` / `{{ source('a','b') }}` render to the quoted
 //! relation names dbt would emit, other `{{ }}` expressions render as
-//! `NULL`, `{% %}` tags drop so `{% if %}…{% endif %}` bodies keep their SQL
-//! (union coverage of every branch — the same answer some warehouse
-//! configuration would give), `{# #}` comments drop. Anything the render or
-//! the dialect parse can't handle falls back to the name-match resolver.
+//! `NULL`, and `{# #}` comments drop. `{% %}` tags drop so `{% if %}…{%
+//! endif %}` bodies keep their SQL — `{% elif %}`/`{% else %}` splits emit
+//! `,` where the position allows, unioning the mutually exclusive arms as
+//! list items — while template-side `{% set %}…{% endset %}`/`{% macro
+//! %}…{% endmacro %}`/`{% call %}…{% endcall %}` bodies blank whole (their
+//! interior SQL is not a statement). When the union text can't parse,
+//! `jinja_parse` retries with dangling loop separators blanked, then with
+//! a collapse render keeping one arm per `{% if %}` chain. Anything the
+//! render or the dialect parse can't handle falls back to the name-match
+//! resolver.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -574,9 +580,11 @@ impl SqlParseResolver {
             }
             // A name whose occurrences sit in mutually exclusive
             // `{% if %}`/`{% else %}` arms reaches one render only as
-            // often as its largest co-runnable set — count each name
+            // often as a maximal co-runnable subset — count each name
             // there, or an `if`/`else` pair of same-named columns
-            // fabricates a duplicate no real render contains.
+            // fabricates a duplicate no real render contains. The
+            // greedy kept-set is always co-runnable and can only
+            // under-count a worst-case ordering — never over-count.
             let name_spans = output_name_occurrences(query);
             for (idx, name) in dup_order.iter().enumerate() {
                 if dup_counts[idx] <= 1 {

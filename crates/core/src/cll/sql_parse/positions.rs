@@ -84,7 +84,7 @@ pub(super) fn plain_positions(raw: &str, dialect: SqlDialect) -> Option<SqlPosit
         _ => None,
     }) {
         for (name, spans) in output_name_occurrences(q) {
-            // The fact count only counts a name's largest co-runnable
+            // The fact count only counts a name's maximal co-runnable
             // occurrence set (exclusive `{% if %}`/`{% else %}` arms
             // never render together) — keep the same occurrences here,
             // so a name the facts don't count can't get a position the

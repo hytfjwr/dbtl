@@ -65,11 +65,17 @@ struct Seg {
 /// Raw model SQL rendered for the parser, plus the map back to source:
 /// every byte range of `text` knows which raw range produced it — copied
 /// regions map 1:1, a rendered `{{ }}`/`{% %}`/`{# #}` maps to its whole
-/// tag. `text` is byte-identical to [`render_jinja_as`]'s output.
+/// tag. Under [`RenderArms::Union`] `text` is byte-identical to
+/// [`render_jinja_as`]'s output; `Collapse` emits whitespace for `>0`
+/// arms.
 #[derive(Debug)]
 pub(super) struct RenderedSql {
     /// The rendered text the parser reads.
     pub(super) text: String,
+    /// The dialect's lexical rules the render ran under —
+    /// [`RenderedSql::only_branch_commas`] skips comments and literals
+    /// with them.
+    lex: Lex,
     /// Segments tiling `text` in emission order (the `src` ranges tile
     /// the input the same way).
     segs: Vec<Seg>,
@@ -128,9 +134,10 @@ impl RenderedSql {
         &self.branches
     }
 
-    /// The source byte range a parsed [`Span`] points at — `None` for an
-    /// empty span or one whose (line, column) math doesn't land on the
-    /// text: a position the renderer can't place is no position.
+    /// The arm path at the source position a parsed [`Span`] maps to —
+    /// `None` like [`RenderedSql::span_source`] when the span can't be
+    /// placed on the text. Callers read exclusivity off the path with
+    /// [`crate::source::arms_exclusive`].
     pub(super) fn span_arm_path(&self, span: Span) -> Option<Vec<ArmStep>> {
         self.span_source(span)
             .map(|r| self.branches.arm_path(r.start).to_vec())
@@ -153,7 +160,9 @@ impl RenderedSql {
     /// Then the items are `{% if %}`/`{% elif %}`/`{% else %}` arms of a
     /// branch union (dbt renders exactly one per chain — they can never
     /// form a product), not a written comma join. `false` when the gap
-    /// holds a literal `,` — or no comma at all.
+    /// holds a literal `,` — or no comma at all. Commas inside comments
+    /// and string literals are text, not separators — the token scan
+    /// skips them like the parser does.
     pub(super) fn only_branch_commas(&self, gap: Span) -> bool {
         let (Some(start), Some(end)) = (
             position_offset(&self.text, gap.start.line, gap.start.column),
@@ -165,9 +174,9 @@ impl RenderedSql {
             return false;
         }
         let mut found = false;
-        for (i, c) in self.text.as_bytes()[start..end].iter().enumerate() {
-            if *c == b',' {
-                if !self.branch_commas.contains(&(start + i)) {
+        for (r, t) in sep_tokens(&self.text.as_bytes()[start..end], &self.lex) {
+            if t == Tok::Comma {
+                if !self.branch_commas.contains(&(start + r.start)) {
                     return false;
                 }
                 found = true;
@@ -279,6 +288,7 @@ pub(super) fn word_byte(c: u8) -> bool {
 /// reads them with the same quote and the dialect's own escape rule;
 /// `x`/`u&` prefixes only count at word start (`xu&'` stays a plain
 /// literal, matching the tokenizer's word-first read).
+#[derive(Debug)]
 pub(super) struct Lex {
     /// `\'`/`\"` escape inside a `'…'`/`"…"` string —
     /// `Dialect::supports_string_literal_backslash_escape` (Snowflake,
@@ -556,6 +566,90 @@ const NAME_WORDS: &[&[u8]] = &[
     b"like", b"ilike", b"rlike", b"similar", b"not", b"on", b"or", b"then", b"when", b"with",
 ];
 
+/// Words that still need their operand — a `,` can't sit after `from`,
+/// `where`, `and`, `as`, `case`, `then`, `in`, `union`, `limit` and
+/// friends without breaking the statement (`from ,t`, `a and ,b`,
+/// `limit ,10` all fail, where the space render concatenates validly —
+/// `a and  b` keeps both arms' text readable). Deliberately absent:
+/// words a `,` legitimately follows — identifiers (including
+/// non-reserved names like `timestamp`), `end` (`case … end , x` is a
+/// list split), and the value words `null`/`true`/`false`/`default`.
+const OPERAND_WORDS: &[&[u8]] = &[
+    b"all",
+    b"and",
+    b"anti",
+    b"apply",
+    b"as",
+    b"asc",
+    b"asof",
+    b"between",
+    b"by",
+    b"case",
+    b"collate",
+    b"cross",
+    b"desc",
+    b"distinct",
+    b"else",
+    b"escape",
+    b"except",
+    b"exists",
+    b"fetch",
+    b"first",
+    b"for",
+    b"from",
+    b"full",
+    b"group",
+    b"having",
+    b"ilike",
+    b"in",
+    b"inner",
+    b"intersect",
+    b"into",
+    b"is",
+    b"isnull",
+    b"join",
+    b"lateral",
+    b"left",
+    b"like",
+    b"limit",
+    b"match_recognize",
+    b"minus",
+    b"natural",
+    b"next",
+    b"not",
+    b"notnull",
+    b"offset",
+    b"on",
+    b"only",
+    b"or",
+    b"order",
+    b"outer",
+    b"over",
+    b"pivot",
+    b"prewhere",
+    b"qualify",
+    b"recursive",
+    b"returning",
+    b"right",
+    b"rlike",
+    b"select",
+    b"semi",
+    b"set",
+    b"similar",
+    b"tablesample",
+    b"then",
+    b"top",
+    b"union",
+    b"unnest",
+    b"unpivot",
+    b"using",
+    b"values",
+    b"when",
+    b"where",
+    b"window",
+    b"with",
+];
+
 /// Which `{% if %}`/`{% for %}` arms a render emits — [`jinja_parse`]
 /// judges the union view first and falls to the collapse view when the
 /// union text can't parse.
@@ -711,6 +805,7 @@ impl<'a> Scan<'a> {
         // `&str`, emitted in order.
         RenderedSql {
             text: String::from_utf8(self.out).expect("the render only emits valid UTF-8"),
+            lex: self.lex,
             segs: self.segs,
             branch_commas: self.branch_commas,
             jinja_literals: self.jinja_literals,
@@ -1009,15 +1104,20 @@ impl<'a> Scan<'a> {
     ///   documented branch union), where `a b` would parse as `a AS b` —
     ///   the false branch's name stealing the true branch's value. An
     ///   adjacent literal comma (the `{% if %}, b{% else %}, c{% endif %}`
-    ///   idiom) already separates the items, so a space there. An arm
-    ///   opening with `from` keeps the `,` and blanks the keyword —
-    ///   `from a ,  b` reads as a FROM-item union. An arm opening with
-    ///   any other clause keyword (`{% else %} limit 100`,
-    ///   `{% else %} where …`) can't follow `,` without the keyword
-    ///   posing as a name (`FROM a , FROM b` reads `from` as a
-    ///   relation) — it emits whitespace and the [`jinja_parse`] retry
-    ///   keeps one arm instead. Inside a literal a comma is just a
-    ///   character — the tag always drops to a space.
+    ///   idiom) already separates the items, so a space there. The
+    ///   emitted text must also be able to precede `,` — after an
+    ///   operator, a `,`, `(`, nothing, or an [`OPERAND_WORDS`] keyword
+    ///   (`select {% if %}{% else %}a{% endif %}`, `a and {% else %}b`,
+    ///   `from {% else %}t`) a comma is guaranteed-invalid; the space
+    ///   render keeps the arms' text concatenated (`a and  b`) or the
+    ///   retry's collapse keeps one arm. An arm opening with `from`
+    ///   keeps the `,` and blanks the keyword — `from a ,  b` reads as a
+    ///   FROM-item union. An arm opening with any other clause keyword
+    ///   (`{% else %} limit 100`, `{% else %} where …`) can't follow `,`
+    ///   without the keyword posing as a name (`FROM a , FROM b` reads
+    ///   `from` as a relation) — it emits whitespace and the
+    ///   [`jinja_parse`] retry keeps one arm instead. Inside a literal a
+    ///   comma is just a character — the tag always drops to a space.
     ///
     /// Returns the index after the tag — after the `{% end… %}` for the
     /// blanked-body forms.
@@ -1034,9 +1134,11 @@ impl<'a> Scan<'a> {
         let if_split = self.arms == RenderArms::Union
             && matches!(word, "elif" | "elseif" | "else")
             && matches!(self.branches.arm_path(i).last(), Some(s) if s.kind == ArmKind::If);
-        let comma_ready = if_split
-            && self.last_sig != Some(b',')
-            && next_sig_byte(self.sql.as_bytes(), e + 2) != Some(b',');
+        // `,` only where it can parse: an expression or item must have
+        // just ended (`a , b` — not `a and ,b`/`from ,t`/`,b`) and the
+        // next byte can't already be a written `,`.
+        let comma_ready =
+            if_split && self.comma_end() && next_sig_byte(self.sql.as_bytes(), e + 2) != Some(b',');
         if comma_ready {
             match arm_start(self.sql.as_bytes(), e + 2, &self.lex) {
                 ArmStart::From(w) => {
@@ -1044,7 +1146,12 @@ impl<'a> Scan<'a> {
                     // lands at.
                     self.branch_commas.insert(self.out.len());
                     self.subst(i..e + 2, b",", true);
-                    self.copy(e + 2..w.start, false);
+                    // The gap is whitespace and comments — emit one
+                    // space for it all: a `{# … #}` doesn't belong in
+                    // rendered SQL at all, and a `,` inside a copied
+                    // `--`/`/* */` comment would read as a written
+                    // separator.
+                    self.subst(e + 2..w.start, b" ", false);
                     let end = w.end;
                     self.subst(w, b" ", true);
                     // The `from` still opens the clause for what the
@@ -1153,11 +1260,15 @@ impl<'a> Scan<'a> {
 
     /// Could an expression have ended just before this `{{ }}` — making
     /// it a NEW select item rather than part of the previous one?
-    /// Identifiers (but not the `select`/`distinct` openers), literals,
-    /// `)`, `]`, `*`, `?` end expressions; keywords, operators, `(`, `,`
-    /// don't. `'`/`` ` `` can't appear as `last_sig` — a literal's
-    /// closing quote is fed as the `"` boundary byte (see
-    /// [`Scan::literal`]), so `"` stands in for every closed literal.
+    /// Literals, `)`, `]`, `*`, `?`, and any word except the
+    /// `select`/`distinct` openers count as ends — callers that care
+    /// whether a word is a *closing* word or an operand-expecting
+    /// keyword (`from`, `and`, `in`…) pair this with their own word
+    /// check (`NAME_WORDS`, [`OPERAND_WORDS`]); a bare `expr_ender` only
+    /// rules out operators, `(`, `,`, and nothing-yet. `'`/`` ` `` can't
+    /// appear as `last_sig` — a literal's closing quote is fed as the
+    /// `"` boundary byte (see [`Scan::literal`]), so `"` stands in for
+    /// every closed literal.
     fn expr_ender(&self) -> bool {
         match self.last_sig {
             Some(b')' | b']' | b'*' | b'?' | b'"') => true,
@@ -1166,6 +1277,24 @@ impl<'a> Scan<'a> {
                 // clause keywords already flipped `select` off, and
                 // `select`/`distinct` are openers, not expression ends.
                 !matches!(&self.last_word[..], b"select" | b"distinct")
+            }
+            _ => false,
+        }
+    }
+
+    /// Could a `,` sit where the emitted text ends — did an item or
+    /// expression just complete? `)`, `]`, `*`, `?`, a closed literal,
+    /// or a word that needs no further operand (an identifier, `end`,
+    /// `null`, `true`, `false`, `default`…). After `(`, an operator, a
+    /// `,`, nothing, or an [`OPERAND_WORDS`] keyword (`from ,t`,
+    /// `a and ,b`, `limit ,10`) a comma is guaranteed-invalid — an arm
+    /// split there emits whitespace so the arms' text concatenates or
+    /// the collapse retry keeps one arm.
+    fn comma_end(&self) -> bool {
+        match self.last_sig {
+            Some(b')' | b']' | b'*' | b'?' | b'"') => true,
+            Some(c) if word_byte(c) || c >= 0x80 => {
+                !OPERAND_WORDS.contains(&self.last_word.as_slice())
             }
             _ => false,
         }
