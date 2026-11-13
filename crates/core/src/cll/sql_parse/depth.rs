@@ -35,7 +35,8 @@
 //   operand; in operand position they count one unit instead.
 // - A `)`'s inner depth must add into the PARENT level (the paren
 //   group's operand depth), not just the global peak — otherwise
-//   chains spread across nested levels under-count quadratically.
+//   chains spread across nested levels under-count by roughly the
+//   nesting factor (≈2× for a chain halved across one level).
 //
 // Counts are approximations by design and only err toward depth: a
 // `between`'s `and`, a `cast`'s `as`, or a call's `f(` paren may count
@@ -662,5 +663,51 @@ mod tests {
         // read as ~900 separate single-element segments, not one chain.
         let sql = format!("select a from t where a in ({})", vec!["1"; 900].join(","));
         assert!(!deep(&sql));
+    }
+
+    #[test]
+    fn near_bound_chains_still_parse() {
+        // ~400 infix units — just under the bound — must reach the
+        // parser and come back as a statement, pinning the margin the
+        // gate leaves real SQL.
+        let sql = format!("select a from t where {}", vec!["x"; 400].join(" and "));
+        assert!(parse_statements(SqlDialect::Generic, &sql).is_some());
+        let sql = format!("select {}", vec!["y"; 400].join(" || "));
+        assert!(parse_statements(SqlDialect::Generic, &sql).is_some());
+        let sql = vec!["select 1"; 400].join(" union all ");
+        assert!(parse_statements(SqlDialect::Generic, &sql).is_some());
+    }
+
+    #[test]
+    fn dialect_specific_lexing_counts_the_same() {
+        // Non-Generic dialects: operators hidden inside dialect-only
+        // literals don't count, while real chains still trip.
+        for dialect in [
+            SqlDialect::Oracle,
+            SqlDialect::Postgres,
+            SqlDialect::MsSql,
+            SqlDialect::MySql,
+        ] {
+            assert!(too_deep(
+                &format!("select a from t where {}", vec!["x"; 900].join(" and ")),
+                dialect
+            ));
+        }
+        // Oracle q'[...]' quoting hides a 600-op chain entirely.
+        let filler = " and ".repeat(600);
+        assert!(!too_deep(
+            &format!("select q'[{filler}]' from t"),
+            SqlDialect::Oracle
+        ));
+        // The same chain in a normal string still counts for Oracle.
+        assert!(too_deep(
+            &format!("select a from t where {}", vec!["x"; 900].join(" and ")),
+            SqlDialect::Oracle
+        ));
+        // MsSql [bracket] identifiers hide operator-looking text.
+        assert!(!too_deep(
+            &format!("select [a{filler}b] from t"),
+            SqlDialect::MsSql
+        ));
     }
 }
