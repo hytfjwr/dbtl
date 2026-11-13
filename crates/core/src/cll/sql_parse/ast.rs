@@ -132,6 +132,23 @@ pub(super) fn exclude_names(excl: &ExcludeSelectItem) -> BTreeSet<String> {
     out
 }
 
+/// Is `arg` a bare (unquoted) identifier spelling a documented date-part
+/// word — `dateadd(day, …)`'s `day`? A quoted or compound ref stays a
+/// column reference; only the plain keyword shape is suppressible.
+pub(super) fn is_date_part_arg(arg: &FunctionArg) -> bool {
+    let arg = match arg {
+        FunctionArg::Unnamed(arg)
+        | FunctionArg::Named { arg, .. }
+        | FunctionArg::ExprNamed { arg, .. } => arg,
+    };
+    match arg {
+        FunctionArgExpr::Expr(Expr::Identifier(i)) => {
+            i.quote_style.is_none() && is_date_part_word(&norm_ident(i))
+        }
+        _ => false,
+    }
+}
+
 /// The bare identifier names appearing at the top level of `e` — the
 /// `ORDER BY <output-name>` probe (Query-level ORDER BY can't see the
 /// select's FROM scope, so only the output-name match is available).

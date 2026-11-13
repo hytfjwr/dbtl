@@ -1287,6 +1287,79 @@ fn lint_select_star_points_at_the_wildcard_in_the_model_file() {
     assert_eq!(finding["label"], "wildcard");
 }
 
+// ---- unknown_column_reference: the name traps that aren't columns -----------
+
+#[test]
+fn unknown_column_reference_skips_date_parts_aliases_and_unnest_names() {
+    // Three name-space traps that aren't upstream columns: date/time
+    // part keywords inside date fns (`dateadd(day, …)`), a same-SELECT
+    // alias in the row-shaping tail (`where c`), and an `UNNEST`'s table
+    // alias standing for its value column. Only genuinely missing
+    // columns (`payload`, `zzz`) still flag.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = common::write_project(
+        tmp.path(),
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            ("models/base.sql", "select 1 as id\n"),
+            (
+                "models/schema.yml",
+                "version: 2\n\nmodels:\n  - name: base\n    config:\n      contract:\n        enforced: true\n    columns:\n      - name: id\n        data_type: int\n      - name: d\n        data_type: date\n      - name: a\n        data_type: int\n      - name: b\n        data_type: int\n",
+            ),
+            (
+                "models/m_parts.sql",
+                "select id, dateadd(day, 1, d) as d1, date_trunc(month, d) as d2\nfrom {{ ref('base') }}\n",
+            ),
+            (
+                "models/m_alias.sql",
+                "select id, a + b as c from {{ ref('base') }} where c > 2\n",
+            ),
+            (
+                "models/m_unnest.sql",
+                "select b.id, x from {{ ref('base') }} b cross join unnest(b.payload) as x\n",
+            ),
+            (
+                "models/m_missing.sql",
+                "select id, zzz from {{ ref('base') }}\n",
+            ),
+        ],
+    );
+    for dialect in ["generic", "snowflake"] {
+        let out = run(&[
+            "lint",
+            "--source",
+            root.to_str().unwrap(),
+            "--rules",
+            "unknown_column_reference",
+            "--sql-dialect",
+            dialect,
+        ]);
+        let stdout = stdout(&out);
+        // The part words, the select alias, and the unnest alias never
+        // name an upstream column.
+        for needle in ["base.day", "base.month", "base.c", "base.x"] {
+            assert!(
+                !stdout.contains(needle),
+                "{dialect}: {needle} must not flag:\n{stdout}"
+            );
+        }
+        // True positives stay: `payload` and `zzz` really don't exist.
+        for needle in ["base.payload", "base.zzz"] {
+            assert!(
+                stdout.contains(needle),
+                "{dialect}: {needle} must still flag:\n{stdout}"
+            );
+        }
+        assert!(
+            stdout.contains("m_missing.sql"),
+            "{dialect}: the missing column's file shows:\n{stdout}"
+        );
+    }
+}
+
 // ---- --select: findings restricted to the selected nodes ---------------------
 
 #[test]

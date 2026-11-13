@@ -152,3 +152,134 @@ impl SqlDialect {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Date/time-part arguments
+// ---------------------------------------------------------------------------
+
+/// Function name → the argument positions (0-based) that hold a date/time
+/// PART keyword: `dateadd(day, 1, d)`'s `day`, `date_trunc(d, month)`'s
+/// `month`. A bare identifier at that slot is the unit keyword — the
+/// signature can't take a column there — so it is never counted as a
+/// column reference. Two spellings exist: the standard form leads with
+/// the part (`datediff(day, a, b)`); BigQuery's `_trunc`/`_diff` family
+/// takes it LAST (`date_diff(a, b, day)`). Each row is
+/// `(name, standard positions, bigquery positions)` — `date_part`/`extract`
+/// forms that sqlparser keeps off the function-call path need no row.
+const DATE_PART_ARG_POSITIONS: &[(&str, &[usize], &[usize])] = &[
+    // Part-first wherever they're documented.
+    ("dateadd", &[0], &[0]),
+    ("datediff", &[0], &[0]),
+    ("datename", &[0], &[0]),
+    ("datepart", &[0], &[0]),
+    ("date_part", &[0], &[0]),
+    ("timediff", &[0], &[0]),
+    ("timestampadd", &[0], &[0]),
+    ("timestampdiff", &[0], &[0]),
+    ("last_day", &[1], &[1]),
+    // `_trunc`: part leads everywhere but BigQuery, where it ends.
+    ("date_trunc", &[0], &[1]),
+    ("datetrunc", &[0], &[1]),
+    ("time_trunc", &[0], &[1]),
+    ("timestamp_trunc", &[0], &[1]),
+    ("datetime_trunc", &[0], &[1]),
+    // `_diff`: part leads everywhere but BigQuery, where it ends.
+    ("date_diff", &[0], &[2]),
+    ("time_diff", &[0], &[2]),
+    ("timestamp_diff", &[0], &[2]),
+    ("datetime_diff", &[0], &[2]),
+];
+
+/// Is `index` a date-part argument position of `name` under `dialect`?
+/// `name` is normalized (lowercase, last name segment). When the dialect
+/// is [`Generic`](SqlDialect::Generic) — never pinned — every documented
+/// position counts, so a bare unit word in either slot stays uncounted
+/// rather than guessed.
+pub(crate) fn date_part_arg_position(name: &str, index: usize, dialect: SqlDialect) -> bool {
+    let Some((_, standard, bigquery)) = DATE_PART_ARG_POSITIONS.iter().find(|(n, ..)| *n == name)
+    else {
+        return false;
+    };
+    match dialect {
+        SqlDialect::BigQuery => bigquery.contains(&index),
+        SqlDialect::Generic => standard.contains(&index) || bigquery.contains(&index),
+        _ => standard.contains(&index),
+    }
+}
+
+/// The words that name a date/time part — matched against a normalized
+/// (lowercase, unquoted) identifier at a [`date_part_arg_position`] slot.
+/// Vendor abbreviations ride along (`yy`, `mcs`, `dw`…): at a part slot
+/// they read as the unit keyword regardless.
+const DATE_PART_WORDS: &[&str] = &[
+    "century",
+    "d",
+    "day",
+    "days",
+    "dayofweek",
+    "dayofyear",
+    "dd",
+    "decade",
+    "dow",
+    "doy",
+    "dw",
+    "dy",
+    "epoch",
+    "hh",
+    "hour",
+    "hours",
+    "isodow",
+    "isoweek",
+    "iso_week",
+    "isoyear",
+    "m",
+    "mcs",
+    "microsecond",
+    "microseconds",
+    "millennium",
+    "millisecond",
+    "milliseconds",
+    "minute",
+    "minutes",
+    "mi",
+    "mm",
+    "mon",
+    "mons",
+    "month",
+    "months",
+    "ms",
+    "n",
+    "nanosecond",
+    "nanoseconds",
+    "ns",
+    "q",
+    "qq",
+    "quarter",
+    "quarters",
+    "s",
+    "second",
+    "seconds",
+    "ss",
+    "timezone",
+    "timezone_hour",
+    "timezone_minute",
+    "us",
+    "week",
+    "weekday",
+    "weekofyear",
+    "weeks",
+    "wk",
+    "ww",
+    "y",
+    "year",
+    "yearofweek",
+    "yearofweekiso",
+    "years",
+    "yy",
+    "yyyy",
+];
+
+/// Is `name` (normalized) a documented date/time-part word?
+pub(crate) fn is_date_part_word(name: &str) -> bool {
+    DATE_PART_WORDS.contains(&name)
+}

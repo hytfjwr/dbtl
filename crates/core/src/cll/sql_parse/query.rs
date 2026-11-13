@@ -52,12 +52,24 @@ impl SqlParseResolver {
         // unqualified `order by <alias>` binds the alias, shadowing a
         // same-named FROM column) and the body's FROM scope (a qualified
         // or never-projected column) — resolve exprs against a probe scope
-        // of the returned bindings, falling back to the output-name match
-        // when nothing in the FROM scope claims the ref.
+        // of the returned bindings stacked over the body's declared-name
+        // set (the same same-SELECT alias level the row-shaping tail uses),
+        // with the output-name match as the last-word fallback.
+        let alias = Scope {
+            bindings: vec![Binding {
+                name: String::new(),
+                src: TableSrc::Derived(Rc::new(QueryRes {
+                    out: res.out.clone(),
+                    foj: ColSources::new(),
+                })),
+            }],
+            windows: HashMap::new(),
+            outer: env.outer,
+        };
         let probe = Scope {
             bindings: scope.clone(),
             windows: HashMap::new(),
-            outer: env.outer,
+            outer: Some(&alias),
         };
         let probe_refs = RefScope {
             scope: Some(&probe),
@@ -582,9 +594,10 @@ impl SqlParseResolver {
         Some(())
     }
 
-    /// Resolve one SELECT: FROM bindings → the row-shaping tail → the
-    /// projection's output columns. Returns the FROM scope too (the model
-    /// level reuses it for the declared-column probe).
+    /// Resolve one SELECT: FROM bindings → the projection's output
+    /// columns → the row-shaping tail (which sees both). Returns the FROM
+    /// scope too (the model level reuses it for the declared-column
+    /// probe).
     pub(super) fn resolve_select(
         &self,
         ctx: &Ctx<'_>,
@@ -658,66 +671,40 @@ impl SqlParseResolver {
             }
         }
 
-        let refs = ref_scope(env, &scope);
-
-        // `TOP (n)` — the quantity is row-shaping (usually a literal, but
-        // `TOP (expr)` can carry a column ref).
-        if let Some(top) = &sel.top {
-            if let Some(sqlparser::ast::TopQuantity::Expr(e)) = &top.quantity {
-                res.foj.extend(self.expr_refs(ctx, refs, e)?);
-            }
-        }
-
-        // The row-shaping tail: PREWHERE/WHERE/GROUP BY/HAVING/QUALIFY/
-        // CONNECT BY/CLUSTER BY/DISTRIBUTE BY/SORT BY/DISTINCT ON.
-        for e in [&sel.prewhere, &sel.selection, &sel.having, &sel.qualify]
-            .into_iter()
-            .flatten()
-        {
-            res.foj.extend(self.expr_refs(ctx, refs, e)?);
-        }
-        if let GroupByExpr::Expressions(exprs, _) = &sel.group_by {
-            for e in exprs {
-                // `GROUP BY 1` positional ordinals stay unresolved — a
-                // literal int never names a column (documented degenerate
-                // case; the output at that position is untouched).
-                res.foj.extend(self.expr_refs(ctx, refs, e)?);
-            }
-        }
-        for cb in &sel.connect_by {
-            match cb {
-                sqlparser::ast::ConnectByKind::ConnectBy { relationships, .. } => {
-                    for e in relationships {
-                        res.foj.extend(self.expr_refs(ctx, refs, e)?);
-                    }
-                }
-                sqlparser::ast::ConnectByKind::StartWith { condition, .. } => {
-                    res.foj.extend(self.expr_refs(ctx, refs, condition)?);
-                }
-            }
-        }
-        for e in sel
-            .cluster_by
-            .iter()
-            .chain(&sel.distribute_by)
-            .chain(sel.sort_by.iter().map(|o| &o.expr))
-        {
-            res.foj.extend(self.expr_refs(ctx, refs, e)?);
-        }
-        if let Some(Distinct::On(exprs)) = &sel.distinct {
-            for e in exprs {
-                res.foj.extend(self.expr_refs(ctx, refs, e)?);
-            }
-        }
-
-        // The projection → output columns. Items resolve against the FROM
-        // scope alone: a same-SELECT alias is NOT visible to sibling items
-        // (`select p.y as z, z + 1` reads `z` from the FROM scope, matching
-        // the SQL standard — dialect-local alias visibility like Postgres'
-        // LATERAL isn't modeled).
+        // The projection → output columns. Items resolve LEFT TO RIGHT,
+        // each against the FROM scope first and then the names the EARLIER
+        // items declared — modeled as one extra scope level between FROM
+        // and the outer scopes, holding an un-nameable derived binding of
+        // the outputs so far. A same-SELECT name no FROM binding proves
+        // therefore reads as the alias (`select a + 1 as c, c * 2` reaches
+        // `a`), while a same-named FROM column still wins (innermost scope
+        // resolves first). The level's bindings/windows are plain clones of
+        // this select's — wildcard expansion and `OVER w` see exactly the
+        // same surface.
         let mut out: Vec<OutCol> = Vec::new();
         for item in &sel.projection {
-            self.resolve_select_item(ctx, refs, &scope, item, &mut out)?;
+            let alias = Scope {
+                bindings: vec![Binding {
+                    name: String::new(),
+                    src: TableSrc::Derived(Rc::new(QueryRes {
+                        out: out.clone(),
+                        foj: ColSources::new(),
+                    })),
+                }],
+                windows: HashMap::new(),
+                outer: env.outer,
+            };
+            let item_scope = Scope {
+                bindings: scope.bindings.clone(),
+                windows: scope.windows.clone(),
+                outer: Some(&alias),
+            };
+            let item_refs = RefScope {
+                scope: Some(&item_scope),
+                ctes: env.ctes,
+                locals: env.locals,
+            };
+            self.resolve_select_item(ctx, item_refs, &item_scope, item, &mut out)?;
         }
 
         // SELECT-level EXCLUDE (Redshift `SELECT * EXCLUDE(col)` parses at
@@ -740,6 +727,86 @@ impl SqlParseResolver {
                 o.synthetic = true;
             }
         }
+
+        // The row-shaping tail resolves last, over the same FROM scope
+        // with the complete declared-name set as the next level out:
+        // WHERE/GROUP BY/HAVING/QUALIFY and the dialect tails read a
+        // same-SELECT alias the FROM scope can't prove (`where c > 2`
+        // after `a + b as c`). Dialects that reject an alias there stay
+        // silent either way — flagging invalid SQL isn't this analysis'
+        // job.
+        let alias = Scope {
+            bindings: vec![Binding {
+                name: String::new(),
+                src: TableSrc::Derived(Rc::new(QueryRes {
+                    out: out.clone(),
+                    foj: ColSources::new(),
+                })),
+            }],
+            windows: HashMap::new(),
+            outer: env.outer,
+        };
+        let tail_scope = Scope {
+            bindings: scope.bindings.clone(),
+            windows: scope.windows.clone(),
+            outer: Some(&alias),
+        };
+        let tail_refs = RefScope {
+            scope: Some(&tail_scope),
+            ctes: env.ctes,
+            locals: env.locals,
+        };
+
+        // `TOP (n)` — the quantity is row-shaping (usually a literal, but
+        // `TOP (expr)` can carry a column ref).
+        if let Some(top) = &sel.top {
+            if let Some(sqlparser::ast::TopQuantity::Expr(e)) = &top.quantity {
+                res.foj.extend(self.expr_refs(ctx, tail_refs, e)?);
+            }
+        }
+
+        // The row-shaping tail: PREWHERE/WHERE/GROUP BY/HAVING/QUALIFY/
+        // CONNECT BY/CLUSTER BY/DISTRIBUTE BY/SORT BY/DISTINCT ON.
+        for e in [&sel.prewhere, &sel.selection, &sel.having, &sel.qualify]
+            .into_iter()
+            .flatten()
+        {
+            res.foj.extend(self.expr_refs(ctx, tail_refs, e)?);
+        }
+        if let GroupByExpr::Expressions(exprs, _) = &sel.group_by {
+            for e in exprs {
+                // `GROUP BY 1` positional ordinals stay unresolved — a
+                // literal int never names a column (documented degenerate
+                // case; the output at that position is untouched).
+                res.foj.extend(self.expr_refs(ctx, tail_refs, e)?);
+            }
+        }
+        for cb in &sel.connect_by {
+            match cb {
+                sqlparser::ast::ConnectByKind::ConnectBy { relationships, .. } => {
+                    for e in relationships {
+                        res.foj.extend(self.expr_refs(ctx, tail_refs, e)?);
+                    }
+                }
+                sqlparser::ast::ConnectByKind::StartWith { condition, .. } => {
+                    res.foj.extend(self.expr_refs(ctx, tail_refs, condition)?);
+                }
+            }
+        }
+        for e in sel
+            .cluster_by
+            .iter()
+            .chain(&sel.distribute_by)
+            .chain(sel.sort_by.iter().map(|o| &o.expr))
+        {
+            res.foj.extend(self.expr_refs(ctx, tail_refs, e)?);
+        }
+        if let Some(Distinct::On(exprs)) = &sel.distinct {
+            for e in exprs {
+                res.foj.extend(self.expr_refs(ctx, tail_refs, e)?);
+            }
+        }
+
         res.out = out;
         Some((res, scope.bindings))
     }
