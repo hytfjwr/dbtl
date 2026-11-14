@@ -106,7 +106,8 @@ pub(super) struct SchemaFile {
     pub(super) unit_tests: Vec<SchemaUnitTest>,
 }
 
-/// Shared shape for `models:` / `seeds:` / `snapshots:` entries (only what we read).
+/// Shared shape for `models:` / `seeds:` / `snapshots:` entries (only what we
+/// read).
 ///
 /// `tests` and `data_tests` are kept as SEPARATE fields (not one aliased
 /// field) so a file declaring both keys on the same entry still deserializes
@@ -145,6 +146,15 @@ pub(super) struct SchemaModel {
     /// dbt validates it's a date; kept as the declared string.
     #[serde(default, deserialize_with = "de_opt_string")]
     pub(super) deprecation_date: Option<String>,
+    /// `versions:` — dbt's versioned-model declaration. Read for NAMES
+    /// only: a `versions:`-declared model and each entry's `defined_in:`
+    /// are names `ref()` can legitimately reach — versioned nodes are
+    /// never synthesized, so `unresolved_references` counts them
+    /// resolved rather than judging an impossible target. Raw `Value`
+    /// entries: each is `{v: …, defined_in: …}`-shaped (a `v:` value may
+    /// itself be a number or string).
+    #[serde(default)]
+    pub(super) versions: Vec<serde_json::Value>,
     /// The model-level `constraints:` list — the manifest wire shape
     /// (`{type, columns, …}`); column-level constraints live on
     /// [`SchemaColumn::constraints`]. A property, not a `config:` key.

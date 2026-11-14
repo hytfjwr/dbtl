@@ -16,8 +16,8 @@ use std::rc::Rc;
 
 use crate::dag::{normalize_version, versioned_model_segs, Dag};
 use crate::source::{
-    arms_exclusive, call_sites_masked, config_arg, jinja_branches, lit_value, mask_jinja_comments,
-    ArmStep, CallKind, CallSite, JinjaBranches,
+    arms_exclusive, call_sites_masked, config_arg, jinja_branches, kwarg, lit_value,
+    mask_jinja_comments, ArmKind, ArmStep, CallKind, CallSite, JinjaBranches,
 };
 
 use super::{Finding, Label};
@@ -306,6 +306,63 @@ impl<'a> CallSites<'a> {
             .any(|c| matches!(c.kind, CallKind::Ref { .. } | CallKind::Source { .. }))
     }
 
+    /// Every literal `ref()`/`source()` call in the node's raw SQL — the
+    /// `unresolved_references` rule's judgment input, in text order.
+    /// Argument names resolve to owned strings (a call the extractor
+    /// couldn't read a literal name for — `ref(var('x'))` — carries no
+    /// `CallKind` name and never appears here); `in_if_arm` marks a call
+    /// sitting inside an `{% if %}`/`{% elif %}`/`{% else %}` arm — the
+    /// rule skips those (a Jinja-switched reference may legitimately not
+    /// exist in the taken arm). `{% for %}` membership does NOT mark a
+    /// call: a loop body's literal ref still runs every render.
+    pub(crate) fn dep_calls(&self) -> Vec<DepCall> {
+        let masked: &str = &self.sites.masked;
+        let mut out = Vec::new();
+        for site in &self.sites.sites {
+            let kind = match &site.kind {
+                CallKind::Ref {
+                    name,
+                    package,
+                    version,
+                } => {
+                    // `version` is the literal v=/version= value's range
+                    // (absent when the kwarg isn't there OR didn't read
+                    // literal) — the args text distinguishes the two: a
+                    // kwarg present without a literal value is a
+                    // nonliteral `v=var('x')`, which the rule must skip
+                    // rather than judge as unversioned.
+                    let args = site.args.as_ref().map(|a| &masked[a.clone()]);
+                    DepCallKind::Ref {
+                        name: masked[name.clone()].to_string(),
+                        package: package.as_ref().map(|p| masked[p.clone()].to_string()),
+                        versioned: args.is_some_and(|a| {
+                            kwarg(a, "v").is_some() || kwarg(a, "version").is_some()
+                        }),
+                        version: version
+                            .as_ref()
+                            .map(|v| normalize_version(&masked[v.clone()]).to_string()),
+                    }
+                }
+                CallKind::Source { source, table } => DepCallKind::Source {
+                    source: masked[source.clone()].to_string(),
+                    table: masked[table.clone()].to_string(),
+                },
+                CallKind::Config => continue,
+            };
+            out.push(DepCall {
+                span: site.span.clone(),
+                in_if_arm: self
+                    .sites
+                    .branches
+                    .arm_path(site.span.start)
+                    .iter()
+                    .any(|step| step.kind == ArmKind::If),
+                kind,
+            });
+        }
+        out
+    }
+
     /// Every call span resolving to the parent `uid`, sorted by position —
     /// a duplicated `ref()`/`source()` reports every site.
     pub(crate) fn calls_to(&self, parent: &str) -> Vec<Range<usize>> {
@@ -508,4 +565,43 @@ impl<'a> CallSites<'a> {
             .with_label(primary.1.into())
             .with_labels(labels)
     }
+}
+
+/// One literal `ref()`/`source()` call [`CallSites::dep_calls`] yields —
+/// the `unresolved_references` rule's judgment unit.
+pub(crate) struct DepCall {
+    /// The call's span in the raw text (`{{ }}`/`{% %}` excluded) — the
+    /// finding's label target.
+    pub span: Range<usize>,
+    /// The call sits inside an `{% if %}`/`{% elif %}`/`{% else %}` arm —
+    /// the rule never judges it (a Jinja-switched reference may not
+    /// exist in the taken arm; mutual exclusivity is handled the same
+    /// way — every arm call is skipped, not just provably-exclusive
+    /// pairs, since an `if` arm by itself already gates the call).
+    /// `{% for %}` membership does not mark a call.
+    pub in_if_arm: bool,
+    pub kind: DepCallKind,
+}
+
+/// What a [`DepCall`] names.
+pub(crate) enum DepCallKind {
+    Ref {
+        /// `ref('x')` → `x`; `ref('pkg','x')` → `x`.
+        name: String,
+        /// `ref('pkg','x')` → `pkg`.
+        package: Option<String>,
+        /// A `v=`/`version=` kwarg is present at all — judged or not
+        /// depends on the mode's `RefScope::versions` (source mode never
+        /// judges; manifest mode checks the pin).
+        versioned: bool,
+        /// The version kwarg's literal value, normalized (`v='v2'` →
+        /// `2`). `None` with `versioned` means the kwarg didn't read
+        /// literal (`v=var('ver')`) — the call is unjudgeable, not
+        /// unversioned.
+        version: Option<String>,
+    },
+    Source {
+        source: String,
+        table: String,
+    },
 }

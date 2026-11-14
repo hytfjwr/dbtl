@@ -51,6 +51,8 @@ fn two_model_manifest() -> RawManifest {
             vec!["model.p.fct_x".to_string()],
         )]),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     }
 }
 
@@ -119,6 +121,8 @@ fn owner_manifest() -> RawManifest {
             ),
         ]),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     }
 }
 

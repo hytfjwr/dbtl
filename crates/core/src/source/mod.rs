@@ -190,6 +190,7 @@ mod collect;
 mod config_tree;
 mod docs;
 mod macros;
+mod packages;
 mod patterns;
 mod schema;
 mod synth;
@@ -203,6 +204,7 @@ use collect::*;
 use config_tree::*;
 use docs::*;
 use macros::*;
+use packages::*;
 use patterns::*;
 use schema::*;
 use synth::*;
@@ -217,6 +219,6 @@ pub use patterns::{
     arms_exclusive, call_sites_masked, jinja_branches, ArmKind, ArmStep, CallKind, CallSite,
     JinjaBranches,
 };
-pub(crate) use patterns::{config_arg, lit_value};
+pub(crate) use patterns::{config_arg, kwarg, lit_value};
 pub(crate) use patterns::{find_subslice, jinja_set_assigns, jinja_tag_close, tag_word};
 pub use vars::CliVars;

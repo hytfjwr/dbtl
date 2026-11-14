@@ -70,7 +70,7 @@ pub use lint::{
 pub use manifest::{
     load_manifest, parse_manifest, RawConfig, RawConstraint, RawContract, RawDependsOn, RawDoc,
     RawExposure, RawExposureOwner, RawFreshness, RawFreshnessThreshold, RawManifest, RawMetadata,
-    RawNode, RawSemanticResource, RawSource, RawTestMetadata, RawUnitTest, RawUnitTestIo,
+    RawNode, RawSemanticResource, RawSource, RawTestMetadata, RawUnitTest, RawUnitTestIo, RefScope,
     UnresolvedAdjacent,
 };
 pub use mermaid::{

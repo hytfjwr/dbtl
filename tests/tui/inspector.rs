@@ -231,6 +231,8 @@ pub(super) fn inspector_omits_empty_sections() {
         child_map: HashMap::new(),
         macros: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     });
     let mut app = dbtl::app::App::new(dag, std::path::PathBuf::from(FIXTURE));
     let buf = render_app_with_inspector(&mut app, 200, 60);

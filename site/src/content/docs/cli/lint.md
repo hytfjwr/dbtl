@@ -76,6 +76,8 @@ The [lint rules reference](../reference/lint-rules.md) lists every rule with its
 
 Four rules ship opt-in — `undocumented_exposures` (an exposure without a description), `model_too_long` (a SQL model's counted lines past the `max_lines` budget — blank and Jinja-comment-only lines never count), `layer_materializations` (a model materialized in a way its layer's `allowed` map doesn't list), and `models_without_unit_tests` (a model in a checked layer — `marts` by default, tunable via `layers` — carrying no unit test; Python models and materialized views can't carry one and never flag). `standard` skips them; `strict` or a `rules:` entry turns them on.
 
+`unresolved_references` checks that the calls resolve at all. It flags a literal `ref()` or `source()` call that names nothing the project or its installed packages provide — a typo'd model name or an undeclared source table — and pins the finding to the call itself. A name parked under `disabled` reports under its own wording. Calls inside an `{% if %}`/`{% elif %}`/`{% else %}` arm are never judged (the arm that runs may provide them), and when `packages.yml`/`dependencies.yml` declare packages that aren't fully installed, possibly-missing names collapse into one summary warning instead of findings — they may live in a package `dbt deps` never fetched.
+
 ### Presets
 
 A preset picks the base rule set a run starts from. `.dbtl.yml`'s `lint.preset` sets it per project and `--preset` overrides it per run:

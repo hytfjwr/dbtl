@@ -16,7 +16,7 @@ use crate::{Catalog, SqlParseResolver};
 
 pub(super) use crate::lint::call_sites::{
     display_name, display_names, family_name, name_list, pluralize, version_families,
-    CallSiteResolver,
+    CallSiteResolver, DepCallKind,
 };
 
 mod documentation;
@@ -390,6 +390,9 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
             }
             LintRule::ModelsWithoutUnitTests => {
                 testing::models_without_unit_tests(dag, &uids, &in_scope, config, &mut out)
+            }
+            LintRule::UnresolvedReferences => {
+                modeling::unresolved_references(dag, &uids, &in_scope, &sites, &mut out, &mut notes)
             }
         }
     }

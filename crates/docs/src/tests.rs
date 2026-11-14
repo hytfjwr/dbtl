@@ -350,6 +350,8 @@ fn meta_renders_sorted_key_value_table() {
         child_map: HashMap::new(),
         macros: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     };
     let dag = Dag::build(&manifest);
     let out = generate_docs(&dag, "p", "src", PackageScope::Root);
@@ -435,6 +437,8 @@ fn hostile_names_and_descriptions_do_not_break_markdown_or_mermaid() {
         child_map,
         macros: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     };
     let dag = Dag::build(&manifest);
     let out = generate_docs(&dag, "p", "src", PackageScope::Root);
@@ -699,6 +703,8 @@ fn large_layered_dag(count: usize) -> Dag {
         child_map,
         macros: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     })
 }
 
@@ -1077,6 +1083,8 @@ fn empty_manifest() -> RawManifest {
         child_map: StdHashMap::new(),
         macros: StdHashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     }
 }
 

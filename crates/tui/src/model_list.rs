@@ -597,6 +597,8 @@ mod tests {
             child_map: HashMap::new(),
             macros: HashMap::new(),
             docs: Default::default(),
+            disabled: Default::default(),
+            ref_scope: None,
         };
         Dag::build(&manifest)
     }
@@ -753,6 +755,8 @@ mod tests {
             child_map: HashMap::new(),
             macros: HashMap::new(),
             docs: Default::default(),
+            disabled: Default::default(),
+            ref_scope: None,
         };
         Dag::build(&manifest)
     }
@@ -874,6 +878,8 @@ mod tests {
             child_map: HashMap::new(),
             macros: HashMap::new(),
             docs: Default::default(),
+            disabled: Default::default(),
+            ref_scope: None,
         };
         let list = build_model_list(&Dag::build(&manifest), SortMode::Layer);
         let layers: Vec<&str> = list.groups.iter().map(|g| g.layer.as_str()).collect();
@@ -950,6 +956,8 @@ mod tests {
             child_map,
             macros: HashMap::new(),
             docs: Default::default(),
+            disabled: Default::default(),
+            ref_scope: None,
         };
         Dag::build(&manifest)
     }

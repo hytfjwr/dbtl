@@ -884,3 +884,209 @@ pub(super) fn unused_models(
         ));
     }
 }
+
+/// `unresolved_references`: a literal `ref()`/`source()` call names nothing
+/// the load could see. The judgment runs against [`Dag::ref_scope`] — the
+/// PRE-PRUNE name universe (installed packages, declared sources, parked
+/// `disabled` names, versioned families) both load modes record — so a
+/// call pointing at a package node the `PackageScope::Root` prune hid
+/// still counts as resolved, while a call whose name is provably absent
+/// flags. A parked name gets its own "disabled" wording: it fails dbt's
+/// parse just like a missing one, but the fix is re-enabling, not
+/// declaring.
+///
+/// Skipped, never flagged: a call inside an `{% if %}`/`{% elif %}`/
+/// `{% else %}` arm (a Jinja-switched reference may legitimately not
+/// exist in the taken arm — `{% for %}` bodies still judge, the literal
+/// ref runs every render); a `v=`/`version=`-pinned ref in source mode
+/// (versioned nodes are never synthesized); a `ref('proj', 'x')` naming
+/// a `projects:`-declared cross-project name; and any call whose name is
+/// missing while declared packages aren't fully installed — those count
+/// into ONE summary warning instead (the name may live in a package
+/// that was never installed, so the verdict is unverifiable, not
+/// absent). A nonliteral arg (`ref(var('x'))`, `v=var('ver')`) produces
+/// no call at all — the extractor only yields names it could read.
+///
+/// One finding per distinct failing target per node; every site of the
+/// same target labels it.
+pub(super) fn unresolved_references(
+    dag: &Dag,
+    uids: &[&String],
+    in_scope: &dyn Fn(&NodeInfo) -> bool,
+    sites: &CallSiteResolver<'_>,
+    out: &mut Vec<Finding>,
+    notes: &mut BTreeSet<String>,
+) {
+    let scope = dag.ref_scope();
+    let root = dag.project_name();
+    let mut unverified = 0usize;
+    for uid in uids {
+        let Some(n) = dag.get(uid) else { continue };
+        if !in_scope(n) {
+            continue;
+        }
+        let Some(cs) = sites.for_node(uid) else {
+            continue;
+        };
+        // (message, spans, span-label) — keyed by message so the same
+        // failing target at several sites becomes one finding.
+        let mut keyed: Vec<(String, Vec<std::ops::Range<usize>>, &'static str)> = Vec::new();
+        for call in cs.dep_calls() {
+            if call.in_if_arm {
+                continue;
+            }
+            let fail = match &call.kind {
+                DepCallKind::Ref {
+                    name,
+                    package,
+                    versioned,
+                    version,
+                } => {
+                    // Unjudgeable calls first: a nonliteral version kwarg
+                    // (`v=var('ver')` — the NAME stays judgeable, but a
+                    // wrong literal pin can't be told from a right one),
+                    // and a cross-project target.
+                    if (*versioned && version.is_none())
+                        || package
+                            .as_deref()
+                            .is_some_and(|p| scope.projects.contains(p))
+                    {
+                        None
+                    } else {
+                        let target = package
+                            .as_deref()
+                            .map_or_else(|| name.clone(), |p| format!("{p}.{name}"));
+                        let pkg_match = |dpkg: &str| package.as_deref().is_none_or(|p| p == dpkg);
+                        match scope.disabled_refs.get(name) {
+                            Some((dpkg, kind)) if pkg_match(dpkg) => Some((
+                                format!(
+                                    "{} references disabled {kind} '{target}'",
+                                    display_name(dag, uid)
+                                ),
+                                "disabled",
+                            )),
+                            _ => {
+                                let name_resolved = match package.as_deref() {
+                                    None => {
+                                        scope.refs.contains_key(name)
+                                            || scope.assumed.contains(name)
+                                    }
+                                    Some(p) => {
+                                        scope.refs.get(name).is_some_and(|pkgs| pkgs.contains(p))
+                                            || (root == Some(p) && scope.assumed.contains(name))
+                                    }
+                                };
+                                // A version pin is only checkable when the
+                                // load records version uids (manifest mode);
+                                // under a mode that never does (source),
+                                // the NAME was already judged and the pin
+                                // passes unjudgeable.
+                                let resolved = name_resolved
+                                    && match (versioned, version, &scope.versions) {
+                                        (true, Some(v), Some(vs)) => {
+                                            match package.as_deref() {
+                                                Some(p) => vs.contains(&(
+                                                    p.to_string(),
+                                                    name.clone(),
+                                                    v.clone(),
+                                                )),
+                                                // A bare ref's package is
+                                                // unknown — accept the
+                                                // version in ANY package
+                                                // (under-reports when a
+                                                // local unversioned x
+                                                // shadows a packaged
+                                                // versioned one: dbt would
+                                                // error, we pass — the
+                                                // approximation's safe
+                                                // direction).
+                                                None => {
+                                                    vs.iter().any(|(_, n, vv)| n == name && vv == v)
+                                                }
+                                            }
+                                        }
+                                        _ => true,
+                                    };
+                                if resolved {
+                                    None
+                                } else if scope.uninstalled_packages > 0 {
+                                    unverified += 1;
+                                    None
+                                } else {
+                                    let message = match (name_resolved, version) {
+                                        (true, Some(v)) => format!(
+                                            "{} references '{target}' version '{v}', which resolves to no node",
+                                            display_name(dag, uid)
+                                        ),
+                                        _ => format!(
+                                            "{} references '{target}', which resolves to no node",
+                                            display_name(dag, uid)
+                                        ),
+                                    };
+                                    Some((message, "unresolved"))
+                                }
+                            }
+                        }
+                    }
+                }
+                DepCallKind::Source { source, table } => {
+                    let pair = (source.clone(), table.clone());
+                    if scope.disabled_sources.contains(&pair) {
+                        Some((
+                            format!(
+                                "{} references disabled source '{source}.{table}'",
+                                display_name(dag, uid)
+                            ),
+                            "disabled",
+                        ))
+                    } else if scope.sources.contains(&pair) {
+                        None
+                    } else if scope.uninstalled_packages > 0 {
+                        unverified += 1;
+                        None
+                    } else {
+                        Some((
+                            format!(
+                                "{} references source '{source}.{table}', which is not declared",
+                                display_name(dag, uid)
+                            ),
+                            "not declared",
+                        ))
+                    }
+                }
+            };
+            if let Some((message, label)) = fail {
+                match keyed.iter_mut().find(|(m, ..)| *m == message) {
+                    Some((_, spans, _)) => spans.push(call.span.clone()),
+                    None => keyed.push((message, vec![call.span.clone()], label)),
+                }
+            }
+        }
+        for (message, spans, label) in keyed {
+            let f = Finding::new(
+                LintRule::UnresolvedReferences,
+                (*uid).clone(),
+                Vec::new(),
+                message,
+            );
+            out.push(
+                cs.annotate(
+                    f,
+                    (spans[0].clone(), label),
+                    spans[1..]
+                        .iter()
+                        .map(|s| (s.clone(), label.to_string()))
+                        .collect(),
+                ),
+            );
+        }
+    }
+    if unverified > 0 {
+        notes.insert(format!(
+            "{unverified} unresolved {} skipped — {} declared {} not installed (run `dbt deps` to verify)",
+            pluralize(unverified, "reference"),
+            scope.uninstalled_packages,
+            pluralize(scope.uninstalled_packages, "package"),
+        ));
+    }
+}

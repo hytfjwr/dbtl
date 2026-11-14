@@ -478,6 +478,8 @@ fn manifest_from_plan(params: &SynthParams, plan: &Plan, sql_bodies: bool) -> Ra
         parent_map,
         child_map,
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     }
 }
 

@@ -334,6 +334,8 @@ mod tests {
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
             docs: Default::default(),
+            disabled: Default::default(),
+            ref_scope: None,
         };
         ResolvedSource {
             dag: dbtl::Dag::build(&manifest),

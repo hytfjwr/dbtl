@@ -370,6 +370,8 @@ mod tests {
             unit_tests: HashMap::new(),
             functions: HashMap::new(),
             docs: Default::default(),
+            disabled: Default::default(),
+            ref_scope: None,
             parent_map: HashMap::from([(
                 "model.p.m".to_string(),
                 vec!["model.p.base".to_string()],

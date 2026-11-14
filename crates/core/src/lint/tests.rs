@@ -46,6 +46,8 @@ fn manifest(
         parent_map,
         child_map,
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     }
 }
 
@@ -1203,7 +1205,7 @@ fn registry_rows_match_all_one_for_one_in_order() {
 
 #[test]
 fn registry_rows_carry_the_fixed_metadata() {
-    // The 44 ids are a fixed contract — config keys, --rules args and the
+    // The 45 ids are a fixed contract — config keys, --rules args and the
     // baseline format all rely on them. The original structure rules lead;
     // rules added later append in the registry's order so the emitted
     // sequence stays stable.
@@ -1255,6 +1257,7 @@ fn registry_rows_carry_the_fixed_metadata() {
             "model_too_long",
             "layer_materializations",
             "models_without_unit_tests",
+            "unresolved_references",
         ]
     );
     // Only rules that represent a broken guarantee or a build failure
@@ -9967,4 +9970,447 @@ fn cfg_only_opt_in(rule: LintRule, yaml: &str) -> LintConfig {
         }
     }
     cfg
+}
+
+// ---- unresolved_references ---------------------------------------------------
+
+/// A model literal carrying `raw_code` AND a `.sql` `original_file_path` —
+/// the two fields `CallSiteResolver` needs to extract `ref()`/`source()`
+/// calls for `unresolved_references` (the same pair the position tests use).
+fn dep_model(name: &str, raw: &str) -> (String, RawNode) {
+    (
+        format!("model.p.{name}"),
+        RawNode {
+            name: name.into(),
+            resource_type: "model".into(),
+            path: Some(format!("models/{name}.sql")),
+            original_file_path: Some(format!("models/{name}.sql")),
+            raw_code: Some(raw.into()),
+            ..Default::default()
+        },
+    )
+}
+
+#[test]
+fn unresolved_references_flags_a_missing_name_at_the_call() {
+    let m = manifest(
+        vec![
+            model("stg_ok", "staging/stg_ok.sql"),
+            dep_model("fct", "select *\nfrom {{ ref('stg_ghost') }}\n"),
+        ],
+        vec![],
+        &[("model.p.stg_ok", "model.p.fct")],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let mut hits = f
+        .iter()
+        .filter(|f| f.rule == LintRule::UnresolvedReferences);
+    let f1 = hits.next().expect("the typo'd ref flags");
+    assert!(hits.next().is_none(), "exactly one failing target");
+    assert_eq!(f1.node_uid, "model.p.fct");
+    assert!(
+        f1.message.contains("'stg_ghost'") && f1.message.contains("no node"),
+        "message names the missing ref: {}",
+        f1.message
+    );
+    let loc = f1.location.as_ref().expect("the call span positions it");
+    assert_eq!(loc.file, "models/fct.sql");
+    assert_eq!((loc.line, loc.column), (Some(2), Some(9)));
+    // And the same broken ref means `root_models` stays quiet — fct has a
+    // dep call; it's under-connected, not a root.
+    assert!(
+        flagged(&f, LintRule::RootModels)
+            .iter()
+            .all(|u| *u != "model.p.fct"),
+        "a model whose only ref is broken isn't a root: {f:?}"
+    );
+}
+
+#[test]
+fn unresolved_references_flags_an_undeclared_source() {
+    let m = manifest(
+        vec![dep_model(
+            "fct",
+            "select * from {{ source('raw', 'orders') }}\njoin {{ source('raw', 'nope') }} on true\n",
+        )],
+        vec![source("raw.orders")],
+        &[],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hits: Vec<&Finding> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::UnresolvedReferences)
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "the declared table resolves, `nope` doesn't: {f:?}"
+    );
+    assert!(
+        hits[0].message.contains("'raw.nope'") && hits[0].message.contains("not declared"),
+        "{}",
+        hits[0].message
+    );
+}
+
+#[test]
+fn unresolved_references_judges_two_arg_refs_against_the_scope() {
+    // `ref_scope` carries the installed-package name universe — pkg's
+    // model AND seed resolve, a missing name in an installed package
+    // flags, and a `projects:`-declared cross-project ref is skipped.
+    let mut m = manifest(
+        vec![
+            dep_model(
+                "ok",
+                "select * from {{ ref('pkg', 'pkg_model') }}\n\
+                 join {{ ref('pkg', 'pkg_seed') }} on true\n\
+                 join {{ ref('mesh', 'their_model') }} on true\n",
+            ),
+            dep_model("bad", "select * from {{ ref('pkg', 'missing') }}"),
+        ],
+        vec![],
+        &[],
+    );
+    let mut scope = crate::RefScope::default();
+    scope
+        .refs
+        .entry("pkg_model".to_string())
+        .or_default()
+        .insert("pkg".to_string());
+    scope
+        .refs
+        .entry("pkg_seed".to_string())
+        .or_default()
+        .insert("pkg".to_string());
+    scope.projects.insert("mesh".to_string());
+    m.ref_scope = Some(scope);
+    let f = findings_of(&m, &LintConfig::default());
+    let hits: Vec<&Finding> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::UnresolvedReferences)
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "only the absent name in an installed package flags: {f:?}"
+    );
+    assert_eq!(hits[0].node_uid, "model.p.bad");
+    assert!(
+        hits[0].message.contains("'pkg.missing'"),
+        "{}",
+        hits[0].message
+    );
+}
+
+#[test]
+fn unresolved_references_warns_once_for_uninstalled_packages() {
+    // Declared-but-not-installed: the missing names may live in a package
+    // `dbt deps` never ran for — unverifiable, not absent. No findings;
+    // one summary warning instead.
+    let mut m = manifest(
+        vec![dep_model(
+            "fct",
+            "select * from {{ ref('ghost') }}\njoin {{ source('raw', 'nope') }} on true\n",
+        )],
+        vec![],
+        &[],
+    );
+    m.ref_scope = Some(crate::RefScope {
+        uninstalled_packages: 2,
+        ..Default::default()
+    });
+    let out = run_rules(LintInput::new(&Dag::build(&m), &LintConfig::default()));
+    assert!(
+        out.findings
+            .iter()
+            .all(|f| f.rule != LintRule::UnresolvedReferences),
+        "unverifiable refs surface as a warning, not findings: {:?}",
+        out.findings
+    );
+    assert_eq!(
+        out.warnings
+            .iter()
+            .filter(|w| w.contains("not installed"))
+            .count(),
+        1,
+        "one summary line: {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn unresolved_references_skips_if_arms_but_judges_for_bodies() {
+    let m = manifest(
+        vec![
+            dep_model(
+                "cond",
+                "{% if target.name == 'dev' %}\nselect * from {{ ref('on_dev') }}\n\
+                 {% else %}\nselect * from {{ ref('on_prod') }}\n{% endif %}\n",
+            ),
+            dep_model(
+                "looped",
+                "{% for i in [1, 2] %}\nselect * from {{ ref('in_loop') }}\n{% endfor %}\n",
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert!(
+        f.iter()
+            .filter(|f| f.rule == LintRule::UnresolvedReferences)
+            .all(|f| f.node_uid == "model.p.looped"),
+        "if/elif/else-arm calls stay unjudged, the for body flags: {f:?}"
+    );
+}
+
+#[test]
+fn unresolved_references_reports_disabled_targets_by_name() {
+    // A parked `disabled` uid is a different failure than "missing" — the
+    // fix is re-enabling, so the message says `disabled`, not `no node`.
+    let mut m = manifest(
+        vec![dep_model(
+            "fct",
+            "select * from {{ ref('parked') }}\njoin {{ source('raw', 'gone') }} on true\n",
+        )],
+        vec![],
+        &[],
+    );
+    m.disabled.insert(
+        "model.p.parked".to_string(),
+        serde_json::Value::Object(Default::default()),
+    );
+    m.disabled.insert(
+        "source.p.raw.gone".to_string(),
+        serde_json::Value::Object(Default::default()),
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let messages: Vec<&str> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::UnresolvedReferences)
+        .map(|f| f.message.as_str())
+        .collect();
+    assert_eq!(messages.len(), 2, "{f:?}");
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("disabled model 'parked'")),
+        "{messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("disabled source 'raw.gone'")),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn unresolved_references_judges_version_pins_when_the_scope_records_them() {
+    // Manifest mode records `model.p.<name>.<v>` uids — a pin that exists
+    // resolves, a pin that doesn't flags under the version wording, and
+    // a bare ref still lands on the family.
+    let m = manifest(
+        vec![
+            versioned_model("x", "v1", "x_v1.sql"),
+            versioned_model("x", "v2", "x_v2.sql"),
+            dep_model(
+                "reads",
+                "select * from {{ ref('x', v=1) }}\n\
+                 join {{ ref('x') }} on true\n\
+                 join {{ ref('x', v=9) }} on true\n",
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hits: Vec<&Finding> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::UnresolvedReferences)
+        .collect();
+    assert_eq!(hits.len(), 1, "only the missing pin flags: {f:?}");
+    assert!(
+        hits[0].message.contains("'x' version '9'"),
+        "{}",
+        hits[0].message
+    );
+}
+
+#[test]
+fn unresolved_references_source_mode_never_judges_a_pin_but_judges_the_name() {
+    // `versions: None` (the source-mode scope) — `ref('x', v=1)` can't
+    // have its pin checked, but a `ref('ghost', v=1)` still flags on the
+    // name: the pin is unjudgeable, the name isn't.
+    let mut m = manifest(
+        vec![dep_model(
+            "reads",
+            "select * from {{ ref('x', v=1) }}\njoin {{ ref('ghost', v=1) }} on true\n",
+        )],
+        vec![],
+        &[],
+    );
+    m.ref_scope = Some(crate::RefScope {
+        versions: None,
+        assumed: ["x".to_string()].into_iter().collect(),
+        ..Default::default()
+    });
+    let f = findings_of(&m, &LintConfig::default());
+    let hits: Vec<&Finding> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::UnresolvedReferences)
+        .collect();
+    assert_eq!(hits.len(), 1, "{f:?}");
+    assert!(hits[0].message.contains("'ghost'"), "{}", hits[0].message);
+}
+
+#[test]
+fn unresolved_references_dedups_one_target_across_its_sites() {
+    let m = manifest(
+        vec![dep_model(
+            "fct",
+            "select * from {{ ref('ghost') }}\nunion all\nselect * from {{ ref('ghost') }}\n",
+        )],
+        vec![],
+        &[],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hits: Vec<&Finding> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::UnresolvedReferences)
+        .collect();
+    assert_eq!(hits.len(), 1, "one finding for the repeated target: {f:?}");
+    assert_eq!(
+        hits[0].labels.len(),
+        1,
+        "the second site labels the same finding: {:?}",
+        hits[0].labels
+    );
+}
+
+#[test]
+fn unresolved_references_never_judges_nonliteral_args() {
+    let m = manifest(
+        vec![dep_model(
+            "fct",
+            "select * from {{ ref(var('m')) }}\n\
+             join {{ ref('x', v=var('ver')) }} on true\n\
+             join {{ source(src_name, 't') }} on true\n",
+        )],
+        vec![],
+        &[],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert!(
+        f.iter().all(|f| f.rule != LintRule::UnresolvedReferences),
+        "nonliteral args produce no call to judge: {f:?}"
+    );
+}
+
+#[test]
+fn unresolved_references_source_scope_counts_installed_and_assumed_names() {
+    // The end-to-end shape: a project dir with `dbt_packages/` +
+    // `dependencies.yml` + a `versions:`-declared model — the synthesized
+    // scope resolves all four call shapes and still flags the truly
+    // missing one.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    std::fs::create_dir_all(dir.path().join("dbt_packages/pkg/models")).unwrap();
+    std::fs::create_dir_all(dir.path().join("dbt_packages/pkg/seeds")).unwrap();
+    std::fs::write(
+        dir.path().join("dbt_project.yml"),
+        "name: p\nmodel-paths: [models]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("dbt_packages/pkg/dbt_project.yml"),
+        "name: pkg\nmodel-paths: [models]\nseed-paths: [seeds]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("dbt_packages/pkg/models/pkg_model.sql"),
+        "select 1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("dbt_packages/pkg/seeds/pkg_seed.csv"),
+        "id\n1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("dependencies.yml"),
+        "projects:\n  - name: mesh\npackages:\n  - package: pkg\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("models/schema.yml"),
+        "version: 2\nmodels:\n  - name: v_model\n    versions:\n      - v: 1\n      - v: 2\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("models/fct.sql"),
+        "select * from {{ ref('pkg', 'pkg_model') }}\n\
+         join {{ ref('pkg', 'pkg_seed') }} on true\n\
+         join {{ ref('mesh', 'their_model') }} on true\n\
+         join {{ ref('v_model', v=1) }} on true\n\
+         join {{ ref('truly_missing') }} on true\n",
+    )
+    .unwrap();
+    let sm = crate::manifest_from_source(dir.path()).unwrap();
+    let f = findings_of(&sm, &LintConfig::default());
+    let hits: Vec<&Finding> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::UnresolvedReferences)
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "installed pkg names, a `projects:` ref, and a versions:-declared name resolve: {f:?}"
+    );
+    assert!(
+        hits[0].message.contains("'truly_missing'"),
+        "{}",
+        hits[0].message
+    );
+}
+
+#[test]
+fn unresolved_references_source_scope_records_disabled_and_version_families() {
+    // `config(enabled=false)` parks the model — the ref scope keeps its
+    // name so the finding says `disabled`; a `<name>_v<N>` file declares
+    // the `<name>` family, so a bare ref to it resolves.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    std::fs::write(
+        dir.path().join("dbt_project.yml"),
+        "name: p\nmodel-paths: [models]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("models/parked.sql"),
+        "{{ config(enabled=false) }}\nselect 1\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("models/fct_orders_v2.sql"), "select 1\n").unwrap();
+    std::fs::write(
+        dir.path().join("models/fct.sql"),
+        "select * from {{ ref('parked') }}\njoin {{ ref('fct_orders') }} on true\n",
+    )
+    .unwrap();
+    let sm = crate::manifest_from_source(dir.path()).unwrap();
+    let f = findings_of(&sm, &LintConfig::default());
+    let hits: Vec<&Finding> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::UnresolvedReferences)
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "the parked name reports `disabled`, the version family resolves: {f:?}"
+    );
+    assert!(
+        hits[0].message.contains("disabled model 'parked'"),
+        "{}",
+        hits[0].message
+    );
 }

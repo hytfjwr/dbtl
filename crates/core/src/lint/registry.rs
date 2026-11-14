@@ -102,7 +102,10 @@ pub static REGISTRY: &[RuleInfo] = &[
         rationale: "A model that refs nothing upstream is either a hand-maintained \
                     table — data nobody can trace or rebuild — or a forgotten \
                     ref that should have been a source. Real roots belong in \
-                    seeds or declared sources so their provenance is explicit.",
+                    seeds or declared sources so their provenance is explicit. \
+                    A model whose ref()/source() calls all failed to resolve \
+                    isn't a root either — unresolved_references reports the \
+                    broken calls themselves.",
         example: "dim_regions is a plain `select ...` with no ref/source \
                   calls. Fix: make it a seed, or declare it as a source if an \
                   external system owns it.",
@@ -980,6 +983,32 @@ pub static REGISTRY: &[RuleInfo] = &[
             &["staging", "intermediate", "marts", "other"],
             "model layers the unit-test check applies to — a built-in layer or a `lint.naming_prefixes` layer",
         )],
+        requires: Requires::Graph,
+    },
+    RuleInfo {
+        rule: LintRule::UnresolvedReferences,
+        id: "unresolved_references",
+        category: Category::Modeling,
+        default_severity: Severity::Warn,
+        default_enabled: true,
+        summary: "a ref()/source() call resolves to no node",
+        rationale: "A call naming nothing the project or its installed \
+                    packages provide fails the dbt parse outright — every \
+                    model, seed, and snapshot behind it stays unbuilt until \
+                    the name is fixed. Catching it here keeps the repair \
+                    local: it's a typo or a missing declaration, not a \
+                    layering decision. A name parked under `disabled` \
+                    reports under its own wording (the fix is re-enabling, \
+                    not declaring), and calls Jinja can switch off — inside \
+                    an `{% if %}`/`{% elif %}`/`{% else %}` arm — are never \
+                    judged. When declared packages aren't fully installed \
+                    a missing name may simply live in one of them, so those \
+                    collapse to one summary warning instead of findings.",
+        example: "fct_orders refs stg_ordres — a typo for stg_orders — and \
+                  reads source('raw', 'nonexistent'), which no schema.yml \
+                  declares. Fix: correct the names, or declare the source.",
+        help: "fix the call's name or declare the target so the reference resolves",
+        params: &[],
         requires: Requires::Graph,
     },
 ];

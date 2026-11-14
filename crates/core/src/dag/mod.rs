@@ -14,7 +14,7 @@ use anyhow::Result;
 use crate::compiled::{CompiledOrigin, CompiledSql};
 use crate::manifest::{
     load_manifest, RawConstraint, RawDoc, RawExposure, RawFreshnessThreshold, RawMacro,
-    RawManifest, RawNode, RawSource,
+    RawManifest, RawNode, RawSource, RefScope,
 };
 
 /// A merged, prefix-resolved entry in the unified node map.
@@ -668,6 +668,15 @@ pub struct Dag {
     /// recomputes it). Empty when no package prune ever ran — source mode
     /// and `All`-scope loads among them.
     pruned_adjacent: HashMap<String, PrunedAdjacent>,
+    /// The `ref()`/`source()` name universe the load captured pre-prune —
+    /// every refable name across the root project AND installed packages,
+    /// declared sources, parked `disabled` names, versioned families, and
+    /// the declared-dependency bookkeeping a missing name may still hide
+    /// behind. `unresolved_references` judges call sites against it;
+    /// [`filtered`](Dag::filtered) carries it over (the universe a call
+    /// resolves against doesn't shrink when a `--select` narrows the
+    /// displayed graph).
+    ref_scope: RefScope,
 }
 
 /// A manifest macro's diff-relevant payload. The [`Dag`] stores these keyed by

@@ -133,6 +133,13 @@ impl Dag {
         self.pruned_adjacent.get(unique_id)
     }
 
+    /// The `ref()`/`source()` name universe the load captured pre-prune —
+    /// `unresolved_references` resolves call-site names against it (see
+    /// [`RefScope`] for what's inside and why).
+    pub fn ref_scope(&self) -> &RefScope {
+        &self.ref_scope
+    }
+
     /// Test-only seam: inject a compiled-SQL entry directly. A `stale` flag
     /// cannot be expressed in a manifest literal, and forging
     /// `target/compiled/` mtimes inside a unit test needs `filetime`-grade APIs
@@ -341,6 +348,9 @@ impl Dag {
                 .filter(|(k, _)| nodes.contains_key(*k))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
+            // The ref/source name universe describes the load, not the
+            // kept set — carried whole like `root_project`.
+            ref_scope: self.ref_scope.clone(),
             // The root identity is a property of the source manifest, not of
             // the kept uid set — a `--project-only` view is still that project.
             root_project: self.root_project.clone(),

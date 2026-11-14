@@ -325,6 +325,8 @@ fn violation_dag() -> Dag {
         child_map,
         macros: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     })
 }
 

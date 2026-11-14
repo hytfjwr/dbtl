@@ -63,6 +63,8 @@ fn manifest(specs: &[(&str, &str, &[&str])], edges: &[(&str, &str)]) -> RawManif
         functions: HashMap::new(),
         metadata: Default::default(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     }
 }
 

@@ -8,6 +8,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- An `unresolved_references` lint rule (on by default, warn) flags
+  literal `ref()`/`source()` calls naming nothing the load could see —
+  a typo'd model, an undeclared `source()` table, or a `v=` version pin
+  that doesn't exist — positioning each finding at the call site.
+  Judgment runs against the pre-prune name universe both load modes
+  record: installed `dbt_packages/` resources resolve without their SQL
+  being parsed, `enabled: false`-parked names report under their own
+  "disabled" wording, `projects:`-declared cross-project refs and calls
+  inside `{% if %}`/`{% elif %}`/`{% else %}` arms are never judged, and
+  source mode skips version pins it can't verify. When declared packages
+  aren't fully installed, missing names collapse into one summary
+  warning instead of findings — they may live in a package `dbt deps`
+  never fetched.
 - An opt-in `models_without_unit_tests` lint rule flags models in a
   checked layer (default `marts`, tunable via `layers`) that carry no
   unit test — off under `standard`, on under `strict`. Models dbt can't

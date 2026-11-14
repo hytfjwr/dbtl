@@ -55,6 +55,8 @@ fn collapse_dag(kids: usize, leaf_parent: Option<&str>) -> Dag {
         child_map,
         macros: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     })
 }
 
@@ -429,6 +431,8 @@ fn nested_hub_app(threshold: usize) -> App {
         child_map,
         macros: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     });
     let mut a = App::new(dag, PathBuf::from("/p/target/manifest.json"));
     a.set_collapse_threshold(threshold);
@@ -534,6 +538,8 @@ fn modal_yank_ascii_does_not_inherit_the_current_roots_keep_set() {
         child_map,
         macros: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     });
     let mut a = App::new(dag, PathBuf::from("/p/target/manifest.json"));
     a.set_collapse_threshold(8);
@@ -725,6 +731,8 @@ fn pk_dag() -> Dag {
         )]),
         macros: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     })
 }
 
