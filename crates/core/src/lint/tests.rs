@@ -10205,6 +10205,140 @@ fn unresolved_references_reports_disabled_targets_by_name() {
     );
 }
 
+/// A model literal under an explicit package — `ref('pkg','x')` and
+/// enabled-elsewhere collisions need a non-`p` uid.
+fn pkg_model(pkg: &str, name: &str) -> (String, RawNode) {
+    (
+        format!("model.{pkg}.{name}"),
+        RawNode {
+            name: name.into(),
+            resource_type: "model".into(),
+            path: Some(format!("models/{name}.sql")),
+            ..Default::default()
+        },
+    )
+}
+
+#[test]
+fn unresolved_references_enabled_same_name_target_wins_over_disabled() {
+    // `ref('x')` resolves to the ENABLED `model.q.x` — the parked
+    // `model.p.x` under the same name is never the verdict (dbt resolves
+    // live nodes only). A pkg-pinned call to the parked package still
+    // reports disabled. (`q` sorts after `p` so `model.p.fct` stays the
+    // root-scoped node under `project_name`'s min-uid fallback.)
+    let mut m = manifest(
+        vec![
+            pkg_model("q", "x"),
+            dep_model(
+                "fct",
+                "select * from {{ ref('x') }}\n\
+                 join {{ ref('q', 'x') }} on true\n\
+                 join {{ ref('p', 'x') }} on true\n",
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    m.disabled.insert(
+        "model.p.x".to_string(),
+        serde_json::Value::Object(Default::default()),
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let hits: Vec<&Finding> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::UnresolvedReferences)
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "only the pkg-pinned call to the parked member flags: {f:?}"
+    );
+    assert!(
+        hits[0].message.contains("disabled model 'p.x'"),
+        "{}",
+        hits[0].message
+    );
+}
+
+#[test]
+fn unresolved_references_matches_a_pin_against_the_disabled_version() {
+    // `model.p.x.v1` parked, `model.p.x.v2` live: the enabled version
+    // resolves, the parked version reports "disabled version", and a
+    // never-existing version reports "no node" — three distinct verdicts.
+    let mut m = manifest(
+        vec![
+            versioned_model("x", "v2", "x_v2.sql"),
+            dep_model(
+                "reads",
+                "select * from {{ ref('x', v=1) }}\n\
+                 join {{ ref('x', v=2) }} on true\n\
+                 join {{ ref('x', v=3) }} on true\n",
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    m.disabled.insert(
+        "model.p.x.v1".to_string(),
+        serde_json::Value::Object(Default::default()),
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    let messages: Vec<&str> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::UnresolvedReferences)
+        .map(|f| f.message.as_str())
+        .collect();
+    assert_eq!(messages.len(), 2, "{f:?}");
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("disabled model 'x' version '1'")),
+        "{messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("'x' version '3'") && m.contains("no node")),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn unresolved_references_disabled_collisions_stay_deterministic() {
+    // Two parked uids sharing a name (`model.p.x` + `seed.q.x`) both
+    // record — the `HashMap` iteration order of `disabled` never picks a
+    // winner, and a pkg-pinned call selects its own parked member.
+    let mut m = manifest(
+        vec![dep_model(
+            "fct",
+            "select * from {{ ref('x') }}\njoin {{ ref('q', 'x') }} on true\n",
+        )],
+        vec![],
+        &[],
+    );
+    for uid in ["model.p.x", "seed.q.x"] {
+        m.disabled.insert(
+            uid.to_string(),
+            serde_json::Value::Object(Default::default()),
+        );
+    }
+    let f = findings_of(&m, &LintConfig::default());
+    let messages: Vec<&str> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::UnresolvedReferences)
+        .map(|f| f.message.as_str())
+        .collect();
+    assert_eq!(messages.len(), 2, "{f:?}");
+    assert!(
+        messages.iter().any(|m| m.contains("disabled model 'x'")),
+        "the bare ref reports the first parked member (p < q): {messages:?}"
+    );
+    assert!(
+        messages.iter().any(|m| m.contains("disabled seed 'q.x'")),
+        "the pkg-pinned ref reports the parked seed: {messages:?}"
+    );
+}
+
 #[test]
 fn unresolved_references_judges_version_pins_when_the_scope_records_them() {
     // Manifest mode records `model.p.<name>.<v>` uids — a pin that exists
@@ -10371,6 +10505,68 @@ fn unresolved_references_source_scope_counts_installed_and_assumed_names() {
         hits[0].message.contains("'truly_missing'"),
         "{}",
         hits[0].message
+    );
+}
+
+#[test]
+fn unresolved_references_source_scope_reads_install_roots_and_package_versions() {
+    // `packages-install-path` redirects where `packages:` land; modern
+    // dbt's `dbt_internal_packages/` resolves names too; and a package's
+    // `<name>_v<N>` stems plus `versions:`/`defined_in:` yml declarations
+    // all count under the package's name.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    std::fs::create_dir_all(dir.path().join("deps/pkg/models")).unwrap();
+    std::fs::create_dir_all(dir.path().join("dbt_internal_packages/dbt/models")).unwrap();
+    std::fs::write(
+        dir.path().join("dbt_project.yml"),
+        "name: p\nmodel-paths: [models]\npackages-install-path: deps\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("deps/pkg/dbt_project.yml"),
+        "name: pkg\nmodel-paths: [models]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("deps/pkg/models/family_v1.sql"),
+        "select 1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("deps/pkg/models/family_v2.sql"),
+        "select 1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("deps/pkg/models/schema.yml"),
+        "version: 2\nmodels:\n  - name: declared\n    versions:\n      - v: 1\n        defined_in: declared_impl\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("dbt_internal_packages/dbt/dbt_project.yml"),
+        "name: dbt_internal\nmodel-paths: [models]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path()
+            .join("dbt_internal_packages/dbt/models/internal_model.sql"),
+        "select 1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("models/fct.sql"),
+        "select * from {{ ref('pkg', 'family') }}\n\
+         join {{ ref('pkg', 'declared') }} on true\n\
+         join {{ ref('pkg', 'declared_impl') }} on true\n\
+         join {{ ref('dbt_internal', 'internal_model') }} on true\n",
+    )
+    .unwrap();
+    let sm = crate::manifest_from_source(dir.path()).unwrap();
+    let f = findings_of(&sm, &LintConfig::default());
+    assert!(
+        f.iter().all(|f| f.rule != LintRule::UnresolvedReferences),
+        "redirected + internal install roots and package versions all resolve: {f:?}"
     );
 }
 

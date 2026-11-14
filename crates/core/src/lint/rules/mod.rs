@@ -146,12 +146,12 @@ pub struct LintOutcome {
     /// `BTreeSet`; `forbidden_patterns` (a raw-text rule) never
     /// contributes, and neither do models that simply HAVE no SQL.
     pub unparsed: BTreeSet<String>,
-    /// Evaluation-time warnings — currently the `path:` legacy
-    /// resource-relative form surfacing through a rule's `exclude:` or a
-    /// selector parameter — deduplicated and sorted (each distinct
-    /// deprecated spec warns once per lint evaluation, no matter how many
-    /// rules read it). Every surface prints them through its own warning
-    /// channel.
+    /// Evaluation-time warnings — selector-deprecation notes (the `path:`
+    /// legacy resource-relative form through a rule's `exclude:` or a
+    /// selector parameter) and `unresolved_references`' unverifiable-call
+    /// summary — deduplicated and sorted (each distinct note warns once
+    /// per lint evaluation, no matter how many rules read it). Every
+    /// surface prints them through its own warning channel.
     pub warnings: Vec<String>,
 }
 

@@ -13,7 +13,8 @@ use anyhow::{Context, Result};
 
 use super::*;
 use crate::{
-    RawConfig, RawDoc, RawExposure, RawExposureOwner, RawMetadata, RefScope, UnresolvedAdjacent,
+    DisabledRef, RawConfig, RawDoc, RawExposure, RawExposureOwner, RawMetadata, RefScope,
+    UnresolvedAdjacent,
 };
 
 /// The shared state the source-synthesis stages build up: the parsed project
@@ -67,11 +68,13 @@ pub(super) struct Synthesis {
     /// (`+access`/`+group`/`+contract`/`+incremental_strategy`) — the same
     /// lowest-precedence slot `tree_mat`/`tree_uk` occupy.
     tree_gov: HashMap<String, TreeConfig>,
-    /// `enabled: false`-parked refable names — `name -> resource_type` —
+    /// `enabled: false`-parked refable names — `name -> resource types` —
     /// recorded instead of dropped: `unresolved_references` reports a
     /// `ref()` to one under its own "disabled" wording, matching where
-    /// dbt parks them (`manifest.disabled`).
-    disabled_names: BTreeMap<String, String>,
+    /// dbt parks them (`manifest.disabled`). The kind set records every
+    /// parked resource under the name — a same-name model+seed collision
+    /// keeps both, matching the manifest-mode `disabled_refs` shape.
+    disabled_names: BTreeMap<String, BTreeSet<String>>,
     /// `(source, table)` pairs `config.enabled`/`+enabled` parked — the
     /// source-side half of `disabled_names`.
     disabled_sources: BTreeSet<(String, String)>,
@@ -303,7 +306,10 @@ impl Synthesis {
                 &rel_path(&self.dir, &file),
             ) || tree.enabled == Some(false)
             {
-                self.disabled_names.insert(name, "model".to_string());
+                self.disabled_names
+                    .entry(name)
+                    .or_default()
+                    .insert("model".to_string());
                 continue;
             }
             // `collect_with_root` sorts by path, so the first file to claim a
@@ -383,7 +389,10 @@ impl Synthesis {
                 Some(&self.vars),
             );
             if tree.enabled == Some(false) {
-                self.disabled_names.insert(name, "seed".to_string());
+                self.disabled_names
+                    .entry(name)
+                    .or_default()
+                    .insert("seed".to_string());
                 continue;
             }
             if self.name_index.contains_key(&name) {
@@ -436,7 +445,10 @@ impl Synthesis {
                 .disabled(&masked, &self.vars, &mut self.warnings, &ofp)
             {
                 for name in self.pat.snapshots(&masked) {
-                    self.disabled_names.insert(name, "snapshot".to_string());
+                    self.disabled_names
+                        .entry(name)
+                        .or_default()
+                        .insert("snapshot".to_string());
                 }
                 continue;
             }
@@ -460,7 +472,9 @@ impl Synthesis {
                 );
                 if tree.enabled == Some(false) {
                     self.disabled_names
-                        .insert(name.clone(), "snapshot".to_string());
+                        .entry(name.clone())
+                        .or_default()
+                        .insert("snapshot".to_string());
                     continue;
                 }
                 if self.name_index.contains_key(&name) {
@@ -595,7 +609,9 @@ impl Synthesis {
                     &mut self.warnings,
                 ) {
                     self.disabled_names
-                        .insert(entry.name.clone(), "snapshot".to_string());
+                        .entry(entry.name.clone())
+                        .or_default()
+                        .insert("snapshot".to_string());
                     continue;
                 }
                 if self.name_index.contains_key(&entry.name) {
@@ -621,7 +637,9 @@ impl Synthesis {
                 );
                 if tree.enabled == Some(false) {
                     self.disabled_names
-                        .insert(entry.name.clone(), "snapshot".to_string());
+                        .entry(entry.name.clone())
+                        .or_default()
+                        .insert("snapshot".to_string());
                     continue;
                 }
                 // dbt V2 synthesizes `select * from {relation}` (wrapping a bare
@@ -1296,9 +1314,17 @@ impl Synthesis {
         // surfaces. `versions` stays None — source mode never synthesizes
         // versioned nodes, so a `v=`-pinned ref is never judged.
         let deps = DeclaredDeps::load(&self.dir, &mut self.warnings);
-        let installed = InstalledPackages::load(&self.dir, &self.pat, &mut self.warnings);
+        let installed =
+            InstalledPackages::load(&self.dir, &self.project, &self.pat, &mut self.warnings);
         let mut refs = installed.refs;
         for name in self.name_index.keys() {
+            // A parked (`disabled`) name stays in `name_index` — edges and
+            // test `to:` still resolve to the dropped uid — but it is NOT
+            // a live `ref()` target: it judges as "disabled" against
+            // `disabled_refs` below, never as resolved here.
+            if self.disabled_names.contains_key(name) {
+                continue;
+            }
             refs.entry(name.clone())
                 .or_default()
                 .insert(self.proj.clone());
@@ -1323,7 +1349,19 @@ impl Synthesis {
             disabled_refs: self
                 .disabled_names
                 .iter()
-                .map(|(n, kind)| (n.clone(), (self.proj.clone(), kind.clone())))
+                .map(|(n, kinds)| {
+                    (
+                        n.clone(),
+                        kinds
+                            .iter()
+                            .map(|kind| DisabledRef {
+                                package: self.proj.clone(),
+                                kind: kind.clone(),
+                                version: None,
+                            })
+                            .collect(),
+                    )
+                })
                 .collect(),
             disabled_sources: self.disabled_sources,
             assumed: self.assumed_names,

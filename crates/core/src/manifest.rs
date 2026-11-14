@@ -85,11 +85,16 @@ pub struct RefScope {
     /// Declared `source()` targets `(source, table)` across every
     /// package the load could see.
     pub sources: BTreeSet<(String, String)>,
-    /// `ref`-able names parked under `disabled` — `name -> (package,
-    /// resource_type)` — so a ref to one flags as a reference to a
-    /// disabled node, not as an unresolved name. Bare `ref('x')` checks
-    /// any recorded package; `ref('pkg', 'x')` only the named one.
-    pub disabled_refs: BTreeMap<String, (String, String)>,
+    /// `ref`-able names parked under `disabled` — `name -> {every parked
+    /// target}` — so a ref to one flags as a reference to a disabled node,
+    /// not as an unresolved name. The whole set is recorded: a same-name
+    /// collision (`model.p.x` + `seed.q.x`) never collapses first-wins, so
+    /// `manifest.disabled`'s `HashMap` order can't leak into a verdict.
+    /// A call matches a member: `ref('pkg','x')` only `pkg` members, a
+    /// `v=` pin only the recorded version, a bare `ref('x')` any member —
+    /// and ONLY once resolution fails, since an enabled same-name target
+    /// answers where the parked one can't.
+    pub disabled_refs: BTreeMap<String, BTreeSet<DisabledRef>>,
     /// Disabled `source()` targets `(source, table)` — same split.
     pub disabled_sources: BTreeSet<(String, String)>,
     /// Names counted as resolved without a node — the versioned-family
@@ -106,6 +111,19 @@ pub struct RefScope {
     /// live in a package that was never installed — unresolved verdicts
     /// are counted (and surfaced once as a warning) instead of flagged.
     pub uninstalled_packages: usize,
+}
+
+/// One parked `disabled` node's identity under a shared name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DisabledRef {
+    /// The parked uid's package (uid segment 1).
+    pub package: String,
+    /// Its resource type (`model`/`seed`/`snapshot`/`analysis`).
+    pub kind: String,
+    /// The `.vN` uid segment, normalized (`v2` → `2`), when the parked
+    /// uid is a versioned model — `None` for unversioned uids, so a `v=`
+    /// pin can tell "disabled version" from "no such version".
+    pub version: Option<String>,
 }
 
 /// dbt writes a version as the declared `v:` value VERBATIM — a JSON number
@@ -635,7 +653,10 @@ pub struct RawManifest {
     /// of declared-but-uninstalled packages that could still own a
     /// missing name. `#[serde(skip)]` like `unresolved_adjacent`: a real
     /// manifest never carries it (`Dag::build` derives the scope from
-    /// the manifest's own maps instead — including `disabled`).
+    /// the manifest's own maps instead — including `disabled`). Same
+    /// round-trip caveat: a serialized+reparsed synthesized manifest
+    /// loses the source-mode scope and derives the manifest-mode one
+    /// (`versions: Some(…)` judges pins the source load skipped).
     #[serde(skip)]
     pub ref_scope: Option<RefScope>,
 }

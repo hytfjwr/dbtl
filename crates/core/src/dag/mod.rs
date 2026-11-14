@@ -13,8 +13,8 @@ use anyhow::Result;
 
 use crate::compiled::{CompiledOrigin, CompiledSql};
 use crate::manifest::{
-    load_manifest, RawConstraint, RawDoc, RawExposure, RawFreshnessThreshold, RawMacro,
-    RawManifest, RawNode, RawSource, RefScope,
+    load_manifest, DisabledRef, RawConstraint, RawDoc, RawExposure, RawFreshnessThreshold,
+    RawMacro, RawManifest, RawNode, RawSource, RefScope,
 };
 
 /// A merged, prefix-resolved entry in the unified node map.

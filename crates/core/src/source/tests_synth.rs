@@ -29,7 +29,7 @@ pub(super) fn apply_meta(
     entries: &[SchemaModel],
     yml_path: &str,
     docs: &DocBlocks,
-    disabled: &mut std::collections::BTreeMap<String, String>,
+    disabled: &mut std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     warnings: &mut Vec<String>,
 ) {
     for entry in entries {
@@ -46,7 +46,10 @@ pub(super) fn apply_meta(
             warnings,
         ) {
             if nodes.remove(&uid).is_some() {
-                disabled.insert(entry.name.clone(), type_prefix.to_string());
+                disabled
+                    .entry(entry.name.clone())
+                    .or_default()
+                    .insert(type_prefix.to_string());
             }
             continue;
         }

@@ -79,6 +79,16 @@ pub(super) struct DbtProject {
     /// before `vars:` loads (see vars.rs for the two scopes).
     #[serde(default)]
     pub(super) vars: serde_json::Value,
+    /// `packages-install-path` — where `packages:` installs land (dbt's
+    /// own key, default `dbt_packages`). Only the ROOT project's value
+    /// matters: `unresolved_references`' package scan reads the declared
+    /// root, never an installed package's own redirect.
+    #[serde(
+        rename = "packages-install-path",
+        default,
+        deserialize_with = "de_opt_string"
+    )]
+    pub(super) packages_install_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]

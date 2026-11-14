@@ -198,6 +198,9 @@ impl<'a> CallSiteResolver<'a> {
     /// The calls `uid`'s raw SQL makes — `None` for a node without raw
     /// code (sources/seeds/exposures), without a declared file, or whose
     /// file isn't SQL (`dbt.ref()` in a Python model gets no position).
+    /// YAML-defined snapshots carry the `.yml` file, so their synthesized
+    /// `select * from {{ ref(…) }}` never reaches here either — call
+    /// spans index `raw_code`, which wouldn't name real `.yml` offsets.
     pub(crate) fn for_node(&self, uid: &str) -> Option<CallSites<'a>> {
         if let Some(entry) = self.memo.borrow().get(uid) {
             return entry.as_ref().map(|sites| self.make(sites.clone()));

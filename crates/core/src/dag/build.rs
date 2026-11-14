@@ -560,8 +560,11 @@ fn ref_scope_from_manifest(manifest: &RawManifest) -> RefScope {
     }
     // `disabled` parks nodes an `enabled: false` sidelined — a call
     // pointing at one fails like a missing name but reads differently.
-    // Refable kinds carry `name -> (pkg, resource_type)`; parked sources
-    // answer `source()` under their own `(source, table)` set.
+    // Refable kinds record EVERY parked uid under its name (a same-name
+    // collision stays a set member, so the `HashMap` iteration order
+    // never picks a winner); `model.<pkg>.<name>.<vseg>` keeps its
+    // version so a `v=` pin matches only the parked version. Parked
+    // sources answer `source()` under their own `(source, table)` set.
     for uid in manifest.disabled.keys() {
         let mut it = uid.split('.');
         match (
@@ -581,13 +584,23 @@ fn ref_scope_from_manifest(manifest: &RawManifest) -> RefScope {
                 Some(kind @ ("model" | "seed" | "snapshot" | "analysis")),
                 Some(pkg),
                 Some(name),
-                _,
+                vseg,
                 _,
                 None,
             ) if !pkg.is_empty() => {
                 scope
                     .disabled_refs
-                    .insert(name.to_string(), (pkg.to_string(), kind.to_string()));
+                    .entry(name.to_string())
+                    .or_default()
+                    .insert(DisabledRef {
+                        package: pkg.to_string(),
+                        kind: kind.to_string(),
+                        version: if kind == "model" {
+                            vseg.map(|v| normalize_version(v).to_string())
+                        } else {
+                            None
+                        },
+                    });
             }
             _ => {}
         }

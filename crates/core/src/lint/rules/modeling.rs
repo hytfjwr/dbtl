@@ -956,63 +956,84 @@ pub(super) fn unresolved_references(
                         let target = package
                             .as_deref()
                             .map_or_else(|| name.clone(), |p| format!("{p}.{name}"));
-                        let pkg_match = |dpkg: &str| package.as_deref().is_none_or(|p| p == dpkg);
-                        match scope.disabled_refs.get(name) {
-                            Some((dpkg, kind)) if pkg_match(dpkg) => Some((
-                                format!(
-                                    "{} references disabled {kind} '{target}'",
-                                    display_name(dag, uid)
-                                ),
-                                "disabled",
-                            )),
-                            _ => {
-                                let name_resolved = match package.as_deref() {
-                                    None => {
-                                        scope.refs.contains_key(name)
-                                            || scope.assumed.contains(name)
-                                    }
-                                    Some(p) => {
-                                        scope.refs.get(name).is_some_and(|pkgs| pkgs.contains(p))
-                                            || (root == Some(p) && scope.assumed.contains(name))
-                                    }
-                                };
-                                // A version pin is only checkable when the
-                                // load records version uids (manifest mode);
-                                // under a mode that never does (source),
-                                // the NAME was already judged and the pin
-                                // passes unjudgeable.
-                                let resolved = name_resolved
-                                    && match (versioned, version, &scope.versions) {
-                                        (true, Some(v), Some(vs)) => {
-                                            match package.as_deref() {
-                                                Some(p) => vs.contains(&(
-                                                    p.to_string(),
-                                                    name.clone(),
-                                                    v.clone(),
-                                                )),
-                                                // A bare ref's package is
-                                                // unknown — accept the
-                                                // version in ANY package
-                                                // (under-reports when a
-                                                // local unversioned x
-                                                // shadows a packaged
-                                                // versioned one: dbt would
-                                                // error, we pass — the
-                                                // approximation's safe
-                                                // direction).
-                                                None => {
-                                                    vs.iter().any(|(_, n, vv)| n == name && vv == v)
-                                                }
-                                            }
+                        let name_resolved = match package.as_deref() {
+                            None => scope.refs.contains_key(name) || scope.assumed.contains(name),
+                            Some(p) => {
+                                scope.refs.get(name).is_some_and(|pkgs| pkgs.contains(p))
+                                    || (root == Some(p) && scope.assumed.contains(name))
+                            }
+                        };
+                        // A version pin is only checkable when the
+                        // load records version uids (manifest mode);
+                        // under a mode that never does (source),
+                        // the NAME was already judged and the pin
+                        // passes unjudgeable.
+                        let resolved = name_resolved
+                            && match (versioned, version, &scope.versions) {
+                                (true, Some(v), Some(vs)) => {
+                                    match package.as_deref() {
+                                        Some(p) => {
+                                            vs.contains(&(p.to_string(), name.clone(), v.clone()))
                                         }
-                                        _ => true,
-                                    };
-                                if resolved {
-                                    None
-                                } else if scope.uninstalled_packages > 0 {
+                                        // A bare ref's package is
+                                        // unknown — accept the
+                                        // version in ANY package
+                                        // (under-reports when a
+                                        // local unversioned x
+                                        // shadows a packaged
+                                        // versioned one: dbt would
+                                        // error, we pass — the
+                                        // approximation's safe
+                                        // direction).
+                                        None => vs.iter().any(|(_, n, vv)| n == name && vv == v),
+                                    }
+                                }
+                                _ => true,
+                            };
+                        if resolved {
+                            None
+                        } else {
+                            // Resolution failed — only NOW does a parked
+                            // same-name target matter: an enabled `x`
+                            // elsewhere answers `ref('x')` where the
+                            // disabled one can't. The call's package arg
+                            // narrows the match to that package's parked
+                            // members; a `v=` pin only matches the parked
+                            // version itself (a pin on an unversioned or
+                            // differently-versioned parked name reads
+                            // "no node", like dbt's resolution error).
+                            let disabled_hit = scope.disabled_refs.get(name).and_then(|set| {
+                                set.iter().find(|d| {
+                                    package.as_deref().is_none_or(|p| p == d.package)
+                                        && match version {
+                                            Some(v) if *versioned => {
+                                                d.version.as_deref() == Some(v.as_str())
+                                            }
+                                            _ => true,
+                                        }
+                                })
+                            });
+                            match disabled_hit {
+                                Some(d) => Some((
+                                    match version {
+                                        Some(v) if *versioned => format!(
+                                            "{} references disabled {} '{target}' version '{v}'",
+                                            display_name(dag, uid),
+                                            d.kind
+                                        ),
+                                        _ => format!(
+                                            "{} references disabled {} '{target}'",
+                                            display_name(dag, uid),
+                                            d.kind
+                                        ),
+                                    },
+                                    "disabled",
+                                )),
+                                None if scope.uninstalled_packages > 0 => {
                                     unverified += 1;
                                     None
-                                } else {
+                                }
+                                None => {
                                     let message = match (name_resolved, version) {
                                         (true, Some(v)) => format!(
                                             "{} references '{target}' version '{v}', which resolves to no node",

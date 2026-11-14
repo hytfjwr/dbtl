@@ -5,10 +5,13 @@
 //! Two inputs, both cheap reads — package SQL is NEVER parsed (matching the
 //! loader's root-only stance, and keeping the scan fast on real installs):
 //!
-//! - `dbt_packages/*/`: each installed dir's OWN `dbt_project.yml` names the
-//!   package and locates its resource roots; the `.sql`/`.py`/`.csv` stems
-//!   under them — plus `{% snapshot %}`/`snapshots:` yml names — become
-//!   refable names, and `sources:` yml declarations become sourceable pairs.
+//! - `<packages-install-path>/*/` (default `dbt_packages/`) plus modern
+//!   dbt's `dbt_internal_packages/`: each installed dir's OWN
+//!   `dbt_project.yml` names the package and locates its resource roots;
+//!   the `.sql`/`.py`/`.csv` stems under them — plus `{% snapshot %}`,
+//!   `snapshots:` yml names, and `versions:`/`defined_in:` declarations —
+//!   become refable names, and `sources:` yml declarations become
+//!   sourceable pairs.
 //! - `dependencies.yml` / `packages.yml` at the project root: the
 //!   `projects:` entries are the cross-project (dbt-mesh) names a two-arg
 //!   `ref('proj', 'x')` may legitimately name, and the `packages:` count
@@ -78,18 +81,36 @@ impl DeclaredDeps {
 pub(super) struct InstalledPackages {
     pub(super) refs: HashMap<String, BTreeSet<String>>,
     pub(super) sources: BTreeSet<(String, String)>,
-    /// Directories directly under `dbt_packages/` — the tally
-    /// [`DeclaredDeps::declared`] compares against.
+    /// Directories directly under the declared install root
+    /// (`packages-install-path`, default `dbt_packages`) — the tally
+    /// [`DeclaredDeps::declared`] compares against. Internal-package dirs
+    /// never count: they aren't `packages:` entries.
     pub(super) installed: usize,
 }
 
 impl InstalledPackages {
-    /// Scan every dir under `<dir>/dbt_packages/`, sorted so the walk is
-    /// deterministic. A missing `dbt_packages/` is the common case, not an
+    /// Scan every dir under the project's package install roots, sorted
+    /// so the walk is deterministic. The declared root is dbt's
+    /// `packages-install-path` key (default `dbt_packages`, kept under
+    /// the project dir); modern dbt also installs internal packages
+    /// under `dbt_internal_packages/` — their names resolve too, but
+    /// they don't count toward `installed`: internal tooling isn't a
+    /// `packages:` entry, so counting it could mask a genuinely missing
+    /// declared package. A missing root is the common case, not an
     /// error.
-    pub(super) fn load(dir: &Path, pat: &Patterns, warnings: &mut Vec<String>) -> Self {
+    pub(super) fn load(
+        dir: &Path,
+        project: &DbtProject,
+        pat: &Patterns,
+        warnings: &mut Vec<String>,
+    ) -> Self {
         let mut out = InstalledPackages::default();
-        let mut dirs: Vec<PathBuf> = fs::read_dir(dir.join("dbt_packages"))
+        let install_root =
+            contained_resource_paths(project.packages_install_path.clone().into_iter().collect())
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| "dbt_packages".to_string());
+        let mut dirs: Vec<PathBuf> = fs::read_dir(dir.join(&install_root))
             .map(|entries| {
                 entries
                     .flatten()
@@ -98,8 +119,18 @@ impl InstalledPackages {
                     .collect()
             })
             .unwrap_or_default();
-        dirs.sort();
         out.installed = dirs.len();
+        let mut internal: Vec<PathBuf> = fs::read_dir(dir.join("dbt_internal_packages"))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                    .map(|e| e.path())
+                    .collect()
+            })
+            .unwrap_or_default();
+        dirs.append(&mut internal);
+        dirs.sort();
         for dir in dirs {
             out.scan_package(&dir, pat, warnings);
         }
@@ -160,10 +191,16 @@ impl InstalledPackages {
                         .map(|(f, _)| f),
                 )
             {
-                self.refs
-                    .entry(file_stem(&file))
-                    .or_default()
-                    .insert(name.clone());
+                let stem = file_stem(&file);
+                // `<name>_v<N>` stems declare the `<name>` family — the
+                // same versioned spelling the root scan records.
+                if let Some(family) = version_family(&stem) {
+                    self.refs
+                        .entry(family.to_string())
+                        .or_default()
+                        .insert(name.clone());
+                }
+                self.refs.entry(stem).or_default().insert(name.clone());
             }
         }
         for sub in &seed_paths {
@@ -222,6 +259,28 @@ impl InstalledPackages {
                     .entry(snap.name.clone())
                     .or_default()
                     .insert(name.clone());
+            }
+            // A `versions:`-declared model name — and each entry's
+            // `defined_in:` file — is refable under the family's declared
+            // name (dbt's `ref('pkg','name')` answers it even with no
+            // `<name>.sql` on disk), the same recording the root's own
+            // schema pass makes.
+            for model in &schema.models {
+                if model.versions.is_empty() {
+                    continue;
+                }
+                self.refs
+                    .entry(model.name.clone())
+                    .or_default()
+                    .insert(name.clone());
+                for v in &model.versions {
+                    if let Some(d) = v.get("defined_in").and_then(|d| d.as_str()) {
+                        self.refs
+                            .entry(d.to_string())
+                            .or_default()
+                            .insert(name.clone());
+                    }
+                }
             }
         }
     }
