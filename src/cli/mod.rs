@@ -466,6 +466,30 @@ pub enum Commands {
         #[arg(long, value_name = "SELECTOR",
                conflicts_with_all = ["write_baseline", "list_rules", "explain"])]
         select: Vec<String>,
+        /// Auto-fix what can be fixed safely in place: rules whose
+        /// findings pin a determined edit (`--list-rules`'s FIX column —
+        /// `trailing_semicolon`, `unused_cte`) have their violations
+        /// deleted from the model files, then lint re-runs to a fixpoint
+        /// and reports what remains. Edits refuse Jinja-covered text,
+        /// overlapping ranges, stale manifest/disk drift, and anything
+        /// that would introduce a new finding — those findings simply
+        /// stay. Writes are atomic; LF/CRLF and a missing final newline
+        /// are preserved byte for byte. Cannot combine with
+        /// `--write-baseline`, `--list-rules`, `--explain`, or
+        /// `--fix-dry-run`.
+        #[arg(long,
+               conflicts_with_all = ["write_baseline", "list_rules", "explain", "fix_dry_run"])]
+        fix: bool,
+        /// Show what `--fix` would change without writing: a unified
+        /// diff per touched file (stdout for the human formats, stderr
+        /// for the machine ones so their payload stays parseable), then
+        /// the same post-fix report `--fix` would produce — the findings
+        /// that would remain. Files are left byte-identical. Cannot
+        /// combine with `--quiet` (there would be nothing to report),
+        /// `--write-baseline`, `--list-rules`, `--explain`, or `--fix`.
+        #[arg(long,
+               conflicts_with_all = ["write_baseline", "list_rules", "explain", "fix", "quiet"])]
+        fix_dry_run: bool,
         /// List the findings `lint.rules.<id>.exclude` and
         /// `meta.dbtl.ignore` suppressed: `text`/`concise` mark each
         /// `suppressed` and name the mechanism + reason, `json` adds the
@@ -719,6 +743,7 @@ mod columns;
 mod completions;
 mod docs;
 mod exit;
+mod fix;
 mod flags;
 mod gates;
 mod git_baseline;

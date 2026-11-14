@@ -33,6 +33,8 @@ pub use registry::{
 
 mod call_sites;
 pub use call_sites::{display_name, display_names, name_list};
+mod fixes;
+pub use fixes::{apply_fixes, manifest_patched, plan_node_edits, FixEdit};
 mod location;
 pub use location::{
     byte_span_position, fill_finding_lines, fill_finding_lines_with, yaml_name_line,
@@ -236,6 +238,14 @@ impl LintRule {
     /// `docs_url`, SARIF's `helpUri` and `--explain`'s `Docs:` line.
     pub fn docs_url(self) -> String {
         format!("{LINT_RULE_DOCS_BASE}#{}", self.name())
+    }
+
+    /// Whether `dbtl lint --fix` may rewrite source for this rule — the
+    /// registry's fixability bit, `true` only where the safe edit is
+    /// fully determined by the finding itself (a deleted `;`, an unread
+    /// `WITH` entry), never an opinionated rewrite.
+    pub fn fixable(self) -> bool {
+        self.info().fixable()
     }
 }
 

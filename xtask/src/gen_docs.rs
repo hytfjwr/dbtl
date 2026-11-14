@@ -294,16 +294,16 @@ fn lint_rules_markdown() -> String {
     }
     out.push('\n');
     out.push_str(
-        "| Rule | Category | Default | `minimal` | `standard` | `strict` | Inputs | Summary |\n",
+        "| Rule | Category | Default | `minimal` | `standard` | `strict` | Inputs | Fix | Summary |\n",
     );
     out.push_str(
-        "| ---- | -------- | ------- | --------- | ---------- | -------- | ------ | ------- |\n",
+        "| ---- | -------- | ------- | --------- | ---------- | -------- | ------ | --- | ------- |\n",
     );
     for rule in LintRule::ALL {
         let i = rule.info();
         let on_off = |on: bool| if on { "on" } else { "off" };
         out.push_str(&format!(
-            "| [`{}`](#{}) | {} | {} | {} | {} | {} | {} | {} |\n",
+            "| [`{}`](#{}) | {} | {} | {} | {} | {} | {} | {} | {} |\n",
             i.id,
             i.id,
             i.category.name(),
@@ -316,6 +316,7 @@ fn lint_rules_markdown() -> String {
             on_off(LintPreset::Standard.enables(i)),
             on_off(LintPreset::Strict.enables(i)),
             requires_label(i.requires),
+            if i.fixable() { "auto" } else { "-" },
             cell(i.summary)
         ));
     }
@@ -332,9 +333,14 @@ fn lint_rules_markdown() -> String {
             )
         };
         out.push_str(&format!(
-            "Category: `{}` · {default_line} · Inputs: {}\n\n",
+            "Category: `{}` · {default_line} · Inputs: {} · Auto-fix: {}\n\n",
             i.category.name(),
-            requires_label(i.requires)
+            requires_label(i.requires),
+            if i.fixable() {
+                "`dbtl lint --fix`"
+            } else {
+                "no"
+            }
         ));
         out.push_str(&format!("{}.\n\n", sentence(i.summary)));
         if !i.rationale.is_empty() {

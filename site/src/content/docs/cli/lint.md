@@ -12,13 +12,15 @@ dbtl lint --select 'path:models/marts+'            # restrict findings to a sele
 dbtl lint --rules root_models,model_fanout  # a named subset
 dbtl lint --preset minimal                  # only the error-default rules
 dbtl lint --fail-on warn                    # fail on warnings too
+dbtl lint --fix                             # delete what the fixable rules flag
+dbtl lint --fix-dry-run                     # preview the edits as unified diffs
 ```
 
 Text output is one annotated block per finding. The header names the severity and rule (`error[rule]` or `warning[rule]`), followed by a `--> file[:line[:column]]` position, the source excerpt with the span underlined when it resolves, and `= help:`/`= docs:` footers.
 
 Findings in a properties `.yml` (descriptions, tests, freshness, contract columns) point at the `- name:` entry's line and column. A `.sql` finding points at the offending syntax — the wildcard, relation name, joined table, column reference, regex match, trailing semicolon, duplicated output column, unread CTE, or unbounded `ORDER BY` — when the rule can pin it exactly.
 
-A closing tally reads `Found N errors and M warnings in K files`, with `K baselined` or `K pre-existing, not counted` in parentheses when a baseline or `--diff` suppresses findings. It then reports `N rules reported findings; M skipped (need --catalog)`, `N findings suppressed (K meta.dbtl.ignore, M exclude; J without a reason)` when [suppression](#suppressed-findings) dropped any, and, when models carried SQL the parser could not read, `N models skipped SQL rules (unparsable SQL): <names>` — up to ten model names, then `+K more`.
+A closing tally reads `Found N errors and M warnings in K files`, with `K baselined` or `K pre-existing, not counted` in parentheses when a baseline or `--diff` suppresses findings. It then reports `N rules reported findings; M skipped (need --catalog)`, `N findings suppressed (K meta.dbtl.ignore, M exclude; J without a reason)` when [suppression](#suppressed-findings) dropped any, `N findings auto-fixed in M files` (or `auto-fixable … (dry run — no files written)`) when a fix pass changed files, and, when models carried SQL the parser could not read, `N models skipped SQL rules (unparsable SQL): <names>` — up to ten model names, then `+K more`.
 
 ```text
 error[public_models_without_contract]: fct_public_api is access: public without an enforced contract
@@ -95,6 +97,30 @@ dbtl lint --list-rules            # id, category, default + effective severity, 
 dbtl lint --list-rules --preset minimal   # effective state under another preset
 dbtl lint --explain model_fanout  # rationale, effective severity, params, docs link
 ```
+
+The `FIX` column marks the rules `dbtl lint --fix` can repair (`auto`) — today `trailing_semicolon` and `unused_cte`. `--explain <ID>` reports the same thing on its `auto-fix:` line.
+
+## Auto-fix
+
+Some findings have exactly one correct repair. `dbtl lint --fix` applies those repairs to the model files themselves, then re-runs lint on the fixed state and reports what remains — the post-fix findings are what the exit code gates on:
+
+```sh
+dbtl lint --fix                 # apply every safe fix, then re-report
+dbtl lint --fix-dry-run         # print a unified diff per file, write nothing
+```
+
+Today two rules are auto-fixable: `trailing_semicolon` removes the statement's final `;`, and `unused_cte` removes the unread CTE definition plus its separating comma. The `--list-rules` `FIX` column and `--explain`'s `auto-fix:` line mark them.
+
+A fix is only ever applied when it is provably safe — the edit is refused, and the finding simply stays, when:
+
+- the finding's span does not map to literal source bytes (a `;` inside an `{% if %}` arm or a CTE definition the Jinja template produces),
+- deleting the range would split a Jinja tag or a paired `{% … %}`/`{% end… %}` block,
+- the result would not re-parse, or would introduce a finding under any other rule (a deleted CTE holding the last `ref()` to a model is left in place — removing it would orphan that model),
+- the file on disk no longer matches the graph's raw text (a stale `manifest.json` or a mid-run edit), or the planned edits overlap.
+
+`--fix` repeats to a fixpoint, so a delete that makes another CTE unread is cleaned up in the same run, and a second `--fix` is always a no-op. Every write goes through a temporary sibling file and an atomic rename, and preserves the file's LF/CRLF style and whether it ends with a newline. `--fix-dry-run` previews the same patch as a unified diff per file — on stdout for the human formats, stderr for the machine ones, so `--format json` stays parseable — followed by the same post-fix report `--fix` would produce.
+
+Fixes narrow with `--rules` and `--select` like the findings do. Neither flag combines with `--write-baseline`, `--list-rules`, `--explain`, or each other; `--fix-dry-run` also excludes `--quiet`. Fixing from a manifest needs the project root — a manifest under `<project>/target/` resolves it; a manifest anywhere else is a usage error, so pass `--source` for those.
 
 ## Severities and fail_on
 

@@ -1459,4 +1459,14 @@ impl RuleInfo {
             _ => None,
         })
     }
+
+    /// Whether `dbtl lint --fix` may rewrite source for this rule's
+    /// findings. `true` only where the finding pins the whole safe edit —
+    /// a literal trailing `;`, an unread `WITH` entry — and the fix is a
+    /// delete the finding itself fully determines, never an opinionated
+    /// rewrite. Surface as the `FIX` column in `--list-rules` and the
+    /// `Auto-fix:` line in `--explain`.
+    pub fn fixable(&self) -> bool {
+        matches!(self.rule, LintRule::TrailingSemicolon | LintRule::UnusedCte)
+    }
 }

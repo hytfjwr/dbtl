@@ -27,12 +27,16 @@ mod lint;
 
 // The public lint seam: callers hand a `LintRunInputs`/`LintAux` in and get
 // `LintAssembly`/`LintRun` data back — those two stay re-exported because a
-// `pub fn`'s return type can't be less reachable than the fn itself. The
-// intermediate evaluation internals (`evaluate_lint`, `lint_gates`,
-// `severity_fails`, `LintGateOutcome`, `RuleOutcome`) stay inside the
-// private `lint` module so they never become API.
+// `pub fn`'s return type can't be less reachable than the fn itself.
+// `evaluate_lint`/`LintGateOutcome` join them for `lint --fix`'s driver,
+// which must re-run the SAME classified evaluation over patched dags each
+// fixpoint round — anything less (raw `run_rules`) would un-apply baseline,
+// selection, and `--diff` pre-existing and diverge from the report. The
+// remaining internals (`lint_gates`, `severity_fails`, `RuleOutcome`) stay
+// inside the private `lint` module so they never become API.
 pub use lint::{
-    gate_status, lint_assembly, lint_report, LintAssembly, LintAux, LintRun, LintRunInputs,
+    evaluate_lint, gate_status, lint_assembly, lint_report, LintAssembly, LintAux, LintGateOutcome,
+    LintRun, LintRunInputs,
 };
 
 use dbtl_core::{Dag, DiffReport, Finding, Severity, SkippedRule};
@@ -203,6 +207,26 @@ pub struct ReportSummary {
     /// one model was skipped that way.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unparsed_models: Option<UnparsedModels>,
+    /// Findings `--fix`/`--fix-dry-run` resolved (or would have) — present
+    /// only when a fix run rewrote at least one byte.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fixed: Option<FixedSummary>,
+}
+
+/// The `--fix`/`--fix-dry-run` rollup `summary.fixed` carries — findings
+/// resolved and the files they span. `dry_run` is report-internal only —
+/// the JSON shape stays just the two counts.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct FixedSummary {
+    /// Findings the fixes resolved (`--fix`) or would resolve
+    /// (`--fix-dry-run`) — the disappeared, never the attempts.
+    pub findings: usize,
+    /// Files at least one fix touched.
+    pub files: usize,
+    /// `true` on a `--fix-dry-run` — the counts are hypothetical; the
+    /// text summary words them "fixable" instead of "fixed".
+    #[serde(skip)]
+    pub dry_run: bool,
 }
 
 /// The suppressed-findings rollup `summary.suppressed` carries — the total
@@ -266,6 +290,10 @@ pub struct LintTally {
     /// count carrying no reason. The text summary's fourth line and the
     /// JSON `summary.suppressed` both read it.
     pub suppressed: SuppressedSummary,
+    /// The `--fix`/`--fix-dry-run` rollup — set by the CLI's fix loop
+    /// (report assembly can't see file edits); lifted into
+    /// `summary.fixed` by [`Report::lift_lint_summary`].
+    pub fixed: Option<FixedSummary>,
 }
 
 /// The shared report the `check`/`lint` gates serialize into — the
@@ -370,6 +398,9 @@ impl Report {
                 count: lint.unparsed_models.len(),
                 names: lint.unparsed_models.clone(),
             });
+        }
+        if lint.fixed.is_some() {
+            self.summary.fixed = lint.fixed.clone();
         }
     }
 }
