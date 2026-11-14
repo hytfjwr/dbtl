@@ -499,7 +499,9 @@ pub(super) fn synth_unit_tests(
             ));
             continue;
         };
-        for (version, dep) in unit_test_targets(ctx, model, &entry.versions) {
+        for (version, dep) in
+            unit_test_targets(ctx, model, &entry.versions, yml_path, &entry.name, warnings)
+        {
             let uid = match &version {
                 Some(v) => format!(
                     "unit_test.{}.{}.{}_v{}",
@@ -551,7 +553,7 @@ pub(super) fn synth_unit_tests(
 /// `include:` selects them (an absent `include` or `'*'` means all),
 /// `exclude:` subtracts — matched through [`normalize_version`] so the
 /// `v2`/`2`/`V2` spellings name the same member. An `include`d version
-/// no member answers to is skipped (dbt hard-errors there); the
+/// no member answers to is warned about (dbt hard-errors there); the
 /// recorded `version` is the member's own declared value — the file
 /// suffix — so the wire keeps `beta`-style versions verbatim.
 ///
@@ -559,11 +561,16 @@ pub(super) fn synth_unit_tests(
 /// `model.<proj>.<name>` uid is the target, and a single-element
 /// `include` rides `version` for fidelity only (dbt rejects `versions:`
 /// on an unversioned model — degrading to the one target beats dropping
-/// a declared test).
+/// a declared test). A `model:` naming nothing the loader knows — or a
+/// non-model node — gets no target at all: dbt hard-errors, source mode
+/// warns and drops the record like the other malformed declarations.
 fn unit_test_targets(
     ctx: &TestCtx<'_>,
     model: &str,
     versions: &SchemaUnitTestVersions,
+    yml_path: &str,
+    test_name: &str,
+    warnings: &mut Vec<String>,
 ) -> Vec<(Option<String>, String)> {
     let bare = format!("model.{}.{}", ctx.proj, model);
     // The bare `model:` name wins when it IS a model — a `fct_orders`
@@ -582,7 +589,7 @@ fn unit_test_targets(
             members.sort();
             let include = version_set(&versions.include);
             let exclude = version_set(&versions.exclude);
-            return members
+            let kept: Vec<_> = members
                 .into_iter()
                 .filter(|(mv, _)| {
                     include
@@ -594,11 +601,20 @@ fn unit_test_targets(
                 })
                 .map(|(mv, uid)| (Some(mv.to_string()), uid.clone()))
                 .collect();
+            if kept.is_empty() {
+                warnings.push(format!(
+                    "{yml_path}: unit test '{test_name}' selects no version of model '{model}' — it can't target anything"
+                ));
+            }
+            return kept;
         }
+        // The name answered to a non-model node or nothing at all.
+        warnings.push(format!(
+            "{yml_path}: unit test '{test_name}' targets unknown model '{model}' — it can't target anything"
+        ));
+        return Vec::new();
     }
-    // An unversioned model (or an unresolvable name — `Dag::build`'s
-    // fallbacks drop it like a missing-model record does). A
-    // single-element `include` rides `version` for fidelity only; dbt
+    // A single-element `include` rides `version` for fidelity only; dbt
     // rejects `versions:` on an unversioned model, so degrading to the
     // one target beats dropping a declared test.
     let version = versions

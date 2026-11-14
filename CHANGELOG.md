@@ -8,13 +8,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Source mode reads `unit_tests:` declarations from schema/property YAML
-  and attaches the same `kind: "unit"` test metadata manifest mode
-  produces — `given:`/`expect:` row counts (a `format: csv` block counts
-  the records dbt parses it into), `versions: {include, exclude}`
-  expansion over `<model>_v<version>.sql` member files, and
-  `config.enabled` as the only disable channel — through the one
-  `RawManifest`/`Dag::build` path, so the consistency contract holds.
 - An opt-in `models_without_unit_tests` lint rule flags models in a
   checked layer (default `marts`, tunable via `layers`) that carry no
   unit test — off under `standard`, on under `strict`. Models dbt can't
@@ -120,6 +113,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Source mode reads `unit_tests:` declarations from schema/property YAML
+  and attaches the same `kind: "unit"` test metadata manifest mode
+  produces — `given:`/`expect:` row counts (a `format: csv` block counts
+  the records dbt parses it into), `versions: {include, exclude}`
+  expansion over `<model>_v<version>.sql` member files, and
+  `config.enabled` as the only disable channel — through the one
+  `RawManifest`/`Dag::build` path, so `test_count` and the consistency
+  contract hold between the modes.
 - A schema file whose `enabled:`/`config.enabled:` value is a `{{ … }}`
   Jinja string no longer drops the whole file: the raw value now
   evaluates through the shared expression evaluator at the right stage,

@@ -2415,9 +2415,9 @@ unit_tests:
 #[test]
 fn unit_tests_config_enabled_and_missing_targets() {
     // `config.enabled: false` parks the test (dbt's `disabled` map);
-    // a missing `model:` warns and skips; an undeclared target still
-    // records `depends_on` for `Dag::build` to drop like a manifest-side
-    // record.
+    // a missing `model:` warns and skips; an undeclared target warns
+    // and drops the record rather than synthesize a `depends_on` that
+    // resolves to nothing (dbt hard-errors there).
     let (m, w) = unit_test_project(
         &[("fct_a", "select 1")],
         r#"version: 2
@@ -2437,9 +2437,16 @@ unit_tests:
         w.iter().any(|s| s.contains("'no_model'")),
         "the missing-model warning names the test: {w:?}"
     );
-    let mut ids: Vec<&str> = m.unit_tests.keys().map(String::as_str).collect();
-    ids.sort_unstable();
-    assert_eq!(ids, vec!["unit_test.p.ghost.ghost_target"]);
+    assert!(
+        w.iter()
+            .any(|s| s.contains("'ghost_target'") && s.contains("unknown model 'ghost'")),
+        "the ghost-target warning names the test and model: {w:?}"
+    );
+    assert!(
+        m.unit_tests.is_empty(),
+        "disabled and unresolvable unit tests synthesize nothing: {:?}",
+        m.unit_tests.keys().collect::<Vec<_>>()
+    );
     let dag = crate::Dag::build(&m);
     assert!(
         dag.tests("model.p.fct_a").iter().all(|t| t.kind != "unit"),
