@@ -21,6 +21,7 @@ pub(super) struct TestCtx<'a> {
 /// `yml_path` is the declaring file, project-root-relative — the same
 /// convention the manifest side normalizes `patch_path` to, so a schema
 /// entry makes the node YAML-declared in both modes.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn apply_meta(
     nodes: &mut HashMap<String, RawNode>,
     ctx: &mut TestCtx<'_>,
@@ -28,19 +29,28 @@ pub(super) fn apply_meta(
     entries: &[SchemaModel],
     yml_path: &str,
     docs: &DocBlocks,
+    disabled: &mut std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     warnings: &mut Vec<String>,
 ) {
     for entry in entries {
         let uid = format!("{type_prefix}.{}.{}", ctx.proj, entry.name);
         // Schema-level `config.enabled:` parks the node like dbt's `disabled`
         // when it evaluates false: drop it (its edges are pruned by
-        // Dag::build's prune-first step) and record none of its docs/tests.
+        // Dag::build's prune-first step) and record none of its docs/tests —
+        // but keep the NAME so `unresolved_references` reports a ref to it
+        // under its own "disabled" wording. A schema entry for a node that
+        // never existed parks nothing (name_index never saw it either).
         if ctx.vars.schema_disabled(
             entry.config.enabled.as_ref(),
             &format!("{yml_path}: {type_prefix} '{}' config.enabled", entry.name),
             warnings,
         ) {
-            nodes.remove(&uid);
+            if nodes.remove(&uid).is_some() {
+                disabled
+                    .entry(entry.name.clone())
+                    .or_default()
+                    .insert(type_prefix.to_string());
+            }
             continue;
         }
         // Skip docs for an absent node; this also gates the synth_tests calls

@@ -68,10 +68,10 @@ pub use lint::{
     LINT_RULE_DOCS_BASE, REGISTRY, REMOVED_RULES, YAML_ATTRIBUTE_RULE_IDS,
 };
 pub use manifest::{
-    load_manifest, parse_manifest, RawConfig, RawConstraint, RawContract, RawDependsOn, RawDoc,
-    RawExposure, RawExposureOwner, RawFreshness, RawFreshnessThreshold, RawManifest, RawMetadata,
-    RawNode, RawSemanticResource, RawSource, RawTestMetadata, RawUnitTest, RawUnitTestIo,
-    UnresolvedAdjacent,
+    load_manifest, parse_manifest, DisabledRef, RawConfig, RawConstraint, RawContract,
+    RawDependsOn, RawDoc, RawExposure, RawExposureOwner, RawFreshness, RawFreshnessThreshold,
+    RawManifest, RawMetadata, RawNode, RawSemanticResource, RawSource, RawTestMetadata,
+    RawUnitTest, RawUnitTestIo, RefScope, UnresolvedAdjacent,
 };
 pub use mermaid::{
     mermaid_ids, mermaid_label, node_kind, subgraph_mermaid, subgraph_mermaid_linked,

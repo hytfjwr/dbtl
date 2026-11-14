@@ -5,7 +5,7 @@
 //! [`Dag::build`](crate::Dag::build) — so nothing downstream knows which mode
 //! produced the data.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -51,6 +51,79 @@ pub struct UnresolvedAdjacent {
     /// unresolved macro call whose literal argument names this source
     /// table.
     pub children: usize,
+}
+
+/// The name universe a `ref()`/`source()` call site resolves against,
+/// captured pre-prune: every name the load could see across the root
+/// project AND installed packages, plus the names it deliberately can't
+/// judge (versioned families, cross-project refs) and the reason a
+/// missing name may still be real (declared-but-uninstalled packages).
+/// `unresolved_references` reads it through [`Dag::ref_scope`](crate::Dag)
+/// to tell a call pointing at nothing (a typo dbt fails on) from a call
+/// the load simply can't disprove.
+///
+/// A real manifest derives the scope from its own maps in `Dag::build`
+/// (a valid parse leaves no gaps to record); a synthesized source-mode
+/// manifest carries the loader's recording via
+/// [`RawManifest::ref_scope`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RefScope {
+    /// `ref()` targets — `name -> packages containing it` — every
+    /// refable name across every package the load could see. A one-arg
+    /// `ref('x')` matches on name alone (the loader's name-index
+    /// approximation); a two-arg `ref('pkg', 'x')` must hit the pair.
+    /// `HashMap` on purpose: this is the per-node lookup the scope build
+    /// hammers, and nothing ever iterates it (findings key on the call,
+    /// not the map).
+    pub refs: HashMap<String, BTreeSet<String>>,
+    /// The `v=`/`version=` arg a `ref('x', v=2)` can pin — `(package,
+    /// name, normalized version)` tuples from `model.<pkg>.<name>.<v>`
+    /// uids. `None` when version args are unjudgeable: source mode never
+    /// synthesizes versioned nodes, so a versioned ref is skipped
+    /// outright there rather than judged against an empty set.
+    pub versions: Option<BTreeSet<(String, String, String)>>,
+    /// Declared `source()` targets `(source, table)` across every
+    /// package the load could see.
+    pub sources: BTreeSet<(String, String)>,
+    /// `ref`-able names parked under `disabled` — `name -> {every parked
+    /// target}` — so a ref to one flags as a reference to a disabled node,
+    /// not as an unresolved name. The whole set is recorded: a same-name
+    /// collision (`model.p.x` + `seed.q.x`) never collapses first-wins, so
+    /// `manifest.disabled`'s `HashMap` order can't leak into a verdict.
+    /// A call matches a member: `ref('pkg','x')` only `pkg` members, a
+    /// `v=` pin only the recorded version, a bare `ref('x')` any member —
+    /// and ONLY once resolution fails, since an enabled same-name target
+    /// answers where the parked one can't.
+    pub disabled_refs: BTreeMap<String, BTreeSet<DisabledRef>>,
+    /// Disabled `source()` targets `(source, table)` — same split.
+    pub disabled_sources: BTreeSet<(String, String)>,
+    /// Names counted as resolved without a node — the versioned-family
+    /// spellings source mode can't synthesize (`versions:`/`defined_in:`
+    /// declarations, `<name>_v<N>` file families). Empty in manifest
+    /// mode (real nodes carry every answer).
+    pub assumed: BTreeSet<String>,
+    /// `dependencies.yml` `projects:` names — a two-arg `ref` naming one
+    /// is a cross-project call that never lands in `dbt_packages/`, so
+    /// it's never judged.
+    pub projects: BTreeSet<String>,
+    /// Declared `packages:` entries with no matching install under
+    /// `dbt_packages/`. When >0, a name absent from every set above may
+    /// live in a package that was never installed — unresolved verdicts
+    /// are counted (and surfaced once as a warning) instead of flagged.
+    pub uninstalled_packages: usize,
+}
+
+/// One parked `disabled` node's identity under a shared name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DisabledRef {
+    /// The parked uid's package (uid segment 1).
+    pub package: String,
+    /// Its resource type (`model`/`seed`/`snapshot`/`analysis`).
+    pub kind: String,
+    /// The `.vN` uid segment, normalized (`v2` → `2`), when the parked
+    /// uid is a versioned model — `None` for unversioned uids, so a `v=`
+    /// pin can tell "disabled version" from "no such version".
+    pub version: Option<String>,
 }
 
 /// dbt writes a version as the declared `v:` value VERBATIM — a JSON number
@@ -519,6 +592,16 @@ pub struct RawManifest {
     /// an absent map disables macro-diff detection rather than inventing one.
     #[serde(default)]
     pub macros: HashMap<String, RawMacro>,
+    /// The `disabled` map dbt writes — nodes an `enabled: false` parked
+    /// instead of compiling. Read for KEYS ONLY (`model.<pkg>.<name>` /
+    /// `source.<pkg>.<src>.<tbl>` uids): a `ref()`/`source()` pointing at a
+    /// parked name fails the parse just like a missing one, so
+    /// `unresolved_references` reports it under its own wording. The
+    /// deserializer accepts the dict shape dbt writes today AND the
+    /// older list-of-uid/nodes shapes — a parked-node payload is never
+    /// read, so nothing about it may fail a manifest parse.
+    #[serde(default, deserialize_with = "de_disabled")]
+    pub disabled: HashMap<String, serde_json::Value>,
     /// Semantic layer (dbt ≥1.6): all three resource kinds are downstream-only
     /// terminators, so one raw type serves all three maps.
     #[serde(default)]
@@ -562,6 +645,51 @@ pub struct RawManifest {
     /// prune or an unseen macro.
     #[serde(skip)]
     pub unresolved_adjacent: HashMap<String, UnresolvedAdjacent>,
+    /// SOURCE-MODE ONLY: the name universe `ref()`/`source()` calls
+    /// resolve against — the loader's own name index widened with the
+    /// installed `dbt_packages/` name tables, the versioned families it
+    /// can't synthesize, the `dependencies.yml` `projects:` it can't
+    /// see, the parked `enabled: false` names it dropped, and the count
+    /// of declared-but-uninstalled packages that could still own a
+    /// missing name. `#[serde(skip)]` like `unresolved_adjacent`: a real
+    /// manifest never carries it (`Dag::build` derives the scope from
+    /// the manifest's own maps instead — including `disabled`). Same
+    /// round-trip caveat: a serialized+reparsed synthesized manifest
+    /// loses the source-mode scope and derives the manifest-mode one
+    /// (`versions: Some(…)` judges pins the source load skipped).
+    #[serde(skip)]
+    pub ref_scope: Option<RefScope>,
+}
+
+/// `disabled`'s reader: only the uids are ever used, so every wire shape
+/// dbt has written lands as the same key set — today's
+/// `{uid: node}` dict, older `[uid]`/`[{unique_id: uid}]` lists. Anything
+/// else reads as empty; a `disabled` payload can never fail a manifest
+/// parse.
+fn de_disabled<'de, D>(
+    deserializer: D,
+) -> std::result::Result<HashMap<String, serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Object(map) => map.into_iter().collect(),
+        serde_json::Value::Array(items) => items
+            .into_iter()
+            .filter_map(|v| {
+                let uid = match &v {
+                    serde_json::Value::String(s) => Some(s.clone()),
+                    serde_json::Value::Object(o) => o
+                        .get("unique_id")
+                        .and_then(|u| u.as_str())
+                        .map(str::to_string),
+                    _ => None,
+                }?;
+                Some((uid, serde_json::Value::Null))
+            })
+            .collect(),
+        _ => HashMap::new(),
+    })
 }
 
 /// The JSON-parse failure wording both manifest loaders share: the file

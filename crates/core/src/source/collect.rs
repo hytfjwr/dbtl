@@ -78,6 +78,23 @@ pub(super) fn file_stem(path: &Path) -> String {
         .to_string()
 }
 
+/// The `<name>` family of a `<name>_v<ver>` file stem — dbt's convention for
+/// splitting a versioned model's implementations across files
+/// (`fct_orders_v2.sql` defines `fct_orders` v2). The suffix is `v` plus
+/// non-empty version text; anything else has no family. Deliberately loose
+/// about what follows the `v` — a `my_var.sql` stem earns `my` an assumed
+/// name too, which can only under-report, the direction the
+/// `unresolved_references` scope deliberately takes for guesses.
+pub(super) fn version_family(stem: &str) -> Option<&str> {
+    let (name, ver) = stem.rsplit_once('_')?;
+    (ver.len() > 1
+        && ver.starts_with('v')
+        && ver[1..]
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_'))
+    .then_some(name)
+}
+
 /// Keep only resource paths that are safe to join onto the project root:
 /// relative, with no `..` component. `dbt_project.yml` is untrusted input, so
 /// a traversal value (`../../etc`, `/etc`) is skipped rather than letting the

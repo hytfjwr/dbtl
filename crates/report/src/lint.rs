@@ -548,6 +548,8 @@ mod tests {
             parent_map,
             child_map,
             docs: Default::default(),
+            disabled: Default::default(),
+            ref_scope: None,
         }
     }
 

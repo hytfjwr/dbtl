@@ -494,6 +494,8 @@ fn longest_chain_terminates_on_a_cyclic_manifest() {
         child_map,
         macros: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     });
     let chain = super::analysis::longest_chain(&dag);
     // Sane: non-empty, no repeated node, every hop is a real kept edge.

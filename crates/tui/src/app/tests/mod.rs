@@ -56,6 +56,8 @@ fn empty_app() -> App {
         child_map: HashMap::new(),
         macros: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     });
     App::new(dag, PathBuf::from(FIXTURE))
 }
@@ -173,6 +175,8 @@ fn diff_base_dag() -> Dag {
         child_map: HashMap::from([("model.p.a".to_string(), vec!["model.p.b".to_string()])]),
         macros: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     })
 }
 
@@ -219,6 +223,8 @@ fn diff_current_dag() -> Dag {
         ]),
         macros: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     })
 }
 
@@ -292,6 +298,8 @@ fn pr_dag(
         child_map,
         macros: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     })
 }
 

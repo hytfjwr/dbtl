@@ -406,6 +406,8 @@ fn selected_file_path_stays_under_the_project_root() {
         child_map: HashMap::new(),
         macros: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     });
     let mut a = App::new(dag, PathBuf::from("/x/proj/target/manifest.json"));
 

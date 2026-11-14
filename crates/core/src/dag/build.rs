@@ -406,6 +406,16 @@ impl Dag {
                     )
                 })
                 .collect(),
+            // A synthesized source-mode manifest carries the loader's own
+            // name-universe recording (installed packages, versioned
+            // families, parked names, declared-dependency bookkeeping);
+            // a real manifest derives the same answers from its own
+            // maps — every name pre-prune, declared sources, `disabled`
+            // keys, `.vN` uid segments.
+            ref_scope: manifest
+                .ref_scope
+                .clone()
+                .unwrap_or_else(|| ref_scope_from_manifest(manifest)),
         };
         // The overview needs the resolved root package, which is a property of
         // the built graph — a second pass over the manifest's `docs` map.
@@ -489,6 +499,113 @@ impl Dag {
             );
         }
     }
+}
+
+/// The [`RefScope`] a real manifest's own maps imply — every name and
+/// package pre-prune (installed packages included, so a pruned package
+/// target still counts as resolvable), every declared `source()`
+/// target, the `disabled` map's parked names, and the `.vN` uid segments
+/// a `v=`/`version=` ref arg pins. A manifest-mode scope needs none of
+/// the source-mode-only fields (`assumed`, `projects`,
+/// `uninstalled_packages`) — a real manifest records no gap to forgive.
+fn ref_scope_from_manifest(manifest: &RawManifest) -> RefScope {
+    let mut scope = RefScope {
+        versions: Some(BTreeSet::new()),
+        ..Default::default()
+    };
+    // `ref()` can name any node the manifest records — models, seeds,
+    // snapshots, and the other refable kinds all answer a call by name.
+    // Every `nodes` name lands here (not just the kept graph's): an
+    // excluded `test`/`analysis`/`operation` name still isn't "nothing".
+    // One segment walk per uid answers both questions: segment 1 is the
+    // owning package, and `model.<pkg>.<name>.<vseg>` (a 4th segment and
+    // no 5th) is a versioned-model uid whose version a `v=` pin checks.
+    for (uid, node) in &manifest.nodes {
+        let mut segs = uid.split('.');
+        let (kind, pkg, name_seg) = match (segs.next(), segs.next(), segs.next()) {
+            (Some(k), Some(p), Some(n)) => (k, p, n),
+            _ => continue,
+        };
+        if pkg.is_empty() {
+            continue;
+        }
+        scope
+            .refs
+            .entry(node.name.clone())
+            .or_default()
+            .insert(pkg.to_string());
+        if kind == "model" {
+            if let (Some(vseg), None) = (segs.next(), segs.next()) {
+                if let Some(versions) = scope.versions.as_mut() {
+                    versions.insert((
+                        pkg.to_string(),
+                        name_seg.to_string(),
+                        normalize_version(vseg).to_string(),
+                    ));
+                }
+            }
+        }
+    }
+    // `ref()` reaches ONLY the `nodes` map's resource types in dbt —
+    // semantic_models/metrics/saved_queries/exposures/unit_tests/functions
+    // names never answer a `ref()` call, so they don't widen the scope
+    // (a `ref('metric_name')` genuinely fails dbt's parse).
+    for uid in manifest.sources.keys() {
+        let mut it = uid.split('.');
+        if let (Some("source"), Some(_), Some(src), Some(tbl), None) =
+            (it.next(), it.next(), it.next(), it.next(), it.next())
+        {
+            scope.sources.insert((src.to_string(), tbl.to_string()));
+        }
+    }
+    // `disabled` parks nodes an `enabled: false` sidelined — a call
+    // pointing at one fails like a missing name but reads differently.
+    // Refable kinds record EVERY parked uid under its name (a same-name
+    // collision stays a set member, so the `HashMap` iteration order
+    // never picks a winner); `model.<pkg>.<name>.<vseg>` keeps its
+    // version so a `v=` pin matches only the parked version. Parked
+    // sources answer `source()` under their own `(source, table)` set.
+    for uid in manifest.disabled.keys() {
+        let mut it = uid.split('.');
+        match (
+            it.next(),
+            it.next(),
+            it.next(),
+            it.next(),
+            it.next(),
+            it.next(),
+        ) {
+            (Some("source"), Some(_), Some(src), Some(tbl), None, None) => {
+                scope
+                    .disabled_sources
+                    .insert((src.to_string(), tbl.to_string()));
+            }
+            (
+                Some(kind @ ("model" | "seed" | "snapshot" | "analysis")),
+                Some(pkg),
+                Some(name),
+                vseg,
+                _,
+                None,
+            ) if !pkg.is_empty() => {
+                scope
+                    .disabled_refs
+                    .entry(name.to_string())
+                    .or_default()
+                    .insert(DisabledRef {
+                        package: pkg.to_string(),
+                        kind: kind.to_string(),
+                        version: if kind == "model" {
+                            vseg.map(|v| normalize_version(v).to_string())
+                        } else {
+                            None
+                        },
+                    });
+            }
+            _ => {}
+        }
+    }
+    scope
 }
 
 /// The root project's `__overview__` block out of a manifest's `docs` map.

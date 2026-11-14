@@ -150,6 +150,10 @@ pub enum LintRule {
     /// test — an opt-in coverage rule (Python models and materialized
     /// views can't carry one and never flag).
     ModelsWithoutUnitTests,
+    /// A `ref()`/`source()` call names nothing the load could see —
+    /// a typo'd model name, an undeclared source, or a `disabled`
+    /// target (reported under its own wording).
+    UnresolvedReferences,
 }
 
 impl LintRule {
@@ -157,7 +161,7 @@ impl LintRule {
     /// order of the enum and of [`REGISTRY`]. The original structure rules
     /// lead; rules added later append in registry order so the emitted
     /// sequence stays stable.
-    pub const ALL: [LintRule; 44] = [
+    pub const ALL: [LintRule; 45] = [
         Self::DirectJoinToSource,
         Self::MultipleSourcesJoined,
         Self::SourceFanout,
@@ -202,6 +206,7 @@ impl LintRule {
         Self::ModelTooLong,
         Self::LayerMaterializations,
         Self::ModelsWithoutUnitTests,
+        Self::UnresolvedReferences,
     ];
 
     /// This rule's registry row — every rule has exactly one (drift-tested).

@@ -318,6 +318,8 @@ fn list_empty_reason_names_the_persistent_filter_and_scope() {
         child_map: HashMap::new(),
         macros: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     });
     let b = App::new(empty, PathBuf::from(FIXTURE));
     assert_eq!(

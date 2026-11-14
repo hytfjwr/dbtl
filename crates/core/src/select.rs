@@ -789,6 +789,8 @@ mod tests {
                 ("model.p.int".into(), vec!["model.p.fct".into()]),
             ]),
             docs: Default::default(),
+            disabled: Default::default(),
+            ref_scope: None,
         })
     }
 
@@ -853,6 +855,8 @@ mod tests {
                 ("model.p.fct.v2".into(), vec!["model.p.use_all".into()]),
             ]),
             docs: Default::default(),
+            disabled: Default::default(),
+            ref_scope: None,
         })
     }
 
@@ -981,6 +985,8 @@ mod tests {
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
             docs: Default::default(),
+            disabled: Default::default(),
+            ref_scope: None,
         })
     }
 
@@ -1169,6 +1175,8 @@ mod tests {
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
             docs: Default::default(),
+            disabled: Default::default(),
+            ref_scope: None,
         });
         let (set, notes) = select_report(&d, None, "path:models/marts");
         assert_eq!(uids(&set), vec!["model.mart"]);
@@ -1247,6 +1255,8 @@ mod tests {
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
             docs: Default::default(),
+            disabled: Default::default(),
+            ref_scope: None,
         })
     }
 
@@ -1292,6 +1302,8 @@ mod tests {
             parent_map: HashMap::new(),
             child_map: HashMap::new(),
             docs: Default::default(),
+            disabled: Default::default(),
+            ref_scope: None,
         };
         let mut base_nodes = HashMap::new();
         let fct = RawNode {

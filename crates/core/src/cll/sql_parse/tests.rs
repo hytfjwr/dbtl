@@ -72,6 +72,8 @@ fn manifest(nodes: Vec<(String, RawNode)>, edges: &[(&str, &str)]) -> RawManifes
         functions: HashMap::new(),
         metadata: Default::default(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     }
 }
 

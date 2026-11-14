@@ -627,6 +627,8 @@ fn perf_closure_walk_is_fast_enough() {
         functions: HashMap::new(),
         metadata: Default::default(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     });
     let resolver = NameMatchResolver::new(None);
     let lin = ColumnLineage::new(&dag, &resolver);

@@ -2,7 +2,7 @@
 
 # Lint rules
 
-44 rules, evaluated by `dbtl lint`, `dbtl check --lint`, the docs generator, and the TUI's Lint lens — one registry table also backs `--list-rules`, `--explain`, SARIF metadata, and `.dbtl.yml` validation, so all of them describe the same rule set.
+45 rules, evaluated by `dbtl lint`, `dbtl check --lint`, the docs generator, and the TUI's Lint lens — one registry table also backs `--list-rules`, `--explain`, SARIF metadata, and `.dbtl.yml` validation, so all of them describe the same rule set.
 
 ## Rule-set presets
 
@@ -11,8 +11,8 @@
 | Preset | Rules |
 | ------ | ----- |
 | `minimal` | only the rules whose default severity is `error` — 5 rules |
-| `standard` | every rule the registry enables by default — 40 rules |
-| `strict` | every rule, opt-in included — 44 rules |
+| `standard` | every rule the registry enables by default — 41 rules |
+| `strict` | every rule, opt-in included — 45 rules |
 
 | Rule | Category | Default | `minimal` | `standard` | `strict` | Inputs | Fix | Summary |
 | ---- | -------- | ------- | --------- | ---------- | -------- | ------ | --- | ------- |
@@ -60,6 +60,7 @@
 | [`model_too_long`](#model_too_long) | structure | off (opt-in) | off | off | on | graph | - | a model's SQL file runs past the configured line budget |
 | [`layer_materializations`](#layer_materializations) | performance | off (opt-in) | off | off | on | graph | - | a model's materialization isn't allowed for its layer |
 | [`models_without_unit_tests`](#models_without_unit_tests) | testing | off (opt-in) | off | off | on | graph | - | a model in a checked layer has no unit test |
+| [`unresolved_references`](#unresolved_references) | modeling | warn | off | on | on | graph | - | a ref()/source() call resolves to no node |
 
 ## `direct_join_to_source`
 
@@ -131,7 +132,7 @@ Category: `modeling` · Default severity: `warn` · Inputs: graph · Auto-fix: n
 
 A model has no parents.
 
-**Why:** A model that refs nothing upstream is either a hand-maintained table — data nobody can trace or rebuild — or a forgotten ref that should have been a source. Real roots belong in seeds or declared sources so their provenance is explicit.
+**Why:** A model that refs nothing upstream is either a hand-maintained table — data nobody can trace or rebuild — or a forgotten ref that should have been a source. Real roots belong in seeds or declared sources so their provenance is explicit. A model whose ref()/source() calls all failed to resolve isn't a root either — unresolved_references reports the broken calls themselves.
 
 **Example:** dim_regions is a plain `select ...` with no ref/source calls. Fix: make it a seed, or declare it as a source if an external system owns it.
 
@@ -746,3 +747,17 @@ A model in a checked layer has no unit test.
 | Name | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
 | `layers` | list of layer names (`staging` `intermediate` `marts` `other` or a `lint.naming_prefixes` layer) | `[marts]` | model layers the unit-test check applies to — a built-in layer or a `lint.naming_prefixes` layer |
+
+## `unresolved_references`
+
+Category: `modeling` · Default severity: `warn` · Inputs: graph · Auto-fix: no
+
+A ref()/source() call resolves to no node.
+
+**Why:** A call naming nothing the project or its installed packages provide fails the dbt parse outright — every model, seed, and snapshot behind it stays unbuilt until the name is fixed. Catching it here keeps the repair local: it's a typo or a missing declaration, not a layering decision. A name parked under `disabled` reports under its own wording (the fix is re-enabling, not declaring), and calls Jinja can switch off — inside an `{% if %}`/`{% elif %}`/`{% else %}` arm — are never judged. When declared packages aren't fully installed a missing name may simply live in one of them, so those collapse to one summary warning instead of findings.
+
+**Example:** fct_orders refs stg_ordres — a typo for stg_orders — and reads source('raw', 'nonexistent'), which no schema.yml declares. Fix: correct the names, or declare the source.
+
+**Fix:** fix the call's name or declare the target so the reference resolves
+
+**Parameters:** none.

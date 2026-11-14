@@ -79,6 +79,8 @@ fn sample_manifest() -> RawManifest {
         parent_map,
         child_map,
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     }
 }
 
@@ -133,6 +135,8 @@ fn analysis_nodes_are_excluded_like_tests() {
         child_map,
         macros: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     });
     assert!(dag.get("analysis.p.x").is_none());
     assert_eq!(dag.count_by_resource_type("analysis"), 0);
@@ -235,6 +239,8 @@ fn closure_is_cycle_safe() {
         child_map,
         macros: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     };
     let dag = Dag::build(&manifest);
     let down = dag.downstream("model.p.a");
@@ -533,6 +539,8 @@ fn multi_package_manifest(root_project: Option<&str>) -> RawManifest {
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     }
 }
 
@@ -1226,6 +1234,8 @@ fn unique_key_normalizes_string_list_and_absent_forms() {
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     };
     let dag = Dag::build(&manifest);
     let uk = |uid: &str| dag.detail(uid).unwrap().unique_key.clone();
@@ -1286,6 +1296,8 @@ fn patch_path_strips_the_package_scheme() {
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     };
     let dag = Dag::build(&manifest);
     assert_eq!(
@@ -1372,6 +1384,8 @@ fn source_freshness_loader_and_loaded_at_normalize() {
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
     };
     let dag = Dag::build(&manifest);
     let d = |uid: &str| dag.detail(uid).unwrap();
@@ -1446,6 +1460,8 @@ fn overview_manifest(entries: &[(&str, RawDoc)]) -> RawManifest {
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
         docs,
+        disabled: Default::default(),
+        ref_scope: None,
     }
 }
 
@@ -1660,6 +1676,8 @@ fn detail_maps_the_model_config_governance_fields() {
         parent_map: HashMap::new(),
         child_map: HashMap::new(),
         docs: Default::default(),
+        disabled: Default::default(),
+        ref_scope: None,
         unresolved_adjacent: HashMap::new(),
     };
     let dag = Dag::build(&manifest);

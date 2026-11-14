@@ -6,13 +6,16 @@
 //! applies them. Warning ORDER is significant (first-seen dedup happens in
 //! `finish`), so the stage order is a contract, not a preference.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 use super::*;
-use crate::{RawConfig, RawDoc, RawExposure, RawExposureOwner, RawMetadata, UnresolvedAdjacent};
+use crate::{
+    DisabledRef, RawConfig, RawDoc, RawExposure, RawExposureOwner, RawMetadata, RefScope,
+    UnresolvedAdjacent,
+};
 
 /// The shared state the source-synthesis stages build up: the parsed project
 /// file and its resource paths, the collected docs blocks, the synthesized
@@ -65,6 +68,21 @@ pub(super) struct Synthesis {
     /// (`+access`/`+group`/`+contract`/`+incremental_strategy`) — the same
     /// lowest-precedence slot `tree_mat`/`tree_uk` occupy.
     tree_gov: HashMap<String, TreeConfig>,
+    /// `enabled: false`-parked refable names — `name -> resource types` —
+    /// recorded instead of dropped: `unresolved_references` reports a
+    /// `ref()` to one under its own "disabled" wording, matching where
+    /// dbt parks them (`manifest.disabled`). The kind set records every
+    /// parked resource under the name — a same-name model+seed collision
+    /// keeps both, matching the manifest-mode `disabled_refs` shape.
+    disabled_names: BTreeMap<String, BTreeSet<String>>,
+    /// `(source, table)` pairs `config.enabled`/`+enabled` parked — the
+    /// source-side half of `disabled_names`.
+    disabled_sources: BTreeSet<(String, String)>,
+    /// Names `ref()` may legitimately resolve to without a synthesized
+    /// node: `versions:`/`defined_in:`-declared model names and the
+    /// `<name>` families of `<name>_v<ver>` model files (versioned nodes
+    /// are never synthesized, so the family name is counted resolved).
+    assumed_names: BTreeSet<String>,
     /// Recoverable oddities (an unparsable schema.yml, a duplicate resource
     /// name, a non-mapping `meta:`) are reported as warnings, not errors.
     warnings: Vec<String>,
@@ -237,6 +255,9 @@ impl Synthesis {
             tree_meta: HashMap::new(),
             tree_uk: HashMap::new(),
             tree_gov: HashMap::new(),
+            disabled_names: BTreeMap::new(),
+            disabled_sources: BTreeSet::new(),
+            assumed_names: BTreeSet::new(),
             warnings,
         })
     }
@@ -257,6 +278,12 @@ impl Synthesis {
             // comment-free files skip the byte loop and keep just the copy.
             let masked = mask_jinja_comments(&raw).into_owned();
             let name = file_stem(&file);
+            // A `<name>_v<ver>` stem declares the `<name>` family — the
+            // ref scope counts it resolved even when the versioned nodes
+            // themselves are never synthesized.
+            if let Some(family) = version_family(&name) {
+                self.assumed_names.insert(family.to_string());
+            }
             let uid = format!("model.{}.{name}", self.proj);
             // dbt's `path` is relative to the model-paths root (e.g. `staging/x.sql`)
             // — the left-pane layer grouping splits it on the first `/`.
@@ -270,7 +297,8 @@ impl Synthesis {
                 Some(&self.vars),
             );
             // Disabled models never reach the manifest's `nodes` (dbt parks them
-            // under `disabled`); drop them here too, edges included.
+            // under `disabled`); drop them here too, edges included — but keep
+            // the NAME, so a `ref()` to it reads as "disabled", not "missing".
             if self.pat.disabled(
                 &masked,
                 &self.vars,
@@ -278,6 +306,10 @@ impl Synthesis {
                 &rel_path(&self.dir, &file),
             ) || tree.enabled == Some(false)
             {
+                self.disabled_names
+                    .entry(name)
+                    .or_default()
+                    .insert("model".to_string());
                 continue;
             }
             // `collect_with_root` sorts by path, so the first file to claim a
@@ -357,6 +389,10 @@ impl Synthesis {
                 Some(&self.vars),
             );
             if tree.enabled == Some(false) {
+                self.disabled_names
+                    .entry(name)
+                    .or_default()
+                    .insert("seed".to_string());
                 continue;
             }
             if self.name_index.contains_key(&name) {
@@ -408,6 +444,12 @@ impl Synthesis {
                 .pat
                 .disabled(&masked, &self.vars, &mut self.warnings, &ofp)
             {
+                for name in self.pat.snapshots(&masked) {
+                    self.disabled_names
+                        .entry(name)
+                        .or_default()
+                        .insert("snapshot".to_string());
+                }
                 continue;
             }
             // Refs in a multi-block file are attributed to every block in it (rare).
@@ -429,6 +471,10 @@ impl Synthesis {
                     Some(&self.vars),
                 );
                 if tree.enabled == Some(false) {
+                    self.disabled_names
+                        .entry(name.clone())
+                        .or_default()
+                        .insert("snapshot".to_string());
                     continue;
                 }
                 if self.name_index.contains_key(&name) {
@@ -519,7 +565,24 @@ impl Synthesis {
             match yaml_to_json(&read(&file), &mut self.warnings)
                 .and_then(|v| serde_json::from_value::<SchemaFile>(v).map_err(|e| e.to_string()))
             {
-                Ok(schema) => parsed.push((schema, file, yml_root)),
+                Ok(schema) => {
+                    // A `versions:`-declared model name — and each entry's
+                    // `defined_in:` file — is refable without a synthesized
+                    // node (versioned nodes are never made), so the ref
+                    // scope counts both as resolved names.
+                    for model in &schema.models {
+                        if model.versions.is_empty() {
+                            continue;
+                        }
+                        self.assumed_names.insert(model.name.clone());
+                        for v in &model.versions {
+                            if let Some(d) = v.get("defined_in").and_then(|d| d.as_str()) {
+                                self.assumed_names.insert(d.to_string());
+                            }
+                        }
+                    }
+                    parsed.push((schema, file, yml_root))
+                }
                 Err(err) => self.warnings.push(format!(
                     "skipped {}: invalid schema file ({err})",
                     rel_path(&self.dir, &file)
@@ -545,6 +608,10 @@ impl Synthesis {
                     &format!("{yml_path}: snapshot '{}' config.enabled", entry.name),
                     &mut self.warnings,
                 ) {
+                    self.disabled_names
+                        .entry(entry.name.clone())
+                        .or_default()
+                        .insert("snapshot".to_string());
                     continue;
                 }
                 if self.name_index.contains_key(&entry.name) {
@@ -569,6 +636,10 @@ impl Synthesis {
                     Some(&self.vars),
                 );
                 if tree.enabled == Some(false) {
+                    self.disabled_names
+                        .entry(entry.name.clone())
+                        .or_default()
+                        .insert("snapshot".to_string());
                     continue;
                 }
                 // dbt V2 synthesizes `select * from {relation}` (wrapping a bare
@@ -811,6 +882,8 @@ impl Synthesis {
                         ),
                         &mut self.warnings,
                     ) {
+                        self.disabled_sources
+                            .insert((src.name.clone(), tbl.name.clone()));
                         continue;
                     }
                     let uid = format!("source.{}.{}.{}", self.proj, src.name, tbl.name);
@@ -834,6 +907,8 @@ impl Synthesis {
                     // `sources:` `+enabled` parks the table like the other
                     // resource trees (dbt disables `source.p.s.t` by fqn).
                     if tree.enabled == Some(false) {
+                        self.disabled_sources
+                            .insert((src.name.clone(), tbl.name.clone()));
                         continue;
                     }
                     self.sources.insert(
@@ -1063,6 +1138,7 @@ impl Synthesis {
                 &schema.models,
                 &yml_path,
                 &self.docs,
+                &mut self.disabled_names,
                 &mut self.warnings,
             );
             apply_meta(
@@ -1072,6 +1148,7 @@ impl Synthesis {
                 &schema.seeds,
                 &yml_path,
                 &self.docs,
+                &mut self.disabled_names,
                 &mut self.warnings,
             );
             apply_meta(
@@ -1081,6 +1158,7 @@ impl Synthesis {
                 &schema.snapshots,
                 &yml_path,
                 &self.docs,
+                &mut self.disabled_names,
                 &mut self.warnings,
             );
 
@@ -1224,6 +1302,73 @@ impl Synthesis {
         }
 
         let raw_macros = self.macros.raw_macros(&self.proj);
+
+        // The ref()/source() name universe `unresolved_references` judges
+        // against — carried on the manifest the way dbt's own parse would
+        // remember it (manifest mode derives the same scope from its
+        // node/source/disabled maps in `Dag::build`). Root names come from
+        // the loader's own indexes; installed `dbt_packages/` dirs
+        // contribute their file-stem/yml names without ever being parsed;
+        // `dependencies.yml`/`packages.yml` mark the cross-project
+        // (`projects:`) and still-missing (`packages:` vs installed dirs)
+        // surfaces. `versions` stays None — source mode never synthesizes
+        // versioned nodes, so a `v=`-pinned ref is never judged.
+        let deps = DeclaredDeps::load(&self.dir, &mut self.warnings);
+        let installed =
+            InstalledPackages::load(&self.dir, &self.project, &self.pat, &mut self.warnings);
+        let mut refs = installed.refs;
+        for name in self.name_index.keys() {
+            // A parked (`disabled`) name stays in `name_index` — edges and
+            // test `to:` still resolve to the dropped uid — but it is NOT
+            // a live `ref()` target: it judges as "disabled" against
+            // `disabled_refs` below, never as resolved here.
+            if self.disabled_names.contains_key(name) {
+                continue;
+            }
+            refs.entry(name.clone())
+                .or_default()
+                .insert(self.proj.clone());
+        }
+        let mut sources = installed.sources;
+        for uid in self.sources.keys() {
+            let mut segs = uid.split('.');
+            if let (Some("source"), Some(_), Some(src), Some(tbl), None) = (
+                segs.next(),
+                segs.next(),
+                segs.next(),
+                segs.next(),
+                segs.next(),
+            ) {
+                sources.insert((src.to_string(), tbl.to_string()));
+            }
+        }
+        let ref_scope = RefScope {
+            refs,
+            versions: None,
+            sources,
+            disabled_refs: self
+                .disabled_names
+                .iter()
+                .map(|(n, kinds)| {
+                    (
+                        n.clone(),
+                        kinds
+                            .iter()
+                            .map(|kind| DisabledRef {
+                                package: self.proj.clone(),
+                                kind: kind.clone(),
+                                version: None,
+                            })
+                            .collect(),
+                    )
+                })
+                .collect(),
+            disabled_sources: self.disabled_sources,
+            assumed: self.assumed_names,
+            projects: deps.projects,
+            uninstalled_packages: deps.declared.saturating_sub(installed.installed),
+        };
+
         (
             RawManifest {
                 // `dbt_project.yml`'s `name` IS the root project — record it where
@@ -1263,6 +1408,11 @@ impl Synthesis {
                 unit_tests: self.unit_tests,
                 functions: HashMap::new(),
                 docs: manifest_docs,
+                // Parked names live on the `RefScope` (below), not the
+                // `disabled` map — a real manifest's parked payloads are
+                // never read either.
+                disabled: HashMap::new(),
+                ref_scope: Some(ref_scope),
             },
             self.warnings,
         )

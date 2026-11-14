@@ -28,7 +28,7 @@ mod common;
 use common::{lines, run, stderr, stdout};
 use dbtl::{
     build_model_list, load_dag, load_dag_from_source, run_rules, Dag, LintConfig, LintInput,
-    PackageScope, SortMode,
+    LintRule, PackageScope, SortMode,
 };
 
 const MANIFEST: &str = concat!(
@@ -275,6 +275,22 @@ fn source_mode_attaches_the_versioned_unit_test_to_the_same_member() {
             "{uid} must not borrow the v2-scoped test"
         );
     }
+}
+
+#[test]
+fn source_mode_flags_no_unresolved_references() {
+    // The spec's 0-findings pin: `ref('fct_orders')` and both `v=` pins
+    // resolve through the synthesized scope — the `<name>_v<N>` member
+    // files declare the `fct_orders` family, and source mode never
+    // judges a pin (no `.vN` uids to check it against).
+    let dag = load_dag_from_source(PROJECT).expect("versioned project parses");
+    let findings = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    assert!(
+        findings
+            .iter()
+            .all(|f| f.rule != LintRule::UnresolvedReferences),
+        "every ref in the fixture resolves under the source scope: {findings:?}"
+    );
 }
 
 // ---- display: list rows, docs pages, column addressing ----------------------
