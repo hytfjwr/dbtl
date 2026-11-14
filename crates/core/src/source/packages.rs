@@ -39,7 +39,7 @@ pub(super) struct DeclaredDeps {
 
 impl DeclaredDeps {
     /// Read both manifests from the project root. Either may be absent or
-    /// unparseable — a bad dependency file already fails `dbt parse`
+    /// unparsable — a bad dependency file already fails `dbt parse`
     /// upstream, so a lenient read here only narrows the suppression.
     pub(super) fn load(dir: &Path, warnings: &mut Vec<String>) -> Self {
         let mut deps = DeclaredDeps::default();
