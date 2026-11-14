@@ -61,8 +61,14 @@ pub(super) struct FixRequest<'a> {
     /// The resolved current source — its `dag` supplies the raw/compiled
     /// text the patched rebuilds restore per node.
     pub resolved: &'a ResolvedSource,
-    /// The effective lint config (post `--preset`/`--rules`).
+    /// The effective lint config (post `--preset`/`--rules`) — it
+    /// decides WHICH findings are fixable.
     pub cfg: &'a dbtl::LintConfig,
+    /// The introduced-findings guard's config: preset + `.dbtl.yml` but
+    /// NOT the `--rules` overlay, and evaluated without `--select` — the
+    /// user's real lint set. Under a narrowed run a fix could introduce a
+    /// finding the narrowing never evaluated; the guard must see it.
+    pub guard_cfg: &'a dbtl::LintConfig,
     /// The `--diff` baseline dag, same as the report path's.
     pub base: Option<&'a dbtl::Dag>,
     /// The applied lint baseline, same as the report path's.
@@ -183,7 +189,21 @@ fn node_file(
         }
     }
     let ofp = dag.detail(uid)?.original_file_path.clone()?;
-    if ofp.ends_with(".py") {
+    if ofp.to_ascii_lowercase().ends_with(".py") {
+        return None;
+    }
+    // `ofp` is manifest-carried data — only a plain relative path may
+    // join the root, or a crafted manifest could point the write outside
+    // the project (the same predicate `contained_resource_paths` uses).
+    if !Path::new(&ofp).components().all(|c| {
+        matches!(
+            c,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    }) {
+        warnings.insert(format!(
+            "--fix: {ofp}: not a project-relative path — skipped"
+        ));
         return None;
     }
     let path = root.join(&ofp);
@@ -223,8 +243,10 @@ fn finding_key(f: &dbtl::Finding) -> (dbtl::LintRule, String, Vec<String>) {
 /// safe fix remains or `MAX_FIX_ROUNDS` trips. Each accepted file's
 /// edits are committed to `overlay` only after the post-edit dag proves
 /// the edit introduced no NEW finding on the node — a fix that creates
-/// work is reverted, per the issue's guard.
-pub(super) fn run_fixes(req: &FixRequest) -> Result<FixOutcome, CliError> {
+/// work is reverted, per the issue's guard. `write` (`--fix`) persists
+/// the accepted set and drops any file that drifted mid-run from the
+/// outcome, so the report dag describes what's really on disk.
+pub(super) fn run_fixes(req: &FixRequest, write: bool) -> Result<FixOutcome, CliError> {
     let (root, manifest) = fix_plan(req.src)?;
     let primary = req.resolved.dag.primary_package();
     let mut overlay: BTreeMap<String, String> = BTreeMap::new();
@@ -257,6 +279,22 @@ pub(super) fn run_fixes(req: &FixRequest) -> Result<FixOutcome, CliError> {
                 base_sql: req.base_sql,
             },
             req.selection,
+        );
+        // The guard's pre-edit key set is evaluated under the FULL lint
+        // set — no `--rules` overlay, no `--select` — or an introduced
+        // finding a narrowed run can't see would slip through.
+        let guard_pre = evaluate_lint(
+            &dag,
+            req.guard_cfg,
+            req.base,
+            req.baseline,
+            req.fail_on,
+            LintAux {
+                sql: Some(&resolver),
+                catalog: req.catalog.as_deref(),
+                base_sql: req.base_sql,
+            },
+            None,
         );
         if _round == 0 {
             fixable_pre = outcome.findings.iter().filter(|f| f.rule.fixable()).count();
@@ -348,7 +386,7 @@ pub(super) fn run_fixes(req: &FixRequest) -> Result<FixOutcome, CliError> {
         let post_resolver = dbtl::SqlParseResolver::new(req.catalog.clone(), req.dialect);
         let post = evaluate_lint(
             &post_dag,
-            req.cfg,
+            req.guard_cfg,
             req.base,
             req.baseline,
             req.fail_on,
@@ -357,7 +395,7 @@ pub(super) fn run_fixes(req: &FixRequest) -> Result<FixOutcome, CliError> {
                 catalog: req.catalog.as_deref(),
                 base_sql: req.base_sql,
             },
-            req.selection,
+            None,
         );
         // The spec's "no new findings" guard: a fix may only REMOVE
         // findings under the rules it ran — anything new under any
@@ -366,7 +404,7 @@ pub(super) fn run_fixes(req: &FixRequest) -> Result<FixOutcome, CliError> {
         // makes-`b`-unread cascade the fixpoint exists for).
         let round_rules: BTreeSet<dbtl::LintRule> =
             cands.iter().flat_map(|c| c.rules.iter().copied()).collect();
-        let pre_keys: BTreeSet<_> = outcome.findings.iter().map(finding_key).collect();
+        let pre_keys: BTreeSet<_> = guard_pre.findings.iter().map(finding_key).collect();
         let introduced: Vec<&dbtl::Finding> = post
             .findings
             .iter()
@@ -418,7 +456,7 @@ pub(super) fn run_fixes(req: &FixRequest) -> Result<FixOutcome, CliError> {
                     .filter(|r| *r != dbtl::LintRule::UnusedCte)
                     .collect();
                 let mut kept_other = false;
-                if !unattributed && !reduced.is_empty() {
+                if !reduced.is_empty() {
                     if let Some(raw) = dag.raw_code(&c.uid) {
                         let edits = dbtl::plan_node_edits(&dag, &resolver, &c.uid, &reduced);
                         if !edits.is_empty() {
@@ -432,8 +470,8 @@ pub(super) fn run_fixes(req: &FixRequest) -> Result<FixOutcome, CliError> {
                     }
                 }
                 // Warn only when an edit was actually reverted — a
-                // `;`-only file under the unattributed fallback kept
-                // everything and has nothing to say.
+                // `;`-only file kept its fix (provably side-effect-free)
+                // and has nothing to say.
                 if reduced.len() < c.rules.len()
                     && warned_culprits.insert(format!("{}:{}", c.uid, rule_names(&introduced)))
                 {
@@ -456,34 +494,11 @@ pub(super) fn run_fixes(req: &FixRequest) -> Result<FixOutcome, CliError> {
         }
         dag = patched_dag(&manifest, &overlay, req.resolved, req.src.scope);
     }
-    if hit_cap {
-        warnings.insert(format!(
-            "--fix: stopped after {MAX_FIX_ROUNDS} rounds without converging — \
-             findings that remain are reported"
-        ));
-    }
-
     // The final evaluation counts what's left — `fixed` is the findings
     // that disappeared, not the edits attempted.
     let mut files = Vec::new();
     let mut fixed_findings = 0usize;
     if !overlay.is_empty() {
-        let resolver = dbtl::SqlParseResolver::new(req.catalog.clone(), req.dialect);
-        let fin = evaluate_lint(
-            &dag,
-            req.cfg,
-            req.base,
-            req.baseline,
-            req.fail_on,
-            LintAux {
-                sql: Some(&resolver),
-                catalog: req.catalog.as_deref(),
-                base_sql: req.base_sql,
-            },
-            req.selection,
-        );
-        let fixable_post = fin.findings.iter().filter(|f| f.rule.fixable()).count();
-        fixed_findings = fixable_pre.saturating_sub(fixable_post);
         for uid in overlay.keys() {
             // Every accepted uid passed `node_file` — a `(ofp, path)`
             // pair and its disk bytes both exist by construction.
@@ -501,6 +516,48 @@ pub(super) fn run_fixes(req: &FixRequest) -> Result<FixOutcome, CliError> {
             });
         }
         files.sort_by(|a, b| a.ofp.cmp(&b.ofp));
+        if write {
+            let (written, skipped) = write_fixed(&files)?;
+            warnings.extend(skipped);
+            if written.len() < files.len() {
+                // A file that drifted mid-run kept its old bytes — its
+                // edits leave the overlay so the report dag (and the
+                // fixed count) describe what's really on disk.
+                let keep: BTreeSet<&PathBuf> = written.iter().collect();
+                files.retain(|f| keep.contains(&f.path));
+                overlay.retain(|uid, _| {
+                    checked
+                        .get(uid)
+                        .and_then(|g| g.as_ref())
+                        .is_some_and(|(_, p)| keep.contains(p))
+                });
+                dag = patched_dag(&manifest, &overlay, req.resolved, req.src.scope);
+            }
+        }
+        let resolver = dbtl::SqlParseResolver::new(req.catalog.clone(), req.dialect);
+        let fin = evaluate_lint(
+            &dag,
+            req.cfg,
+            req.base,
+            req.baseline,
+            req.fail_on,
+            LintAux {
+                sql: Some(&resolver),
+                catalog: req.catalog.as_deref(),
+                base_sql: req.base_sql,
+            },
+            req.selection,
+        );
+        let fixable_post = fin.findings.iter().filter(|f| f.rule.fixable()).count();
+        fixed_findings = fixable_pre.saturating_sub(fixable_post);
+        // A round hitting the cap that still fixed everything IS a
+        // convergence — only warn when fixable findings remain.
+        if hit_cap && fixable_post > 0 {
+            warnings.insert(format!(
+                "--fix: stopped after {MAX_FIX_ROUNDS} rounds without converging — \
+                 findings that remain are reported"
+            ));
+        }
     }
     Ok(FixOutcome {
         dag,
@@ -513,8 +570,11 @@ pub(super) fn run_fixes(req: &FixRequest) -> Result<FixOutcome, CliError> {
 /// `--fix`'s write: a sibling temp file + `rename`, so a crash mid-write
 /// can never leave a half-written `.sql`. The `before` bytes are
 /// re-checked first — a file that drifted between the read and the write
-/// is skipped with a warning, never stomped.
-pub(super) fn write_fixed(files: &[FixFile]) -> Result<Vec<String>, CliError> {
+/// is skipped with a warning, never stomped (the compare→rename gap
+/// can't close fully on POSIX; the re-read narrows it to microseconds).
+/// Returns the written paths plus the skip warnings.
+fn write_fixed(files: &[FixFile]) -> Result<(Vec<PathBuf>, Vec<String>), CliError> {
+    let mut written = Vec::new();
     let mut skipped = Vec::new();
     for f in files {
         let current = std::fs::read_to_string(&f.path).ok();
@@ -534,11 +594,20 @@ pub(super) fn write_fixed(files: &[FixFile]) -> Result<Vec<String>, CliError> {
         std::fs::write(&tmp, &f.after)
             .with_context(|| format!("failed to write {}", tmp.display()))
             .input()?;
-        std::fs::rename(&tmp, &f.path)
-            .with_context(|| format!("failed to replace {}", f.path.display()))
-            .input()?;
+        // The rename would otherwise drop the file's mode (execute bit,
+        // restrictive umask) — carry the original permissions over.
+        if let Ok(meta) = std::fs::metadata(&f.path) {
+            let _ = std::fs::set_permissions(&tmp, meta.permissions());
+        }
+        if let Err(e) = std::fs::rename(&tmp, &f.path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e)
+                .with_context(|| format!("failed to replace {}", f.path.display()))
+                .input();
+        }
+        written.push(f.path.clone());
     }
-    Ok(skipped)
+    Ok((written, skipped))
 }
 
 /// The `--fix-dry-run` preview for one file — a unified-diff-shaped
@@ -549,8 +618,21 @@ pub(super) fn write_fixed(files: &[FixFile]) -> Result<Vec<String>, CliError> {
 pub(super) fn unified_diff(ofp: &str, before: &str, after: &str) -> String {
     let a: Vec<&str> = before.split_inclusive('\n').collect();
     let b: Vec<&str> = after.split_inclusive('\n').collect();
-    // LCS table over the line arrays — O(n·m) on model-sized files.
     let (n, m) = (a.len(), b.len());
+    // The LCS table is O(n·m) — a generated SQL file over ~10k lines a
+    // side would allocate hundreds of MB for a preview. Past the cap a
+    // coarse whole-file hunk shows the same before/after.
+    const MAX_LCS_CELLS: usize = 4_000_000;
+    if n.saturating_mul(m) > MAX_LCS_CELLS {
+        let mut out = format!("--- a/{ofp}\n+++ b/{ofp}\n@@ -1,{n} +1,{m} @@\n");
+        for line in &a {
+            emit_diff_line(&mut out, '-', line);
+        }
+        for line in &b {
+            emit_diff_line(&mut out, '+', line);
+        }
+        return out;
+    }
     let mut dp = vec![vec![0u32; m + 1]; n + 1];
     for i in (0..n).rev() {
         for j in (0..m).rev() {

@@ -232,11 +232,11 @@ fn inside_jinja(sql: &str, at: usize, lex: &Lex) -> bool {
             if let Some(end) = paired_end(word, rest) {
                 stack.push((tag, end));
             } else if word.starts_with("end") {
-                // Pop the innermost frame expecting this word — a
-                // stray/mismatched end tag leaves everything still
-                // open, the conservative read.
+                // Pop ONLY the frame expecting this word — a mismatched
+                // end (`{% if %}{% for %}{% endif %}`) must leave the
+                // still-unclosed `for` body open, the conservative read.
                 if let Some(p) = stack.iter().rposition(|(_, w)| *w == word) {
-                    stack.truncate(p);
+                    stack.remove(p);
                 }
             }
         }

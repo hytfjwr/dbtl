@@ -2106,9 +2106,11 @@ fn fix_project(dir: &Path) -> PathBuf {
                 "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
             ),
             ("models/stg_base.sql", "select 1 as id\n"),
+            // `m`'s parent edge rides the main select, not the dead CTE —
+            // deleting `dead` can then introduce no orphan/root finding.
             (
                 "models/m.sql",
-                "with dead as (\n    select * from {{ ref('stg_base') }}\n)\nselect 2 as x;\n",
+                "with dead as (\n    select 1 as y\n)\nselect 2 as x from {{ ref('stg_base') }};\n",
             ),
         ],
     )
@@ -2140,7 +2142,7 @@ fn lint_fix_rewrites_and_repeats_to_fixpoint() {
     );
     assert_eq!(
         std::fs::read_to_string(&m).unwrap(),
-        "select 2 as x\n",
+        "select 2 as x from {{ ref('stg_base') }}\n",
         "the CTE and the `;` both go"
     );
 
@@ -2174,9 +2176,11 @@ fn lint_fix_cascade_deletes_newly_unread_ctes() {
                 "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
             ),
             ("models/stg_base.sql", "select 1 as id\n"),
+            // `m`'s parent edge rides the main select — the cascade can't
+            // orphan `stg_base` or un-parent `m` itself.
             (
                 "models/m.sql",
-                "with a as (\n    select * from {{ ref('stg_base') }}\n),\nb as (\n    select * from a\n)\nselect 1\n",
+                "with a as (\n    select * from {{ ref('stg_base') }}\n),\nb as (\n    select * from a\n)\nselect 1 from {{ ref('stg_base') }}\n",
             ),
         ],
     );
@@ -2184,7 +2188,7 @@ fn lint_fix_cascade_deletes_newly_unread_ctes() {
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
     assert_eq!(
         std::fs::read_to_string(root.join("models/m.sql")).unwrap(),
-        "select 1\n",
+        "select 1 from {{ ref('stg_base') }}\n",
         "the with-clause goes entirely once `b`'s delete orphans `a`"
     );
 }
@@ -2302,23 +2306,35 @@ fn lint_fix_jinja_arm_semicolon_is_never_touched() {
 
 #[test]
 fn lint_fix_refuses_a_delete_that_orphans_a_model() {
-    // `dead` is stg_base's ONLY reader — removing it would introduce an
+    // `dead` is victim's ONLY reader — removing it would introduce an
     // `unused_models` finding on a different node, so the CTE delete is
-    // reverted while the independent `;` fix still lands.
+    // reverted while the independent `;` fix still lands. `unused_models`
+    // is deliberately NOT in `--rules`: the guard evaluates the full lint
+    // set, so a narrowed run can't blind it.
     let tmp = tempfile::tempdir().unwrap();
-    let root = fix_project(tmp.path());
+    let root = common::write_project(
+        tmp.path(),
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            ("models/stg_victim.sql", "select 1 as id\n"),
+            ("models/stg_base.sql", "select 1 as id\n"),
+            (
+                "models/m.sql",
+                "with dead as (\n    select * from {{ ref('stg_victim') }}\n)\nselect 2 as x from {{ ref('stg_base') }};\n",
+            ),
+        ],
+    );
     let out = lint_src(
         &root,
-        &[
-            "--rules",
-            "trailing_semicolon,unused_cte,unused_models",
-            "--fix",
-        ],
+        &["--rules", "trailing_semicolon,unused_cte", "--fix"],
     );
     let err = stderr(&out);
     assert!(
         err.contains("would introduce a new unused_models finding"),
-        "the guard warns: {err}"
+        "the guard warns under --rules narrowing: {err}"
     );
     let after = std::fs::read_to_string(root.join("models/m.sql")).unwrap();
     assert!(
@@ -2326,6 +2342,144 @@ fn lint_fix_refuses_a_delete_that_orphans_a_model() {
         "the unsafe delete reverts: {after}"
     );
     assert!(!after.contains("x;"), "the safe `;` fix is kept: {after}");
+}
+
+#[test]
+fn lint_fix_select_narrowing_still_guards_unselected_nodes() {
+    // `--select m` narrows the report — but a fix on `m` that orphans the
+    // unselected `victim` must still revert: the guard never narrows.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = common::write_project(
+        tmp.path(),
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            ("models/stg_victim.sql", "select 1 as id\n"),
+            ("models/stg_base.sql", "select 1 as id\n"),
+            (
+                "models/m.sql",
+                "with dead as (\n    select * from {{ ref('stg_victim') }}\n)\nselect 2 as x from {{ ref('stg_base') }};\n",
+            ),
+        ],
+    );
+    let out = lint_src(
+        &root,
+        &[
+            "--rules",
+            "trailing_semicolon,unused_cte",
+            "--select",
+            "m",
+            "--fix",
+        ],
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("would introduce a new unused_models finding"),
+        "the guard sees past --select: {err}"
+    );
+    let after = std::fs::read_to_string(root.join("models/m.sql")).unwrap();
+    assert!(
+        after.contains("dead as"),
+        "the orphaning delete reverts: {after}"
+    );
+    assert!(!after.contains("x;"), "the safe `;` fix is kept: {after}");
+}
+
+#[test]
+fn lint_fix_refuses_traversal_original_file_path() {
+    // A manifest-carried `original_file_path` with `..` must never let
+    // the write escape the project root.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = common::write_project(
+        tmp.path(),
+        &[(
+            "dbt_project.yml",
+            "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+        )],
+    );
+    std::fs::create_dir_all(root.join("target")).unwrap();
+    std::fs::write(
+        root.join("target/manifest.json"),
+        r#"{"metadata": {"project_name": "v"},
+ "nodes": {
+  "model.v.m": {
+   "name": "m", "resource_type": "model", "package_name": "v",
+   "path": "m.sql", "original_file_path": "../outside.sql",
+   "raw_code": "select 1 as x;\n"
+  }
+ },
+ "sources": {}, "parent_map": {}, "child_map": {}}"#,
+    )
+    .unwrap();
+    let manifest = root.join("target/manifest.json");
+    let out = run(&[
+        "lint",
+        "--manifest",
+        manifest.to_str().unwrap(),
+        "--rules",
+        "trailing_semicolon",
+        "--fix",
+    ]);
+    let err = stderr(&out);
+    assert!(
+        err.contains("not a project-relative path"),
+        "the traversal refusal: {err}"
+    );
+    assert_eq!(out.status.code(), Some(1), "the finding stands: {err}");
+    assert!(
+        !root.parent().unwrap().join("outside.sql").exists(),
+        "nothing was written outside the root"
+    );
+}
+
+#[test]
+fn lint_fix_json_summary_and_quiet() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = fix_project(tmp.path());
+    // `--format json` carries `summary.fixed`.
+    let out = lint_src(
+        &root,
+        &[
+            "--rules",
+            "trailing_semicolon,unused_cte",
+            "--fix",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    let fixed = &json["summary"]["fixed"];
+    assert_eq!(fixed["findings"], 2, "summary.fixed.findings: {fixed}");
+    assert_eq!(fixed["files"], 1, "summary.fixed.files: {fixed}");
+    assert!(
+        fixed["dry_run"].is_null() || fixed["dry_run"] == false,
+        "summary.fixed.dry_run absent/false on a real fix: {fixed}"
+    );
+
+    // `--fix --quiet` still writes — quiet only silences report noise.
+    std::fs::write(
+        root.join("models/m.sql"),
+        "with dead as (\n    select 1 as y\n)\nselect 2 as x from {{ ref('stg_base') }};\n",
+    )
+    .unwrap();
+    let out = lint_src(
+        &root,
+        &[
+            "--rules",
+            "trailing_semicolon,unused_cte",
+            "--fix",
+            "--quiet",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    assert_eq!(
+        std::fs::read_to_string(root.join("models/m.sql")).unwrap(),
+        "select 2 as x from {{ ref('stg_base') }}\n",
+        "--quiet silences output, not the write"
+    );
 }
 
 #[test]
@@ -2455,7 +2609,7 @@ fn lint_fix_rules_and_select_narrow_the_fixes() {
     // Revert, then `--select` the other model — `m` is untouched.
     std::fs::write(
         root.join("models/m.sql"),
-        "with dead as (\n    select * from {{ ref('stg_base') }}\n)\nselect 2 as x;\n",
+        "with dead as (\n    select 1 as y\n)\nselect 2 as x from {{ ref('stg_base') }};\n",
     )
     .unwrap();
     let out = lint_src(
@@ -2471,7 +2625,7 @@ fn lint_fix_rules_and_select_narrow_the_fixes() {
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
     let after = std::fs::read_to_string(root.join("models/m.sql")).unwrap();
     assert!(
-        after.contains("x;"),
+        after.contains("select 2 as x from {{ ref('stg_base') }};"),
         "m is out of the selection — untouched: {after}"
     );
 }

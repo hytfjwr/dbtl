@@ -226,7 +226,14 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
     let baseline_explicit = pc.config.baseline_explicit;
     let config_found = pc.path.is_some();
     let mut cfg = pc.config.lint;
-    apply_preset_and_rules(&mut cfg, args.preset, args.rules)?;
+    if let Some(p) = args.preset {
+        cfg.preset = p;
+    }
+    // `--fix`'s introduced-findings guard evaluates the user's real lint
+    // set — preset + `.dbtl.yml`, no `--rules` overlay — or a narrowed
+    // run couldn't see a finding its edits introduced.
+    let guard_cfg = cfg.clone();
+    apply_rules_overlay(&mut cfg, args.rules)?;
     let candidates =
         dbtl::project_config_candidates(manifest_arg.as_deref(), project_arg.as_deref());
     // The auxiliary inputs every evaluation path below shares — the lazy
@@ -351,18 +358,22 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
     let mut fix_dag: Option<dbtl::Dag> = None;
     let mut fix_resolver: Option<dbtl::SqlParseResolver> = None;
     if args.fix || args.fix_dry_run {
-        let outcome = fix::run_fixes(&fix::FixRequest {
-            src,
-            resolved: &resolved,
-            cfg: &cfg,
-            base: base.as_ref().map(|(b, _)| b),
-            baseline: baseline.as_ref(),
-            fail_on,
-            catalog: &catalog,
-            base_sql: base_resolver.as_ref(),
-            selection: selection.as_ref(),
-            dialect: sql_resolver.dialect(),
-        })?;
+        let outcome = fix::run_fixes(
+            &fix::FixRequest {
+                src,
+                resolved: &resolved,
+                cfg: &cfg,
+                guard_cfg: &guard_cfg,
+                base: base.as_ref().map(|(b, _)| b),
+                baseline: baseline.as_ref(),
+                fail_on,
+                catalog: &catalog,
+                base_sql: base_resolver.as_ref(),
+                selection: selection.as_ref(),
+                dialect: sql_resolver.dialect(),
+            },
+            args.fix,
+        )?;
         warn_each("", &outcome.warnings);
         if args.fix_dry_run {
             // The diff is part of the human report; under the machine
@@ -376,9 +387,6 @@ pub fn run_lint(src: &DataSourceArgs, args: &LintArgs) -> Result<(), CliError> {
                     eprint!("{diff}");
                 }
             }
-        } else {
-            let skipped = fix::write_fixed(&outcome.files)?;
-            warn_each("", &skipped);
         }
         if !outcome.files.is_empty() {
             fixed = Some(FixedSummary {
