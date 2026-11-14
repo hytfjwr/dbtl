@@ -460,3 +460,244 @@ pub(super) fn test_kind(v: &serde_json::Value) -> Option<String> {
         _ => None,
     }
 }
+
+/// Synthesize `unit_tests:` declarations into `RawManifest::unit_tests`
+/// records — the same wire shape a real `dbt parse` emits, keyed
+/// `unit_test.<proj>.<model>.<name>[_v<version>]`, so [`Dag::build`]
+/// attaches each test to its `model:` target through the one intake
+/// path (`kind: "unit"` on the `tests` side map, never a graph node).
+/// `depends_on.nodes` carries the target uid exactly like the real
+/// record — `Dag::build` resolves it and falls back to the `model:`
+/// name when it can't (a disabled or missing model, the same drop the
+/// name fallbacks give a manifest-side record).
+///
+/// `config.enabled` is the only disable channel (a top-level `enabled:`
+/// is a dbt parse error — never read): a proven `false` parks the test
+/// the way dbt's `disabled` map does.
+pub(super) fn synth_unit_tests(
+    unit_tests: &mut HashMap<String, RawUnitTest>,
+    ctx: &TestCtx<'_>,
+    entries: &[SchemaUnitTest],
+    yml_path: &str,
+    warnings: &mut Vec<String>,
+) {
+    for entry in entries {
+        if ctx.vars.schema_disabled(
+            entry.config.enabled.as_ref(),
+            &format!("{yml_path}: unit test '{}' config.enabled", entry.name),
+            warnings,
+        ) {
+            continue;
+        }
+        let Some(model) = &entry.model else {
+            // `model:` is required by dbt's schema — warn-and-skip like
+            // the other malformed declarations rather than guessing a
+            // target.
+            warnings.push(format!(
+                "{yml_path}: unit test '{}' declares no 'model:' — it can't target anything",
+                entry.name
+            ));
+            continue;
+        };
+        for (version, dep) in
+            unit_test_targets(ctx, model, &entry.versions, yml_path, &entry.name, warnings)
+        {
+            let uid = match &version {
+                Some(v) => format!(
+                    "unit_test.{}.{}.{}_v{}",
+                    ctx.proj,
+                    model,
+                    entry.name,
+                    normalize_version(v)
+                ),
+                None => format!("unit_test.{}.{}.{}", ctx.proj, model, entry.name),
+            };
+            // A repeated (model, name) declaration is a dbt error —
+            // degraded here to a warning + first-declared-wins, the same
+            // convention the duplicate resource names follow.
+            if unit_tests.contains_key(&uid) {
+                warnings.push(format!(
+                    "{yml_path}: duplicate unit test name '{}' on model '{model}' — ignoring it",
+                    entry.name
+                ));
+                continue;
+            }
+            unit_tests.insert(
+                uid,
+                RawUnitTest {
+                    name: entry.name.clone(),
+                    model: Some(model.clone()),
+                    depends_on: RawDependsOn {
+                        nodes: vec![dep],
+                        macros: vec![],
+                    },
+                    version,
+                    given: entry.given.iter().map(manifest_io_shape).collect(),
+                    expect: entry.expect.as_ref().map(manifest_io_shape),
+                },
+            );
+        }
+    }
+}
+
+/// The `(version, depends_on uid)` pairs a `unit_tests:` entry expands
+/// to — the per-version emission dbt performs (`versions: {include: …}`
+/// mints one `unit_test…_v<version>` record per selected version), over
+/// the members source mode can see.
+///
+/// Source mode synthesizes no `.vN` uid segments, but the file-name
+/// convention dbt requires — `<model>_v<version>.sql` — makes a
+/// versioned family's members visible as names: `fct_orders_v2` IS
+/// version 2's model. A member set therefore stands in for the model's
+/// declared `versions:` — an unfiltered entry expands to every member,
+/// `include:` selects them (an absent `include` or `'*'` means all),
+/// `exclude:` subtracts — matched through [`normalize_version`] so the
+/// `v2`/`2`/`V2` spellings name the same member. An `include`d version
+/// no member answers to is warned about (dbt hard-errors there); the
+/// recorded `version` is the member's own declared value — the file
+/// suffix — so the wire keeps `beta`-style versions verbatim.
+///
+/// A model with no `<model>_v*` members is unversioned: its single
+/// `model.<proj>.<name>` uid is the target, and a single-element
+/// `include` rides `version` for fidelity only (dbt rejects `versions:`
+/// on an unversioned model — degrading to the one target beats dropping
+/// a declared test). A `model:` naming nothing the loader knows — or a
+/// non-model node — gets no target at all: dbt hard-errors, source mode
+/// warns and drops the record like the other malformed declarations.
+fn unit_test_targets(
+    ctx: &TestCtx<'_>,
+    model: &str,
+    versions: &SchemaUnitTestVersions,
+    yml_path: &str,
+    test_name: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<(Option<String>, String)> {
+    let bare = format!("model.{}.{}", ctx.proj, model);
+    // The bare `model:` name wins when it IS a model — a `fct_orders`
+    // sitting next to a coincidentally-named `fct_orders_v2` file stays
+    // the target. A real versioned family carries no bare name (dbt's
+    // file convention names every version `<model>_v<version>.sql`), so
+    // only then do the `_v*` members expand.
+    if ctx.name_index.get(model).is_none_or(|u| u != &bare) {
+        let prefix = format!("{model}_v");
+        let mut members: Vec<(&str, &String)> = ctx
+            .name_index
+            .iter()
+            .filter_map(|(name, uid)| name.strip_prefix(&prefix).map(|v| (v, uid)))
+            .collect();
+        if !members.is_empty() {
+            members.sort();
+            let include = version_set(&versions.include);
+            let exclude = version_set(&versions.exclude);
+            let kept: Vec<_> = members
+                .into_iter()
+                .filter(|(mv, _)| {
+                    include
+                        .as_ref()
+                        .is_none_or(|set| set.contains(normalize_version(mv)))
+                        && !exclude
+                            .as_ref()
+                            .is_some_and(|set| set.contains(normalize_version(mv)))
+                })
+                .map(|(mv, uid)| (Some(mv.to_string()), uid.clone()))
+                .collect();
+            if kept.is_empty() {
+                warnings.push(format!(
+                    "{yml_path}: unit test '{test_name}' selects no version of model '{model}' — it can't target anything"
+                ));
+            }
+            return kept;
+        }
+        // The name answered to a non-model node or nothing at all.
+        warnings.push(format!(
+            "{yml_path}: unit test '{test_name}' targets unknown model '{model}' — it can't target anything"
+        ));
+        return Vec::new();
+    }
+    // A single-element `include` rides `version` for fidelity only; dbt
+    // rejects `versions:` on an unversioned model, so degrading to the
+    // one target beats dropping a declared test.
+    let version = versions
+        .include
+        .as_array()
+        .filter(|l| l.len() == 1)
+        .and_then(|l| l.first().and_then(version_scalar));
+    vec![(version, bare)]
+}
+
+/// Rewrite a `given:`/`expect:` entry's `rows:` into the shape the
+/// manifest carries. A `csv`-format string is a CSV block real dbt
+/// parses into a list of row dicts at parse time — the manifest's
+/// `rows` IS an array, so `UnitTestShape`'s row counts read it. Rather
+/// than fabricate dict contents source mode can't know, the string
+/// becomes an array of `null`s, one per data record: the count survives
+/// the one `as_array().len()` read in `Dag::build`, and parity holds.
+/// (`format: sql` strings are queries, not rows — they stay strings,
+/// uncounted like the manifest's.)
+fn manifest_io_shape(io: &RawUnitTestIo) -> RawUnitTestIo {
+    let mut io = io.clone();
+    // `format: sql` keeps its query string on the wire — only the absent
+    // (default `csv`) or explicit `csv` formats parse into row lists.
+    let parses_to_rows = io.format.as_deref().is_none_or(|f| f == "csv");
+    if parses_to_rows {
+        if let Some(serde_json::Value::String(text)) = &io.rows {
+            if let Some(records) = csv_records(text) {
+                // First record is the header row.
+                io.rows = Some(serde_json::Value::Array(vec![
+                    serde_json::Value::Null;
+                    records.saturating_sub(1)
+                ]));
+            }
+        }
+    }
+    io
+}
+
+/// The record count of a CSV payload — header included, so the caller
+/// subtracts one. `"…"` quoting is honored: a newline or `""` escape
+/// inside a quoted field never splits a record. `None` on an empty
+/// payload or unbalanced quotes — the raw string then rides through
+/// uncounted, which matches what a malformed manifest would surface.
+fn csv_records(text: &str) -> Option<usize> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    let mut records = 0usize;
+    let mut in_quotes = false;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if in_quotes && chars.peek() == Some(&'"') => {
+                chars.next();
+            }
+            '"' => in_quotes = !in_quotes,
+            '\n' if !in_quotes => records += 1,
+            _ => {}
+        }
+    }
+    if in_quotes {
+        return None;
+    }
+    if !text.ends_with('\n') {
+        records += 1;
+    }
+    Some(records)
+}
+
+/// A `versions:` list's normalized member set — `None` for the
+/// absent/wildcard/non-list spellings (all of which select every
+/// member), `Some` of the normalized version strings for a real list.
+fn version_set(v: &serde_json::Value) -> Option<std::collections::BTreeSet<String>> {
+    let list = v.as_array().filter(|l| !l.is_empty())?;
+    Some(
+        list.iter()
+            .filter_map(|v| version_scalar(v).map(|s| normalize_version(&s).to_string()))
+            .collect(),
+    )
+}
+
+/// A `versions:` item's version string — `2` → `"2"`, `'beta'` →
+/// `"beta"`; non-scalars can't name a version and yield `None`.
+fn version_scalar(v: &serde_json::Value) -> Option<String> {
+    scalar_to_string(v)
+}

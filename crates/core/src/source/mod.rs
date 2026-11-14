@@ -76,6 +76,16 @@
 //!   can't claim "no parents" on a node whose hidden parents live inside
 //!   an unexpanded call, and `unused_sources` can't claim "no consumers"
 //!   on a source table such a call literally named.
+//! - `unit_tests:` declarations (dbt ≥1.8) synthesize into
+//!   `RawManifest::unit_tests` — the same wire records a real parse
+//!   emits, so `Dag::build` attaches each test to its `model:` target
+//!   through the one intake path (the `tests` side map, never a node).
+//!   `config.enabled` is the only disable channel (a top-level
+//!   `enabled:` is a dbt error), and a `versions:` filter expands one
+//!   record per selected version over the `<model>_v<version>` file
+//!   names dbt's convention requires — the `.vN` uid segments a real
+//!   manifest carries are not synthesized, so the file-named member is
+//!   the dep the record points at.
 //!
 //! Scope: this covers the common project shape, not dbt's full resolver. NOT
 //! handled (a `ref` to one of these simply drops out, which `prune_adjacency`
@@ -103,8 +113,9 @@ use yaml_rust2::parser::{Event, MarkedEventReceiver, Tag};
 use yaml_rust2::scanner::{Marker, TScalarStyle};
 
 use crate::{
-    Dag, RawConstraint, RawContract, RawDependsOn, RawFreshness, RawFreshnessThreshold,
-    RawManifest, RawNode, RawSource, RawTestMetadata,
+    normalize_version, Dag, RawConstraint, RawContract, RawDependsOn, RawFreshness,
+    RawFreshnessThreshold, RawManifest, RawNode, RawSource, RawTestMetadata, RawUnitTest,
+    RawUnitTestIo,
 };
 
 /// Parse a dbt project directory and build its [`Dag`] from source.

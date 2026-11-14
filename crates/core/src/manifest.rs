@@ -423,16 +423,23 @@ pub struct RawUnitTest {
 
 /// One `given:`/`expect:` entry of a unit test. Only `rows` is surfaced: an
 /// inline `rows:` list is countable from the manifest, while a `fixture:`
-/// reference or a CSV-string `rows:` payload is not (dbt stores the string,
-/// not the parsed rows — counting it would invent a number).
+/// reference or a `format: sql` string `rows:` payload is not (a SQL query
+/// string stays a string — counting it would invent a number).
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct RawUnitTestIo {
     /// The `input:` reference for `given:` entries (`ref('x')` /
     /// `source('a','b')` as a string). Kept raw — display doesn't resolve it.
     #[serde(default)]
     pub input: Option<String>,
-    /// The inline `rows:` payload: a JSON array for row-dict fixtures, a
-    /// string for `format: csv` fixtures. Counted only when it is an array.
+    /// The row payload's `format:` (`dict`/`csv`/`sql`). Read on the
+    /// source-synthesis path to tell a CSV block (dbt parses it into a
+    /// row list at parse time — countable) from a `sql` query string
+    /// (which stays a string — uncountable).
+    #[serde(default)]
+    pub format: Option<String>,
+    /// The inline `rows:` payload: a JSON array for row-dict fixtures
+    /// (and for `format: csv`, which dbt parses into dicts), a string
+    /// for `format: sql`. Counted only when it is an array.
     #[serde(default)]
     pub rows: Option<serde_json::Value>,
 }

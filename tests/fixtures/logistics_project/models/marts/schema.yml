@@ -59,3 +59,32 @@ models:
           - not_null
       - name: carrier_name
       - name: carrier_rating
+unit_tests:
+  - name: fct_shipments_legs_join
+    model: fct_shipments
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('int_shipment_legs')
+        rows:
+          - {shipment_id: 1, carrier_id: 10, origin_id: 100, dest_id: 200, weight_kg: 5.0, status: 'delivered', event_count: 2, last_event_at: '2024-01-02'}
+          - {shipment_id: 2, carrier_id: 11, origin_id: 101, dest_id: 201, weight_kg: 3.0, status: 'in_transit', event_count: 1, last_event_at: '2024-01-03'}
+      - input: ref('int_order_shipments')
+        rows:
+          - {shipment_id: 1, order_id: 500, order_total: 42.5}
+    expect:
+      rows:
+        - {shipment_id: 1, carrier_id: 10, origin_id: 100, dest_id: 200, weight_kg: 5.0, status: 'delivered', event_count: 2, last_event_at: '2024-01-02', order_id: 500, order_total: 42.5}
+        - {shipment_id: 2, carrier_id: 11, origin_id: 101, dest_id: 201, weight_kg: 3.0, status: 'in_transit', event_count: 1, last_event_at: '2024-01-03', order_id: null, order_total: null}
+  - name: dim_carriers_row_shape
+    model: dim_carriers
+    given:
+      - input: ref('stg_carriers')
+        rows:
+          - {carrier_id: 10, carrier_name: 'Acme', mode: 'road', scac_code: 'ACME'}
+    expect:
+      format: csv
+      rows: |
+        carrier_id,carrier_name,mode,scac_code
+        10,Acme,road,ACME

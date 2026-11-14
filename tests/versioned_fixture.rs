@@ -18,18 +18,27 @@
 //!
 //! Source mode intentionally does NOT synthesize versions (the `.sql` files
 //! are independent models there), so this fixture is deliberately absent
-//! from `consistency.rs` — manifest mode only.
+//! from `consistency.rs` — manifest mode plus the one deliberate source-mode
+//! assertion: `versions: include`-scoped unit tests DO expand over the
+//! `fct_orders_v<N>.sql` member files and land on the same member the
+//! manifest's `.v2` uid names.
 
 mod common;
 
 use common::{lines, run, stderr, stdout};
 use dbtl::{
-    build_model_list, load_dag, run_rules, Dag, LintConfig, LintInput, PackageScope, SortMode,
+    build_model_list, load_dag, load_dag_from_source, run_rules, Dag, LintConfig, LintInput,
+    PackageScope, SortMode,
 };
 
 const MANIFEST: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/versioned_manifest.json"
+);
+
+const PROJECT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/versioned_project"
 );
 
 fn dag() -> Dag {
@@ -234,6 +243,35 @@ fn unit_test_attaches_to_its_declared_version_only() {
     ] {
         assert!(
             unit_uids(uid).is_empty(),
+            "{uid} must not borrow the v2-scoped test"
+        );
+    }
+}
+
+#[test]
+fn source_mode_attaches_the_versioned_unit_test_to_the_same_member() {
+    // The source-mode counterpart: no `.v2` uid segment exists off-manifest,
+    // so `versions: {include: [2]}` expands over the `fct_orders_v<N>.sql`
+    // member files — `fct_orders_v2` carries the test with the same
+    // (inputs, given_rows, expect_rows) shape the manifest records.
+    let dag = load_dag_from_source(PROJECT).expect("versioned project parses");
+    let tests = dag.tests("model.versioned.fct_orders_v2");
+    let unit = tests
+        .iter()
+        .find(|t| t.kind == "unit")
+        .expect("source mode attaches the include-scoped unit test");
+    assert_eq!(unit.name, "fct_orders_v2_keeps_rows");
+    let shape = unit.unit.as_ref().expect("kind unit carries its shape");
+    assert_eq!(
+        (shape.inputs, shape.given_rows, shape.expect_rows),
+        (1, Some(1), Some(1))
+    );
+    for uid in [
+        "model.versioned.fct_orders_v1",
+        "model.versioned.fct_orders_vbeta",
+    ] {
+        assert!(
+            dag.tests(uid).iter().all(|t| t.kind != "unit"),
             "{uid} must not borrow the v2-scoped test"
         );
     }

@@ -140,7 +140,7 @@ fn default_config_enables_the_registry_default_set() {
         );
     }
     // The opt-in set the registry ships today — a pinned list so adding a
-    // fourth default-off rule is a deliberate edit, not drift.
+    // fifth default-off rule is a deliberate edit, not drift.
     assert_eq!(
         LintRule::ALL
             .iter()
@@ -150,7 +150,8 @@ fn default_config_enables_the_registry_default_set() {
         vec![
             "undocumented_exposures",
             "model_too_long",
-            "layer_materializations"
+            "layer_materializations",
+            "models_without_unit_tests"
         ]
     );
     assert_eq!(
@@ -1202,7 +1203,7 @@ fn registry_rows_match_all_one_for_one_in_order() {
 
 #[test]
 fn registry_rows_carry_the_fixed_metadata() {
-    // The 43 ids are a fixed contract — config keys, --rules args and the
+    // The 44 ids are a fixed contract — config keys, --rules args and the
     // baseline format all rely on them. The original structure rules lead;
     // rules added later append in the registry's order so the emitted
     // sequence stays stable.
@@ -1253,6 +1254,7 @@ fn registry_rows_carry_the_fixed_metadata() {
             "undocumented_exposures",
             "model_too_long",
             "layer_materializations",
+            "models_without_unit_tests",
         ]
     );
     // Only rules that represent a broken guarantee or a build failure
@@ -8152,7 +8154,7 @@ fn missing_inputs_report_skipped_rules_not_findings() {
 #[test]
 fn presets_define_the_base_rule_set() {
     // minimal = exactly the error-default rules; standard = the registry's
-    // `default_enabled` set; strict = everything — the three opt-in rules
+    // `default_enabled` set; strict = everything — the four opt-in rules
     // included.
     let minimal: Vec<_> = LintRule::ALL
         .iter()
@@ -8190,6 +8192,7 @@ fn presets_define_the_base_rule_set() {
         LintRule::UndocumentedExposures,
         LintRule::ModelTooLong,
         LintRule::LayerMaterializations,
+        LintRule::ModelsWithoutUnitTests,
     ] {
         assert!(!LintPreset::Minimal.enables(opt_in.info()));
         assert!(!LintPreset::Standard.enables(opt_in.info()));
@@ -9801,4 +9804,167 @@ fn layer_materializations_reads_custom_naming_prefix_layers() {
         vec!["model.p.sem_view"],
         "the custom layer's allowed list applies to prefix-matched models"
     );
+}
+
+// ---- models_without_unit_tests ----------------------------------------------
+
+/// A `unit_tests` record — extend `RawManifest::unit_tests` with it;
+/// `depends_on.nodes` carries the tested model's uid exactly like the wire
+/// shape `Dag::build` resolves.
+fn unit_test(model_uid: &str, name: &str) -> (String, crate::manifest::RawUnitTest) {
+    (
+        format!("unit_test.p.{name}"),
+        crate::manifest::RawUnitTest {
+            name: name.into(),
+            model: Some(model_uid.to_string()),
+            depends_on: crate::manifest::RawDependsOn {
+                nodes: vec![model_uid.into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+}
+
+#[test]
+fn models_without_unit_tests_flags_only_marts_models_without_one() {
+    // Default `layers: [marts]`: fct_tested carries a unit test and passes,
+    // fct_bare flags. Staging models aren't in the checked layers, and
+    // non-model resources never apply — while a GENERIC test doesn't count:
+    // schema tests guard shape, the rule asks for a unit test.
+    let mut m = manifest(
+        vec![
+            model("fct_tested", "marts/fct_tested.sql"),
+            model("fct_bare", "marts/fct_bare.sql"),
+            model("stg_bare", "staging/stg_bare.sql"),
+        ],
+        vec![],
+        &[],
+    );
+    m.unit_tests
+        .extend([unit_test("model.p.fct_tested", "fct_tested_math")]);
+    let cfg = cfg_only_opt_in(
+        LintRule::ModelsWithoutUnitTests,
+        "lint:\n  rules:\n    models_without_unit_tests: true\n",
+    );
+    let out = lint_outcome(&Dag::build(&m), &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::ModelsWithoutUnitTests),
+        vec!["model.p.fct_bare"],
+        "marts-without-unit-test only — the staged generic shape tests don't excuse"
+    );
+    assert_eq!(
+        finding_on(
+            &out.findings,
+            LintRule::ModelsWithoutUnitTests,
+            "model.p.fct_bare"
+        )
+        .message,
+        "marts model fct_bare has no unit test"
+    );
+}
+
+#[test]
+fn models_without_unit_tests_is_opt_in() {
+    // Off under the default config — coverage rules gate nothing a project
+    // didn't ask for.
+    let m = manifest(vec![model("fct_bare", "marts/fct_bare.sql")], vec![], &[]);
+    let out = lint_outcome(&Dag::build(&m), &LintConfig::default(), None, None);
+    assert!(
+        flagged(&out.findings, LintRule::ModelsWithoutUnitTests).is_empty(),
+        "the default preset must not run the opt-in rule"
+    );
+}
+
+#[test]
+fn models_without_unit_tests_layers_param_retargets_the_check() {
+    // `layers: [staging]` sweeps staging instead of marts — stg_bare flags,
+    // fct_bare stops being checked.
+    let m = manifest(
+        vec![
+            model("fct_bare", "marts/fct_bare.sql"),
+            model("stg_bare", "staging/stg_bare.sql"),
+        ],
+        vec![],
+        &[],
+    );
+    let cfg = cfg_only_opt_in(
+        LintRule::ModelsWithoutUnitTests,
+        "lint:\n  rules:\n    models_without_unit_tests:\n      layers: [staging]\n",
+    );
+    let out = lint_outcome(&Dag::build(&m), &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::ModelsWithoutUnitTests),
+        vec!["model.p.stg_bare"]
+    );
+}
+
+#[test]
+fn models_without_unit_tests_never_flags_models_dbt_cant_test() {
+    // dbt unit-tests SQL models only: a `language: python` model and a
+    // `materialized_view` materialization can't carry one, so flagging them
+    // would demand the impossible. An ephemeral model CAN (verified against
+    // real dbt) and stays checked.
+    let mut py = model("fct_py", "marts/fct_py.py");
+    py.1.language = Some("python".into());
+    let m = manifest(
+        vec![
+            py,
+            mat_model_in("fct_mv", "marts/fct_mv.sql", "materialized_view"),
+            mat_model_in("fct_eph", "marts/fct_eph.sql", "ephemeral"),
+        ],
+        vec![],
+        &[],
+    );
+    let cfg = cfg_only_opt_in(
+        LintRule::ModelsWithoutUnitTests,
+        "lint:\n  rules:\n    models_without_unit_tests: true\n",
+    );
+    let out = lint_outcome(&Dag::build(&m), &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::ModelsWithoutUnitTests),
+        vec!["model.p.fct_eph"],
+        "python and materialized_view are untestable — ephemeral is not"
+    );
+}
+
+#[test]
+fn models_without_unit_tests_checks_each_version_member() {
+    // A unit test scoped by `versions: {include: [2]}` lands on the v2 uid
+    // alone — v1/vbeta have no unit test and each flags.
+    let mut m = manifest(
+        vec![
+            versioned_model("fct_orders", "v1", "marts/fct_orders_v1.sql"),
+            versioned_model("fct_orders", "v2", "marts/fct_orders_v2.sql"),
+            versioned_model("fct_orders", "vbeta", "marts/fct_orders_vbeta.sql"),
+        ],
+        vec![],
+        &[],
+    );
+    m.unit_tests.extend([unit_test(
+        "model.p.fct_orders.v2",
+        "fct_orders_v2_keeps_rows",
+    )]);
+    let cfg = cfg_only_opt_in(
+        LintRule::ModelsWithoutUnitTests,
+        "lint:\n  rules:\n    models_without_unit_tests: true\n",
+    );
+    let out = lint_outcome(&Dag::build(&m), &cfg, None, None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::ModelsWithoutUnitTests),
+        vec!["model.p.fct_orders.v1", "model.p.fct_orders.vbeta"],
+        "a version-scoped unit test covers only the version it tests"
+    );
+}
+
+/// `cfg_only` for an opt-in rule: the yaml enables it (`rules:` presence
+/// turns a rule on), every other rule gets an explicit `Off`.
+fn cfg_only_opt_in(rule: LintRule, yaml: &str) -> LintConfig {
+    let mut cfg = config_from(yaml);
+    for r in LintRule::ALL {
+        if r != rule {
+            cfg.rules.insert(r, RuleEnabled::Off);
+        }
+    }
+    cfg
 }

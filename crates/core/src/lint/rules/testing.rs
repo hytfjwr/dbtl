@@ -96,3 +96,45 @@ pub(super) fn sources_without_freshness(
         ));
     }
 }
+
+/// `models_without_unit_tests`: a model in a checked layer (default
+/// `[marts]` — unit tests matter most where the data ships) carrying no
+/// `kind == "unit"` test. Opt-in — off by default, on under `strict`.
+/// Models dbt can't unit-test never flag: Python models (dbt supports
+/// unit tests on SQL models only) and `materialized_view`
+/// materializations (dbt rejects them as unit-test targets). Ephemeral
+/// models DO accept unit tests (verified against real dbt) and stay
+/// eligible.
+pub(super) fn models_without_unit_tests(
+    dag: &Dag,
+    uids: &[&String],
+    in_scope: &dyn Fn(&NodeInfo) -> bool,
+    config: &LintConfig,
+    out: &mut Vec<Finding>,
+) {
+    let layers = config
+        .str_list_param(LintRule::ModelsWithoutUnitTests, "layers")
+        .expect("the registry declares models_without_unit_tests.layers");
+    for uid in uids {
+        let Some(n) = dag.get(uid) else { continue };
+        if !is_sql_model(dag, n) || !in_scope(n) {
+            continue;
+        }
+        if matches!(n.materialized.as_deref(), Some("materialized_view")) {
+            continue;
+        }
+        let layer = lint_model_type(n, config);
+        if !layers.iter().any(|l| l.as_str() == layer) {
+            continue;
+        }
+        if dag.tests(uid).iter().any(|t| t.kind == "unit") {
+            continue;
+        }
+        out.push(Finding::new(
+            LintRule::ModelsWithoutUnitTests,
+            (*uid).clone(),
+            Vec::new(),
+            format!("{layer} model {} has no unit test", display_name(dag, uid)),
+        ));
+    }
+}

@@ -3056,6 +3056,77 @@
                   }
                 }
               ]
+            },
+            "models_without_unit_tests": {
+              "description": "a model in a checked layer has no unit test",
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "severity": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warn",
+                            "off"
+                          ],
+                          "description": "The `severity:` wire value — `off` folds into \"no severity\" (disabled)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "exclude": {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "select"
+                            ],
+                            "properties": {
+                              "select": {
+                                "type": "string",
+                                "description": "a dbt selector spec (`state:` is not allowed)"
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "why the suppression exists — reported by `--show-suppressed`"
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      "description": "dbt selector specs — findings whose node matches the union are suppressed; an item is a bare selector string or `{select: <selector>, reason: <why>}`"
+                    },
+                    "layers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "default": [
+                        "marts"
+                      ],
+                      "description": "model layers the unit-test check applies to — a built-in layer or a `lint.naming_prefixes` layer (built-in layers: staging, intermediate, marts, other)"
+                    }
+                  }
+                }
+              ]
             }
           }
         }

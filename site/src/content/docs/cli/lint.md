@@ -74,7 +74,7 @@ One findings list feeds every surface, so the numbers cannot drift apart:
 
 The [lint rules reference](../reference/lint-rules.md) lists every rule with its category, default severity, inputs, rationale, fix guidance, and parameters. Rules in the `warehouse` category run against `catalog.json` and are skipped without one.
 
-Three rules ship opt-in — `undocumented_exposures` (an exposure without a description), `model_too_long` (a SQL model's counted lines past the `max_lines` budget — blank and Jinja-comment-only lines never count), and `layer_materializations` (a model materialized in a way its layer's `allowed` map doesn't list). `standard` skips them; `strict` or a `rules:` entry turns them on.
+Four rules ship opt-in — `undocumented_exposures` (an exposure without a description), `model_too_long` (a SQL model's counted lines past the `max_lines` budget — blank and Jinja-comment-only lines never count), `layer_materializations` (a model materialized in a way its layer's `allowed` map doesn't list), and `models_without_unit_tests` (a model in a checked layer — `marts` by default, tunable via `layers` — carrying no unit test; Python models and materialized views can't carry one and never flag). `standard` skips them; `strict` or a `rules:` entry turns them on.
 
 ### Presets
 

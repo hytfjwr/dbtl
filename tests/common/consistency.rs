@@ -265,23 +265,43 @@ pub fn assert_details_identical(m: &Dag, s: &Dag) {
     }
 }
 
-/// Per-node (kind, column) test multisets — dbt mints hashed names, so the
-/// multiset is the contract. Singular `.sql` tests exist only on the
-/// manifest side (source mode never synthesizes them) and are dropped from
-/// the manifest multiset; package-namespaced kinds (`pkg.test_name`)
+/// Per-node (kind, column, unit-shape) test multisets — dbt mints hashed
+/// names, so the multiset is the contract. Singular `.sql` tests exist only
+/// on the manifest side (source mode never synthesizes them) and are dropped
+/// from the manifest multiset; package-namespaced kinds (`pkg.test_name`)
 /// compare namespace-stripped — dbt splits the qualifier into
-/// `test_metadata.namespace`, source mode keeps the spelled form.
+/// `test_metadata.namespace`, source mode keeps the spelled form. A `unit`
+/// test additionally carries its [`UnitTestShape`] in the key — the
+/// `given:`/`expect:` row counts the source synthesis must reproduce from
+/// YAML (including `format: csv` blocks dbt parses into row lists).
+///
+/// The per-test comparison key: bare kind, attached column, and — for
+/// `kind == "unit"` — the `(inputs, given_rows, expect_rows)` shape.
+type TestKey = (
+    String,
+    Option<String>,
+    Option<(usize, Option<usize>, Option<usize>)>,
+);
+
 pub fn assert_tests_identical(m: &Dag, s: &Dag) {
     // Namespaced generic tests (`shipkit.no_negative_amounts`): dbt strips
     // the package namespace into `test_metadata.namespace` and keeps the
     // bare name; source mode keeps the spelled form — compare bare kinds.
     let bare = |kind: &str| kind.rsplit('.').next().unwrap_or(kind).to_string();
-    let key = |d: &Dag, uid: &str, drop_singular: bool| -> Vec<(String, Option<String>)> {
+    let key = |d: &Dag, uid: &str, drop_singular: bool| -> Vec<TestKey> {
         let mut v: Vec<_> = d
             .tests(uid)
             .iter()
             .filter(|t: &&TestInfo| !drop_singular || t.kind != "singular")
-            .map(|t| (bare(&t.kind), t.column_name.clone()))
+            .map(|t| {
+                (
+                    bare(&t.kind),
+                    t.column_name.clone(),
+                    t.unit
+                        .as_ref()
+                        .map(|u| (u.inputs, u.given_rows, u.expect_rows)),
+                )
+            })
             .collect();
         v.sort();
         v
