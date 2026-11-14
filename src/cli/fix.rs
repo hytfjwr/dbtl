@@ -381,7 +381,7 @@ pub(super) fn run_fixes(req: &FixRequest, write: bool) -> Result<FixOutcome, Cli
             },
             None,
         );
-        // The spec's "no new findings" guard: a fix may only REMOVE
+        // The "no new findings" guard: a fix may only REMOVE
         // findings under the rules it ran — anything new under any
         // other rule means the round's edits broke something. New
         // findings under the fixed rules are legal (the `a`-deleted-

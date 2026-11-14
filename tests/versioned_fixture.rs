@@ -279,7 +279,7 @@ fn source_mode_attaches_the_versioned_unit_test_to_the_same_member() {
 
 #[test]
 fn source_mode_flags_no_unresolved_references() {
-    // The spec's 0-findings pin: `ref('fct_orders')` and both `v=` pins
+    // The 0-findings pin: `ref('fct_orders')` and both `v=` pins
     // resolve through the synthesized scope — the `<name>_v<N>` member
     // files declare the `fct_orders` family, and source mode never
     // judges a pin (no `.vN` uids to check it against).
