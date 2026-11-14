@@ -593,6 +593,15 @@ mod tests {
             semicolon_delete("select 1\n{% set s %};{% endset %}", SqlDialect::Generic),
             None
         );
+        // A mismatched end (`{% if %}{% for %}{% endif %}`) pops only
+        // the `if` — the `for` body stays open, so its `;` is refused.
+        assert_eq!(
+            semicolon_delete(
+                "select 1\n{% if x %}{% for y in z %}{% endif %};{% endfor %}",
+                SqlDialect::Generic
+            ),
+            None
+        );
     }
 
     #[test]

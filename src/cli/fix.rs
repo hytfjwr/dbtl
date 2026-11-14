@@ -280,22 +280,6 @@ pub(super) fn run_fixes(req: &FixRequest, write: bool) -> Result<FixOutcome, Cli
             },
             req.selection,
         );
-        // The guard's pre-edit key set is evaluated under the FULL lint
-        // set — no `--rules` overlay, no `--select` — or an introduced
-        // finding a narrowed run can't see would slip through.
-        let guard_pre = evaluate_lint(
-            &dag,
-            req.guard_cfg,
-            req.base,
-            req.baseline,
-            req.fail_on,
-            LintAux {
-                sql: Some(&resolver),
-                catalog: req.catalog.as_deref(),
-                base_sql: req.base_sql,
-            },
-            None,
-        );
         if _round == 0 {
             fixable_pre = outcome.findings.iter().filter(|f| f.rule.fixable()).count();
         }
@@ -404,6 +388,23 @@ pub(super) fn run_fixes(req: &FixRequest, write: bool) -> Result<FixOutcome, Cli
         // makes-`b`-unread cascade the fixpoint exists for).
         let round_rules: BTreeSet<dbtl::LintRule> =
             cands.iter().flat_map(|c| c.rules.iter().copied()).collect();
+        // The guard's pre-edit key set is evaluated under the FULL lint
+        // set — no `--rules` overlay, no `--select` — or an introduced
+        // finding a narrowed run can't see would slip through. It runs
+        // only once a round has real candidates.
+        let guard_pre = evaluate_lint(
+            &dag,
+            req.guard_cfg,
+            req.base,
+            req.baseline,
+            req.fail_on,
+            LintAux {
+                sql: Some(&resolver),
+                catalog: req.catalog.as_deref(),
+                base_sql: req.base_sql,
+            },
+            None,
+        );
         let pre_keys: BTreeSet<_> = guard_pre.findings.iter().map(finding_key).collect();
         let introduced: Vec<&dbtl::Finding> = post
             .findings
@@ -591,13 +592,25 @@ fn write_fixed(files: &[FixFile]) -> Result<(Vec<PathBuf>, Vec<String>), CliErro
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
         let tmp = f.path.with_file_name(format!(".{name}.dbtl-tmp"));
-        std::fs::write(&tmp, &f.after)
-            .with_context(|| format!("failed to write {}", tmp.display()))
-            .input()?;
+        if let Err(e) = std::fs::write(&tmp, &f.after) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e)
+                .with_context(|| format!("failed to write {}", tmp.display()))
+                .input();
+        }
         // The rename would otherwise drop the file's mode (execute bit,
-        // restrictive umask) — carry the original permissions over.
+        // restrictive umask) — carry the original permissions over. A
+        // file we can't re-permission stays untouched rather than land
+        // with a wider default mode.
         if let Ok(meta) = std::fs::metadata(&f.path) {
-            let _ = std::fs::set_permissions(&tmp, meta.permissions());
+            if std::fs::set_permissions(&tmp, meta.permissions()).is_err() {
+                let _ = std::fs::remove_file(&tmp);
+                skipped.push(format!(
+                    "--fix: {}: could not carry the file's permissions to the replacement — left unchanged",
+                    f.ofp
+                ));
+                continue;
+            }
         }
         if let Err(e) = std::fs::rename(&tmp, &f.path) {
             let _ = std::fs::remove_file(&tmp);
