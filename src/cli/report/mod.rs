@@ -13,8 +13,9 @@ use std::io::Write;
 use std::path::Path;
 
 pub use dbtl_report::{
-    collect_sources, gate_status, lint_assembly, lint_report, render_report, DocsDrift, GateResult,
-    GateStatus, LintAux, LintRunInputs, RenderCtx, RenderEnv, Report, ReportFormat,
+    collect_sources, evaluate_lint, gate_status, lint_assembly, lint_report, render_report,
+    DocsDrift, FixedSummary, GateResult, GateStatus, LintAux, LintRunInputs, RenderCtx, RenderEnv,
+    Report, ReportFormat,
 };
 
 /// The one `.yml` text source a run reads through: `location.file` paths

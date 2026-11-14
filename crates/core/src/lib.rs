@@ -59,12 +59,13 @@ pub use layout::{
     NodeRect,
 };
 pub use lint::{
-    byte_span_position, display_name, display_names, fill_finding_lines, fill_finding_lines_with,
-    name_list, removed_rule, removed_rule_error, run_rules, yaml_name_line, yaml_name_span,
-    Baseline, Category, ExcludeSpec, Finding, Label, LayerMapDefault, LintConfig, LintInput,
-    LintOutcome, LintPreset, LintRule, Location, ParamKind, ParamSpec, RemovedRule, Requires,
-    RuleEnabled, RuleInfo, Severity, SkippedRule, Suppression, SuppressionSource, BASELINE_SCHEMA,
-    DEFAULT_BASELINE_NAME, LINT_RULE_DOCS_BASE, REGISTRY, REMOVED_RULES, YAML_ATTRIBUTE_RULE_IDS,
+    apply_fixes, byte_span_position, display_name, display_names, fill_finding_lines,
+    fill_finding_lines_with, manifest_patched, name_list, plan_node_edits, removed_rule,
+    removed_rule_error, run_rules, yaml_name_line, yaml_name_span, Baseline, Category, ExcludeSpec,
+    Finding, FixEdit, Label, LayerMapDefault, LintConfig, LintInput, LintOutcome, LintPreset,
+    LintRule, Location, ParamKind, ParamSpec, RemovedRule, Requires, RuleEnabled, RuleInfo,
+    Severity, SkippedRule, Suppression, SuppressionSource, BASELINE_SCHEMA, DEFAULT_BASELINE_NAME,
+    LINT_RULE_DOCS_BASE, REGISTRY, REMOVED_RULES, YAML_ATTRIBUTE_RULE_IDS,
 };
 pub use manifest::{
     load_manifest, parse_manifest, RawConfig, RawConstraint, RawContract, RawDependsOn, RawDoc,
