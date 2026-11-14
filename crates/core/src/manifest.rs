@@ -72,7 +72,10 @@ pub struct RefScope {
     /// refable name across every package the load could see. A one-arg
     /// `ref('x')` matches on name alone (the loader's name-index
     /// approximation); a two-arg `ref('pkg', 'x')` must hit the pair.
-    pub refs: BTreeMap<String, BTreeSet<String>>,
+    /// `HashMap` on purpose: this is the per-node lookup the scope build
+    /// hammers, and nothing ever iterates it (findings key on the call,
+    /// not the map).
+    pub refs: HashMap<String, BTreeSet<String>>,
     /// The `v=`/`version=` arg a `ref('x', v=2)` can pin — `(package,
     /// name, normalized version)` tuples from `model.<pkg>.<name>.<v>`
     /// uids. `None` when version args are unjudgeable: source mode never

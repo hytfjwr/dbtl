@@ -517,22 +517,32 @@ fn ref_scope_from_manifest(manifest: &RawManifest) -> RefScope {
     // snapshots, and the other refable kinds all answer a call by name.
     // Every `nodes` name lands here (not just the kept graph's): an
     // excluded `test`/`analysis`/`operation` name still isn't "nothing".
+    // One segment walk per uid answers both questions: segment 1 is the
+    // owning package, and `model.<pkg>.<name>.<vseg>` (a 4th segment and
+    // no 5th) is a versioned-model uid whose version a `v=` pin checks.
     for (uid, node) in &manifest.nodes {
-        let Some(pkg) = uid_package(uid).filter(|p| !p.is_empty()) else {
-            continue;
+        let mut segs = uid.split('.');
+        let (kind, pkg, name_seg) = match (segs.next(), segs.next(), segs.next()) {
+            (Some(k), Some(p), Some(n)) => (k, p, n),
+            _ => continue,
         };
+        if pkg.is_empty() {
+            continue;
+        }
         scope
             .refs
             .entry(node.name.clone())
             .or_default()
             .insert(pkg.to_string());
-        if let Some((name, vseg)) = versioned_model_segs(uid) {
-            if let Some(versions) = scope.versions.as_mut() {
-                versions.insert((
-                    pkg.to_string(),
-                    name.to_string(),
-                    normalize_version(vseg).to_string(),
-                ));
+        if kind == "model" {
+            if let (Some(vseg), None) = (segs.next(), segs.next()) {
+                if let Some(versions) = scope.versions.as_mut() {
+                    versions.insert((
+                        pkg.to_string(),
+                        name_seg.to_string(),
+                        normalize_version(vseg).to_string(),
+                    ));
+                }
             }
         }
     }

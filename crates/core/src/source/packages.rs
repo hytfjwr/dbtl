@@ -16,7 +16,7 @@
 //!   name may simply live in a package that was never installed, so the
 //!   rule degrades those hits to a summary warning instead of findings.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -76,7 +76,7 @@ impl DeclaredDeps {
 /// for `ref()`, `(source, table)` pairs for `source()`.
 #[derive(Debug, Default)]
 pub(super) struct InstalledPackages {
-    pub(super) refs: BTreeMap<String, BTreeSet<String>>,
+    pub(super) refs: HashMap<String, BTreeSet<String>>,
     pub(super) sources: BTreeSet<(String, String)>,
     /// Directories directly under `dbt_packages/` — the tally
     /// [`DeclaredDeps::declared`] compares against.
