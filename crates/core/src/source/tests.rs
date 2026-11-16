@@ -2211,6 +2211,15 @@ fn enabled_arms_evaluate_resolvable_conditions() {
     // → provably OFF, matching Jinja. (Bound only via {% set %} it would
     // be unprovable — see the arm case above.)
     assert_eq!(verdict, Some(Enabled::Off));
+    // A bound `execute` shadows the parse-time `false` — Jinja resolves
+    // the `{% set %}` value, which can't be read from source, so the
+    // call stays unproven rather than a guessed disable.
+    let (verdict, warnings) = enabled(
+        "{% set execute = 1 %}{{ config(enabled=execute) }}",
+        &no_vars(),
+    );
+    assert_eq!(verdict, Some(Enabled::Unproven));
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
 }
 
 #[test]

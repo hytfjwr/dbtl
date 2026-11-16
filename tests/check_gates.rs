@@ -240,7 +240,7 @@ fn check_named_param_flags_enable_gates_and_override_config() {
 
 #[test]
 fn check_doc_coverage_min_flag_reports_and_gates() {
-    // The sample project documents 13 of its 17 models: a 90% floor fails.
+    // The sample project documents 13 of its 24 models: a 90% floor fails.
     let m = sample_manifest();
     let out = run(&[
         "check",
@@ -298,7 +298,7 @@ fn check_explicitly_enabled_diff_gate_skips_without_diff() {
 
 #[test]
 fn check_blast_radius_and_diff_gates_evaluate() {
-    // stg_orders changes → 7-model blast radius, a 9-downstream hub, and
+    // stg_orders changes → 8-model blast radius, a 10-downstream hub, and
     // the orders_dashboard exposure: every diff gate fires on real data.
     let tmp = tempfile::tempdir().unwrap();
     let changed = changed_manifest(&tmp, "model.sample.stg_orders");
