@@ -42,10 +42,12 @@ jobs:
         with:
           persist-credentials: false
 
+      # No `version:` input: the action resolves `latest` from a hash-locked
+      # requirements file in its own tree, so the SHA pin also pins zizmor
+      # (1.32.0 at v0.8.1) and a Dependabot update moves both.
       - name: Run zizmor
         uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
         with:
-          version: "1.32.0"
           # Fork PRs get a read-only token (no security-events: write), so the
           # SARIF upload would always fail there; fall back to plain output.
           advanced-security: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
