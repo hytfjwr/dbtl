@@ -1036,7 +1036,10 @@ fn unit_test_targets(
         // An `include`d version the family never declared is a dbt parse
         // error — warn-and-skip like the other malformed declarations.
         if let Some(set) = &include {
-            for v in set.iter().filter(|v| v.as_str() != "*") {
+            for v in set
+                .iter()
+                .filter(|v| v.as_str() != "*" && v.as_str() != "all")
+            {
                 if !declared.contains(v) {
                     warnings.push(format!(
                         "{yml_path}: unit test '{test_name}' includes version '{v}' which model '{model}' never declares — ignoring it"
@@ -1048,12 +1051,15 @@ fn unit_test_targets(
             .versions
             .iter()
             .filter(|(v, _)| {
+                let all = |set: &std::collections::BTreeSet<String>| {
+                    set.contains("*") || set.contains("all")
+                };
                 include
                     .as_ref()
-                    .is_none_or(|set| set.contains("*") || set.contains(*v))
+                    .is_none_or(|set| all(set) || set.contains(*v))
                     && !exclude
                         .as_ref()
-                        .is_some_and(|set| set.contains("*") || set.contains(*v))
+                        .is_some_and(|set| all(set) || set.contains(*v))
             })
             .filter_map(|(v, uid)| uid.as_ref().map(|u| (Some(v.clone()), u.clone())))
             .collect();
