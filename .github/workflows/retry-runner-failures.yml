@@ -6,8 +6,17 @@ name: Retry runner failures
 # cancelled-while-queued job has; the decision script reads each job's
 # check-run annotations for the acquisition message before it allows
 # `gh run rerun --failed`. A run that mixed in a real failure, was
-# cancelled by a person, was superseded by a newer push, or already had
+# cancelled by a person, was superseded by a newer push, or already spent
 # its one retry is left alone.
+#
+# Two paths reach the same decision script:
+#   - workflow_run covers human-authored runs, whose completion events are
+#     delivered as usual;
+#   - the scheduled sweep covers runs whose actor is github-actions[bot].
+#     A run triggered by GITHUB_TOKEN — the release pull request's checks —
+#     never emits workflow_run events, so the event path can never see it.
+#     Human runs stay out of the sweep so a failure is never evaluated —
+#     and re-run — through two paths at once.
 
 on:
   # zizmor: ignore[dangerous-triggers] — workflow_run hands this job a
@@ -20,13 +29,33 @@ on:
   workflow_run:
     workflows: [CI, Dogfood, Security]
     types: [completed]
+  # The bot's runs emit no workflow_run event, so a cron polls for them
+  # instead. Scheduled starts lag (this repository's crons have run hours
+  # late); the wide evaluation window absorbs that, and the decision is
+  # idempotent, so catching the same run twice is harmless.
+  schedule:
+    - cron: "*/30 * * * *"
+  # Manual inspection runs evaluate and report only — the `rerun` input
+  # opts into issuing retries, and `run_id` pins the evaluation to one
+  # run instead of sweeping the window.
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Evaluate only this run id (default: sweep the recent window)"
+        type: string
+        required: false
+      rerun:
+        description: "Issue gh run rerun --failed for accepted runs (default: evaluate and report only)"
+        type: boolean
+        required: false
+        default: false
 
 permissions: {}
 
-# One in-flight decision per triggering run; a second completion event for
-# the same run queues behind the first instead of racing it.
+# One in-flight decision per triggering run; sweeps share a single slot so
+# a schedule and a dispatch can never race the same target run.
 concurrency:
-  group: retry-runner-failures-${{ github.event.workflow_run.id }}
+  group: retry-runner-failures-${{ github.event.workflow_run.id || 'sweep' }}
   cancel-in-progress: false
 
 jobs:
@@ -35,7 +64,7 @@ jobs:
     # Green and cancelled runs need nothing; the decision script still
     # re-checks the conclusion from the API so the skip stays single-
     # sourced. A skipped job in the run log is the record for those.
-    if: github.event.workflow_run.conclusion == 'failure'
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -74,3 +103,53 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RUN_ID: ${{ github.event.workflow_run.id }}
         run: gh run rerun "$RUN_ID" --failed
+
+  sweep:
+    name: Sweep the bot's failed runs
+    # The schedule sweeps the recent window; a dispatch either does the
+    # same or evaluates one run id. Both jobs' permissions stay identical
+    # — the sweep issues the same write the event path does.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      checks: read
+      actions: write
+    steps:
+      # Fetched through the contents API like the event path — $GITHUB_SHA
+      # is the ref this workflow run itself checked out, so a dispatch on
+      # a branch evaluates that branch's scripts.
+      - name: Fetch the decision script
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: >-
+          gh api -H "Accept: application/vnd.github.raw+json"
+          "repos/$GH_REPO/contents/.github/scripts/retry-runner-failures.sh?ref=$GITHUB_SHA"
+          > "$RUNNER_TEMP/retry-runner-failures.sh"
+
+      - name: Fetch the sweep script
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: >-
+          gh api -H "Accept: application/vnd.github.raw+json"
+          "repos/$GH_REPO/contents/.github/scripts/retry-runner-sweep.sh?ref=$GITHUB_SHA"
+          > "$RUNNER_TEMP/retry-runner-sweep.sh"
+
+      - name: Sweep the recent window
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ inputs.run_id }}
+          # The cron retries for real; a manual run defaults to dry-run so
+          # an inspection can never touch a run still inside the window.
+          APPLY: ${{ github.event_name == 'schedule' || inputs.rerun }}
+        run: >-
+          args=(--decision "$RUNNER_TEMP/retry-runner-failures.sh"
+          --since "$(date -u -d '24 hours ago' +%FT%TZ)"
+          --summary "$GITHUB_STEP_SUMMARY");
+          if [ -n "$RUN_ID" ]; then args+=(--run-id "$RUN_ID"); fi;
+          if [ "$APPLY" != "true" ]; then args+=(--dry-run); fi;
+          bash "$RUNNER_TEMP/retry-runner-sweep.sh" "${args[@]}"

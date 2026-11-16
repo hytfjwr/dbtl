@@ -10,6 +10,11 @@ Releases are almost fully automated. The flow is:
 2. Approve the release PR's workflow runs. Runs on a bot-authored PR start
    in the approval-gated state, so open the PR's Checks tab and approve the
    waiting workflows. The required checks then run and report as usual.
+   When an approved run fails only because jobs could not acquire a
+   hosted runner, the **Retry runner failures** automation re-runs it
+   once on its own — approval-gated attempts do not consume that retry,
+   and a re-run that lands back in approval gating is left alone.
+   Anything else is left to you.
 3. Merge that PR. The merge triggers **Release**
    (`.github/workflows/release.yml`), which tags `vX.Y.Z` at the merge
    commit, builds every target, publishes the GitHub release, and updates

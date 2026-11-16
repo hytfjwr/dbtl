@@ -703,6 +703,53 @@ const OPERAND_WORDS: &[&[u8]] = &[
 /// shape: `desc , name` parses where `desc NULL` breaks.
 const POSTFIX_WORDS: &[&[u8]] = &[b"asc", b"desc", b"isnull", b"notnull"];
 
+/// The extra operand-awaiting words the loose boundary
+/// ([`Scan::clause_boundary`]'s second-pass test) consults on top of
+/// [`OPERAND_WORDS`] minus its postfix closers and [`NAME_WORDS`]:
+///
+/// - the quantifiers `any`/`some` — `= ANY {{ }}` is already the
+///   [`Scan::list_rhs`] shape, but `LIKE ANY {{ }}` reaches here;
+/// - the typed-literal heads `date`/`time`/`timestamp`/`datetime`/
+///   `interval` — each takes its literal next (`DATE '2020-01-01'`,
+///   `INTERVAL '1 day'`), so a tag behind one is that value;
+/// - the connectors `at`/`zone` (`AT TIME ZONE`), `to` (`SIMILAR TO`),
+///   `of` (`FOR … AS OF`);
+/// - the ordering/frame complements still awaiting their tail word:
+///   `unbounded`/`current`/`exclude`/`no`/`nulls`/`last` (`UNBOUNDED
+///   PRECEDING`, `CURRENT ROW`, `EXCLUDE TIES`, `NO OTHERS`, `NULLS
+///   FIRST`, `FETCH LAST`).
+///
+/// Deliberately absent: the value words `null`/`true`/`false`/`default`
+/// and the non-reserved words real schemas use as column names
+/// (`id`/`name`/`status`/`value`/`key`/`comment`/`range`…) — those are
+/// exactly what the loose pass must count as complete. Completable
+/// frame bounds (`row`/`rows`/`preceding`/`following`/`ties`/`others`)
+/// stay out for the same reason, and statement starters (`insert`,
+/// `create`, `grant`…) never sit inside an expression — a tag behind
+/// one fails identically with or without the boundary. `date`/`time`/
+/// `timestamp` do double duty as plausible column names; the
+/// typed-literal position wins the tie, so `where date = 'x' {{ m() }}`
+/// staying unparsed is the documented approximation.
+const LOOSE_OPERAND_WORDS: &[&[u8]] = &[
+    b"any",
+    b"at",
+    b"current",
+    b"date",
+    b"datetime",
+    b"exclude",
+    b"interval",
+    b"last",
+    b"no",
+    b"nulls",
+    b"of",
+    b"some",
+    b"time",
+    b"timestamp",
+    b"to",
+    b"unbounded",
+    b"zone",
+];
+
 /// Which `{% if %}`/`{% for %}` arms a render emits — [`jinja_parse`]
 /// judges the union view first and falls to the collapse view when the
 /// union text can't parse.
@@ -734,6 +781,11 @@ struct Scan<'a> {
     /// is the value-shape render [`jinja_parse`] retries within a stage
     /// when the boundary shape fails — the pre-boundary behavior.
     elide: bool,
+    /// Which completeness test [`Scan::clause_boundary`] applies to a
+    /// word — `true` is the loose rule [`jinja_parse`]'s second pass
+    /// renders under: any word that isn't operand-awaiting completes
+    /// the expression.
+    loose: bool,
     /// The source's `{% if %}`/`{% for %}` arm index — arm paths decide
     /// collapse-mode drops and whether a `{% else %}` split can emit
     /// `,`.
@@ -790,6 +842,7 @@ impl<'a> Scan<'a> {
         branches: JinjaBranches,
         arms: RenderArms,
         elide: bool,
+        loose: bool,
     ) -> Scan<'a> {
         Scan {
             sql,
@@ -797,6 +850,7 @@ impl<'a> Scan<'a> {
             mark,
             arms,
             elide,
+            loose,
             branches,
             out: Vec::with_capacity(sql.len() + 16),
             segs: Vec::new(),
@@ -1459,20 +1513,32 @@ impl<'a> Scan<'a> {
     /// the position a clause boundary, not a value? Complete means:
     /// `)`, `]`, a closed literal or quoted identifier (the `"` boundary
     /// byte a literal's close feeds — see [`Scan::literal`]), a number,
-    /// an identifier that isn't a SQL keyword, or a `.`-qualified name
-    /// part that happens to spell a keyword (`db.orders`… — `order` IS
-    /// a keyword, the qualifier still completes it). A keyword never
-    /// completes — after `zone`/`interval`/`date`/`to`/`any`/`desc` the
-    /// `{{ }}` is the operand the keyword awaits, and the value shape
-    /// must stay (`ts AT TIME ZONE {{ var('tz') }}`).
+    /// a `.`-qualified name part that happens to spell a keyword
+    /// (`db.orders`… — `order` IS a keyword, the qualifier still
+    /// completes it), or an identifier the word test doesn't hold back.
+    /// The word test comes in two shapes:
+    ///
+    /// - strict: NO keyword completes — after `zone`/`interval`/`date`/
+    ///   `to`/`any`/`desc` the `{{ }}` is the operand the keyword
+    ///   awaits, and the value shape must stay
+    ///   (`ts AT TIME ZONE {{ var('tz') }}`).
+    /// - loose (`Scan::loose`): only an operand-awaiting word holds the
+    ///   boundary back — [`OPERAND_WORDS`] minus its postfix closers,
+    ///   [`NAME_WORDS`], and [`LOOSE_OPERAND_WORDS`]. `null`/`true`/
+    ///   `false` and column-shaped non-reserved words (`id`/`status`)
+    ///   complete, so `where id is not null {{ group_by() }}` elides.
     fn clause_boundary(&self) -> bool {
         match self.last_sig {
             Some(b')' | b']' | b'"') => true,
             Some(c) if word_byte(c) || c >= 0x80 => {
                 let w = self.last_word.as_slice();
                 w.first().is_some_and(u8::is_ascii_digit)
-                    || !is_sql_keyword(w)
                     || self.prev_sig == Some(b'.')
+                    || if self.loose {
+                        !loose_awaits_operand(w)
+                    } else {
+                        !is_sql_keyword(w)
+                    }
             }
             _ => false,
         }
@@ -1548,6 +1614,18 @@ fn is_sql_keyword(word: &[u8]) -> bool {
             .binary_search(&w.to_ascii_uppercase().as_str())
             .is_ok()
     })
+}
+
+/// The loose boundary's operand-awaiting test — [`OPERAND_WORDS`] minus
+/// the postfix closers ([`POSTFIX_WORDS`] — `x DESC` is complete), plus
+/// [`NAME_WORDS`] (a name position is an operand position), plus
+/// [`LOOSE_OPERAND_WORDS`]. Every other word completes the expression
+/// before it — the point of the second pass being that `null`/`true`/
+/// `false` and column-shaped non-reserved words DO complete one.
+fn loose_awaits_operand(word: &[u8]) -> bool {
+    (OPERAND_WORDS.contains(&word) && !POSTFIX_WORDS.contains(&word))
+        || NAME_WORDS.contains(&word)
+        || LOOSE_OPERAND_WORDS.contains(&word)
 }
 
 /// The index of the line comment's end (the `\n`, or EOF) for the `--`
@@ -1704,7 +1782,7 @@ pub(super) fn render_jinja_as(sql: &str, mark: JinjaMark, dialect: SqlDialect) -
 /// arm render ([`RenderArms::Union`]) with clause-boundary elision on.
 #[cfg(test)]
 pub(super) fn render_jinja_mapped(sql: &str, mark: JinjaMark, dialect: SqlDialect) -> RenderedSql {
-    render_arms(sql, mark, dialect, RenderArms::Union, true)
+    render_arms(sql, mark, dialect, RenderArms::Union, true, false)
 }
 
 /// [`render_jinja_mapped`] with an explicit arm mode — see
@@ -1715,15 +1793,19 @@ pub(super) fn render_jinja_mapped(sql: &str, mark: JinjaMark, dialect: SqlDialec
 /// `elide` lets [`Scan::other_text`] drop a `{{ }}` at a clause boundary
 /// to whitespace — [`jinja_parse`]'s within-stage fallback re-renders
 /// with `elide: false` (the value shape) when the boundary render fails.
+/// `loose` picks the boundary's word test — `false` is the strict
+/// no-keyword-completes rule, `true` the operand-awaiting test the
+/// second pass runs.
 pub(super) fn render_arms(
     sql: &str,
     mark: JinjaMark,
     dialect: SqlDialect,
     arms: RenderArms,
     elide: bool,
+    loose: bool,
 ) -> RenderedSql {
     let branches = jinja_branches(&mask_jinja_comments(sql));
-    let mut scan = Scan::new(sql, mark, Lex::new(dialect), branches, arms, elide);
+    let mut scan = Scan::new(sql, mark, Lex::new(dialect), branches, arms, elide, loose);
     scan.run();
     scan.finish()
 }
@@ -1750,10 +1832,21 @@ pub(super) fn render_arms(
 /// parsed before can stop parsing. The elided render that wins carries
 /// its mark into analysis.
 ///
+/// When all four stages fail, the same four run once more under the
+/// loose boundary — [`Scan::clause_boundary`]'s operand-awaiting test,
+/// which counts `null`/`true`/`false` and column-shaped non-reserved
+/// words as completing the expression the strict keyword test held
+/// open. The second pass only ever runs on a model the strict pass
+/// already gave up on, so a looser elision can never steal the render
+/// a strict stage would have won; a loose stage whose text is
+/// byte-identical to one already tried (every value-shape text is, and
+/// so is a boundary text no keyword-word blocked) skips its parse.
+///
 /// `Err` when every stage fails — the caller's unparsed-model path, and
-/// the failure the UNION render produced (the faithful text a compile
-/// would run; the fallbacks exist for Jinja artifacts, so its error is
-/// the honest reason) rather than whichever retry failed last.
+/// the failure the first pass's UNION render produced (the faithful
+/// text a compile would run; the fallbacks exist for Jinja artifacts,
+/// so its error is the honest reason) rather than whichever retry
+/// failed last.
 pub(super) fn jinja_parse(
     sql: &str,
     mark: JinjaMark,
@@ -1761,24 +1854,43 @@ pub(super) fn jinja_parse(
 ) -> Result<(RenderedSql, Vec<Statement>), ParseFailure> {
     let lex = Lex::new(dialect);
     let mut first_failure: Option<ParseFailure> = None;
-    for arms in [RenderArms::Union, RenderArms::Collapse] {
-        for strip in [false, true] {
-            for elide in [true, false] {
-                let mut rendered = render_arms(sql, mark, dialect, arms, elide);
-                if strip {
-                    strip_dangling(&mut rendered, &lex);
-                }
-                match parse_statements(dialect, &rendered.text) {
-                    Ok(stmts) => return Ok((rendered, stmts)),
-                    Err(e) => {
-                        if first_failure.is_none() {
-                            first_failure = Some(e);
-                        }
-                        if !rendered.elided_clauses {
-                            // The boundary render dropped nothing — the
-                            // value-shape retry would re-parse the same
-                            // text, so the stage is done.
-                            break;
+    // Every text already parsed — a second-pass render producing one of
+    // these again re-parses nothing: it failed once. (The loose flag
+    // only rewrites the boundary render, so a stage's value-shape text
+    // is always in this set by the second pass.)
+    let mut tried: Vec<String> = Vec::new();
+    for loose in [false, true] {
+        for arms in [RenderArms::Union, RenderArms::Collapse] {
+            for strip in [false, true] {
+                for elide in [true, false] {
+                    if loose && !elide {
+                        // The value shape never consults the boundary
+                        // — the loose flag can't change this text, so
+                        // it is already in `tried` and its parse failed.
+                        break;
+                    }
+                    let mut rendered = render_arms(sql, mark, dialect, arms, elide, loose);
+                    if strip {
+                        strip_dangling(&mut rendered, &lex);
+                    }
+                    if loose && tried.contains(&rendered.text) {
+                        // Byte-identical to a strict render — its parse
+                        // already failed, so this stage is done.
+                        break;
+                    }
+                    match parse_statements(dialect, &rendered.text) {
+                        Ok(stmts) => return Ok((rendered, stmts)),
+                        Err(e) => {
+                            if first_failure.is_none() {
+                                first_failure = Some(e);
+                            }
+                            tried.push(rendered.text.clone());
+                            if !rendered.elided_clauses {
+                                // The boundary render dropped nothing —
+                                // the value-shape retry would re-parse
+                                // the same text, so the stage is done.
+                                break;
+                            }
                         }
                     }
                 }
