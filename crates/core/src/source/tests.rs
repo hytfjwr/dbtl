@@ -4203,7 +4203,7 @@ unit_tests:
     );
 }
 
-// ---- project macro calls in `config(enabled=…)` (Issue 90) -------------
+// ---- project macro calls in `config(enabled=…)` ------------------------
 
 /// A `Macros` table built from in-memory bodies — one file under the
 /// dir's `macros/` per entry, run through the real loader (masking,
