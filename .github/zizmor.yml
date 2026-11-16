@@ -1,0 +1,6 @@
+rules:
+  # Moving `uses: ./...` to the `$/...` self-repository syntax is a separate
+  # change, to be verified against a real release run (the release workflow
+  # calls reusable workflows this way) before this audit is switched back on.
+  self-repository:
+    disable: true

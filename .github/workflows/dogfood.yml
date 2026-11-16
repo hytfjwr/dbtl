@@ -41,6 +41,7 @@ jobs:
         id: classify
         env:
           EVENT_NAME: ${{ github.event_name }}
+        shell: bash
         run: bash .github/scripts/changed-paths.sh "$EVENT_NAME" | tee -a "$GITHUB_OUTPUT"
 
   # The one `cargo build --release --locked` of the pull request — the

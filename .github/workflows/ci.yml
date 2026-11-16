@@ -42,6 +42,7 @@ jobs:
         id: classify
         env:
           EVENT_NAME: ${{ github.event_name }}
+        shell: bash
         run: bash .github/scripts/changed-paths.sh "$EVENT_NAME" | tee -a "$GITHUB_OUTPUT"
 
   lint:
@@ -321,6 +322,7 @@ jobs:
 
       # Report only — coverage never gates, it just lands on the run summary.
       - name: Coverage summary
+        shell: bash
         run: |
           {
             echo '## Coverage (workspace)'

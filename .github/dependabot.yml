@@ -8,10 +8,10 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "Asia/Tokyo"
-    # Wait 5 days after a release before proposing it (supply-chain cooldown:
+    # Wait 7 days after a release before proposing it (supply-chain cooldown:
     # lets compromised releases get yanked before they ever reach a PR).
     cooldown:
-      default-days: 5
+      default-days: 7
     open-pull-requests-limit: 10
     commit-message:
       prefix: "chore"
@@ -35,10 +35,10 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "Asia/Tokyo"
-    # Wait 5 days after a release before proposing it (supply-chain cooldown:
+    # Wait 7 days after a release before proposing it (supply-chain cooldown:
     # lets compromised releases get yanked before they ever reach a PR).
     cooldown:
-      default-days: 5
+      default-days: 7
     open-pull-requests-limit: 10
     commit-message:
       prefix: "ci"
