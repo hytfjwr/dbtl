@@ -118,13 +118,9 @@ fn scan(
                 walk_scoped(&dir, newer, best, count, &mut seen);
             }
             if include_compiled {
-                walk_scoped(
-                    &root.join("target").join("compiled"),
-                    newer,
-                    best,
-                    count,
-                    &mut seen,
-                );
+                if let Some(dir) = dbtl::default_compiled_dir(None, Some(root)) {
+                    walk_scoped(&dir, newer, best, count, &mut seen);
+                }
             }
         }
         None => walk_fallback(root, include_compiled, newer, best, count, &mut seen),
