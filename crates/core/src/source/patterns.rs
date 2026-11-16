@@ -1162,8 +1162,9 @@ pub enum CallKind {
     /// applies. Ranges index the input text — no per-call allocation.
     Ref {
         name: Range<usize>,
-        /// `ref('pkg','x')` → the `pkg` range (the first quoted arg of a
-        /// two-arg call).
+        /// `ref('pkg','x')` → the `pkg` range — the first quoted arg of a
+        /// call with more than one (a shape dbt rejects past two, which
+        /// still takes the first and last).
         package: Option<Range<usize>>,
         /// The `v=`/`version=` kwarg's UNQUOTED literal range (`v=2` → the
         /// `2`, `v='v2'` → the `v2`) — `None` when absent or unresolvable.
