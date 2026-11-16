@@ -48,9 +48,12 @@ use mouse::{
     drawer_shortcut, handle_mouse, reconcile_hover_tip, ChromeGeom, HoverTip, PaneDrag,
     TOOLTIP_DELAY,
 };
-use proc::{dbt_command, open_in_editor, yank_to_clipboard};
 #[cfg(test)]
-use proc::{editor_failure_notice, feed_and_reap, find_in_path_dirs, split_editor_command};
+use proc::{
+    cmd_shim, editor_failure_notice, feed_and_reap, find_in_dirs, find_in_path_dirs,
+    needs_cmd_shim, split_editor_command, windows_candidate_names, windows_is_executable,
+};
+use proc::{dbt_command, open_in_editor, yank_to_clipboard};
 #[cfg(test)]
 use toasts::toast_ttl;
 use toasts::{warnings_tail, ToastItem, ToastStack};

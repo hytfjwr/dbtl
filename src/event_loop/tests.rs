@@ -194,6 +194,90 @@ fn find_in_path_dirs_resolves_executables_only() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Windows resolves `dbt` as name + each `PATHEXT` extension, lowercased,
+/// empty segments dropped — the `where`-style candidate list, produced
+/// here on Unix so the Windows rule is covered on every CI leg.
+#[test]
+fn windows_candidate_names_join_pathext_lowercased() {
+    assert_eq!(
+        windows_candidate_names("dbt", ".COM;.EXE;.BAT;.CMD"),
+        ["dbt.com", "dbt.exe", "dbt.bat", "dbt.cmd"]
+    );
+    assert_eq!(
+        windows_candidate_names("dbt", ".EXE;;.Bat"),
+        ["dbt.exe", "dbt.bat"],
+        "empty PATHEXT segments are dropped and case folds"
+    );
+    assert_eq!(
+        windows_candidate_names("dbt", ""),
+        Vec::<String>::new(),
+        "an empty PATHEXT yields no candidates"
+    );
+}
+
+/// The Windows executability probe is `is_file` — no mode bit exists
+/// there. Driven through the shared dir scan so the whole Windows lookup
+/// shape (PATHEXT candidates + the probe), not just the predicate, is
+/// covered on Unix.
+#[test]
+fn windows_lookup_finds_pathext_candidates_only() {
+    let dir = std::env::temp_dir().join(format!("dbtl_path_win_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let bat = dir.join("dbt.bat");
+    std::fs::write(&bat, "@echo off\r\n").unwrap();
+    // A file literally named `dbt` is not a Windows candidate — only the
+    // PATHEXT-suffixed names are tried.
+    std::fs::write(dir.join("dbt"), "x").unwrap();
+    let candidates = windows_candidate_names("dbt", ".COM;.EXE;.BAT;.CMD");
+    assert_eq!(
+        find_in_dirs(&candidates, [dir.clone()], windows_is_executable),
+        Some(bat.clone())
+    );
+    // A *directory* carrying a candidate name is not executable either.
+    std::fs::remove_file(&bat).unwrap();
+    std::fs::create_dir_all(dir.join("dbt.exe")).unwrap();
+    assert_eq!(
+        find_in_dirs(&candidates, [dir.clone()], windows_is_executable),
+        None
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `.bat`/`.cmd` launchers go through `cmd /C` — `CreateProcess` cannot
+/// spawn them directly. The decision and the produced argv are pure, so
+/// they are asserted on every OS, not just Windows.
+#[test]
+fn batch_launchers_route_through_cmd() {
+    for name in ["dbt.bat", "dbt.cmd", "DBT.BAT"] {
+        let exe = std::path::Path::new(name);
+        assert!(needs_cmd_shim(exe), "{name} needs the cmd shim");
+        let cmd = cmd_shim(exe);
+        assert_eq!(cmd.get_program(), std::ffi::OsStr::new("cmd"));
+        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        assert_eq!(args, [std::ffi::OsStr::new("/C"), exe.as_os_str()]);
+    }
+    for name in ["dbt.exe", "dbt", "dbt.com", "dbt.bat.exe"] {
+        assert!(
+            !needs_cmd_shim(std::path::Path::new(name)),
+            "{name} spawns directly"
+        );
+    }
+}
+
+/// Off Windows there is no shim: the resolved executable is spawned
+/// directly, whatever its extension.
+#[cfg(unix)]
+#[test]
+fn dbt_command_spawns_the_executable_directly_on_unix() {
+    for name in ["/usr/bin/dbt", "dbt.bat"] {
+        let exe = std::path::Path::new(name);
+        let cmd = dbt_command(exe);
+        assert_eq!(cmd.get_program(), exe.as_os_str(), "{name}");
+        assert_eq!(cmd.get_args().count(), 0);
+    }
+}
+
 // ------------------------------------------------------------------
 // Splitter gestures through `handle_mouse`: MouseEvent -> MouseRouter
 // -> pane_layout hit-test -> set_pane_width — the same path the loop feeds
