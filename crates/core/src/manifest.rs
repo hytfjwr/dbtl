@@ -114,6 +114,110 @@ pub struct RefScope {
     pub uninstalled_packages: usize,
 }
 
+impl RefScope {
+    /// [`ref_owner`] over this scope — the caller-package membership
+    /// `home` is just this union table's `caller` entry.
+    pub(crate) fn ref_owner<'a>(
+        &'a self,
+        caller: &str,
+        package: Option<&'a str>,
+        name: &str,
+    ) -> RefVerdict<'a> {
+        ref_owner(
+            caller,
+            package,
+            name,
+            self.refs
+                .get(name)
+                .is_some_and(|pkgs| pkgs.contains(caller)),
+            &self.refs,
+            &self.projects,
+        )
+    }
+}
+
+/// Where a `ref(name)`/`ref(package, name)` call's target sits relative
+/// to the caller's own graph — the ONE package-scope judgment the source
+/// loader's edge passes and the lint side's call checks share. The
+/// `v=`/`version=` pin is not part of this verdict: a `Local` caller
+/// continues to its own name-index/versioned-family lookup, and a
+/// package's version table isn't recorded (a `Foreign` call matches on
+/// name alone).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefVerdict<'a> {
+    /// The caller's own package owns `name` — a kept-graph node may
+    /// carry the edge.
+    Local,
+    /// The named out-of-scope package owns it — `ref('pkg', 'x')`
+    /// naming an installed `dbt_packages/` member, or `pkg` a
+    /// `projects:`-declared mesh name (real but never lands in
+    /// `dbt_packages/`).
+    Foreign(&'a str),
+    /// A bare `ref` landing on owners that are ALL out of the caller's
+    /// package — the whole owner set, so a consumer matching uids asks
+    /// membership rather than trusting one pick. dbt resolves this
+    /// shape to the package's node even with no package arg; the kept
+    /// graph just can't show it.
+    ForeignAny(&'a BTreeSet<String>),
+    /// No package the load saw owns `name` — dbt's "depends on a node
+    /// named 'x' in package or project 'y' which was not found" error.
+    Missing,
+}
+
+/// The [`RefVerdict`] for `ref(name[, package])` called from package
+/// `caller`. `home` is whether the caller's package owns `name` (the
+/// source loader's name index answers it — a parked name still resolves
+/// its edge); `package_names` is the `name -> owning packages` table
+/// ([`RefScope::refs`], or the installed-package side alone when the
+/// caller checks `home` against its own index); `projects` the
+/// `dependencies.yml`/`packages.yml` `projects:` mesh names.
+pub(crate) fn ref_owner<'a>(
+    caller: &str,
+    package: Option<&'a str>,
+    name: &str,
+    home: bool,
+    package_names: &'a HashMap<String, BTreeSet<String>>,
+    projects: &BTreeSet<String>,
+) -> RefVerdict<'a> {
+    match package {
+        // An explicit package scopes the lookup outright — the caller's
+        // own name answers it, an installed package's name is real but
+        // out-of-scope, a `projects:` mesh name is real but never lands
+        // in `dbt_packages/`. Anything else is dbt's parse error: no
+        // node named `name` in package `p`. A same-named node in the
+        // caller's package NEVER substitutes — `ref('other', 'x')` is
+        // not `ref('x')`.
+        Some(p) if p == caller => {
+            if home {
+                RefVerdict::Local
+            } else {
+                RefVerdict::Missing
+            }
+        }
+        Some(p) => {
+            if package_names.get(name).is_some_and(|pkgs| pkgs.contains(p)) || projects.contains(p)
+            {
+                RefVerdict::Foreign(p)
+            } else {
+                RefVerdict::Missing
+            }
+        }
+        // A bare `ref`: the caller's own name wins (dbt's same-project
+        // first); a name only out-of-scope packages own still resolves —
+        // outside the kept graph either way.
+        None => {
+            if home {
+                RefVerdict::Local
+            } else {
+                match package_names.get(name) {
+                    Some(pkgs) if !pkgs.is_empty() => RefVerdict::ForeignAny(pkgs),
+                    _ => RefVerdict::Missing,
+                }
+            }
+        }
+    }
+}
+
 /// One parked `disabled` node's identity under a shared name.
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DisabledRef {

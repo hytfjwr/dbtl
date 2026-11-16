@@ -8,6 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `--source` no longer links a two-argument `ref('pkg', 'name')` to a
+  same-named root model: the call resolves to the installed package's
+  member like real dbt, makes no edge in the root-only graph, and marks
+  the caller as possibly having an unshown parent — so `root_models`
+  stays quiet and `unused_models` no longer spares the root model it
+  falsely consumed.
 - Models whose only parse failure was a `{{ }}` clause macro behind a
   keyword-shaped word — `where id is not null {{ group_by() }}`,
   `where v = status {{ m() }}` — no longer report as unparsable SQL:

@@ -15,6 +15,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use crate::dag::{normalize_version, uid_package, versioned_model_segs, Dag, NodeInfo};
+use crate::manifest::RefVerdict;
 use crate::source::{
     arms_exclusive, call_sites_masked, call_version, config_arg, jinja_branches, kwarg, lit_value,
     mask_jinja_comments, scan_python, ArmKind, ArmStep, CallKind, CallSite, JinjaBranches,
@@ -141,6 +142,10 @@ fn version_number(uid: &str) -> Option<u64> {
 struct Sites<'a> {
     file: &'a str,
     text: &'a str,
+    /// The calling node's package (uid segment 1) — `targets` judges a
+    /// `ref()` call's package scope against it (a bare `ref` lands in
+    /// the caller's own package first, dbt's same-project lookup).
+    pkg: &'a str,
     parents: &'a [String],
     masked: Cow<'a, str>,
     sites: Vec<CallSite>,
@@ -242,6 +247,15 @@ impl<'a> CallSiteResolver<'a> {
     fn extract(&self, uid: &str) -> Option<Sites<'a>> {
         let file = self.dag.detail(uid)?.original_file_path.as_deref()?;
         let text = self.dag.raw_code(uid)?;
+        // The calling node's package — read off the `nodes` map's own
+        // key so the `'a` borrow holds regardless of `uid`'s caller
+        // lifetime.
+        let pkg = self
+            .dag
+            .nodes()
+            .get_key_value(uid)
+            .and_then(|(k, _)| uid_package(k))
+            .unwrap_or("");
         if file.ends_with(".py") {
             // A `.py` model's `dbt.*` calls carry no SQL spans — only the
             // dep-call fact `has_dependency_calls` reports is extracted.
@@ -252,6 +266,7 @@ impl<'a> CallSiteResolver<'a> {
             return Some(Sites {
                 file,
                 text,
+                pkg,
                 parents: self.dag.direct_parents(uid),
                 masked: Cow::Borrowed(text),
                 sites: Vec::new(),
@@ -272,6 +287,7 @@ impl<'a> CallSiteResolver<'a> {
         Some(Sites {
             file,
             text,
+            pkg,
             parents: self.dag.direct_parents(uid), // &[String] — no clone
             masked,
             sites,
@@ -688,10 +704,12 @@ impl<'a> CallSites<'a> {
     /// split, precomputed once per [`calls_to`](CallSites::calls_to) so
     /// per-site checks don't re-split)? Mirrors what the edges already
     /// encode: `source('s','t')` hits `source.*.s.t`; `ref()` hits
-    /// `model|seed|snapshot.*.<name>` by NAME alone — the loader's
-    /// name-index resolution ignores the package arg (`ref('pkg','x')`
-    /// lands on the local `x`), so a call naming any package still marks
-    /// the edge it produced. A versioned ref wants exactly `.v<pin>`
+    /// `model|seed|snapshot.*.<name>` under the package the shared
+    /// [`ref_owner`] verdict resolves the call to — `ref('pkg','x')`
+    /// can only have produced `*.pkg.x` (it never marks a same-named
+    /// parent in the caller's own project), and a bare `ref('x')` lands
+    /// in the caller's package when it owns `x`, in one of the foreign
+    /// owners otherwise. A versioned ref wants exactly `.v<pin>`
     /// (`version='02'` is `.v02`, never `.v2` — the rendered arg is
     /// verbatim) and never an unversioned same-named uid; a bare
     /// `ref('x')` lands on an unversioned uid or the family's latest
@@ -703,13 +721,29 @@ impl<'a> CallSites<'a> {
                     if self.sites.masked[source.clone()] == **s
                         && self.sites.masked[table.clone()] == **t)
             }
-            CallKind::Ref { name, .. } => {
-                let [kind, _, uname, ..] = segs else {
+            CallKind::Ref { name, package, .. } => {
+                let [kind, pkg, uname, ..] = segs else {
                     return false;
                 };
                 if !matches!(*kind, "model" | "seed" | "snapshot")
                     || self.sites.masked[name.clone()] != **uname
                 {
+                    return false;
+                }
+                // The shared package-scope verdict the edge resolution
+                // uses: the call can only have produced an edge into
+                // the package it resolves to.
+                let owned = match self.dag.ref_scope().ref_owner(
+                    self.sites.pkg,
+                    package.as_ref().map(|p| &self.sites.masked[p.clone()]),
+                    &self.sites.masked[name.clone()],
+                ) {
+                    RefVerdict::Local => *pkg == self.sites.pkg,
+                    RefVerdict::Foreign(p) => *pkg == p,
+                    RefVerdict::ForeignAny(pkgs) => pkgs.contains(*pkg),
+                    RefVerdict::Missing => false,
+                };
+                if !owned {
                     return false;
                 }
                 let uid_vseg = segs.get(3);

@@ -341,27 +341,42 @@ fn arg_value(args: &CallArgs, i: usize, name: &str, bound: &[Option<String>]) ->
 /// version, an unbound one is the dynamic pin source mode resolves to
 /// the family's latest.
 enum DepTarget {
-    Ref(String, RefPin),
+    /// `(name, package, pin)` — `package` is the first positional arg
+    /// when the call gives two (`ref('pkg', 'x')`).
+    Ref(String, Option<String>, RefPin),
     Source(String, String),
 }
 
 fn dep_target(dep: &BodyDep, bound: &[Option<String>]) -> Option<DepTarget> {
     match dep {
-        BodyDep::Ref(args) => args
-            .pos
-            .last()
-            .and_then(|e| eval(e, bound))
-            .or_else(|| kw_value(args, "name").and_then(|e| eval(e, bound)))
-            .map(|name| {
-                let pin = kw_value(args, "v")
-                    .or_else(|| kw_value(args, "version"))
-                    .map(|e| match eval(e, bound) {
-                        Some(v) => RefPin::Literal(v),
-                        None => RefPin::Dynamic,
-                    })
-                    .unwrap_or(RefPin::Absent);
-                DepTarget::Ref(name, pin)
-            }),
+        BodyDep::Ref(args) => {
+            // dbt's `ref` reads ≤2 positionals — more is a parse error,
+            // the unverifiable side.
+            if args.pos.len() > 2 {
+                return None;
+            }
+            let name = args
+                .pos
+                .last()
+                .and_then(|e| eval(e, bound))
+                .or_else(|| kw_value(args, "name").and_then(|e| eval(e, bound)))?;
+            // A second positional means the FIRST was the package. One
+            // that stays non-literal can't be proven — the call may
+            // name any package.
+            let package = if args.pos.len() > 1 {
+                Some(args.pos.first().and_then(|e| eval(e, bound))?)
+            } else {
+                None
+            };
+            let pin = kw_value(args, "v")
+                .or_else(|| kw_value(args, "version"))
+                .map(|e| match eval(e, bound) {
+                    Some(v) => RefPin::Literal(v),
+                    None => RefPin::Dynamic,
+                })
+                .unwrap_or(RefPin::Absent);
+            Some(DepTarget::Ref(name, package, pin))
+        }
         BodyDep::Source(args) => match (
             arg_value(args, 0, "source_name", bound),
             arg_value(args, 1, "table_name", bound),
@@ -377,9 +392,10 @@ fn dep_target(dep: &BodyDep, bound: &[Option<String>]) -> Option<DepTarget> {
 /// whether any part stayed unresolvable.
 #[derive(Debug, Default)]
 pub(super) struct Resolution {
-    /// `(name, pin)` pairs `ref()` reduced to (the family/name_index
-    /// resolves them like a model-level `ref('x')`/`ref('x', v=…)`).
-    pub refs: Vec<(String, RefPin)>,
+    /// `(name, package, pin)` triples `ref()` reduced to — `package` the
+    /// first positional arg when the call gave two — resolved like a
+    /// model-level `ref('x')`/`ref('pkg','x')`/`ref('x', v=…)`.
+    pub refs: Vec<(String, Option<String>, RefPin)>,
     /// `(source_name, table_name)` pairs `source()` reduced to.
     pub sources: Vec<(String, String)>,
     /// The bare name of the node-level invoked project macro — direct
@@ -581,7 +597,7 @@ impl Macros {
         let mut out = Resolution::default();
         for dep in &def.deps {
             match dep_target(dep, bound) {
-                Some(DepTarget::Ref(name, pin)) => out.refs.push((name, pin)),
+                Some(DepTarget::Ref(name, package, pin)) => out.refs.push((name, package, pin)),
                 Some(DepTarget::Source(s, t)) => out.sources.push((s, t)),
                 None => out.incomplete = true,
             }

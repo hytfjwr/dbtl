@@ -62,18 +62,29 @@ pub(super) struct PyArgs {
     pub(super) literals: Vec<String>,
 }
 
-/// The model name a literal `dbt.ref(...)` call resolves to — the LAST
-/// positional arg's string (dbt's `ref(*args)` reads the last as the
-/// name; `ref('pkg','x')` → `x`). More than two positionals or a
-/// non-string name is a dbt error → `None` = unverifiable.
-pub(super) fn ref_name(args: &PyArgs) -> Option<&str> {
+/// The `(package, name)` a literal `dbt.ref(...)` call resolves to —
+/// the LAST positional arg's string is the name and a first positional
+/// (when two are given) is the package, the same shape `ref(*args)`
+/// reads: `dbt.ref('x')` → `(None, "x")`, `dbt.ref('pkg','x')` →
+/// `("pkg", "x")`. More than two positionals or a non-string arg is a
+/// dbt error → `None` = unverifiable.
+pub(super) fn ref_name(args: &PyArgs) -> Option<(Option<&str>, &str)> {
     if args.positional.len() > 2 {
         return None;
     }
-    match args.positional.last()? {
-        Some(serde_json::Value::String(s)) => Some(s),
+    let name = match args.positional.last()? {
+        Some(serde_json::Value::String(s)) => Some(s.as_str()),
         _ => None,
-    }
+    }?;
+    let package = if args.positional.len() == 2 {
+        match &args.positional[0] {
+            Some(serde_json::Value::String(s)) => Some(s.as_str()),
+            _ => return None,
+        }
+    } else {
+        None
+    };
+    Some((package, name))
 }
 
 /// The `(source, table)` a literal `dbt.source("s", "t")` names — exactly
@@ -1122,7 +1133,7 @@ def model(dbt, session):
             .map(|c| {
                 c.args
                     .as_ref()
-                    .and_then(|a| ref_name(a).map(str::to_string))
+                    .and_then(|a| ref_name(a).map(|(_, n)| n.to_string()))
             })
             .collect();
         assert_eq!(
@@ -1144,6 +1155,33 @@ def model(dbt, session):
         );
         assert_eq!(scan.model_defs, 1);
         assert!(!scan.has_jinja);
+    }
+
+    #[test]
+    fn ref_name_reads_the_optional_package_arg() {
+        // `dbt.ref('m')` yields (None, 'm'); `dbt.ref('pkg', 'm')` yields
+        // (Some('pkg'), 'm') — the LAST positional is always the name,
+        // the first the package when two land (dbt's own arg order).
+        let one = scan_python("def model(dbt, s):\n    return dbt.ref('m')\n");
+        let two = scan_python("def model(dbt, s):\n    return dbt.ref('pkg', 'm')\n");
+        let three = scan_python("def model(dbt, s):\n    return dbt.ref('a', 'b', 'c')\n");
+        let nonstr = scan_python("def model(dbt, s):\n    return dbt.ref('pkg', var)\n");
+        let named = |scan: &PyScan| {
+            scan.calls
+                .iter()
+                .find(|c| c.kind == PyCallKind::Ref)
+                .and_then(|c| c.args.as_ref())
+                .and_then(ref_name)
+                .map(|(p, n)| (p.map(str::to_string), n.to_string()))
+        };
+        assert_eq!(named(&one), Some((None, "m".to_string())));
+        assert_eq!(
+            named(&two),
+            Some((Some("pkg".to_string()), "m".to_string())),
+            "two positionals = (package, name), not two names"
+        );
+        assert_eq!(named(&three), None, ">2 positionals is a dbt error");
+        assert_eq!(named(&nonstr), None, "a nonliteral name can't resolve");
     }
 
     #[test]
