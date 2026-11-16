@@ -96,7 +96,7 @@ mod tests;
 use ast::*;
 pub use dialect::SqlDialect;
 use dialect::{date_part_arg_position, is_date_part_word};
-use facts::{outer_order_by_span, output_name_occurrences, star_over_single_explicit_cte};
+use facts::{outer_order_by_span, star_over_single_explicit_cte};
 pub(crate) use fixes::{semicolon_delete, sql_still_parses, unread_cte_deletes};
 pub(crate) use jinja::trailing_semicolon;
 use jinja::*;
@@ -584,32 +584,29 @@ impl SqlParseResolver {
             // `{% if %}`/`{% else %}` arms reaches one render only as
             // often as a maximal co-runnable subset — count each name
             // there, or an `if`/`else` pair of same-named columns
-            // fabricates a duplicate no real render contains. The
-            // greedy kept-set is always co-runnable and can only
-            // under-count a worst-case ordering — never over-count.
-            let name_spans = output_name_occurrences(query);
+            // fabricates a duplicate no real render contains. Every
+            // output carries the span of the written name that produced
+            // it — inside a CTE or derived table just as at the top
+            // level — so a `*`-expanded name collapses on the arm its
+            // own projection sits in; an occurrence with no written
+            // span (a name carried in from a parent's column list) is
+            // unconditional. The greedy kept-set is always co-runnable
+            // and can only under-count a worst-case ordering — never
+            // over-count.
             for (idx, name) in dup_order.iter().enumerate() {
                 if dup_counts[idx] <= 1 {
                     continue;
                 }
-                let mut paths: Vec<Vec<ArmStep>> = name_spans
-                    .iter()
-                    .find(|(n, _)| n == name)
-                    .map(|(_, spans)| {
-                        spans
-                            .iter()
-                            .map(|s| rendered.span_arm_path(*s).unwrap_or_default())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                // Occurrences whose span doesn't map to a written
-                // position can't be arm-attributed — unconditional.
-                while paths.len() < dup_counts[idx] {
-                    paths.push(Vec::new());
-                }
-                let mut kept: Vec<&Vec<ArmStep>> = Vec::new();
-                for path in &paths {
-                    if kept.iter().all(|k| !arms_exclusive(k, path)) {
+                let mut kept: Vec<Vec<ArmStep>> = Vec::new();
+                for o in &res.out {
+                    if o.name != *name || o.synthetic || (o.derived && !names_exprs) {
+                        continue;
+                    }
+                    let path = o
+                        .span
+                        .and_then(|s| rendered.span_arm_path(s))
+                        .unwrap_or_default();
+                    if kept.iter().all(|k| !arms_exclusive(k, &path)) {
                         kept.push(path);
                     }
                 }

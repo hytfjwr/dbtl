@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `duplicate_output_columns` no longer reports a duplicate when
+  same-named columns written in mutually exclusive `{% if %}`/`{% else %}`
+  arms inside a CTE or derived table reach the outer query through
+  `select *` — the arm each output name was written in now travels with
+  the column through wildcard expansion, nested CTEs, and `union all`
+  arms, so only names a single render could produce together count.
+
 ## [0.7.0] - 2026-11-15
 
 ### Added

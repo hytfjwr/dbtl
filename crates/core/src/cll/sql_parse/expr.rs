@@ -880,6 +880,7 @@ impl SqlParseResolver {
                                 sources: BTreeSet::from([(uid.clone(), c.clone())]),
                                 synthetic: false,
                                 derived: false,
+                                span: None,
                             });
                         }
                     }
@@ -911,33 +912,37 @@ impl SqlParseResolver {
         // `* RENAME col AS alias` — the output name changes (the edge still
         // resolves to Rename downstream since `bare` stays true).
         if let Some(rename) = &opts.opt_rename {
-            let pairs: Vec<(String, String)> = match rename {
+            let pairs: Vec<(String, Ident)> = match rename {
                 RenameSelectItem::Single(ia) => {
-                    vec![(norm_ident(&ia.ident), norm_ident(&ia.alias))]
+                    vec![(norm_ident(&ia.ident), ia.alias.clone())]
                 }
                 RenameSelectItem::Multiple(ias) => ias
                     .iter()
-                    .map(|ia| (norm_ident(&ia.ident), norm_ident(&ia.alias)))
+                    .map(|ia| (norm_ident(&ia.ident), ia.alias.clone()))
                     .collect(),
             };
             for o in &mut cols {
                 if let Some((_, to)) = pairs.iter().find(|(from, _)| from == &o.name) {
-                    o.name = to.clone();
+                    o.name = norm_ident(to);
                     // An explicit rename names the output — no longer a
-                    // positional placeholder.
+                    // positional placeholder; the name's written position
+                    // is the alias in the RENAME clause.
                     o.synthetic = false;
                     o.derived = false;
+                    o.span = Some(to.span);
                 }
             }
         }
         // `* REPLACE(expr AS col)` — the column's value is recomputed:
         // sources = the replacement expr's refs, and it's no longer bare.
+        // The name is written again at the REPLACE site.
         if let Some(repl) = &opts.opt_replace {
             for item in &repl.items {
                 let target = norm_ident(&item.column_name);
                 if let Some(o) = cols.iter_mut().find(|o| o.name == target) {
                     o.sources = self.expr_refs(ctx, refs, &item.expr)?;
                     o.bare = false;
+                    o.span = Some(item.column_name.span);
                 }
             }
         }
