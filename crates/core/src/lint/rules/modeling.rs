@@ -198,14 +198,20 @@ pub(super) fn source_fanout(
 /// models. A leaf is a model with no DATA-RESOURCE children of its own —
 /// a model feeding only endpoint resources (an exposure, a semantic
 /// model, a metric, a saved query) is still a leaf, matching how dbt's
-/// fanout check reads the graph — PLUS no package-severed children: a
-/// child only an installed package reads can't prove leaf-ness (the
-/// [`PrunedAdjacent`](crate::PrunedAdjacent) record), so it never counts.
+/// fanout check reads the graph — PLUS no unrecorded children: a child
+/// only an installed package reads or only an unrendered Jinja branch
+/// calls can't prove leaf-ness, so it never counts
+/// ([`CallSiteResolver::unrecorded_children`]). A possible consumer —
+/// the branch call the manifest never recorded — counts toward the
+/// hub's leaf tally the way a recorded child does: the edge may not be
+/// recorded, but the read is possible, and the threshold checks how
+/// many leaves COULD read the hub.
 pub(super) fn model_fanout(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     config: &LintConfig,
+    sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
 ) {
     let threshold = config
@@ -216,19 +222,21 @@ pub(super) fn model_fanout(
         if n.resource_type != "model" || !in_scope(n) {
             continue;
         }
+        let is_leaf = |c: &String| {
+            dag.get(c).is_some_and(|n| {
+                n.resource_type == "model"
+                    && dag.direct_children(c).iter().all(|gc| {
+                        dag.get(gc)
+                            .is_none_or(|g| !is_data_resource(&g.resource_type))
+                    })
+                    && !sites.unrecorded_children(c, |_| true)
+            })
+        };
         let mut leaves: Vec<String> = dag
             .direct_children(uid)
             .iter()
-            .filter(|c| {
-                dag.get(c).is_some_and(|n| {
-                    n.resource_type == "model"
-                        && dag.direct_children(c).iter().all(|gc| {
-                            dag.get(gc)
-                                .is_none_or(|g| !is_data_resource(&g.resource_type))
-                        })
-                        && dag.pruned_adjacent(c).is_none_or(|a| a.children == 0)
-                })
-            })
+            .chain(sites.possible_children(uid).iter())
+            .filter(|c| is_leaf(c))
             .cloned()
             .collect();
         leaves.sort();
@@ -255,11 +263,12 @@ pub(super) fn model_fanout(
 }
 
 /// `root_models`: a model with no parents. Two connectedness shapes the
-/// pruned graph can't see don't count: parents a `PackageScope::Root`
-/// prune severed (the [`PrunedAdjacent`](crate::PrunedAdjacent) record —
-/// the model IS connected, just outside the project), and dependency
-/// calls whose targets never resolved to an edge (source mode parses no
-/// installed packages, so a cross-package `ref()` drops silently — an
+/// pruned graph can't see don't count ([`CallSiteResolver::unrecorded_parents`]):
+/// parents a `PackageScope::Root` prune severed (the
+/// [`PrunedAdjacent`](crate::PrunedAdjacent) record — the model IS
+/// connected, just outside the project), and dependency calls whose
+/// targets never resolved to an edge (source mode parses no installed
+/// packages, so a cross-package `ref()` drops silently — an
 /// under-resolved model, not a root).
 pub(super) fn root_models(
     dag: &Dag,
@@ -273,13 +282,7 @@ pub(super) fn root_models(
         if n.resource_type != "model" || !in_scope(n) || n.direct_up != 0 {
             continue;
         }
-        if dag.pruned_adjacent(uid).is_some_and(|a| a.parents > 0) {
-            continue;
-        }
-        if sites
-            .for_node(uid)
-            .is_some_and(|cs| cs.has_dependency_calls())
-        {
+        if sites.unrecorded_parents(uid) {
             continue;
         }
         out.push(Finding::new(
@@ -295,11 +298,12 @@ pub(super) fn root_models(
 /// data-node parent A of B also feeds C directly (A→B→C plus A→C — B is a
 /// redundant hop). "Single use" counts data-carrying children only: the
 /// child count ignores endpoint resources, and A/C aren't model-only (a
-/// source→B→C + source→C or a snapshot relay rejoin counts too). A B whose
-/// package-side children a `PackageScope::Root` prune severed (the
-/// [`PrunedAdjacent`](crate::PrunedAdjacent) record) can never ESTABLISH
-/// single use — the missing consumer's resource type is invisible — so it
-/// never flags.
+/// source→B→C + source→C or a snapshot relay rejoin counts too). A B with
+/// a consumer the recorded graph can't show
+/// ([`CallSiteResolver::unrecorded_children`] — a package-severed child
+/// or a literal branch call dbt never recorded) can never ESTABLISH
+/// single use — the missing consumer's resource type is invisible — so
+/// it never flags.
 ///
 /// One finding per B — `related` is the sorted set `{C} ∪ {A₁, A₂, …}` and
 /// `message` names the offenders, so a B bypassed by several parents shows
@@ -341,8 +345,12 @@ pub(super) fn rejoining_upstream(
         }
         // "Otherwise unused": exactly ONE data-node child. Endpoint resources
         // (an exposure reading B, say) don't count as a second use — but a
-        // pruned package child might, so its presence ends the check here.
-        if dag.pruned_adjacent(uid).is_some_and(|a| a.children > 0) {
+        // consumer the recorded graph can't show might, so its presence
+        // ends the check here ([`CallSiteResolver::unrecorded_children`]:
+        // a pruned package child or a branch call the manifest never
+        // recorded can never establish the single-use claim — B may have
+        // the second reader).
+        if sites.unrecorded_children(uid, |n| is_data_resource(&n.resource_type)) {
             continue;
         }
         let mut children = dag.direct_children(uid).iter().filter(|c| {
@@ -537,13 +545,18 @@ pub(super) fn layer_violation(dag: &Dag, sites: &CallSiteResolver<'_>, out: &mut
 }
 
 /// `unused_sources`: a source no node reads — an exposure child counts as a
-/// use like any other (`direct_down` covers it), and so does a child the
-/// `PackageScope::Root` prune severed (the [`PrunedAdjacent`](crate::PrunedAdjacent)
-/// record: a package model reading it IS a use — just not a visible one).
+/// use like any other (`direct_down` covers it), and so does a consumer
+/// the recorded graph can't show ([`CallSiteResolver::unrecorded_children`]:
+/// a package model the `PackageScope::Root` prune severed IS a use —
+/// just not a visible one — and a literal `source()` call the manifest
+/// never recorded, a Jinja branch dbt didn't render when it parsed,
+/// counts the same). A possible read suppresses the "definitely unused"
+/// verdict, never creates an edge.
 pub(super) fn unused_sources(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
+    sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
 ) {
     for uid in uids {
@@ -551,7 +564,7 @@ pub(super) fn unused_sources(
         if n.resource_type != "source"
             || !in_scope(n)
             || n.direct_down != 0
-            || dag.pruned_adjacent(uid).is_some_and(|a| a.children > 0)
+            || sites.unrecorded_children(uid, |_| true)
         {
             continue;
         }
@@ -845,15 +858,18 @@ pub(super) fn incremental_without_unique_key(
 /// reading it keeps it alive), and so does a `semantic_models:` consumer
 /// the [`NodeDetail::semantic_dependents`] channel records (source mode
 /// synthesizes no semantic-layer nodes, so the channel is how both modes
-/// answer "the semantic layer reads this" identically). And a child the
-/// `PackageScope::Root` prune severed counts too (the
-/// [`PrunedAdjacent`](crate::PrunedAdjacent) record — the model IS used,
-/// just outside the kept project).
+/// answer "the semantic layer reads this" identically). And a consumer
+/// the recorded graph can't show counts too
+/// ([`CallSiteResolver::unrecorded_children`]: a child the
+/// `PackageScope::Root` prune severed — the model IS used, just outside
+/// the kept project — or a literal `ref()` call the manifest never
+/// recorded, a Jinja branch dbt didn't render when it parsed).
 pub(super) fn unused_models(
     dag: &Dag,
     uids: &[&String],
     in_scope: &dyn Fn(&NodeInfo) -> bool,
     config: &LintConfig,
+    sites: &CallSiteResolver<'_>,
     out: &mut Vec<Finding>,
 ) {
     let layers = config
@@ -869,7 +885,7 @@ pub(super) fn unused_models(
             continue;
         }
         if n.direct_down != 0
-            || dag.pruned_adjacent(uid).is_some_and(|a| a.children > 0)
+            || sites.unrecorded_children(uid, |_| true)
             || dag
                 .detail(uid)
                 .is_some_and(|d| !d.semantic_dependents.is_empty())

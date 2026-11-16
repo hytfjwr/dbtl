@@ -10,11 +10,11 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 use std::rc::Rc;
 
-use crate::dag::{normalize_version, versioned_model_segs, Dag};
+use crate::dag::{normalize_version, uid_package, versioned_model_segs, Dag, NodeInfo};
 use crate::source::{
     arms_exclusive, call_sites_masked, call_version, config_arg, jinja_branches, kwarg, lit_value,
     mask_jinja_comments, scan_python, ArmKind, ArmStep, CallKind, CallSite, JinjaBranches,
@@ -156,6 +156,11 @@ struct Sites<'a> {
     /// first positioned label so `position` is a binary search + one
     /// line's char count instead of a full-text scan per label.
     lines: std::cell::OnceCell<Vec<u32>>,
+    /// The literal `ref()`/`source()` calls in this node — computed on the
+    /// first [`CallSites::dep_calls`] ask and shared with every later ask
+    /// (`unresolved_references` and the possible-edge index hit the same
+    /// node's calls, so the argument pass runs once).
+    dep_calls: std::cell::OnceCell<Vec<DepCall>>,
 }
 
 /// The hasher the memo uses — every graph rule calls [`CallSiteResolver::for_node`]
@@ -182,6 +187,10 @@ impl std::hash::Hasher for UidHasher {
 
 type UidMap<V> = HashMap<String, V, std::hash::BuildHasherDefault<UidHasher>>;
 
+/// A `K -> &[&'a str]` lookup over dag-borrowed strings, hashed by
+/// [`UidHasher`] — the same fast hasher the node memo uses.
+type FastMap<'a, K> = HashMap<K, Vec<&'a str>, std::hash::BuildHasherDefault<UidHasher>>;
+
 /// The per-`run_rules` call-site cache every graph rule shares —
 /// [`SqlParseResolver`](crate::SqlParseResolver)'s memo shape. Without it
 /// each rule re-parses the same `raw_code`: the extraction (mask + regex
@@ -190,6 +199,12 @@ type UidMap<V> = HashMap<String, V, std::hash::BuildHasherDefault<UidHasher>>;
 pub(crate) struct CallSiteResolver<'a> {
     dag: &'a Dag,
     memo: RefCell<UidMap<Option<Rc<Sites<'a>>>>>,
+    /// The possible-edge index — the `target -> callers` map
+    /// [`CallSiteResolver::possible_children`] serves — built on the first
+    /// ask, after which the per-node [`Sites`] memo already holds every
+    /// extraction it needs (the scan each graph rule shares is reused,
+    /// never re-run).
+    possible: std::cell::OnceCell<BTreeMap<String, BTreeSet<String>>>,
 }
 
 impl<'a> CallSiteResolver<'a> {
@@ -197,6 +212,7 @@ impl<'a> CallSiteResolver<'a> {
         Self {
             dag,
             memo: RefCell::new(UidMap::default()),
+            possible: std::cell::OnceCell::new(),
         }
     }
 
@@ -242,6 +258,7 @@ impl<'a> CallSiteResolver<'a> {
                 py_dep_calls,
                 branches: JinjaBranches::default(),
                 lines: std::cell::OnceCell::new(),
+                dep_calls: std::cell::OnceCell::new(),
             });
         }
         if !file.ends_with(".sql") {
@@ -261,13 +278,277 @@ impl<'a> CallSiteResolver<'a> {
             py_dep_calls: false,
             branches,
             lines: std::cell::OnceCell::new(),
+            dep_calls: std::cell::OnceCell::new(),
         })
+    }
+
+    /// The possible consumers of `uid` — graph members whose raw SQL
+    /// carries a literal `ref()`/`source()` call resolving to `uid`
+    /// **without** the matching recorded edge. The index is a lint-only
+    /// view: it never mutates `direct_children`/`downstream`, so lineage,
+    /// `ls`, and docs stay dbt-faithful. Rules that check "could anything
+    /// read this" read the set the way they read `direct_children` — a
+    /// possible child means under-reporting is the safe direction only.
+    /// On a source-mode `Dag` the set is always empty: the loader records
+    /// every resolved call as an edge, so there is nothing to recover.
+    ///
+    /// Resolution shares [`CallSites::targets`]' rules through
+    /// [`version_pin_matches`]/[`family_latest`] — the pin-vs-segment
+    /// comparison and the bare-ref latest pick the edge match makes —
+    /// and adds the package disambiguation `targets` never needs (its
+    /// calls only match recorded parents): an explicit `package` arg
+    /// scopes the family to that package outright, while a bare name
+    /// prefers members in the caller's own package and falls back to
+    /// foreign members only when exactly one package owns the name —
+    /// dbt's same-project-first name lookup. A literal `v=`/`version=`
+    /// pin must hit a member's `.vN` segment verbatim (`v='v3'` names
+    /// `.vv3`, never `.v3`); a pin that isn't literal resolves the way
+    /// a bare ref does — the family's latest. A missing name or a hit
+    /// the `depends_on` list already carries resolves to no possible
+    /// edge.
+    pub(crate) fn possible_children(&self, uid: &str) -> &BTreeSet<String> {
+        static EMPTY: BTreeSet<String> = BTreeSet::new();
+        self.possible
+            .get_or_init(|| self.build_possible())
+            .get(uid)
+            .unwrap_or(&EMPTY)
+    }
+
+    /// Build the `target -> callers` possible-edge index — one pass over
+    /// the kept graph's call sites, resolving each literal call to a
+    /// member uid through [`resolve_call`]. A call whose resolution
+    /// matches an already-recorded parent contributes nothing (the real
+    /// edge answers for it).
+    fn build_possible(&self) -> BTreeMap<String, BTreeSet<String>> {
+        let mut map: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        if self.dag.is_source_mode() {
+            return map;
+        }
+        let mut refs: FastMap<'a, &'a str> = FastMap::default();
+        let mut sources: FastMap<'a, (&'a str, &'a str)> = FastMap::default();
+        for (uid, n) in self.dag.nodes() {
+            match n.resource_type.as_str() {
+                "model" | "seed" | "snapshot" => {
+                    refs.entry(n.name.as_str()).or_default().push(uid.as_str())
+                }
+                "source" => {
+                    // `source.<pkg>.<src>.<tbl>[.<gen>]` — the call's two
+                    // args name the trailing segments.
+                    let mut segs = uid.split('.');
+                    if let (Some(s), Some(t)) = (segs.nth(2), segs.next()) {
+                        sources.entry((s, t)).or_default().push(uid.as_str());
+                    }
+                }
+                _ => {}
+            }
+        }
+        // `dag.nodes()` iterates in HashMap order — sort the member vecs
+        // so pool picks (first unversioned, declared-latest, single
+        // foreign) never depend on the map's layout.
+        for members in refs.values_mut().chain(sources.values_mut()) {
+            members.sort_unstable();
+        }
+        let mut callers: Vec<&String> = self.dag.nodes().keys().collect();
+        callers.sort();
+        for caller in callers {
+            let Some(cs) = self.for_node(caller) else {
+                continue;
+            };
+            for call in cs.dep_calls() {
+                let Some(target) = resolve_call(self.dag, &refs, &sources, caller, call) else {
+                    continue;
+                };
+                if target == caller.as_str()
+                    || self
+                        .dag
+                        .direct_parents(caller)
+                        .iter()
+                        .any(|p| p.as_str() == target)
+                {
+                    continue;
+                }
+                map.entry(target.to_string())
+                    .or_default()
+                    .insert(caller.clone());
+            }
+        }
+        map
+    }
+
+    /// Could `uid` have a CHILD the recorded graph can't show — a package
+    /// child the `PackageScope::Root` prune severed
+    /// ([`Dag::pruned_adjacent`]) or a kept node whose raw code calls
+    /// `uid` in a branch dbt never rendered ([`possible_children`])? The
+    /// ONE "is anything possibly reading this" question connectedness
+    /// rules ask: `direct_children` alone proves nothing recorded reads
+    /// the node, never that nothing reads it. `kind` filters the
+    /// possible callers the way the rule filters `direct_children` —
+    /// severed package children can't be type-checked, so their
+    /// presence always answers `true`; pass `|_| true` for "any
+    /// consumer".
+    pub(crate) fn unrecorded_children(&self, uid: &str, kind: impl Fn(&NodeInfo) -> bool) -> bool {
+        self.dag
+            .pruned_adjacent(uid)
+            .is_some_and(|a| a.children > 0)
+            || self
+                .possible_children(uid)
+                .iter()
+                .any(|c| self.dag.get(c).is_some_and(&kind))
+    }
+
+    /// Could `uid` have a PARENT the recorded graph can't show — a
+    /// package parent the scope prune severed
+    /// ([`Dag::pruned_adjacent`]), or a `ref()`/`source()` call in the
+    /// node's own `raw_code` ([`CallSites::has_dependency_calls`]) that
+    /// produced no edge? `root_models`'s under-connection guard: a node
+    /// making dep calls at all is under-connected, not a root —
+    /// conservative on a node whose calls DID land (every recorded
+    /// parent still reads "more parents possible"), so ask it where the
+    /// recorded-parent check already ran.
+    pub(crate) fn unrecorded_parents(&self, uid: &str) -> bool {
+        self.dag.pruned_adjacent(uid).is_some_and(|a| a.parents > 0)
+            || self
+                .for_node(uid)
+                .is_some_and(|cs| cs.has_dependency_calls())
     }
 
     fn make(&self, sites: Rc<Sites<'a>>) -> CallSites<'a> {
         CallSites {
             dag: self.dag,
             sites,
+        }
+    }
+}
+
+/// The member pool a `ref()`/`source()` call picks from — the caller's own
+/// package first (dbt's name lookup resolves same-project names before
+/// cross-project ones), else the foreign members when the family lives
+/// under exactly one package. A name owned by multiple foreign packages
+/// can't pick a render deterministically — the pool comes back empty and
+/// the call resolves to nothing.
+fn caller_pool<'m>(members: &[&'m str], caller_pkg: &str) -> Vec<&'m str> {
+    let home: Vec<&str> = members
+        .iter()
+        .copied()
+        .filter(|u| uid_package(u) == Some(caller_pkg))
+        .collect();
+    if !home.is_empty() {
+        return home;
+    }
+    let foreign: Vec<&str> = members
+        .iter()
+        .copied()
+        .filter(|u| uid_package(u).is_some_and(|p| p != caller_pkg))
+        .collect();
+    let single_pkg = foreign
+        .first()
+        .and_then(|u| uid_package(u))
+        .is_some_and(|p| foreign.iter().all(|u| uid_package(u) == Some(p)));
+    if single_pkg {
+        foreign
+    } else {
+        Vec::new()
+    }
+}
+
+/// Does the literal `v=`/`version=` pin `pin` — rendered the way dbt
+/// spells the version — name the member whose uid segment is `vseg`?
+/// The pin compares VERBATIM against the normalized segment: `v='v3'`
+/// names `.vv3` (the `version: 'v3'` member), never `.v3`; `v=1.10`
+/// names `.v1.1`; `v='02'` names nothing. `normalize_version` strips
+/// exactly one `v`, so `pin == normalize(vseg)` is the `v{pin} == vseg`
+/// check dbt's lookup makes — the ONE comparison [`CallSites::targets`]
+/// and the possible-edge resolver share.
+fn version_pin_matches(pin: &str, vseg: &str) -> bool {
+    normalize_version(vseg) == pin
+}
+
+/// The "latest" member of an all-versioned family among `candidates` —
+/// a member whose own `version` equals its declared `latest_version`
+/// wins (dbt's own latest), else the highest `.vN` segment. `None` when
+/// no member's version can be read. The ONE latest pick
+/// [`CallSites::is_latest`] and the possible-edge resolver share —
+/// `is_latest` asks whether one recorded parent is it, the index asks
+/// which member it lands on.
+fn family_latest<'m>(dag: &Dag, candidates: &[&'m str]) -> Option<&'m str> {
+    if let Some(u) = candidates.iter().find(|u| {
+        dag.detail(u).is_some_and(|d| {
+            matches!(
+                (d.version.as_deref(), d.latest_version.as_deref()),
+                (Some(v), Some(l)) if normalize_version(v) == normalize_version(l)
+            )
+        })
+    }) {
+        return Some(u);
+    }
+    candidates
+        .iter()
+        .filter_map(|u| version_number(u).map(|n| (n, *u)))
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, u)| u)
+}
+
+/// Resolve one literal [`DepCall`] to the member uid it names — the
+/// possible-edge counterpart of [`CallSites::targets`]'s match, sharing
+/// its pin/latest rules through [`version_pin_matches`]/
+/// [`family_latest`] and layering the package scoping on top (a
+/// possible edge has no recorded parent to anchor the guess). `None`
+/// when the call can't name a target: a name no member owns, a literal
+/// `v=` pin hitting no version segment, or a name the member family
+/// can't disambiguate.
+fn resolve_call<'m>(
+    dag: &Dag,
+    refs: &HashMap<&'m str, Vec<&'m str>, std::hash::BuildHasherDefault<UidHasher>>,
+    sources: &HashMap<(&'m str, &'m str), Vec<&'m str>, std::hash::BuildHasherDefault<UidHasher>>,
+    caller_uid: &str,
+    call: &DepCall,
+) -> Option<&'m str> {
+    let caller_pkg = uid_package(caller_uid).unwrap_or("");
+    match &call.kind {
+        DepCallKind::Ref {
+            name,
+            package,
+            versioned: _,
+            version,
+        } => {
+            let members = refs.get(name.as_str())?;
+            let pool: Vec<&'m str> = match package.as_deref() {
+                // An explicit package arg scopes the family outright
+                // (dbt cross-project semantics) — a miss resolves nothing.
+                Some(p) => members
+                    .iter()
+                    .copied()
+                    .filter(|u| uid_package(u) == Some(p))
+                    .collect(),
+                None => caller_pool(members, caller_pkg),
+            };
+            if let Some(pin) = version.as_deref() {
+                // A literal pin names ONE member — no-hit and multi-hit
+                // (a duplicated version segment across members) both
+                // refuse rather than guess.
+                let mut hits = pool.iter().filter(|u| {
+                    versioned_model_segs(u).is_some_and(|(_, vs)| version_pin_matches(pin, vs))
+                });
+                return match (hits.next(), hits.next()) {
+                    (Some(u), None) => Some(u),
+                    _ => None,
+                };
+            }
+            // No literal pin — the `targets` `None` arm: a kwarg that
+            // isn't a literal rides the bare-ref resolution, an
+            // unversioned member takes it outright, an all-versioned
+            // family hands it to the latest.
+            if let Some(u) = pool.iter().find(|u| versioned_model_segs(u).is_none()) {
+                return Some(u);
+            }
+            family_latest(dag, &pool)
+        }
+        DepCallKind::Source { source, table } => {
+            let members = sources.get(&(source.as_str(), table.as_str()))?;
+            match caller_pool(members, caller_pkg).as_slice() {
+                [u] => Some(u),
+                _ => None,
+            }
         }
     }
 }
@@ -339,60 +620,20 @@ impl<'a> CallSites<'a> {
     }
 
     /// Every literal `ref()`/`source()` call in the node's raw SQL — the
-    /// `unresolved_references` rule's judgment input, in text order.
-    /// Argument names resolve to owned strings (a call the extractor
-    /// couldn't read a literal name for — `ref(var('x'))` — carries no
-    /// `CallKind` name and never appears here); `in_if_arm` marks a call
-    /// sitting inside an `{% if %}`/`{% elif %}`/`{% else %}` arm — the
-    /// rule skips those (a Jinja-switched reference may legitimately not
-    /// exist in the taken arm). `{% for %}` membership does NOT mark a
-    /// call: a loop body's literal ref still runs every render.
-    pub(crate) fn dep_calls(&self) -> Vec<DepCall> {
-        let masked: &str = &self.sites.masked;
-        let mut out = Vec::new();
-        for site in &self.sites.sites {
-            let kind = match &site.kind {
-                CallKind::Ref {
-                    name,
-                    package,
-                    version: _,
-                } => {
-                    // A `v=`/`version=` kwarg judges by its literal
-                    // rendered the way dbt spells the version (a
-                    // number's `str()` — `1.10` → `"1.1"` — a string
-                    // verbatim): `v='v3'` names `.vv3`, never `.v3`.
-                    // A kwarg that isn't a literal is the nonliteral
-                    // `v=var('x')` case — `versioned` true, `version`
-                    // none — which the rule must skip rather than judge
-                    // as unversioned.
-                    let args = site.args.as_ref().map(|a| &masked[a.clone()]);
-                    DepCallKind::Ref {
-                        name: masked[name.clone()].to_string(),
-                        package: package.as_ref().map(|p| masked[p.clone()].to_string()),
-                        versioned: args.is_some_and(|a| {
-                            kwarg(a, "v").is_some() || kwarg(a, "version").is_some()
-                        }),
-                        version: args.and_then(call_version),
-                    }
-                }
-                CallKind::Source { source, table } => DepCallKind::Source {
-                    source: masked[source.clone()].to_string(),
-                    table: masked[table.clone()].to_string(),
-                },
-                CallKind::Config => continue,
-            };
-            out.push(DepCall {
-                span: site.span.clone(),
-                in_if_arm: self
-                    .sites
-                    .branches
-                    .arm_path(site.span.start)
-                    .iter()
-                    .any(|step| step.kind == ArmKind::If),
-                kind,
-            });
-        }
-        out
+    /// `unresolved_references` rule's judgment input and the possible-edge
+    /// index's call stream, in text order. Argument names resolve to owned
+    /// strings (a call the extractor couldn't read a literal name for —
+    /// `ref(var('x'))` — carries no `CallKind` name and never appears
+    /// here); `in_if_arm` marks a call sitting inside an `{% if %}`/
+    /// `{% elif %}`/`{% else %}` arm — the rule skips those (a
+    /// Jinja-switched reference may legitimately not exist in the taken
+    /// arm). `{% for %}` membership does NOT mark a call: a loop body's
+    /// literal ref still runs every render.
+    pub(crate) fn dep_calls(&self) -> &[DepCall] {
+        self.sites
+            .dep_calls
+            .get_or_init(|| extract_dep_calls(&self.sites))
+            .as_slice()
     }
 
     /// Every call span resolving to the parent `uid`, sorted by position —
@@ -471,24 +712,20 @@ impl<'a> CallSites<'a> {
                 {
                     return false;
                 }
-                let uid_version = segs.get(3).map(|v| normalize_version(v));
-                // The pin compares RENDERED — `v='v3'` names the `.vv3`
-                // member, `v=1.10` the `.v1.1`, `v='02'` nothing at all
-                // — while a kwarg that isn't a literal rides the
-                // dynamic-pin resolution (the family's latest), the
-                // bare-ref case. `normalize_version` strips exactly one
-                // `v`, so `pin == normalize(vseg)` is the same
-                // `v{pin} == vseg` check dbt's lookup makes.
+                let uid_vseg = segs.get(3);
                 match call
                     .args
                     .as_ref()
                     .and_then(|a| call_version(&self.sites.masked[a.clone()]))
                 {
-                    Some(v) => {
-                        let Some(uv) = uid_version else { return false };
-                        v == uv
+                    Some(pin) => {
+                        let Some(vseg) = uid_vseg else { return false };
+                        version_pin_matches(&pin, vseg)
                     }
-                    None => uid_version.is_none() || self.is_latest(parent, segs),
+                    // No literal pin: a kwarg that isn't a literal rides
+                    // the dynamic-pin resolution (the family's latest),
+                    // the bare-ref case.
+                    None => uid_vseg.is_none() || self.is_latest(parent, segs),
                 }
             }
             CallKind::Config => false,
@@ -498,7 +735,8 @@ impl<'a> CallSites<'a> {
     /// `parent` is the newest version of its name among this node's
     /// parents — where a bare `ref('x')` lands (`detail.latest_version`
     /// when the manifest carries it, else the highest `.vN` suffix among
-    /// the same kind/package/name parents).
+    /// the same kind/package/name parents — the pick [`family_latest`]
+    /// makes over the same-kind family).
     fn is_latest(&self, parent: &str, segs: &[&str]) -> bool {
         if let Some((version, latest)) = self
             .dag
@@ -510,7 +748,7 @@ impl<'a> CallSites<'a> {
         let [kind, pkg, name, ..] = segs else {
             return false;
         };
-        let Some(max) = self
+        let candidates: Vec<&str> = self
             .sites
             .parents
             .iter()
@@ -519,16 +757,13 @@ impl<'a> CallSites<'a> {
                 let mut it = p.split('.');
                 match (it.next(), it.next(), it.next()) {
                     (Some(k), Some(pk), Some(n)) if k == *kind && pk == *pkg && n == *name => {
-                        version_number(p)
+                        Some(p.as_str())
                     }
                     _ => None,
                 }
             })
-            .max()
-        else {
-            return false;
-        };
-        version_number(parent) == Some(max)
+            .collect();
+        family_latest(self.dag, &candidates) == Some(parent)
     }
 
     /// The byte range of the LAST resolvable `materialized=` literal across
@@ -633,11 +868,62 @@ pub(crate) enum DepCallKind {
         /// The version kwarg's literal value RENDERED — `v=2`/`v='2'` →
         /// `"2"`, `v='v2'` → `"v2"`, `v=1.10` → `"1.1"`. `None` with
         /// `versioned` means the kwarg didn't read literal
-        /// (`v=var('ver')`) — the call is unjudgeable, not unversioned.
+        /// (`v=var('ver')`) — `unresolved_references` can't judge the
+        /// pin, while edge resolution treats it the way `targets` does:
+        /// the bare-ref case, landing on the family's latest.
         version: Option<String>,
     },
     Source {
         source: String,
         table: String,
     },
+}
+
+/// The [`DepCall`]s inside one node's [`Sites`] — the body
+/// [`CallSites::dep_calls`] memoizes. A call the extractor couldn't read a
+/// literal name for (`ref(var('x'))`) carries no `CallKind` name and never
+/// appears.
+fn extract_dep_calls(sites: &Sites) -> Vec<DepCall> {
+    let masked: &str = &sites.masked;
+    let mut out = Vec::new();
+    for site in &sites.sites {
+        let kind = match &site.kind {
+            CallKind::Ref {
+                name,
+                package,
+                version: _,
+            } => {
+                // A `v=`/`version=` kwarg judges by its literal rendered
+                // the way dbt spells the version (a number's `str()` —
+                // `1.10` → `"1.1"` — a string verbatim): `v='v3'` names
+                // `.vv3`, never `.v3`. A kwarg that isn't a literal is the
+                // nonliteral `v=var('x')` case — `versioned` true,
+                // `version` none — which a consumer must skip rather than
+                // judge as unversioned.
+                let args = site.args.as_ref().map(|a| &masked[a.clone()]);
+                DepCallKind::Ref {
+                    name: masked[name.clone()].to_string(),
+                    package: package.as_ref().map(|p| masked[p.clone()].to_string()),
+                    versioned: args
+                        .is_some_and(|a| kwarg(a, "v").is_some() || kwarg(a, "version").is_some()),
+                    version: args.and_then(call_version),
+                }
+            }
+            CallKind::Source { source, table } => DepCallKind::Source {
+                source: masked[source.clone()].to_string(),
+                table: masked[table.clone()].to_string(),
+            },
+            CallKind::Config => continue,
+        };
+        out.push(DepCall {
+            span: site.span.clone(),
+            in_if_arm: sites
+                .branches
+                .arm_path(site.span.start)
+                .iter()
+                .any(|step| step.kind == ArmKind::If),
+            kind,
+        });
+    }
+    out
 }

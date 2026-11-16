@@ -18,6 +18,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `dbtl lint` in manifest mode now counts literal `ref()`/`source()`
+  calls inside Jinja branches dbt never rendered (`target`-gated arms,
+  `{% if execute %}`) as possible consumers — a lint-only judgment that
+  never joins the dbt-faithful lineage graph.
 - Fewer models are skipped as unparsable SQL: a `{{ }}` standing where a
   whole clause goes (directly after a complete expression) renders as
   whitespace, and a `{{ }}` on an `IN`/`ANY`/`SOME`/`ALL` right-hand side

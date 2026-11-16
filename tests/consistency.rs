@@ -36,13 +36,13 @@ fn node_sets_and_infos_are_identical() {
     // Covers the config precedence chain, the project tree, disabled-node
     // dropping, and the comment semantics in one comparison.
     let (m, s) = dags();
-    cmp::assert_node_infos_identical(&m, &s, cmp::NO_DROPPED_EDGES);
+    cmp::assert_node_infos_identical(&m, &s, cmp::NO_DROPPED_EDGES, cmp::NO_SOURCE_ONLY_EDGES);
 }
 
 #[test]
 fn full_lineage_closures_are_identical() {
     let (m, s) = dags();
-    cmp::assert_closures_identical(&m, &s, cmp::NO_DROPPED_EDGES);
+    cmp::assert_closures_identical(&m, &s, cmp::NO_DROPPED_EDGES, cmp::NO_SOURCE_ONLY_EDGES);
 }
 
 #[test]

@@ -430,8 +430,8 @@ fn source_mode_matches_the_manifest_node_set_and_edges() {
     // same uid set, same adjacency (`ref('fct_orders')` → `.v2`, the
     // `v=`/`version=` pins → their member).
     let (m, s) = both();
-    cmp::assert_node_infos_identical(&m, &s, cmp::NO_DROPPED_EDGES);
-    cmp::assert_closures_identical(&m, &s, cmp::NO_DROPPED_EDGES);
+    cmp::assert_node_infos_identical(&m, &s, cmp::NO_DROPPED_EDGES, cmp::NO_SOURCE_ONLY_EDGES);
+    cmp::assert_closures_identical(&m, &s, cmp::NO_DROPPED_EDGES, cmp::NO_SOURCE_ONLY_EDGES);
 }
 
 #[test]

@@ -9,3 +9,14 @@ models:
         tests:
           - unique
           - not_null
+  # The `target.name == 'prod'` arm refs stg_prod_orders — real dbt never
+  # renders it under `dev`, so the manifest's depends_on records stg_orders
+  # alone while the source loader keeps both edges.
+  - name: int_order_split
+    description: "Order rows re-staged by environment branch"
+    columns:
+      - name: order_id
+        description: "Order identifier"
+        tests:
+          - unique
+          - not_null

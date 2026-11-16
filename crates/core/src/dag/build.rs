@@ -449,6 +449,10 @@ impl Dag {
                 .ref_scope
                 .clone()
                 .unwrap_or_else(|| ref_scope_from_manifest(manifest)),
+            // The source loader is the only producer that carries a
+            // `ref_scope` on the manifest itself (see the field docs) —
+            // its presence marks the graph as source-mode.
+            from_source: manifest.ref_scope.is_some(),
         };
         // The overview needs the resolved root package, which is a property of
         // the built graph — a second pass over the manifest's `docs` map.

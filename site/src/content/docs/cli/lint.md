@@ -166,6 +166,7 @@ The precedence is `--fail-on`, then the top-level `fail_on` in `.dbtl.yml`, then
 Each rule declares what it needs: the graph alone, parsed model SQL, or the warehouse `catalog.json` record. A rule whose input is absent never runs — `dbtl check` prints a `SKIP lint <rule>: requires …` row and `dbtl lint` counts it on the summary line (`M skipped (need --catalog)`). That is informational and never a failure.
 
 - `dbtl` parses SQL lazily per model and reuses the result across rules.
+- In manifest mode, a `ref()` or `source()` inside a Jinja branch dbt never rendered — a `target`-gated arm, an `{% if execute %}` body — is missing from `depends_on`, so it adds no graph edge. Rules that judge whether a node is read or is a proven leaf (`unused_sources`, `unused_models`, `model_fanout`, `rejoining_upstream`, `chained_views`) still count the call as a possible read, matching what source mode records as real edges. One limit: the default root-project scope prunes package nodes, so a root source read only from an installed package's unrendered branch still reports as unused.
 - `catalog.json` is detected next to the data source. Use `--catalog <path>` to point elsewhere.
 - `--sql-dialect` pins the parser dialect. Some results depend on it: `duplicate_output_columns` flags repeats of an un-aliased expression such as `sum(id), sum(id)` only under Postgres and Redshift. Source mode has no adapter to read, so pass `--sql-dialect postgres` to get that check.
 - The TUI runs the graph and catalog rules only. Parsing every model up front would stall startup.

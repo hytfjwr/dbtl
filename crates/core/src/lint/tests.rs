@@ -11252,3 +11252,413 @@ fn fix_planning_refuses_an_in_rhs_models_cte_delete() {
     assert_eq!(plan.refused.len(), 1);
     assert_eq!(plan.refused[0].0, LintRule::UnusedCte);
 }
+
+// ---- possible_edges ----------------------------------------------------------
+// In manifest mode a literal `ref()`/`source()` inside a Jinja arm real
+// dbt never rendered leaves no `depends_on` edge — the possible-edge index
+// (`CallSiteResolver::possible_children`) resolves those calls to graph
+// members so "could anything read this" rules count them as uses. The
+// real DAG never gains the edge: each test pins the caller's recorded
+// parents alongside the lint effect.
+
+#[test]
+fn possible_edges_suppress_unused_sources_on_a_branch_only_call() {
+    // `prod_orders` is named only inside the `{% if %}` arm real dbt
+    // skipped — the manifest records `orders` alone. The source is still
+    // possibly read, so `unused_sources` can't claim "no node reads it";
+    // the truly-unreferenced `unused` source still flags.
+    let m = manifest(
+        vec![dep_model(
+            "branchy",
+            "{% if target.name == 'prod' %}\nselect * from {{ source('raw', 'prod_orders') }}\n\
+             {% else %}\nselect * from {{ source('raw', 'orders') }}\n{% endif %}\n",
+        )],
+        vec![
+            source("raw.orders"),
+            source("raw.prod_orders"),
+            source("raw.unused"),
+        ],
+        &[("source.p.raw.orders", "model.p.branchy")],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::UnusedSources),
+        vec!["source.p.raw.unused"],
+        "the branch-only source counts as possibly read: {f:?}"
+    );
+    // The possible edge is lint-only — `depends_on` still answers for the
+    // real graph.
+    assert_eq!(
+        Dag::build(&m).direct_parents("model.p.branchy"),
+        &["source.p.raw.orders".to_string()],
+        "the manifest's recorded edges stay the graph"
+    );
+}
+
+#[test]
+fn possible_edges_suppress_unused_models_on_a_branch_only_ref() {
+    // `stg_hidden` is named only inside an execute-gated arm — the
+    // manifest never recorded the edge, but the call may run in another
+    // render: the model counts as possibly read, `stg_truly_unused` still
+    // flags, and `stg_ok`'s recorded child keeps it out too.
+    let m = manifest(
+        vec![
+            model("stg_hidden", "staging/stg_hidden.sql"),
+            model("stg_truly_unused", "staging/stg_truly_unused.sql"),
+            model("stg_ok", "staging/stg_ok.sql"),
+            dep_model(
+                "branchy",
+                "{% if execute %}{{ ref('stg_hidden') }}{% endif %}\nselect * from {{ ref('stg_ok') }}",
+            ),
+        ],
+        vec![],
+        &[("model.p.stg_ok", "model.p.branchy")],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::UnusedModels),
+        vec!["model.p.stg_truly_unused"],
+        "the branch-only ref counts as a possible read: {f:?}"
+    );
+    assert_eq!(
+        Dag::build(&m).direct_parents("model.p.branchy"),
+        &["model.p.stg_ok".to_string()],
+        "the possible edge never becomes a real one"
+    );
+}
+
+#[test]
+fn possible_edges_count_toward_model_fanout() {
+    // `hub` feeds four leaf models; `leaf_e`'s read sits in an arm real
+    // dbt never rendered — the possible child still counts toward the
+    // hub's leaf tally, so the default threshold (5) trips.
+    let m = manifest(
+        vec![
+            model("hub", "marts/hub.sql"),
+            model("leaf_a", "marts/leaf_a.sql"),
+            model("leaf_b", "marts/leaf_b.sql"),
+            model("leaf_c", "marts/leaf_c.sql"),
+            model("leaf_d", "marts/leaf_d.sql"),
+            dep_model(
+                "leaf_e",
+                "{% if execute %}{{ ref('hub') }}{% endif %}\nselect 1",
+            ),
+        ],
+        vec![],
+        &[
+            ("model.p.hub", "model.p.leaf_a"),
+            ("model.p.hub", "model.p.leaf_b"),
+            ("model.p.hub", "model.p.leaf_c"),
+            ("model.p.hub", "model.p.leaf_d"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::ModelFanout),
+        vec!["model.p.hub"],
+        "the possible branch child counts toward the threshold: {f:?}"
+    );
+}
+
+#[test]
+fn possible_edges_block_a_chained_views_end() {
+    // v1→…→v5 is a proven 5-chain end — but `ext`'s branch-only ref means
+    // a view consumer may exist that dbt never recorded: v5 is not a
+    // proven END, so it can't flag. The control chain w1→…→w5 still does.
+    let mut nodes: Vec<(String, RawNode)> =
+        ["v1", "v2", "v3", "v4", "v5", "w1", "w2", "w3", "w4", "w5"]
+            .into_iter()
+            .map(|n| mat_model(n, "view"))
+            .collect();
+    let (ext_uid, mut ext) = dep_model(
+        "ext",
+        "{% if execute %}{{ ref('v5') }}{% endif %}\nselect 1",
+    );
+    ext.config.materialized = Some("view".into());
+    nodes.push((ext_uid, ext));
+    let m = manifest(
+        nodes,
+        vec![],
+        &[
+            ("model.p.v1", "model.p.v2"),
+            ("model.p.v2", "model.p.v3"),
+            ("model.p.v3", "model.p.v4"),
+            ("model.p.v4", "model.p.v5"),
+            ("model.p.w1", "model.p.w2"),
+            ("model.p.w2", "model.p.w3"),
+            ("model.p.w3", "model.p.w4"),
+            ("model.p.w4", "model.p.w5"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::ChainedViews),
+        vec!["model.p.w5"],
+        "a possible view consumer unproves v5's chain end: {f:?}"
+    );
+}
+
+#[test]
+fn possible_edges_block_the_rejoining_upstream_single_use_claim() {
+    // a → b → c AND a → c: b flags as the redundant hop. `int_b2` shares
+    // the same shape — but `probe`'s branch-only ref means b2 may have a
+    // second reader the manifest never recorded, so its single-use claim
+    // can't be established.
+    let m = manifest(
+        vec![
+            model("stg_a", "staging/stg_a.sql"),
+            model("int_b", "intermediate/int_b.sql"),
+            model("fct_c", "marts/fct_c.sql"),
+            model("stg_a2", "staging/stg_a2.sql"),
+            model("int_b2", "intermediate/int_b2.sql"),
+            model("fct_c2", "marts/fct_c2.sql"),
+            dep_model(
+                "probe",
+                "{% if execute %}{{ ref('int_b2') }}{% endif %}\nselect 1",
+            ),
+        ],
+        vec![],
+        &[
+            ("model.p.stg_a", "model.p.int_b"),
+            ("model.p.int_b", "model.p.fct_c"),
+            ("model.p.stg_a", "model.p.fct_c"),
+            ("model.p.stg_a2", "model.p.int_b2"),
+            ("model.p.int_b2", "model.p.fct_c2"),
+            ("model.p.stg_a2", "model.p.fct_c2"),
+        ],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::RejoiningUpstream),
+        vec!["model.p.int_b"],
+        "the possible second consumer disqualifies int_b2: {f:?}"
+    );
+}
+
+#[test]
+fn possible_edges_leave_root_models_on_the_dep_call_shape() {
+    // `lonely`'s only dep call sits in an unrendered arm — no recorded
+    // parents, but `root_models` already keys on "calls a dependency at
+    // all": the branch call still means under-connected, not a root.
+    let m = manifest(
+        vec![
+            dep_model(
+                "lonely",
+                "{% if execute %}{{ ref('stg_x') }}{% endif %}\nselect 1",
+            ),
+            model("stg_x", "staging/stg_x.sql"),
+        ],
+        vec![],
+        &[],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::RootModels),
+        vec!["model.p.stg_x"],
+        "the unrendered ref suppresses lonely's root verdict — stg_x still roots: {f:?}"
+    );
+}
+
+#[test]
+fn possible_edges_ignore_calls_inside_jinja_comments() {
+    // `{# {{ source('raw', 'ghost') }} #}` is comment-masked — the call
+    // never extracts, so `ghost` still flags unused.
+    let m = manifest(
+        vec![dep_model(
+            "commented",
+            "select 1\n{# select * from {{ source('raw', 'ghost') }} #}\n",
+        )],
+        vec![source("raw.ghost")],
+        &[],
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::UnusedSources),
+        vec!["source.p.raw.ghost"],
+        "a commented call never produces a possible edge: {f:?}"
+    );
+}
+
+#[test]
+fn possible_edges_never_form_off_dynamic_missing_or_disabled_targets() {
+    // `ref(var('m'))` reads no literal name — no call, no edge. `ref('ghost')`
+    // names nothing; `ref('parked')` names a disabled node; `source('raw',
+    // 'gone')` isn't declared — none resolve to a graph member, so the one
+    // real unused source still flags (and if-arm calls stay unjudged by
+    // `unresolved_references`, as before).
+    let mut m = manifest(
+        vec![dep_model(
+            "reads",
+            "{% if execute %}{{ ref(var('m')) }}{{ ref('ghost') }}{{ ref('parked') }}{{ source('raw', 'gone') }}{% endif %}\nselect 1",
+        )],
+        vec![source("raw.truly_unused")],
+        &[],
+    );
+    m.disabled.insert(
+        "model.p.parked".to_string(),
+        serde_json::Value::Object(Default::default()),
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::UnusedSources),
+        vec!["source.p.raw.truly_unused"],
+        "an unresolvable branch call can't suppress a finding: {f:?}"
+    );
+    assert!(
+        f.iter().all(|f| f.rule != LintRule::UnresolvedReferences),
+        "if-arm calls stay unjudged: {f:?}"
+    );
+}
+
+#[test]
+fn possible_edges_resolve_versioned_pins_and_package_refs() {
+    // `ref('x', v=1)` names the v1 member, a bare `ref('x')` lands on the
+    // declared latest (v2), and `ref('pkg', 'pm')` scopes to the package
+    // model — every pinned member counts as possibly read.
+    let m = manifest(
+        vec![
+            versioned_model("x", "v1", "staging/x_v1.sql"),
+            versioned_model("x", "v2", "staging/x_v2.sql"),
+            pkg_model("pkg", "pm"),
+            dep_model(
+                "reads",
+                "{% if execute %}{{ ref('x', v=1) }}{{ ref('x') }}{{ ref('pkg', 'pm') }}{% endif %}\nselect 1",
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let resolver = super::call_sites::CallSiteResolver::new(&dag);
+    for uid in ["model.p.x.v1", "model.p.x.v2", "model.pkg.pm"] {
+        assert_eq!(
+            resolver.possible_children(uid),
+            &std::collections::BTreeSet::from(["model.p.reads".to_string()]),
+            "{uid} should carry the possible consumer"
+        );
+    }
+    // The calls' targets never entered `depends_on` — the graph records
+    // nothing.
+    assert!(
+        dag.direct_parents("model.p.reads").is_empty(),
+        "the possible edges never became real ones"
+    );
+}
+
+#[test]
+fn possible_edges_match_version_pins_the_way_targets_does() {
+    // `ref('x', v='v3')` pins the DECLARED version string verbatim —
+    // the member declared `version: 'v3'` lives on the `.vv3` uid
+    // segment, so the call names `.vv3`, never the `version: 3` member
+    // on `.v3`. The pin compares rendered-as-is against the normalized
+    // `.vN` segment (the same check `targets` runs on a recorded edge);
+    // normalizing BOTH sides would land on the wrong member. A kwarg
+    // that isn't a literal — `v=var('ver')` — takes the same arm a
+    // bare ref does: the family's latest, `x.v3` here (neither member's
+    // `version` field reads its declared `latest_version: 2`, so the
+    // `.vN` max decides).
+    let m = manifest(
+        vec![
+            versioned_model("x", "v3", "staging/x_v3.sql"),
+            versioned_model("x", "vv3", "staging/x_vv3.sql"),
+            dep_model(
+                "pin_reader",
+                "{% if execute %}{{ ref('x', v='v3') }}{% endif %}\nselect 1",
+            ),
+            dep_model(
+                "dyn_reader",
+                "{% if execute %}{{ ref('x', v=var('ver')) }}{% endif %}\nselect 1",
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let resolver = super::call_sites::CallSiteResolver::new(&dag);
+    assert_eq!(
+        resolver.possible_children("model.p.x.vv3"),
+        &std::collections::BTreeSet::from(["model.p.pin_reader".to_string()]),
+        "the literal pin names the .vv3 member — and only it"
+    );
+    assert_eq!(
+        resolver.possible_children("model.p.x.v3"),
+        &std::collections::BTreeSet::from(["model.p.dyn_reader".to_string()]),
+        "the dynamic pin lands on the family's latest, .v3 — and only it"
+    );
+}
+
+#[test]
+fn possible_edges_never_point_a_node_at_itself() {
+    // `ref('stg_rec')` inside `stg_rec` resolves to its own uid — a
+    // self-loop no real edge could form. The index drops it: `stg_rec`
+    // keeps judging by the consumers it actually has — none, so it flags
+    // like the truly-unused control.
+    let m = manifest(
+        vec![
+            dep_model(
+                "stg_rec",
+                "{% if execute %}{{ ref('stg_rec') }}{% endif %}\nselect 1",
+            ),
+            model("stg_truly_unused", "staging/stg_truly_unused.sql"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let resolver = super::call_sites::CallSiteResolver::new(&dag);
+    assert!(
+        resolver.possible_children("model.p.stg_rec").is_empty(),
+        "a self-resolving call never becomes a possible edge"
+    );
+    let f = findings_of(&m, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::UnusedModels),
+        vec!["model.p.stg_rec", "model.p.stg_truly_unused"],
+        "the self-call doesn't count as a consumer: {f:?}"
+    );
+}
+
+#[test]
+fn possible_edges_stay_off_on_a_source_mode_dag() {
+    // Source mode records every resolved call — including branch arms —
+    // as a REAL edge, so the possible-edge index has nothing to recover:
+    // the source gets its consumer through `depends_on`, and the index
+    // reports empty by construction.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    std::fs::write(
+        dir.path().join("dbt_project.yml"),
+        "name: p\nmodel-paths: [models]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("models/sources.yml"),
+        "version: 2\nsources:\n  - name: raw\n    tables:\n      - name: orders\n      - name: prod_orders\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("models/branchy.sql"),
+        "{% if execute %}\nselect * from {{ source('raw', 'prod_orders') }}\n\
+         {% else %}\nselect * from {{ source('raw', 'orders') }}\n{% endif %}\n",
+    )
+    .unwrap();
+    let sm = crate::manifest_from_source(dir.path()).unwrap();
+    let dag = Dag::build(&sm);
+    assert!(
+        dag.is_source_mode(),
+        "the synthesized manifest marks the load"
+    );
+    assert!(
+        dag.direct_parents("model.p.branchy")
+            .iter()
+            .any(|p| p == "source.p.raw.prod_orders"),
+        "source mode records the arm the manifest drops"
+    );
+    let resolver = super::call_sites::CallSiteResolver::new(&dag);
+    assert!(
+        resolver
+            .possible_children("source.p.raw.prod_orders")
+            .is_empty(),
+        "a source-mode dag has no possible edges to recover"
+    );
+}
