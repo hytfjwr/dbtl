@@ -48,3 +48,42 @@ fn main() -> Result<()> {
         Command::ChangelogRelease(args) => changelog_cmd::run(args),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The subcommand names the repo's docs and workflows invoke — clap
+    /// derives them from the enum, so a rename would silently break CI.
+    #[test]
+    fn subcommands_route_to_their_handlers() {
+        for (argv, want) in [
+            ("xtask regen-sample-manifest", "regen"),
+            ("xtask gen-fixture-manifest --project p", "gen-fixture"),
+            ("xtask synth --models 4 --out /tmp/x", "synth"),
+            (
+                "xtask perf-report --base b --head h --metrics-dir m",
+                "perf",
+            ),
+            ("xtask gen-docs --check", "docs"),
+            (
+                "xtask changelog-release --version 0.6.3 --date 2024-01-01",
+                "changelog",
+            ),
+        ] {
+            let cli = Cli::try_parse_from(argv.split_whitespace().collect::<Vec<_>>())
+                .unwrap_or_else(|e| panic!("{argv}: {e}"));
+            let got = match &cli.command {
+                Command::RegenSampleManifest(_) => "regen",
+                Command::GenFixtureManifest(_) => "gen-fixture",
+                Command::Synth(_) => "synth",
+                Command::PerfReport(_) => "perf",
+                Command::GenDocs(_) => "docs",
+                Command::ChangelogRelease(_) => "changelog",
+            };
+            assert_eq!(got, want, "{argv}");
+        }
+        // An unknown flag is a parse error, not a silent default.
+        assert!(Cli::try_parse_from(["xtask", "synth", "--bogus"]).is_err());
+    }
+}

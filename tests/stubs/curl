@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Test stub for `curl` — used by tests/action_scripts.rs, which puts this
+# directory first on PATH so no network is ever touched.
+#
+# Every call appends its argv to $STUB_LOG. The URL's basename is matched
+# against the files in $STUB_DIR/curl/ — the matching file is written to
+# `-o`'s argument (or stdout); no match exits 22, curl -f's exit on an
+# HTTP error. `curl_fail=1` in $STUB_DIR/responses.env fails every call.
+set -u
+printf 'curl' >>"${STUB_LOG:?STUB_LOG is required}"
+printf ' %q' "$@" >>"$STUB_LOG"
+printf '\n' >>"$STUB_LOG"
+# shellcheck source=/dev/null
+[ -f "${STUB_DIR:-}/responses.env" ] && . "${STUB_DIR}/responses.env"
+[ -z "${curl_fail:-}" ] || exit 22
+
+url="" out="" prev=""
+for a in "$@"; do
+	if [ -n "$prev" ]; then
+		[ "$prev" = "-o" ] && out="$a"
+		prev=""
+		continue
+	fi
+	case "$a" in
+	-o | --retry | -X | -H | -d) prev="$a" ;;
+	-*) ;;
+	*) url="$a" ;;
+	esac
+done
+
+src=""
+for f in "${STUB_DIR:-}"/curl/*; do
+	[ -e "$f" ] || continue
+	b="$(basename "$f")"
+	case "$url" in *"$b") src="$f" ;; esac
+done
+[ -n "$src" ] || exit 22
+if [ -n "$out" ]; then
+	cp "$src" "$out"
+else
+	cat "$src"
+fi
+exit 0

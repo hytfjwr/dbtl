@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Test stub for `git` — used by tests/action_scripts.rs, which puts this
+# directory first on PATH so no real repository is ever touched.
+#
+# Every call appends its argv to $STUB_LOG. Only the two calls run.sh can
+# make are modeled:
+#   git -C <dir> rev-parse --verify --quiet <sha>^{commit}
+#       succeeds iff <sha> is a line of $STUB_DIR/git_known_shas
+#   git -C <dir> fetch --no-tags --depth=1 origin <sha>
+#       appends <sha> to git_known_shas; `git_fetch_fail=1` in
+#       $STUB_DIR/responses.env makes it exit 1 instead
+set -u
+printf 'git' >>"${STUB_LOG:?STUB_LOG is required}"
+printf ' %q' "$@" >>"$STUB_LOG"
+printf '\n' >>"$STUB_LOG"
+# shellcheck source=/dev/null
+[ -f "${STUB_DIR:-}/responses.env" ] && . "${STUB_DIR}/responses.env"
+
+while [ "${1:-}" = "-C" ]; do shift 2; done
+known="${STUB_DIR:?}/git_known_shas"
+case "${1:-}" in
+rev-parse)
+	rev="${*: -1}"
+	rev="${rev%'^{commit}'}"
+	if grep -qx "$rev" "$known" 2>/dev/null; then
+		printf '%s\n' "$rev"
+		exit 0
+	fi
+	exit 1
+	;;
+fetch)
+	[ -z "${git_fetch_fail:-}" ] || exit 1
+	printf '%s\n' "${*: -1}" >>"$known"
+	exit 0
+	;;
+esac
+exit 0

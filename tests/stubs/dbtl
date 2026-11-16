@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Test stub for the `dbtl` binary — used by tests/action_scripts.rs, which
+# puts this directory first on PATH.
+#
+# Every call appends its argv to $STUB_LOG. Behavior comes from
+# $STUB_DIR/responses.env:
+#   dbtl_version      text printed by `dbtl --version` (default "dbtl 0.0.0")
+#   dbtl_check_exit   exit code of `dbtl check` (default 0)
+#   dbtl_skip_report  nonempty = check exits without writing the report
+# `check` honors `--report markdown:<path>` / `--report sarif:<path>`:
+# the markdown target gets $STUB_DIR/dbtl_report.txt (a one-line default
+# when absent), the SARIF target a minimal empty-run document.
+set -u
+printf 'dbtl' >>"${STUB_LOG:?STUB_LOG is required}"
+printf ' %q' "$@" >>"$STUB_LOG"
+printf '\n' >>"$STUB_LOG"
+# shellcheck source=/dev/null
+[ -f "${STUB_DIR:-}/responses.env" ] && . "${STUB_DIR}/responses.env"
+
+case "${1:-}" in
+--version | -V | version)
+	printf '%s\n' "${dbtl_version:-dbtl 0.0.0}"
+	;;
+check)
+	report="" sarif=""
+	shift
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--report)
+			case "${2:-}" in
+			markdown:*) report="${2#markdown:}" ;;
+			sarif:*) sarif="${2#sarif:}" ;;
+			esac
+			shift 2
+			;;
+		--format | --path-prefix | --diff | --fail-on | --select | --exclude | --project | --state | --output | --report-dir) shift 2 ;;
+		*) shift ;;
+		esac
+	done
+	if [ -n "$report" ] && [ -z "${dbtl_skip_report:-}" ]; then
+		if [ -f "${STUB_DIR:-}/dbtl_report.txt" ]; then
+			cp "${STUB_DIR}/dbtl_report.txt" "$report"
+		else
+			printf '# stub dbtl report\n' >"$report"
+		fi
+	fi
+	[ -z "$sarif" ] || printf '{"version":"2.1.0","runs":[]}\n' >"$sarif"
+	exit "${dbtl_check_exit:-0}"
+	;;
+esac
+exit 0
