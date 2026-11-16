@@ -37,7 +37,7 @@ pub(super) fn apply_meta(
         String,
         std::collections::BTreeSet<(Option<String>, String)>,
     >,
-    in_file: &HashMap<String, Enabled>,
+    in_file: &HashMap<String, EnabledScan>,
     tree: &HashMap<String, TreeConfig>,
     unverifiable: &mut std::collections::BTreeSet<String>,
     // The schema `config.tags:` channel — uid → entries in declaration
@@ -67,11 +67,20 @@ pub(super) fn apply_meta(
             &format!("{yml_path}: {type_prefix} '{}' config.enabled", entry.name),
             warnings,
         ));
-        let verdict = in_file
-            .get(&uid)
-            .copied()
-            .or(schema)
-            .or_else(|| tree.get(&uid).and_then(|t| t.enabled_verdict()));
+        let fallback = schema.or_else(|| tree.get(&uid).and_then(|t| t.enabled_verdict()));
+        let verdict = match in_file.get(&uid) {
+            // The scan folds the lower channels — counting the gated
+            // calls against the provable ones. `ctx` names the file the
+            // `{% if %}` lives in (the node's own), not the schema file.
+            Some(scan) => {
+                let ctx = nodes
+                    .get(&uid)
+                    .and_then(|n| n.original_file_path.clone())
+                    .unwrap_or_else(|| uid.clone());
+                scan.resolve(fallback, warnings, &ctx)
+            }
+            None => fallback,
+        };
         match verdict {
             Some(Enabled::Off) => {
                 unverifiable.remove(&uid);

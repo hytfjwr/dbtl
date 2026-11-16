@@ -34,11 +34,20 @@ fn no_vars() -> Vars {
     test_vars(serde_json::json!({}), serde_json::json!({}), "p")
 }
 
-/// `pat.enabled` verdict with fresh warnings — returns the
+/// A [`JinjaScope`] over `sql` bound to `vars` — the extractor tests'
+/// one-liner scope (`no_vars()` wherever branch conditions don't matter).
+fn scope_of<'v>(sql: &str, vars: &'v Vars) -> JinjaScope<'v> {
+    JinjaScope::new(sql, vars)
+}
+
+/// `pat.enabled` verdict folded over an empty fallback — the
 /// (verdict, warnings) pair.
 fn enabled(sql: &str, vars: &Vars) -> (Option<Enabled>, Vec<String>) {
     let mut w = Vec::new();
-    let d = Patterns::new().enabled(sql, vars, &mut w, "models/m.sql");
+    let scope = scope_of(sql, vars);
+    let d = Patterns::new()
+        .enabled(sql, &scope, &mut w, "models/m.sql")
+        .resolve(None, &mut w, "models/m.sql");
     (d, w)
 }
 
@@ -49,35 +58,72 @@ fn config_extractors_scope_to_config_calls_in_any_arg_order() {
     let mut w = Vec::new();
     // The key matches even AFTER a prior argument inside the same call.
     assert_eq!(
-        pat.materialized("{{ config(enabled=true, materialized='table') }}"),
+        pat.materialized(
+            "{{ config(enabled=true, materialized='table') }}",
+            &scope_of(
+                "{{ config(enabled=true, materialized='table') }}",
+                &no_vars()
+            )
+        ),
         Some("table".to_string())
     );
     assert_eq!(
         pat.enabled(
             "{{ config(materialized='view', enabled=false) }}",
-            &vars,
+            &scope_of("{{ config(materialized='view', enabled=false) }}", &vars),
             &mut w,
             "m.sql"
-        ),
+        )
+        .resolve(None, &mut w, "m.sql"),
         Some(Enabled::Off)
     );
     assert_eq!(
-        pat.enabled("{{ config(enabled=False) }}", &vars, &mut w, "m.sql"),
+        pat.enabled(
+            "{{ config(enabled=False) }}",
+            &scope_of("{{ config(enabled=False) }}", &vars),
+            &mut w,
+            "m.sql"
+        )
+        .resolve(None, &mut w, "m.sql"),
         Some(Enabled::Off)
     );
     // Outside a config() call the keys are inert (dbt only honours them
     // inside config()).
-    assert_eq!(pat.materialized("-- materialized='ephemeral'"), None);
     assert_eq!(
-        pat.enabled("where enabled = false", &vars, &mut w, "m.sql"),
+        pat.materialized(
+            "-- materialized='ephemeral'",
+            &scope_of("-- materialized='ephemeral'", &no_vars())
+        ),
         None
     );
     assert_eq!(
-        pat.enabled("-- note: enabled=false someday", &vars, &mut w, "m.sql"),
+        pat.enabled(
+            "where enabled = false",
+            &scope_of("where enabled = false", &vars),
+            &mut w,
+            "m.sql"
+        )
+        .resolve(None, &mut w, "m.sql"),
         None
     );
     assert_eq!(
-        pat.enabled("{% set enabled=false %}", &vars, &mut w, "m.sql"),
+        pat.enabled(
+            "-- note: enabled=false someday",
+            &scope_of("-- note: enabled=false someday", &vars),
+            &mut w,
+            "m.sql"
+        )
+        .resolve(None, &mut w, "m.sql"),
+        None
+    );
+    assert_eq!(
+        pat.enabled(
+            "{% set enabled=false %}",
+            &scope_of("{% set enabled=false %}", &vars),
+            &mut w,
+            "m.sql"
+        )
+        .resolve(None, &mut w, "m.sql"),
         None
     );
 }
@@ -232,6 +278,10 @@ fn render_warns_on_uninterpretable_doc_calls() {
 fn config_meta_parses_literal_dicts() {
     let m = config_meta(
         "{{ config(materialized='table', meta={'owner': 'alice', 'deep': {'x': 1}}) }}",
+        &scope_of(
+            "{{ config(materialized='table', meta={'owner': 'alice', 'deep': {'x': 1}}) }}",
+            &no_vars(),
+        ),
     )
     .expect("a meta dict parses");
     assert_eq!(m["owner"], serde_json::json!("alice"));
@@ -239,6 +289,10 @@ fn config_meta_parses_literal_dicts() {
     // Numbers/bools/lists/tuples and double quotes all convert.
     let m = config_meta(
         r#"{{ config(meta={'n': 2, 'f': 1.5, 'b': True, 'l': [1, "x"], 't': (3,)}) }}"#,
+        &scope_of(
+            r#"{{ config(meta={'n': 2, 'f': 1.5, 'b': True, 'l': [1, "x"], 't': (3,)}) }}"#,
+            &no_vars(),
+        ),
     )
     .unwrap();
     assert_eq!(m["n"], serde_json::json!(2));
@@ -247,16 +301,40 @@ fn config_meta_parses_literal_dicts() {
     assert_eq!(m["l"], serde_json::json!([1, "x"]));
     assert_eq!(m["t"], serde_json::json!([3]));
     // Jinja's lowercase literal spellings convert the same way.
-    let m = config_meta(r#"{{ config(meta={'b': true, 'x': none}) }}"#).unwrap();
+    let m = config_meta(
+        r#"{{ config(meta={'b': true, 'x': none}) }}"#,
+        &scope_of(r#"{{ config(meta={'b': true, 'x': none}) }}"#, &no_vars()),
+    )
+    .unwrap();
     assert_eq!(m["b"], serde_json::json!(true));
     assert_eq!(m["x"], serde_json::Value::Null);
     // `metadata=` is not `meta`; a `meta` inside comments/strings elsewhere
     // can't configure the node; unresolvable exprs drop rather than guess.
-    assert!(config_meta("{{ config(metadata={'a': 1}) }}").is_none());
-    assert!(config_meta("{{ config(meta=var('m')) }}").is_none());
-    assert!(config_meta("-- no config here").is_none());
-    assert!(config_meta("{{ config(meta={'a': 1} if x else {}) }}").is_none());
-    assert!(config_meta("{{ config(meta='not-a-dict') }}").is_none());
+    assert!(config_meta(
+        "{{ config(metadata={'a': 1}) }}",
+        &scope_of("{{ config(metadata={'a': 1}) }}", &no_vars())
+    )
+    .is_none());
+    assert!(config_meta(
+        "{{ config(meta=var('m')) }}",
+        &scope_of("{{ config(meta=var('m')) }}", &no_vars())
+    )
+    .is_none());
+    assert!(config_meta(
+        "-- no config here",
+        &scope_of("-- no config here", &no_vars())
+    )
+    .is_none());
+    assert!(config_meta(
+        "{{ config(meta={'a': 1} if x else {}) }}",
+        &scope_of("{{ config(meta={'a': 1} if x else {}) }}", &no_vars())
+    )
+    .is_none());
+    assert!(config_meta(
+        "{{ config(meta='not-a-dict') }}",
+        &scope_of("{{ config(meta='not-a-dict') }}", &no_vars())
+    )
+    .is_none());
 }
 
 #[test]
@@ -268,6 +346,12 @@ fn config_meta_merges_every_config_call_per_key() {
         "{{ config(meta={'a': 1, 'b': 'first'}) }}\n\
          select 1\n\
          {{ config(meta={'b': 'second', 'c': 3}) }}",
+        &scope_of(
+            "{{ config(meta={'a': 1, 'b': 'first'}) }}\n\
+         select 1\n\
+         {{ config(meta={'b': 'second', 'c': 3}) }}",
+            &no_vars(),
+        ),
     )
     .expect("both dicts merge");
     assert_eq!(m["a"], serde_json::json!(1));
@@ -278,13 +362,25 @@ fn config_meta_merges_every_config_call_per_key() {
     let m = config_meta(
         "{{ config(meta={'d': {'x': 1}, 'keep': 1}) }}\n\
          {{ config(meta={'d': {'y': 2}}) }}",
+        &scope_of(
+            "{{ config(meta={'d': {'x': 1}, 'keep': 1}) }}\n\
+         {{ config(meta={'d': {'y': 2}}) }}",
+            &no_vars(),
+        ),
     )
     .unwrap();
     assert_eq!(m["d"], serde_json::json!({"y": 2}));
     assert_eq!(m["keep"], serde_json::json!(1));
     // An unresolvable later kwarg can't clear an earlier literal — the
     // merge keeps what it could resolve (a subset of dbt's result).
-    let m = config_meta("{{ config(meta={'a': 1}) }}\n{{ config(meta=var('x')) }}").unwrap();
+    let m = config_meta(
+        "{{ config(meta={'a': 1}) }}\n{{ config(meta=var('x')) }}",
+        &scope_of(
+            "{{ config(meta={'a': 1}) }}\n{{ config(meta=var('x')) }}",
+            &no_vars(),
+        ),
+    )
+    .unwrap();
     assert_eq!(m["a"], serde_json::json!(1));
 }
 
@@ -300,30 +396,50 @@ fn last_config_call_wins_for_scalar_kwargs() {
     //   config(enabled=false)        then config(enabled=true)
     //   → node stays ENABLED
     assert_eq!(
-        pat.materialized("{{ config(materialized='view') }}\n{{ config(materialized='table') }}",),
+        pat.materialized(
+            "{{ config(materialized='view') }}\n{{ config(materialized='table') }}",
+            &scope_of(
+                "{{ config(materialized='view') }}\n{{ config(materialized='table') }}",
+                &no_vars()
+            )
+        ),
         Some("table".to_string())
     );
     assert_eq!(
         pat.enabled(
             "{{ config(enabled=false) }}\n{{ config(enabled=true) }}",
-            &vars,
+            &scope_of(
+                "{{ config(enabled=false) }}\n{{ config(enabled=true) }}",
+                &vars
+            ),
             &mut w,
             "m.sql"
-        ),
+        )
+        .resolve(None, &mut w, "m.sql"),
         Some(Enabled::On)
     );
     assert_eq!(
         pat.enabled(
             "{{ config(enabled=true) }}\n{{ config(enabled=false) }}",
-            &vars,
+            &scope_of(
+                "{{ config(enabled=true) }}\n{{ config(enabled=false) }}",
+                &vars
+            ),
             &mut w,
             "m.sql"
-        ),
+        )
+        .resolve(None, &mut w, "m.sql"),
         Some(Enabled::Off)
     );
     // An unresolvable later value can't override an earlier literal one.
     assert_eq!(
-        pat.materialized("{{ config(materialized='view') }}\n{{ config(materialized=var('m')) }}"),
+        pat.materialized(
+            "{{ config(materialized='view') }}\n{{ config(materialized=var('m')) }}",
+            &scope_of(
+                "{{ config(materialized='view') }}\n{{ config(materialized=var('m')) }}",
+                &no_vars()
+            )
+        ),
         Some("view".to_string())
     );
 }
@@ -495,25 +611,55 @@ fn config_unique_key_keeps_the_declared_shape() {
     // same as `materialized`); an unresolvable expression can't override an
     // earlier literal.
     assert_eq!(
-        config_unique_key("{{ config(unique_key='id') }}"),
+        config_unique_key(
+            "{{ config(unique_key='id') }}",
+            &scope_of("{{ config(unique_key='id') }}", &no_vars())
+        ),
         Some(serde_json::json!("id"))
     );
     assert_eq!(
-        config_unique_key("{{ config(materialized='i', unique_key=['a', 'b']) }}"),
+        config_unique_key(
+            "{{ config(materialized='i', unique_key=['a', 'b']) }}",
+            &scope_of(
+                "{{ config(materialized='i', unique_key=['a', 'b']) }}",
+                &no_vars()
+            )
+        ),
         Some(serde_json::json!(["a", "b"]))
     );
     assert_eq!(
-        config_unique_key("{{ config(unique_key='x') }} {{ config(unique_key=['y','z']) }}"),
+        config_unique_key(
+            "{{ config(unique_key='x') }} {{ config(unique_key=['y','z']) }}",
+            &scope_of(
+                "{{ config(unique_key='x') }} {{ config(unique_key=['y','z']) }}",
+                &no_vars()
+            )
+        ),
         Some(serde_json::json!(["y", "z"]))
     );
     assert_eq!(
-        config_unique_key("{{ config(unique_key='id') }} {{ config(unique_key=var('k')) }}"),
+        config_unique_key(
+            "{{ config(unique_key='id') }} {{ config(unique_key=var('k')) }}",
+            &scope_of(
+                "{{ config(unique_key='id') }} {{ config(unique_key=var('k')) }}",
+                &no_vars()
+            )
+        ),
         Some(serde_json::json!("id")),
         "the unresolvable expr can't shadow the earlier literal"
     );
     // Outside a config() call the key is inert.
-    assert_eq!(config_unique_key("-- unique_key='id'"), None);
-    assert_eq!(config_unique_key("select 1"), None);
+    assert_eq!(
+        config_unique_key(
+            "-- unique_key='id'",
+            &scope_of("-- unique_key='id'", &no_vars())
+        ),
+        None
+    );
+    assert_eq!(
+        config_unique_key("select 1", &scope_of("select 1", &no_vars())),
+        None
+    );
 }
 
 /// A `SchemaSourceTable`/`SchemaSource` with just the freshness fields
@@ -1073,7 +1219,7 @@ fn disabled_resolves_var_forms_like_dbt() {
 /// `node_enabled` outcomes for one `config(enabled=<expr>)` — the shared
 /// evaluator's node-scope entry.
 fn enabled_expr(expr: &str, vars: &Vars) -> Option<bool> {
-    vars.node_enabled(expr)
+    vars.node_enabled(expr, &BoundNames::default())
 }
 
 #[test]
@@ -1559,7 +1705,7 @@ fn vars_load_warns_once_and_vars_yml_wins_when_both_declared() {
         "vars.yml wins the project-file scope"
     );
     assert_eq!(
-        vars.node_enabled("var('flag')"),
+        vars.node_enabled("var('flag')", &BoundNames::default()),
         Some(false),
         "vars.yml wins the node scope"
     );
@@ -1574,7 +1720,10 @@ fn vars_load_warns_once_and_vars_yml_wins_when_both_declared() {
         &mut w,
     );
     assert!(w.is_empty(), "{w:?}");
-    assert_eq!(vars.node_enabled("var('flag')"), Some(true));
+    assert_eq!(
+        vars.node_enabled("var('flag')", &BoundNames::default()),
+        Some(true)
+    );
 }
 
 #[test]
@@ -1593,7 +1742,10 @@ fn vars_load_warns_on_malformed_vars_sources() {
         w[0].contains("vars:") && w[0].contains("not a mapping"),
         "{w:?}"
     );
-    assert_eq!(vars.node_enabled("var('flag', true)"), Some(true));
+    assert_eq!(
+        vars.node_enabled("var('flag', true)", &BoundNames::default()),
+        Some(true)
+    );
     // An unparsable vars.yml → warning, contributes nothing.
     std::fs::write(dir.path().join("vars.yml"), "vars: {a: [unclosed\n").unwrap();
     let mut w = Vec::new();
@@ -1609,7 +1761,7 @@ fn vars_load_warns_on_malformed_vars_sources() {
         "{w:?}"
     );
     assert_eq!(
-        vars.node_enabled("var('flag')"),
+        vars.node_enabled("var('flag')", &BoundNames::default()),
         Some(false),
         "vars: still backs the node scope"
     );
@@ -1854,6 +2006,288 @@ fn jinja_branches_malformed_structure_is_unconditional() {
     assert_eq!(path_at(sql, sql.find('y').unwrap()), vec![]);
 }
 
+// ---- branch-aware config() verdicts ------------------------------------------
+
+#[test]
+fn enabled_in_unselectable_arms_never_disables() {
+    let vars = no_vars();
+    // A proven-true arm's `enabled=false` parks the node; a proven-false
+    // arm's never applies; an unprovable arm's keeps the node and marks
+    // the verdict unproven, naming the unknown condition.
+    assert_eq!(
+        enabled("{% if true %}{{ config(enabled=false) }}{% endif %}", &vars).0,
+        Some(Enabled::Off)
+    );
+    assert_eq!(
+        enabled(
+            "{% if false %}{{ config(enabled=false) }}{% endif %}",
+            &vars
+        )
+        .0,
+        None
+    );
+    for (sql, gate) in [
+        (
+            "{% if target.name == 'prod' %}{{ config(enabled=false) }}{% endif %}",
+            "target.name == 'prod'",
+        ),
+        (
+            "{% set flag = target.name %}{% if flag %}{{ config(enabled=false) }}{% endif %}",
+            "flag",
+        ),
+        (
+            "{% for x in items %}{{ config(enabled=false) }}{% endfor %}",
+            "x in items",
+        ),
+    ] {
+        let (verdict, warnings) = enabled(sql, &vars);
+        assert_eq!(verdict, Some(Enabled::Unproven), "{sql}");
+        assert!(
+            warnings.iter().any(|w| w.contains(gate)),
+            "{sql} should warn naming {gate:?}: {warnings:?}"
+        );
+    }
+    // `execute` is parse-time false — an `enabled=false` parked behind it
+    // is dead code, not a disable.
+    assert_eq!(
+        enabled(
+            "{% if execute %}{{ config(enabled=false) }}{% endif %}",
+            &vars
+        )
+        .0,
+        None
+    );
+    // A bare undefined name is Jinja-falsy — provably NOT taken, not
+    // merely unprovable.
+    assert_eq!(
+        enabled("{% if flag %}{{ config(enabled=false) }}{% endif %}", &vars).0,
+        None
+    );
+    // An unconditional `enabled=false` plus a gated conflicting call is
+    // still unproven — dbt's outcome leans on the unknown arm either way.
+    let (verdict, warnings) = enabled(
+        "{{ config(enabled=false) }}\n{% if target.name %}{{ config(enabled=true) }}{% endif %}",
+        &vars,
+    );
+    assert_eq!(verdict, Some(Enabled::Unproven));
+    assert!(!warnings.is_empty());
+    // Both arms agreeing on `enabled=false` still isn't PROVEN off — no
+    // call executes unconditionally, so the node stays and is marked
+    // rather than silently parked.
+    let (verdict, warnings) = enabled(
+        "{% if target.name %}{{ config(enabled=false) }}{% else %}{{ config(enabled=false) }}{% endif %}",
+        &vars,
+    );
+    assert_eq!(verdict, Some(Enabled::Unproven));
+    assert!(!warnings.is_empty());
+}
+
+#[test]
+fn enabled_arms_evaluate_resolvable_conditions() {
+    // `{% if var('flag', false) %}` — the default keeps the node; a vars
+    // map flipping it drops it.
+    let sql = "{% if var('flag', false) %}{{ config(enabled=false) }}{% endif %}";
+    assert_eq!(enabled(sql, &no_vars()).0, None);
+    let vars_on = test_vars(
+        serde_json::json!({"flag": true}),
+        serde_json::json!({}),
+        "p",
+    );
+    assert_eq!(enabled(sql, &vars_on).0, Some(Enabled::Off));
+    // `{% if var('x', 1) == 1 %}…{% else %}…{% endif %}` — the true arm
+    // runs, the else arm's `enabled=false` never applies.
+    assert_eq!(
+        enabled(
+            "{% if var('x', 1) == 1 %}a{% else %}{{ config(enabled=false) }}{% endif %}",
+            &no_vars()
+        )
+        .0,
+        None
+    );
+    // `{% if not execute %}` — `execute` is parse-time false, so `not
+    // execute` is a PROVEN arm: its `enabled=false` drops the node.
+    assert_eq!(
+        enabled(
+            "{% if not execute %}{{ config(enabled=false) }}{% endif %}",
+            &no_vars()
+        )
+        .0,
+        Some(Enabled::Off)
+    );
+    // `{% if execute %}` alone leaves the verdict untouched AND unmarked —
+    // a provable arm warns nothing.
+    assert_eq!(
+        enabled(
+            "{% if execute %}{{ config(enabled=false) }}{% endif %}",
+            &no_vars()
+        ),
+        (None, vec![])
+    );
+    // `is defined` on a never-bound name is provably false → drops.
+    assert_eq!(
+        enabled(
+            "{{ config(enabled=nonexistent_flag is defined) }}",
+            &no_vars()
+        )
+        .0,
+        Some(Enabled::Off)
+    );
+    // An unprovable arm carrying only `enabled=true` changes nothing —
+    // no mark, no warning.
+    assert_eq!(
+        enabled(
+            "{% if target.name %}{{ config(enabled=true) }}{% endif %}",
+            &no_vars()
+        ),
+        (Some(Enabled::On), vec![])
+    );
+    // Two unprovable arms DISAGREEING — `enabled=false` then
+    // `enabled=true`: the renders that take only the first arm leave the
+    // node disabled, so the verdict can't settle at On — Unproven, and
+    // the warning names the diverging call's condition.
+    let (verdict, warnings) = enabled(
+        "{% if target.name == 'a' %}{{ config(enabled=false) }}{% endif %}\n\
+         {% if target.name == 'b' %}{{ config(enabled=true) }}{% endif %}",
+        &no_vars(),
+    );
+    assert_eq!(verdict, Some(Enabled::Unproven));
+    assert!(warnings.iter().any(|w| w.contains("target.name == 'a'")));
+    // An unconditional call AFTER the gated ones overrides them all —
+    // the gated calls can never be the effective last.
+    assert_eq!(
+        enabled(
+            "{% if target.name %}{{ config(enabled=false) }}{% endif %}\n{{ config(enabled=true) }}",
+            &no_vars()
+        ),
+        (Some(Enabled::On), vec![])
+    );
+    // `{% set flag = var('x', true) %}{% if not flag %}…` — a bound name
+    // is unprovable even though the var has a default: the node stays
+    // and is marked.
+    let (verdict, warnings) = enabled(
+        "{% set flag = var('x', true) %}{% if not flag %}{{ config(enabled=false) }}{% endif %}",
+        &no_vars(),
+    );
+    assert_eq!(verdict, Some(Enabled::Unproven));
+    assert!(warnings.iter().any(|w| w.contains("not flag")));
+    // A bound name inside `enabled=` itself is unprovable too.
+    let (verdict, _) = enabled("{{ config(enabled=flag == true) }}", &no_vars());
+    // `flag` unbound entirely → Undefined → `Undefined == true` is false
+    // → provably OFF, matching Jinja. (Bound only via {% set %} it would
+    // be unprovable — see the arm case above.)
+    assert_eq!(verdict, Some(Enabled::Off));
+}
+
+#[test]
+fn enabled_in_elif_conditions_follows_the_chain() {
+    let vars = no_vars();
+    // `{% elif %}`'s own expressions evaluate when the EARLIER arms were
+    // falsy — a proven-true `{% if %}` parks the elif's config entirely,
+    // a proven-false one lets it run, an unprovable one gates it.
+    assert_eq!(
+        enabled(
+            "{% if true %}a{% elif config(enabled=false) %}b{% endif %}",
+            &vars
+        )
+        .0,
+        None
+    );
+    assert_eq!(
+        enabled(
+            "{% if false %}a{% elif config(enabled=false) %}b{% endif %}",
+            &vars
+        )
+        .0,
+        Some(Enabled::Off)
+    );
+    let (verdict, warnings) = enabled(
+        "{% if target.name %}a{% elif config(enabled=false) %}b{% endif %}",
+        &vars,
+    );
+    assert_eq!(verdict, Some(Enabled::Unproven));
+    assert!(
+        warnings.iter().any(|w| w.contains("target.name")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn enabled_in_statement_tags_and_definition_bodies() {
+    let vars = no_vars();
+    // `{% do %}`/`{% set _ = %}` invoke config() exactly like `{{ }}`.
+    for sql in [
+        "{% do config(enabled=false) %}",
+        "{% set _ = config(enabled=false) %}",
+    ] {
+        assert_eq!(enabled(sql, &vars).0, Some(Enabled::Off), "{sql}");
+    }
+    // …and obey arm gates the same way.
+    let (verdict, _) = enabled(
+        "{% if target.name %}{% do config(enabled=false) %}{% endif %}",
+        &vars,
+    );
+    assert_eq!(verdict, Some(Enabled::Unproven));
+    // Deferred definition bodies never run top-level — a `config()` inside
+    // a macro/test/docs/materialization/verification block applies (at
+    // most) at an invocation the parse can't prove.
+    for (open, close) in [
+        ("{% macro m() %}", "{% endmacro %}"),
+        ("{% docs d %}", "{% enddocs %}"),
+        (
+            "{% materialization m, default %}",
+            "{% endmaterialization %}",
+        ),
+        ("{% test t() %}", "{% endtest %}"),
+        ("{% verification v() %}", "{% endverification %}"),
+    ] {
+        let sql = format!("{open}{{{{ config(enabled=false) }}}}{close}");
+        assert_eq!(
+            enabled(&sql, &vars).0,
+            None,
+            "config inside {open} must not disable the model"
+        );
+    }
+}
+
+#[test]
+fn non_enabled_keys_in_unselectable_arms_contribute_conservatively() {
+    let pat = Patterns::new();
+    let vars = no_vars();
+    // Non-`enabled` keys can't drop a node — both arms may contribute, so
+    // the gated call's literal still lands (last-resolvable-literal order).
+    let sql =
+        "{% if target.name %}{{ config(materialized='table') }}{% else %}{{ config(materialized='view') }}{% endif %}";
+    let scope = scope_of(sql, &vars);
+    assert_eq!(pat.materialized(sql, &scope), Some("view".to_string()));
+    // A gated call DOES override an earlier unconditional literal — the
+    // conservative direction keeps the later value, never fabricates.
+    let sql = "{{ config(materialized='view') }}\n{% if target.name %}{{ config(materialized='table') }}{% endif %}";
+    let scope = scope_of(sql, &vars);
+    assert_eq!(pat.materialized(sql, &scope), Some("table".to_string()));
+    // A proven-dead arm contributes nothing, even to non-enabled keys.
+    let sql = "{{ config(materialized='view') }}\n{% if false %}{{ config(materialized='table') }}{% endif %}";
+    let scope = scope_of(sql, &vars);
+    assert_eq!(pat.materialized(sql, &scope), Some("view".to_string()));
+    // A deferred body contributes nothing either.
+    let sql = "{{ config(materialized='view') }}\n{% macro m() %}{{ config(materialized='table') }}{% endmacro %}";
+    let scope = scope_of(sql, &vars);
+    assert_eq!(pat.materialized(sql, &scope), Some("view".to_string()));
+    // A resolvable arm picks its own literal — `var()` resolves the
+    // condition, so the dead arm's `table` never lands.
+    let sql = "{% if var('m', 'view') == 'view' %}{{ config(materialized='view') }}{% else %}{{ config(materialized='table') }}{% endif %}";
+    let scope = scope_of(sql, &vars);
+    assert_eq!(pat.materialized(sql, &scope), Some("view".to_string()));
+    // A bare `config(…)` inside a `--` comment is SQL text to dbt, not a
+    // Jinja call — it applies nothing.
+    let sql = "-- note: config(materialized='table') someday\nselect 1";
+    let scope = scope_of(sql, &vars);
+    assert_eq!(pat.materialized(sql, &scope), None);
+    // …while `{% set _x = config(…) %}` IS a call and applies.
+    let sql = "{% set _x = config(materialized='table') %}\nselect 1";
+    let scope = scope_of(sql, &vars);
+    assert_eq!(pat.materialized(sql, &scope), Some("table".to_string()));
+}
+
 // ---- config({...}) positional-dict spelling ---------------------------------
 
 #[test]
@@ -1865,12 +2299,18 @@ fn config_dict_arg_reads_keys_like_kwargs() {
     // materializes `config({"materialized": "table"})` identically to the
     // kwarg form).
     assert_eq!(
-        pat.materialized(r#"{{ config({"materialized": "table"}) }}"#),
+        pat.materialized(
+            r#"{{ config({"materialized": "table"}) }}"#,
+            &scope_of(r#"{{ config({"materialized": "table"}) }}"#, &no_vars())
+        ),
         Some("table".to_string())
     );
     // Single-quoted keys and whitespace work the same.
     assert_eq!(
-        pat.materialized("{{ config({ 'materialized' : 'ephemeral' }) }}"),
+        pat.materialized(
+            "{{ config({ 'materialized' : 'ephemeral' }) }}",
+            &scope_of("{{ config({ 'materialized' : 'ephemeral' }) }}", &no_vars())
+        ),
         Some("ephemeral".to_string())
     );
     // `enabled`/`alias`/`unique_key`/`meta` and the governance readers all
@@ -1878,24 +2318,41 @@ fn config_dict_arg_reads_keys_like_kwargs() {
     assert_eq!(
         pat.enabled(
             r#"{{ config({"enabled": false}) }}"#,
-            &vars,
+            &scope_of(r#"{{ config({"enabled": false}) }}"#, &vars),
             &mut w,
             "m.sql"
-        ),
+        )
+        .resolve(None, &mut w, "m.sql"),
         Some(Enabled::Off)
     );
     assert!(w.is_empty(), "{w:?}");
     assert_eq!(
-        config_alias(r#"{{ config({"alias": "renamed"}) }}"#),
+        config_alias(
+            r#"{{ config({"alias": "renamed"}) }}"#,
+            &scope_of(r#"{{ config({"alias": "renamed"}) }}"#, &no_vars())
+        ),
         Some("renamed".to_string())
     );
     assert_eq!(
-        config_unique_key(r#"{{ config({"unique_key": ["a", "b"]}) }}"#),
+        config_unique_key(
+            r#"{{ config({"unique_key": ["a", "b"]}) }}"#,
+            &scope_of(r#"{{ config({"unique_key": ["a", "b"]}) }}"#, &no_vars())
+        ),
         Some(serde_json::json!(["a", "b"]))
     );
-    let m = config_meta(r#"{{ config({"meta": {"owner": "alice"}}) }}"#).unwrap();
+    let m = config_meta(
+        r#"{{ config({"meta": {"owner": "alice"}}) }}"#,
+        &scope_of(r#"{{ config({"meta": {"owner": "alice"}}) }}"#, &no_vars()),
+    )
+    .unwrap();
     assert_eq!(m["owner"], serde_json::json!("alice"));
-    let gov = config_governance(r#"{{ config({"group": "g1", "access": "private"}) }}"#);
+    let gov = config_governance(
+        r#"{{ config({"group": "g1", "access": "private"}) }}"#,
+        &scope_of(
+            r#"{{ config({"group": "g1", "access": "private"}) }}"#,
+            &no_vars(),
+        ),
+    );
     assert_eq!(gov.group.as_deref(), Some("g1"));
     assert_eq!(gov.access.as_deref(), Some("private"));
 }
@@ -1910,22 +2367,34 @@ fn config_dict_arg_joins_the_ordered_call_sequence() {
     assert_eq!(
         pat.materialized(
             "{{ config(materialized='view') }}\n{{ config({\"materialized\": \"table\"}) }}",
+            &scope_of(
+                "{{ config(materialized='view') }}\n{{ config({\"materialized\": \"table\"}) }}",
+                &no_vars()
+            )
         ),
         Some("table".to_string())
     );
     assert_eq!(
         pat.materialized(
             "{{ config({\"materialized\": \"table\"}) }}\n{{ config(materialized='view') }}",
+            &scope_of(
+                "{{ config({\"materialized\": \"table\"}) }}\n{{ config(materialized='view') }}",
+                &no_vars()
+            )
         ),
         Some("view".to_string())
     );
     assert_eq!(
         pat.enabled(
             "{{ config(enabled=true) }}\n{{ config({\"enabled\": false}) }}",
-            &vars,
+            &scope_of(
+                "{{ config(enabled=true) }}\n{{ config({\"enabled\": false}) }}",
+                &vars
+            ),
             &mut w,
             "m.sql"
-        ),
+        )
+        .resolve(None, &mut w, "m.sql"),
         Some(Enabled::Off)
     );
     // A later LITERAL entry overrides; an unresolvable VALUE inside a dict
@@ -1933,15 +2402,27 @@ fn config_dict_arg_joins_the_ordered_call_sequence() {
     // take. Literal keys around it still land.
     assert_eq!(
         pat.materialized(
-            "{{ config(materialized='view') }}\n{{ config({\"materialized\": var('m'), \"group\": \"g\"}) }}",
-        ),
+            "{{ config(materialized='view') }}\n{{ config({\"materialized\": var('m'), \"group\": \"g\"}) }}", &scope_of(
+            "{{ config(materialized='view') }}\n{{ config({\"materialized\": var('m'), \"group\": \"g\"}) }}", &no_vars())),
         Some("view".to_string())
     );
-    let gov = config_governance("{{ config({\"materialized\": var('m'), \"group\": \"g\"}) }}");
+    let gov = config_governance(
+        "{{ config({\"materialized\": var('m'), \"group\": \"g\"}) }}",
+        &scope_of(
+            "{{ config({\"materialized\": var('m'), \"group\": \"g\"}) }}",
+            &no_vars(),
+        ),
+    );
     assert_eq!(gov.group.as_deref(), Some("g"));
     // Meta entries merge per key across the dict and kwarg spellings.
-    let m =
-        config_meta("{{ config(meta={'a': 1}) }}\n{{ config({\"meta\": {\"b\": 2}}) }}").unwrap();
+    let m = config_meta(
+        "{{ config(meta={'a': 1}) }}\n{{ config({\"meta\": {\"b\": 2}}) }}",
+        &scope_of(
+            "{{ config(meta={'a': 1}) }}\n{{ config({\"meta\": {\"b\": 2}}) }}",
+            &no_vars(),
+        ),
+    )
+    .unwrap();
     assert_eq!(m["a"], serde_json::json!(1));
     assert_eq!(m["b"], serde_json::json!(2));
 }
@@ -1952,23 +2433,47 @@ fn config_dict_arg_shape_edges() {
     // Only the FIRST positional arg is the dict spelling — a dict bound to
     // a kwarg is a value, not a config dict.
     assert_eq!(
-        pat.materialized("{{ config(meta={'materialized': 'table'}) }}"),
+        pat.materialized(
+            "{{ config(meta={'materialized': 'table'}) }}",
+            &scope_of("{{ config(meta={'materialized': 'table'}) }}", &no_vars())
+        ),
         None,
         "the kwarg's dict value is not the config dict"
     );
     // A non-string key can't name a config; a duplicate key yields the
     // last entry (the Python-dict rule); non-literal keys are skipped.
     assert_eq!(
-        pat.materialized("{{ config({1: 'x', 'materialized': 'table'}) }}"),
+        pat.materialized(
+            "{{ config({1: 'x', 'materialized': 'table'}) }}",
+            &scope_of(
+                "{{ config({1: 'x', 'materialized': 'table'}) }}",
+                &no_vars()
+            )
+        ),
         Some("table".to_string())
     );
     assert_eq!(
-        pat.materialized("{{ config({'materialized': 'view', 'materialized': 'table'}) }}",),
+        pat.materialized(
+            "{{ config({'materialized': 'view', 'materialized': 'table'}) }}",
+            &scope_of(
+                "{{ config({'materialized': 'view', 'materialized': 'table'}) }}",
+                &no_vars()
+            )
+        ),
         Some("table".to_string())
     );
     // A bare `config()` and a first arg that isn't a dict contribute nothing.
-    assert_eq!(pat.materialized("{{ config() }}"), None);
-    assert_eq!(pat.materialized("{{ config('materialized') }}"), None);
+    assert_eq!(
+        pat.materialized("{{ config() }}", &scope_of("{{ config() }}", &no_vars())),
+        None
+    );
+    assert_eq!(
+        pat.materialized(
+            "{{ config('materialized') }}",
+            &scope_of("{{ config('materialized') }}", &no_vars())
+        ),
+        None
+    );
 }
 
 // ---- config(**{…}) / `*` spreads — the argument-shape rule -------------------
@@ -1979,33 +2484,63 @@ fn config_spread_args_bind_like_literal_kwargs() {
     // `**{…}` appended after the explicit kwargs is dbt-valid (verified
     // on 1.12.6): its entries bind like kwargs written in place.
     assert_eq!(
-        pat.materialized("{{ config(**{'materialized': 'table'}) }}"),
+        pat.materialized(
+            "{{ config(**{'materialized': 'table'}) }}",
+            &scope_of("{{ config(**{'materialized': 'table'}) }}", &no_vars())
+        ),
         Some("table".to_string())
     );
     assert_eq!(
-        pat.materialized("{{ config(alias='a', **{'materialized': 'table'}) }}"),
+        pat.materialized(
+            "{{ config(alias='a', **{'materialized': 'table'}) }}",
+            &scope_of(
+                "{{ config(alias='a', **{'materialized': 'table'}) }}",
+                &no_vars()
+            )
+        ),
         Some("table".to_string())
     );
     assert_eq!(
-        config_alias("{{ config(alias='a', **{'materialized': 'table'}) }}"),
+        config_alias(
+            "{{ config(alias='a', **{'materialized': 'table'}) }}",
+            &scope_of(
+                "{{ config(alias='a', **{'materialized': 'table'}) }}",
+                &no_vars()
+            )
+        ),
         Some("a".to_string())
     );
     // `*[{…}]` / `*({…},)` unpack into the one-dict positional spelling.
     assert_eq!(
-        pat.materialized("{{ config(*[{'materialized': 'table'}]) }}"),
+        pat.materialized(
+            "{{ config(*[{'materialized': 'table'}]) }}",
+            &scope_of("{{ config(*[{'materialized': 'table'}]) }}", &no_vars())
+        ),
         Some("table".to_string())
     );
     assert_eq!(
-        pat.materialized("{{ config(*({'materialized': 'table'},)) }}"),
+        pat.materialized(
+            "{{ config(*({'materialized': 'table'},)) }}",
+            &scope_of("{{ config(*({'materialized': 'table'},)) }}", &no_vars())
+        ),
         Some("table".to_string())
     );
     // A `**` operand that isn't a literal resolves at render — nothing a
     // static read can bind from the operand itself (dbt reaches it
     // through its own render; explicit kwargs beside it still bind).
-    assert_eq!(pat.materialized("{{ config(**var('cfg')) }}"), None);
+    assert_eq!(
+        pat.materialized(
+            "{{ config(**var('cfg')) }}",
+            &scope_of("{{ config(**var('cfg')) }}", &no_vars())
+        ),
+        None
+    );
     // A trailing comma is still a valid call.
     assert_eq!(
-        pat.materialized("{{ config(**{'materialized': 'table'},) }}"),
+        pat.materialized(
+            "{{ config(**{'materialized': 'table'},) }}",
+            &scope_of("{{ config(**{'materialized': 'table'},) }}", &no_vars())
+        ),
         Some("table".to_string())
     );
 }
@@ -2018,16 +2553,32 @@ fn config_render_spread_binds_kwargs_and_warns() {
     // 1.12.6); unresolvable fails at render. The static read keeps the
     // explicit kwargs and warns instead of dropping the call.
     assert_eq!(
-        pat.materialized("{{ config(materialized='table', **var('cfg')) }}"),
+        pat.materialized(
+            "{{ config(materialized='table', **var('cfg')) }}",
+            &scope_of(
+                "{{ config(materialized='table', **var('cfg')) }}",
+                &no_vars()
+            )
+        ),
         Some("table".to_string())
     );
     assert_eq!(
-        pat.materialized("{{ config(*var('cfg'), materialized='table') }}"),
+        pat.materialized(
+            "{{ config(*var('cfg'), materialized='table') }}",
+            &scope_of(
+                "{{ config(*var('cfg'), materialized='table') }}",
+                &no_vars()
+            )
+        ),
         Some("table".to_string())
     );
     let mut w = Vec::new();
     config_shape_warnings(
         "{{ config(materialized='table', **var('cfg')) }}",
+        &scope_of(
+            "{{ config(materialized='table', **var('cfg')) }}",
+            &no_vars(),
+        ),
         &mut w,
         "models/m.sql",
     );
@@ -2036,11 +2587,22 @@ fn config_render_spread_binds_kwargs_and_warns() {
     // `**{1: 'x'}` — a non-string literal key is Python's
     // "keywords must be strings" TypeError: the call shape dbt rejects.
     assert_eq!(
-        pat.materialized("{{ config(**{1: 'x', 'materialized': 'table'}) }}"),
+        pat.materialized(
+            "{{ config(**{1: 'x', 'materialized': 'table'}) }}",
+            &scope_of(
+                "{{ config(**{1: 'x', 'materialized': 'table'}) }}",
+                &no_vars()
+            )
+        ),
         None
     );
     let mut w = Vec::new();
-    config_shape_warnings("{{ config(**{1: 'x'}) }}", &mut w, "models/m.sql");
+    config_shape_warnings(
+        "{{ config(**{1: 'x'}) }}",
+        &scope_of("{{ config(**{1: 'x'}) }}", &no_vars()),
+        &mut w,
+        "models/m.sql",
+    );
     assert_eq!(w.len(), 1, "{w:?}");
     assert!(w[0].contains("not a shape dbt accepts"), "{w:?}");
     // Shape warnings only read `{{ config(…) }}` calls — `config(…)` in
@@ -2049,6 +2611,10 @@ fn config_render_spread_binds_kwargs_and_warns() {
     let mut w = Vec::new();
     config_shape_warnings(
         "select config(1, 2)\n-- {{ config({'a': 1}, alias='x') }}",
+        &scope_of(
+            "select config(1, 2)\n-- {{ config({'a': 1}, alias='x') }}",
+            &no_vars(),
+        ),
         &mut w,
         "models/m.sql",
     );
@@ -2056,7 +2622,12 @@ fn config_render_spread_binds_kwargs_and_warns() {
     // A bare `{{ config() }}` carries no arguments — a valid no-op call
     // that warns on nothing.
     let mut w = Vec::new();
-    config_shape_warnings("{{ config() }}", &mut w, "models/m.sql");
+    config_shape_warnings(
+        "{{ config() }}",
+        &scope_of("{{ config() }}", &no_vars()),
+        &mut w,
+        "models/m.sql",
+    );
     assert!(w.is_empty(), "{w:?}");
 }
 
@@ -2065,6 +2636,10 @@ fn config_shape_warns_once_per_call() {
     let mut w = Vec::new();
     config_shape_warnings(
         "{{ config({'a': 1}, alias='x') }}\n{{ config({'b': 2}, alias='y') }}",
+        &scope_of(
+            "{{ config({'a': 1}, alias='x') }}\n{{ config({'b': 2}, alias='y') }}",
+            &no_vars(),
+        ),
         &mut w,
         "models/m.sql",
     );
@@ -2133,20 +2708,36 @@ fn config_arg_shapes_dbt_rejects_apply_nothing() {
         // a dict: invalid outright (verified on 1.12.6).
         ("{{ config(*var('cfg'), 'y') }}", "star then non-dict"),
     ] {
-        assert_eq!(pat.materialized(sql), None, "{why}: {sql}");
+        assert_eq!(
+            pat.materialized(sql, &scope_of(sql, &no_vars())),
+            None,
+            "{why}: {sql}"
+        );
     }
 }
 
 #[test]
 fn config_tags_accumulate_each_call_in_order() {
     assert_eq!(
-        config_tags("{{ config(tags=['a', 'b']) }}\n{{ config(tags=['c']) }}"),
+        config_tags(
+            "{{ config(tags=['a', 'b']) }}\n{{ config(tags=['c']) }}",
+            &scope_of(
+                "{{ config(tags=['a', 'b']) }}\n{{ config(tags=['c']) }}",
+                &no_vars()
+            )
+        ),
         vec!["a", "b", "c"]
     );
     // A bare scalar wraps to a one-element list; numbers stringify —
     // dbt's StringOrArrayOfStrings coercion (verified on 1.12.6).
     assert_eq!(
-        config_tags("{{ config(tags='solo') }}\n{{ config(tags=[7, 'x']) }}"),
+        config_tags(
+            "{{ config(tags='solo') }}\n{{ config(tags=[7, 'x']) }}",
+            &scope_of(
+                "{{ config(tags='solo') }}\n{{ config(tags=[7, 'x']) }}",
+                &no_vars()
+            )
+        ),
         vec!["solo", "7", "x"]
     );
     // The dict and `**` spellings bind the same; a shape dbt rejects
@@ -2154,13 +2745,21 @@ fn config_tags_accumulate_each_call_in_order() {
     assert_eq!(
         config_tags(
             "{{ config({'tags': ['d']}) }}\n{{ config(**{'tags': ['s']}) }}\n{{ config(tags=['a'], {'tags': ['b']}) }}"
-        ),
+        , &scope_of(
+            "{{ config({'tags': ['d']}) }}\n{{ config(**{'tags': ['s']}) }}\n{{ config(tags=['a'], {'tags': ['b']}) }}"
+        , &no_vars())),
         vec!["d", "s"]
     );
     // A non-literal `tags` yields nothing for that call — an earlier
     // literal still stands (the last-resolvable stance).
     assert_eq!(
-        config_tags("{{ config(tags=['kept']) }}\n{{ config(tags=var('t')) }}"),
+        config_tags(
+            "{{ config(tags=['kept']) }}\n{{ config(tags=var('t')) }}",
+            &scope_of(
+                "{{ config(tags=['kept']) }}\n{{ config(tags=var('t')) }}",
+                &no_vars()
+            )
+        ),
         vec!["kept"]
     );
 }
@@ -2719,6 +3318,42 @@ fn unverifiable_enabled_keeps_the_node_and_marks_it() {
 }
 
 #[test]
+fn snapshots_read_enabled_with_the_same_branch_semantics() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    std::fs::create_dir_all(dir.path().join("snapshots")).unwrap();
+    std::fs::write(dir.path().join("dbt_project.yml"), "name: p\n").unwrap();
+    std::fs::write(dir.path().join("models/m.sql"), "select 1\n").unwrap();
+    // Gated on `target.name` → stays + marked; the dead-arm one stays
+    // untouched; the true-arm one parks under `disabled`.
+    std::fs::write(
+        dir.path().join("snapshots/gated.sql"),
+        "{% snapshot gated %}{% if target.name == 'prod' %}{{ config(enabled=false) }}{% endif %}{{ config(target_schema='s', unique_key='id', strategy='check', check_cols='all') }} select 1 {% endsnapshot %}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("snapshots/dead.sql"),
+        "{% snapshot dead %}{% if false %}{{ config(enabled=false) }}{% endif %}{{ config(target_schema='s', unique_key='id', strategy='check', check_cols='all') }} select 1 {% endsnapshot %}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("snapshots/live_off.sql"),
+        "{% snapshot live_off %}{% if true %}{{ config(enabled=false) }}{% endif %}{{ config(target_schema='s', unique_key='id', strategy='check', check_cols='all') }} select 1 {% endsnapshot %}\n",
+    )
+    .unwrap();
+    let (m, warnings) = manifest_from_source_with_warnings(dir.path(), None).unwrap();
+    assert!(m.nodes.contains_key("snapshot.p.gated"));
+    assert!(m.enabled_unverifiable.contains("snapshot.p.gated"));
+    assert!(m.nodes.contains_key("snapshot.p.dead"));
+    assert!(!m.enabled_unverifiable.contains("snapshot.p.dead"));
+    assert!(!m.nodes.contains_key("snapshot.p.live_off"));
+    assert!(
+        warnings.iter().any(|w| w.contains("target.name == 'prod'")),
+        "the warning names the unprovable condition: {warnings:?}"
+    );
+}
+
+#[test]
 fn disabled_generic_tests_are_never_synthesized() {
     let dir = tempfile::tempdir().unwrap();
     write_source_config_project(dir.path());
@@ -3176,6 +3811,92 @@ fn comment_and_raw_calls_produce_no_edges() {
     let m = manifest_from_source(dir.path()).unwrap();
     assert!(!m.parent_map.contains_key("model.p.m1"));
     assert!(m.unresolved_adjacent.is_empty());
+}
+
+#[test]
+fn model_local_definitions_do_not_edge_or_configure() {
+    let dir = tempfile::tempdir().unwrap();
+    macro_project(
+        dir.path(),
+        &[
+            // `ref`/`source`/`config` inside a model-local `{% macro %}`
+            // body run only when the macro is invoked — an un-invoked
+            // definition is not the model's call (an invoked PROJECT
+            // macro's calls still arrive through `Macros`).
+            (
+                "m1",
+                concat!(
+                    "{% macro helper() %}",
+                    "select * from {{ ref('other') }} join {{ source('shop', 'orders') }} on true",
+                    "{% endmacro %}",
+                    "{% macro cfg() %}{{ config(enabled=false, materialized='table') }}{% endmacro %}",
+                    "{{ config(materialized='view') }}",
+                    "select 1",
+                ),
+            ),
+            ("other", "select 1"),
+        ],
+        &[(
+            "macros",
+            "{% macro union_raw(t) %}select * from {{ source('shop', t) }}{% endmacro %}",
+        )],
+        Some(SHOP_SCHEMA),
+    );
+    let (m, _w) = manifest_from_source_with_warnings(dir.path(), None).unwrap();
+    // The macro body's `enabled=false` did not park the model, and its
+    // `materialized='table'` did not beat the model's own `view`.
+    assert!(m.nodes.contains_key("model.p.m1"));
+    assert_eq!(
+        m.nodes["model.p.m1"].config.materialized.as_deref(),
+        Some("view")
+    );
+    let parents = m.parent_map.get("model.p.m1").cloned().unwrap_or_default();
+    assert!(
+        !parents
+            .iter()
+            .any(|p| p.contains("other") || p.contains("shop")),
+        "definition bodies must not edge: {parents:?}"
+    );
+    assert!(
+        !m.unresolved_adjacent.contains_key("model.p.m1"),
+        "an un-invoked definition isn't unprovable adjacency: {:?}",
+        m.unresolved_adjacent
+    );
+}
+
+#[test]
+fn branch_arms_edge_only_when_they_can_run() {
+    let dir = tempfile::tempdir().unwrap();
+    macro_project(
+        dir.path(),
+        &[
+            // An UNPROVABLE arm's calls edge either way — `ref` in the
+            // gated arm AND `source` in its else both land, matching
+            // dbt's static extractor.
+            (
+                "gated",
+                "{% if target.name %}{{ ref('other') }}{% else %}{{ source('shop', 'orders') }}{% endif %}select 1",
+            ),
+            // A statically-false arm's calls are dead — dbt's extractor
+            // drops them too (verified: only the live arm's ref lands in
+            // the real manifest).
+            (
+                "dead",
+                "{% if false %}{{ ref('other') }}{% else %}{{ ref('live') }}{% endif %}select 1",
+            ),
+            ("other", "select 1"),
+            ("live", "select 1"),
+        ],
+        &[],
+        Some(SHOP_SCHEMA),
+    );
+    let m = manifest_from_source(dir.path()).unwrap();
+    let parents = |uid: &str| m.parent_map.get(uid).cloned().unwrap_or_default();
+    assert_eq!(
+        parents("model.p.gated"),
+        vec!["model.p.other", "source.p.shop.orders"]
+    );
+    assert_eq!(parents("model.p.dead"), vec!["model.p.live"]);
 }
 
 // ---- unit_tests: YAML → RawManifest → TestInfo ------------------------------

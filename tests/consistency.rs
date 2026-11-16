@@ -180,10 +180,47 @@ fn lint_findings_are_identical_between_modes() {
     // message, severity, location, labels, help — must agree byte-for-byte
     // across modes. Same edges produce the same calls; same raw SQL maps
     // them to the same positions.
+    //
+    // One documented exception: `stg_branch_target` gates `enabled=false`
+    // on `target.name` — unprovable from source (source mode never reads
+    // the profile target), so the node survives provisionally marked
+    // `enabled_unverifiable` while real dbt evaluates the arm dead under
+    // the fixture's target and keeps it unconditionally. A node whose
+    // presence can't be proven must not host a finding, so the source
+    // mode drops every finding that names it in `node_uid` OR `related` —
+    // the comparison excludes exactly those findings from BOTH sides and
+    // asserts each one truly touches a marked node, so the exclusion can
+    // never hide a real divergence.
     let (m, s) = dags();
+    assert!(
+        s.enabled_unverifiable("model.sample.stg_branch_target"),
+        "the fixture pins one unverifiable node — if the set is empty \
+         this exclusion silently covers nothing"
+    );
     let cfg = LintConfig::default();
-    let mf = run_rules(LintInput::new(&m, &cfg)).findings;
-    let sf = run_rules(LintInput::new(&s, &cfg)).findings;
+    let touches_unverifiable = |f: &dbtl::Finding| {
+        s.enabled_unverifiable(&f.node_uid) || f.related.iter().any(|r| s.enabled_unverifiable(r))
+    };
+    let mf: Vec<_> = run_rules(LintInput::new(&m, &cfg))
+        .findings
+        .into_iter()
+        .filter(|f| !touches_unverifiable(f))
+        .collect();
+    let sf: Vec<_> = run_rules(LintInput::new(&s, &cfg))
+        .findings
+        .into_iter()
+        .filter(|f| !touches_unverifiable(f))
+        .collect();
+    // The exclusion must only ever hide marked-node findings — and it must
+    // have actually excluded something on the MANIFEST side (the source
+    // lint runner already drops the marked node's findings itself; the
+    // manifest Dag's set is empty, so its findings are what the filter
+    // proves away).
+    assert!(
+        mf.len() < run_rules(LintInput::new(&m, &cfg)).findings.len(),
+        "the marked node should host manifest-mode findings the \
+         exclusion drops — otherwise the filter proves nothing"
+    );
     assert_eq!(
         mf.len(),
         sf.len(),

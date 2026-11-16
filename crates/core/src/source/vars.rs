@@ -204,7 +204,7 @@ impl Vars {
         match v {
             serde_json::Value::Bool(b) => Some(*b),
             serde_json::Value::String(s) => jinja_expr(s)
-                .and_then(|e| eval_enabled_expr(e, &lookup, false))
+                .and_then(|e| eval_enabled_expr(e, &lookup, false, None))
                 .and_then(|v| v.as_bool()),
             _ => None,
         }
@@ -257,9 +257,24 @@ impl Vars {
     /// `var()` is the tolerant one — a missing name yields `none`
     /// (verified on 1.12.6: `config(enabled=var('x'))` on a missing `x`
     /// records `enabled: None`, a validation error, not "Required var
-    /// not found"), so `missing_none` is on.
-    pub(super) fn node_enabled(&self, expr: &str) -> Option<bool> {
-        eval_enabled_expr(expr, &|n| self.node_scope(n), true).and_then(|v| v.as_bool())
+    /// not found"), so `missing_none` is on. `bound` names what the
+    /// template itself binds (its `{% set %}`/`{% for %}`/`{% macro %}`
+    /// names) — those resolve to a value at render but can't be read
+    /// from source, so they — and dbt's own parse-context names — make
+    /// the expression unprovable rather than `Undefined`.
+    pub(super) fn node_enabled(&self, expr: &str, bound: &BoundNames) -> Option<bool> {
+        eval_enabled_expr(expr, &|n| self.node_scope(n), true, Some(bound))
+            .and_then(|v| v.as_bool())
+    }
+
+    /// The truthiness an `{% if %}`/`{% elif %}` condition resolves to in
+    /// the same node scope — the same evaluator [`node_enabled`] uses,
+    /// read for truthiness rather than bool validation (a `var()`-
+    /// produced string is enough to take an arm). `None` is unprovable —
+    /// the arm can't be selected and the caller keeps the node and
+    /// marks it instead of guessing.
+    pub(super) fn node_condition(&self, expr: &str, bound: &BoundNames) -> Option<bool> {
+        eval_enabled_expr(expr, &|n| self.node_scope(n), true, Some(bound)).map(|v| truthy(&v))
     }
 
     /// `var('name')` as `dbt_project.yml`'s own render sees it — the
@@ -354,11 +369,13 @@ fn eval_enabled_expr(
     expr: &str,
     lookup: &dyn Fn(&str) -> Option<serde_json::Value>,
     missing_none: bool,
+    bound: Option<&BoundNames>,
 ) -> Option<Val> {
     let mut e = EnabledExpr {
         p: LitParser { s: expr, i: 0 },
         lookup,
         missing_none,
+        bound,
         used_var: false,
     };
     let v = e.parse_or()?;
@@ -377,12 +394,74 @@ struct EnabledExpr<'a, 'b> {
     lookup: &'b dyn Fn(&str) -> Option<serde_json::Value>,
     /// The render pass's missing-`var()` rule — see [`eval_enabled_expr`].
     missing_none: bool,
+    /// The node render's bound-name table — `Some` for an in-file
+    /// `config()` or `{% if %}`/`{% elif %}` condition (see
+    /// [`Vars::node_enabled`]), `None` for the YAML render passes, where
+    /// every bare name stays `Undefined`.
+    bound: Option<&'b BoundNames>,
     /// `var()` was consulted in the current operand — an `is sameas`
     /// argument is provable only when it is a pure literal (a var-drawn
     /// operand could share the operand object's identity, which value
     /// comparison can't see).
     used_var: bool,
 }
+
+/// The names dbt's model parse context always binds (the macro callables
+/// `ref`/`source`/`config`, the `target`/`this`/`model` objects, the
+/// `env_var`/`log`/`modules` helpers, run metadata like `run_started_at`
+/// and `invocation_id`, the `is_incremental`/`sql_now`-style builtins and
+/// `caller`, the value `{% call %}` blocks expose) — defined but
+/// unreadable from source, so an `enabled` expression or `{% if %}`
+/// condition that names one is unprovable rather than `Undefined`.
+/// `execute` is deliberately NOT here — it is the one context name whose
+/// parse-time value dbt fixes (falsy), so it evaluates instead.
+const DBT_PARSE_NAMES: &[&str] = &[
+    "adapter",
+    "api",
+    "as_bool",
+    "as_native",
+    "as_number",
+    "as_text",
+    "builtins",
+    "caller",
+    "config",
+    "dbt_version",
+    "deployment_env",
+    "docs",
+    "env_var",
+    "exceptions",
+    "flags",
+    "fromjson",
+    "fromyaml",
+    "graph",
+    "invocation_id",
+    "is_incremental",
+    "load_agate_table",
+    "load_result",
+    "local_md5",
+    "log",
+    "model",
+    "modules",
+    "project_name",
+    "ref",
+    "return",
+    "run_query",
+    "run_started_at",
+    "schema",
+    "selected_resources",
+    "sql",
+    "sql_now",
+    "statement",
+    "store_raw_result",
+    "store_result",
+    "submit_python_job",
+    "target",
+    "this",
+    "thread_id",
+    "tojson",
+    "toyaml",
+    "var",
+];
 
 impl<'a> EnabledExpr<'a, '_> {
     /// The unconsumed input (for keyword lookahead).
@@ -798,7 +877,19 @@ impl<'a> EnabledExpr<'a, '_> {
             _ => {
                 self.p.ws();
                 if self.p.peek() != Some('(') {
-                    return Some(Val::Undefined);
+                    return match self.bound {
+                        // The node render — `execute` is the parse-time
+                        // falsy dbt fixes (the run-time flag can't be
+                        // read from source); a name the template binds
+                        // (`{% set %}`/`{% for %}`/`{% macro %}`…) or
+                        // dbt's parse context carries is defined but
+                        // unprovable — never an `Undefined` the `is
+                        // defined` test could prove missing. Anything
+                        // else stays `Undefined`, the same as dbt.
+                        Some(_) if name == "execute" => Some(Val::V(false.into())),
+                        Some(b) if b.contains(name) || DBT_PARSE_NAMES.contains(&name) => None,
+                        _ => Some(Val::Undefined),
+                    };
                 }
                 if name != "var" {
                     return None; // a macro/env_var/target call — unprovable

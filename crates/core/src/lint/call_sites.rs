@@ -289,8 +289,10 @@ impl<'a> CallSiteResolver<'a> {
     /// `ls`, and docs stay dbt-faithful. Rules that check "could anything
     /// read this" read the set the way they read `direct_children` — a
     /// possible child means under-reporting is the safe direction only.
-    /// On a source-mode `Dag` the set is always empty: the loader records
-    /// every resolved call as an edge, so there is nothing to recover.
+    /// On a source-mode `Dag` the set is small but real: the loader drops
+    /// calls in provably-dead arms and deferred definition bodies (as
+    /// dbt's extractor does) and counts them as edges nowhere — lint
+    /// still weighs them as possible reads exactly like manifest mode.
     ///
     /// Resolution shares [`CallSites::targets`]' rules through
     /// [`version_pin_matches`]/[`family_latest`] — the pin-vs-segment
@@ -321,9 +323,6 @@ impl<'a> CallSiteResolver<'a> {
     /// edge answers for it).
     fn build_possible(&self) -> BTreeMap<String, BTreeSet<String>> {
         let mut map: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        if self.dag.is_source_mode() {
-            return map;
-        }
         let mut refs: FastMap<'a, &'a str> = FastMap::default();
         let mut sources: FastMap<'a, (&'a str, &'a str)> = FastMap::default();
         for (uid, n) in self.dag.nodes() {
