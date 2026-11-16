@@ -77,7 +77,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   build-test:
-    name: Build & Test (${{ matrix.os }})
+    name: Build & Test (${{ matrix.os }}${{ matrix.variant && format(' [{0}]', matrix.variant) || '' }})
     needs: changes
     if: needs.changes.outputs.code != 'false'
     runs-on: ${{ matrix.os }}
@@ -94,7 +94,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: windows-latest
+            variant: control
+          - os: windows-latest
+            variant: nodebug
+          - os: windows-latest
+            variant: nodebug2
+          - os: windows-latest
+            variant: lld
+          - os: windows-latest
+            variant: nodebug-lld
+          - os: windows-latest
+            variant: defender
+          - os: windows-latest
+            variant: notoolchain
+          - os: windows-latest
+            variant: fast
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -102,11 +119,80 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
+        if: matrix.variant != 'notoolchain' && matrix.variant != 'fast'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
 
+      # Applies the matrix variant's flags through GITHUB_ENV (so every later
+      # step — including the cache key's env hash — sees one consistent set),
+      # then compiles a linker shim that logs each link's wall time. Windows
+      # legs skip the cache, so every variant measures the same cold build.
+      - name: Apply the experiment variant
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          rustc -vV || true
+          mkdir -p target/linkwrap
+          LW_DIR="$PWD/target/linkwrap"
+          cat > "$LW_DIR/linkwrap.rs" <<'EOF'
+          use std::env;
+          use std::fs::OpenOptions;
+          use std::io::Write;
+          use std::process::{Command, ExitCode};
+          use std::time::Instant;
+          fn main() -> ExitCode {
+              let real = env::var("LINKWRAP_REAL").unwrap_or_else(|_| "link.exe".to_string());
+              let mut it = real.split(' ');
+              let exe = it.next().unwrap_or("link.exe").to_string();
+              let pre: Vec<String> = it.map(str::to_string).collect();
+              let args: Vec<String> = env::args().skip(1).collect();
+              let t = Instant::now();
+              let status = Command::new(&exe).args(&pre).args(&args).status();
+              let code = status.ok().and_then(|s| s.code()).unwrap_or(1);
+              if let Ok(log) = env::var("LINKWRAP_LOG") {
+                  let out = args
+                      .iter()
+                      .find_map(|a| a.strip_prefix("/OUT:"))
+                      .or_else(|| args.last().map(String::as_str))
+                      .unwrap_or("")
+                      .to_string();
+                  if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(log) {
+                      let _ = writeln!(f, "{}\t{}", t.elapsed().as_millis(), out);
+                  }
+              }
+              ExitCode::from(code as u8)
+          }
+          EOF
+          rustc -O -o "$LW_DIR/linkwrap.exe" "$LW_DIR/linkwrap.rs"
+          REAL="link.exe"
+          case "$VARIANT" in
+            lld|nodebug-lld|fast)
+              SYSROOT="$(rustc --print sysroot)"
+              REAL="$(cygpath -w "$SYSROOT/lib/rustlib/x86_64-pc-windows-msvc/bin/rust-lld.exe") -flavor link"
+              ;;
+          esac
+          {
+            echo "LINKWRAP_REAL=$REAL"
+            echo "LINKWRAP_LOG=$(cygpath -w "$LW_DIR/link-times.tsv")"
+            echo "RUSTFLAGS=-C linker=$(cygpath -w "$LW_DIR/linkwrap.exe")"
+            case "$VARIANT" in
+              nodebug|nodebug-lld|fast) echo 'CARGO_PROFILE_TEST_DEBUG=0' ;;
+              nodebug2) echo 'CARGO_PROFILE_TEST_DEBUG=0'; echo 'CARGO_PROFILE_DEV_DEBUG=0' ;;
+            esac
+          } >> "$GITHUB_ENV"
+          echo "variant=$VARIANT linker=$REAL"
+
+      - name: Exclude build directories from the Defender real-time scan
+        if: matrix.variant == 'defender' || matrix.variant == 'fast'
+        run: |
+          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE\target"
+          Add-MpPreference -ExclusionPath "$env:CARGO_HOME"
+
       - name: Cache cargo
+        if: matrix.os != 'windows-latest'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Shared per-OS debug/test build; saved on pushes to main only — PR runs and other test jobs restore it.
@@ -118,6 +204,14 @@ jobs:
         with:
           tool: cargo-nextest
 
+      - name: Build test binaries
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p target
+          cargo test --workspace --locked --no-run --timings 2>&1 | tee target/build-verbose.log
+
       - name: Test
         run: cargo nextest run --workspace --locked --profile ci
 
@@ -125,9 +219,20 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: junit-${{ matrix.os }}
+          name: junit-${{ matrix.os }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}
           path: target/nextest/ci/junit.xml
           if-no-files-found: ignore
+
+      - name: Upload build timings
+        if: always() && matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: timing-${{ matrix.variant }}-${{ github.run_attempt }}-${{ strategy.job-attempt }}
+          path: |
+            target/cargo-timings/cargo-timing.html
+            target/build-verbose.log
+            target/linkwrap/link-times.tsv
+          if-no-files-found: warn
 
       # nextest does not run doctests, so they keep their own step.
       - name: Doc tests
