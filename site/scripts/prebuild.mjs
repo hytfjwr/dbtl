@@ -38,10 +38,8 @@ const TEST_FLAGS = {
   accepted_range: "AR",
 };
 
-function buildGraph(file) {
-  const manifest = JSON.parse(
-    fs.readFileSync(path.join(repoRoot, "tests", "fixtures", file), "utf8"),
-  );
+function buildGraph(manifestPath) {
+  const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, manifestPath), "utf8"));
   const nodes = manifest.nodes ?? {};
 
   // Tests are counted against the node they are declared on, never emitted.
@@ -109,7 +107,7 @@ function buildGraph(file) {
 
 fs.mkdirSync(outDir, { recursive: true });
 const graph = Object.fromEntries(
-  SAMPLES.map(({ name, manifest }) => [name, { name, nodes: buildGraph(path.basename(manifest)) }]),
+  SAMPLES.map(({ name, manifest }) => [name, { name, nodes: buildGraph(manifest) }]),
 );
 const version = readVersion();
 fs.writeFileSync(path.join(outDir, "graph.json"), `${JSON.stringify(graph)}\n`);
