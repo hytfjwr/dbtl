@@ -7,6 +7,11 @@ model-paths: ["models"]
 seed-paths: ["seeds"]
 snapshot-paths: ["snapshots"]
 
+vars:
+  # `stg_branch_var` gates its `config(enabled=false)` on this — provably
+  # false in every render.
+  branch_flag_off: false
+
 # Directory-hierarchical configs: dbt resolves `+materialized` by path, with
 # more specific directories winning. The source loader must honour this tree
 # (precedence: in-file config() > schema.yml config > this tree > default view).

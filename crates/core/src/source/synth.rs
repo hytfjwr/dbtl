@@ -115,12 +115,12 @@ pub(super) struct Synthesis {
     /// `(source, table)` pairs `config.enabled`/`+enabled` parked — the
     /// source-side half of `disabled_names`.
     disabled_sources: BTreeSet<(String, String)>,
-    /// uid -> the IN-FILE `enabled` verdict — `config(enabled=…)` or a
-    /// `.py` model's `dbt.config(enabled=…)` — recorded when the file
-    /// declares one. `apply_meta` folds it as the highest-precedence
-    /// channel over schema.yml `config.enabled:` and the tree's
-    /// `+enabled`.
-    in_file_enabled: HashMap<String, Enabled>,
+    /// uid -> the IN-FILE `enabled` scan — `config(enabled=…)` or a
+    /// `.py` model's `dbt.config(enabled=…)` — carried whole (provable
+    /// vs branch-gated calls split) so `apply_meta` can fold the schema
+    /// `config.enabled:` level under it the way [`EnabledScan::resolve`]
+    /// specifies.
+    in_file_enabled: HashMap<String, EnabledScan>,
     /// uids whose `enabled` stayed [`Enabled::Unproven`] after every
     /// declared channel folded — kept in the graph (a guess either way
     /// could drop a live node dbt keeps… or a dead one) but recorded so
@@ -217,10 +217,12 @@ pub(super) struct PendingModel {
     root: PathBuf,
     /// The raw file text — `raw_code`.
     raw: String,
-    /// The file's own `config(enabled=)`/`dbt.config(enabled=)` verdict —
+    /// The file's own `config(enabled=)`/`dbt.config(enabled=)` scan —
     /// the highest-precedence `enabled` channel wherever the file lands
-    /// (a member file's own config parks ITS version only).
-    in_file: Option<Enabled>,
+    /// (a member file's own config parks ITS version only). Carried as
+    /// the whole [`EnabledScan`]: whether the deciding call provably
+    /// executes only resolves against the lower levels at materialize.
+    in_file: EnabledScan,
     /// The language-specific collected payload.
     kind: PendingKind,
 }
@@ -423,19 +425,27 @@ impl Synthesis {
             if let Some(family) = version_family(&name) {
                 self.assumed_names.insert(family.to_string());
             }
-            // The in-file `config(enabled=)` verdict is the only enabled
+            // The in-file `config(enabled=)` scan is the only enabled
             // channel knowable before the member claims resolve the real
-            // fqn — a file's own `false` parks it under either fate, so
-            // it never claims the stem (matching dbt: a disabled resource
-            // doesn't answer a name claim either).
+            // fqn — a file's own PROVEN `false` parks it under either
+            // fate, so it never claims the stem (matching dbt: a disabled
+            // resource doesn't answer a name claim either). A verdict
+            // leaning on an unselectable arm is never proven — the file
+            // claims the stem and the verdict resolves at materialize.
+            let scope = JinjaScope::new(&masked, &self.vars);
             let in_file = self.pat.enabled(
                 &masked,
-                &self.vars,
+                &scope,
                 &mut self.warnings,
                 &rel_path(&self.dir, &file),
             );
-            config_shape_warnings(&masked, &mut self.warnings, &rel_path(&self.dir, &file));
-            if in_file != Some(Enabled::Off) {
+            config_shape_warnings(
+                &masked,
+                &scope,
+                &mut self.warnings,
+                &rel_path(&self.dir, &file),
+            );
+            if !in_file.proven_off() {
                 // `collect_with_root` sorts by path, so the first file to
                 // claim a name wins deterministically; drop (and warn on)
                 // a later same-stem file before the synthesis stage can
@@ -496,7 +506,7 @@ impl Synthesis {
             // literal `False` parks the file under either fate (a
             // declared-but-unreadable or non-bool value warns and stays
             // enabled — the `Enabled::Unproven` stance).
-            let in_file = match cfg.enabled.as_ref() {
+            let in_file = EnabledScan::plain(match cfg.enabled.as_ref() {
                 Some(Some(serde_json::Value::Bool(b))) => {
                     Some(if *b { Enabled::On } else { Enabled::Off })
                 }
@@ -513,8 +523,8 @@ impl Synthesis {
                     Some(Enabled::Unproven)
                 }
                 None => None,
-            };
-            if in_file != Some(Enabled::Off) && !self.claimed.insert(name.clone()) {
+            });
+            if !in_file.proven_off() && !self.claimed.insert(name.clone()) {
                 self.warnings
                     .push(format!("duplicate resource name '{name}': ignoring {ofp}"));
                 continue;
@@ -615,14 +625,13 @@ impl Synthesis {
             let masked = mask_jinja_comments(&raw);
             let path = rel_path(&root, &file);
             let ofp = rel_path(&self.dir, &file);
-            // An in-file `enabled` verdict applies to every block in the
+            // An in-file `enabled` scan applies to every block in the
             // file (rare) — a proven `false` parks them all like dbt's
             // `disabled`; an unproven one marks each block it covers.
-            let in_file = self
-                .pat
-                .enabled(&masked, &self.vars, &mut self.warnings, &ofp);
-            config_shape_warnings(&masked, &mut self.warnings, &ofp);
-            if in_file == Some(Enabled::Off) {
+            let scope = JinjaScope::new(&masked, &self.vars);
+            let in_file = self.pat.enabled(&masked, &scope, &mut self.warnings, &ofp);
+            config_shape_warnings(&masked, &scope, &mut self.warnings, &ofp);
+            if in_file.proven_off() {
                 for name in self.pat.snapshots(&masked) {
                     self.disabled_names
                         .entry(name)
@@ -649,7 +658,7 @@ impl Synthesis {
                     &mut self.warnings,
                     Some(&self.vars),
                 );
-                let verdict = in_file.or(tree.enabled_verdict());
+                let verdict = in_file.resolve(tree.enabled_verdict(), &mut self.warnings, &ofp);
                 if verdict == Some(Enabled::Off) {
                     self.disabled_names
                         .entry(name.clone())
@@ -676,7 +685,7 @@ impl Synthesis {
                 // The `{{ config(tags=…) }}` inside a `{% snapshot %}`
                 // block — extracted file-wide like the other pattern
                 // extractors (multi-block files share the config).
-                let tags = config_tags(&masked);
+                let tags = config_tags(&masked, &scope);
                 if !tags.is_empty() {
                     self.infile_tags.insert(uid.clone(), tags);
                 }
@@ -692,31 +701,31 @@ impl Synthesis {
                             // The `{{ config(…) }}` inside a `{% snapshot %}`
                             // block carries `unique_key` — extracted file-wide
                             // like the other pattern extractors.
-                            unique_key: config_unique_key(&masked),
+                            unique_key: config_unique_key(&masked, &scope),
                             ..Default::default()
                         },
                         // Snapshots can sit in a dbt `group`; `access`/`contract`
                         // stay None — dbt records them on models only.
-                        group: config_governance(&masked).group,
+                        group: config_governance(&masked, &scope).group,
                         // dbt records `language: "sql"` on .sql-defined snapshots.
                         language: Some("sql".to_string()),
                         // The `{{ config(…) }}` inside a `{% snapshot %}` block is
                         // extracted file-wide like the other pattern extractors
                         // (multi-block files share the config — rare).
-                        meta: config_meta(&masked).unwrap_or_default(),
+                        meta: config_meta(&masked, &scope).unwrap_or_default(),
                         // The whole (multi-block) file is stored per block; raw_code
                         // is never compared, and snapshots are rare, so this is fine.
                         raw_code: Some(raw.clone()),
-                        alias: config_alias(&masked),
+                        alias: config_alias(&masked, &scope),
                         ..Default::default()
                     },
                 );
                 self.name_index.insert(name, uid.clone());
-                // The file's `enabled` verdict is the block's in-file
+                // The file's `enabled` scan is the block's in-file
                 // channel — `apply_meta` folds a schema-level
                 // `config.enabled:` under it.
-                if let Some(v) = in_file {
-                    self.in_file_enabled.insert(uid.clone(), v);
+                if in_file.declared() {
+                    self.in_file_enabled.insert(uid.clone(), in_file.clone());
                 }
                 self.node_sql.push((uid, masked.clone().into_owned()));
             }
@@ -822,10 +831,10 @@ impl Synthesis {
             let Some(p) = p else { continue };
             match by_stem.entry(p.name.clone()) {
                 std::collections::hash_map::Entry::Occupied(mut e) => {
-                    if p.in_file != Some(Enabled::Off)
+                    if !p.in_file.proven_off()
                         && pending[*e.get()]
                             .as_ref()
-                            .is_some_and(|x| x.in_file == Some(Enabled::Off))
+                            .is_some_and(|x| x.in_file.proven_off())
                     {
                         e.insert(i);
                     }
@@ -1103,11 +1112,11 @@ impl Synthesis {
             &format!("{yml_path}: model '{}' config.enabled", fam.name),
             &mut self.warnings,
         ));
-        let verdict = pending
-            .in_file
-            .or(schema_v)
-            .or(schema_m)
-            .or_else(|| tree.enabled_verdict());
+        let verdict = pending.in_file.resolve(
+            schema_v.or(schema_m).or_else(|| tree.enabled_verdict()),
+            &mut self.warnings,
+            &rel_path(&self.dir, &pending.file),
+        );
         if verdict == Some(Enabled::Off) {
             self.disabled_names
                 .entry(fam.name.clone())
@@ -1149,19 +1158,20 @@ impl Synthesis {
                 // The in-file `config(…)` spellings — the highest
                 // precedence level over the version's and model's
                 // `config:` blocks, same chain as an unversioned file.
-                let gov = config_governance(&masked);
+                let scope = JinjaScope::new(&masked, &self.vars);
+                let gov = config_governance(&masked, &scope);
                 node.config = RawConfig {
-                    materialized: self.pat.materialized(&masked),
-                    unique_key: config_unique_key(&masked),
+                    materialized: self.pat.materialized(&masked, &scope),
+                    unique_key: config_unique_key(&masked, &scope),
                     incremental_strategy: gov.incremental_strategy.clone(),
                 };
                 node.access = gov.access.clone();
                 node.group = gov.group.clone();
                 node.contract = gov.contract.clone();
                 node.language = Some("sql".to_string());
-                node.meta = config_meta(&masked).unwrap_or_default();
-                node.alias = config_alias(&masked);
-                let tags = config_tags(&masked);
+                node.meta = config_meta(&masked, &scope).unwrap_or_default();
+                node.alias = config_alias(&masked, &scope);
+                let tags = config_tags(&masked, &scope);
                 if !tags.is_empty() {
                     self.infile_tags.insert(uid.clone(), tags);
                 }
@@ -1193,8 +1203,8 @@ impl Synthesis {
             }
         }
         self.nodes.insert(uid.clone(), node);
-        if let Some(v) = pending.in_file {
-            self.in_file_enabled.insert(uid.clone(), v);
+        if pending.in_file.declared() {
+            self.in_file_enabled.insert(uid.clone(), pending.in_file);
         }
         Some(uid)
     }
@@ -1214,7 +1224,9 @@ impl Synthesis {
             Some(&self.vars),
         );
         let uid = format!("model.{}.{}", self.proj, pending.name);
-        let verdict = pending.in_file.or(tree.enabled_verdict());
+        let verdict = pending
+            .in_file
+            .resolve(tree.enabled_verdict(), &mut self.warnings, &ofp);
         if verdict == Some(Enabled::Off) {
             self.disabled_names
                 .entry(pending.name)
@@ -1248,19 +1260,20 @@ impl Synthesis {
                 // The in-file `config(…)` spellings of the model governance
                 // fields — each the highest level of the same precedence
                 // chain `materialized` follows.
-                let gov = config_governance(&masked);
+                let scope = JinjaScope::new(&masked, &self.vars);
+                let gov = config_governance(&masked, &scope);
                 node.config = RawConfig {
-                    materialized: self.pat.materialized(&masked),
-                    unique_key: config_unique_key(&masked),
+                    materialized: self.pat.materialized(&masked, &scope),
+                    unique_key: config_unique_key(&masked, &scope),
                     incremental_strategy: gov.incremental_strategy.clone(),
                 };
                 node.access = gov.access.clone();
                 node.group = gov.group.clone();
                 node.contract = gov.contract.clone();
                 node.language = Some("sql".to_string());
-                node.meta = config_meta(&masked).unwrap_or_default();
-                node.alias = config_alias(&masked);
-                let tags = config_tags(&masked);
+                node.meta = config_meta(&masked, &scope).unwrap_or_default();
+                node.alias = config_alias(&masked, &scope);
+                let tags = config_tags(&masked, &scope);
                 if !tags.is_empty() {
                     self.infile_tags.insert(uid.clone(), tags);
                 }
@@ -1294,8 +1307,8 @@ impl Synthesis {
         }
         self.nodes.insert(uid.clone(), node);
         self.name_index.insert(pending.name.clone(), uid.clone());
-        if let Some(v) = pending.in_file {
-            self.in_file_enabled.insert(uid.clone(), v);
+        if pending.in_file.declared() {
+            self.in_file_enabled.insert(uid.clone(), pending.in_file);
         }
     }
 
@@ -1419,8 +1432,9 @@ impl Synthesis {
                 if verdict == Some(Enabled::Unproven) {
                     self.enabled_unverifiable.insert(uid.clone());
                 }
-                if let Some(v) = schema {
-                    self.in_file_enabled.insert(uid.clone(), v);
+                if schema.is_some() {
+                    self.in_file_enabled
+                        .insert(uid.clone(), EnabledScan::plain(schema));
                 }
                 // dbt V2 synthesizes `select * from {relation}` (wrapping a bare
                 // ref()/source() in {{ }}) and feeds it through the normal
@@ -1497,8 +1511,18 @@ impl Synthesis {
         for (uid, sql) in &self.node_sql {
             let mut parents: Vec<String> = Vec::new();
             let mut invoked: BTreeSet<String> = BTreeSet::new();
-            // `sql` is already comment-masked — no second mask pass.
+            // `sql` is already comment-masked — no second mask pass. The
+            // scope marks the positions the model render provably never
+            // runs — a `{% macro %}`/`{% test %}`-style deferred body, or
+            // a statically-false arm (dbt's own extractor drops those
+            // refs too — verified: a `ref` behind `{% if var('off') %}`
+            // earns no edge in the real manifest). An UNPROVABLE arm is
+            // not dead — its calls stay as edges either way.
+            let scope = JinjaScope::new(sql, &self.vars);
             for site in self.pat.call_sites_masked(sql) {
+                if scope.dead(sql, site.span.start) {
+                    continue;
+                }
                 match site.kind {
                     // A `ref` the package scope keeps in the root graph
                     // makes its edge; one resolving out of it counts as
@@ -1535,6 +1559,9 @@ impl Synthesis {
                 }
             }
             for call in jinja_calls(sql) {
+                if scope.dead(sql, call.head) {
+                    continue;
+                }
                 match self.macros.classify_callee(call.name, &self.proj) {
                     // `ref`/`source`/`config` belong to the call-site pass
                     // above; dbt/Jinja builtins carry no deps.

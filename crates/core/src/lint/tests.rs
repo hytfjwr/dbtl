@@ -11874,10 +11874,10 @@ fn possible_edges_never_point_a_node_at_itself() {
 
 #[test]
 fn possible_edges_stay_off_on_a_source_mode_dag() {
-    // Source mode records every resolved call — including branch arms —
-    // as a REAL edge, so the possible-edge index has nothing to recover:
-    // the source gets its consumer through `depends_on`, and the index
-    // reports empty by construction.
+    // `execute` is parse-time false, so the arm's call is provably dead:
+    // source mode drops it from `depends_on` exactly like a real manifest,
+    // but the literal call still registers as a possible consumer so lint
+    // stays conservative.
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("models")).unwrap();
     std::fs::write(
@@ -11903,17 +11903,24 @@ fn possible_edges_stay_off_on_a_source_mode_dag() {
         "the synthesized manifest marks the load"
     );
     assert!(
-        dag.direct_parents("model.p.branchy")
+        !dag.direct_parents("model.p.branchy")
             .iter()
             .any(|p| p == "source.p.raw.prod_orders"),
-        "source mode records the arm the manifest drops"
+        "the dead arm's call edges nowhere, matching dbt"
+    );
+    assert!(
+        dag.direct_parents("model.p.branchy")
+            .iter()
+            .any(|p| p == "source.p.raw.orders"),
+        "the live arm's call still edges"
     );
     let resolver = super::call_sites::CallSiteResolver::new(&dag);
     assert!(
         resolver
             .possible_children("source.p.raw.prod_orders")
-            .is_empty(),
-        "a source-mode dag has no possible edges to recover"
+            .iter()
+            .any(|c| c == "model.p.branchy"),
+        "the dropped call stays visible to lint as a possible read"
     );
 }
 

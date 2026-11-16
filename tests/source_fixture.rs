@@ -204,7 +204,7 @@ fn schema_tests_are_captured_but_never_dag_nodes() {
 #[test]
 fn builds_dag_with_expected_counts_and_lineage() {
     let dag = load_dag_from_source(PROJECT).unwrap();
-    assert_eq!(dag.count_by_resource_type("model"), 17, "model count");
+    assert_eq!(dag.count_by_resource_type("model"), 23, "model count");
     assert_eq!(dag.count_by_resource_type("source"), 6, "source count");
     assert_eq!(dag.count_by_resource_type("seed"), 2, "seed count");
     assert_eq!(dag.count_by_resource_type("snapshot"), 3, "snapshot count");

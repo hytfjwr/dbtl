@@ -32,6 +32,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the caller as possibly having an unshown parent — so `root_models`
   stays quiet and `unused_models` no longer spares the root model it
   falsely consumed.
+- Source mode no longer treats `config()` calls inside `{% if %}`/`{% elif %}`/`{% else %}` arms as unconditional. A provably-true arm's `enabled=false` still disables the model and a provably-false arm's never applies, but when the arm's condition can't be evaluated (`target.name`, a macro call, a `{% for %}` header, a `{% set %}`-bound name) the model now stays in the graph, warns once naming the unknown condition, and is marked unverifiable — where before the gated `enabled=false` silently dropped live models. `execute` evaluates as parse-time `false`, matching dbt's parser context.
+- `config()` calls inside `{% %}` statement tags are now read — `{% do config(…) %}` and `{% set _ = config(…) %}` configure the model exactly like `{{ config(…) }}`, matching dbt.
+- `ref()`/`source()`/`config()` inside deferred definition bodies — `{% macro %}`, `{% test %}`, `{% docs %}`, `{% materialization %}`, `{% verification %}` — no longer configure the model or become dependency edges, and calls in statically-dead branches no longer edge, both matching dbt's own static extractor. Calls in unresolvable arms still contribute edges and (for non-`enabled` keys) config conservatively.
 - Models whose only parse failure was a `{{ }}` clause macro behind a
   keyword-shaped word — `where id is not null {{ group_by() }}`,
   `where v = status {{ m() }}` — no longer report as unparsable SQL:

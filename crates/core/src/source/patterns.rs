@@ -254,16 +254,21 @@ impl Patterns {
     }
 
     /// The materialization from `config(materialized='…')`, if present. Both
-    /// this and [`enabled`](Patterns::enabled) are scoped to `config(`
-    /// calls, so a bare `materialized='x'` / `enabled=false` in SQL text, a
-    /// `-- comment`, or a WHERE clause can never configure the node (dbt
-    /// only honours them inside `config()`). dbt applies config() calls in
-    /// order — the LAST call naming `materialized` wins (verified:
-    /// `config(materialized='view')` then `config(materialized='table')`
-    /// yields `table`) — so the last parseable string literal is taken; an
-    /// unresolvable expression (`var()`) can't override an earlier literal.
-    pub(super) fn materialized(&self, sql: &str) -> Option<String> {
-        config_kwarg_exprs(sql, "materialized")
+    /// this and [`enabled`](Patterns::enabled) read only `config(` calls
+    /// inside Jinja tags, so a bare `materialized='x'` / `enabled=false`
+    /// in SQL text, a `-- comment`, or a WHERE clause can never configure
+    /// the node (dbt only honours them inside `config()`). dbt applies
+    /// config() calls in order — the LAST call naming `materialized`
+    /// wins (verified: `config(materialized='view')` then
+    /// `config(materialized='table')` yields `table`) — so the last
+    /// parseable string literal is taken; an unresolvable expression
+    /// (`var()`) can't override an earlier literal. `scope` carries the
+    /// file's branch index: a call in a provably-dead arm or a
+    /// `{% macro %}`-style definition body is never read, while a call
+    /// in an unselectable arm still contributes — the conservative
+    /// read every non-`enabled` key takes.
+    pub(super) fn materialized(&self, sql: &str, scope: &JinjaScope) -> Option<String> {
+        config_kwarg_exprs(sql, scope, "materialized")
             .into_iter()
             .filter_map(|expr| match lit_value(expr) {
                 Some(serde_json::Value::String(s)) => Some(s),
@@ -272,56 +277,63 @@ impl Patterns {
             .next_back()
     }
 
-    /// The verdict the file's `{{ config() }}` calls leave on `enabled` —
-    /// `None` when no `enabled=` is declared; the LAST `enabled=` decides
-    /// otherwise, matching dbt's ordered config() application (verified:
-    /// `config(enabled=false)` then `config(enabled=true)` leaves the
-    /// node enabled). The value goes through the shared expression
-    /// evaluator (`Vars::node_enabled`) — literals, `var()`, comparisons,
-    /// `and`/`or`/`not`, `in`, `is` tests, parens, `| as_bool`. An
-    /// unresolvable value is a boolean-validation error in dbt — reported
-    /// once (`ctx` names the file), the verdict is
-    /// [`Enabled::Unproven`], and the resource stays enabled; it can't
-    /// fall back to an earlier `enabled=`.
+    /// What the file's `config(enabled=…)` calls declare, split by
+    /// whether the call provably executes — see [`EnabledScan`]. The
+    /// value goes through the shared expression evaluator
+    /// (`Vars::node_enabled`) — literals, `var()`, comparisons,
+    /// `and`/`or`/`not`, `in`, `is` tests, parens, `| as_bool` — with
+    /// the file's bound-name table marking `{% set %}`-bound and
+    /// parse-context names unprovable. An unresolvable `enabled=` on a
+    /// call that always runs is a boolean-validation error in dbt —
+    /// reported once (`ctx` names the file) as before; on an
+    /// unselectable-arm call it stays silent inside the scan (the arm
+    /// may never run — [`EnabledScan::resolve`] weighs it instead).
     pub(super) fn enabled(
         &self,
         sql: &str,
-        vars: &Vars,
+        scope: &JinjaScope,
         warnings: &mut Vec<String>,
         ctx: &str,
-    ) -> Option<Enabled> {
-        // `config()` only exists inside `{{ }}` — a bare `config(...)` in
-        // SQL text or a `--`/`/* */` comment is SQL to dbt, never a call
-        // (`{{ }}` inside a `--` comment DOES execute: Jinja renders first).
-        // The LAST `enabled=` decides: dbt applies config() calls in order,
-        // so a later unresolvable value is a boolean-validation error —
-        // reported once and the node stays enabled; it can't fall back to
-        // an earlier proven `false`.
-        let b = sql.as_bytes();
-        let mut i = 0usize;
-        let mut last: Option<&str> = None;
-        while i + 1 < b.len() {
-            if b[i] == b'{' && b[i + 1] == b'{' {
-                if let Some(end) = jinja_tag_close(b, i) {
-                    if let Some(e) = config_kwarg_exprs(&sql[i + 2..end], "enabled").last() {
-                        last = Some(e);
+    ) -> EnabledScan {
+        // `config()` only exists inside Jinja tags — `{{ }}` AND
+        // `{% %}` (`{% do %}`/`{% set _ = %}` invoke it too, and an
+        // `{% if config(…) %}`'s own call applies when the condition
+        // evaluates). A bare `config(...)` in SQL text or a `--`/`/* */`
+        // comment is SQL to dbt, never a call — while `{{ }}`/`{% %}`
+        // inside a `--` comment DOES execute (Jinja renders first).
+        let mut scan = EnabledScan::default();
+        for call in config_calls(sql, scope) {
+            let Some(expr) = config_arg(call.args, "enabled") else {
+                continue;
+            };
+            let verdict = match scope.vars.node_enabled(expr, scope.branches.bound_names()) {
+                Some(b) => {
+                    if b {
+                        Enabled::On
+                    } else {
+                        Enabled::Off
                     }
-                    i = end + 2;
-                    continue;
                 }
+                None => {
+                    if call.gate.is_none() {
+                        warnings.push(format!(
+                            "{ctx}: config(enabled={expr}) could not be evaluated as a boolean; the resource stays enabled"
+                        ));
+                    }
+                    Enabled::Unproven
+                }
+            };
+            match call.gate {
+                None => {
+                    scan.readable = Some(verdict);
+                    // The unconditional call overrides every earlier
+                    // gated call — they can never be the effective last.
+                    scan.gated.clear();
+                }
+                Some(cond) => scan.gated.push((verdict, cond.to_string())),
             }
-            i += 1;
         }
-        let expr = last?;
-        match vars.node_enabled(expr) {
-            Some(b) => Some(if b { Enabled::On } else { Enabled::Off }),
-            None => {
-                warnings.push(format!(
-                    "{ctx}: config(enabled={expr}) could not be evaluated as a boolean; the resource stays enabled"
-                ));
-                Some(Enabled::Unproven)
-            }
-        }
+        scan
     }
 }
 
@@ -333,10 +345,13 @@ impl Patterns {
 /// `env_var()`, an identifier) is skipped rather than guessed — an
 /// unresolvable LATER call can't clear what an earlier literal set, so the
 /// result is a subset of dbt's, never a fabrication.
-pub(super) fn config_meta(sql: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+pub(super) fn config_meta(
+    sql: &str,
+    scope: &JinjaScope,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
     let mut out = serde_json::Map::new();
     let mut found = false;
-    for expr in config_kwarg_exprs(sql, "meta") {
+    for expr in config_kwarg_exprs(sql, scope, "meta") {
         if let Some(serde_json::Value::Object(m)) = lit_value(expr) {
             out.extend(m);
             found = true;
@@ -350,8 +365,8 @@ pub(super) fn config_meta(sql: &str) -> Option<serde_json::Map<String, serde_jso
 /// Kept as the raw `Value`: dbt accepts a bare string or a string list and
 /// records the declared shape; `Dag::build` normalizes. An unresolvable
 /// expression can't override an earlier literal.
-pub(super) fn config_unique_key(sql: &str) -> Option<serde_json::Value> {
-    config_kwarg_exprs(sql, "unique_key")
+pub(super) fn config_unique_key(sql: &str, scope: &JinjaScope) -> Option<serde_json::Value> {
+    config_kwarg_exprs(sql, scope, "unique_key")
         .into_iter()
         .filter_map(lit_value)
         .next_back()
@@ -361,8 +376,8 @@ pub(super) fn config_unique_key(sql: &str) -> Option<serde_json::Value> {
 /// the LAST `alias=` across the file's config() calls wins, the same ordered
 /// application `materialized`/`enabled` follow. An unresolvable expression
 /// (`var()`, an identifier) can't override an earlier literal.
-pub(super) fn config_alias(sql: &str) -> Option<String> {
-    config_kwarg_exprs(sql, "alias")
+pub(super) fn config_alias(sql: &str, scope: &JinjaScope) -> Option<String> {
+    config_kwarg_exprs(sql, scope, "alias")
         .into_iter()
         .filter_map(|expr| match lit_value(expr) {
             Some(serde_json::Value::String(s)) => Some(s),
@@ -387,9 +402,9 @@ pub(super) struct FileConfig {
     pub(super) incremental_strategy: Option<String>,
 }
 
-pub(super) fn config_governance(sql: &str) -> FileConfig {
+pub(super) fn config_governance(sql: &str, scope: &JinjaScope) -> FileConfig {
     let mut out = FileConfig::default();
-    for args in config_call_args_list(sql) {
+    for args in config_call_args_list(sql, scope) {
         for (name, slot) in [
             ("access", &mut out.access),
             ("group", &mut out.group),
@@ -422,28 +437,345 @@ fn site_head_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"\b(?:ref|source|config)\s*\(").unwrap())
 }
 
-/// The argument text of EVERY `config(…)` call in `sql`, in order — each
-/// string is the text between that call's parens, found by a balanced-
-/// paren/quote scan so nested `(`/`)` inside dicts or macro calls can't end
-/// the call early (the `[^)]*` approach can't). dbt applies config() calls
-/// in order — each call's kwargs override the earlier ones per key
-/// (verified: `config(materialized='v')` then `config(materialized='t')`
-/// yields `t`), so kwarg readers take the LAST resolvable value.
-pub(super) fn config_call_args_list(sql: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut pos = 0usize;
-    while let Some(m) = config_re().find_at(sql, pos) {
-        match scan_call_args(sql, m.end()) {
-            Some((args, end)) => {
-                out.push(args);
-                pos = end;
-            }
-            // An unclosed call swallows the rest of the file — no more
-            // config() calls can follow it.
-            None => break,
+/// The Jinja-level context every `config_*` reader shares for one file —
+/// the branch index [`jinja_branches`] built (arm paths, per-arm
+/// conditions, bound names, deferred definition bodies) plus the node's
+/// `var()` scope for condition evaluation. Building it once per file
+/// keeps the readers a pure map over [`config_calls`].
+pub(super) struct JinjaScope<'v> {
+    /// The file's arm/bound-name/deferred-body index.
+    branches: JinjaBranches,
+    /// The node's `var()` scope — `Vars::node_condition` resolves an
+    /// arm's condition through it.
+    vars: &'v Vars,
+}
+
+impl<'v> JinjaScope<'v> {
+    /// Index `text` (the Jinja-comment-masked file body) once for every
+    /// `config_*` reader of the file.
+    pub(super) fn new(text: &str, vars: &'v Vars) -> Self {
+        JinjaScope {
+            branches: jinja_branches(text),
+            vars,
         }
     }
+
+    /// True when the position provably never runs in the model render —
+    /// a dead arm or a `{% macro %}`-style deferred definition body. A
+    /// merely unprovable arm is NOT dead: its calls may execute.
+    pub(super) fn dead(&self, text: &str, off: usize) -> bool {
+        // A call inside an `{% elif %}` condition — `chain.conds[k]` for
+        // k > 0 is exactly the k-th elif's expression — evaluates when the
+        // earlier arms were falsy, which `arm_path` alone can't say.
+        let boundary = self.branches.chains.iter().any(|c| {
+            c.conds
+                .iter()
+                .enumerate()
+                .any(|(k, r)| k > 0 && r.contains(&off))
+        });
+        let verdict = if boundary {
+            exec_arm_boundary(text, &self.branches, self.vars, off)
+        } else {
+            exec_at(text, &self.branches, self.vars, off)
+        };
+        matches!(verdict, Exec::Inactive)
+    }
+}
+
+/// One `config(…)` call site inside a Jinja tag, with the render verdict
+/// [`exec_at`] left it: `gate` names the unprovable arm condition guarding
+/// the call (`None` — it executes on every render). Calls provably dead —
+/// a never-taken arm, a `{% macro %}`-style definition body — never reach
+/// the list.
+struct ConfigCall<'a> {
+    /// The text between the call's parens.
+    args: &'a str,
+    /// The unprovable condition of the arm gating the call, when gated.
+    gate: Option<&'a str>,
+}
+
+/// Whether a source position executes on every render, sits behind an
+/// arm whose condition source can't prove, or can never execute.
+enum Exec<'a> {
+    /// Unconditional — the position renders whenever the file does.
+    Active,
+    /// An unprovable arm guards the position — the `&str` is the
+    /// condition's source text (for the warning naming it).
+    Gated(&'a str),
+    /// The position never executes in the model render — an arm whose
+    /// condition provably failed (or whose earlier arm provably took the
+    /// chain), or a `{% macro %}`/`{% test %}`/`{% docs %}`/
+    /// `{% materialization %}`/`{% verification %}` definition body the
+    /// render never runs top-level.
+    Inactive,
+}
+
+/// [`exec_at`] for a position inside an `{% elif %}`/`{% else %}` tag —
+/// the tag's own expressions evaluate when its chain's EARLIER arms were
+/// all falsy. The arm path's last step names the arm about to close, so
+/// the gate is that chain's `conds[0..=arm]` — a proven-true earlier arm
+/// means the tag never runs; an unprovable one gates it. (`{% endif %}`/
+/// `{% end… %}` positions keep the plain read — an end tag holds no
+/// valid expression anyway.)
+fn exec_arm_boundary<'a>(
+    text: &'a str,
+    branches: &JinjaBranches,
+    vars: &Vars,
+    off: usize,
+) -> Exec<'a> {
+    if branches.in_deferred(off) {
+        return Exec::Inactive;
+    }
+    let path = branches.arm_path(off);
+    let Some((last, rest)) = path.split_last() else {
+        // An `elif`/`else` outside a chain — Jinja rejects it; nothing
+        // provable, keep the conservative read.
+        return Exec::Active;
+    };
+    let mut gate = None;
+    for step in rest {
+        match step_exec(text, branches, vars, step) {
+            Exec::Inactive => return Exec::Inactive,
+            Exec::Gated(cond) => gate = gate.or(Some(cond)),
+            Exec::Active => {}
+        }
+    }
+    let chain = &branches.chains[last.chain as usize];
+    if chain.kind == ArmKind::For {
+        // A for-chain's `{% else %}` evaluates when the loop ran empty —
+        // unprovable like the loop itself.
+        gate = gate.or(Some(&text[chain.header.clone()]));
+    } else {
+        for r in &chain.conds[..(last.arm as usize + 1).min(chain.conds.len())] {
+            match vars.node_condition(&text[r.clone()], &branches.bound) {
+                Some(true) => return Exec::Inactive,
+                Some(false) => {}
+                None => gate = gate.or(Some(&text[r.clone()])),
+            }
+        }
+    }
+    match gate {
+        Some(g) => Exec::Gated(g),
+        None => Exec::Active,
+    }
+}
+
+/// The [`Exec`] verdict of the position `off` — first the deferred-body
+/// check (a definition body's config applies only when the definition is
+/// invoked, which a parse can't prove), then the arm path folded against
+/// each chain's conditions. A chain's arm `k` requires `conds[0..k]` all
+/// false and `conds[k]` true; a proven-true earlier cond parks the arm
+/// (`Inactive`), a proven-false own cond the same, and any unprovable
+/// cond gates it — the FIRST unprovable one names the gate. A `{% for %}`
+/// chain's arms can never be selected from source — the loop header
+/// (`x in expr`) is the gate text.
+fn exec_at<'a>(text: &'a str, branches: &JinjaBranches, vars: &Vars, off: usize) -> Exec<'a> {
+    if branches.in_deferred(off) {
+        return Exec::Inactive;
+    }
+    let mut gate = None;
+    for step in branches.arm_path(off) {
+        match step_exec(text, branches, vars, step) {
+            Exec::Inactive => return Exec::Inactive,
+            Exec::Gated(cond) => gate = gate.or(Some(cond)),
+            Exec::Active => {}
+        }
+    }
+    match gate {
+        Some(g) => Exec::Gated(g),
+        None => Exec::Active,
+    }
+}
+
+/// One arm step's contribution to [`exec_at`]/[`exec_arm_boundary`]:
+/// `Inactive` when the arm can never be selected, `Gated` carrying the
+/// first unprovable condition text when selection is open but unproven.
+fn step_exec<'a>(text: &'a str, branches: &JinjaBranches, vars: &Vars, step: &ArmStep) -> Exec<'a> {
+    let chain = &branches.chains[step.chain as usize];
+    if chain.kind == ArmKind::For {
+        return Exec::Gated(&text[chain.header.clone()]);
+    }
+    let mut gate = None;
+    for r in &chain.conds[..(step.arm as usize).min(chain.conds.len())] {
+        match vars.node_condition(&text[r.clone()], &branches.bound) {
+            Some(true) => return Exec::Inactive,
+            Some(false) => {}
+            None => gate = gate.or(Some(&text[r.clone()])),
+        }
+    }
+    if (step.arm as usize) < chain.conds.len() {
+        match vars.node_condition(
+            &text[chain.conds[step.arm as usize].clone()],
+            &branches.bound,
+        ) {
+            Some(false) => return Exec::Inactive,
+            Some(true) => {}
+            None => gate = gate.or(Some(&text[chain.conds[step.arm as usize].clone()])),
+        }
+    }
+    match gate {
+        Some(g) => Exec::Gated(g),
+        None => Exec::Active,
+    }
+}
+
+/// Every `config(…)` call inside `sql`'s Jinja tags — `{{ }}` AND
+/// `{% %}` bodies (`{% do config(…) %}` and `{% set _ = config(…) %}`
+/// invoke it identically at render) — in source order, each carrying its
+/// [`Exec`] verdict. The bare `\bconfig\s*\(` finder inside the tag body
+/// is balanced-paren/quote rescanned like everywhere else, so a nested
+/// `(`/`)` inside dicts or macro calls can't end the call early.
+fn config_calls<'a>(sql: &'a str, scope: &JinjaScope) -> Vec<ConfigCall<'a>> {
+    let b = sql.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + 1 < b.len() {
+        if b[i] == b'{' && matches!(b[i + 1], b'{' | b'%') {
+            if let Some(end) = jinja_tag_close(b, i) {
+                let body = &sql[i + 2..end];
+                // `{% elif %}` bodies sit at their chain's boundary —
+                // their expressions evaluate when the earlier arms were
+                // falsy, which the arm index alone can't say. The
+                // declaration/raw-payload tags (`{% macro config(…) %}`
+                // is a SIGNATURE, not a call) and every `{% end… %}`
+                // close carry no call.
+                let boundary = if b[i + 1] == b'%' {
+                    let (word, _) = tag_word(body);
+                    if word.starts_with("end") || NO_CALL_TAGS.contains(&word) {
+                        i = end + 2;
+                        continue;
+                    }
+                    matches!(word, "elif" | "elseif")
+                } else {
+                    false
+                };
+                let mut pos = 0usize;
+                while let Some(m) = config_re().find_at(body, pos) {
+                    match scan_call_args(body, m.end()) {
+                        Some((args, call_end)) => {
+                            // The call head's offset in `sql` — the arm
+                            // index and deferred ranges are keyed on it.
+                            let head = i + 2 + m.start();
+                            let verdict = if boundary {
+                                exec_arm_boundary(sql, &scope.branches, scope.vars, head)
+                            } else {
+                                exec_at(sql, &scope.branches, scope.vars, head)
+                            };
+                            match verdict {
+                                Exec::Active => out.push(ConfigCall { args, gate: None }),
+                                Exec::Gated(cond) => out.push(ConfigCall {
+                                    args,
+                                    gate: Some(cond),
+                                }),
+                                Exec::Inactive => {}
+                            }
+                            pos = call_end;
+                        }
+                        // An unclosed call swallows the rest of the tag
+                        // body — nothing follows it inside.
+                        None => break,
+                    }
+                }
+                i = end + 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
     out
+}
+
+/// The argument text of every `config(…)` call `sql`'s render may execute,
+/// in call order — [`config_calls`] with the branch bookkeeping dropped,
+/// for the readers whose keys take the conservative "an unselectable arm
+/// still contributes" stance (every key but `enabled`).
+fn config_call_args_list<'a>(sql: &'a str, scope: &JinjaScope) -> Vec<&'a str> {
+    config_calls(sql, scope)
+        .into_iter()
+        .map(|c| c.args)
+        .collect()
+}
+
+/// What a file's `config(enabled=…)` calls declare, split by whether the
+/// call provably executes — [`Patterns::enabled`]'s return.
+///
+/// `readable` is the last-wins verdict over the calls that run on every
+/// render — unconditional positions plus provably-taken arms. `gated`
+/// is every call sitting behind a condition source can't prove that
+/// could be the EFFECTIVE last call — those after the last unconditional
+/// `enabled=` call (an unconditional call overrides every earlier gated
+/// one, so pre-`readable` gated calls can never win). Calls in a
+/// provably-dead arm or a `{% macro %}`-style definition body reach
+/// neither. A non-`config()` channel — a `.py` `dbt.config` literal, a
+/// YAML `config.enabled:` — has no arms; [`EnabledScan::plain`] wraps it.
+#[derive(Debug, Clone, Default)]
+pub(super) struct EnabledScan {
+    /// The verdict over calls that provably execute — `None` when no
+    /// such call declares `enabled=` (the unselectable-arm calls alone
+    /// do not fill this).
+    readable: Option<Enabled>,
+    /// `(verdict, gate condition)` per unselectable-arm call that could
+    /// be the effective last `enabled=` call, in source order.
+    gated: Vec<(Enabled, String)>,
+}
+
+impl EnabledScan {
+    /// A channel with no Jinja branch context — the one verdict stands.
+    pub(super) fn plain(v: Option<Enabled>) -> EnabledScan {
+        EnabledScan {
+            readable: v,
+            gated: Vec::new(),
+        }
+    }
+
+    /// Did the file declare `enabled=` at all?
+    pub(super) fn declared(&self) -> bool {
+        self.readable.is_some() || !self.gated.is_empty()
+    }
+
+    /// The file's own `enabled=false` is PROVEN — every call that may
+    /// execute agrees (a verdict leaning on an unselectable arm is never
+    /// proven) — so the resource parks like dbt's `disabled` whatever the
+    /// lower channels say.
+    pub(super) fn proven_off(&self) -> bool {
+        self.readable == Some(Enabled::Off) && self.gated.iter().all(|(v, _)| *v == Enabled::Off)
+    }
+
+    /// The in-file channel's verdict folded over `fallback` — the lower-
+    /// precedence levels' already-resolved verdict (schema
+    /// `config.enabled:` then the tree's `+enabled`). Any gated call
+    /// whose verdict differs from the unconditional outcome can be the
+    /// effective last call on some render, so the verdict is
+    /// [`Enabled::Unproven`] — the node stays enabled and marked, never
+    /// silently disabled — and one warning names that call's unprovable
+    /// condition (`ctx` names the file the branch lives in).
+    pub(super) fn resolve(
+        &self,
+        fallback: Option<Enabled>,
+        warnings: &mut Vec<String>,
+        ctx: &str,
+    ) -> Option<Enabled> {
+        let without = self.readable.or(fallback);
+        let base = verdict_value(without);
+        for (v, gate) in &self.gated {
+            if *v != base {
+                warnings.push(format!(
+                    "{ctx}: config(enabled=…) sits in a Jinja branch whose condition cannot be evaluated ({gate}); the resource stays enabled"
+                ));
+                return Some(Enabled::Unproven);
+            }
+        }
+        // No divergence — every gated call agrees with the unconditional
+        // outcome, so its declaration still counts as the file's verdict.
+        without.or_else(|| self.gated.first().map(|(v, _)| *v))
+    }
+}
+
+/// The outcome an `enabled` verdict leaves on the node — an absent
+/// channel leaves the default (enabled), so the `readable`/`gated`
+/// compare ignores which level declared it.
+fn verdict_value(v: Option<Enabled>) -> Enabled {
+    v.unwrap_or(Enabled::On)
 }
 
 /// Scan the call whose `(` ends at `start`: returns the text between the
@@ -489,9 +821,11 @@ pub(super) fn scan_call_args(sql: &str, start: usize) -> Option<(&str, usize)> {
 /// `enabled`) and per-key-merged dict kwargs (`meta`). Each call's binding
 /// comes from [`config_arg`], so a positional-dict call's `"name": v`
 /// entries and a trailing `**{…}` spread's entries take part in the same
-/// ordered sequence as the `name=v` kwargs.
-pub(super) fn config_kwarg_exprs<'a>(sql: &'a str, name: &str) -> Vec<&'a str> {
-    config_call_args_list(sql)
+/// ordered sequence as the `name=v` kwargs. `scope` filters the calls to
+/// what the render may execute — the conservative read a non-`enabled`
+/// key takes (an unselectable arm still contributes).
+pub(super) fn config_kwarg_exprs<'a>(sql: &'a str, scope: &JinjaScope, name: &str) -> Vec<&'a str> {
+    config_call_args_list(sql, scope)
         .into_iter()
         .filter_map(|args| config_arg(args, name))
         .collect()
@@ -502,9 +836,9 @@ pub(super) fn config_kwarg_exprs<'a>(sql: &'a str, name: &str) -> Vec<&'a str> {
 /// `+tags` and the schema `config.tags` (the wire `config.tags` order is
 /// the same list with the two channels swapped — verified on 1.12.6).
 /// Multiple calls accumulate; each literal extends the list.
-pub(crate) fn config_tags(sql: &str) -> Vec<String> {
+pub(super) fn config_tags(sql: &str, scope: &JinjaScope) -> Vec<String> {
     let mut out = Vec::new();
-    for expr in config_kwarg_exprs(sql, "tags") {
+    for expr in config_kwarg_exprs(sql, scope, "tags") {
         if let Some(v) = lit_value(expr) {
             out.extend(tag_values_of(&v));
         }
@@ -569,34 +903,30 @@ pub(crate) fn config_arg<'a>(args: &'a str, name: &str) -> Option<&'a str> {
     }
 }
 
-/// Warn once per `{{ config(…) }}` call in `sql` whose argument shape is
-/// not one dbt accepts (the call contributes no config — a parse error in
-/// dbt) or whose `*`/`**` operand isn't a literal (dbt evaluates it at
-/// render; only the call's explicit kwargs can be read statically).
-/// Scoping to `{{ }}` keeps a `config(` appearing in plain SQL text —
-/// a column or function name — from warning like a real config call.
-pub(crate) fn config_shape_warnings(sql: &str, warnings: &mut Vec<String>, ctx: &str) {
-    let b = sql.as_bytes();
-    let mut i = 0usize;
-    while i + 1 < b.len() {
-        if b[i] == b'{' && b[i + 1] == b'{' {
-            if let Some(end) = jinja_tag_close(b, i) {
-                for args in config_call_args_list(&sql[i + 2..end]) {
-                    match config_args(args) {
-                        ConfigShape::Invalid => warnings.push(format!(
-                            "{ctx}: a config(...) call's arguments are not a shape dbt accepts (kwargs or a single dict); its config is ignored"
-                        )),
-                        ConfigShape::RenderSpread { .. } => warnings.push(format!(
-                            "{ctx}: a config(...) call's * or ** operand is not a literal; only the call's keyword arguments are applied"
-                        )),
-                        _ => {}
-                    }
-                }
-                i = end + 2;
-                continue;
-            }
+/// Warn once per `config(…)` call in `sql`'s Jinja tags whose argument
+/// shape is not one dbt accepts (the call contributes no config — a parse
+/// error in dbt) or whose `*`/`**` operand isn't a literal (dbt evaluates
+/// it at render; only the call's explicit kwargs can be read statically).
+/// Scoping to the Jinja tags — `{{ }}` and `{% %}` alike — keeps a
+/// `config(` appearing in plain SQL text — a column or function name —
+/// from warning like a real config call; a call provably never executed
+/// (a dead arm, a definition body) doesn't warn either.
+pub(super) fn config_shape_warnings(
+    sql: &str,
+    scope: &JinjaScope,
+    warnings: &mut Vec<String>,
+    ctx: &str,
+) {
+    for call in config_calls(sql, scope) {
+        match config_args(call.args) {
+            ConfigShape::Invalid => warnings.push(format!(
+                "{ctx}: a config(...) call's arguments are not a shape dbt accepts (kwargs or a single dict); its config is ignored"
+            )),
+            ConfigShape::RenderSpread { .. } => warnings.push(format!(
+                "{ctx}: a config(...) call's * or ** operand is not a literal; only the call's keyword arguments are applied"
+            )),
+            _ => {}
         }
-        i += 1;
     }
 }
 
@@ -1236,13 +1566,31 @@ pub fn arms_exclusive(a: &[ArmStep], b: &[ArmStep]) -> bool {
 /// offset — [`jinja_branches`]'s output. [`JinjaBranches::arm_path`]
 /// answers the stack of enclosing arms a position sits in, outermost
 /// first; the positions it indexes are the same text
-/// [`call_sites_masked`] spans point into.
+/// [`call_sites_masked`] spans point into. `chains`/`bound`/`deferred`
+/// extend the index for the branch-aware `config()` readers: the arm
+/// conditions `Vars::node_condition` can prove, the template-bound
+/// names it can't, and the definition bodies the model render never runs.
 #[derive(Debug, Default)]
 pub struct JinjaBranches {
     /// `(offset, path)` cuts in ascending order — the path in effect from
     /// `offset` until the next cut. Always non-empty (the empty path at
     /// offset 0).
     cuts: Vec<(usize, Vec<ArmStep>)>,
+    /// Per-chain arm conditions — `chains[step.chain]` guards
+    /// `step.arm`. Private to the branch-aware `config()` readers.
+    chains: Vec<ChainArms>,
+    /// The names the template binds — `{% set %}`/`{% for %}` targets,
+    /// `{% macro %}`/`{% test %}` signatures, `{% import %}`/
+    /// `{% from %}`/`{% with %}`/`{% call %}` bindings — defined but
+    /// unreadable from source, so the expression evaluator treats them
+    /// like dbt's parse-context names: unprovable.
+    bound: BoundNames,
+    /// Definition-body ranges the model render never executes top-level —
+    /// `{% macro %}`/`{% test %}`/`{% docs %}`/`{% materialization %}`/
+    /// `{% verification %}` interiors. A `config()` inside applies only
+    /// when the definition is invoked, which a parse can't prove, so the
+    /// model-level readers never see it.
+    deferred: Vec<Range<usize>>,
 }
 
 impl JinjaBranches {
@@ -1252,6 +1600,62 @@ impl JinjaBranches {
     pub fn arm_path(&self, offset: usize) -> &[ArmStep] {
         let i = self.cuts.partition_point(|(o, _)| *o <= offset);
         self.cuts.get(i.wrapping_sub(1)).map_or(&[], |(_, p)| p)
+    }
+
+    /// The file's template-bound name table — [`Vars::node_enabled`]/
+    /// [`Vars::node_condition`]'s unprovable-name set.
+    pub(super) fn bound_names(&self) -> &BoundNames {
+        &self.bound
+    }
+
+    /// Is `offset` inside a definition body the model render never runs
+    /// (`{% macro %}`/`{% test %}`/`{% docs %}`/`{% materialization %}`/
+    /// `{% verification %}` interiors)? The `config()` and dependency
+    /// passes filter those — an uninvoked definition's calls are not
+    /// the node's (an invoked macro's calls arrive through `Macros`).
+    pub(super) fn in_deferred(&self, offset: usize) -> bool {
+        self.deferred.iter().any(|r| r.contains(&offset))
+    }
+}
+
+/// One `{% if %}`/`{% elif %}`/`{% else %}`/`{% endif %}` or
+/// `{% for %}`/`{% else %}`/`{% endfor %}` chain's arm bookkeeping —
+/// [`ArmStep::chain`] indexes into this.
+#[derive(Debug)]
+struct ChainArms {
+    /// The same `{% if %}`-vs-`{% for %}` split [`ArmStep::kind`] carries.
+    kind: ArmKind,
+    /// The `{% if %}`/`{% elif %}` condition text ranges in arm order —
+    /// `conds[k]` guards arm `k`; the `{% else %}` arm (index
+    /// `conds.len()`) has none. Empty for a `{% for %}` chain — its arms
+    /// are never selectable from source.
+    conds: Vec<Range<usize>>,
+    /// The open tag's whole remainder — the `for` clause's display text
+    /// (`x in expr`) naming the gate in warnings.
+    header: Range<usize>,
+}
+
+/// The names a template binds at render — `{% set %}`/`{% for %}` targets,
+/// `{% macro %}`/`{% test %}` names and parameters, `{% import %}`/
+/// `{% from %}` aliases, `{% with %}`/`{% call %}` bindings — collected by
+/// [`jinja_branches`] alongside the arm index. In the node render these
+/// are DEFINED but unreadable from source (a `{% set x = expr %}`'s
+/// `expr` evaluates at render), so the enabled/condition evaluator treats
+/// them like dbt's parse-context names: unprovable, never `Undefined`.
+#[derive(Debug, Default)]
+pub(super) struct BoundNames {
+    names: std::collections::BTreeSet<String>,
+}
+
+impl BoundNames {
+    /// Extend the table with a binding position's identifiers.
+    fn extend<'a>(&mut self, names: impl IntoIterator<Item = &'a str>) {
+        self.names.extend(names.into_iter().map(str::to_string));
+    }
+
+    /// Is `name` bound anywhere in the template?
+    pub(super) fn contains(&self, name: &str) -> bool {
+        self.names.contains(name)
     }
 }
 
@@ -1264,6 +1668,14 @@ impl JinjaBranches {
 /// other paired tag (`{% macro %}`, `{% block %}`, `{% docs %}`…) nests
 /// transparently — arms inside it still index.
 ///
+/// The same pass records what the branch-aware `config()` readers need:
+/// each chain's arm conditions (`chains`), the template-bound names
+/// (`bound` — `{% set %}`/`{% for %}`/`{% macro %}`/`{% import %}`…
+/// bindings, defined but unreadable from source), and the deferred
+/// definition bodies (`deferred` — `{% macro %}`/`{% test %}`/
+/// `{% docs %}`/`{% materialization %}`/`{% verification %}` interiors
+/// the model render never runs top-level).
+///
 /// A malformed structure — an unclosed block, a stray `{% end… %}`, an
 /// `{% else %}`/`{% elif %}` outside `if`/`for` — yields a map where
 /// every offset is unconditional: Jinja rejects it too, so nothing is
@@ -1271,8 +1683,10 @@ impl JinjaBranches {
 /// the structure itself proves — under-reporting is the safe direction.
 pub fn jinja_branches(text: &str) -> JinjaBranches {
     /// An open `{% %}` block — `If`/`For` carry the arm bookkeeping the
-    /// signature reads; `Block` any other paired tag, holding only the
-    /// `{% end… %}` word it must close with.
+    /// signature reads; `Block` any other paired tag — the `{% end… %}`
+    /// word it must close with, plus the interior's start offset when
+    /// the body is a definition the render defers (`Some`), so the close
+    /// can record the deferred range.
     enum Frame {
         If {
             chain: u32,
@@ -1284,32 +1698,39 @@ pub fn jinja_branches(text: &str) -> JinjaBranches {
             arm: u32,
             else_seen: bool,
         },
-        Block(&'static str),
+        Block(&'static str, Option<usize>),
     }
-    /// `{% word %}…{% end<tail> %}` pairs other than `if`/`for`/`raw` —
-    /// their interior still composes arms; only the `end` word differs.
+    /// `{% word %}…{% end<tail> %}` pairs other than `if`/`for`/`raw` and
+    /// the binding/deferred tags handled above the catch-all — their
+    /// interior still composes arms; only the `end` word differs.
     /// (`debug` is deliberately absent — Jinja's `{% debug %}` is a
     /// single statement tag, not a pair.)
     const BLOCK_TAGS: &[(&str, &str)] = &[
-        ("macro", "endmacro"),
         ("block", "endblock"),
         ("filter", "endfilter"),
-        ("call", "endcall"),
-        ("with", "endwith"),
         ("trans", "endtrans"),
         ("autoescape", "endautoescape"),
-        ("docs", "enddocs"),
         ("snapshot", "endsnapshot"),
+        ("embed", "endembed"),
+    ];
+    /// The paired tags whose interiors the model render never executes:
+    /// they DEFINE a macro/test/docs block/materialization/verification
+    /// invoked elsewhere, so a `config()` inside applies (at most) at
+    /// the invocation a parse can't prove.
+    const DEFERRED_TAGS: &[(&str, &str)] = &[
+        ("macro", "endmacro"),
+        ("docs", "enddocs"),
         ("test", "endtest"),
         ("materialization", "endmaterialization"),
         ("verification", "endverification"),
-        ("embed", "endembed"),
     ];
 
     let b = text.as_bytes();
     let mut cuts: Vec<(usize, Vec<ArmStep>)> = vec![(0, Vec::new())];
+    let mut chains: Vec<ChainArms> = Vec::new();
+    let mut bound = BoundNames::default();
+    let mut deferred: Vec<Range<usize>> = Vec::new();
     let mut stack: Vec<Frame> = Vec::new();
-    let mut next_chain = 0u32;
     let mut malformed = false;
     let mut i = 0usize;
     while i < b.len() && !malformed {
@@ -1327,23 +1748,40 @@ pub fn jinja_branches(text: &str) -> JinjaBranches {
             let (word, rest) = tag_word(&text[i + 2..e]);
             match word {
                 "if" => {
+                    let r = range_of(text, rest);
+                    chains.push(ChainArms {
+                        kind: ArmKind::If,
+                        conds: vec![r.clone()],
+                        header: r,
+                    });
                     stack.push(Frame::If {
-                        chain: next_chain,
+                        chain: chains.len() as u32 - 1,
                         arm: 0,
                         else_seen: false,
                     });
-                    next_chain += 1;
                 }
                 "for" => {
+                    bound.extend(for_bind_names(rest));
+                    chains.push(ChainArms {
+                        kind: ArmKind::For,
+                        conds: Vec::new(),
+                        header: range_of(text, rest),
+                    });
                     stack.push(Frame::For {
-                        chain: next_chain,
+                        chain: chains.len() as u32 - 1,
                         arm: 0,
                         else_seen: false,
                     });
-                    next_chain += 1;
                 }
                 "elif" | "elseif" => match stack.last_mut() {
-                    Some(Frame::If { arm, else_seen, .. }) if !*else_seen => *arm += 1,
+                    Some(Frame::If {
+                        chain,
+                        arm,
+                        else_seen,
+                    }) if !*else_seen => {
+                        *arm += 1;
+                        chains[*chain as usize].conds.push(range_of(text, rest));
+                    }
                     // An `elif`/`elseif` anywhere else is malformed Jinja.
                     _ => malformed = true,
                 },
@@ -1387,25 +1825,57 @@ pub fn jinja_branches(text: &str) -> JinjaBranches {
                     };
                     continue;
                 }
-                "set" if !jinja_set_assigns(rest) => stack.push(Frame::Block("endset")),
+                "set" => {
+                    bound.extend(set_bind_names(rest));
+                    if !jinja_set_assigns(rest) {
+                        stack.push(Frame::Block("endset", None));
+                    }
+                }
+                word @ ("macro" | "test" | "docs" | "materialization" | "verification") => {
+                    if word == "macro" || word == "test" {
+                        bound.extend(sig_bind_names(rest));
+                    }
+                    let (_, end) = DEFERRED_TAGS.iter().find(|(w, _)| *w == word).unwrap();
+                    stack.push(Frame::Block(end, Some(e + 2)));
+                }
+                "with" => {
+                    bound.extend(with_bind_names(rest));
+                    stack.push(Frame::Block("endwith", None));
+                }
+                "call" => {
+                    // A `{% call f() %}…{% endcall %}` body is NOT a
+                    // deferred definition: dbt's static extractor reads
+                    // it as toplevel — a `config()` inside applies (an
+                    // `enabled=false` parks the node) and a `ref` edges,
+                    // even though the body only renders when the callee
+                    // invokes `caller()`. Verified against the real
+                    // manifest — keep the body unconditional (`None`).
+                    bound.extend(call_bind_names(rest));
+                    stack.push(Frame::Block("endcall", None));
+                }
+                "import" => bound.extend(import_bind_names(rest)),
+                "from" => bound.extend(from_bind_names(rest)),
                 _ => {
                     if let Some((_, end)) = BLOCK_TAGS.iter().find(|(w, _)| *w == word) {
-                        stack.push(Frame::Block(end));
+                        stack.push(Frame::Block(end, None));
                     } else if word.starts_with("end") {
-                        let expected = stack.last().map(|f| match f {
-                            Frame::If { .. } => "endif",
-                            Frame::For { .. } => "endfor",
-                            Frame::Block(end) => end,
-                        });
-                        match expected {
-                            Some(w) if w == word => {
+                        match stack.last() {
+                            Some(Frame::If { .. }) if word == "endif" => {
                                 stack.pop();
+                            }
+                            Some(Frame::For { .. }) if word == "endfor" => {
+                                stack.pop();
+                            }
+                            Some(Frame::Block(w, _)) if *w == word => {
+                                if let Some(Frame::Block(_, Some(start))) = stack.pop() {
+                                    deferred.push(start..i);
+                                }
                             }
                             _ => malformed = true,
                         }
                     }
-                    // Anything else (`do`, `include`, `import`, `print`, a
-                    // statement `{% set x = … %}`…) executes once — no frame.
+                    // Anything else (`do`, `include`, `print`, a statement
+                    // `{% set x = … %}`…) executes once — no frame.
                 }
             }
         }
@@ -1424,7 +1894,7 @@ pub fn jinja_branches(text: &str) -> JinjaBranches {
                     arm: *arm,
                     kind: ArmKind::For,
                 }),
-                Frame::Block(_) => None,
+                Frame::Block(..) => None,
             })
             .collect();
         if cuts.last().is_none_or(|(_, s)| *s != sig) {
@@ -1437,7 +1907,201 @@ pub fn jinja_branches(text: &str) -> JinjaBranches {
         // exclusive, so every offset reports unconditional.
         return JinjaBranches::default();
     }
-    JinjaBranches { cuts }
+    JinjaBranches {
+        cuts,
+        chains,
+        bound,
+        deferred,
+    }
+}
+
+/// `sub`'s byte range inside `text` (`sub` must be a subslice — the
+/// pointer delta is its offset).
+fn range_of(text: &str, sub: &str) -> Range<usize> {
+    let start = sub.as_ptr() as usize - text.as_ptr() as usize;
+    start..start + sub.len()
+}
+
+/// Is `b` an identifier byte?
+fn is_ident(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// The identifiers a binding position's LHS carries — the bare names in
+/// `x`, `x, y`, `(x, y)`, `[x, [y]]` destructuring — quotes skipped.
+/// Over-collecting is the safe direction: a name marked bound that isn't
+/// merely evaluates unprovable, never `Undefined`.
+fn lhs_idents(lhs: &str) -> Vec<&str> {
+    let b = lhs.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < b.len() {
+        match b[i] {
+            q @ (b'\'' | b'"') => {
+                i += 1;
+                while i < b.len() {
+                    if b[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    let c = b[i];
+                    i += 1;
+                    if c == q {
+                        break;
+                    }
+                }
+            }
+            c if is_ident(c) && !c.is_ascii_digit() => {
+                let start = i;
+                while i < b.len() && is_ident(b[i]) {
+                    i += 1;
+                }
+                out.push(&lhs[start..i]);
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+/// `rest` cut at the FIRST depth-0, quote-free keyword `kw` — word-
+/// boundary on both sides. `None` when `kw` doesn't occur at top level.
+fn split_top_kw<'a>(rest: &'a str, kw: &str) -> Option<(&'a str, &'a str)> {
+    let b = rest.as_bytes();
+    let (mut depth, mut quote) = (0usize, 0u8);
+    let mut i = 0usize;
+    while i < b.len() {
+        match b[i] {
+            q @ (b'\'' | b'"') if quote == 0 => quote = q,
+            _ if quote != 0 => {
+                if b[i] == b'\\' {
+                    i += 1;
+                } else if b[i] == quote {
+                    quote = 0;
+                }
+            }
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            _ if depth == 0
+                && rest[i..].starts_with(kw)
+                && (i == 0 || !is_ident(b[i - 1]))
+                && !b.get(i + kw.len()).is_some_and(|&c| is_ident(c)) =>
+            {
+                return Some((&rest[..i], &rest[i + kw.len()..]));
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `{% set … %}`'s bound names — the LHS identifiers before the top-level
+/// `=` (`set x = e`, `set x, y = e`, the block form's bare `x`).
+fn set_bind_names(rest: &str) -> Vec<&str> {
+    let b = rest.as_bytes();
+    let (mut depth, mut quote) = (0usize, 0u8);
+    let mut i = 0usize;
+    let mut eq = rest.len();
+    while i < b.len() {
+        match b[i] {
+            q @ (b'\'' | b'"') if quote == 0 => quote = q,
+            _ if quote != 0 => {
+                if b[i] == b'\\' {
+                    i += 1;
+                } else if b[i] == quote {
+                    quote = 0;
+                }
+            }
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b'=' if depth == 0 => {
+                eq = i;
+                break;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    lhs_idents(&rest[..eq])
+}
+
+/// `{% for … in … %}`'s bound names — the LHS identifiers before the
+/// top-level `in` (`for x in e`, `for x, y in e`).
+fn for_bind_names(rest: &str) -> Vec<&str> {
+    let (lhs, _) = split_top_kw(rest, "in").unwrap_or((rest, ""));
+    lhs_idents(lhs)
+}
+
+/// `{% macro name(…)`/`{% test name(…)`'s bound names — the signature
+/// name plus every parameter identifier (`lhs_idents` over-collects a
+/// `p='default'`'s contents — the safe direction).
+fn sig_bind_names(rest: &str) -> Vec<&str> {
+    let first = rest.trim_start();
+    let end = first
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(first.len());
+    let mut out = Vec::new();
+    if end > 0 {
+        out.push(&first[..end]);
+    }
+    if let Some(open) = rest.find('(') {
+        if let Some((inner, _)) = scan_call_args(rest, open + 1) {
+            out.extend(lhs_idents(inner));
+        }
+    }
+    out
+}
+
+/// `{% call(…) %}`'s bound names — the leading parameter list's
+/// identifiers (`{% call(a, b) f() %}` binds `a`, `b` for the body's
+/// `caller` — `caller` itself binds too).
+fn call_bind_names(rest: &str) -> Vec<&str> {
+    let mut out = vec!["caller"];
+    let rest = rest.trim_start();
+    if rest.starts_with('(') {
+        if let Some((inner, _)) = scan_call_args(rest, 1) {
+            out.extend(lhs_idents(inner));
+        }
+    }
+    out
+}
+
+/// `{% with a = e1, b = e2 %}`'s bound names — each top-level segment's
+/// kwarg-style name. A bare `{% with %}` binds nothing.
+fn with_bind_names(rest: &str) -> Vec<&str> {
+    top_level_segments(rest)
+        .iter()
+        .filter_map(|seg| kwarg_split(seg).map(|(n, _)| n))
+        .collect()
+}
+
+/// `{% import e as n %}`'s bound name — `n`. A bare `{% import e %}`
+/// binds the module name (`lhs_idents` over-collects an expression's
+/// identifiers — the safe direction).
+fn import_bind_names(rest: &str) -> Vec<&str> {
+    match split_top_kw(rest, "as") {
+        Some((_, alias)) => lhs_idents(alias).into_iter().take(1).collect(),
+        None => lhs_idents(rest),
+    }
+}
+
+/// `{% from e import a, b as c %}`'s bound names — each item's `as`
+/// alias, or the imported name itself.
+fn from_bind_names(rest: &str) -> Vec<&str> {
+    let Some((_, tail)) = split_top_kw(rest, "import") else {
+        return Vec::new();
+    };
+    top_level_segments(tail)
+        .iter()
+        .filter_map(|seg| {
+            let seg = seg.trim();
+            match split_top_kw(seg, "as") {
+                Some((_, alias)) => lhs_idents(alias).into_iter().next(),
+                None => lhs_idents(seg).into_iter().next(),
+            }
+        })
+        .collect()
 }
 
 /// The close-pair offset of the Jinja tag opened at `b[i]` (`{{`/`{%`/`{#`)
@@ -1590,11 +2254,13 @@ fn call_head_re() -> &'static Regex {
 /// One `name(...)`/`ns.name(...)` call inside a Jinja `{{ }}`/`{% %}` tag —
 /// the shape macro invocations take. `name` is the callee as spelled
 /// (`union_raw`, `shipkit.audited_select`); `args` is the text between the
-/// parens.
+/// parens; `head` is the callee's byte offset in `text` — the position the
+/// deferred-body filter reads.
 #[derive(Debug, Clone)]
 pub(super) struct JinjaCall<'a> {
     pub name: &'a str,
     pub args: &'a str,
+    pub head: usize,
 }
 
 /// The ordered `name(...)`/`ns.name(...)` calls inside `text`'s Jinja tags —
@@ -1658,6 +2324,7 @@ pub(super) fn jinja_calls(text: &str) -> Vec<JinjaCall<'_>> {
                 calls.push(JinjaCall {
                     name: m.as_str().trim_end_matches('(').trim_end(),
                     args,
+                    head: i + 2 + off + m.start(),
                 });
             }
         }

@@ -51,9 +51,11 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Edges the source loader records but real dbt's manifest never does —
 /// the `target.name == 'prod'` arm of each branch-split model (verified
 /// against the generated manifests: dbt keeps the `dev`-rendered arm
-/// only), plus `stg_execute_feed`'s `{% if execute %}` arm (parse never
-/// renders it, so `depends_on` stays empty while compile resolves the
-/// source). Lint sees the same calls as possible consumers without
+/// only). Source mode can't evaluate `target.name`, so the unprovable
+/// arm's calls edge conservatively. `stg_execute_feed`'s
+/// `{% if execute %}` arm is no longer here — `execute` is parse-time
+/// false, so that call is provably dead and edges nowhere, matching the
+/// manifest. Lint sees the same calls as possible consumers without
 /// adding them to the graph.
 const SOURCE_ONLY_EDGES: &[(&str, &str)] = &[
     (
@@ -64,10 +66,10 @@ const SOURCE_ONLY_EDGES: &[(&str, &str)] = &[
         "model.logistics.stg_prod_orders",
         "model.logistics.int_order_split",
     ),
-    (
-        "source.logistics.raw.execute_feed",
-        "model.logistics.stg_execute_feed",
-    ),
+    // The `{% if execute %}` arm's source call is no longer source-only:
+    // provably-dead-arm calls edge nowhere, matching the manifest's empty
+    // `depends_on` (the literal call still counts as a possible read for
+    // the lint rules in both modes).
 ];
 
 use dbtl::{
@@ -418,16 +420,14 @@ fn lineage_renders_identical_outside_the_singular_badge_cone() {
             "model.logistics.fct_shipments".to_string(),
             "model.logistics.ops_run_log".to_string(),
             "snapshot.logistics.shipment_status_snap".to_string(),
-            // The three branch edges' cones — every subgraph drawing the
-            // edge only source mode records: the endpoints and their
+            // The unprovable branch edges' cones — every subgraph drawing
+            // an edge only source mode records: the endpoints and their
             // shared seed ancestor (test nodes are side-map entries, not
             // graph nodes, so they never join the set).
             "model.logistics.int_order_split".to_string(),
-            "model.logistics.stg_execute_feed".to_string(),
             "model.logistics.stg_order_feed".to_string(),
             "model.logistics.stg_prod_orders".to_string(),
             "seed.logistics.orders".to_string(),
-            "source.logistics.raw.execute_feed".to_string(),
             "source.logistics.raw.prod_orders".to_string(),
         ]),
         "the render-divergent cone grew — re-check the fixture"
@@ -552,9 +552,10 @@ fn branch_only_consumers_count_as_uses_in_manifest_mode() {
     // `target.name == 'prod'` arms never rendered, so the manifest records
     // no consumer for `raw.prod_orders` or `stg_prod_orders` — yet neither
     // flags, because lint counts the literal branch calls as possible
-    // reads. Source mode records the same calls as real edges, so both
-    // modes agree. `raw.unused_t` — nothing anywhere reads it — still
-    // flags in both.
+    // reads. Source mode records the unprovable-arm calls as real edges
+    // (a possible edge beats a missing one) and drops only the provably
+    // dead ones, so both modes agree. `raw.unused_t` — nothing anywhere
+    // reads it — still flags in both.
     let (m, s) = dags();
     // The manifest's depends_on stays dbt-faithful — the possible edges
     // never became real ones.
@@ -568,13 +569,19 @@ fn branch_only_consumers_count_as_uses_in_manifest_mode() {
         &["model.logistics.stg_orders".to_string()],
     );
     // The `{% if execute %}` arm is the sharpest omission: parse never
-    // renders it (execute = false), so `depends_on` is EMPTY — yet
-    // `dbt compile` resolved the source into compiled_code, and the
-    // source loader records the call as a real edge.
+    // renders it (execute = false), so `depends_on` is EMPTY — and source
+    // mode now matches, since a provably-dead arm's calls edge nowhere
+    // either (the literal call still counts as a possible read for lint,
+    // exactly as manifest mode).
     assert!(
         m.direct_parents("model.logistics.stg_execute_feed")
             .is_empty(),
         "the execute-only dependency leaves depends_on empty"
+    );
+    assert!(
+        s.direct_parents("model.logistics.stg_execute_feed")
+            .is_empty(),
+        "source mode matches dbt: the execute arm edges nowhere"
     );
     assert!(
         m.raw_code("model.logistics.stg_execute_feed")
@@ -585,12 +592,6 @@ fn branch_only_consumers_count_as_uses_in_manifest_mode() {
         m.compiled_code("model.logistics.stg_execute_feed")
             .is_some_and(|sql| sql.contains("execute_feed")),
         "dbt compile resolved the execute arm into compiled_code"
-    );
-    assert!(
-        s.direct_parents("model.logistics.stg_execute_feed")
-            .iter()
-            .any(|p| p == "source.logistics.raw.execute_feed"),
-        "source mode records the execute arm"
     );
     assert!(
         s.direct_parents("model.logistics.stg_order_feed")

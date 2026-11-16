@@ -285,7 +285,8 @@ fn restored_all_fold_then_dash_reopens_the_roots_group() {
 #[test]
 fn fold_survives_the_untested_filter_toggle() {
     // sample_manifest (not the `app()` fixture — all its models are tested):
-    // staging holds 1 untested model (stg_two_configs), marts holds 4.
+    // staging holds 7 untested models (stg_two_configs + the branch models),
+    // marts holds the rest.
     let mut a = sample_app();
     let group = "staging";
     let hidden_uids: Vec<String> = a
@@ -303,8 +304,8 @@ fn fold_survives_the_untested_filter_toggle() {
         .collect();
     assert_eq!(
         hidden_uids.len(),
-        1,
-        "the premise — staging holds exactly one untested model"
+        7,
+        "the premise — staging holds seven untested models"
     );
     // Root on a Marts untested model (survives T, outside the fold); park the
     // cursor in staging and fold it.
@@ -325,7 +326,7 @@ fn fold_survives_the_untested_filter_toggle() {
     );
     assert_eq!(
         a.active_list().len(),
-        7 - hidden_uids.len(),
+        13 - hidden_uids.len(),
         "the folded group's untested members stay hidden under T"
     );
     for uid in &hidden_uids {

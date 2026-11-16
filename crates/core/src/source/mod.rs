@@ -276,9 +276,7 @@ pub use patterns::{
     arms_exclusive, call_sites_masked, jinja_branches, ArmKind, ArmStep, CallKind, CallSite,
     JinjaBranches,
 };
-pub(crate) use patterns::{
-    call_version, config_arg, config_shape_warnings, config_tags, kwarg, lit_value, tag_values_of,
-};
+pub(crate) use patterns::{call_version, config_arg, kwarg, lit_value, tag_values_of};
 pub(crate) use patterns::{find_subslice, jinja_set_assigns, jinja_tag_close, tag_word};
 pub(crate) use python::{is_identifier, scan_python, PyCallKind};
 pub use vars::CliVars;

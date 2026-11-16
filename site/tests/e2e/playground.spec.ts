@@ -118,9 +118,9 @@ test("a local manifest.json loads in memory only", async ({ page }) => {
   });
 
   await expect(page.locator("#pg-file-hint")).toContainText(
-    "my-manifest.json — 30 nodes, kept in memory only",
+    "my-manifest.json — 36 nodes, kept in memory only",
   );
-  await expect(page.locator("#pg-match-title")).toContainText("of 30");
+  await expect(page.locator("#pg-match-title")).toContainText("of 36");
   await page.locator("#pt-lint").click();
   await expect(page.locator("#pg-lint-foot")).toContainText("excerpts cite positions only");
 });
@@ -137,7 +137,7 @@ test("re-uploading a manifest replaces the custom project", async ({ page }) => 
     mimeType: "application/json",
     buffer: small,
   });
-  await expect(page.locator("#pg-match-title")).toContainText("matched 30 of 30");
+  await expect(page.locator("#pg-match-title")).toContainText("matched 36 of 36");
 
   await page.locator("#pg-file").setInputFiles({
     name: "big.json",
@@ -208,7 +208,7 @@ test("nothing on the playground requests an external origin", async ({ page }) =
   await page.locator("#pg-col-node").selectOption({ index: 1 });
   await expect(page.locator("#pg-cols")).toContainText("# Column lineage:");
   await page.locator('#pg-proj button[data-p="sample"]').click();
-  await expect(page.locator("#pg-match-title")).toContainText("of 30");
+  await expect(page.locator("#pg-match-title")).toContainText("of 36");
   await page.locator("#pt-sel").click();
   await expect(page.locator("#pg-lin .lin-stage")).toBeVisible();
 

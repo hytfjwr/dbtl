@@ -137,6 +137,12 @@ fn ls_method_atoms_match_their_domains() {
             "payments",
             "payments",
             "payments",
+            "stg_branch_defs",
+            "stg_branch_do",
+            "stg_branch_execute",
+            "stg_branch_set_assign",
+            "stg_branch_target",
+            "stg_branch_var",
             "stg_dup_probe",
             "stg_orders",
             "stg_two_configs",
@@ -154,7 +160,17 @@ fn ls_legacy_path_form_warns_once_on_stderr() {
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     assert_eq!(
         lines(&out),
-        ["stg_dup_probe", "stg_orders", "stg_two_configs"]
+        [
+            "stg_branch_defs",
+            "stg_branch_do",
+            "stg_branch_execute",
+            "stg_branch_set_assign",
+            "stg_branch_target",
+            "stg_branch_var",
+            "stg_dup_probe",
+            "stg_orders",
+            "stg_two_configs",
+        ]
     );
     let err = stderr(&out);
     let warnings: Vec<&str> = err.lines().filter(|l| l.starts_with("warning: ")).collect();
@@ -211,6 +227,7 @@ fn ls_exclude_subtracts_after_the_union() {
             "fct_daily_orders",
             "fct_line_items",
             "orders_snapshot",
+            "stg_branch_var",
             "stg_orders",
         ]
     );
@@ -225,6 +242,7 @@ fn ls_exclude_subtracts_after_the_union() {
             "extra_snapshot",
             "fct_line_items",
             "orders_snapshot",
+            "stg_branch_var",
             "stg_orders",
         ]
     );
@@ -249,6 +267,7 @@ fn ls_exclude_takes_one_spec_per_occurrence() {
             "fct_daily_orders",
             "fct_line_items",
             "orders_snapshot",
+            "stg_branch_var",
             "stg_orders",
         ]
     );
@@ -264,6 +283,7 @@ fn ls_exclude_takes_one_spec_per_occurrence() {
             "fct_daily_orders",
             "fct_line_items",
             "orders_snapshot",
+            "stg_branch_var",
             "stg_orders",
         ]
     );
@@ -287,7 +307,7 @@ fn ls_selector_prints_one_buildable_line() {
     assert_eq!(
         stdout(&out),
         "agg_country_orders cll_demo cll_syntax extra_snapshot fct_daily_orders \
-         fct_line_items fct_orders orders_snapshot stg_orders\n"
+         fct_line_items fct_orders orders_snapshot stg_branch_var stg_orders\n"
     );
 }
 
