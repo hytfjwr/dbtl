@@ -7,7 +7,9 @@
 //! trees) + the
 //! model `.sql` files (extracting `ref()`/`source()` and the `config(…)`
 //! kwargs `materialized`/`enabled`/`meta`, plus the `config({…})`
-//! positional-dict spelling of the same kwargs) + the `schema.yml` files
+//! positional-dict spelling of the same kwargs) + the model `.py` files
+//! (dbt Python models — `dbt.ref()`/`dbt.source()` calls become edges
+//! and `dbt.config()` kwargs configure the node) + the `schema.yml` files
 //! under the configured resource paths (sources — incl. their `config:`
 //! blocks — columns, descriptions, tests) +
 //! the `.md` files under `docs-paths` (`{% docs %}` blocks, so `{{ doc() }}`
@@ -31,7 +33,21 @@
 //!   `incremental_strategy` resolve in-file `config()` > schema.yml
 //!   (top-level or `config:`) > `+`-prefixed tree keys. `deprecation_date`
 //!   and `constraints` are model properties — schema.yml is their only
-//!   intake. `language` is `"sql"` for `.sql`-defined models and snapshots.
+//!   intake. `language` is `"sql"` for `.sql`-defined models and snapshots
+//!   and `"python"` for `.py`-defined models.
+//! - Python models (`.py` under `model-paths`) synthesize the way dbt's
+//!   own Python scan behaves (verified on 1.12.6): `dbt.ref()`/
+//!   `dbt.source()` calls are edges wherever they appear — helper
+//!   functions, module scope, f-string interpolations — `dbt.config()`
+//!   kwargs (`materialized`/`enabled`/`meta`/`alias`/`access`/`group`/
+//!   `contract`/`incremental_strategy`, either spelling like SQL
+//!   `config()`) configure the node, and a config-less Python model
+//!   materializes `table` — dbt's Python default, which outranks the
+//!   `+materialized` project tree. A call whose arguments aren't
+//!   literal (a variable, a computed expression, an f-string argument)
+//!   adds no edge but counts into `unresolved_adjacent`, and a file
+//!   carrying Jinja markup or zero/multiple `def model` declarations
+//!   still synthesizes with a warning.
 //! - Property yml files are read ONLY from the configured model/seed/snapshot
 //!   paths — never `target/`, `dbt_packages/`, or stray yml elsewhere.
 //! - `config(enabled=false)` (in-file, either spelling) / `+enabled: false`
@@ -169,6 +185,7 @@ pub fn manifest_from_source_with_warnings<P: AsRef<Path>>(
 ) -> Result<(RawManifest, Vec<String>)> {
     let mut synth = Synthesis::load(project_dir.as_ref(), vars)?;
     synth.collect_models();
+    synth.collect_python_models();
     synth.collect_seeds();
     synth.collect_snapshots();
     let parsed = synth.parse_schema_files();
@@ -192,6 +209,7 @@ mod docs;
 mod macros;
 mod packages;
 mod patterns;
+mod python;
 mod schema;
 mod synth;
 #[cfg(test)]
@@ -206,6 +224,7 @@ use docs::*;
 use macros::*;
 use packages::*;
 use patterns::*;
+use python::*;
 use schema::*;
 use synth::*;
 use tests_synth::*;

@@ -378,6 +378,8 @@ fn lineage_renders_identical_outside_the_singular_badge_cone() {
     assert_eq!(
         skip,
         BTreeSet::from([
+            "model.logistics.fct_delivery_scores".to_string(),
+            "model.logistics.fct_py_delivery_risk".to_string(),
             "model.logistics.fct_shipments".to_string(),
             "model.logistics.ops_run_log".to_string(),
         ]),
@@ -423,16 +425,27 @@ fn lint_rule_counts_are_pinned_in_both_modes() {
     // The four enabled-expression models declare columns without
     // per-column `description:` (+4 undocumented_columns), and
     // fct_region_gate's only unique test is var-gated — under the default
-    // vars it counts as missing a primary-key pair (+1).
+    // vars it counts as missing a primary-key pair (+1). The python models
+    // fire the same language-agnostic rules a `.sql` file would:
+    // fct_py_delivery_risk joins a source (direct_join_to_source +
+    // marts_depend_on_source), stg_py_sensor_scores refs staging parents
+    // (staging_depends_on_staging), carrier_feed.rate_cards picks up a
+    // second consumer (source_fanout), and stg_py_sensor_scores itself is
+    // the new leaf inside unused_models' unchanged 5 (it also gives
+    // stg_rate_cards the downstream that was keeping it flagged).
     assert_eq!(
         rule_counts(&m),
         expected(&[
+            ("direct_join_to_source", 1),
+            ("marts_depend_on_source", 1),
             ("missing_primary_key_tests", 16),
             ("model_fanout", 1),
             ("order_by_without_limit", 1),
             ("root_models", 1),
             ("select_star", 1),
+            ("source_fanout", 1),
             ("sources_without_freshness", 2),
+            ("staging_depends_on_staging", 1),
             ("undocumented_columns", 12),
             ("undocumented_models", 14),
             ("unused_cte", 1),
@@ -444,11 +457,15 @@ fn lint_rule_counts_are_pinned_in_both_modes() {
     assert_eq!(
         rule_counts(&s),
         expected(&[
+            ("direct_join_to_source", 1),
+            ("marts_depend_on_source", 1),
             ("missing_primary_key_tests", 16),
             ("model_fanout", 1),
             ("root_models", 1),
             ("select_star", 1),
+            ("source_fanout", 1),
             ("sources_without_freshness", 2),
+            ("staging_depends_on_staging", 1),
             ("undocumented_columns", 12),
             ("undocumented_models", 14),
             ("unused_models", 5),

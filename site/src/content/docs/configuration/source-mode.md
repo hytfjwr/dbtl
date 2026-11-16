@@ -13,6 +13,7 @@ Source mode aims to produce the same graph as a real `dbt parse` for the common 
 | ----- | ------------------------- |
 | `dbt_project.yml` | The project name, the resource paths (`model-paths`, `seed-paths`, `snapshot-paths`, `macro-paths`, `docs-paths`), and the `models:`, `seeds:`, `snapshots:`, and `sources:` config trees. |
 | Model `.sql` files | Literal `ref()` and `source()` calls, and `config()` arguments. |
+| Model `.py` files | Literal `dbt.ref()` and `dbt.source()` calls, and `dbt.config()` arguments. |
 | `schema.yml` files | Sources, models, columns, descriptions, tests, `config:` blocks, exposures, and unit tests. |
 | Seed `.csv` files | One seed per file, with the header row as its columns. |
 | Snapshots | `{% snapshot %}` blocks in `.sql` files, and YAML-defined snapshots. |
@@ -36,6 +37,8 @@ A setting can come from several places, and the most specific one wins. For `mat
 
 Governance settings follow the same order: `access`, `group`, `contract`, `incremental_strategy`, and `language`. `constraints` and `deprecation_date` come from `schema.yml` only. A model with no `access` reads as `protected`, like dbt's default.
 
+A Python model carries one quirk: with no `materialized` anywhere, it materializes `table` — dbt's Python default — and that default outranks the `dbt_project.yml` tree.
+
 `config()` takes either keyword arguments or a single positional dict. `config(materialized='table')` and `config({'materialized': 'table'})` mean the same. `meta` merges per top-level key, with deeper levels winning.
 
 Source tables resolve `meta`, `freshness`, `loaded_at_field`, and `tags` through the table, source, and `sources:` tree levels. Only a table's `config: enabled:` disables it.
@@ -48,6 +51,7 @@ Edges come from literal `ref()` and `source()` calls found by scanning the SQL. 
 - A `ref()` that names nothing the project defines is dropped. The [`unresolved_references`](../reference/lint-rules.md#unresolved_references) lint rule reports it.
 - A project macro that wraps `ref()` or `source()` produces edges. The call's literal arguments bind to the macro's parameters, and nested project macros are followed up to a depth limit. A macro's `{% if %}` branches are not evaluated, so the calls in every branch become edges. A possible edge is better than a missing one.
 - A call that cannot be resolved adds no edge. That covers a macro from an installed package, a `var()` or computed argument, and a call past the depth limit. Lint rules that judge a node's parents or children treat such a node as unprovable and stay quiet.
+- `.py` model files contribute edges the way dbt's own Python scan does: literal `dbt.ref()`/`dbt.source()` calls resolve wherever they appear — helper functions, module scope, and f-string interpolations included — and `dbt.config()` sets the node's config instead of making an edge. A call whose arguments are not literal, such as a variable or a computed value, adds no edge and marks the node unprovable.
 
 ## Enabled expressions and `--vars`
 
@@ -79,7 +83,7 @@ Variables resolve in these scopes:
 - **Versioned models.** A `ref('x', v=2)` is recorded against the model `x`. The `.vN` nodes that a `versions:` block defines are not synthesized, so a versioned manifest shows one node per version where source mode shows the files. The version names are still read, so `unresolved_references` knows them.
 - **Jinja in SQL.** SQL rules and column lineage render the Jinja in a model approximately, only to parse it. `{% set %}` and `{% macro %}` bodies are blanked, mutually exclusive `{% if %}` arms render as one arm, and an expression `dbtl` cannot evaluate becomes a generated name. The graph never depends on that render.
 - **Installed packages.** Only the root project is parsed. `dbt_packages/` is never read for nodes, a `ref` into another package drops out, and `--include-packages` does nothing but print a warning. Package names are read only so `unresolved_references` can tell a typo from a package that is not installed.
-- **Other resource kinds.** Python models, singular tests, analyses, metrics, and saved queries are not read.
+- **Other resource kinds.** Singular tests, analyses, metrics, and saved queries are not read.
 - **Adapter and profile data.** Nothing from `profiles.yml` or the warehouse is available. The `database` and `schema` of non-source nodes are unknown, and `target.*` expressions are not evaluated. The SQL dialect is `generic` unless you pass `--sql-dialect`.
 
 ## Get manifest precision

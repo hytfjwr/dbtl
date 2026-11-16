@@ -85,3 +85,17 @@ models:
           - unique
           - not_null
   - name: stg_shipment_events
+  - name: stg_py_sensor_scores
+    # A schema entry attaches to a python model identically to a `.sql`
+    # one — description, columns, tests, `patch_path`. No `config:` here:
+    # the python `table` default must stand (beating the staging tree's
+    # `+materialized: view`).
+    description: "Sensor scores staged by a python model"
+    columns:
+      - name: ping_id
+        description: "Sensor ping id"
+        tests:
+          - unique
+          - not_null
+      - name: score
+        description: "The staged score"

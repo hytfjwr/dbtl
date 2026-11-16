@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Source mode synthesizes Python models: a `.py` file under
+  `model-paths` becomes a `language: python` node whose `dbt.ref()`/
+  `dbt.source()` calls resolve into real edges wherever they appear —
+  helper functions, module scope, f-string interpolations — and whose
+  `dbt.config()` kwargs apply like the SQL `config()`. Config-less
+  Python models carry dbt's `table` default materialization, which
+  outranks the `dbt_project.yml` tree's `+materialized`. A call with
+  non-literal arguments adds no edge but marks the node unprovable, so
+  degree-sensitive rules stay quiet; a `ref()` in a SQL model that
+  names a Python model now resolves instead of tripping
+  `unresolved_references`.
+
 ## [0.7.0] - 2026-11-15
 
 ### Added
