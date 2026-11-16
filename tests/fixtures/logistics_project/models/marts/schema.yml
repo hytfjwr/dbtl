@@ -59,6 +59,26 @@ models:
           - not_null
       - name: carrier_name
       - name: carrier_rating
+  - name: fct_py_delivery_risk
+    description: "Late-delivery risk scored off the shipment fact — a python model"
+    columns:
+      - name: shipment_id
+        description: "Shipment the risk row covers"
+        tests:
+          - unique
+          - not_null
+      - name: risk_band
+        description: "Scored risk band"
+  - name: fct_delivery_scores
+    description: "SQL consumer of the python delivery-risk model"
+    columns:
+      - name: shipment_id
+        description: "Shipment the score covers"
+        tests:
+          - unique
+          - not_null
+      - name: risk_band
+        description: "The python model's risk band"
 unit_tests:
   - name: fct_shipments_legs_join
     model: fct_shipments

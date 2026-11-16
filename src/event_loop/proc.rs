@@ -15,13 +15,26 @@ pub(super) fn find_in_path_dirs(
     name: &str,
     dirs: impl IntoIterator<Item = PathBuf>,
 ) -> Option<PathBuf> {
+    find_in_dirs(&candidate_names(name), dirs, is_executable)
+}
+
+/// The directory scan every platform's lookup shares: candidate names in
+/// order, first executable hit wins, empty dir entries skipped. Candidates
+/// and the executability probe are parameters so the tests can drive the
+/// Windows shape — `PATHEXT` names plus the plain `is_file` probe — on
+/// any OS.
+pub(super) fn find_in_dirs(
+    candidates: &[String],
+    dirs: impl IntoIterator<Item = PathBuf>,
+    executable: impl Fn(&std::path::Path) -> bool,
+) -> Option<PathBuf> {
     for dir in dirs {
         if dir.as_os_str().is_empty() {
             continue;
         }
-        for cand in candidate_names(name) {
-            let p = dir.join(&cand);
-            if is_executable(&p) {
+        for cand in candidates {
+            let p = dir.join(cand);
+            if executable(&p) {
                 return Some(p);
             }
         }
@@ -39,8 +52,17 @@ fn candidate_names(name: &str) -> Vec<String> {
 
 #[cfg(windows)]
 fn candidate_names(name: &str) -> Vec<String> {
-    let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
-    exts.split(';')
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    windows_candidate_names(name, &pathext)
+}
+
+/// The Windows candidate set: `name` + each `pathext` extension lowercased,
+/// empty segments dropped. Compiled (and unit-tested) on every OS so the
+/// `#[cfg(windows)]` shell above stays a one-line env read.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(super) fn windows_candidate_names(name: &str, pathext: &str) -> Vec<String> {
+    pathext
+        .split(';')
         .filter(|e| !e.is_empty())
         .map(|e| format!("{name}{}", e.to_ascii_lowercase()))
         .collect()
@@ -58,6 +80,15 @@ fn is_executable(path: &std::path::Path) -> bool {
 
 #[cfg(windows)]
 fn is_executable(path: &std::path::Path) -> bool {
+    windows_is_executable(path)
+}
+
+/// The Windows executability probe: no mode bit exists there — the
+/// `PATHEXT` extension in the candidate name is what marks a command, so
+/// any regular file qualifies. Compiled (and unit-tested) on every OS for
+/// the same reason as [`windows_candidate_names`].
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(super) fn windows_is_executable(path: &std::path::Path) -> bool {
     path.is_file()
 }
 
@@ -67,17 +98,33 @@ fn is_executable(path: &std::path::Path) -> bool {
 pub(super) fn dbt_command(exe: &std::path::Path) -> Command {
     #[cfg(windows)]
     {
-        let ext = exe
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_ascii_lowercase());
-        if matches!(ext.as_deref(), Some("bat" | "cmd")) {
-            let mut c = Command::new("cmd");
-            c.arg("/C").arg(exe);
-            return c;
+        if needs_cmd_shim(exe) {
+            return cmd_shim(exe);
         }
     }
     Command::new(exe)
+}
+
+/// Whether a resolved executable must launch through `cmd /C` on Windows:
+/// true for `.bat`/`.cmd` launchers. Compiled (and unit-tested) on every
+/// OS like the probes above.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(super) fn needs_cmd_shim(exe: &std::path::Path) -> bool {
+    let ext = exe
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    matches!(ext.as_deref(), Some("bat" | "cmd"))
+}
+
+/// `cmd /C <exe>` — the launcher `.bat`/`.cmd` files need on Windows
+/// (`CreateProcess` cannot spawn them directly). Compiled (and
+/// unit-tested) on every OS like the probes above.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(super) fn cmd_shim(exe: &std::path::Path) -> Command {
+    let mut c = Command::new("cmd");
+    c.arg("/C").arg(exe);
+    c
 }
 
 /// Split an editor value like `code --wait` into program + leading arguments.

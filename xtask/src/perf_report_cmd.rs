@@ -63,3 +63,80 @@ pub fn run(args: Args) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// run()'s file plumbing: criterion estimates + metrics sidecars in,
+    /// one rendered report appended to --out (the workflow concatenates
+    /// several into the step summary).
+    #[test]
+    fn run_appends_the_rendered_report() {
+        let tmp = tempfile::tempdir().unwrap();
+        let write = |rel: &str, body: &str| {
+            let p = tmp.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, body).unwrap();
+        };
+        write(
+            "base/group/bench_one/new/estimates.json",
+            r#"{"median":{"point_estimate":1.5}}"#,
+        );
+        write(
+            "head/group/bench_one/new/estimates.json",
+            r#"{"median":{"point_estimate":1.0}}"#,
+        );
+        write("metrics/check.base", "1.0 1024 0");
+        write("metrics/check.head", "2.0 2048 0");
+        write("metrics/size.base", "1048576");
+        write("metrics/size.head", "2097152");
+        let out = tmp.path().join("report.md");
+        let args = |out: PathBuf| Args {
+            base: tmp.path().join("base"),
+            head: tmp.path().join("head"),
+            metrics_dir: tmp.path().join("metrics"),
+            base_label: "v0.6.2".to_string(),
+            head_label: "pr".to_string(),
+            benches_changed: false,
+            out: Some(out),
+        };
+        run(args(out.clone())).expect("run perf-report");
+        let md = std::fs::read_to_string(&out).unwrap();
+        for needle in [
+            "`v0.6.2` → `pr`",
+            "| group/bench_one |",
+            "| check |",
+            "Release binary size: 1.00 MiB → 2.00 MiB",
+        ] {
+            assert!(md.contains(needle), "{needle}: {md}");
+        }
+        // A second run APPENDS — reports concatenate, never overwrite.
+        run(args(out.clone())).expect("run perf-report again");
+        assert_eq!(
+            std::fs::read_to_string(&out).unwrap().len(),
+            md.len() * 2,
+            "the second report was appended, not truncated"
+        );
+    }
+
+    /// An --out that can't be opened is a hard error naming the path —
+    /// the report must not silently go nowhere.
+    #[test]
+    fn run_fails_when_out_is_unwritable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = run(Args {
+            base: tmp.path().join("base"), // absent inputs render as n/a
+            head: tmp.path().join("head"),
+            metrics_dir: tmp.path().join("metrics"),
+            base_label: "b".to_string(),
+            head_label: "h".to_string(),
+            benches_changed: false,
+            out: Some(tmp.path().join("no/such/dir/r.md")),
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("append to"), "{err}");
+        assert!(err.contains("r.md"), "{err}");
+    }
+}

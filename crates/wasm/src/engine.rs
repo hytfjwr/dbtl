@@ -1191,4 +1191,123 @@ mod tests {
             assert!(engine.replace_sql(pruned, "select 1").is_ok());
         }
     }
+
+    #[test]
+    fn node_detail_returns_the_editor_payload() {
+        let (engine, _) = load_fixture();
+        let d = engine
+            .node_detail("model.jaffle_finance.fct_subscription_process")
+            .unwrap();
+        assert_eq!(d.unique_id, "model.jaffle_finance.fct_subscription_process");
+        assert_eq!(d.name, "fct_subscription_process");
+        assert_eq!(d.resource_type, "model");
+        assert_eq!(d.materialized.as_deref(), Some("table"));
+        assert_eq!(
+            d.path.as_deref(),
+            Some(
+                "models/marts/dimensional/jaffle/subscription_process/fct_subscription_process.sql"
+            )
+        );
+        assert!(
+            d.raw_code
+                .as_deref()
+                .is_some_and(|s| s.contains("fct_subscription_process")),
+            "raw_code: {:?}",
+            d.raw_code
+        );
+        // The fixture carries raw_code only — no compiled artifacts.
+        assert!(!d.has_compiled_code);
+        assert_eq!(
+            d.columns,
+            [
+                "subscription_id",
+                "delivery_id",
+                "delivery_lane_key",
+                "supplier_key",
+                "supplier_department_key",
+                "fiscal_year_key",
+                "received_date",
+            ]
+            .map(String::from)
+        );
+
+        // A source keeps its kind but has no editable SQL.
+        let src = engine
+            .node_detail("source.jaffle_finance.dev_lake_jaffle_finance.budgets")
+            .unwrap();
+        assert_eq!(src.resource_type, "source");
+        assert!(src.raw_code.is_none());
+        assert!(!src.has_compiled_code);
+
+        let err = engine.node_detail("model.jaffle_finance.nope").unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Usage);
+        assert_eq!(err.message, "no node 'model.jaffle_finance.nope'");
+    }
+
+    #[test]
+    fn node_detail_names_versioned_models_uniquely() {
+        // The same-name `fct_orders` versions must not read identically —
+        // `list_name` appends the `.vN` uid segment.
+        let (engine, _) = Engine::load(&LoadInput {
+            manifest: fixture("versioned_manifest.json"),
+            ..LoadInput::default()
+        })
+        .expect("versioned fixture loads");
+        let v1 = engine.node_detail("model.versioned.fct_orders.v1").unwrap();
+        assert_eq!(v1.name, "fct_orders.v1");
+        assert_eq!(v1.resource_type, "model");
+        assert_eq!(v1.materialized.as_deref(), Some("view"));
+        assert_eq!(v1.path.as_deref(), Some("models/fct_orders_v1.sql"));
+        assert!(v1.has_compiled_code, "the fixture carries compiled_code");
+        let vbeta = engine
+            .node_detail("model.versioned.fct_orders.vbeta")
+            .unwrap();
+        assert_eq!(vbeta.name, "fct_orders.vbeta");
+        // A non-versioned model keeps its plain name.
+        let use_v1 = engine.node_detail("model.versioned.use_v1").unwrap();
+        assert_eq!(use_v1.name, "use_v1");
+    }
+
+    #[test]
+    fn warnings_echo_the_load_output() {
+        // `warnings()` is the load's vec — same lines, same order.
+        let (engine, out) = load_fixture();
+        assert_eq!(engine.warnings(), out.warnings.as_slice());
+
+        // An adapter the SQL dialect table doesn't know names itself.
+        let mut m: serde_json::Value =
+            serde_json::from_str(&fixture("sample_manifest.json")).unwrap();
+        m["metadata"]["adapter_type"] = serde_json::json!("weirddb");
+        let (engine, out) = Engine::load(&LoadInput {
+            manifest: m.to_string(),
+            ..LoadInput::default()
+        })
+        .expect("patched manifest loads");
+        let dialect = "column lineage: unknown adapter 'weirddb' — using the generic SQL dialect";
+        assert!(
+            out.warnings.iter().any(|w| w == dialect),
+            "warnings: {:#?}",
+            out.warnings
+        );
+        assert_eq!(engine.warnings(), out.warnings.as_slice());
+
+        // Several packages + no recorded project_name → the root-scope
+        // guess is warned, `(scope) `-prefixed.
+        let mut m: serde_json::Value =
+            serde_json::from_str(&fixture("packages_manifest.json")).unwrap();
+        m["metadata"]["project_name"] = serde_json::Value::Null;
+        let (engine, out) = Engine::load(&LoadInput {
+            manifest: m.to_string(),
+            ..LoadInput::default()
+        })
+        .expect("patched manifest loads");
+        assert!(
+            out.warnings
+                .iter()
+                .any(|w| w.starts_with("(scope) ") && w.contains("metadata.project_name")),
+            "warnings: {:#?}",
+            out.warnings
+        );
+        assert_eq!(engine.warnings(), out.warnings.as_slice());
+    }
 }

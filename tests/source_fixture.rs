@@ -1588,6 +1588,330 @@ fn jinja_blocks_loops_and_clause_branches_parse_cleanly() {
     );
 }
 
+// ---- python models -----------------------------------------------------------
+
+/// A `.py` under `model-paths` is a `model.*` node. Previously python
+/// models were skipped wholesale, so a `.sql` model's `{{ ref('py') }}`
+/// had nothing to resolve against and `unresolved_references` fired on
+/// a perfectly valid call.
+#[test]
+fn python_model_is_a_node_and_sql_refs_resolve() {
+    let tmp = tiny_project(&[
+        (
+            "models/base.py",
+            "def model(dbt, session):\n    return dbt.ref('upstream')\n",
+        ),
+        ("models/upstream.sql", "select 1 as id\n"),
+        ("models/child.sql", "select * from {{ ref('base') }}\n"),
+    ]);
+    let dag = load_dag_from_source(tmp.path()).expect("project loads");
+    assert!(dag.contains("model.d.base"), "the .py file is a model node");
+    let detail = dag.detail("model.d.base").expect("python model detail");
+    assert_eq!(detail.language.as_deref(), Some("python"));
+    // The cross-language edge both ways: the py model's `dbt.ref` and the
+    // sql model's `{{ ref('base') }}`.
+    assert_eq!(
+        dag.direct_parents("model.d.base"),
+        vec!["model.d.upstream".to_string()],
+        "dbt.ref is an edge out of the python model"
+    );
+    assert_eq!(
+        dag.direct_parents("model.d.child"),
+        vec!["model.d.base".to_string()],
+        "ref('base') is an edge into the python model"
+    );
+    // And the lint side of the original bug: no unresolved_references.
+    let findings = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    assert!(
+        findings
+            .iter()
+            .all(|f| f.rule != LintRule::UnresolvedReferences),
+        "no false unresolved_references on a ref naming a python model: {findings:?}"
+    );
+}
+
+/// A python model defaults to `table` — its own default, NOT the SQL
+/// `view` — and the project tree's `+materialized` cannot reach it
+/// (verified against real dbt; the logistics fixture pins the same).
+/// `raw_code` carries the file's whole text like a `.sql` model's.
+#[test]
+fn python_materialization_and_raw_code() {
+    let tmp = tiny_project(&[(
+        "models/py_a.py",
+        "def model(dbt, session):\n    return dbt.ref('sql_a')\n",
+    )]);
+    let dag = load_dag_from_source(tmp.path()).unwrap();
+    let d = dag.detail("model.d.py_a").expect("python model detail");
+    assert_eq!(d.materialized.as_deref(), Some("table"));
+    assert_eq!(dag.get("model.d.py_a").unwrap().resource_type, "model");
+    assert!(dag
+        .raw_code("model.d.py_a")
+        .is_some_and(|s| s.contains("def model")));
+}
+
+/// The scan sees the same calls real dbt's AST pass does — helper
+/// functions, module-level code, multiline calls — and NOT the text inside
+/// comments or string bodies (an f-string interpolation still counts as a
+/// call: `f"{dbt.ref('x')}"` is a real Call node).
+#[test]
+fn python_scan_covers_dbt_call_shapes() {
+    let tmp = tiny_project(&[
+        ("models/a.sql", "select 1 as id\n"),
+        ("models/b.sql", "select 1 as id\n"),
+        ("models/c.sql", "select 1 as id\n"),
+        ("models/d.sql", "select 1 as id\n"),
+        (
+            "models/py_scan.py",
+            concat!(
+                "# dbt.ref('not_a')\n",
+                "S = \"dbt.ref('not_b')\"\n",
+                "T = '''\ndbt.ref('not_c')\n'''\n",
+                "def helper(dbt):\n    return dbt.ref('a')\n",
+                "def model(dbt, session):\n",
+                "    _ = f\"{dbt.ref('b')}\"\n",
+                "    x = notdbt.ref('not_d')\n",
+                "    y = x.dbt.ref('not_e')\n",
+                "    helper(dbt)\n",
+                "    return dbt.ref(\n        'c',  # trailing comment\n    )\n",
+            ),
+        ),
+    ]);
+    let dag = load_dag_from_source(tmp.path()).unwrap();
+    let mut parents = dag.direct_parents("model.d.py_scan").to_vec();
+    parents.sort();
+    assert_eq!(
+        parents,
+        vec![
+            "model.d.a".to_string(),
+            "model.d.b".to_string(),
+            "model.d.c".to_string()
+        ],
+        "helper-fn, f-string interpolation, and multiline calls — but never \
+         comments, string bodies, or longer/qualified names"
+    );
+}
+
+/// A `dbt.source` call is the same edge a `source()` Jinja call is.
+#[test]
+fn python_source_call_is_an_edge() {
+    let tmp = tiny_project(&[
+        (
+            "models/schema.yml",
+            "version: 2\nsources:\n  - name: raw\n    tables:\n      - name: orders\n",
+        ),
+        (
+            "models/py_src.py",
+            "def model(dbt, session):\n    return dbt.source('raw', 'orders')\n",
+        ),
+    ]);
+    let dag = load_dag_from_source(tmp.path()).unwrap();
+    assert_eq!(
+        dag.direct_parents("model.d.py_src"),
+        vec!["source.d.raw.orders".to_string()],
+    );
+}
+
+/// The one shape real dbt *rejects* — a non-literal call argument — must
+/// fabricate no edge; it counts into the unprovable-adjacency record
+/// instead so degree-sensitive lint rules stay silent (the same
+/// under-reporting stance unresolved macro calls take).
+#[test]
+fn python_nonliteral_call_marks_unverifiable() {
+    let tmp = tiny_project(&[
+        (
+            "models/py_dyn.py",
+            concat!(
+                "NAME = 'parent'\n",
+                "def model(dbt, session):\n",
+                "    return dbt.ref(NAME)  # a variable — literal_eval fails in dbt too\n",
+            ),
+        ),
+        ("models/parent.sql", "select 1 as id\n"),
+    ]);
+    let dag = load_dag_from_source(tmp.path()).unwrap();
+    assert!(
+        dag.direct_parents("model.d.py_dyn").is_empty(),
+        "a variable argument fabricates no edge"
+    );
+    assert_eq!(
+        dag.pruned_adjacent("model.d.py_dyn").map(|a| a.parents),
+        Some(1),
+        "the unreadable call marks parents unverifiable"
+    );
+    let findings = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    assert!(
+        findings
+            .iter()
+            .all(|f| !(f.rule == LintRule::RootModels && f.node_uid == "model.d.py_dyn")),
+        "root_models may not claim 'no parents' on the marked node: {findings:?}"
+    );
+}
+
+/// A `.py` model whose every `dbt.*` call is literal but unresolvable —
+/// a typo'd `ref`, a `ref` to an installed-package model (source mode
+/// never reads `dbt_packages/`), a `source` nothing declares — is
+/// under-connected, not parentless: `root_models` must not claim "no
+/// parents" on it, the same stance `has_dependency_calls` already takes
+/// for a `.sql` file's calls.
+#[test]
+fn python_unresolvable_calls_still_suppress_root_models() {
+    let tmp = tiny_project(&[
+        (
+            "models/py_ref.py",
+            "def model(dbt, session):\n    return dbt.ref('no_such_model')\n",
+        ),
+        (
+            "models/py_src2.py",
+            "def model(dbt, session):\n    return dbt.source('no_such_src', 'tbl')\n",
+        ),
+    ]);
+    let dag = load_dag_from_source(tmp.path()).unwrap();
+    assert!(
+        dag.direct_parents("model.d.py_ref").is_empty()
+            && dag.direct_parents("model.d.py_src2").is_empty(),
+        "unresolvable calls produce no edges"
+    );
+    let findings = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
+    assert!(
+        findings.iter().all(|f| f.rule != LintRule::RootModels),
+        "root_models may not fire on under-connected python models: {findings:?}"
+    );
+}
+
+/// `dbt.config` kwargs AND a positional dict literal are both the
+/// highest-precedence in-file channel (over schema `config:` — which
+/// itself beats the python `table` default).
+#[test]
+fn python_config_channels_stack_like_dbt() {
+    let tmp = tiny_project(&[
+        (
+            "models/py_cfg.py",
+            concat!(
+                "def model(dbt, session):\n",
+                "    dbt.config({'meta': {'owner': 'in-file'}})\n",
+                "    return dbt.ref('x')\n",
+            ),
+        ),
+        (
+            "models/py_yml.py",
+            "def model(dbt, session):\n    return dbt.ref('x')\n",
+        ),
+        (
+            "models/schema.yml",
+            "version: 2\nmodels:\n  - name: py_cfg\n    config:\n      materialized: ephemeral\n      meta: {zone: z1}\n  - name: py_yml\n    config:\n      materialized: view\n",
+        ),
+    ]);
+    let dag = load_dag_from_source(tmp.path()).unwrap();
+    let cfg = dag.detail("model.d.py_cfg").expect("py_cfg detail");
+    // in-file dict `meta` lands; schema `config.materialized` fills the
+    // rest (no in-file materialized declared).
+    assert_eq!(cfg.meta["owner"], "in-file");
+    assert_eq!(cfg.meta["zone"], "z1");
+    assert_eq!(cfg.materialized.as_deref(), Some("ephemeral"));
+    // No in-file config at all: schema `config:` beats the `table` default.
+    assert_eq!(
+        dag.detail("model.d.py_yml")
+            .and_then(|d| d.materialized.clone())
+            .as_deref(),
+        Some("view"),
+    );
+}
+
+/// `dbt.config(enabled=False)` parks the model like the SQL `disabled`
+/// channel — a `.sql` twin of the same stem keeps the name (models are
+/// collected before python files, matching `collect_models`' first-wins).
+#[test]
+fn python_disabled_and_duplicate_stem_behave_like_sql() {
+    let tmp = tiny_project(&[
+        (
+            "models/off.py",
+            "def model(dbt, session):\n    dbt.config(enabled=False)\n    return dbt.ref('x')\n",
+        ),
+        ("models/twice.sql", "select 1 as id\n"),
+        (
+            "models/twice.py",
+            "def model(dbt, s):\n    return dbt.ref('x')\n",
+        ),
+    ]);
+    let (dag, warnings) =
+        load_dag_from_source_with_warnings(tmp.path(), None).expect("project loads");
+    assert!(!dag.contains("model.d.off"), "enabled=False parks the node");
+    let twice = dag
+        .detail("model.d.twice")
+        .expect("one node for the shared stem");
+    assert_eq!(twice.language.as_deref(), Some("sql"), "the .sql twin wins");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("duplicate resource name 'twice'")),
+        "the duplicate stem warns like a .sql/.sql pair: {warnings:?}"
+    );
+}
+
+/// `language: python` excludes the node from every SQL-family rule in
+/// source mode too — the same `is_sql_model` predicate manifest mode
+/// uses (its lint-side unit tests already cover that path).
+#[test]
+fn python_models_are_out_of_sql_rule_scope() {
+    let tmp = tiny_project(&[
+        (
+            "models/py_clean.py",
+            // Would trip `select_star`, `trailing_semicolon`, … if read as SQL.
+            "def model(dbt, session):\n    return dbt.ref('x');\n",
+        ),
+        ("models/sql_bad.sql", "select * from {{ ref('x') }};\n"),
+    ]);
+    let dag = load_dag_from_source(tmp.path()).unwrap();
+    let sql = SqlParseResolver::new(None, dbtl::SqlDialect::from_dag(&dag));
+    let findings =
+        run_rules(LintInput::new(&dag, &LintConfig::default()).with_sql(Some(&sql))).findings;
+    let on = |rule: LintRule, uid: &str| {
+        findings
+            .iter()
+            .filter(|f| f.rule == rule && f.node_uid == uid)
+            .count()
+    };
+    assert_eq!(on(LintRule::SelectStar, "model.d.py_clean"), 0);
+    assert_eq!(on(LintRule::TrailingSemicolon, "model.d.py_clean"), 0);
+    // …and the SQL sibling still fires — the rule itself isn't off.
+    assert_eq!(on(LintRule::SelectStar, "model.d.sql_bad"), 1);
+    assert_eq!(on(LintRule::TrailingSemicolon, "model.d.sql_bad"), 1);
+}
+
+/// The two dbt parse-error shapes — no `def model` (or two) and Jinja
+/// markup — degrade to warnings, not a dropped project or a fabricated
+/// call graph.
+#[test]
+fn python_file_shape_oddities_warn_but_load() {
+    let tmp = tiny_project(&[
+        ("models/no_model_fn.py", "x = 1\n"),
+        (
+            "models/two_fns.py",
+            "def model(dbt, s):\n    pass\ndef model(dbt, s):\n    pass\n",
+        ),
+        (
+            "models/jinja_py.py",
+            "def model(dbt, s):\n    return dbt.ref('{{ x }}')\n",
+        ),
+    ]);
+    let (dag, warnings) =
+        load_dag_from_source_with_warnings(tmp.path(), None).expect("project loads");
+    for (file, pat) in [
+        ("no_model_fn.py", "found 0"),
+        ("two_fns.py", "found 2"),
+        ("jinja_py.py", "Jinja markup"),
+    ] {
+        assert!(
+            dag.contains(&format!("model.d.{}", file.trim_end_matches(".py"))),
+            "{file} still synthesized"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains(file) && w.contains(pat)),
+            "a warning names {file}'s oddity ({pat}): {warnings:?}"
+        );
+    }
+}
+
 /// Same exclusive-arm rule one level down: same-named columns written in
 /// `{% if %}`/`{% else %}` arms inside a CTE carry their arms through
 /// `select *` expansion — no fabricated `duplicate_output_columns` —

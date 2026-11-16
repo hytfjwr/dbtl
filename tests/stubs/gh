@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Test stub for `gh` — used by tests/action_scripts.rs, which puts this
+# directory first on PATH so no real GitHub API is ever touched.
+#
+# Every call appends its argv to $STUB_LOG. Behavior comes from
+# $STUB_DIR/responses.env:
+#   gh_existing_id   id printed for the comment-list GET (empty = none found)
+#   gh_patch_fail    nonempty = the PATCH (comment update) call exits 1
+#   gh_post_fail     nonempty = the POST (new comment) call exits 1
+# For `-F body=@<file>` calls the file is copied to $STUB_DIR/last_body.md
+# so tests can assert the exact comment body.
+set -u
+printf 'gh' >>"${STUB_LOG:?STUB_LOG is required}"
+printf ' %q' "$@" >>"$STUB_LOG"
+printf '\n' >>"$STUB_LOG"
+# shellcheck source=/dev/null
+[ -f "${STUB_DIR:-}/responses.env" ] && . "${STUB_DIR}/responses.env"
+
+[ "${1:-}" = "api" ] || exit 0
+shift
+method="GET"
+prev=""
+for a in "$@"; do
+	if [ -n "$prev" ]; then
+		case "${prev}/${a}" in
+		-X/*) method="$a" ;;
+		-F/body=@* | body=@*) cp "${a#body=@}" "${STUB_DIR:?}/last_body.md" ;;
+		esac
+		prev=""
+		continue
+	fi
+	case "$a" in
+	-X | -F) prev="$a" ;;
+	body=@*) cp "${a#body=@}" "${STUB_DIR:?}/last_body.md" ;;
+	esac
+done
+
+case "$method" in
+GET) [ -n "${gh_existing_id:-}" ] && printf '%s\n' "$gh_existing_id" ;;
+PATCH) [ -z "${gh_patch_fail:-}" ] || exit 1 ;;
+POST) [ -z "${gh_post_fail:-}" ] || exit 1 ;;
+esac
+exit 0

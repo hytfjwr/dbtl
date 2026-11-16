@@ -30,6 +30,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `select *` — the arm each output name was written in now travels with
   the column through wildcard expansion, nested CTEs, and `union all`
   arms, so only names a single render could produce together count.
+- Source mode recognizes `.py` model files: `dbt.ref()`/`dbt.source()`
+  calls become edges, `dbt.config()` applies, and a config-less Python
+  model takes dbt's `table` default over the project tree's
+  `+materialized`.
 
 ## [0.7.0] - 2026-11-15
 
