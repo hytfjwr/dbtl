@@ -8,7 +8,7 @@ use std::ops::Range;
 use sqlparser::ast::Statement;
 use sqlparser::tokenizer::Span;
 
-use super::depth::{parse_statements, ParseFailure};
+use super::depth::{parse_statements, split_error_position, ParseFailure};
 use super::SqlDialect;
 use crate::source::{
     call_sites_masked, call_version, find_subslice, jinja_branches, jinja_set_assigns,
@@ -96,6 +96,13 @@ pub(super) struct RenderedSql {
     /// exclusive-arm fact checks ([`crate::source::arms_exclusive`])
     /// read.
     branches: JinjaBranches,
+    /// `out` byte ranges of every unclassifiable `{{ }}`'s render —
+    /// a macro call, `var(…)`, anything [`Scan::other_text`] shapes —
+    /// in emission order. The [`UnparsedReason::JinjaGenerated`]
+    /// classification checks a parse failure's position against them;
+    /// `ref`/`source`/`this`/`config` renders and `{% %}`/`{# #}`
+    /// drops never appear here.
+    other_tags: Vec<Range<usize>>,
     /// A `{{ }}` at a clause boundary rendered to whitespace — the
     /// statement can be missing a JOIN/WHERE/LIMIT the real macro
     /// emits, so facts proving an absence can't be trusted from this
@@ -247,6 +254,44 @@ impl RenderedSql {
         self.segs
             .iter()
             .any(|s| !s.copy && s.out.start < end && start < s.out.end)
+    }
+
+    /// Does `offset` land inside an unclassifiable `{{ }}`'s render —
+    /// or on the whitespace directly before one's? A `found:` position
+    /// pointing at the tag's own text and one pointing at the gap where
+    /// its clause stood both belong to the tag.
+    fn in_other_tag(&self, offset: usize) -> bool {
+        self.other_tags.iter().any(|r| {
+            r.contains(&offset)
+                || (offset < r.start
+                    && self.text.as_bytes()[offset..r.start]
+                        .iter()
+                        .all(u8::is_ascii_whitespace))
+        })
+    }
+
+    /// The `out` range of the render's last meaningful element, when
+    /// that element is an ELIDED unclassifiable `{{ }}` — the text
+    /// effectively ends where the tag's clause stood. Anything a token
+    /// scan can see (a word, punctuation, a literal, a non-elided
+    /// render) coming later disqualifies it; trailing whitespace,
+    /// comments, and tag drops (`{% %}`/`{# #}`/`config`/`set` all
+    /// render ` `) don't. `None` also when the last `{{ }}` rendered
+    /// real text — `trailing` means the clause is MISSING, not
+    /// substituted.
+    fn trailing_elided_tag(&self) -> Option<Range<usize>> {
+        for s in self.segs.iter().rev() {
+            if self.other_tags.contains(&s.out) {
+                return self.text[s.out.clone()]
+                    .trim()
+                    .is_empty()
+                    .then(|| s.out.clone());
+            }
+            if !sep_tokens(&self.text.as_bytes()[s.out.clone()], &self.lex).is_empty() {
+                return None;
+            }
+        }
+        None
     }
 }
 
@@ -794,6 +839,10 @@ struct Scan<'a> {
     segs: Vec<Seg>,
     branch_commas: BTreeSet<usize>,
     jinja_literals: Vec<String>,
+    /// `out` byte ranges of the [`JinjaExpr::Other`] renders — the
+    /// unclassifiable `{{ }}`s — in emission order, copied onto
+    /// [`RenderedSql::other_tags`] by `finish`.
+    other_tags: Vec<Range<usize>>,
     /// Identifier bytes accumulating — flushed to `last_word` by the
     /// first non-identifier byte.
     word: Vec<u8>,
@@ -856,6 +905,7 @@ impl<'a> Scan<'a> {
             segs: Vec::new(),
             branch_commas: BTreeSet::new(),
             jinja_literals: Vec::new(),
+            other_tags: Vec::new(),
             word: Vec::new(),
             last_word: Vec::new(),
             last_sig: None,
@@ -949,6 +999,7 @@ impl<'a> Scan<'a> {
             segs: self.segs,
             branch_commas: self.branch_commas,
             jinja_literals: self.jinja_literals,
+            other_tags: self.other_tags,
             branches: self.branches,
             elided_clauses: self.elided_clauses,
             in_rhs: self.in_rhs,
@@ -1223,7 +1274,9 @@ impl<'a> Scan<'a> {
             JinjaExpr::Other(literals) => {
                 self.jinja_literals.extend(literals);
                 let t = self.other_text(ctx, after);
+                let from = self.out.len();
                 self.subst(src, t.as_bytes(), ctx.is_top());
+                self.other_tags.push(from..self.out.len());
             }
         }
     }
@@ -1846,14 +1899,23 @@ pub(super) fn render_arms(
 /// the failure the first pass's UNION render produced (the faithful
 /// text a compile would run; the fallbacks exist for Jinja artifacts,
 /// so its error is the honest reason) rather than whichever retry
-/// failed last.
+/// failed last. [`jinja_generated`] may relabel that same failure
+/// [`ParseFailure::JinjaGenerated`] first — it reads ONLY this stage's
+/// renders, never a retry's, so a fallback's own artifacts can't mint
+/// the reason.
 pub(super) fn jinja_parse(
     sql: &str,
     mark: JinjaMark,
     dialect: SqlDialect,
 ) -> Result<(RenderedSql, Vec<Statement>), ParseFailure> {
     let lex = Lex::new(dialect);
-    let mut first_failure: Option<ParseFailure> = None;
+    // The first pass's union stage — its clause-boundary render's
+    // failure, and the value-shape retry's when the boundary render
+    // actually dropped a tag. `jinja_generated` reads these when every
+    // stage fails; the boundary failure is also the `Err` the caller's
+    // contract returns (the first failure ever recorded).
+    let mut union_boundary: Option<(RenderedSql, ParseFailure)> = None;
+    let mut union_value: Option<(RenderedSql, ParseFailure)> = None;
     // Every text already parsed — a second-pass render producing one of
     // these again re-parses nothing: it failed once. (The loose flag
     // only rewrites the boundary render, so a stage's value-shape text
@@ -1881,11 +1943,16 @@ pub(super) fn jinja_parse(
                     match parse_statements(dialect, &rendered.text) {
                         Ok(stmts) => return Ok((rendered, stmts)),
                         Err(e) => {
-                            if first_failure.is_none() {
-                                first_failure = Some(e);
-                            }
                             tried.push(rendered.text.clone());
-                            if !rendered.elided_clauses {
+                            let elided = rendered.elided_clauses;
+                            if !loose && arms == RenderArms::Union && !strip {
+                                if elide {
+                                    union_boundary = Some((rendered, e));
+                                } else {
+                                    union_value = Some((rendered, e));
+                                }
+                            }
+                            if !elided {
                                 // The boundary render dropped nothing —
                                 // the value-shape retry would re-parse
                                 // the same text, so the stage is done.
@@ -1897,7 +1964,114 @@ pub(super) fn jinja_parse(
             }
         }
     }
-    Err(first_failure.expect("the first stage always parses or fails"))
+    let union_boundary = union_boundary.expect("the first stage always parses or fails");
+    Err(jinja_generated(&union_boundary, union_value.as_ref())
+        .map(|(line, column)| ParseFailure::JinjaGenerated { line, column })
+        .unwrap_or(union_boundary.1))
+}
+
+// ---------------------------------------------------------------------------
+// The JinjaGenerated classification — did an unclassifiable `{{ }}`
+// stand where the parser waited for the statement's body?
+// ---------------------------------------------------------------------------
+
+/// The `Expected:` phrases proving the parser was waiting for a whole
+/// statement or the query's body when it hit the failing position —
+/// exactly the two wordings every bundled dialect shares:
+/// `Expected: an SQL statement` (nothing parsed yet — a whole-body
+/// `{{ m() }}` lands here) and `Expected: SELECT, VALUES, or a subquery
+/// in the query body` (a `( … )`/`WITH` opened a query the tag was
+/// meant to fill). The list stays this short: `Expected: ), found: EOF`
+/// (an unclosed paren), `Expected: end of statement` (a union/separator
+/// `{{ }}`), `Expected: an expression` and every dialect-specific
+/// phrasing all describe ordinary syntax errors — widening the list
+/// would misclassify them.
+const AWAITED_BODY: &[&str] = &[
+    "Expected: an SQL statement",
+    "Expected: SELECT, VALUES, or a subquery in the query body",
+];
+
+/// The positionless-EOF form [`elided_tag_at_eof`] checks — the parser
+/// consumed the render's whole written prefix and still awaited the
+/// query's body: a `WITH x as (…)` whose final SELECT lives inside a
+/// trailing `{{ final_select() }}` lands here.
+const AWAITED_BODY_EOF: &str =
+    "Expected: SELECT, VALUES, or a subquery in the query body, found: EOF";
+
+/// Did the first pass's union stage fail because an unclassifiable
+/// `{{ }}` — a macro call, `var(…)`, anything [`Scan::other_text`]
+/// shapes — stood where the parser waited for the statement's or
+/// query's body? `boundary` is that stage's clause-boundary render
+/// with its failure; `value` is the same stage's value-shape retry,
+/// present only when the boundary render dropped a tag and still
+/// failed (its own failure position can sit on the tag the boundary
+/// render erased). Returns the `(line, column)` the reason reports —
+/// always a position in a stage render, never the source file.
+fn jinja_generated(
+    boundary: &(RenderedSql, ParseFailure),
+    value: Option<&(RenderedSql, ParseFailure)>,
+) -> Option<(u32, u32)> {
+    let (render, failure) = boundary;
+    body_awaited_in_tag(render, failure)
+        .or_else(|| value.and_then(|(r, f)| body_awaited_in_tag(r, f)))
+        .or_else(|| elided_tag_at_eof(render, failure))
+}
+
+/// Check (a): the failure's own position lands inside an unclassifiable
+/// `{{ }}`'s render — or on the whitespace directly before one's —
+/// while the parser awaited a statement or the query's body: the tag
+/// generates the body it wanted. The reported position is the
+/// failure's own.
+fn body_awaited_in_tag(rendered: &RenderedSql, failure: &ParseFailure) -> Option<(u32, u32)> {
+    let ParseFailure::Error(message) = failure else {
+        return None;
+    };
+    let (line, column, message) = split_error_position(message);
+    if !AWAITED_BODY.iter().any(|p| message.contains(p)) {
+        return None;
+    }
+    let (line, column) = (line?, column?);
+    let offset = position_offset(&rendered.text, line as u64, column as u64)?;
+    rendered.in_other_tag(offset).then_some((line, column))
+}
+
+/// Check (b): the positionless `found: EOF` form — the parser consumed
+/// the boundary render's whole prefix and still awaited the query's
+/// body, AND the render's last meaningful element is an elided
+/// unclassifiable `{{ }}`: a macro writing the final SELECT after a
+/// written `with x as (…)` prefix. A trailing `;`, `)` or any real
+/// token disqualifies it — those are unclosed-paren and stray-syntax
+/// failures, not a generated body. The position reported is the
+/// elided tag's own — the failure carries none.
+fn elided_tag_at_eof(rendered: &RenderedSql, failure: &ParseFailure) -> Option<(u32, u32)> {
+    let ParseFailure::Error(message) = failure else {
+        return None;
+    };
+    let (line, _, message) = split_error_position(message);
+    if line.is_some() || !message.contains(AWAITED_BODY_EOF) {
+        return None;
+    }
+    let range = rendered.trailing_elided_tag()?;
+    Some(offset_position(&rendered.text, range.start))
+}
+
+/// The 1-based `(line, column)` of byte `offset` in `text` — the
+/// inverse of [`position_offset`].
+fn offset_position(text: &str, offset: usize) -> (u32, u32) {
+    let (mut line, mut column) = (1u32, 1u32);
+    for (i, ch) in text.char_indices() {
+        if i >= offset {
+            break;
+        }
+        match ch {
+            '\n' => {
+                line += 1;
+                column = 1;
+            }
+            _ => column += 1,
+        }
+    }
+    (line, column)
 }
 
 // ---------------------------------------------------------------------------

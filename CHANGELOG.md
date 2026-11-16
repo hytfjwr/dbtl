@@ -6,8 +6,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- A model whose SQL statement body a `{{ }}` macro generates — a
+  whole-model `{{ pkg.macro() }}`, a macro supplying a whole `( … )`
+  subquery, or a macro writing the final `SELECT` after a written
+  `with` — now reports its own skip reason, `Jinja generates the query
+  ({{…}} at L:C)`, instead of an ordinary `parse error`, and
+  `unparsable_sql` findings carry per-reason help: generated bodies are
+  told to compile (`dbt compile` → `compiled_code` or the
+  `target/compiled/` files source mode reads), plain parse errors keep
+  the fix-your-Jinja advice. `ref()`/`source()`/`this`-only bodies and
+  ordinary syntax errors still report `parse error`.
+- The `unparsed_models` summary tally (count, names, reasons — and the
+  text summary's `N models skipped SQL rules` line) now excludes models
+  whose `enabled` value source mode could not evaluate, matching the
+  unprovable-finding drop those models already got. A run that used to
+  count such a model reports one fewer skipped model.
+
 ### Fixed
 
+- `--source` no longer links a two-argument `ref('pkg', 'name')` to a
+  same-named root model: the call resolves to the installed package's
+  member like real dbt, makes no edge in the root-only graph, and marks
+  the caller as possibly having an unshown parent — so `root_models`
+  stays quiet and `unused_models` no longer spares the root model it
+  falsely consumed.
 - Source mode no longer treats `config()` calls inside `{% if %}`/`{% elif %}`/`{% else %}` arms as unconditional. A provably-true arm's `enabled=false` still disables the model and a provably-false arm's never applies, but when the arm's condition can't be evaluated (`target.name`, a macro call, a `{% for %}` header, a `{% set %}`-bound name) the model now stays in the graph, warns once naming the unknown condition, and is marked unverifiable — where before the gated `enabled=false` silently dropped live models. `execute` evaluates as parse-time `false`, matching dbt's parser context.
 - `config()` calls inside `{% %}` statement tags are now read — `{% do config(…) %}` and `{% set _ = config(…) %}` configure the model exactly like `{{ config(…) }}`, matching dbt.
 - `ref()`/`source()`/`config()` inside deferred definition bodies — `{% macro %}`, `{% test %}`, `{% docs %}`, `{% materialization %}`, `{% verification %}` — no longer configure the model or become dependency edges, and calls in statically-dead branches no longer edge, both matching dbt's own static extractor. Calls in unresolvable arms still contribute edges and (for non-`enabled` keys) config conservatively.

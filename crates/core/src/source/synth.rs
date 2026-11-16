@@ -14,6 +14,7 @@ use anyhow::{Context, Result};
 use super::*;
 use crate::{
     dag::{version_scope_key, versioned_model_segs},
+    manifest::{ref_owner, RefVerdict},
     normalize_version, DisabledRef, RawConfig, RawDoc, RawExposure, RawExposureConfig,
     RawExposureOwner, RawMetadata, RefScope, UnresolvedAdjacent,
 };
@@ -133,6 +134,24 @@ pub(super) struct Synthesis {
     /// fabricating a "no such name" verdict dbt can't confirm either
     /// (the declaration alone is a dbt parse error we degrade).
     assumed_names: BTreeSet<String>,
+    /// The installed-`dbt_packages` name universe — loaded once in
+    /// `load` so the edge pass already resolves `ref('pkg', 'x')`
+    /// against it; `finish` builds the `RefScope` from the SAME table
+    /// (no second scan).
+    installed: InstalledPackages,
+    /// `dependencies.yml`/`packages.yml` — the `projects:` mesh names a
+    /// two-arg `ref` may legitimately name, and the declared-vs-installed
+    /// package tally.
+    deps: DeclaredDeps,
+    /// Warnings the dependency scans raised at `load` — held aside and
+    /// replayed at `finish`'s old load position so the warning ORDER
+    /// survives the hoisted scan.
+    package_warnings: Vec<String>,
+    /// uid → `ref()` parents the schema pass found out of the kept
+    /// graph — exposure `depends_on:` entries resolving into installed
+    /// packages or `projects:` names, the post-`resolve_edges`
+    /// counterpart of [`UnresolvedCalls::parents`].
+    unresolved_foreign: HashMap<String, usize>,
     /// Recoverable oddities (an unparsable schema.yml, a duplicate resource
     /// name, a non-mapping `meta:`) are reported as warnings, not errors.
     warnings: Vec<String>,
@@ -255,6 +274,22 @@ pub(super) enum RefPin {
     Dynamic,
 }
 
+/// What an edge pass does with one `ref()` call's [`RefVerdict`],
+/// lifted to the uid level for a `Local` hit: `Local` makes an edge,
+/// `OutOfScope` records the call as unprovable adjacency on the caller
+/// (a node outside the kept graph — manifest mode's `pruned_adjacent`
+/// for a pruned package parent), and `Missing` drops the call without
+/// an edge or record (`unresolved_references` words the failure).
+enum RefEdge<'a> {
+    /// A root-project node — the uid the kept graph carries.
+    Local(&'a String),
+    /// A node outside the kept graph — an installed package's member or
+    /// a `projects:` mesh name.
+    OutOfScope,
+    /// Nothing the load saw owns the name.
+    Missing,
+}
+
 impl Synthesis {
     /// Read `dbt_project.yml`, load the `var()` tables, resolve the resource
     /// path lists, and collect the `{% docs %}` blocks — everything the later
@@ -311,6 +346,16 @@ impl Synthesis {
             collect_doc_blocks(dir, &paths.doc_paths, &pat, &mut warnings),
         );
 
+        // The installed-package name universe and the dependency
+        // manifests — the `ref('pkg', 'x')`/`projects:` tables the edge
+        // pass already needs (this used to run inside `finish`, after
+        // the edges resolved). Their warnings are kept aside and
+        // replayed at `finish`'s old call position: warning order is a
+        // contract, not a preference.
+        let mut package_warnings = Vec::new();
+        let deps = DeclaredDeps::load(dir, &mut package_warnings);
+        let installed = InstalledPackages::load(dir, &project, &pat, &mut package_warnings);
+
         Ok(Synthesis {
             dir: dir.to_path_buf(),
             proj,
@@ -343,6 +388,10 @@ impl Synthesis {
             in_file_enabled: HashMap::new(),
             enabled_unverifiable: BTreeSet::new(),
             assumed_names: BTreeSet::new(),
+            installed,
+            deps,
+            package_warnings,
+            unresolved_foreign: HashMap::new(),
             warnings,
         })
     }
@@ -1269,21 +1318,54 @@ impl Synthesis {
         ref_target_of(name, pin, &self.name_index, &self.versioned)
     }
 
-    /// Every `ref()` target inside a Jinja-bearing `text` fragment —
-    /// an exposure `depends_on:` entry, a semantic model's `model:` —
-    /// resolved with the same pin semantics the .sql pass uses.
-    fn ref_targets_in(&self, text: &str) -> Vec<String> {
+    /// One `ref()` call's [`RefEdge`] — [`ref_owner`] over this load's
+    /// tables (the root claim is `name_index`, which a parked name still
+    /// answers so its edge resolves), then `ref_target`'s pin/uid lookup
+    /// on a `Local` verdict. A `Local` name the pin can't satisfy is
+    /// `Missing`, like dbt's version resolution error.
+    fn ref_edge(&self, name: &str, package: Option<&str>, pin: &RefPin) -> RefEdge<'_> {
+        match ref_owner(
+            &self.proj,
+            package,
+            name,
+            self.name_index.contains_key(name),
+            &self.installed.refs,
+            &self.deps.projects,
+        ) {
+            RefVerdict::Local => self
+                .ref_target(name, pin)
+                .map(RefEdge::Local)
+                .unwrap_or(RefEdge::Missing),
+            RefVerdict::Foreign(_) | RefVerdict::ForeignAny(_) => RefEdge::OutOfScope,
+            RefVerdict::Missing => RefEdge::Missing,
+        }
+    }
+
+    /// Every `ref()` inside a Jinja-bearing `text` fragment — an
+    /// exposure `depends_on:` entry, a semantic model's `model:` —
+    /// resolved with the same package/pin semantics the .sql pass uses.
+    /// Returns the resolved root uids plus the count of calls that
+    /// resolved OUT of the kept graph (the caller decides where that
+    /// count records — the semantic model has no node to carry it).
+    fn ref_targets_in(&self, text: &str) -> (Vec<String>, usize) {
         let masked = mask_jinja_comments(text);
-        self.pat
-            .call_sites_masked(&masked)
-            .iter()
-            .filter_map(|site| match &site.kind {
-                CallKind::Ref { name, .. } => self
-                    .ref_target(&masked[name.clone()], &ref_pin(&masked, site))
-                    .cloned(),
-                _ => None,
-            })
-            .collect()
+        let mut out = Vec::new();
+        let mut out_of_scope = 0usize;
+        for site in self.pat.call_sites_masked(&masked) {
+            let CallKind::Ref { name, package, .. } = &site.kind else {
+                continue;
+            };
+            match self.ref_edge(
+                &masked[name.clone()],
+                package.as_ref().map(|p| &masked[p.clone()]),
+                &ref_pin(&masked, &site),
+            ) {
+                RefEdge::Local(uid) => out.push(uid.clone()),
+                RefEdge::OutOfScope => out_of_scope += 1,
+                RefEdge::Missing => {}
+            }
+        }
+        (out, out_of_scope)
     }
 
     /// YAML-defined snapshots (dbt 1.9+ `snapshots:` schema entries with a
@@ -1400,9 +1482,13 @@ impl Synthesis {
     }
 
     /// Resolve `ref()`/`source()` call sites in the deferred masked SQL into
-    /// `(parent_map, child_map)` — unresolved refs (cross-package, typo,
-    /// gated) drop out; a source referenced but not declared in schema.yml
-    /// dangles here and is pruned later.
+    /// `(parent_map, child_map)` — a ref resolving out of the kept graph
+    /// (a `ref('pkg', 'x')` naming an installed package, or a bare name
+    /// only a package owns) makes no edge but counts into the unprovable
+    /// adjacency record, the same place a pruned package parent lands in
+    /// manifest mode; a genuinely unresolvable ref (typo, gated) drops
+    /// out; a source referenced but not declared in schema.yml dangles
+    /// here and is pruned later.
     ///
     /// A second pass over each node's Jinja tags resolves `{{ name(…) }}` /
     /// `{% … name(…) %}` calls against the project macro table: an invoked
@@ -1438,11 +1524,27 @@ impl Synthesis {
                     continue;
                 }
                 match site.kind {
-                    // Unresolved refs (cross-package, typo, gated) are dropped, not faked.
-                    CallKind::Ref { ref name, .. } => {
+                    // A `ref` the package scope keeps in the root graph
+                    // makes its edge; one resolving out of it counts as
+                    // unprovable adjacency (manifest mode's pruned
+                    // package-parent record); a genuinely unresolvable
+                    // call drops — `unresolved_references` words it.
+                    CallKind::Ref {
+                        ref name,
+                        ref package,
+                        ..
+                    } => {
                         let pin = ref_pin(sql, &site);
-                        if let Some(parent) = self.ref_target(&sql[name.clone()], &pin) {
-                            parents.push(parent.clone());
+                        match self.ref_edge(
+                            &sql[name.clone()],
+                            package.as_ref().map(|p| &sql[p.clone()]),
+                            &pin,
+                        ) {
+                            RefEdge::Local(parent) => parents.push(parent.clone()),
+                            RefEdge::OutOfScope => {
+                                *extras.unresolved.parents.entry(uid.clone()).or_default() += 1;
+                            }
+                            RefEdge::Missing => {}
                         }
                     }
                     // A source referenced but not declared in schema.yml dangles
@@ -1542,7 +1644,7 @@ impl Synthesis {
                     PyCallKind::Ref => match &call.args {
                         Some(args) if args.is_literal() => {
                             match ref_name(args) {
-                                Some(name) => {
+                                Some((package, name)) => {
                                     // A `v=`/`version=` kwarg pins like
                                     // the SQL spelling — a literal
                                     // version names the member; a
@@ -1558,8 +1660,18 @@ impl Synthesis {
                                         Some(None) => RefPin::Dynamic,
                                         None => RefPin::Absent,
                                     };
-                                    if let Some(parent) = self.ref_target(name, &pin) {
-                                        parents.push(parent.clone());
+                                    match self.ref_edge(name, package, &pin) {
+                                        RefEdge::Local(parent) => {
+                                            parents.push(parent.clone());
+                                        }
+                                        RefEdge::OutOfScope => {
+                                            *extras
+                                                .unresolved
+                                                .parents
+                                                .entry(d.uid.clone())
+                                                .or_default() += 1;
+                                        }
+                                        RefEdge::Missing => {}
                                     }
                                 }
                                 // A literal call dbt itself would reject
@@ -1627,11 +1739,13 @@ impl Synthesis {
     }
 
     /// Fold one macro-resolution outcome into the edge pass's running
-    /// state: resolved `ref`/`source` targets join `parents` (an
-    /// unresolvable name drops like an ordinary unresolved `ref`), the
-    /// invoked macro names land in `invoked`, and an `incomplete`
-    /// resolution counts as unprovable adjacency — its literal args stay
-    /// candidates for the source tables a hidden `source()` may have read.
+    /// state: resolved `ref`/`source` targets join `parents` (a call
+    /// resolving out of the kept graph counts as unprovable adjacency on
+    /// the node, an unresolvable one drops like an ordinary unresolved
+    /// `ref`), the invoked macro names land in `invoked`, and an
+    /// `incomplete` resolution counts as unprovable adjacency — its
+    /// literal args stay candidates for the source tables a hidden
+    /// `source()` may have read.
     fn absorb_resolution(
         &self,
         uid: &str,
@@ -1641,9 +1755,13 @@ impl Synthesis {
         invoked: &mut BTreeSet<String>,
         unresolved: &mut UnresolvedCalls,
     ) {
-        for (name, pin) in &res.refs {
-            if let Some(parent) = self.ref_target(name, pin) {
-                parents.push(parent.clone());
+        for (name, package, pin) in &res.refs {
+            match self.ref_edge(name, package.as_deref(), pin) {
+                RefEdge::Local(parent) => parents.push(parent.clone()),
+                RefEdge::OutOfScope => {
+                    *unresolved.parents.entry(uid.to_string()).or_default() += 1;
+                }
+                RefEdge::Missing => {}
             }
         }
         for (src, tbl) in &res.sources {
@@ -1674,6 +1792,8 @@ impl Synthesis {
             pat: &self.pat,
             name_index: &self.name_index,
             versioned: &self.versioned,
+            installed_refs: &self.installed.refs,
+            projects: &self.deps.projects,
             vars: &self.vars,
         };
         let mut applied_families: HashSet<String> = HashSet::new();
@@ -1842,9 +1962,11 @@ impl Synthesis {
 
             // Exposures: pure leaf declarations. Their `depends_on` entries are
             // Jinja strings (`ref('x')` / `source('a','b')`), so the SAME extractors
-            // the .sql scan uses resolve them — an unresolved ref drops out, exactly
-            // like a model's. dbt records `path` resource-root-relative (like a
-            // model's) and `original_file_path` project-root-relative.
+            // the .sql scan uses resolve them — a ref resolving out of the kept
+            // graph counts as unprovable adjacency on the exposure, and an
+            // unresolvable one drops out, exactly like a model's. dbt records
+            // `path` resource-root-relative (like a model's) and
+            // `original_file_path` project-root-relative.
             for exp in &schema.exposures {
                 // `config: enabled:` parks the exposure like dbt's
                 // `disabled`; an unprovable one keeps it and marks it.
@@ -1858,11 +1980,17 @@ impl Synthesis {
                 }
                 let uid = format!("exposure.{}.{}", self.proj, exp.name);
                 let mut deps: Vec<String> = Vec::new();
+                let mut out_of_scope = 0usize;
                 for dep in &exp.depends_on {
-                    deps.extend(self.ref_targets_in(dep));
+                    let (resolved, foreign) = self.ref_targets_in(dep);
+                    deps.extend(resolved);
+                    out_of_scope += foreign;
                     for (src, tbl) in self.pat.sources(dep) {
                         deps.push(format!("source.{}.{src}.{tbl}", self.proj));
                     }
+                }
+                if out_of_scope > 0 {
+                    *self.unresolved_foreign.entry(uid.clone()).or_default() += out_of_scope;
                 }
                 deps.sort();
                 deps.dedup();
@@ -1983,7 +2111,8 @@ impl Synthesis {
                 let Some(model) = &sm.model else {
                     continue;
                 };
-                for uid in self.ref_targets_in(model) {
+                let (uids, _out_of_scope) = self.ref_targets_in(model);
+                for uid in uids {
                     if let Some(node) = self.nodes.get_mut(&uid) {
                         node.semantic_dependents.push(sm.name.clone());
                     }
@@ -2218,6 +2347,12 @@ impl Synthesis {
         for (uid, n) in extras.unresolved.parents {
             unresolved_adjacent.entry(uid).or_default().parents += n;
         }
+        // The schema pass's own share — exposure `depends_on:` refs that
+        // resolved out of the kept graph (the same record the edge
+        // pass's `UnresolvedCalls` writes).
+        for (uid, n) in self.unresolved_foreign {
+            unresolved_adjacent.entry(uid).or_default().parents += n;
+        }
         for table in &extras.unresolved.candidates {
             for (uid, src) in &self.sources {
                 if &src.name == table {
@@ -2249,9 +2384,13 @@ impl Synthesis {
         // surfaces. `versions` records the synthesized `.<v>` member uids
         // — the same shape a real manifest's scope build reads — so a
         // `v=`-pinned ref judges here exactly like manifest mode.
-        let deps = DeclaredDeps::load(&self.dir, &mut self.warnings);
-        let installed =
-            InstalledPackages::load(&self.dir, &self.project, &self.pat, &mut self.warnings);
+        // The dependency scans ran at `load` so the edge pass already
+        // resolved `ref('pkg', 'x')` against them — reuse the tables
+        // here (no second walk); their warnings replay at the position
+        // they used to emit, just past the dedup.
+        self.warnings.append(&mut self.package_warnings);
+        let deps = self.deps;
+        let installed = self.installed;
         let mut refs = installed.refs;
         for (name, uid) in &self.name_index {
             // A parked (`disabled`) name stays in `name_index` — edges and

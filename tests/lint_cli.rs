@@ -2211,6 +2211,124 @@ fn unparsable_sql_stays_off_under_standard_and_fires_under_strict() {
 }
 
 #[test]
+fn a_macro_generating_the_query_reports_jinja_generated() {
+    // A whole-model `{{ }}` macro — the model's SQL body is generated,
+    // not broken — reports the JinjaGenerated reason (never a parse
+    // error), and the finding's help advises compiling, not editing.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = common::write_project(
+        tmp.path(),
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            ("models/ok.sql", "select 1 as id\n"),
+            ("models/m_macro.sql", "{{ some_pkg.union_all('a', 'b') }}\n"),
+        ],
+    );
+    let lint = |extra: &[&str]| {
+        let mut args: Vec<&str> = vec![
+            "lint",
+            "--source",
+            root.to_str().unwrap(),
+            "--rules",
+            "unparsable_sql",
+        ];
+        args.extend_from_slice(extra);
+        run(&args)
+    };
+    let text = stdout(&lint(&["--format", "text", "--color", "never"]));
+    assert!(
+        text.contains(
+            "warning[unparsable_sql]: m_macro was skipped by SQL rules: \
+             Jinja generates the query ({{…}} at 1:2)"
+        ),
+        "the generated-body reason names the tag, not a parse error: {text}"
+    );
+    assert!(
+        text.contains("= help: a macro generates this SQL"),
+        "the reason's own help advises compiling: {text}"
+    );
+    assert!(
+        text.contains(
+            "1 model skipped SQL rules (unparsable SQL): \
+             m_macro (Jinja generates the query ({{…}} at 1:2))"
+        ),
+        "the tally prints the same reason: {text}"
+    );
+}
+
+#[test]
+fn enabled_unverifiable_models_leave_the_unparsed_summary() {
+    // A model whose `enabled` expression source mode can't evaluate
+    // keeps nothing: its `unparsable_sql` finding drops like every
+    // unprovable finding, and `summary.unparsed_models` (count, names,
+    // reasons) plus the text line drop it the same way.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = common::write_project(
+        tmp.path(),
+        &[
+            (
+                "dbt_project.yml",
+                "name: v\nversion: \"1.0.0\"\nconfig-version: 2\n",
+            ),
+            ("models/m_broken.sql", "select from where or\n"),
+            (
+                "models/m_uncertain.sql",
+                "{{ config(enabled=var('missing')) }}\nselect from where or\n",
+            ),
+        ],
+    );
+    let lint = |extra: &[&str]| {
+        let mut args: Vec<&str> = vec![
+            "lint",
+            "--source",
+            root.to_str().unwrap(),
+            "--rules",
+            "unparsable_sql",
+        ];
+        args.extend_from_slice(extra);
+        run(&args)
+    };
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout(&lint(&["--format", "json"]))).unwrap();
+    assert_eq!(json["summary"]["unparsed_models"]["count"], 1);
+    assert_eq!(
+        json["summary"]["unparsed_models"]["names"],
+        serde_json::json!(["m_broken"]),
+        "the unverifiable model leaves the summary: {}",
+        json["summary"]
+    );
+    assert_eq!(
+        json["summary"]["unparsed_models"]["reasons"],
+        serde_json::json!({"m_broken": "parse error at 1:13: Expected: table name, found: where"}),
+        "…reasons included: {}",
+        json["summary"]
+    );
+    let findings: Vec<&serde_json::Value> = json["gates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["findings"].as_array().into_iter().flatten())
+        .filter(|f| f["rule"] == "unparsable_sql")
+        .collect();
+    assert_eq!(
+        findings.len(),
+        1,
+        "only the verifiable skip becomes a finding: {json}"
+    );
+    let text = stdout(&lint(&["--format", "text", "--color", "never"]));
+    assert!(
+        text.contains(
+            "1 model skipped SQL rules (unparsable SQL): \
+             m_broken (parse error at 1:13: Expected: table name, found: where)"
+        ),
+        "the text line names only the verifiable model: {text}"
+    );
+}
+
+#[test]
 fn unparsable_sql_suppresses_through_meta_and_exclude() {
     // `meta.dbtl.ignore` on the node and a config `exclude:` both drop
     // the finding — the tally still records the skip, since the model

@@ -1,4 +1,5 @@
 use super::*;
+use crate::manifest::{ref_owner, RefVerdict};
 
 /// The shared context [`synth_tests`] and [`apply_meta`] thread through every
 /// schema-file test pass: the running synth-key counter, the project name, the
@@ -14,6 +15,12 @@ pub(super) struct TestCtx<'a> {
     /// `versions:`-declared families the `synthesize_models` stage bound —
     /// a `unit_tests:` `versions:` selector walks its members.
     pub(super) versioned: &'a BTreeMap<String, VersionedFamily>,
+    /// The installed packages' `name -> packages` universe — a
+    /// `to: "{{ ref('pkg','x') }}"` judges against it the way the .sql
+    /// pass does.
+    pub(super) installed_refs: &'a HashMap<String, BTreeSet<String>>,
+    /// `dependencies.yml`/`packages.yml` `projects:` mesh names.
+    pub(super) projects: &'a BTreeSet<String>,
     pub(super) vars: &'a Vars,
 }
 
@@ -905,12 +912,27 @@ pub(super) fn synth_tests(
         if let Some(to) = kwargs.get("to").and_then(|v| v.as_str()) {
             let masked = mask_jinja_comments(to);
             for site in call_sites_masked(&masked) {
-                if let CallKind::Ref { name, .. } = &site.kind {
+                if let CallKind::Ref { name, package, .. } = &site.kind {
                     let pin = ref_pin(&masked, &site);
-                    if let Some(uid) =
-                        ref_target_of(&masked[name.clone()], &pin, ctx.name_index, ctx.versioned)
-                    {
-                        deps.push(uid.clone());
+                    // Only a `Local` verdict names a node the kept graph
+                    // carries — a `to:` naming an installed package's
+                    // member drops like an unresolvable name.
+                    if let RefVerdict::Local = ref_owner(
+                        ctx.proj,
+                        package.as_ref().map(|p| &masked[p.clone()]),
+                        &masked[name.clone()],
+                        ctx.name_index.contains_key(&masked[name.clone()] as &str),
+                        ctx.installed_refs,
+                        ctx.projects,
+                    ) {
+                        if let Some(uid) = ref_target_of(
+                            &masked[name.clone()],
+                            &pin,
+                            ctx.name_index,
+                            ctx.versioned,
+                        ) {
+                            deps.push(uid.clone());
+                        }
                     }
                 }
             }

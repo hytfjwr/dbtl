@@ -128,9 +128,13 @@
 //!   matching, an undeclared `include` warning instead of dbt's parse
 //!   error — so the record's `depends_on` names the exact `.vN` node.
 //!
-//! Scope: this covers the common project shape, not dbt's full resolver. NOT
-//! handled (a `ref` to one of these simply drops out, which `prune_adjacency`
-//! tolerates): cross-package `ref`, `var()`-gated refs (only the
+//! Scope: this covers the common project shape, not dbt's full resolver. A
+//! `ref` naming an installed package's member (or a `projects:`-declared
+//! project) resolves out of the kept root-only graph — no edge, but the
+//! call counts into the caller's `unresolved_adjacent` the way a
+//! manifest-mode package parent the scope prune severed records.
+//! NOT handled (a `ref` to one of these simply drops out, which
+//! `prune_adjacency` tolerates): `var()`-gated refs (only the
 //! `var()` in `enabled` positions resolves — see vars.rs), the bodies of
 //! installed-package macros (their invocations count into
 //! `unresolved_adjacent` rather than resolving — `dbt_packages/` is never

@@ -7,6 +7,8 @@ use crate::cll::ColumnLineage;
 use crate::manifest::{RawManifest, RawNode};
 use std::collections::HashMap;
 
+use super::depth::ParseFailure;
+
 /// A `model` node: `sql` lands in `compiled_code` (a dbt-compile product —
 /// parses to Exact edges), with the given declared columns and topology
 /// coming from the `parent_map`/`child_map` args of [`manifest`].
@@ -3911,5 +3913,55 @@ fn a_loose_render_still_marks_an_operator_shaped_tag() {
         let (r, _stmts) = jinja_parse(sql, JinjaMark::Plain, SqlDialect::Postgres)
             .unwrap_or_else(|e| panic!("{sql:?} parses under Postgres: {e:?}"));
         assert!(r.elided_clauses, "{sql:?}");
+    }
+}
+
+/// `sql` fails every [`jinja_parse`] stage with a [`ParseFailure`] —
+/// the helper the JinjaGenerated tests read through `into_reason`.
+fn parse_failure(sql: &str) -> ParseFailure {
+    jinja_parse(sql, JinjaMark::Plain, SqlDialect::Generic)
+        .expect_err(&format!("{sql:?} fails every stage"))
+}
+
+#[test]
+fn a_macro_generating_the_statement_reports_jinja_generated() {
+    // The three shapes that read as "a macro emits the body the parser
+    // waited for" — a whole-model macro, a macro supplying the whole
+    // `( … )` subquery, and a macro writing the final SELECT after a
+    // written `with` prefix.
+    for sql in [
+        "{{ some_pkg.union_connections(ref('a'), ref('b')) }}",
+        "with s as ({{ spine_macro('x') }}) select * from s",
+        "with s as (select 1 as id) {{ final_select('s') }}",
+        // `var(…)`/unknown `{{ }}`s count like a macro call.
+        "{{ var('body') }}",
+    ] {
+        let reason = parse_failure(sql).into_reason();
+        assert!(
+            matches!(reason, UnparsedReason::JinjaGenerated { .. }),
+            "{sql:?} -> {reason:?}"
+        );
+    }
+}
+
+#[test]
+fn an_ordinary_parse_failure_stays_a_parse_error() {
+    // The shapes that must NOT read as Jinja-generated — a `ref`-only
+    // body (the tag renders a relation name, never a statement), an
+    // unclosed paren with an elided tail tag, a mid-statement syntax
+    // error, and a union-separator `{{ }}`.
+    for sql in [
+        "{{ ref('x') }}",
+        "{{ source('a', 'b') }}",
+        "{{ this }}",
+        "select id from t where id in (select id from {{ ref('a') }} {{ filt() }}",
+        "select from where or",
+        "select a from x {{ union_macro() }} select b from y",
+    ] {
+        let reason = parse_failure(sql).into_reason();
+        assert!(
+            matches!(reason, UnparsedReason::ParseError { .. }),
+            "{sql:?} -> {reason:?}"
+        );
     }
 }

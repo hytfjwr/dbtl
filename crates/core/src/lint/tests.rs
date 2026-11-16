@@ -9021,6 +9021,85 @@ fn unparsable_sql_never_judges_when_sql_is_absent() {
     );
 }
 
+#[test]
+fn unparsable_sql_help_matches_the_reason() {
+    // A macro generating the statement body gets compile advice; a
+    // plain parse error gets Jinja-repair advice — the finding's help
+    // is the reason's own, and the tally carries the reason with it.
+    let m = manifest(
+        vec![
+            model_sql("macro_body", "{{ some_pkg.union_all('a','b') }}"),
+            model_sql("broken", "select from where or"),
+        ],
+        vec![],
+        &[],
+    );
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only_opt_in(
+        LintRule::UnparsableSql,
+        "lint:\n  rules:\n    unparsable_sql: true\n",
+    );
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert!(matches!(
+        out.unparsed.get("model.p.macro_body"),
+        Some(UnparsedReason::JinjaGenerated { .. })
+    ));
+    let f = finding_on(&out.findings, LintRule::UnparsableSql, "model.p.macro_body");
+    assert!(f.help.is_some(), "the finding carries the reason's help");
+    assert!(
+        f.message.contains("Jinja generates the query"),
+        "{}",
+        f.message
+    );
+    assert!(
+        f.effective_help().contains("dbt compile"),
+        "{}",
+        f.effective_help()
+    );
+    let f = finding_on(&out.findings, LintRule::UnparsableSql, "model.p.broken");
+    assert!(f.help.is_some(), "the finding carries the reason's help");
+    assert!(f.message.contains("parse error"), "{}", f.message);
+    assert!(
+        f.effective_help().contains("renders valid SQL"),
+        "{}",
+        f.effective_help()
+    );
+}
+
+#[test]
+fn enabled_unverifiable_models_leave_the_unparsed_tally() {
+    // A model whose `enabled` couldn't be evaluated keeps nothing in
+    // the tally: a finding claiming its skip would be dropped too, so
+    // counting it could only mislead.
+    let mut m = manifest(
+        vec![
+            model_sql("certain", "select from where or"),
+            model_sql("uncertain", "select from where or"),
+        ],
+        vec![],
+        &[],
+    );
+    m.enabled_unverifiable.insert("model.p.uncertain".into());
+    let dag = Dag::build(&m);
+    let res = sql_resolver(None);
+    let cfg = cfg_only_opt_in(
+        LintRule::UnparsableSql,
+        "lint:\n  rules:\n    unparsable_sql: true\n",
+    );
+    let out = lint_outcome(&dag, &cfg, Some(&res), None);
+    assert_eq!(
+        flagged(&out.findings, LintRule::UnparsableSql),
+        vec!["model.p.certain"],
+        "the unverifiable model's finding drops like every other's"
+    );
+    assert_eq!(
+        out.unparsed.keys().collect::<Vec<_>>(),
+        vec!["model.p.certain"],
+        "…and the tally drops it the same way"
+    );
+}
+
 // ---- pathological SQL depth ------------------------------------------------
 //
 // A flat infix/set-op chain (`x and …`, `x || …`, `union all …`) builds
@@ -11682,12 +11761,15 @@ fn possible_edges_never_form_off_dynamic_missing_or_disabled_targets() {
 fn possible_edges_resolve_versioned_pins_and_package_refs() {
     // `ref('x', v=1)` names the v1 member, a bare `ref('x')` lands on the
     // declared latest (v2), and `ref('pkg', 'pm')` scopes to the package
-    // model — every pinned member counts as possibly read.
+    // model — every pinned member counts as possibly read. The root
+    // project's OWN `pm` (a deliberate same-name collision) is NOT a
+    // target: the package arg scopes the lookup outright, like dbt.
     let m = manifest(
         vec![
             versioned_model("x", "v1", "staging/x_v1.sql"),
             versioned_model("x", "v2", "staging/x_v2.sql"),
             pkg_model("pkg", "pm"),
+            model("pm", "staging/pm.sql"),
             dep_model(
                 "reads",
                 "{% if execute %}{{ ref('x', v=1) }}{{ ref('x') }}{{ ref('pkg', 'pm') }}{% endif %}\nselect 1",
@@ -11705,6 +11787,10 @@ fn possible_edges_resolve_versioned_pins_and_package_refs() {
             "{uid} should carry the possible consumer"
         );
     }
+    assert!(
+        resolver.possible_children("model.p.pm").is_empty(),
+        "ref('pkg', 'pm') never possibly-reads the same-named root model"
+    );
     // The calls' targets never entered `depends_on` — the graph records
     // nothing.
     assert!(
@@ -11836,4 +11922,290 @@ fn possible_edges_stay_off_on_a_source_mode_dag() {
             .any(|c| c == "model.p.branchy"),
         "the dropped call stays visible to lint as a possible read"
     );
+}
+
+// ---- package-qualified `ref('pkg', 'name')` in source mode ------------------
+// `ref(pkg, name)` scopes the lookup to that package outright — a
+// same-named root model is NEVER the target (real dbt 1.12.6 resolves
+// `ref('otherpkg', 'm')` to `model.otherpkg.m` and errors where the
+// package lacks the name; a bare `ref('m')` still lands on the root
+// model, same-project first). Source mode keeps the root-only graph, so
+// a call resolving to an installed package's member makes no edge: the
+// caller records an unshown parent — the same `unresolved_adjacent`
+// record a `PackageScope::Root` prune writes — and the root model keeps
+// whatever consumers it actually has.
+
+/// The issue's reproduction shape: root project `shop` + installed
+/// package `otherpkg`, each declaring a model `m`. `files` are extra
+/// (path, text) pairs under the project root (parents created).
+fn pkg_collision_project(files: &[(&str, &str)]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    std::fs::create_dir_all(dir.path().join("dbt_packages/otherpkg/models")).unwrap();
+    std::fs::write(
+        dir.path().join("dbt_project.yml"),
+        "name: shop\nmodel-paths: [models]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("dbt_packages/otherpkg/dbt_project.yml"),
+        "name: otherpkg\nmodel-paths: [models]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("dbt_packages/otherpkg/models/m.sql"),
+        "select 1\n",
+    )
+    .unwrap();
+    // `staging/` puts `m` inside `unused_models`'s default layer set —
+    // an unclassified root-level model reads as `other` and never flags.
+    std::fs::create_dir_all(dir.path().join("models/staging")).unwrap();
+    std::fs::write(dir.path().join("models/staging/m.sql"), "select 1\n").unwrap();
+    for (rel, text) in files {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    dir
+}
+
+/// Does ANY node's recorded parents include `uid`? The blanket "never
+/// edges to" check — one walk covers models, synthesized tests, and
+/// exposures alike.
+fn any_parent_is(m: &RawManifest, uid: &str) -> bool {
+    m.parent_map.values().any(|ps| ps.iter().any(|p| p == uid))
+}
+
+#[test]
+fn package_qualified_ref_resolves_out_of_the_kept_graph() {
+    // `{{ ref('otherpkg', 'm') }}` names `model.otherpkg.m` — never the
+    // same-named `model.shop.m` the retained graph carries.
+    let dir =
+        pkg_collision_project(&[("models/c.sql", "select * from {{ ref('otherpkg', 'm') }}\n")]);
+    let sm = crate::manifest_from_source(dir.path()).unwrap();
+    assert!(
+        !any_parent_is(&sm, "model.shop.m"),
+        "the package-qualified call can't parent root m: {:?}",
+        sm.parent_map
+    );
+    let dag = Dag::build(&sm);
+    assert!(
+        dag.direct_parents("model.shop.c").is_empty(),
+        "`ls '+c'` shows only `c` — no edge was made"
+    );
+    // The out-of-scope parent counts the way a pruned package parent
+    // does — `root_models` can't claim "no parents", and the call does
+    // NOT consume root m either.
+    assert_eq!(
+        dag.pruned_adjacent("model.shop.c"),
+        Some(&crate::PrunedAdjacent {
+            parents: 1,
+            children: 0
+        })
+    );
+    let f = findings_of(&sm, &LintConfig::default());
+    assert_eq!(
+        flagged(&f, LintRule::UnusedModels),
+        vec!["model.shop.m"],
+        "a package-qualified call isn't a consumer of root m: {f:?}"
+    );
+    assert!(
+        !flagged(&f, LintRule::RootModels).contains(&"model.shop.c"),
+        "c may hide a package parent — 'no parents' can't be claimed: {f:?}"
+    );
+    assert!(
+        f.iter().all(|f| f.rule != LintRule::UnresolvedReferences),
+        "otherpkg.m resolves — out of the kept graph, not missing: {f:?}"
+    );
+}
+
+#[test]
+fn ref_naming_the_root_project_resolves_to_the_root_model() {
+    // `ref('shop', 'm')` — an explicit package arg equal to the caller's
+    // own project resolves like the bare `ref('m')` (verified against
+    // real dbt 1.12.6).
+    let dir = pkg_collision_project(&[("models/c.sql", "select * from {{ ref('shop', 'm') }}\n")]);
+    let sm = crate::manifest_from_source(dir.path()).unwrap();
+    assert_eq!(
+        sm.parent_map["model.shop.c"].as_slice(),
+        ["model.shop.m"],
+        "the self-qualified ref lands on the root m"
+    );
+}
+
+#[test]
+fn ref_to_an_uninstalled_package_stays_edgeless_and_flags() {
+    // `ref('nopkg', 'm')` names nothing the load saw — dbt's parse
+    // error. Source mode keeps the under-report: no edge, and NO
+    // unshown-parent record either (the call resolves to nothing — it
+    // isn't out-of-scope, it's absent); `unresolved_references` words
+    // the miss like before.
+    let dir = pkg_collision_project(&[("models/c.sql", "select * from {{ ref('nopkg', 'm') }}\n")]);
+    let sm = crate::manifest_from_source(dir.path()).unwrap();
+    assert!(!any_parent_is(&sm, "model.shop.m"));
+    assert!(
+        sm.unresolved_adjacent
+            .get("model.shop.c")
+            .is_none_or(|a| a.parents == 0),
+        "a missing ref records no unshown parent: {:?}",
+        sm.unresolved_adjacent
+    );
+    let f = findings_of(&sm, &LintConfig::default());
+    let hits: Vec<&Finding> = f
+        .iter()
+        .filter(|f| f.rule == LintRule::UnresolvedReferences)
+        .collect();
+    assert_eq!(hits.len(), 1, "{f:?}");
+    assert!(hits[0].message.contains("'nopkg.m'"), "{}", hits[0].message);
+}
+
+#[test]
+fn bare_ref_to_a_package_only_name_counts_as_unshown_adjacency() {
+    // `pm_only` exists ONLY in `otherpkg` — dbt's bare-ref lookup still
+    // resolves it (the package's model: name lookup searches root first,
+    // then installed packages). The kept graph can't edge to it, so the
+    // caller records an unshown parent — never a fabricated root edge —
+    // and `unresolved_references` stays quiet because the name resolves.
+    let dir = pkg_collision_project(&[
+        ("dbt_packages/otherpkg/models/pm_only.sql", "select 1\n"),
+        ("models/c.sql", "select * from {{ ref('pm_only') }}\n"),
+    ]);
+    let sm = crate::manifest_from_source(dir.path()).unwrap();
+    assert!(
+        sm.parent_map.get("model.shop.c").is_none_or(Vec::is_empty),
+        "no root edge can form: {:?}",
+        sm.parent_map
+    );
+    assert_eq!(sm.unresolved_adjacent["model.shop.c"].parents, 1);
+    let f = findings_of(&sm, &LintConfig::default());
+    assert!(
+        f.iter().all(|f| f.rule != LintRule::UnresolvedReferences),
+        "the package-only name resolves: {f:?}"
+    );
+}
+
+#[test]
+fn python_dbt_ref_two_arg_resolves_out_of_the_kept_graph() {
+    // `dbt.ref('otherpkg', 'm')` — the Python spelling carries the same
+    // package arg the SQL one does: no edge to root m, unshown parent.
+    let dir = pkg_collision_project(&[(
+        "models/c.py",
+        "def model(dbt, session):\n    return session.sql(f\"select * from {dbt.ref('otherpkg', 'm')}\")\n",
+    )]);
+    let sm = crate::manifest_from_source(dir.path()).unwrap();
+    assert!(!any_parent_is(&sm, "model.shop.m"), "{:?}", sm.parent_map);
+    assert_eq!(sm.unresolved_adjacent["model.shop.c"].parents, 1);
+}
+
+#[test]
+fn project_macro_two_arg_ref_resolves_out_of_the_kept_graph() {
+    // A two-arg `ref` inside a PROJECT macro body resolves the same way
+    // a direct call does — the caller gains no root edge, only the
+    // unshown-parent record.
+    let dir = pkg_collision_project(&[
+        (
+            "macros/pull.sql",
+            "{% macro pull() %}\nselect * from {{ ref('otherpkg', 'm') }}\n{% endmacro %}\n",
+        ),
+        ("models/c.sql", "{{ pull() }}\n"),
+    ]);
+    let sm = crate::manifest_from_source(dir.path()).unwrap();
+    assert!(
+        !any_parent_is(&sm, "model.shop.m"),
+        "the macro body's package ref can't parent root m: {:?}",
+        sm.parent_map
+    );
+    assert_eq!(sm.unresolved_adjacent["model.shop.c"].parents, 1);
+}
+
+#[test]
+fn exposure_two_arg_ref_resolves_out_of_the_kept_graph() {
+    // An exposure `depends_on:` entry naming `otherpkg`'s member makes
+    // no edge to root m — the exposure records the unshown parent.
+    let dir = pkg_collision_project(&[
+        ("models/c.sql", "select 1\n"),
+        (
+            "models/expo.yml",
+            "version: 2\nexposures:\n  - name: dash\n    type: dashboard\n    depends_on:\n      - ref('otherpkg', 'm')\n",
+        ),
+    ]);
+    let sm = crate::manifest_from_source(dir.path()).unwrap();
+    assert!(
+        !any_parent_is(&sm, "model.shop.m"),
+        "the exposure dep can't parent root m: {:?}",
+        sm.parent_map
+    );
+    assert_eq!(sm.unresolved_adjacent["exposure.shop.dash"].parents, 1);
+}
+
+#[test]
+fn semantic_model_two_arg_ref_stamps_no_root_dependents() {
+    // A `semantic_models:` entry whose `model:` names the package member
+    // marks no `semantic_dependents` on root m — the entry consumes
+    // `model.otherpkg.m`, which the kept graph doesn't carry.
+    let dir = pkg_collision_project(&[
+        ("models/c.sql", "select 1\n"),
+        (
+            "models/sm.yml",
+            "version: 2\nsemantic_models:\n  - name: sm_m\n    model: ref('otherpkg', 'm')\n",
+        ),
+    ]);
+    let sm = crate::manifest_from_source(dir.path()).unwrap();
+    let dag = Dag::build(&sm);
+    assert!(
+        dag.detail("model.shop.m")
+            .is_none_or(|d| d.semantic_dependents.is_empty()),
+        "root m gains no semantic dependent from the package ref"
+    );
+}
+
+#[test]
+fn relationship_test_to_arg_two_arg_resolves_out_of_the_kept_graph() {
+    // `to: ref('otherpkg', 'm')` — the synthesized test depends on the
+    // model under test alone; the package target makes no root edge.
+    let dir = pkg_collision_project(&[
+        ("models/child.sql", "select 1 as pid\n"),
+        (
+            "models/schema.yml",
+            "version: 2\nmodels:\n  - name: child\n    columns:\n      - name: pid\n        tests:\n          - relationships:\n              to: ref('otherpkg', 'm')\n              field: id\n",
+        ),
+    ]);
+    let sm = crate::manifest_from_source(dir.path()).unwrap();
+    // Schema tests record their deps on the test node's `depends_on`
+    // (they never enter `parent_map`) — the `to:` target must add
+    // nothing but the model under test.
+    let test = sm
+        .nodes
+        .values()
+        .find(|n| n.resource_type == "test")
+        .expect("the relationships test synthesized");
+    assert_eq!(
+        test.depends_on.nodes,
+        vec!["model.shop.child".to_string()],
+        "`to: ref('otherpkg', 'm')` contributes no root-m dep"
+    );
+}
+
+#[test]
+fn calls_to_never_matches_a_package_qualified_call_against_root() {
+    // `c` reads root `m` plainly AND package-qualified — only the
+    // unqualified call could have produced the `model.shop.m` edge, so
+    // `calls_to` returns its span alone (before the fix it matched by
+    // name and claimed the qualified call too).
+    let dir = pkg_collision_project(&[(
+        "models/c.sql",
+        "select * from {{ ref('m') }}\njoin {{ ref('otherpkg', 'm') }} on true\n",
+    )]);
+    let sm = crate::manifest_from_source(dir.path()).unwrap();
+    let dag = Dag::build(&sm);
+    let resolver = super::call_sites::CallSiteResolver::new(&dag);
+    let cs = resolver.for_node("model.shop.c").unwrap();
+    let spans = cs.calls_to("model.shop.m");
+    assert_eq!(
+        spans.len(),
+        1,
+        "only the unqualified call reads root m: {spans:?}"
+    );
+    let raw = dag.raw_code("model.shop.c").unwrap();
+    assert_eq!(raw[spans[0].clone()].trim(), "ref('m')");
 }

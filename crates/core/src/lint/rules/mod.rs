@@ -145,7 +145,9 @@ pub struct LintOutcome {
     /// once, mapped to the [`UnparsedReason`] the analysis recorded (the
     /// depth bound or a parser rejection). Sorted by the `BTreeMap`;
     /// `forbidden_patterns` (a raw-text rule) never contributes, and
-    /// neither do models that simply HAVE no SQL.
+    /// neither do models that simply HAVE no SQL. A node whose `enabled`
+    /// state couldn't be verified is dropped like its findings are —
+    /// the tally only counts models the run can act on.
     pub unparsed: BTreeMap<String, UnparsedReason>,
     /// `.dbtl.yml` `lint.rules.<id>.exclude` entries declaring no reason
     /// — counted during the suppression pass (an exclude is a config
@@ -435,6 +437,10 @@ pub fn run_rules(input: LintInput<'_>) -> LintOutcome {
     };
     out.retain(provable);
     suppressed.retain(provable);
+    // The `unparsed` tally drops the same nodes: a finding claiming the
+    // node was skipped would be dropped too, so counting it in the
+    // summary could only ever mislead.
+    unparsed.retain(|uid, _| !dag.enabled_unverifiable(uid));
     LintOutcome {
         findings: out,
         suppressed,

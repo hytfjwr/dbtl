@@ -29,7 +29,7 @@ A closing tally summarizes the run. Each line appears only when it applies:
 | `N findings suppressed (K meta.dbtl.ignore, M exclude; J without a reason)` | [Suppression](#suppressed-findings) dropped at least one finding. |
 | `N findings auto-fixed in M files` | A fix pass changed files. A dry run reads `auto-fixable … (dry run — no files written)`. |
 | `N fix edits refused:` | A fix pass refused edits — one `file: rule — reason` line follows per refusal. |
-| `N models skipped SQL rules (unparsable SQL): <name (reason), …>` | A model carried SQL the parser could not read. Each name carries why — `parse error at L:C: …`, `depth limit exceeded`, or `no query statement`. It lists up to ten names, then `+K more`. |
+| `N models skipped SQL rules (unparsable SQL): <name (reason), …>` | A model carried SQL the parser could not read. Each name carries why — `parse error at L:C: …`, `Jinja generates the query ({{…}} at L:C)` (a macro emits the statement's body — only `dbt compile`'s `compiled_code`, or the `target/compiled/` file source mode reads, shows the parser that body), `depth limit exceeded`, `no query statement`, or `dependency cycle`. A model whose `enabled` value can't be evaluated stays out of the count. It lists up to ten names, then `+K more`. |
 | `N exclude entries in .dbtl.yml without a reason` | `suppressions_without_reason` ran and at least one `exclude:` entry carried no reason. |
 
 ```text
@@ -97,7 +97,7 @@ Six rules ship opt-in. `standard` skips them, and `strict` or a `rules:` entry t
 
 `unresolved_references` flags a literal `ref()` or `source()` call that names nothing the project or its installed packages provide, such as a typo'd model name or an undeclared source table. It pins the finding to the call itself. See the [rule reference](../reference/lint-rules.md#unresolved_references) for what it skips.
 
-`unparsable_sql` turns the skipped-models tally into findings: one per model the SQL parser could not read, carrying the same reason the summary prints (`parse error at L:C: …`, `depth limit exceeded`, `no query statement`), anchored at the model file. Enable it — or run `strict` — to fail CI on an unparsable model instead of only counting it; `meta.dbtl.ignore` and `exclude:` suppress it like any other rule.
+`unparsable_sql` turns the skipped-models tally into findings: one per model the SQL parser could not read, carrying the same reason the summary prints (`parse error at L:C: …`, `Jinja generates the query ({{…}} at L:C)`, `depth limit exceeded`, `no query statement`, `dependency cycle`), anchored at the model file. The finding's `= help:` matches the reason — a `parse error` repairs its Jinja, a Jinja-generated body compiles first (a `{{ }}` macro the render can't classify is a body the source-side parse can't see, not a syntax error — run `dbt compile`, then lint a manifest carrying `compiled_code` or the `target/compiled/` files source mode reads). Enable it — or run `strict` — to fail CI on an unparsable model instead of only counting it; `meta.dbtl.ignore` and `exclude:` suppress it like any other rule.
 
 ### Presets
 
@@ -249,7 +249,7 @@ The `json` report's `summary` always carries `errors`, `warnings`, `baselined`, 
 | Key | Appears when |
 | --- | ------------ |
 | `suppressed` | A finding was suppressed. It holds the total, the `exclude`/`meta` split, and how many recorded no reason. |
-| `unparsed_models` | Models carried SQL the parser could not read. It is `{count, names, reasons}` — `reasons` maps each name to why its parse failed. |
+| `unparsed_models` | Models carried SQL the parser could not read. It is `{count, names, reasons}` — `reasons` maps each name to why its parse failed. A model whose `enabled` value can't be evaluated stays out of all three, like its findings. |
 | `exclude_entries_without_reason` | `suppressions_without_reason` ran — the count of `.dbtl.yml` `exclude:` entries carrying no reason. |
 | `fixed` | The run used `--fix` or `--fix-dry-run` and at least one file changed (or would have). |
 | `fix_refused` | A fix pass refused at least one edit — `[{file, rule, reason}]` per refusal, in file order. |
