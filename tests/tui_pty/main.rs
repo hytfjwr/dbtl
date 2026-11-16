@@ -23,29 +23,32 @@ use unicode_width::UnicodeWidthStr;
 /// still failing a wedged session in reasonable time.
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Spawn the binary and wait for the home screen's title — the launch every
-/// scenario starts from.
+/// The name on the home row carrying the ` > ` cursor marker, or `None`
+/// while the marker isn't painted — scraped from the screen so the
+/// assertion tracks whichever row is selected, never a hardcoded
+/// coordinate. The marker starts the row, so `strip_prefix` can't match a
+/// ` > ` inside a row's detail text.
+fn selected_home_name(screen: &str) -> Option<String> {
+    screen.lines().find_map(|line| {
+        let rest = line.strip_prefix(" > ")?;
+        rest.split_whitespace().next().map(str::to_string)
+    })
+}
+
+/// Spawn the binary and wait for the home screen's body — the launch every
+/// scenario starts from. The title row reaches the screen before the body
+/// does (a frame arrives at the reader in chunks, so a snapshot taken right
+/// after the title can show it with the rows still blank). Waiting for the
+/// ` > ` selection marker means the body has painted — every scenario then
+/// starts from a complete screen.
 fn launch_home() -> TuiSession {
     let mut t = TuiSession::spawn();
-    if let Err(e) = t.wait_for("dbtl home", TIMEOUT) {
+    if let Err(e) = t.wait_until("the home body's selected row".to_string(), TIMEOUT, |s| {
+        s.contains("dbtl home") && selected_home_name(s).is_some()
+    }) {
         panic!("{e}");
     }
     t
-}
-
-/// The name on the home row carrying the ` > ` cursor marker — scraped from
-/// the screen so the assertion tracks whichever row is selected, never a
-/// hardcoded coordinate.
-fn selected_home_name(t: &TuiSession) -> String {
-    let screen = t.screen_text();
-    for line in screen.lines() {
-        if let Some(rest) = line.split(" > ").nth(1) {
-            if let Some(name) = rest.split_whitespace().next() {
-                return name.to_string();
-            }
-        }
-    }
-    panic!("no selected ` > ` row on the home screen:\n{screen}");
 }
 
 #[test]
@@ -67,7 +70,9 @@ fn startup_shows_the_home_screen() {
 #[ignore = "spawns the real binary on a PTY — run with --ignored"]
 fn enter_opens_the_selected_model_tab() {
     let mut t = launch_home();
-    let name = selected_home_name(&t);
+    // The launch already waited for the ` > ` marker — read which model
+    // row it sits on (the marker persists until a key is pressed).
+    let name = selected_home_name(&t.screen_text()).expect("the selected row the launch saw");
     t.send_str("\r");
     // The home body leaves the screen and the model-tab panes draw in its
     // place — the list pane's title stats render only there.
@@ -91,14 +96,14 @@ fn slash_search_filters_and_esc_restores() {
     let mut t = launch_home();
     t.send_str("/");
     t.send_str("fct_");
-    if let Err(e) = t.wait_for("fct_delivery_monthly_snapshot", TIMEOUT) {
+    // Wait for the whole filtered frame, not just the match: a mid-frame
+    // read can show the match while a stale row from the unfiltered body
+    // (`pos_tax`'s Attention entry) is still painted.
+    if let Err(e) = t.wait_until("the filtered results".to_string(), TIMEOUT, |s| {
+        s.contains("fct_delivery_monthly_snapshot") && !s.contains("pos_tax")
+    }) {
         panic!("{e}");
     }
-    let screen = t.screen_text();
-    assert!(
-        !screen.contains("pos_tax"),
-        "the filter hides non-matching rows:\n{screen}"
-    );
     t.send_str("\x1b"); // Esc
     if let Err(e) = t.wait_for("[Health]", TIMEOUT) {
         panic!("{e}");
@@ -130,8 +135,17 @@ fn tab_cycles_the_pane_focus() {
     if let Err(e) = t.wait_for("model:45", TIMEOUT) {
         panic!("{e}");
     }
-    let first = enter_hint(&t.screen_text())
-        .unwrap_or_else(|| panic!("no focus hint on the status line:\n{}", t.screen_text()));
+    // Same chunked-frame shape as the launch: the pane's `model:45` title
+    // can be on screen while the status line's Enter hint isn't yet —
+    // poll for the hint instead of reading once.
+    let first = t
+        .wait_until(
+            "a focus hint on the status line".to_string(),
+            TIMEOUT,
+            |s| enter_hint(s).is_some(),
+        )
+        .map(|s| enter_hint(&s).expect("the hint the wait saw"))
+        .unwrap_or_else(|e| panic!("{e}"));
     // Each Tab moves focus to a different pane (the Enter hint changes);
     // three presses cycle back to the starting pane.
     t.send_str("\t");
@@ -164,14 +178,16 @@ fn question_mark_opens_and_esc_closes_help() {
         panic!("{e}");
     }
     t.send_str("\x1b"); // Esc
-    if let Err(e) = t.wait_gone("Keybindings - dbtl", TIMEOUT) {
+                        // The home title only repaints once the overlay is gone — waiting for
+                        // it covers both halves of "closing help returns to the home screen",
+                        // and can't trip on a mid-restore frame the way a single read can.
+    if let Err(e) = t.wait_until(
+        "the home screen behind the closed help".to_string(),
+        TIMEOUT,
+        |s| s.contains("dbtl home") && !s.contains("Keybindings - dbtl"),
+    ) {
         panic!("{e}");
     }
-    let screen = t.screen_text();
-    assert!(
-        screen.contains("dbtl home"),
-        "closing help returns to the home screen:\n{screen}"
-    );
 }
 
 #[test]
@@ -191,6 +207,41 @@ fn shrinking_past_the_floor_shows_too_small_and_restoring_recovers() {
     }
 }
 
+/// The first unselected model row on the list pane — `(name, x, y)` in
+/// 1-based SGR cell coords — or `None` while the body hasn't painted (no
+/// `> ` marker row yet) or no second row exists.
+///
+/// An unselected row is `│` + 2-indent + 2 marker spaces + the name, and
+/// the list pane's border always sits at column 0 — `strip_prefix` keeps
+/// pane interiors elsewhere on the row from matching. Names may be
+/// mid-truncated (`stg_financ…scal_years`); the rendered text is what both
+/// the click target and the marker assertion use.
+fn unselected_list_row(screen: &str) -> Option<(String, u16, u16)> {
+    // The marker row being absent means the list body hasn't painted — the
+    // first row could secretly BE the selected one, so don't pick yet.
+    let selected = selected_list_name(screen)?.to_string();
+    for (y, line) in screen.lines().enumerate() {
+        let Some(rest) = line.strip_prefix("│    ") else {
+            continue;
+        };
+        if let Some(name) = rest.split_whitespace().next() {
+            let model_shaped = name.starts_with(|c: char| c.is_ascii_lowercase())
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "_…".contains(c));
+            if model_shaped && name != selected {
+                // The click column comes from the screen too: the display
+                // width of everything before the name in this row (+1 —
+                // SGR coords are 1-based), never a hardcoded cell.
+                let byte_off = line.len() - rest.len() + rest.find(name).unwrap();
+                let x = UnicodeWidthStr::width(&line[..byte_off]) as u16 + 1;
+                return Some((name.to_string(), x, y as u16 + 1));
+            }
+        }
+    }
+    None
+}
+
 #[test]
 #[ignore = "spawns the real binary on a PTY — run with --ignored"]
 fn sgr_click_on_a_list_row_selects_that_model() {
@@ -199,36 +250,15 @@ fn sgr_click_on_a_list_row_selects_that_model() {
     if let Err(e) = t.wait_for("model:45", TIMEOUT) {
         panic!("{e}");
     }
-    // An unselected list row is `│` + 2-indent + 2 marker spaces + the name,
-    // and the list pane's border always sits at column 0 — `starts_with`
-    // keeps pane interiors elsewhere on the row from matching. Names may be
-    // mid-truncated (`stg_financ…scal_years`); the rendered text is what
-    // both the click target and the marker assertion use.
+    // The pane title can arrive before the rows do (chunked frame) — wait
+    // until a selectable row is actually on screen, then click it.
     let (name, x, y) = {
-        let screen = t.screen_text();
-        let selected = selected_list_name(&screen).unwrap_or("").to_string();
-        let mut found = None;
-        for (y, line) in screen.lines().enumerate() {
-            let Some(rest) = line.strip_prefix("│    ") else {
-                continue;
-            };
-            if let Some(name) = rest.split_whitespace().next() {
-                let model_shaped = name.starts_with(|c: char| c.is_ascii_lowercase())
-                    && name
-                        .chars()
-                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "_…".contains(c));
-                if model_shaped && name != selected {
-                    // The click column comes from the screen too: the display
-                    // width of everything before the name in this row (+1 —
-                    // SGR coords are 1-based), never a hardcoded cell.
-                    let byte_off = line.len() - rest.len() + rest.find(name).unwrap();
-                    let x = UnicodeWidthStr::width(&line[..byte_off]) as u16 + 1;
-                    found = Some((name.to_string(), x, y as u16 + 1));
-                    break;
-                }
-            }
-        }
-        found.unwrap_or_else(|| panic!("no unselected list row found:\n{screen}"))
+        let screen = t
+            .wait_until("an unselected list row".to_string(), TIMEOUT, |s| {
+                unselected_list_row(s).is_some()
+            })
+            .unwrap_or_else(|e| panic!("{e}"));
+        unselected_list_row(&screen).expect("the row the wait saw")
     };
     t.click(x, y);
     // Exact-match the selected marker's row token — a `> {name}` substring
