@@ -14,6 +14,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   renders as `(NULL)` — both shapes parse under every supported dialect,
   including a manifest's `adapter_type` dialect for models carrying only
   `raw_code`.
+- Fewer models are skipped as unparsable SQL: the strip that blanks a
+  separator `{% if not loop.last %} SEP {% endif %}` leaves dangling on
+  a `{% for %}` body's last iteration now counts each string literal,
+  quoted identifier, or dollar-/`q'[..]'`-quoted body it skips over as
+  an operand. `IN ('1', '2')` under an `OR` loop separator parses on
+  every dialect again, and a `,` join in front of a quoted relation
+  keeps its `cartesian_join` finding.
 - The auto-detected-manifest staleness warning and source-mode `--watch`
   no longer count files `dbt parse` never reads. Both now compare
   against the same input set — the `.sql`/`.py`/`.yml`/`.yaml`/`.csv`/
