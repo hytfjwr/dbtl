@@ -110,21 +110,20 @@ if (chip) onThemeChange((choice) => (chip.textContent = `theme:${choice}`));
 for (const button of $$('.hints [data-act="theme"]')) button.addEventListener("click", cycleTheme);
 initKeysToggle();
 
-/* ---- scrollable <pre>: a code block is a tab stop only while it overflows ---- */
-const pres = $$("pre").filter((p) => !p.closest(".lin-stage"));
-if (pres.length > 0) {
-  const check = (pre: HTMLElement) => {
-    const scrolls =
-      pre.scrollWidth > pre.clientWidth + 1 || pre.scrollHeight > pre.clientHeight + 1;
-    if (scrolls) pre.tabIndex = 0;
-    else pre.removeAttribute("tabindex");
+/* ---- scrollable panes: a <pre> or .scroll box is a tab stop only while it overflows ---- */
+const scrollers = [...$$("pre").filter((p) => !p.closest(".lin-stage")), ...$$(".scroll")];
+if (scrollers.length > 0) {
+  const check = (el: HTMLElement) => {
+    const scrolls = el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1;
+    if (scrolls) el.tabIndex = 0;
+    else el.removeAttribute("tabindex");
   };
-  const run = () => pres.forEach(check);
+  const run = () => scrollers.forEach(check);
   if ("ResizeObserver" in window) {
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) check(entry.target as HTMLElement);
     });
-    for (const pre of pres) observer.observe(pre);
+    for (const el of scrollers) observer.observe(el);
   }
   window.addEventListener("resize", run);
   run();
