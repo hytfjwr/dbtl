@@ -38,7 +38,7 @@
 | [`undocumented_sources`](#undocumented_sources) | documentation | warn | off | on | on | graph | - | a source has no description |
 | [`undocumented_columns`](#undocumented_columns) | documentation | warn | off | on | on | graph | - | a model has declared columns without descriptions |
 | [`model_directories`](#model_directories) | structure | warn | off | on | on | graph | - | a model's name prefix and directory point at different layers |
-| [`required_meta_keys`](#required_meta_keys) | governance | warn | off | on | on | graph | - | a model is missing a required meta key |
+| [`required_meta_keys`](#required_meta_keys) | governance | warn | off | on | on | graph | - | a resource is missing a required meta key |
 | [`contract_columns_without_type`](#contract_columns_without_type) | governance | warn | off | on | on | graph | - | a contract-enforced model has declared columns without data_type |
 | [`incremental_without_unique_key`](#incremental_without_unique_key) | modeling | warn | off | on | on | graph | - | an incremental model has no unique_key |
 | [`sources_without_freshness`](#sources_without_freshness) | testing | warn | off | on | on | graph | - | a source has no freshness configured |
@@ -411,7 +411,7 @@ A model's name prefix and directory point at different layers.
 
 Category: `governance` · Default severity: `warn` · Inputs: graph · Auto-fix: no
 
-A model is missing a required meta key.
+A resource is missing a required meta key.
 
 **Why:** Projects that rely on meta for ownership, cost centers or data-domain tagging only get value when every model carries the keys. A missing key means the model escapes the reports and groupings built on that tag.
 

@@ -25,7 +25,7 @@ The `dbtl` screen has three panes, a tab strip, and a status line. This page cov
 
 ### Terminal size
 
-The layout adapts to the terminal's width: the model list collapses into a drawer on narrow terminals and the inspector appears on its own on wide ones. Below a minimum size `dbtl` draws a "terminal too small" notice instead. The exact widths and workarounds are in [Troubleshooting](../configuration/troubleshooting.md#the-terminal-is-too-small-or-panes-disappeared).
+The layout adapts to the terminal's width. See [Troubleshooting](../configuration/troubleshooting.md#the-terminal-is-too-small-or-panes-disappeared) for the widths at which panes collapse and the minimum size.
 
 ## Model list
 
@@ -100,7 +100,16 @@ It shows the same data as the [structure view](structure-view.md), always on scr
 
 `S` opens the project stats dashboard. It includes a runtime-weighted critical path when run results are loaded, and a lint worklist.
 
-In any scrollable modal, `j` and `k` scroll, `d` `u` `Ctrl-d` `Ctrl-u` `PgDn` `PgUp` page, `g` and `G` jump to the top or bottom, and `Esc` or `q` closes it. Two modals give `Enter` a job instead: in the structure view it traces the cursored column (or jumps to a `relationships` test's target), and in the column-lineage modal it jumps to that column's model — close those with `Esc` or `q`.
+Every scrollable modal uses the same keys:
+
+| Key | Action |
+|---|---|
+| `j` `k` | Scroll |
+| `d` `u` `Ctrl-d` `Ctrl-u` `PgDn` `PgUp` | Page |
+| `g` `G` | Jump to the top or bottom |
+| `Esc` `q` | Close |
+
+Two modals give `Enter` a job. In the structure view it traces the cursored column, or jumps to a `relationships` test's target. In the column-lineage modal it jumps to that column's model. Close those two with `Esc` or `q`.
 
 ## Node actions menu
 
@@ -124,7 +133,11 @@ Single keys copy the lineage, SQL, and reports to the clipboard, and `e` writes 
 | `r` | Reload the data source. Also re-reads `run_results.json`. |
 | `P` | Run `dbt parse` and switch to the generated manifest. Needs `dbt` on your `PATH`. |
 
-Start with `--watch` to reload automatically when the data source changes — a change counts once the poller confirms a newer stamp, scanning at most every two seconds. In manifest mode it watches the manifest file's mtime. In source mode it watches the `.sql`, `.py`, `.yml`, `.yaml`, and `.csv` files under the project, skipping dot-directories and `target/` except `target/compiled/` (so a `dbt compile` refreshes the compiled-SQL view).
+Start with `--watch` to reload automatically when the data source changes. The poller scans at most every two seconds, and a change counts once it confirms a newer stamp.
+
+- In manifest mode it watches the manifest file's modification time.
+- In source mode it watches the `.sql`, `.py`, `.yml`, `.yaml`, and `.csv` files under the project.
+- It skips dot-directories and `target/`, except `target/compiled/`. A `dbt compile` therefore refreshes the compiled-SQL view.
 
 ## Status line
 
@@ -180,4 +193,4 @@ While a modal or menu is open, the rest of the screen dims. The wheel scrolls it
 
 ## Borders look wrong
 
-Some terminals draw Unicode box characters two cells wide, which doubles the borders. `dbtl` probes for this and falls back to ASCII; `--ascii` and `--unicode` force a mode. See [Troubleshooting](../configuration/troubleshooting.md#borders-look-doubled-or-misaligned).
+If the borders look doubled or misaligned, see [Troubleshooting](../configuration/troubleshooting.md#borders-look-doubled-or-misaligned). `--ascii` and `--unicode` force a glyph mode.

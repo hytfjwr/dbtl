@@ -5,7 +5,9 @@ description: Trace column-level lineage from the command line, with no compile a
 
 `dbtl columns` resolves column-level lineage: which upstream columns feed a model's output columns, and which downstream columns an input feeds. It works in both manifest and source mode, with no compile and no Python.
 
-`dbtl` parses each model's SQL with a SQL parser and resolves column references through the real FROM and JOIN scope. That covers table aliases, CTEs, derived and correlated subqueries, wildcards (`*` and `t.*`), and set operations. Compiled SQL is preferred and flagged `[stale]` when the source file is newer. Otherwise `dbtl` uses the raw model SQL after rendering `{{ ref() }}`, `{{ source() }}`, `{% %}`, and `{# #}`.
+`dbtl` parses each model's SQL with a SQL parser and resolves column references through the real FROM and JOIN scope. That covers table aliases, CTEs, derived and correlated subqueries, wildcards (`*` and `t.*`), and set operations.
+
+Compiled SQL is preferred, and flagged `[stale]` when the source file is newer. Without compiled SQL, `dbtl` renders the raw model SQL first: `{{ ref() }}`, `{{ source() }}`, `{% %}`, and `{# #}` are rendered, and then it parses the result.
 
 ## Usage
 
@@ -17,6 +19,8 @@ dbtl columns cll_demo.order_id --upstream # provenance
 dbtl columns stg_orders.id --format json  # machine-readable report
 dbtl --sql-dialect snowflake columns m.id # pin the parser dialect
 ```
+
+A versioned model's name carries its version, as in `fct_orders.v1`. Write `dbtl columns fct_orders.v1.id` for one version. The bare `fct_orders.id` is rejected as ambiguous when the model has several versions, and the error lists the unique IDs to choose from.
 
 | Flag | Effect |
 | ---- | ------ |
@@ -58,8 +62,8 @@ The fallback is per model. A model whose SQL is missing or unparsable resolves b
 
 - `select *` and `t.*` expand over the parent's known columns, taken from the catalog first, then documented columns, then the parent's own resolved outputs. A parent with entirely unknown columns contributes nothing. `dbtl` does not invent names.
 - An unqualified column that matches several bindings keeps all candidates. This over-connection is documented behavior for genuine ambiguity. A binding with an unknown column list cannot disprove a reference, so it joins the candidates too.
-- `{% if %}` and `{% for %}` bodies all resolve, so every branch's refs count. `{{ macro(...) }}` calls render as `NULL`, so macro-emitted SQL is opaque.
+- `{% if %}` and `{% for %}` bodies all resolve, so every branch's refs count. A `{{ macro(...) }}` call renders as `NULL` where a value is expected, and as a generated name where SQL needs a name, such as after `FROM`. Either way, macro-emitted SQL stays opaque.
 
 ## In the TUI
 
-The structure view (`Enter`) shows `↑u ↓d` one-hop edge counts beside every column: direct parents in, direct children out. These are not the transitive closure. `h` and `l` move a cursor between the columns. `y l` copies the selected column's downstream closure as the same Markdown, and `Enter` or `c` traces the column in the lineage pane. For the keys, see the [keybindings reference](../reference/keybindings.md).
+The structure view (`Enter`) shows `↑u ↓d` one-hop edge counts beside every column: direct parents in, direct children out. These are not the transitive closure. The keys that move between columns and trace one are in [Structure view](../tui/structure-view.md#column-rows).

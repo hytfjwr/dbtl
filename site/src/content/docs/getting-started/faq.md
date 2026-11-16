@@ -11,7 +11,7 @@ Yes. The [playground](/dbtl/playground/) runs the real engine — the same Rust 
 
 ## Does dbtl need dbt installed?
 
-No. Source mode parses the project files itself, and manifest mode reads an existing `target/manifest.json`. `dbt` on your `PATH` is needed only for the `P` key, which runs `dbt parse` and switches to the generated manifest in place. See [source mode](quick-start.md#source-mode).
+No. Source mode parses the project files itself, and manifest mode reads an existing `target/manifest.json`. `dbt` on your `PATH` is needed only for the `P` key, which runs `dbt parse` and switches to the generated manifest in place. See [Source mode](../configuration/source-mode.md).
 
 ## Which dbt versions does dbtl work with?
 
@@ -29,7 +29,7 @@ No. Everything is read from local files. A `catalog.json` next to the data sourc
 
 ## Should I use source mode or manifest mode?
 
-Use the manifest when you have one — it is always more accurate, because source mode infers lineage from raw SQL without rendering Jinja. With neither flag, `dbtl` auto-detects `target/manifest.json` and parses the source otherwise. See [choose a data source](quick-start.md#choose-a-data-source).
+Use the manifest when you have one. It carries dbt's own resolved graph, and source mode only approximates it. With neither flag, `dbtl` auto-detects `target/manifest.json` and parses the source otherwise. See [choose a data source](quick-start.md#choose-a-data-source) and [Source mode](../configuration/source-mode.md).
 
 ## Why does `dbtl` exit immediately in CI or over a pipe?
 
@@ -49,7 +49,16 @@ Start `dbtl` with `--diff <baseline>` — a manifest, another checkout, or a `gi
 
 ## What does dbtl write to my project?
 
-Nothing by default. Two opt-in commands write files: `dbtl lint --write-baseline` writes `.dbtl-baseline.json`, and `dbtl docs --out <DIR>` writes the generated Markdown tree. In the TUI, `e` writes an export into the current directory — the lineage as `<name>_lineage.txt`, or the PR impact report as `<project>_pr_impact.md` from the diff view. Your per-project view (bookmarks, tabs, the active lens) is saved outside the project under `$XDG_STATE_HOME/dbtl/`, or `~/.local/state/dbtl/` when that variable is unset. See [saved state](../configuration/user-config.md#saved-state).
+Nothing by default. Commands write only when you ask them to:
+
+- **`dbtl lint --fix`** rewrites model `.sql` files in place. `--fix-dry-run` previews the edits and writes nothing. See [Auto-fix](../cli/lint.md#auto-fix).
+- **`dbtl lint --write-baseline`** writes `.dbtl-baseline.json`.
+- **`dbtl docs --out <DIR>`** writes the generated Markdown tree, and `--clean` also deletes the stale pages in it.
+- **`--report <fmt>:<path>`** on `check`, `lint`, and `impact` writes a report file. `--step-summary` appends the Markdown report to the file `GITHUB_STEP_SUMMARY` names.
+- **The TUI `P` key** runs `dbt parse`, which writes `target/` the way dbt does.
+- **The TUI `e` key** writes an export into the current directory: the lineage as `<name>_lineage.txt`, or the PR impact report as `<project>_pr_impact.md` from the diff view.
+
+Your per-project view (bookmarks, tabs, the active lens) is saved outside the project under `$XDG_STATE_HOME/dbtl/`, or `~/.local/state/dbtl/` when that variable is unset. See [saved state](../configuration/user-config.md#saved-state).
 
 ## How do I upgrade dbtl?
 

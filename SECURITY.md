@@ -14,4 +14,4 @@ For bugs that are not vulnerabilities, use the [issue tracker](https://github.co
 
 ## Scope notes
 
-`dbtl` parses `manifest.json`, project SQL/YAML, and theme files from wherever you point it — treat untrusted project checkouts as untrusted input, as with any dbt or compiler tool. Export keys write files into the current working directory only; node names from a manifest are sanitized before becoming file names. `dbtl` makes no network calls at runtime.
+`dbtl` parses `manifest.json`, project SQL/YAML, and theme files from wherever you point it — treat untrusted project checkouts as untrusted input, as with any dbt or compiler tool. The TUI export keys write files into the current working directory only; node names from a manifest are sanitized before becoming file names. `dbtl lint --fix` is the one command that rewrites project files: it edits model `.sql` files in place, and `--fix-dry-run` previews the edits without writing. Report and docs outputs (`--report`, `docs --out`, `--write-baseline`) write only to the paths you pass. `dbtl` makes no network calls at runtime.

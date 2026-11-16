@@ -1686,7 +1686,7 @@
               ]
             },
             "required_meta_keys": {
-              "description": "a model is missing a required meta key",
+              "description": "a resource is missing a required meta key",
               "anyOf": [
                 {
                   "type": "boolean"

@@ -14,7 +14,7 @@ description: The dbt selector grammar that dbtl uses in the TUI search, --select
 | `+name`, `name+`, `+name+` | Add all upstream nodes, all downstream nodes, or both. |
 | `N+name` | A number before `+` limits the expansion to that many hops, for example `2+fct_orders`. |
 | `tag:x` | Nodes with the tag. |
-| `path:x` | Nodes whose project-root-relative path matches `x`, like dbt's `path` selector: `x` is compared to the node's `original_file_path` and every ancestor directory of it, and to the node's `patch_path` (the `.yml` that configures it — matched itself, not its ancestors). `x` may be a glob (`*`, `?`, `[a-z]` never cross `/`; a whole-segment `**` spans directories), so `path:models/marts` selects everything under `models/marts` and `path:models/**/stg*` reaches every `stg*` file at any depth. The old resource-relative form (`path:marts` for `models/marts/fct_orders.sql`) still matches but prints a deprecation warning — write it project-relative. |
+| `path:x` | Nodes whose project-relative path matches `x`. See [The path selector](#the-path-selector). |
 | `config.materialized:x` | Nodes with the materialization. |
 | `exposure:x` | The named exposure and every node upstream of it. |
 | `meta:key` | Nodes where the `meta` key exists. |
@@ -46,13 +46,22 @@ fct_orders.v2+                   # version 2 and its downstream
 | ------- | -------------- |
 | TUI list search | Press `/` and start the query with `!`, for example `!tag:nightly`, `!+fct_orders`, `!meta:owner=alice`, or `!state:modified+` when a `--diff` baseline is loaded. |
 | TUI full-text search | Start the query with `?` to search descriptions, column names, and raw and compiled SQL instead. |
-| `dbtl --select <spec>` | Start the TUI with a model selected. Accepts the same selectors (`state:` needs a `--diff` baseline); its first matching model opens in a tab. |
+| `dbtl --select <spec>` | Start the TUI on the first matching model, which opens in a tab. Details are below this table. |
 | `dbtl ls <SELECTOR>...` | List the matching nodes. See [dbtl ls](ls.md). |
 | `--select` on `check`, `lint`, `impact`, `docs` | Scope the command to the matching nodes. Repeatable. Specs union. |
 | `--exclude` on `ls` and `docs` | Subtract matches after the union. Repeatable. |
 | `.dbtl.yml` `exclude:` | Drop lint findings on matching nodes. See [Project config](../configuration/project-config.md). |
 
 The `--select` flag on subcommands and the `--select` flag on the TUI take different input. On `check`, `lint`, `impact`, and `docs` it is a full selector spec and can be repeated. On the bare `dbtl` command it is a model name or a spec whose first matching model — non-model matches are skipped — opens in a model tab. `state:` atoms work there when `--diff` loads a baseline first.
+
+## The path selector
+
+`path:x` works like dbt's `path` selector:
+
+- `x` is compared to each node's `original_file_path` and to every ancestor directory of it. It is also compared to the node's `patch_path`, the `.yml` that configures it. That file matches itself, not its ancestors.
+- `path:models/marts` selects everything under `models/marts`.
+- `x` may be a glob. `*`, `?`, and `[a-z]` never cross a `/`. A whole-segment `**` spans directories, so `path:models/**/stg*` reaches every `stg*` file at any depth.
+- The older resource-relative form, such as `path:marts` for `models/marts/fct_orders.sql`, still matches but prints a deprecation warning. Write the project-relative path instead.
 
 ## Exclude
 

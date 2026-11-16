@@ -23,9 +23,11 @@ error: no data source under .: neither target/manifest.json nor dbt_project.yml 
 
 ## Source mode and manifest mode disagree
 
-A compiled manifest is always more accurate. Source mode infers lineage from raw SQL without rendering Jinja: a `ref()` it cannot resolve drops out of the graph, `enabled` expressions evaluate only the dbt-compatible subset (`var()`, literals, comparisons, `and`/`or`/`not`, `in`/lists, `| as_bool` — `--vars` applies too), and macros never run — so an edge a macro would produce is absent. See [source mode](../getting-started/quick-start.md#source-mode).
+Source mode approximates dbt, so it can differ from a compiled manifest. A `ref()` it cannot resolve drops out of the graph, and an edge produced by a package macro or a computed argument is absent. [Source mode](source-mode.md) lists what it reads and where it differs.
 
-- Keep `target/manifest.json` up to date (`dbt compile` or `dbt parse` after changing models) when precision matters.
+To get dbt's own graph:
+
+- Keep `target/manifest.json` up to date. Run `dbt parse` or `dbt compile` after changing models.
 - In the TUI, press `P` to run `dbt parse` and switch to the generated manifest in place.
 
 ## `check` or `lint` exits 2 or 3 instead of 1

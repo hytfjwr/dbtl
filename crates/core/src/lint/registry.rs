@@ -501,7 +501,7 @@ pub static REGISTRY: &[RuleInfo] = &[
         category: Category::Governance,
         default_severity: Severity::Warn,
         default_enabled: true,
-        summary: "a model is missing a required meta key",
+        summary: "a resource is missing a required meta key",
         rationale: "Projects that rely on meta for ownership, cost centers or \
                     data-domain tagging only get value when every model carries \
                     the keys. A missing key means the model escapes the reports \

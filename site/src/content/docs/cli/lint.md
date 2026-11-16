@@ -20,7 +20,15 @@ Text output is one annotated block per finding. The header names the severity an
 
 Findings in a properties `.yml` (descriptions, tests, freshness, contract columns) point at the `- name:` entry's line and column. A `.sql` finding points at the offending syntax — the wildcard, relation name, joined table, column reference, regex match, trailing semicolon, duplicated output column, unread CTE, or unbounded `ORDER BY` — when the rule can pin it exactly.
 
-A closing tally reads `Found N errors and M warnings in K files`, with `K baselined` or `K pre-existing, not counted` in parentheses when a baseline or `--diff` suppresses findings. It then reports `N rules reported findings; M skipped (need --catalog)`, `N findings suppressed (K meta.dbtl.ignore, M exclude; J without a reason)` when [suppression](#suppressed-findings) dropped any, `N findings auto-fixed in M files` (or `auto-fixable … (dry run — no files written)`) when a fix pass changed files, and, when models carried SQL the parser could not read, `N models skipped SQL rules (unparsable SQL): <names>` — up to ten model names, then `+K more`.
+A closing tally summarizes the run. Each line appears only when it applies:
+
+| Line | Appears when |
+| ---- | ------------ |
+| `Found N errors and M warnings in K files` | Always. It ends with `K baselined` or `K pre-existing, not counted` in parentheses when a baseline or `--diff` held findings back. |
+| `N rules reported findings; M skipped (need --catalog)` | Always. The `skipped` part appears when rules lacked an input. |
+| `N findings suppressed (K meta.dbtl.ignore, M exclude; J without a reason)` | [Suppression](#suppressed-findings) dropped at least one finding. |
+| `N findings auto-fixed in M files` | A fix pass changed files. A dry run reads `auto-fixable … (dry run — no files written)`. |
+| `N models skipped SQL rules (unparsable SQL): <names>` | A model carried SQL the parser could not read. It lists up to ten names, then `+K more`. |
 
 ```text
 error[public_models_without_contract]: fct_public_api is access: public without an enforced contract
@@ -74,9 +82,16 @@ One findings list feeds every surface, so the numbers cannot drift apart:
 
 The [lint rules reference](../reference/lint-rules.md) lists every rule with its category, default severity, inputs, rationale, fix guidance, and parameters. Rules in the `warehouse` category run against `catalog.json` and are skipped without one.
 
-Four rules ship opt-in — `undocumented_exposures` (an exposure without a description), `model_too_long` (a SQL model's counted lines past the `max_lines` budget — blank and Jinja-comment-only lines never count), `layer_materializations` (a model materialized in a way its layer's `allowed` map doesn't list), and `models_without_unit_tests` (a model in a checked layer — `marts` by default, tunable via `layers` — carrying no unit test; Python models and materialized views can't carry one and never flag). `standard` skips them; `strict` or a `rules:` entry turns them on.
+Four rules ship opt-in. `standard` skips them, and `strict` or a `rules:` entry turns them on:
 
-`unresolved_references` checks that the calls resolve at all. It flags a literal `ref()` or `source()` call that names nothing the project or its installed packages provide — a typo'd model name or an undeclared source table — and pins the finding to the call itself. A name parked under `disabled` reports under its own wording. Calls inside an `{% if %}`/`{% elif %}`/`{% else %}` arm are never judged (the arm that runs may provide them), and when `packages.yml`/`dependencies.yml` declare packages that aren't fully installed, possibly-missing names collapse into one summary warning instead of findings — they may live in a package `dbt deps` never fetched.
+| Rule | Flags | Main parameter |
+| ---- | ----- | -------------- |
+| `undocumented_exposures` | An exposure without a description. | none |
+| `model_too_long` | A SQL model whose counted lines pass a budget. Blank lines and Jinja-comment-only lines never count. | `max_lines` |
+| `layer_materializations` | A model materialized in a way its layer's `allowed` map does not list. | `allowed` |
+| `models_without_unit_tests` | A model in a checked layer with no unit test. Python models and materialized views cannot carry one and never flag. | `layers` (default `marts`) |
+
+`unresolved_references` flags a literal `ref()` or `source()` call that names nothing the project or its installed packages provide, such as a typo'd model name or an undeclared source table. It pins the finding to the call itself. See the [rule reference](../reference/lint-rules.md#unresolved_references) for what it skips.
 
 ### Presets
 
@@ -95,12 +110,10 @@ Above the preset, `lint.categories` pins a whole category to `error`/`warn`/`off
 `--list-rules` and `--explain <ID>` are query modes. They read `.dbtl.yml` for severity and parameter overrides but never load a data source.
 
 ```sh
-dbtl lint --list-rules            # id, category, default + effective severity, enabled
+dbtl lint --list-rules            # id, category, severity, enabled, per-preset state, fix, summary
 dbtl lint --list-rules --preset minimal   # effective state under another preset
 dbtl lint --explain model_fanout  # rationale, effective severity, params, docs link
 ```
-
-The `FIX` column marks the rules `dbtl lint --fix` can repair (`auto`) — today `trailing_semicolon` and `unused_cte`. `--explain <ID>` reports the same thing on its `auto-fix:` line.
 
 ## Auto-fix
 
@@ -111,7 +124,7 @@ dbtl lint --fix                 # apply every safe fix, then re-report
 dbtl lint --fix-dry-run         # print a unified diff per file, write nothing
 ```
 
-Today two rules are auto-fixable: `trailing_semicolon` removes the statement's final `;`, and `unused_cte` removes the unread CTE definition plus its separating comma. The `--list-rules` `FIX` column and `--explain`'s `auto-fix:` line mark them.
+Two rules are auto-fixable today. `trailing_semicolon` removes the statement's final `;`, and `unused_cte` removes the unread CTE definition plus its separating comma. The `FIX` column of `--list-rules` and the `auto-fix:` line of `--explain <ID>` mark the fixable rules.
 
 A fix is only ever applied when it is provably safe — the edit is refused, and the finding simply stays, when:
 
@@ -120,9 +133,16 @@ A fix is only ever applied when it is provably safe — the edit is refused, and
 - the result would not re-parse, or would introduce a finding under any other rule (a deleted CTE holding the last `ref()` to a model is left in place — removing it would orphan that model),
 - the file on disk no longer matches the graph's raw text (a stale `manifest.json` or a mid-run edit), or the planned edits overlap.
 
-`--fix` repeats to a fixpoint, so a delete that makes another CTE unread is cleaned up in the same run, and a second `--fix` is always a no-op. Every write goes through a temporary sibling file and an atomic rename, and preserves the file's LF/CRLF style and whether it ends with a newline. `--fix-dry-run` previews the same patch as a unified diff per file — on stdout for the human formats, stderr for the machine ones, so `--format json` stays parseable — followed by the same post-fix report `--fix` would produce.
+How a fix run behaves:
 
-Fixes narrow with `--rules` and `--select` like the findings do. Neither flag combines with `--write-baseline`, `--list-rules`, `--explain`, or each other; `--fix-dry-run` also excludes `--quiet`. Fixing from a manifest needs the project root — a manifest under `<project>/target/` resolves it; a manifest anywhere else is a usage error, so pass `--source` for those.
+- `--fix` repeats until nothing more changes, so a delete that makes another CTE unread is cleaned up in the same run. A second `--fix` is always a no-op.
+- Every write goes through a temporary sibling file and an atomic rename. It preserves the file's LF or CRLF style and whether it ends with a newline.
+- `--fix-dry-run` previews the same patch as a unified diff per file, then prints the post-fix report `--fix` would produce. The diff goes to stdout for the human formats and to stderr for the machine ones, so `--format json` stays parseable.
+
+Limits:
+
+- `--fix` and `--fix-dry-run` narrow with `--rules` and `--select`. Neither flag combines with `--write-baseline`, `--list-rules`, `--explain`, or each other. `--fix-dry-run` also excludes `--quiet`.
+- Fixing from a manifest needs the project root. A manifest under `<project>/target/` resolves it. A manifest anywhere else is a usage error, so pass `--source` instead.
 
 ## Severities and fail_on
 
@@ -142,7 +162,7 @@ Each rule declares what it needs: the graph alone, parsed model SQL, or the ware
 
 - `dbtl` parses SQL lazily per model and reuses the result across rules.
 - `catalog.json` is detected next to the data source. Use `--catalog <path>` to point elsewhere.
-- `--sql-dialect` pins the parser dialect.
+- `--sql-dialect` pins the parser dialect. Some results depend on it: `duplicate_output_columns` flags repeats of an un-aliased expression such as `sum(id), sum(id)` only under Postgres and Redshift. Source mode has no adapter to read, so pass `--sql-dialect postgres` to get that check.
 - The TUI runs the graph and catalog rules only. Parsing every model up front would stall startup.
 
 ## Configure rules
@@ -164,16 +184,21 @@ The [project config](../configuration/project-config.md) page covers every `lint
 
 ## Suppressed findings
 
-Two mechanisms suppress a finding without disabling its rule: `lint.rules.<id>.exclude` selectors in `.dbtl.yml` and `meta.dbtl.ignore` on the node itself. Both can record *why* — an `exclude` entry may carry `reason:` as a `{select, reason}` object, and `meta.dbtl.ignore` takes per-rule reasons in map form with `meta.dbtl.reason` as the fallback. See [Suppress rules on one node](../configuration/project-config.md#suppress-rules-on-one-node).
+Two mechanisms suppress a finding without disabling its rule:
 
-A suppressed finding never gates: it drops out of the `--fail-on` count, the baseline, the exit code, and the `sarif`/`junit`/`codeclimate`/`github` outputs entirely. It is not invisible, though — the text and JSON summaries always count it (`summary.suppressed` carries the total, the `exclude`/`meta` split, and how many recorded no reason), and `--show-suppressed` lists the findings themselves:
+- `lint.rules.<id>.exclude` selectors in `.dbtl.yml`.
+- `meta.dbtl.ignore` on the node itself.
+
+Both can record why. An `exclude` entry may be a `{select, reason}` object. `meta.dbtl.ignore` takes per-rule reasons in map form, with `meta.dbtl.reason` as the fallback. See [Suppress rules on one node](../configuration/project-config.md#suppress-rules-on-one-node).
+
+A suppressed finding never gates. It drops out of the `--fail-on` count, the baseline, and the exit code. It is also left out of the `sarif`, `junit`, `codeclimate`, `github`, and `markdown` outputs. The `github` and `markdown` summaries still count it, as in `2 suppressed`. The text and JSON summaries count it too, and `--show-suppressed` lists the findings themselves:
 
 ```sh
 dbtl lint --show-suppressed
 dbtl check --lint --show-suppressed    # same listing inside the check report
 ```
 
-Under the flag, `text`/`concise` mark each finding `suppressed` with the mechanism and reason (`= suppressed: meta.dbtl.ignore — pk enforced upstream`), and `json` adds `suppressed: true` and a `suppression: {by, reason}` object to the finding. The `json` summary also names the models the SQL rules could not parse under `summary.unparsed_models` (`{count, names}`).
+Under the flag, `text` and `concise` mark each finding `suppressed` with the mechanism and reason (`= suppressed: meta.dbtl.ignore — pk enforced upstream`). `json` adds `suppressed: true` and a `suppression: {by, reason}` object to the finding.
 
 ## Freeze existing violations
 
@@ -202,8 +227,20 @@ dbtl lint --write-baseline                    # writes .dbtl-baseline.json; comm
 dbtl check --lint --diff git:origin/main      # PRs fail only on NEW findings
 ```
 
-## Reports and exit codes
+## Reports
 
 `dbtl lint` renders the same `dbtl.report/v1` document as `dbtl check`. It accepts `--format`, `--color`, `--report <FMT>:<PATH>`, `--step-summary`, `--path-prefix`, and `--quiet`. See [report formats](check-and-impact.md#report-formats).
+
+### JSON summary keys
+
+The `json` report's `summary` always carries `errors`, `warnings`, `baselined`, and `skipped`. These keys appear only when they apply:
+
+| Key | Appears when |
+| --- | ------------ |
+| `suppressed` | A finding was suppressed. It holds the total, the `exclude`/`meta` split, and how many recorded no reason. |
+| `unparsed_models` | Models carried SQL the parser could not read. It is `{count, names}`. |
+| `fixed` | The run used `--fix` or `--fix-dry-run`. |
+
+## Exit codes
 
 `dbtl lint` exits 1 when a finding lands at or above `fail_on`, 2 on usage errors such as an unknown rule name or a malformed `.dbtl.yml`, and 3 on input errors such as a missing data source or an unreadable baseline. See [Exit codes](../configuration/exit-codes.md).

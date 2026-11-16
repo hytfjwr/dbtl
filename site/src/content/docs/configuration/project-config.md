@@ -37,62 +37,70 @@ Both config files have a generated JSON Schema. Point yaml-language-server at it
 
 ## Example
 
+Every key is optional, and a rule you do not mention stays enabled at its default. The blocks below cover the sections one at a time. Each is a valid `.dbtl.yml` on its own. Put blocks that share the `lint:` key together under one `lint:`.
+
+Top-level keys and the rule set:
+
 ```yaml
-# .dbtl.yml. Every key is optional; absent rules stay enabled at their default.
-fail_on: warn                # error | warn | never
-owner_meta_key: owner        # meta key for the affected-owners report
+fail_on: warn            # error | warn | never
+owner_meta_key: owner    # meta key for the affected-owners report
 
 lint:
-  preset: minimal             # minimal | standard (default) | strict
-  categories:                 # one severity per rule category, above the preset
-    sql: error                #   and below per-rule `rules:` entries
+  preset: minimal        # minimal | standard (default) | strict
+  categories:            # one severity per rule category
+    sql: error
     documentation: off
-  baseline: .dbtl-baseline.json   # the freeze file (default shown)
+  # baseline: .dbtl-baseline.json   # the freeze file (this is the default)
+```
+
+Per-rule settings. A rule entry is `false`, `true`, or an object with `severity`, `exclude`, and the rule's own parameters:
+
+```yaml
+lint:
   rules:
-    root_models: false            # bool: off, or on at default severity
+    root_models: false          # off
     model_fanout:
-      severity: warn              # error | warn | off
-      threshold: 5                # declared params only; unknown keys error
-      exclude:                    # dbt selector specs: suppress findings on matches
+      severity: warn            # error | warn | off
+      threshold: 5              # a declared parameter
+      exclude:                  # suppress findings on matching nodes
         - "stg_legacy_*"
         - "path:models/legacy"
         - {select: "tag:wip", reason: "WIP models ship knowingly"}
     select_star:
-      allow_final_star_over_single_cte: true   # `select *` closing one
-                                             #   all-explicit-columns CTE is fine
+      allow_final_star_over_single_cte: true
     rejoining_upstream:
-      ignore_shared_parents: ["dim_*"]   # selector list: exempt shared
-                                         #   parents matching it
+      ignore_shared_parents: ["dim_*"]
     required_meta_keys:
-      keys: [owner, domain]            # meta keys each checked resource needs
-      resource_types: [model, source]  # model | seed | snapshot | source |
-                                       #   exposure; default [model]
+      keys: [owner, domain]
+      resource_types: [model, source]   # default: [model]
     layer_materializations:
-      allowed:                         # layer -> permitted materializations;
-        staging: [view, ephemeral]     #   keys are staging/intermediate/marts/
-        marts: [table, incremental]    #   other + naming_prefixes layers;
-                                       #   unlisted layers keep the defaults
+      allowed:                          # layer -> permitted materializations
+        staging: [view, ephemeral]
+        marts: [table, incremental]
     models_without_unit_tests:
-      layers: [marts]                  # layers the unit-test check covers;
-                                       #   same key set as `allowed` above
-  model_fanout_threshold: 5       # compat flat keys; an error if combined
-  source_fanout_threshold: 2      #   with the nested param form
-  naming_prefixes:                # per-layer merge over the defaults
+      layers: [marts]                   # same layer names as `allowed`
+    exposures_dependent_on_private_models:
+      allowed_access: [public, protected]
+  naming_prefixes:                      # per-layer merge over the defaults
     staging: [stg_, base_]
     marts: []
     other: [rpt_]
+```
 
+Gates and docs options:
+
+```yaml
 check:
-  lint: true                      # fold the lint gates into `dbtl check`
+  lint: true                    # fold the lint gates into `dbtl check`
   gates:
     coverage: {severity: error, min: 80}
     changed_hubs: {min_downstream: 10}
     docs_drift: {dir: docs/lineage}
 
 docs:
-  lineage_depth: 2                # an integer >= 1, or all
-  catalog: false                  # opt in to the sibling catalog.json
-  run_results: false              # opt in to the sibling run_results.json
+  lineage_depth: 2              # an integer >= 1, or all
+  catalog: false                # opt in to the sibling catalog.json
+  run_results: false            # opt in to the sibling run_results.json
 ```
 
 ## lint
@@ -101,11 +109,11 @@ The `lint:` section configures the [lint rules](../cli/lint.md).
 
 | Key | Meaning |
 | --- | ------- |
-| `preset` | `minimal`, `standard` (the default), or `strict`. The base rule set a run starts from: `minimal` enables only the rules whose default severity is `error`, `standard` enables every rule the registry enables by default, and `strict` enables every rule, opt-in included. Unknown names are an error. |
-| `categories` | Maps a rule category to `error`, `warn`, or `off` — one severity (and enable/disable) for a whole category at once. `off` disables the category; `error`/`warn` enable its rules at that severity. It sits above `preset` and below `rules.<id>`. Unknown category names are an error. |
-| `rules` | Maps a rule id to `false` (off), `true` (on — at the `categories` severity when one is set, else the registry default), or a settings object. Unknown rule names are an error. |
+| `preset` | `minimal`, `standard` (the default), or `strict`. The base rule set a run starts from. See [Presets](../cli/lint.md#presets). Unknown names are an error. |
+| `categories` | Maps a rule category to `error`, `warn`, or `off`. The valid categories are `modeling`, `testing`, `documentation`, `structure`, `performance`, `governance`, `sql`, and `warehouse`. Unknown names are an error. |
+| `rules` | Maps a rule id to `false` (off), `true` (on), or a settings object. Unknown rule names are an error. |
 | `baseline` | The frozen-violations file. Default: `.dbtl-baseline.json`. It resolves against the directory of `.dbtl.yml`. |
-| `naming_prefixes` | Maps a layer directory to its allowed prefixes. It merges per layer over the defaults: `intermediate: [int_]`, `marts: [fct_, dim_, rpt_]`, `staging: [stg_]`. |
+| `naming_prefixes` | Maps a layer directory to its allowed prefixes. It merges per layer over the defaults: `intermediate: [int_]`, `marts: [fct_, dim_, rpt_]`, `staging: [stg_]`. The layers you name here also become valid layer names for `layer_materializations.allowed` and `models_without_unit_tests.layers`, next to `staging`, `intermediate`, `marts`, and `other`. |
 | `model_fanout_threshold`, `source_fanout_threshold` | Flat keys for the fanout thresholds. Defaults: 5 and 2. They set the same values as `rules.<id>.threshold`. Using both spellings together is an error that names both keys. |
 
 A rule entry can set:
@@ -113,7 +121,7 @@ A rule entry can set:
 | Key | Meaning |
 | --- | ------- |
 | `severity` | `error`, `warn`, or `off`. `off` disables the rule. |
-| `exclude` | A list of [selectors](../cli/selectors.md). Findings on matching nodes are dropped. |
+| `exclude` | A list of [selectors](../cli/selectors.md). Each item is a selector string, or an object `{select: <selector>, reason: <why>}`. Findings on matching nodes are suppressed, and the reason shows under `--show-suppressed`. |
 | rule parameters | Declared per rule. An undeclared name is an error. |
 
 Parameters are listed per rule in the [lint rules reference](../reference/lint-rules.md).
@@ -126,6 +134,8 @@ A rule's enablement and severity resolve in this order — highest first:
 2. Its category's `categories.<category>` setting.
 3. The `preset` set (or `--preset`).
 4. The rule's registry default.
+
+In this order, `categories.<category>: off` disables every rule in the category, and `error` or `warn` enables them at that severity. A rule set to `true` runs at its category's severity when one is set, and at its registry default otherwise.
 
 `--rules` is different: it is an authoritative selector above all of these — every rule not named goes off, and a named rule runs even when a `rules.<id>`, `categories`, or `preset` entry turned it off.
 
@@ -144,18 +154,38 @@ lint:
 
 ### Suppress rules on one node
 
-A node can suppress rules through its `meta`. dbt's `+meta` inheritance from `dbt_project.yml` applies as usual.
+A node can suppress rules through `meta.dbtl.ignore`. dbt's `+meta` inheritance from `dbt_project.yml` applies as usual. The value takes one of three forms:
+
+| Form | Effect |
+| ---- | ------ |
+| A list of rule ids | Suppresses those rules on the node. |
+| The string `"all"` | Suppresses every rule on the node. |
+| A map of `<rule id or all>: <reason>` | Suppresses the named rules, each with its own reason. A `~` value has no reason of its own. |
 
 ```yaml
 models:
   - name: stg_legacy_orders
     meta:
       dbtl:
-        ignore: [root_models, naming_conventions]   # or the string "all"
-        reason: "legacy import — tracked in DEC-482"      # optional; for humans
+        ignore: [root_models, naming_conventions]
+        reason: "legacy import, tracked in DEC-482"
+
+  - name: stg_legacy_payments
+    meta:
+      dbtl:
+        ignore:
+          root_models: "no upstream by design"
+          naming_conventions: ~       # uses meta.dbtl.reason below
+        reason: "legacy import, tracked in DEC-482"
 ```
 
-`dbtl` reads `dbtl.ignore` only — sibling keys like `reason:` are a convention for recording why the suppression exists; the linter ignores them.
+`meta.dbtl.reason` is the fallback reason for the list form, for `"all"`, and for map entries whose value is `~`. In a map, a rule's own key wins over `all`. Reasons appear under `--show-suppressed`. See [suppressed findings](../cli/lint.md#suppressed-findings).
+
+A value that suppresses nothing is reported once per node as a load warning:
+
+- `ignore` is none of the three forms, including an empty map or a map value that is not a string.
+- `ignore` names a rule id that does not exist.
+- `reason` is a list or a map instead of a string, number, or boolean.
 
 ## check
 
