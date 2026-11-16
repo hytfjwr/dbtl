@@ -35,7 +35,7 @@
     "@types/node": "26.6.6",
     "oxfmt": "0.75.0",
     "oxlint": "1.90.0",
-    "pagefind": "1.5.2",
+    "pagefind": "1.6.0",
     "rumdl": "0.3.2",
     "typescript": "6.0.3",
     "vfile": "6.0.3"
