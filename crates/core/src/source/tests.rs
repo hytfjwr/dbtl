@@ -2000,13 +2000,75 @@ fn config_spread_args_bind_like_literal_kwargs() {
         Some("table".to_string())
     );
     // A `**` operand that isn't a literal resolves at render — nothing a
-    // static read can bind (dbt reaches it through its own render).
+    // static read can bind from the operand itself (dbt reaches it
+    // through its own render; explicit kwargs beside it still bind).
     assert_eq!(pat.materialized("{{ config(**var('cfg')) }}"), None);
     // A trailing comma is still a valid call.
     assert_eq!(
         pat.materialized("{{ config(**{'materialized': 'table'},) }}"),
         Some("table".to_string())
     );
+}
+
+#[test]
+fn config_render_spread_binds_kwargs_and_warns() {
+    let pat = Patterns::new();
+    // `config(materialized='table', **var('cfg'))` — dbt RENDERS the
+    // operand, so a resolvable var lands the whole call (verified on
+    // 1.12.6); unresolvable fails at render. The static read keeps the
+    // explicit kwargs and warns instead of dropping the call.
+    assert_eq!(
+        pat.materialized("{{ config(materialized='table', **var('cfg')) }}"),
+        Some("table".to_string())
+    );
+    assert_eq!(
+        pat.materialized("{{ config(*var('cfg'), materialized='table') }}"),
+        Some("table".to_string())
+    );
+    let mut w = Vec::new();
+    config_shape_warnings(
+        "{{ config(materialized='table', **var('cfg')) }}",
+        &mut w,
+        "models/m.sql",
+    );
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(w[0].contains("not a literal"), "{w:?}");
+    // `**{1: 'x'}` — a non-string literal key is Python's
+    // "keywords must be strings" TypeError: the call shape dbt rejects.
+    assert_eq!(
+        pat.materialized("{{ config(**{1: 'x', 'materialized': 'table'}) }}"),
+        None
+    );
+    let mut w = Vec::new();
+    config_shape_warnings("{{ config(**{1: 'x'}) }}", &mut w, "models/m.sql");
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(w[0].contains("not a shape dbt accepts"), "{w:?}");
+    // Shape warnings only read `{{ config(…) }}` calls — `config(…)` in
+    // ordinary SQL text is not a config call; a call inside a SQL `--`
+    // comment still is (Jinja renders the whole file, comment or not).
+    let mut w = Vec::new();
+    config_shape_warnings(
+        "select config(1, 2)\n-- {{ config({'a': 1}, alias='x') }}",
+        &mut w,
+        "models/m.sql",
+    );
+    assert_eq!(w.len(), 1, "{w:?}");
+    // A bare `{{ config() }}` carries no arguments — a valid no-op call
+    // that warns on nothing.
+    let mut w = Vec::new();
+    config_shape_warnings("{{ config() }}", &mut w, "models/m.sql");
+    assert!(w.is_empty(), "{w:?}");
+}
+
+#[test]
+fn config_shape_warns_once_per_call() {
+    let mut w = Vec::new();
+    config_shape_warnings(
+        "{{ config({'a': 1}, alias='x') }}\n{{ config({'b': 2}, alias='y') }}",
+        &mut w,
+        "models/m.sql",
+    );
+    assert_eq!(w.len(), 2, "{w:?}");
 }
 
 #[test]
@@ -2066,6 +2128,10 @@ fn config_arg_shapes_dbt_rejects_apply_nothing() {
             "star two dicts",
         ),
         ("{{ config(*['x']) }}", "star string"),
+        // A render-time spread mixed with a non-dict positional —
+        // `*var(…)` could only unpack positional args, and `'y'` is not
+        // a dict: invalid outright (verified on 1.12.6).
+        ("{{ config(*var('cfg'), 'y') }}", "star then non-dict"),
     ] {
         assert_eq!(pat.materialized(sql), None, "{why}: {sql}");
     }
@@ -2138,6 +2204,24 @@ fn tree_config_tags_accumulate_outer_first() {
     assert_eq!(w.len(), 1, "{w:?}");
 }
 
+#[test]
+fn source_tree_ignores_tags_entirely() {
+    // dbt ignores a `+tags` rung on the `sources:` tree — so completely
+    // that even a non-scalar member there earns no warning (verified on
+    // 1.12.6: only the model/seed/snapshot/exposures trees read `+tags`).
+    let mut w = Vec::new();
+    let tree = yaml_to_json("p:\n  raw:\n    +tags: [{k: 1}]\n", &mut w).unwrap();
+    let cfg = resolve_source_tree_config(
+        &tree,
+        &["p".to_string(), "raw".to_string()],
+        "sources".to_string(),
+        &mut w,
+        Some(&no_vars()),
+    );
+    assert!(cfg.tags.is_empty(), "{:?}", cfg.tags);
+    assert!(w.is_empty(), "{w:?}");
+}
+
 // ---- node tags: tree `+tags` → in-file `config(tags=…)` → `config.tags:` ----
 
 /// A scratch project exercising every node-tag channel: two `+tags`
@@ -2150,6 +2234,7 @@ fn write_tags_project(dir: &std::path::Path) {
         "models/nested",
         "models/grp",
         "models/extra",
+        "models/dup",
         "seeds",
         "snapshots",
     ] {
@@ -2166,6 +2251,8 @@ models:
     +tags: [m_tree]
     nested:
       +tags: [m_nested]
+    dup:
+      +tags: [m_dup, m_tree, m_dup]
 seeds:
   p:
     +tags: [seed_tree]
@@ -2186,6 +2273,10 @@ exposures:
     )
     .unwrap();
     std::fs::write(dir.join("models/nested/n.sql"), "select 1\n").unwrap();
+    // The dup rung — `+tags` repeats the outer rung's tag AND its own
+    // element; node.tags still dedups the whole union (verified on
+    // 1.12.6) even though the wire's config.tags keeps every occurrence.
+    std::fs::write(dir.join("models/dup/d.sql"), "select 1\n").unwrap();
     // A `**{…}` config call — the dict the spread carries binds like
     // kwargs written in place (verified on 1.12.6).
     std::fs::write(
@@ -2313,6 +2404,11 @@ fn node_tags_merge_tree_infile_yml_in_dbt_order() {
         m.nodes["model.p.n"].tags,
         vec!["m_tree", "m_nested", "n_yml"]
     );
+    // `d` — the union dedups ACROSS tree rungs and inside one list:
+    // `+tags: [m_dup, m_tree, m_dup]` under `+tags: [m_tree]` still yields
+    // each tag once (verified on 1.12.6 — only the wire's config.tags
+    // keeps every occurrence).
+    assert_eq!(m.nodes["model.p.d"].tags, vec!["m_tree", "m_dup"]);
     // The `**{…}` call's tags land in the in-file channel — and its
     // materialized binds too.
     assert_eq!(m.nodes["model.p.spread"].tags, vec!["m_tree", "spread_in"]);
@@ -2345,7 +2441,7 @@ fn node_tags_merge_tree_infile_yml_in_dbt_order() {
 fn exposure_tags_and_group_follow_the_wire_rules() {
     let dir = tempfile::tempdir().unwrap();
     write_tags_project(dir.path());
-    let m = manifest_from_source(dir.path()).unwrap();
+    let (m, warnings) = manifest_from_source_with_warnings(dir.path(), None).unwrap();
     // `exp_a` — `config.tags` declared: `config.tags ++ tags:` wins over
     // the tree's `+tags` outright, the union sorted + dedup'd the way the
     // wire keeps it (verified on 1.12.6). `config.group` lands in
@@ -2372,6 +2468,19 @@ fn exposure_tags_and_group_follow_the_wire_rules() {
     let d = &m.exposures["exposure.p.exp_d"];
     assert_eq!(d.tags, vec!["d_top", "exp_tree"]);
     assert!(d.config.group.is_none(), "top-level group: must not land");
+    // The top-level `group:` is a dbt parse error — the loader ignores it
+    // but warns, once per misdeclared exposure (exp_c and exp_d here).
+    let group_warnings = warnings
+        .iter()
+        .filter(|w| w.contains("top-level 'group:'"))
+        .count();
+    assert_eq!(group_warnings, 2, "{warnings:?}");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("exp_c") && w.contains("top-level 'group:'")),
+        "exp_c's group: warns: {warnings:?}"
+    );
 }
 
 #[test]

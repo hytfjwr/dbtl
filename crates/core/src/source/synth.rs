@@ -451,6 +451,7 @@ impl Synthesis {
                 &mut self.warnings,
                 &rel_path(&self.dir, &file),
             );
+            config_shape_warnings(&masked, &mut self.warnings, &rel_path(&self.dir, &file));
             if in_file != Some(Enabled::Off) {
                 // `collect_with_root` sorts by path, so the first file to
                 // claim a name wins deterministically; drop (and warn on)
@@ -637,6 +638,7 @@ impl Synthesis {
             let in_file = self
                 .pat
                 .enabled(&masked, &self.vars, &mut self.warnings, &ofp);
+            config_shape_warnings(&masked, &mut self.warnings, &ofp);
             if in_file == Some(Enabled::Off) {
                 for name in self.pat.snapshots(&masked) {
                     self.disabled_names
@@ -1754,7 +1756,7 @@ impl Synthesis {
                     segments.pop();
                     segments.push(src.name.clone());
                     segments.push(tbl.name.clone());
-                    let tree = resolve_tree_config(
+                    let tree = resolve_source_tree_config(
                         &self.project.sources,
                         &segments,
                         "sources".to_string(),
@@ -1957,9 +1959,16 @@ impl Synthesis {
                 tags.sort();
                 tags.dedup();
                 // `group` lives only in `config` on the wire — the entry's
-                // own `group:` property never lands (dbt ignores it), and
-                // the tree's `+group` fills only what `config.group`
-                // leaves undeclared (verified on 1.12.6).
+                // own `group:` property never lands (a top-level `group:`
+                // is a dbt parse error, surfaced here as a warning like
+                // every other recoverable oddity), and the tree's `+group`
+                // fills only what `config.group` leaves undeclared
+                // (verified on 1.12.6).
+                if exp.group.is_some() {
+                    self.warnings.push(format!(
+                        "{what}: an exposure's top-level 'group:' is not a dbt property (a parse error in dbt); it is ignored — use config.group or a groups entry"
+                    ));
+                }
                 let group = exp.config.group.clone().or(tree.group);
                 self.exposures.insert(
                     uid,
@@ -2165,12 +2174,15 @@ impl Synthesis {
             }
             // `tags` — the three channels deduplicated in the order dbt's
             // node list keeps (verified on 1.12.6): the project `+tags`
-            // tree (outer→inner), the file's own `config(tags=…)`, then
-            // the schema entry's `config.tags:`. The wire `config.tags`
-            // holds the same channels in a DIFFERENT order (tree → yml →
-            // in-file, duplicates kept) — nothing downstream reads it, so
-            // only this list is synthesized.
-            let mut tags = gov.map(|g| g.tags.clone()).unwrap_or_default();
+            // tree (outer→inner — `push_unique` covers dbt deduping a tag
+            // declared on two nested rungs or twice in one `+tags:` list),
+            // the file's own `config(tags=…)`, then the schema entry's
+            // `config.tags:`. The wire `config.tags` holds the same
+            // channels in a DIFFERENT order (tree → yml → in-file,
+            // duplicates kept) — nothing downstream reads it, so only
+            // this list is synthesized.
+            let mut tags: Vec<String> = Vec::new();
+            push_unique(&mut tags, gov.map(|g| g.tags.as_slice()).unwrap_or(&[]));
             push_unique(
                 &mut tags,
                 self.infile_tags.get(uid).map_or(&[][..], Vec::as_slice),

@@ -104,11 +104,18 @@ impl PyArgs {
     /// the same rule the SQL `config(…)` extractor applies (verified on
     /// 1.12.6): all `name=value` kwargs with no name repeated, or ONE
     /// positional dict literal as the whole list (the dict spelling of
-    /// the same kwargs). A `*`/`**` spread lands here as a `None`
-    /// marker — a `ast.literal_eval` failure in dbt — and a dict/kwarg
-    /// mix is a Python/dbt error, so the call contributes NOTHING.
+    /// the same kwargs). A `*`/`**` spread or a non-literal positional
+    /// lands here as a `None` marker — an `ast.literal_eval` failure in
+    /// dbt — and a dict/kwarg mix is a Python/dbt error, so those calls
+    /// contribute NOTHING. A non-literal VALUE (`v` = `None`) does not
+    /// fail the shape: `value_of` still reports the kwarg as
+    /// declared-but-unreadable (`enabled=` keeps its Unproven mark, like
+    /// the SQL side), and the literal siblings still bind — the same
+    /// partial application dbt reaches by evaluating at render.
     pub(super) fn config_shape_ok(&self) -> bool {
-        if !self.is_literal() {
+        if self.kwargs.iter().any(|(n, _)| n.is_none())
+            || self.positional.iter().any(Option::is_none)
+        {
             return false;
         }
         let mut names: Vec<&str> = Vec::new();
@@ -1222,6 +1229,22 @@ def model(dbt, session):
         assert!(cfg.tags.is_empty());
         assert!(cfg.alias.is_none());
         assert_eq!(w.len(), 1, "{w:?}");
+    }
+
+    #[test]
+    fn config_nonliteral_values_stay_declared_not_rejected() {
+        let mut w = vec![];
+        // `enabled=flag` — the NAME isn't a literal the extractor can
+        // resolve, but the call's SHAPE is still valid kwargs (dbt
+        // applies the resolvable members and validates the rest). So the
+        // other kwargs bind and `enabled` stays declared-but-unreadable
+        // — the unverifiable mark — instead of the call dropping whole.
+        let scan =
+            scan_python("def model(dbt, s):\n    dbt.config(enabled=flag, materialized='table')\n");
+        let cfg = py_file_config(&scan, &mut w, "t.py");
+        assert_eq!(cfg.materialized.as_deref(), Some("table"));
+        assert_eq!(cfg.enabled, Some(None));
+        assert!(w.is_empty(), "{w:?}");
     }
 
     #[test]

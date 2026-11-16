@@ -93,6 +93,30 @@ pub(super) fn resolve_tree_config(
     warnings: &mut Vec<String>,
     vars: Option<&Vars>,
 ) -> TreeConfig {
+    resolve_tree_config_read(tree, segments, tree_path, warnings, vars, true)
+}
+
+/// The `sources:` variant of [`resolve_tree_config`] — dbt ignores a
+/// `+tags` rung on the `sources:` tree entirely, so neither its value
+/// nor its non-scalar warning is read there.
+pub(super) fn resolve_source_tree_config(
+    tree: &serde_json::Value,
+    segments: &[String],
+    tree_path: String,
+    warnings: &mut Vec<String>,
+    vars: Option<&Vars>,
+) -> TreeConfig {
+    resolve_tree_config_read(tree, segments, tree_path, warnings, vars, false)
+}
+
+fn resolve_tree_config_read(
+    tree: &serde_json::Value,
+    segments: &[String],
+    tree_path: String,
+    warnings: &mut Vec<String>,
+    vars: Option<&Vars>,
+    read_tags: bool,
+) -> TreeConfig {
     let mut out = TreeConfig::default();
     if !tree.is_object() {
         return out; // missing level (indexing Null yields Null) — nothing deeper
@@ -153,9 +177,10 @@ pub(super) fn resolve_tree_config(
     }
     // `+tags` — a bare scalar wraps to a one-element list, elements
     // stringify (`7` → `"7"`, verified on 1.12.6); a non-scalar member
-    // (a dict, a nested list) warns once per level like `+meta`.
+    // (a dict, a nested list) warns once per level like `+meta`. The
+    // `sources:` walk skips the key wholesale — dbt ignores it there.
     let tags_v = &tree["+tags"];
-    if !tags_v.is_null() {
+    if read_tags && !tags_v.is_null() {
         let bad = match tags_v {
             serde_json::Value::Array(items) => items.iter().any(|i| scalar_to_string(i).is_none()),
             v => scalar_to_string(v).is_none(),
@@ -168,12 +193,13 @@ pub(super) fn resolve_tree_config(
         out.tags = tag_values_of(tags_v);
     }
     let deeper = segments.split_first().map(|(seg, rest)| {
-        resolve_tree_config(
+        resolve_tree_config_read(
             &tree[seg.as_str()],
             rest,
             format!("{tree_path}.{seg}"),
             warnings,
             vars,
+            read_tags,
         )
     });
     // The deepest DECLARED `+enabled` wins — proven or unproven. An

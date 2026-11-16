@@ -326,10 +326,15 @@ pub(super) struct SchemaExposure {
     /// Top-level `tags:` — unlike on models, an exposure's property tags
     /// DO apply (verified on 1.12.6): they follow the entry's
     /// `config.tags` on the wire, or precede the tree's `+tags` when no
-    /// `config.tags` is declared. A top-level `group:` is NOT a field —
-    /// dbt never applies it (the group lives only in `config.group`/`+group`).
+    /// `config.tags` is declared.
     #[serde(default, deserialize_with = "de_string_vec")]
     pub(super) tags: Vec<String>,
+    /// Top-level `group:` — a dbt parse error ("Additional properties are
+    /// not allowed" — the group lives only in `config.group`/`+group`).
+    /// Captured so the loader can warn like every other recoverable
+    /// oddity instead of silently dropping the key.
+    #[serde(default)]
+    pub(super) group: Option<serde_json::Value>,
     #[serde(default, deserialize_with = "de_string_vec")]
     pub(super) depends_on: Vec<String>,
 }

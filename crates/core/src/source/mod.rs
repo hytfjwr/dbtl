@@ -70,8 +70,9 @@
 //!   `meta`/`freshness` walk table `config:` > table top-level > source
 //!   `config:` > source top-level > `sources:` tree — per meta key and per
 //!   freshness threshold; `loaded_at_field` walks table > source with the
-//!   TOP-LEVEL spelling beating `config:` within each level (explicit
-//!   `null` clears either way); `tags` union in dbt's
+//!   TOP-LEVEL spelling beating `config:` within each level (a table's
+//!   top-level `null` clears; a `config:`-level `null` is a no-op); `tags`
+//!   union in dbt's
 //!   config-channels-then-properties order; `config.enabled` is the only
 //!   disable channel (a table's top-level `enabled:` is ignored).
 //! - A `ref()`/`source()` a project-local macro carries resolves the way
@@ -268,7 +269,9 @@ pub use patterns::{
     arms_exclusive, call_sites_masked, jinja_branches, ArmKind, ArmStep, CallKind, CallSite,
     JinjaBranches,
 };
-pub(crate) use patterns::{config_arg, config_tags, kwarg, lit_value, tag_values_of};
+pub(crate) use patterns::{
+    config_arg, config_shape_warnings, config_tags, kwarg, lit_value, tag_values_of,
+};
 pub(crate) use patterns::{find_subslice, jinja_set_assigns, jinja_tag_close, tag_word};
 pub(crate) use python::{is_identifier, scan_python, PyCallKind};
 pub use vars::CliVars;
