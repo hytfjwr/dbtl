@@ -330,21 +330,27 @@ fn last_config_call_wins_for_scalar_kwargs() {
 
 #[test]
 fn ref_regex_handles_versioned_and_extra_args() {
-    let pat = Patterns::new();
-    assert_eq!(pat.refs("{{ ref('m', v=2) }}"), vec!["m".to_string()]);
-    assert_eq!(pat.refs("{{ ref('m', version=2) }}"), vec!["m".to_string()]);
-    assert_eq!(
-        pat.refs("{{ ref('pkg', 'm', v=2) }}"),
-        vec!["m".to_string()]
-    );
+    let names = |sql: &str| -> Vec<String> {
+        let masked = mask_jinja_comments(sql);
+        call_sites_masked(&masked)
+            .iter()
+            .filter_map(|s| match &s.kind {
+                CallKind::Ref { name, .. } => Some(masked[name.clone()].to_string()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(names("{{ ref('m', v=2) }}"), vec!["m".to_string()]);
+    assert_eq!(names("{{ ref('m', version=2) }}"), vec!["m".to_string()]);
+    assert_eq!(names("{{ ref('pkg', 'm', v=2) }}"), vec!["m".to_string()]);
     // No cross-call over-matching: `[^)]*` must not cross the first `)`.
     assert_eq!(
-        pat.refs("{{ ref('a') }} x {{ ref('b') }}"),
+        names("{{ ref('a') }} x {{ ref('b') }}"),
         vec!["a".to_string(), "b".to_string()]
     );
     // A non-literal arg (a macro call, not a quoted string) still drops,
     // like before this change.
-    assert!(pat.refs("{{ ref(var('x')) }}").is_empty());
+    assert!(names("{{ ref(var('x')) }}").is_empty());
 }
 
 #[test]
@@ -2692,11 +2698,12 @@ unit_tests:
 
 #[test]
 fn unit_tests_expand_versioned_families_by_member_files() {
-    // `<model>_v<version>.sql` members stand in for the `versions:` block:
+    // A `versions:`-declared family expands one entry per bound member:
     // an unfiltered entry emits one record per member, `include: [2]`
-    // selects just v2, `exclude: ['beta']` drops it. `v`/`2`/`V2` spellings
-    // normalize to one member, and the uid/version segments match what a
-    // real manifest writes.
+    // selects just v2, `exclude: ['beta']` drops it. The selection
+    // matches the declared `v:` VERBATIM (dbt rejects `v2` for a `v: 2`
+    // member — the same `v{arg}`-suffix lookup `ref(m, v=…)` performs),
+    // and the uid/version segments match what a real manifest writes.
     let files = [
         ("fct_orders_v1", "select 1"),
         ("fct_orders_v2", "select 1"),
@@ -2705,6 +2712,13 @@ fn unit_tests_expand_versioned_families_by_member_files() {
     let (m, w) = unit_test_project(
         &files,
         r#"version: 2
+models:
+  - name: fct_orders
+    latest_version: 2
+    versions:
+      - v: 1
+      - v: 2
+      - v: beta
 unit_tests:
   - name: all_versions
     model: fct_orders
@@ -2737,7 +2751,7 @@ unit_tests:
     assert_eq!(v2.version.as_deref(), Some("2"));
     assert_eq!(
         v2.depends_on.nodes,
-        vec!["model.p.fct_orders_v2".to_string()]
+        vec!["model.p.fct_orders.v2".to_string()]
     );
     let beta = &m.unit_tests["unit_test.p.fct_orders.all_versions_vbeta"];
     assert_eq!(beta.version.as_deref(), Some("beta"));
@@ -2749,10 +2763,10 @@ unit_tests:
         v
     };
     assert_eq!(
-        kinds("model.p.fct_orders_v2"),
+        kinds("model.p.fct_orders.v2"),
         vec!["all_versions", "excluding_beta", "scoped_v2"]
     );
-    assert_eq!(kinds("model.p.fct_orders_vbeta"), vec!["all_versions"]);
+    assert_eq!(kinds("model.p.fct_orders.vbeta"), vec!["all_versions"]);
 }
 
 #[test]

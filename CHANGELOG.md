@@ -34,6 +34,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   calls become edges, `dbt.config()` applies, and a config-less Python
   model takes dbt's `table` default over the project tree's
   `+materialized`.
+- Source mode now synthesizes `versions:`-declared models the way a real
+  manifest does. Each `v:` binds its implementation file — `defined_in:`,
+  then the `<name>_v<v>` convention, with the latest also allowed to
+  live in `<name>.sql` — into a `model.<project>.<name>.v<v>` node
+  carrying the member's own path, raw code, and config, so member file
+  stems are no longer separate refable models. A bare `ref('name')`
+  resolves to `latest_version:` (or dbt's pairwise max over the declared
+  versions), and literal `v=`/`version=` pins resolve to the exact
+  member by verbatim version — `v='v3'` answers `v: 'v3'`, never `v: 3`
+  — through SQL calls, project-macro expansions, and Python `dbt.ref()`
+  alike. Enabled precedence folds in-file `config()` > version
+  `config.enabled:` > model `config.enabled:` > the `models:` tree
+  (addressed by the member fqn `[project, *dirs, name, v<v>]`); a
+  disabled member drops and a pin on it reports as a disabled version.
+  Version-level `description`, `deprecation_date`, `config:`, and
+  `meta:` merge over the model-level declarations; `columns:`
+  `include:`/`exclude:` markers slice the inherited set while a
+  same-named def replaces its column (its tests union onto the
+  inherited ones), and a version's own `tests:`/`data_tests:` replaces
+  the model-level list outright; `unit_tests:` `versions:` filters
+  expand one `unit_test…_v<v>` record per selected member. Shapes dbt
+  hard-errors on — a repeated `v:`, an undeclared `latest_version`, a
+  missing file, `<name>.sql` beside the family — warn and degrade
+  rather than fail the load. As a result the
+  synthesized `Dag` carries the versioned uids everywhere downstream —
+  `ls`, the model list, `unresolved_references` pin checks, and
+  `references_deprecated_model` all match manifest mode — while a
+  non-literal `v=` still approximates to the family's latest member and
+  `RefScope.versions` is now populated so pins judge like a manifest's.
 - Source mode stops making lint claims it cannot prove around `enabled`
   expressions it cannot evaluate. An `enabled` that renders outside the
   evaluable subset — a `var()` with no value, a `target.*` read, an

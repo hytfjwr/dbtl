@@ -898,14 +898,15 @@ pub(super) fn unused_models(
 /// Skipped, never flagged: a call inside an `{% if %}`/`{% elif %}`/
 /// `{% else %}` arm (a Jinja-switched reference may legitimately not
 /// exist in the taken arm — `{% for %}` bodies still judge, the literal
-/// ref runs every render); a `v=`/`version=`-pinned ref in source mode
-/// (versioned nodes are never synthesized); a `ref('proj', 'x')` naming
-/// a `projects:`-declared cross-project name; and any call whose name is
-/// missing while declared packages aren't fully installed — those count
-/// into ONE summary warning instead (the name may live in a package
-/// that was never installed, so the verdict is unverifiable, not
-/// absent). A nonliteral arg (`ref(var('x'))`, `v=var('ver')`) produces
-/// no call at all — the extractor only yields names it could read.
+/// ref runs every render); a `ref()` whose version kwarg didn't read
+/// literal (`v=var('ver')` — the name still judges); a `ref('proj',
+/// 'x')` naming a `projects:`-declared cross-project name; and any call
+/// whose name is missing while declared packages aren't fully installed
+/// — those count into ONE summary warning instead (the name may live in
+/// a package that was never installed, so the verdict is unverifiable,
+/// not absent). A nonliteral arg (`ref(var('x'))`, `v=var('ver')`)
+/// produces no call at all — the extractor only yields names it could
+/// read.
 ///
 /// One finding per distinct failing target per node; every site of the
 /// same target labels it.
@@ -963,11 +964,12 @@ pub(super) fn unresolved_references(
                                     || (root == Some(p) && scope.assumed.contains(name))
                             }
                         };
-                        // A version pin is only checkable when the
-                        // load records version uids (manifest mode);
-                        // under a mode that never does (source),
-                        // the NAME was already judged and the pin
-                        // passes unjudgeable.
+                        // A version pin checks against the recorded
+                        // `(package, name, rendered-version)` uids —
+                        // both load modes populate the table (source
+                        // mode's synthesized `.vN` members key the same
+                        // way the manifest's do), so a missing member
+                        // reads "resolves to no node" in either.
                         let resolved = name_resolved
                             && match (versioned, version, &scope.versions) {
                                 (true, Some(v), Some(vs)) => {

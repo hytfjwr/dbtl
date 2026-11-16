@@ -839,11 +839,15 @@ fn yaml_snapshot_edges_resolve_in_both_directions() {
 
 #[test]
 fn versioned_ref_resolves_to_unversioned_model() {
+    // `ref('base', v=2)` on an UNVERSIONED `base` is a dbt error — a
+    // version pin only reaches a `versions:` family member, so the call
+    // degrades to no edge (the lint pass then reports the unresolved
+    // pin) rather than an invented target.
     let dag = load_dag_from_source(YAML_SNAPSHOT_PROJECT).expect("project loads");
     let up = dag.upstream("model.ysnap.uses_versioned");
     assert!(
-        up.contains("model.ysnap.base"),
-        "ref('base', v=2) resolves to the unversioned model, got {up:?}"
+        !up.contains("model.ysnap.base"),
+        "ref('base', v=2) on an unversioned model resolves to nothing, got {up:?}"
     );
 }
 

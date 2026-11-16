@@ -105,7 +105,7 @@ impl PyArgs {
     /// dict literal (`dbt.config({'k': v})` is dbt's dict spelling of the
     /// same kwargs, verified on 1.12.6). `Some(None)` = declared but
     /// unreadable.
-    fn value_of(&self, name: &str) -> Option<Option<serde_json::Value>> {
+    pub(super) fn value_of(&self, name: &str) -> Option<Option<serde_json::Value>> {
         for (k, v) in self.kwargs.iter().rev() {
             if k.as_deref() == Some(name) {
                 return Some(v.clone());

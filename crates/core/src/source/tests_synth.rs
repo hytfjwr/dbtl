@@ -3,13 +3,17 @@ use super::*;
 /// The shared context [`synth_tests`] and [`apply_meta`] thread through every
 /// schema-file test pass: the running synth-key counter, the project name, the
 /// `ref()`/`source()` extractors + name index a `relationships` test's `to:`
-/// resolves against (the same lookups the .sql scan uses), and the var tables
-/// a `config.enabled:`/`enabled:` Jinja string evaluates against.
+/// resolves against (the same lookups the .sql scan uses), the versioned
+/// families a `unit_tests:` `versions:` selects over, and the var tables a
+/// `config.enabled:`/`enabled:` Jinja string evaluates against.
 pub(super) struct TestCtx<'a> {
     pub(super) seq: usize,
     pub(super) proj: &'a str,
     pub(super) pat: &'a Patterns,
     pub(super) name_index: &'a HashMap<String, String>,
+    /// `versions:`-declared families the `synthesize_models` stage bound —
+    /// a `unit_tests:` `versions:` selector walks its members.
+    pub(super) versioned: &'a BTreeMap<String, VersionedFamily>,
     pub(super) vars: &'a Vars,
 }
 
@@ -29,7 +33,10 @@ pub(super) fn apply_meta(
     entries: &[SchemaModel],
     yml_path: &str,
     docs: &DocBlocks,
-    disabled: &mut std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    disabled: &mut std::collections::BTreeMap<
+        String,
+        std::collections::BTreeSet<(Option<String>, String)>,
+    >,
     in_file: &HashMap<String, Enabled>,
     tree: &HashMap<String, TreeConfig>,
     unverifiable: &mut std::collections::BTreeSet<String>,
@@ -67,7 +74,7 @@ pub(super) fn apply_meta(
                     disabled
                         .entry(entry.name.clone())
                         .or_default()
-                        .insert(type_prefix.to_string());
+                        .insert((None, type_prefix.to_string()));
                 }
                 continue;
             }
@@ -208,6 +215,403 @@ pub(super) fn apply_meta(
                 warnings,
             );
         }
+    }
+}
+
+/// The versioned half of [`apply_meta`]: expand a `versions:`-declared
+/// model entry over the members `synthesize_models` bound — each member
+/// gets the model-level patch PLUS its version entry's overrides
+/// (description / `deprecation_date` / `config:` fields), the version's
+/// effective columns (top-level set sliced by `include:`/`exclude:`
+/// markers, a same-named def replacing its column while its tests
+/// union), and the version's effective tests (the model-level list
+/// unless the version declares its own — `tests:`/`data_tests:` on a
+/// version REPLACES it outright, verified on 1.12.6).
+///
+/// Config precedence inside each member mirrors the verified chain —
+/// in-file `config()` > version `config:` > model `config:` > project
+/// tree — every `if unset` fill here sits between the in-file level
+/// (already on the node) and the tree fallback (`tree_*` tables).
+/// The `enabled` verdicts all folded at the claim stage, so a member
+/// whose uid never materialized contributes nothing — its docs/tests
+/// park with it, matching dbt.
+pub(super) fn apply_versioned_meta(
+    nodes: &mut HashMap<String, RawNode>,
+    ctx: &mut TestCtx<'_>,
+    entry: &SchemaModel,
+    family: &VersionedFamily,
+    yml_path: &str,
+    docs: &DocBlocks,
+    warnings: &mut Vec<String>,
+) {
+    let mut applied: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for ver_entry in &entry.versions {
+        let Some(rendered) = scalar_to_string(&ver_entry.v) else {
+            continue;
+        };
+        // A repeated `v:` warns at bind and keeps the first — metadata
+        // expansion must not double-apply (its tests would duplicate).
+        if !applied.insert(rendered.clone()) {
+            continue;
+        }
+        let Some(uid) = family
+            .versions
+            .get(&rendered)
+            .and_then(|u| u.as_ref())
+            .cloned()
+        else {
+            continue;
+        };
+        let effective_cols = version_columns(
+            &entry.columns,
+            &ver_entry.columns,
+            warnings,
+            &format!("{yml_path}: model '{}' version '{rendered}'", entry.name),
+        );
+        {
+            let Some(node) = nodes.get_mut(&uid) else {
+                continue;
+            };
+            // The declaring yml is `patch_path` for every member — the
+            // scheme-stripped form `project_rel_patch_path` normalizes a
+            // real manifest's `<pkg>://<yml>` to, the same record the
+            // unversioned arm writes.
+            node.patch_path = Some(yml_path.to_string());
+            // The version's own description wins over the model's (verified:
+            // v1's description stays v1's while the model's fills the rest).
+            node.description = ver_entry
+                .description
+                .clone()
+                .or_else(|| entry.description.clone())
+                .map(|d| docs.render(&d, warnings));
+            // The version `config:` slots fill only what the impl file's
+            // own `config()` left unset — then the model `config:` fills
+            // what the version left — the in-file > version > model >
+            // tree chain (verified).
+            if node.config.materialized.is_none() {
+                node.config.materialized = ver_entry
+                    .config
+                    .materialized
+                    .clone()
+                    .or_else(|| entry.config.materialized.clone());
+            }
+            if node.alias.is_none() {
+                node.alias = ver_entry
+                    .config
+                    .alias
+                    .clone()
+                    .or_else(|| ver_entry.alias.clone())
+                    .or_else(|| entry.config.alias.clone());
+            }
+            if node.config.unique_key.is_none() {
+                if !ver_entry.config.unique_key.is_null() {
+                    node.config.unique_key = Some(ver_entry.config.unique_key.clone());
+                } else if !entry.config.unique_key.is_null() {
+                    node.config.unique_key = Some(entry.config.unique_key.clone());
+                }
+            }
+            // The governance surface — `config:` wins over the bare
+            // top-level spelling at each level (declaring both is a dbt
+            // error — merge degraded like `meta:`'s), version level
+            // before model level.
+            if node.group.is_none() {
+                node.group = ver_entry
+                    .config
+                    .group
+                    .clone()
+                    .or_else(|| ver_entry.group.clone())
+                    .or_else(|| entry.config.group.clone())
+                    .or_else(|| entry.group.clone());
+            }
+            if node.access.is_none() {
+                node.access = ver_entry
+                    .config
+                    .access
+                    .clone()
+                    .or_else(|| ver_entry.access.clone())
+                    .or_else(|| entry.config.access.clone())
+                    .or_else(|| entry.access.clone());
+            }
+            if node.contract.is_none() {
+                node.contract = contract_value(&ver_entry.config.contract)
+                    .or_else(|| contract_value(&entry.config.contract));
+            }
+            if node.config.incremental_strategy.is_none() {
+                node.config.incremental_strategy = ver_entry
+                    .config
+                    .incremental_strategy
+                    .clone()
+                    .or_else(|| entry.config.incremental_strategy.clone());
+            }
+            // `deprecation_date` is a PROPERTY — the version's own beats
+            // the model's (properties never have a `config:` channel).
+            if node.deprecation_date.is_none() {
+                node.deprecation_date = ver_entry
+                    .deprecation_date
+                    .clone()
+                    .or_else(|| entry.deprecation_date.clone());
+            }
+            if node.constraints.is_empty() {
+                node.constraints = entry.constraints.clone();
+            }
+            // `tags` accumulate like `meta:`'s union — the model's then
+            // the version's, config channel then property (the same
+            // shape `source_tags` takes).
+            for tags in [
+                &entry.config.tags,
+                &entry.tags,
+                &ver_entry.config.tags,
+                &ver_entry.tags,
+            ] {
+                push_unique(&mut node.tags, tags);
+            }
+            // `meta:`/`config.meta:` merge per key — version level wins
+            // over model level, `config.meta` wins over the bare `meta:`
+            // spelling at each level; in-file `config(meta=…)` wins over
+            // all (`entry().or_insert` — so levels apply high to low).
+            let what = format!("model '{}'", entry.name);
+            for (v, level) in [
+                (
+                    &ver_entry.config.meta,
+                    format!("version '{rendered}' config meta"),
+                ),
+                (&ver_entry.meta, format!("version '{rendered}' meta")),
+                (&entry.config.meta, "config meta".to_string()),
+                (&entry.meta, "meta".to_string()),
+            ] {
+                for (k, v) in meta_map(v, warnings, &format!("{what} {level}")) {
+                    node.meta.entry(k).or_insert(v);
+                }
+            }
+            if !effective_cols.is_empty() {
+                node.columns = columns_json(
+                    &effective_cols
+                        .iter()
+                        .map(|c| c.col.clone())
+                        .collect::<Vec<_>>(),
+                    docs,
+                    warnings,
+                );
+            }
+        }
+        // The version's effective tests — a version's own `tests:`/
+        // `data_tests:` REPLACES the model-level list (verified: no
+        // include/exclude markers exist there — every entry is a def),
+        // while column tests ride each effective column (an excluded
+        // column's tests drop with it). `synth_tests` attaches each to
+        // the member uid like a real manifest does.
+        for (model_tests, ver_tests, family) in [
+            (&entry.tests, &ver_entry.tests, ColTests::Tests),
+            (
+                &entry.data_tests,
+                &ver_entry.data_tests,
+                ColTests::DataTests,
+            ),
+        ] {
+            let (model_level, per_column) =
+                version_tests(model_tests, ver_tests, &effective_cols, family);
+            synth_tests(
+                nodes,
+                ctx,
+                &uid,
+                &entry.name,
+                None,
+                &model_level,
+                yml_path,
+                warnings,
+            );
+            for (col, defs) in per_column {
+                synth_tests(
+                    nodes,
+                    ctx,
+                    &uid,
+                    &entry.name,
+                    Some(&col),
+                    &defs,
+                    yml_path,
+                    warnings,
+                );
+            }
+        }
+    }
+}
+
+/// A version's effective column — the resolved definition shape
+/// (`columns_json` reads it) PLUS the tests split by provenance: the
+/// model-level column's own `tests:`/`data_tests:` (inherited — they
+/// ride the column whatever the version declares) vs the version-level
+/// def's (added — a same-named def unions its tests onto the inherited
+/// set, verified on 1.12.6).
+struct EffectiveColumn {
+    col: SchemaColumn,
+    inherited_tests: Vec<serde_json::Value>,
+    added_tests: Vec<serde_json::Value>,
+    inherited_data_tests: Vec<serde_json::Value>,
+    added_data_tests: Vec<serde_json::Value>,
+}
+
+/// The version's effective column set — the model-level `columns:` sliced
+/// by the version's `include:`/`exclude:` markers (survivors keep their
+/// top-level declaration order — verified: `include: [b, a]` still emits
+/// `a` before `b`) and overridden by the version's own `name:`-defs. A
+/// same-named def REPLACES the column's declared shape (a def without
+/// `description:` shows empty, not the inherited text — verified), while
+/// its `tests:`/`data_tests:` UNION onto the inherited column's. No
+/// marker → the whole top-level set is the selection, so a def-only
+/// `columns:` list still inherits everything — the dbt behavior behind
+/// "columns are version-specific by exception".
+fn version_columns(
+    model_cols: &[SchemaColumn],
+    ver_cols: &[serde_json::Value],
+    warnings: &mut Vec<String>,
+    what: &str,
+) -> Vec<EffectiveColumn> {
+    let mut include: Option<BTreeSet<String>> = None;
+    let mut include_all = false;
+    let mut exclude: BTreeSet<String> = BTreeSet::new();
+    let mut defs: Vec<SchemaColumn> = Vec::new();
+    for raw in ver_cols {
+        if version_marker(raw) {
+            for name in version_marker_list(raw.get("include")) {
+                if matches!(name.as_str(), "*" | "all") {
+                    include_all = true;
+                } else {
+                    include.get_or_insert_with(BTreeSet::new).insert(name);
+                }
+            }
+            for name in version_marker_list(raw.get("exclude")) {
+                exclude.insert(name);
+            }
+            continue;
+        }
+        match serde_json::from_value::<SchemaColumn>(raw.clone()) {
+            Ok(col) => defs.push(col),
+            Err(_) => warnings.push(format!(
+                "{what}: a column entry is neither a column def nor an include/exclude marker — ignoring it"
+            )),
+        }
+    }
+    // dbt permits `exclude:` only beside `include: '*'`/`'all'` —
+    // without an include-all marker it is a schema error, degraded here
+    // to the lenient read (exclude from the full set) plus a warning.
+    if !exclude.is_empty() && !include_all {
+        warnings.push(format!(
+            "{what}: 'exclude:' without 'include: \"*\"' is a dbt schema error — excluding from the full set anyway"
+        ));
+    }
+    let mut out: Vec<EffectiveColumn> = model_cols
+        .iter()
+        .filter(|c| {
+            (include_all || include.as_ref().is_none_or(|set| set.contains(&c.name)))
+                && !exclude.contains(&c.name)
+        })
+        .map(|c| EffectiveColumn {
+            col: c.clone(),
+            inherited_tests: c.tests.clone(),
+            added_tests: Vec::new(),
+            inherited_data_tests: c.data_tests.clone(),
+            added_data_tests: Vec::new(),
+        })
+        .collect();
+    for def in defs {
+        match out.iter_mut().find(|c| c.col.name == def.name) {
+            Some(existing) => {
+                // A same-named def REPLACES the column's declared shape
+                // outright (verified: an absent `description:` reads
+                // empty, not inherited) — only the test lists union.
+                existing.col = SchemaColumn {
+                    tests: Vec::new(),
+                    data_tests: Vec::new(),
+                    ..def.clone()
+                };
+                existing.added_tests.extend(def.tests);
+                existing.added_data_tests.extend(def.data_tests);
+            }
+            None => out.push(EffectiveColumn {
+                col: SchemaColumn {
+                    tests: Vec::new(),
+                    data_tests: Vec::new(),
+                    ..def.clone()
+                },
+                inherited_tests: Vec::new(),
+                added_tests: def.tests,
+                inherited_data_tests: Vec::new(),
+                added_data_tests: def.data_tests,
+            }),
+        }
+    }
+    out
+}
+
+/// Which of a column's two test lists the pass selects — `tests:` and
+/// `data_tests:` are parallel channels in the schema shape, each with
+/// its own inherited/added halves.
+enum ColTests {
+    Tests,
+    DataTests,
+}
+
+/// The version's effective tests split into `(model-level defs,
+/// column -> defs)`. Model-level `tests:`/`data_tests:` work by
+/// REPLACEMENT, verified on 1.12.6: a version that declares its own
+/// list takes ONLY that list (the model-level set never merges), and
+/// every entry is a test def — `include:`/`exclude:` keys are not
+/// markers here (they parse as test names of their own). A version
+/// declaring neither inherits the model-level list. A column's tests
+/// ride on that column: a column the version's `columns:` slice drops
+/// takes its tests with it, and a same-named def unions its declared
+/// tests onto the inherited set.
+fn version_tests(
+    model_tests: &[serde_json::Value],
+    ver_tests: &[serde_json::Value],
+    effective_cols: &[EffectiveColumn],
+    family: ColTests,
+) -> (
+    Vec<serde_json::Value>,
+    Vec<(String, Vec<serde_json::Value>)>,
+) {
+    fn parts<'c>(
+        c: &'c EffectiveColumn,
+        family: &ColTests,
+    ) -> (&'c Vec<serde_json::Value>, &'c Vec<serde_json::Value>) {
+        match family {
+            ColTests::Tests => (&c.inherited_tests, &c.added_tests),
+            ColTests::DataTests => (&c.inherited_data_tests, &c.added_data_tests),
+        }
+    }
+    let model_level: Vec<serde_json::Value> = if ver_tests.is_empty() {
+        model_tests.to_vec()
+    } else {
+        ver_tests.to_vec()
+    };
+    let per_column: Vec<(String, Vec<serde_json::Value>)> = effective_cols
+        .iter()
+        .map(|c| {
+            let (inherited, added) = parts(c, &family);
+            let mut defs = inherited.clone();
+            defs.extend(added.iter().cloned());
+            (c.col.name.clone(), defs)
+        })
+        .collect();
+    (model_level, per_column)
+}
+
+/// Whether a `columns:` list entry is an `include:`/`exclude:` marker
+/// rather than a column definition (the keys dbt reserves there —
+/// `tests:` lists do NOT have markers, every entry is a def).
+fn version_marker(v: &serde_json::Value) -> bool {
+    v.as_object()
+        .is_some_and(|m| m.contains_key("include") || m.contains_key("exclude"))
+}
+
+/// The members of a `columns:` `include:`/`exclude:` — a name list, or a
+/// bare `'*'`/`'all'` scalar (the dbt spellings for "the whole inherited
+/// set"). Non-scalars can't name a column and drop silently.
+fn version_marker_list(v: Option<&serde_json::Value>) -> Vec<String> {
+    match v {
+        Some(serde_json::Value::Array(a)) => a.iter().filter_map(scalar_to_string).collect(),
+        Some(v) => scalar_to_string(v).into_iter().collect(),
+        None => Vec::new(),
     }
 }
 
@@ -424,9 +828,15 @@ pub(super) fn synth_tests(
         }
         let key = format!("test.{}.{}", ctx.proj, ctx.seq);
         ctx.seq += 1;
-        let name = match column {
-            Some(c) => format!("{kind}_{target_name}_{c}"),
-            None => format!("{kind}_{target_name}"),
+        // A `name:` inside the body is the generated-name override —
+        // dbt consumes it as the node name and drops it from kwargs
+        // (verified: `{include: {name: custom_test}}` records kind
+        // `include` named `custom_test` with `name` absent from kwargs).
+        let name_override = body.and_then(|b| b.get("name")).and_then(scalar_to_string);
+        let name = match (name_override, column) {
+            (Some(n), _) => n,
+            (None, Some(c)) => format!("{kind}_{target_name}_{c}"),
+            (None, None) => format!("{kind}_{target_name}"),
         };
         // The config map under `{kind: {...}}` — a `relationships` test's
         // `to:`/`field:` live there; a bare-string test has none. `config:`
@@ -437,6 +847,7 @@ pub(super) fn synth_tests(
             body.cloned().unwrap_or_default();
         kwargs.remove("config");
         kwargs.remove("enabled");
+        kwargs.remove("name");
         // dbt >=1.10's `arguments:` key is the canonical test-args home —
         // the manifest records it FLATTENED into kwargs (verified on
         // 1.12.6: `arguments: {column_name: id}` lands as
@@ -449,13 +860,21 @@ pub(super) fn synth_tests(
             }
         }
         // `to:` is a Jinja-string reference — resolve through the same
-        // extractors the .sql scan uses. Unresolved refs (and non-ref values
-        // like `var('x')`) drop out, exactly like a model's.
+        // extractors the .sql scan uses, version pins included: a
+        // `to: "{{ ref('m', v=1) }}"` dep names the `.v1` member like
+        // the real manifest's record does. Unresolved refs (and non-ref
+        // values like `var('x')`) drop out, exactly like a model's.
         let mut deps = vec![target_uid.to_string()];
         if let Some(to) = kwargs.get("to").and_then(|v| v.as_str()) {
-            for ref_name in ctx.pat.refs(to) {
-                if let Some(uid) = ctx.name_index.get(&ref_name) {
-                    deps.push(uid.clone());
+            let masked = mask_jinja_comments(to);
+            for site in call_sites_masked(&masked) {
+                if let CallKind::Ref { name, .. } = &site.kind {
+                    let pin = ref_pin(&masked, &site);
+                    if let Some(uid) =
+                        ref_target_of(&masked[name.clone()], &pin, ctx.name_index, ctx.versioned)
+                    {
+                        deps.push(uid.clone());
+                    }
                 }
             }
             for (src, tbl) in ctx.pat.sources(to) {
@@ -538,13 +957,9 @@ pub(super) fn synth_unit_tests(
             unit_test_targets(ctx, model, &entry.versions, yml_path, &entry.name, warnings)
         {
             let uid = match &version {
-                Some(v) => format!(
-                    "unit_test.{}.{}.{}_v{}",
-                    ctx.proj,
-                    model,
-                    entry.name,
-                    normalize_version(v)
-                ),
+                // `<test>_v<version>` with the declared scalar rendered —
+                // `2` → `_v2`, `'v3'` → `_vv3` — the real wire shape.
+                Some(v) => format!("unit_test.{}.{}.{}_v{}", ctx.proj, model, entry.name, v),
                 None => format!("unit_test.{}.{}.{}", ctx.proj, model, entry.name),
             };
             // A repeated (model, name) declaration is a dbt error —
@@ -578,21 +993,22 @@ pub(super) fn synth_unit_tests(
 /// The `(version, depends_on uid)` pairs a `unit_tests:` entry expands
 /// to — the per-version emission dbt performs (`versions: {include: …}`
 /// mints one `unit_test…_v<version>` record per selected version), over
-/// the members source mode can see.
+/// the members `synthesize_models` bound.
 ///
-/// Source mode synthesizes no `.vN` uid segments, but the file-name
-/// convention dbt requires — `<model>_v<version>.sql` — makes a
-/// versioned family's members visible as names: `fct_orders_v2` IS
-/// version 2's model. A member set therefore stands in for the model's
-/// declared `versions:` — an unfiltered entry expands to every member,
-/// `include:` selects them (an absent `include` or `'*'` means all),
-/// `exclude:` subtracts — matched through [`normalize_version`] so the
-/// `v2`/`2`/`V2` spellings name the same member. An `include`d version
-/// no member answers to is warned about (dbt hard-errors there); the
-/// recorded `version` is the member's own declared value — the file
-/// suffix — so the wire keeps `beta`-style versions verbatim.
+/// A `versions:`-declared family walks its member table in declaration
+/// order — an unfiltered entry expands to every LIVE member (a parked
+/// `enabled: false` version contributes nothing, the way dbt's disabled
+/// map holds it), `include:` selects them (an absent `include` or `'*'`
+/// means all), `exclude:` subtracts — matched on the VERBATIM rendered
+/// version, the same `v{arg}`-suffix comparison `ref(m, v=…)` performs
+/// (`include: [v3]` selects `v: 'v3'`'s `.vv3` member, never `v: 3`'s
+/// `.v3` — verified on 1.12.6). An `include`d version the family never
+/// declared is warned about (dbt hard-errors there); a declared-but-
+/// unbound member just doesn't emit. The recorded `version` is the
+/// member's declared scalar rendered — `beta` stays `beta`, `'v3'`
+/// stays `v3` — so the wire keeps the real `<test>_v<version>` shape.
 ///
-/// A model with no `<model>_v*` members is unversioned: its single
+/// A model with no `versions:` declaration is unversioned: its single
 /// `model.<proj>.<name>` uid is the target, and a single-element
 /// `include` rides `version` for fidelity only (dbt rejects `versions:`
 /// on an unversioned model — degrading to the one target beats dropping
@@ -608,41 +1024,47 @@ fn unit_test_targets(
     warnings: &mut Vec<String>,
 ) -> Vec<(Option<String>, String)> {
     let bare = format!("model.{}.{}", ctx.proj, model);
-    // The bare `model:` name wins when it IS a model — a `fct_orders`
-    // sitting next to a coincidentally-named `fct_orders_v2` file stays
-    // the target. A real versioned family carries no bare name (dbt's
-    // file convention names every version `<model>_v<version>.sql`), so
-    // only then do the `_v*` members expand.
-    if ctx.name_index.get(model).is_none_or(|u| u != &bare) {
-        let prefix = format!("{model}_v");
-        let mut members: Vec<(&str, &String)> = ctx
-            .name_index
-            .iter()
-            .filter_map(|(name, uid)| name.strip_prefix(&prefix).map(|v| (v, uid)))
-            .collect();
-        if !members.is_empty() {
-            members.sort();
-            let include = version_set(&versions.include);
-            let exclude = version_set(&versions.exclude);
-            let kept: Vec<_> = members
-                .into_iter()
-                .filter(|(mv, _)| {
-                    include
-                        .as_ref()
-                        .is_none_or(|set| set.contains(normalize_version(mv)))
-                        && !exclude
-                            .as_ref()
-                            .is_some_and(|set| set.contains(normalize_version(mv)))
-                })
-                .map(|(mv, uid)| (Some(mv.to_string()), uid.clone()))
-                .collect();
-            if kept.is_empty() {
-                warnings.push(format!(
-                    "{yml_path}: unit test '{test_name}' selects no version of model '{model}' — it can't target anything"
-                ));
+    if let Some(family) = ctx.versioned.get(model) {
+        // The member table is keyed by the declared scalar RENDERED —
+        // matching is verbatim, the same `v{arg}`-suffix comparison
+        // `ref(m, v=…)` performs (`include: [v3]` selects `v: 'v3'`'s
+        // `.vv3` member, never `v: 3`'s `.v3`).
+        let include = version_set(&versions.include);
+        let exclude = version_set(&versions.exclude);
+        let declared: std::collections::BTreeSet<String> =
+            family.versions.keys().cloned().collect();
+        // An `include`d version the family never declared is a dbt parse
+        // error — warn-and-skip like the other malformed declarations.
+        if let Some(set) = &include {
+            for v in set.iter().filter(|v| v.as_str() != "*") {
+                if !declared.contains(v) {
+                    warnings.push(format!(
+                        "{yml_path}: unit test '{test_name}' includes version '{v}' which model '{model}' never declares — ignoring it"
+                    ));
+                }
             }
-            return kept;
         }
+        let kept: Vec<_> = family
+            .versions
+            .iter()
+            .filter(|(v, _)| {
+                include
+                    .as_ref()
+                    .is_none_or(|set| set.contains("*") || set.contains(*v))
+                    && !exclude
+                        .as_ref()
+                        .is_some_and(|set| set.contains("*") || set.contains(*v))
+            })
+            .filter_map(|(v, uid)| uid.as_ref().map(|u| (Some(v.clone()), u.clone())))
+            .collect();
+        if kept.is_empty() {
+            warnings.push(format!(
+                "{yml_path}: unit test '{test_name}' selects no version of model '{model}' — it can't target anything"
+            ));
+        }
+        return kept;
+    }
+    if ctx.name_index.get(model).is_none_or(|u| u != &bare) {
         // The name answered to a non-model node or nothing at all.
         warnings.push(format!(
             "{yml_path}: unit test '{test_name}' targets unknown model '{model}' — it can't target anything"
@@ -656,7 +1078,7 @@ fn unit_test_targets(
         .include
         .as_array()
         .filter(|l| l.len() == 1)
-        .and_then(|l| l.first().and_then(version_scalar));
+        .and_then(|l| l.first().and_then(scalar_to_string));
     vec![(version, bare)]
 }
 
@@ -719,20 +1141,11 @@ fn csv_records(text: &str) -> Option<usize> {
     Some(records)
 }
 
-/// A `versions:` list's normalized member set — `None` for the
+/// A `versions:` list's rendered member set — `None` for the
 /// absent/wildcard/non-list spellings (all of which select every
-/// member), `Some` of the normalized version strings for a real list.
+/// member), `Some` of the verbatim version strings for a real list
+/// (non-scalars can't name a version and drop out).
 fn version_set(v: &serde_json::Value) -> Option<std::collections::BTreeSet<String>> {
     let list = v.as_array().filter(|l| !l.is_empty())?;
-    Some(
-        list.iter()
-            .filter_map(|v| version_scalar(v).map(|s| normalize_version(&s).to_string()))
-            .collect(),
-    )
-}
-
-/// A `versions:` item's version string — `2` → `"2"`, `'beta'` →
-/// `"beta"`; non-scalars can't name a version and yield `None`.
-fn version_scalar(v: &serde_json::Value) -> Option<String> {
-    scalar_to_string(v)
+    Some(list.iter().filter_map(scalar_to_string).collect())
 }

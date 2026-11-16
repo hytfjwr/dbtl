@@ -39,6 +39,8 @@ use super::patterns::{
     find_subslice, jinja_calls, jinja_tag_close, lit_value, scan_call_args, tag_word,
     top_level_segments,
 };
+use super::synth::RefPin;
+use super::yaml::scalar_to_string;
 
 /// Deepest macro→macro chain an invocation resolves before the call
 /// reports `incomplete` — real chains run 1–3 deep; the cap is for
@@ -248,11 +250,12 @@ fn is_ident(s: &str) -> bool {
 }
 
 /// Reduce `expr` against `scope` (the enclosing macro's parameter names,
-/// empty at model level): quoted string literal → `Lit`, bare parameter
-/// name → `Param`, everything else → `Other`.
+/// empty at model level): a quoted string or scalar literal → `Lit` (a
+/// number/bool renders — `v=2`/`v=1.10` bind version pins too), a bare
+/// parameter name → `Param`, everything else → `Other`.
 fn classify_expr(expr: &str, scope: &[String]) -> ArgExpr {
     let e = expr.trim();
-    if let Some(serde_json::Value::String(s)) = lit_value(e) {
+    if let Some(s) = lit_value(e).and_then(|v| scalar_to_string(&v)) {
         return ArgExpr::Lit(s);
     }
     if let Some(i) = scope.iter().position(|p| p == e) {
@@ -333,9 +336,12 @@ fn arg_value(args: &CallArgs, i: usize, name: &str, bound: &[Option<String>]) ->
 }
 
 /// The resolved shape of one `ref`/`source` body dep under `bound` —
-/// `None` when a needed argument isn't provably a string.
+/// `None` when a needed argument isn't provably a string. A `ref` keeps
+/// the `v=`/`version=` kwarg's [`RefPin`]: a bound literal pins the
+/// version, an unbound one is the dynamic pin source mode resolves to
+/// the family's latest.
 enum DepTarget {
-    Ref(String),
+    Ref(String, RefPin),
     Source(String, String),
 }
 
@@ -346,7 +352,16 @@ fn dep_target(dep: &BodyDep, bound: &[Option<String>]) -> Option<DepTarget> {
             .last()
             .and_then(|e| eval(e, bound))
             .or_else(|| kw_value(args, "name").and_then(|e| eval(e, bound)))
-            .map(DepTarget::Ref),
+            .map(|name| {
+                let pin = kw_value(args, "v")
+                    .or_else(|| kw_value(args, "version"))
+                    .map(|e| match eval(e, bound) {
+                        Some(v) => RefPin::Literal(v),
+                        None => RefPin::Dynamic,
+                    })
+                    .unwrap_or(RefPin::Absent);
+                DepTarget::Ref(name, pin)
+            }),
         BodyDep::Source(args) => match (
             arg_value(args, 0, "source_name", bound),
             arg_value(args, 1, "table_name", bound),
@@ -362,9 +377,9 @@ fn dep_target(dep: &BodyDep, bound: &[Option<String>]) -> Option<DepTarget> {
 /// whether any part stayed unresolvable.
 #[derive(Debug, Default)]
 pub(super) struct Resolution {
-    /// Model names `ref()` reduced to (the name_index resolves them like
-    /// a model-level `ref('x')`).
-    pub refs: Vec<String>,
+    /// `(name, pin)` pairs `ref()` reduced to (the family/name_index
+    /// resolves them like a model-level `ref('x')`/`ref('x', v=…)`).
+    pub refs: Vec<(String, RefPin)>,
     /// `(source_name, table_name)` pairs `source()` reduced to.
     pub sources: Vec<(String, String)>,
     /// The bare name of the node-level invoked project macro — direct
@@ -566,7 +581,7 @@ impl Macros {
         let mut out = Resolution::default();
         for dep in &def.deps {
             match dep_target(dep, bound) {
-                Some(DepTarget::Ref(name)) => out.refs.push(name),
+                Some(DepTarget::Ref(name, pin)) => out.refs.push((name, pin)),
                 Some(DepTarget::Source(s, t)) => out.sources.push((s, t)),
                 None => out.incomplete = true,
             }

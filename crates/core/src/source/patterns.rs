@@ -7,11 +7,10 @@ use std::ops::Range;
 /// leading `\b` stops `my_ref(...)` / `data_source(...)` identifiers producing
 /// spurious edges. A versioned or kwarg-bearing `ref('x', v=2)` /
 /// `ref('x', version=2)` IS matched — the trailing `(?:,[^)]*)?` absorbs any
-/// extra args up to (but never past) the call's closing `)`. Edge resolution
-/// is name-only — the version kwargs ride the arg tail (`call_sites_masked`
-/// records them on `CallKind::Ref` so a position can still pick the versioned
-/// call);
-/// the `.vN` node a `versions:` block would define is not synthesized.
+/// extra args up to (but never past) the call's closing `)`. The `v=`/
+/// `version=` kwarg rides the arg tail (`call_sites_masked` records it on
+/// `CallKind::Ref`), and edge resolution reads it as a [`RefPin`]: a literal
+/// pins the `.vN` member, a nonliteral kwarg approximates to the latest.
 pub(super) struct Patterns {
     pub(super) ref_re: Regex,
     pub(super) source_re: Regex,
@@ -56,19 +55,6 @@ impl Patterns {
         }
     }
 
-    /// The referenced model names. `ref('pkg','x')` uses the 2nd arg (`x`);
-    /// `ref('x')` uses the 1st.
-    pub(super) fn refs(&self, sql: &str) -> Vec<String> {
-        self.ref_re
-            .captures_iter(sql)
-            .filter_map(|c| {
-                c.get(2)
-                    .or_else(|| c.get(1))
-                    .map(|m| m.as_str().to_string())
-            })
-            .collect()
-    }
-
     /// The `(source_name, table_name)` pairs.
     pub(super) fn sources(&self, sql: &str) -> Vec<(String, String)> {
         self.source_re
@@ -83,8 +69,8 @@ impl Patterns {
     }
 
     /// The `ref()`/`source()`/`config()` calls in `sql`, ordered by position —
-    /// the span-carrying extension of [`refs`](Patterns::refs) /
-    /// [`sources`](Patterns::sources). The SAME regexes recognize the calls
+    /// the span-carrying entry point every dep extraction goes through.
+    /// The SAME regexes recognize the calls
     /// (extraction semantics are identical: `my_ref(` can't match, an
     /// unquoted or unclosed call is not a call), then a balanced-paren,
     /// quote-aware rescan takes the call's TRUE end — the regex's `[^)]*`
@@ -863,7 +849,7 @@ fn lit_range(text: &str, expr: &str) -> Option<Range<usize>> {
     let start = e.as_ptr() as usize - text.as_ptr() as usize;
     match lit_value(e)? {
         serde_json::Value::String(_) => Some(start + 1..start + e.len() - 1),
-        serde_json::Value::Number(_) => Some(start..start + e.len()),
+        serde_json::Value::Number(_) | serde_json::Value::Bool(_) => Some(start..start + e.len()),
         _ => None,
     }
 }

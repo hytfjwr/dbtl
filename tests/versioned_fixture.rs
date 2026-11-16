@@ -16,15 +16,15 @@
 //!   model for counting.
 //! - A `versions: include: [2]` unit test must attach to v2 exactly.
 //!
-//! Source mode intentionally does NOT synthesize versions (the `.sql` files
-//! are independent models there), so this fixture is deliberately absent
-//! from `consistency.rs` — manifest mode plus the one deliberate source-mode
-//! assertion: `versions: include`-scoped unit tests DO expand over the
-//! `fct_orders_v<N>.sql` member files and land on the same member the
-//! manifest's `.v2` uid names.
+//! Source mode synthesizes the same `model.<pkg>.<name>.vN` members —
+//! `ref('fct_orders')` lands on the declared latest, `v=`/`version=`
+//! pins land on their member, and `versions: include`-scoped unit
+//! tests expand per member through the synthesized family — the
+//! manifest↔source assertions at the bottom pin the equivalence.
 
 mod common;
 
+use common::consistency as cmp;
 use common::{lines, run, stderr, stdout};
 use dbtl::{
     build_model_list, load_dag, load_dag_from_source, run_rules, Dag, LintConfig, LintInput,
@@ -187,16 +187,27 @@ fn lint_folds_versions_into_one_consumer_and_names_them() {
     let dag = dag();
     let outcome = run_rules(LintInput::new(&dag, &LintConfig::default()));
 
-    // `source_fanout` (threshold 2): raw.orders feeds v1+v2+vbeta — three
-    // DAG children but ONE logical model. Counted per-node this would flag;
-    // folded it must not.
+    // `source_fanout`: raw.orders feeds seven MEMBER nodes across three
+    // logical models — the fold reports `dim_items, fct_orders,
+    // stg_users` once, never the member count or spellings.
+    let fanout: Vec<&dbtl::Finding> = outcome
+        .findings
+        .iter()
+        .filter(|f| f.rule == dbtl::LintRule::SourceFanout)
+        .collect();
+    assert_eq!(fanout.len(), 1, "one folded finding: {fanout:?}");
     assert!(
-        outcome
-            .findings
-            .iter()
-            .all(|f| f.rule != dbtl::LintRule::SourceFanout),
-        "3 versions of one model are ONE consumer — no source_fanout finding"
+        fanout[0].message.contains("3 models"),
+        "7 member nodes fold to 3 logical models: {}",
+        fanout[0].message
     );
+    for name in ["dim_items", "fct_orders", "stg_users"] {
+        assert!(
+            fanout[0].message.contains(name),
+            "the family names: {}",
+            fanout[0].message
+        );
+    }
 
     // `marts_depend_on_source` DOES fire — once per version (each is a
     // real model with the defect) — and the messages name the exact
@@ -206,12 +217,25 @@ fn lint_folds_versions_into_one_consumer_and_names_them() {
         .iter()
         .filter(|f| f.rule == dbtl::LintRule::MartsDependOnSource)
         .collect();
-    marts.sort_by_key(|f| &f.node_uid);
-    assert_eq!(marts.len(), 3, "one finding per version, got: {marts:?}");
-    for (f, v) in marts.iter().zip(["v1", "v2", "vbeta"]) {
-        assert_eq!(f.node_uid, format!("model.versioned.fct_orders.{v}"));
+    marts.sort_by_key(|f| f.node_uid.clone());
+    let want: Vec<(&str, &str)> = [
+        ("dim_items", "v1"),
+        ("dim_items", "v2"),
+        ("fct_orders", "v1"),
+        ("fct_orders", "v2"),
+        ("fct_orders", "vbeta"),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        marts.len(),
+        want.len(),
+        "one finding per version: {marts:?}"
+    );
+    for (f, (name, v)) in marts.iter().zip(want) {
+        assert_eq!(f.node_uid, format!("model.versioned.{name}.{v}"));
         assert!(
-            f.message.contains(&format!("fct_orders.{v}")),
+            f.message.contains(&format!("{name}.{v}")),
             "the message names the version: {}",
             f.message
         );
@@ -250,12 +274,12 @@ fn unit_test_attaches_to_its_declared_version_only() {
 
 #[test]
 fn source_mode_attaches_the_versioned_unit_test_to_the_same_member() {
-    // The source-mode counterpart: no `.v2` uid segment exists off-manifest,
-    // so `versions: {include: [2]}` expands over the `fct_orders_v<N>.sql`
-    // member files — `fct_orders_v2` carries the test with the same
-    // (inputs, given_rows, expect_rows) shape the manifest records.
+    // The source-mode counterpart: `versions: {include: [2]}` expands
+    // over the synthesized `model.versioned.fct_orders.vN` members —
+    // `.v2` carries the test with the same (inputs, given_rows,
+    // expect_rows) shape the manifest records.
     let dag = load_dag_from_source(PROJECT).expect("versioned project parses");
-    let tests = dag.tests("model.versioned.fct_orders_v2");
+    let tests = dag.tests("model.versioned.fct_orders.v2");
     let unit = tests
         .iter()
         .find(|t| t.kind == "unit")
@@ -267,8 +291,8 @@ fn source_mode_attaches_the_versioned_unit_test_to_the_same_member() {
         (1, Some(1), Some(1))
     );
     for uid in [
-        "model.versioned.fct_orders_v1",
-        "model.versioned.fct_orders_vbeta",
+        "model.versioned.fct_orders.v1",
+        "model.versioned.fct_orders.vbeta",
     ] {
         assert!(
             dag.tests(uid).iter().all(|t| t.kind != "unit"),
@@ -279,10 +303,11 @@ fn source_mode_attaches_the_versioned_unit_test_to_the_same_member() {
 
 #[test]
 fn source_mode_flags_no_unresolved_references() {
-    // The 0-findings pin: `ref('fct_orders')` and both `v=` pins
-    // resolve through the synthesized scope — the `<name>_v<N>` member
-    // files declare the `fct_orders` family, and source mode never
-    // judges a pin (no `.vN` uids to check it against).
+    // The 0-findings pin: `ref('fct_orders')` lands on the declared
+    // latest member and both `v=` pins land on their synthesized member
+    // — the `RefScope` the loader emits carries the same `(pkg, name,
+    // version)` tuples a real manifest's does, so the pins judge the
+    // same way and resolve.
     let dag = load_dag_from_source(PROJECT).expect("versioned project parses");
     let findings = run_rules(LintInput::new(&dag, &LintConfig::default())).findings;
     assert!(
@@ -386,6 +411,84 @@ fn columns_address_a_single_version_or_bail_ambiguous() {
         "stderr: {}",
         stderr(&out)
     );
+}
+
+// ---- manifest↔source: the same project both ways ----------------------------
+
+/// (manifest-mode Dag, source-mode Dag) of `versioned_project`.
+fn both() -> (Dag, Dag) {
+    cmp::dags(
+        MANIFEST,
+        PROJECT,
+        "cargo xtask gen-fixture-manifest --project tests/fixtures/versioned_project --dbt-version 1.12.6",
+    )
+}
+
+#[test]
+fn source_mode_matches_the_manifest_node_set_and_edges() {
+    // The synthesized `.vN` members land exactly where real dbt put them:
+    // same uid set, same adjacency (`ref('fct_orders')` → `.v2`, the
+    // `v=`/`version=` pins → their member).
+    let (m, s) = both();
+    cmp::assert_node_infos_identical(&m, &s, cmp::NO_DROPPED_EDGES);
+    cmp::assert_closures_identical(&m, &s, cmp::NO_DROPPED_EDGES);
+}
+
+#[test]
+fn source_mode_matches_the_manifest_details() {
+    // `version`/`latest_version`/`deprecation_date` ride NodeDetail — the
+    // shared comparison covers them through the description/meta surface
+    // plus the per-member patch_path (`<pkg>://` stripped on both sides).
+    let (m, s) = both();
+    cmp::assert_details_identical(&m, &s);
+    for (uid, want) in [
+        ("model.versioned.fct_orders.v1", ("1", "2")),
+        ("model.versioned.fct_orders.v2", ("2", "2")),
+        ("model.versioned.fct_orders.vbeta", ("beta", "2")),
+    ] {
+        let d = s.detail(uid).expect("source detail");
+        assert_eq!(
+            (d.version.as_deref(), d.latest_version.as_deref()),
+            (Some(want.0), Some(want.1)),
+            "{uid} version fields"
+        );
+    }
+}
+
+#[test]
+fn source_mode_matches_the_manifest_tests() {
+    let (m, s) = both();
+    cmp::assert_tests_identical(&m, &s);
+}
+
+#[test]
+fn source_mode_matches_the_manifest_lint_findings() {
+    // Same rules, nodes, messages — the one documented difference is the
+    // finding LOCATION: the manifest records only `patch_path` (the file),
+    // while source mode also resolves the `name:` line/column inside it.
+    let (m, s) = both();
+    let cfg = LintConfig::default();
+    let key = |f: &dbtl::Finding| {
+        (
+            f.rule,
+            f.node_uid.clone(),
+            f.related.clone(),
+            f.message.clone(),
+            f.severity,
+            f.help.clone(),
+        )
+    };
+    let mf: Vec<_> = run_rules(LintInput::new(&m, &cfg))
+        .findings
+        .iter()
+        .map(key)
+        .collect();
+    let sf: Vec<_> = run_rules(LintInput::new(&s, &cfg))
+        .findings
+        .iter()
+        .map(key)
+        .collect();
+    assert_eq!(mf, sf, "lint findings diverge between modes");
 }
 
 // ---- scope: nothing versioned leaks through the prune ------------------------

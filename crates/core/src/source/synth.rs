@@ -13,8 +13,9 @@ use anyhow::{Context, Result};
 
 use super::*;
 use crate::{
-    DisabledRef, RawConfig, RawDoc, RawExposure, RawExposureOwner, RawMetadata, RefScope,
-    UnresolvedAdjacent,
+    dag::{version_scope_key, versioned_model_segs},
+    normalize_version, DisabledRef, RawConfig, RawDoc, RawExposure, RawExposureOwner, RawMetadata,
+    RefScope, UnresolvedAdjacent,
 };
 
 /// The shared state the source-synthesis stages build up: the parsed project
@@ -46,7 +47,28 @@ pub(super) struct Synthesis {
     sources: HashMap<String, RawSource>,
     exposures: HashMap<String, RawExposure>,
     /// name -> unique_id for models/seeds/snapshots, so `ref('x')` can resolve.
+    /// A `versions:`-declared family lands here under its logical name
+    /// pointing at the latest version's `.<v>` member uid; a member's
+    /// file stem (`fct_orders_v2`, a `defined_in:` stem) is never a
+    /// refable name — dbt reaches those nodes only through the family.
     name_index: HashMap<String, String>,
+    /// Model files collected but not yet turned into nodes — a `.sql`/
+    /// `.py` file is an independent model OR a `versions:`-declared
+    /// member (via the `<name>_v<v>`/`<name>` conventions or
+    /// `defined_in:`), which only the parsed schema files can tell.
+    /// `synthesize_models` binds them after `parse_schema_files`.
+    pending_models: Vec<PendingModel>,
+    /// The collect-time claim registry — every stem a collected
+    /// resource took, in collection order (pending models reserve their
+    /// stems here before the schema pass says where they land, keeping
+    /// the models-first ordering seeds/snapshots check against). After
+    /// `synthesize_models` the `name_index` is the universe — a claimed
+    /// member stem stays claimed without ever becoming refable.
+    claimed: HashSet<String>,
+    /// `versions:`-declared families `synthesize_models` bound —
+    /// family name → its version table — the `ref('fam', v=)` lookup
+    /// and the per-version metadata expansion target.
+    versioned: BTreeMap<String, VersionedFamily>,
     /// `unit_tests:` declarations → the `RawManifest::unit_tests` map —
     /// filled in `apply_schema_files` once `name_index` is complete.
     unit_tests: HashMap<String, RawUnitTest>,
@@ -71,13 +93,15 @@ pub(super) struct Synthesis {
     /// (`+access`/`+group`/`+contract`/`+incremental_strategy`) — the same
     /// lowest-precedence slot `tree_mat`/`tree_uk` occupy.
     tree_gov: HashMap<String, TreeConfig>,
-    /// `enabled: false`-parked refable names — `name -> resource types` —
-    /// recorded instead of dropped: `unresolved_references` reports a
-    /// `ref()` to one under its own "disabled" wording, matching where
-    /// dbt parks them (`manifest.disabled`). The kind set records every
-    /// parked resource under the name — a same-name model+seed collision
-    /// keeps both, matching the manifest-mode `disabled_refs` shape.
-    disabled_names: BTreeMap<String, BTreeSet<String>>,
+    /// `enabled: false`-parked refable names — `name -> {(version,
+    /// resource kind)}` — recorded instead of dropped:
+    /// `unresolved_references` reports a `ref()` to one under its own
+    /// "disabled" wording, matching where dbt parks them
+    /// (`manifest.disabled`). A parked version member records its
+    /// declared version so a `v=` pin reads "disabled version" rather
+    /// than "no such version"; `None` marks an unversioned resource —
+    /// the same shape `DisabledRef` carries on the wire.
+    disabled_names: BTreeMap<String, BTreeSet<(Option<String>, String)>>,
     /// `(source, table)` pairs `config.enabled`/`+enabled` parked — the
     /// source-side half of `disabled_names`.
     disabled_sources: BTreeSet<(String, String)>,
@@ -95,8 +119,10 @@ pub(super) struct Synthesis {
     enabled_unverifiable: BTreeSet<String>,
     /// Names `ref()` may legitimately resolve to without a synthesized
     /// node: `versions:`/`defined_in:`-declared model names and the
-    /// `<name>` families of `<name>_v<ver>` model files (versioned nodes
-    /// are never synthesized, so the family name is counted resolved).
+    /// `<name>` families of `<name>_v<ver>` model files — a family whose
+    /// members all went missing/disabled keeps resolving rather than
+    /// fabricating a "no such name" verdict dbt can't confirm either
+    /// (the declaration alone is a dbt parse error we degrade).
     assumed_names: BTreeSet<String>,
     /// Recoverable oddities (an unparsable schema.yml, a duplicate resource
     /// name, a non-mapping `meta:`) are reported as warnings, not errors.
@@ -146,6 +172,76 @@ pub(super) struct ResolvedEdges {
     pub child_map: HashMap<String, Vec<String>>,
     /// The macro metadata and unprovable-adjacency record.
     pub extras: EdgeExtras,
+}
+
+/// A model file collected before the schema files name its fate: an
+/// independent `model.<proj>.<stem>` or a `versions:` member's
+/// implementation (`model.<proj>.<fam>.v<ver>`). Nothing is synthesized
+/// from it until `synthesize_models` — the `claimed` registry already
+/// holds the stem, preserving the collection-order name claims.
+pub(super) struct PendingModel {
+    /// The file stem — the model name when the file stays independent.
+    name: String,
+    /// The source file — `path`/`original_file_path` (and `.py` scans).
+    file: PathBuf,
+    /// The model-paths root `file` was collected under (`path` is
+    /// relative to it, like dbt records).
+    root: PathBuf,
+    /// The raw file text — `raw_code`.
+    raw: String,
+    /// The file's own `config(enabled=)`/`dbt.config(enabled=)` verdict —
+    /// the highest-precedence `enabled` channel wherever the file lands
+    /// (a member file's own config parks ITS version only).
+    in_file: Option<Enabled>,
+    /// The language-specific collected payload.
+    kind: PendingKind,
+}
+
+/// What a pending model file carries past the schema pass.
+pub(super) enum PendingKind {
+    /// A `.sql` model — the Jinja-comment-masked text the in-file config
+    /// extractors and the edge pass read.
+    Sql { masked: String },
+    /// A `.py` model — the merged `dbt.config` surface and the deferred
+    /// `dbt.*` dependency calls.
+    Py {
+        cfg: Box<PyFileConfig>,
+        calls: Vec<PyCall>,
+        jinja: bool,
+    },
+}
+
+/// A `versions:`-declared model family — the members `synthesize_models`
+/// bound to implementation files: the `ref('fam', v=…)` lookup table and
+/// the per-version metadata expansion target.
+pub(super) struct VersionedFamily {
+    /// `ref('fam')`'s target — the declared `latest_version:` or the
+    /// computed newest — as the RENDERED version string (`"2"`, `"beta"`)
+    /// the `versions` keys share.
+    pub latest: String,
+    /// rendered version → member uid. A version whose member is parked
+    /// (`enabled: false`) or file-less stays `None` — a `v=` pin on it
+    /// resolves to nothing and `disabled_refs`/`unresolved` words why.
+    pub versions: BTreeMap<String, Option<String>>,
+}
+
+/// What a `ref()` call's `v=`/`version=` kwarg resolves to — the three
+/// states dbt's versioned-target lookup distinguishes: no pin (the
+/// family's LATEST answers), a literal pin (that exact rendered
+/// version), and a kwarg source can't read (`v=var('x')`, a macro's
+/// unbound parameter — resolved to the family's latest, the same
+/// approximation a bare ref gives, since dbt binds it at run time).
+#[derive(Debug)]
+pub(super) enum RefPin {
+    /// No `v=`/`version=` kwarg — `ref('x')`.
+    Absent,
+    /// `v=`/`version=` a literal — rendered the way dbt writes it (a
+    /// number's `str()` — `1.10` → `"1.1"` — a string verbatim).
+    Literal(String),
+    /// A `v=` kwarg that isn't a literal — unprovable; the family's
+    /// latest is the approximation (and on an unversioned name the ref
+    /// resolves to nothing, like dbt's error).
+    Dynamic,
 }
 
 impl Synthesis {
@@ -276,6 +372,9 @@ impl Synthesis {
             sources: HashMap::new(),
             exposures: HashMap::new(),
             name_index: HashMap::new(),
+            pending_models: Vec::new(),
+            claimed: HashSet::new(),
+            versioned: BTreeMap::new(),
             unit_tests: HashMap::new(),
             node_sql: Vec::new(),
             node_python: Vec::new(),
@@ -292,11 +391,17 @@ impl Synthesis {
         })
     }
 
-    /// The models stage: every `.sql` under `model-paths` becomes a `model.*`
-    /// node — enabled-filtered (in-file `config()` and tree `+enabled`),
-    /// duplicate-named files dropped with a warning, in-file governance/
-    /// unique_key/alias/meta extracted, and the comment-masked SQL deferred
-    /// for the edge pass.
+    /// The models stage: every `.sql` under `model-paths` is collected as
+    /// a [`PendingModel`] — the schema pass still has to say whether a
+    /// file is an independent model or a `versions:`-declared member, so
+    /// node synthesis defers to [`Synthesis::synthesize_models`]. What
+    /// collect CAN decide it does here: the in-file `config(enabled=)`
+    /// verdict (a file's own config parks it wherever it lands — an
+    /// Off file is kept pending too, so the claim stage records the
+    /// parked member under its family rather than its stem), the
+    /// duplicate-name check (`claimed` reserves the stem in collection
+    /// order — models always precede seeds/snapshots), and the
+    /// `<name>_v<ver>` family-name assumption.
     pub(super) fn collect_models(&mut self) {
         for (file, root) in collect_with_root(&self.dir, &self.model_paths, "sql") {
             // Keep the pre-mask text for the SQL preview modal (comments intact);
@@ -304,146 +409,71 @@ impl Synthesis {
             // copy (dbt's Jinja-before-SQL-comments semantics) — masking preserves
             // byte length, so offsets in it index `raw` too.
             let raw = read(&file);
-            // `raw` moves into `RawNode` below, so the mask is owned here —
-            // comment-free files skip the byte loop and keep just the copy.
+            // `raw` moves into `RawNode` at synthesis, so the mask is owned
+            // here — comment-free files skip the byte loop and keep the copy.
             let masked = mask_jinja_comments(&raw).into_owned();
             let name = file_stem(&file);
-            // A `<name>_v<ver>` stem declares the `<name>` family — the
-            // ref scope counts it resolved even when the versioned nodes
-            // themselves are never synthesized.
+            // A `<name>_v<ver>` stem MAY declare the `<name>` family — the
+            // ref scope counts it resolved whether or not a `versions:`
+            // declaration later binds it (deliberately loose: an
+            // under-report, never a false "no such name").
             if let Some(family) = version_family(&name) {
                 self.assumed_names.insert(family.to_string());
             }
-            let uid = format!("model.{}.{name}", self.proj);
-            // dbt's `path` is relative to the model-paths root (e.g. `staging/x.sql`)
-            // — the left-pane layer grouping splits it on the first `/`.
-            // `original_file_path` is project-root-relative.
-            let path = rel_path(&root, &file);
-            let tree = resolve_tree_config(
-                &self.project.models,
-                &tree_segments(&self.proj, &path),
-                "models".to_string(),
-                &mut self.warnings,
-                Some(&self.vars),
-            );
-            // The in-file `config(enabled=)` verdict outranks the tree's
-            // `+enabled` — it decides whenever it exists; the tree only
-            // fills its absence. Disabled models never reach the
-            // manifest's `nodes` (dbt parks them under `disabled`); drop
-            // them here too, edges included — but keep the NAME, so a
-            // `ref()` to it reads as "disabled", not "missing". An
-            // `Unproven` verdict keeps the node AND marks it: dbt may
-            // have dropped it, so lint claims on it or its edges are
-            // unprovable.
+            // The in-file `config(enabled=)` verdict is the only enabled
+            // channel knowable before the member claims resolve the real
+            // fqn — a file's own `false` parks it under either fate, so
+            // it never claims the stem (matching dbt: a disabled resource
+            // doesn't answer a name claim either).
             let in_file = self.pat.enabled(
                 &masked,
                 &self.vars,
                 &mut self.warnings,
                 &rel_path(&self.dir, &file),
             );
-            let verdict = in_file.or(tree.enabled_verdict());
-            if verdict == Some(Enabled::Off) {
-                self.disabled_names
-                    .entry(name)
-                    .or_default()
-                    .insert("model".to_string());
-                continue;
+            if in_file != Some(Enabled::Off) {
+                // `collect_with_root` sorts by path, so the first file to
+                // claim a name wins deterministically; drop (and warn on)
+                // a later same-stem file before the synthesis stage can
+                // pick it up.
+                if !self.claimed.insert(name.clone()) {
+                    self.warnings.push(format!(
+                        "duplicate resource name '{name}': ignoring {}",
+                        rel_path(&self.dir, &file)
+                    ));
+                    continue;
+                }
             }
-            // `collect_with_root` sorts by path, so the first file to claim a
-            // name wins deterministically; drop (and warn on) a later same-stem
-            // file before it can touch `tree_mat`/`nodes`/`name_index`/`node_sql`.
-            if self.name_index.contains_key(&name) {
-                self.warnings.push(format!(
-                    "duplicate resource name '{name}': ignoring {}",
-                    rel_path(&self.dir, &file)
-                ));
-                continue;
-            }
-            if verdict == Some(Enabled::Unproven) {
-                self.enabled_unverifiable.insert(uid.clone());
-            }
-            if let Some(m) = &tree.materialized {
-                self.tree_mat.insert(uid.clone(), m.clone());
-            }
-            if !tree.meta.is_empty() {
-                self.tree_meta.insert(uid.clone(), tree.meta.clone());
-            }
-            if let Some(uk) = &tree.unique_key {
-                self.tree_uk.insert(uid.clone(), uk.clone());
-            }
-            self.tree_gov.insert(uid.clone(), tree.clone());
-            // The in-file `config(…)` spellings of the model governance fields —
-            // each the highest level of the same precedence chain `materialized`
-            // follows (`access`/`contract` are model-only; `group` is not) —
-            // extracted in one pass over the file's config() calls.
-            let gov = config_governance(&masked);
-            self.nodes.insert(
-                uid.clone(),
-                RawNode {
-                    name: name.clone(),
-                    resource_type: "model".to_string(),
-                    path: Some(path),
-                    original_file_path: Some(rel_path(&self.dir, &file)),
-                    config: RawConfig {
-                        materialized: self.pat.materialized(&masked),
-                        // In-file `config(unique_key=…)` is the HIGHEST
-                        // precedence level — the same chain `materialized`
-                        // follows (schema.yml and the tree fill below it).
-                        unique_key: config_unique_key(&masked),
-                        incremental_strategy: gov.incremental_strategy.clone(),
-                    },
-                    access: gov.access.clone(),
-                    group: gov.group.clone(),
-                    contract: gov.contract.clone(),
-                    // dbt records `language: "sql"` on every .sql-defined model.
-                    language: Some("sql".to_string()),
-                    // In-file `config(meta={…})` is the HIGHEST precedence level;
-                    // schema.yml and the project tree merge under it per key.
-                    meta: config_meta(&masked).unwrap_or_default(),
-                    raw_code: Some(raw),
-                    // In-file `config(alias=…)` is the highest-precedence relation
-                    // name — schema.yml `config.alias` can only fill it when
-                    // unset (same precedence chain as `materialized`).
-                    alias: config_alias(&masked),
-                    ..Default::default()
-                },
-            );
-            self.name_index.insert(name, uid.clone());
-            if let Some(v) = in_file {
-                self.in_file_enabled.insert(uid.clone(), v);
-            }
-            self.node_sql.push((uid, masked));
+            self.pending_models.push(PendingModel {
+                name,
+                file,
+                root,
+                raw,
+                in_file,
+                kind: PendingKind::Sql { masked },
+            });
         }
     }
 
-    /// The python half of model discovery: every `.py` under `model-paths`
-    /// becomes a `model.*` node — `language: "python"`, `raw_code` the file's
-    /// whole text, and `dbt.config(...)` literals as the in-file config
-    /// (kwargs or a positional dict — dbt accepts both). A `.sql` file of
-    /// the same stem claims the name first (models are collected before
-    /// python files, both in path order), matching the duplicate-name
-    /// stance `collect_models` takes. `def model`-missing files and
-    /// Jinja-marked files are dbt parse errors — kept with warnings, like
-    /// every other recoverable oddity.
+    /// The python half of model discovery — the same [`PendingModel`]
+    /// deferral `collect_models` takes (`language: "python"`, `raw_code`
+    /// the file's whole text, and `dbt.config(...)` literals as the
+    /// in-file config — kwargs or a positional dict, dbt accepts both),
+    /// deferred until `synthesize_models` binds the `versions:` members.
+    /// A `.sql` file of the same stem claims the name first (models are
+    /// collected before python files, both in path order). `def
+    /// model`-missing files and Jinja-marked files are dbt parse errors —
+    /// kept with warnings, like every other recoverable oddity.
     pub(super) fn collect_python_models(&mut self) {
         for (file, root) in collect_with_root(&self.dir, &self.model_paths, "py") {
             let raw = read(&file);
             let name = file_stem(&file);
-            // A `<name>_v<ver>` stem declares the `<name>` family — same
-            // convention as `.sql` stems.
+            // A `<name>_v<ver>` stem may declare the `<name>` family —
+            // same convention as `.sql` stems.
             if let Some(family) = version_family(&name) {
                 self.assumed_names.insert(family.to_string());
             }
-            let uid = format!("model.{}.{name}", self.proj);
-            let path = rel_path(&root, &file);
             let ofp = rel_path(&self.dir, &file);
-            let tree = resolve_tree_config(
-                &self.project.models,
-                &tree_segments(&self.proj, &path),
-                "models".to_string(),
-                &mut self.warnings,
-                Some(&self.vars),
-            );
             let scan = scan_python(&raw);
             if scan.model_defs != 1 {
                 self.warnings.push(format!(
@@ -457,16 +487,14 @@ impl Synthesis {
                 ));
             }
             let cfg = py_file_config(&scan, &mut self.warnings, &ofp);
-            // `enabled` parks like the SQL path: a proven literal
-            // `False` in `dbt.config(...)`, or the tree's `+enabled:
-            // false` — the in-file call outranks the tree whenever it
-            // declares `enabled`. A declared-but-unreadable or non-bool
-            // value warns, stays enabled, and marks the node
-            // `enabled`-unverifiable (the `Enabled::Unproven` stance —
-            // dbt may have dropped it, so claims on it are unprovable).
-            let in_file = match cfg.enabled {
+            // The in-file `enabled` verdict is the only channel knowable
+            // before the member claims resolve the real fqn — a proven
+            // literal `False` parks the file under either fate (a
+            // declared-but-unreadable or non-bool value warns and stays
+            // enabled — the `Enabled::Unproven` stance).
+            let in_file = match cfg.enabled.as_ref() {
                 Some(Some(serde_json::Value::Bool(b))) => {
-                    Some(if b { Enabled::On } else { Enabled::Off })
+                    Some(if *b { Enabled::On } else { Enabled::Off })
                 }
                 Some(Some(v)) => {
                     self.warnings.push(format!(
@@ -482,74 +510,28 @@ impl Synthesis {
                 }
                 None => None,
             };
-            let verdict = in_file.or(tree.enabled_verdict());
-            if verdict == Some(Enabled::Off) {
-                self.disabled_names
-                    .entry(name)
-                    .or_default()
-                    .insert("model".to_string());
-                continue;
-            }
-            if self.name_index.contains_key(&name) {
+            if in_file != Some(Enabled::Off) && !self.claimed.insert(name.clone()) {
                 self.warnings
                     .push(format!("duplicate resource name '{name}': ignoring {ofp}"));
                 continue;
             }
-            if verdict == Some(Enabled::Unproven) {
-                self.enabled_unverifiable.insert(uid.clone());
-            }
-            // The tree's other `+` keys DO reach a python model — but
-            // `+materialized` deliberately does not: dbt's python default
-            // `table` outranks the tree (verified: a `+materialized:
-            // view` tree still yields `table` on a config-less `.py`), so
-            // `tree_mat` never gains an entry for it.
-            if !tree.meta.is_empty() {
-                self.tree_meta.insert(uid.clone(), tree.meta.clone());
-            }
-            if let Some(uk) = &tree.unique_key {
-                self.tree_uk.insert(uid.clone(), uk.clone());
-            }
-            self.tree_gov.insert(uid.clone(), tree.clone());
-            self.nodes.insert(
-                uid.clone(),
-                RawNode {
-                    name: name.clone(),
-                    resource_type: "model".to_string(),
-                    path: Some(path),
-                    original_file_path: Some(ofp),
-                    config: RawConfig {
-                        // In-file `dbt.config(...)` is the HIGHEST
-                        // precedence level — schema.yml and the python
-                        // `table` default fill below it.
-                        materialized: cfg.materialized,
-                        unique_key: cfg.unique_key,
-                        incremental_strategy: cfg.incremental_strategy.clone(),
-                    },
-                    access: cfg.access,
-                    group: cfg.group,
-                    contract: cfg.contract,
-                    // dbt records `language: "python"` on a .py-defined model.
-                    language: Some("python".to_string()),
-                    meta: cfg.meta,
-                    raw_code: Some(raw),
-                    alias: cfg.alias,
-                    ..Default::default()
+            self.pending_models.push(PendingModel {
+                name,
+                file,
+                root,
+                raw,
+                in_file,
+                kind: PendingKind::Py {
+                    cfg: Box::new(cfg),
+                    // `dbt.config` calls configure the node — only the
+                    // dependency calls defer to the edge pass.
+                    calls: scan
+                        .calls
+                        .into_iter()
+                        .filter(|c| c.kind != PyCallKind::Config)
+                        .collect(),
+                    jinja: scan.has_jinja,
                 },
-            );
-            self.name_index.insert(name, uid.clone());
-            if let Some(v) = in_file {
-                self.in_file_enabled.insert(uid.clone(), v);
-            }
-            self.node_python.push(DeferredPy {
-                uid,
-                // `dbt.config` calls configure the node at collection;
-                // only the dependency calls defer to the edge pass.
-                calls: scan
-                    .calls
-                    .into_iter()
-                    .filter(|c| c.kind != PyCallKind::Config)
-                    .collect(),
-                jinja: scan.has_jinja,
             });
         }
     }
@@ -575,16 +557,20 @@ impl Synthesis {
                 self.disabled_names
                     .entry(name)
                     .or_default()
-                    .insert("seed".to_string());
+                    .insert((None, "seed".to_string()));
                 continue;
             }
-            if self.name_index.contains_key(&name) {
+            // `claimed` — not `name_index` — is the dup registry: a
+            // pending model file holds its stem here before the schema
+            // pass says where it lands.
+            if self.claimed.contains(&name) {
                 self.warnings.push(format!(
                     "duplicate resource name '{name}': ignoring {}",
                     rel_path(&self.dir, &file)
                 ));
                 continue;
             }
+            self.claimed.insert(name.clone());
             if verdict == Some(Enabled::Unproven) {
                 self.enabled_unverifiable.insert(uid.clone());
             }
@@ -636,7 +622,7 @@ impl Synthesis {
                     self.disabled_names
                         .entry(name)
                         .or_default()
-                        .insert("snapshot".to_string());
+                        .insert((None, "snapshot".to_string()));
                 }
                 continue;
             }
@@ -663,14 +649,15 @@ impl Synthesis {
                     self.disabled_names
                         .entry(name.clone())
                         .or_default()
-                        .insert("snapshot".to_string());
+                        .insert((None, "snapshot".to_string()));
                     continue;
                 }
-                if self.name_index.contains_key(&name) {
+                if self.claimed.contains(&name) {
                     self.warnings
                         .push(format!("duplicate resource name '{name}': ignoring {ofp}"));
                     continue;
                 }
+                self.claimed.insert(name.clone());
                 if verdict == Some(Enabled::Unproven) {
                     self.enabled_unverifiable.insert(uid.clone());
                 }
@@ -764,18 +751,19 @@ impl Synthesis {
                 .and_then(|v| serde_json::from_value::<SchemaFile>(v).map_err(|e| e.to_string()))
             {
                 Ok(schema) => {
-                    // A `versions:`-declared model name — and each entry's
-                    // `defined_in:` file — is refable without a synthesized
-                    // node (versioned nodes are never made), so the ref
-                    // scope counts both as resolved names.
+                    // A `versions:`-declared family name keeps resolving
+                    // even when no member file survives (all parked or
+                    // missing — dbt errors at parse there, we under-report),
+                    // and a `defined_in:` stem is a file the loader may not
+                    // bind — the ref scope counts both as resolved names.
                     for model in &schema.models {
                         if model.versions.is_empty() {
                             continue;
                         }
                         self.assumed_names.insert(model.name.clone());
                         for v in &model.versions {
-                            if let Some(d) = v.get("defined_in").and_then(|d| d.as_str()) {
-                                self.assumed_names.insert(d.to_string());
+                            if let Some(d) = &v.defined_in {
+                                self.assumed_names.insert(d.clone());
                             }
                         }
                     }
@@ -788,6 +776,509 @@ impl Synthesis {
             }
         }
         parsed
+    }
+
+    /// The versioned-model stage: every `versions:`-declared schema entry
+    /// binds its declared versions to implementation files and emits one
+    /// `model.<proj>.<name>.v<version>` node per member — the same nodes
+    /// a real manifest carries (the member's OWN file drives `path`/
+    /// `original_file_path`/`raw_code`/in-file config), so every later
+    /// stage — edges, schema metadata, tests, tree fallback, the lint
+    /// scope — sees the manifest shape through one path. Files no family
+    /// claims become independent models under their own stem, the fate
+    /// collection used to hand every file.
+    ///
+    /// The enabled verdicts a member folds here are version-aware: the
+    /// impl file's own `config(enabled=)` > the version's
+    /// `config.enabled:` > the model's > the member-fqn tree — verified
+    /// precedence on real dbt 1.12.6. A parked member records
+    /// `(version, "model")` under the FAMILY name so a `v=` pin reads
+    /// "disabled version", the same wording a manifest's `disabled` map
+    /// gives.
+    pub(super) fn synthesize_models(&mut self, parsed: &[ParsedSchemaFile]) {
+        let pending: Vec<Option<PendingModel>> = std::mem::take(&mut self.pending_models)
+            .into_iter()
+            .map(Some)
+            .collect();
+        let mut pending = pending;
+        // stem → the pending file the family conventions/`defined_in:`
+        // reach. A live file wins over an in-file-disabled one for the
+        // same stem (the parked file would drop out of dbt's parse
+        // anyway — its own verdict still records at claim).
+        let mut by_stem: HashMap<String, usize> = HashMap::new();
+        for (i, p) in pending.iter().enumerate() {
+            let Some(p) = p else { continue };
+            match by_stem.entry(p.name.clone()) {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    if p.in_file != Some(Enabled::Off)
+                        && pending[*e.get()]
+                            .as_ref()
+                            .is_some_and(|x| x.in_file == Some(Enabled::Off))
+                    {
+                        e.insert(i);
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(i);
+                }
+            }
+        }
+        let mut claimed: HashSet<usize> = HashSet::new();
+        let mut declared: HashSet<String> = HashSet::new();
+        for (schema, file, _root) in parsed {
+            let yml_path = rel_path(&self.dir, file);
+            for entry in &schema.models {
+                if entry.versions.is_empty() {
+                    continue;
+                }
+                declared.insert(entry.name.clone());
+                // A second `versions:` declaration of one family is a
+                // dbt duplicate error — warn and keep the FIRST bind
+                // (its members already claimed the files).
+                if self.versioned.contains_key(&entry.name) {
+                    self.warnings.push(format!(
+                        "{yml_path}: model '{}' declares versions twice (a dbt duplicate error) — the first declaration wins",
+                        entry.name
+                    ));
+                    continue;
+                }
+                self.synthesize_family(entry, &yml_path, &mut pending, &by_stem, &mut claimed);
+            }
+        }
+        // The stems a family bound — a SECOND file carrying one (a
+        // same-stem file in another model dir — a duplicate resource
+        // name in dbt) must not materialize as an independent model.
+        // (`pending[i]` is already `take`n at claim — `by_stem` maps stem
+        // → index, so resolve each claimed index back through it.)
+        let bound_stems: HashSet<String> = by_stem
+            .iter()
+            .filter(|(_, &i)| claimed.contains(&i))
+            .map(|(stem, _)| stem.clone())
+            .collect();
+        for (i, p) in pending.iter_mut().enumerate() {
+            if claimed.contains(&i) {
+                continue;
+            }
+            let Some(p) = p.take() else { continue };
+            // A leftover `<fam>`-stemmed file next to a `versions:`-
+            // declared `fam` — dbt's DuplicateVersionedUnversionedError —
+            // degraded to a warning + the file dropped (an unversioned
+            // `fam` node would shadow the family's own name claims).
+            if declared.contains(&p.name) {
+                self.warnings.push(format!(
+                    "{}: an unversioned '{}' and versioned members of '{}' can't coexist (a dbt parse error); ignoring the file",
+                    rel_path(&self.dir, &p.file),
+                    p.name,
+                    p.name
+                ));
+                continue;
+            }
+            if bound_stems.contains(&p.name) {
+                self.warnings.push(format!(
+                    "{}: '{}' is already bound to a versioned model (a duplicate model file — a dbt parse error); ignoring it",
+                    rel_path(&self.dir, &p.file),
+                    p.name
+                ));
+                continue;
+            }
+            self.materialize_unversioned(p);
+        }
+    }
+
+    /// Bind one `versions:`-declared family: render each declared `v:`,
+    /// resolve `latest_version` (the declared one, or dbt's pairwise
+    /// newest — numbers compare as floats, everything else as text, so
+    /// `'beta'` outranks `2`), find each version's implementation file
+    /// (`defined_in:` > `<name>_v<v>` convention > `<name>` for the
+    /// latest only), and mint `model.<proj>.<fam>.v<v>` nodes through
+    /// [`Synthesis::claim_member`]. The `name_index` learns the family
+    /// name → latest member uid — `ref('fam')`'s resolution — and
+    /// `self.versioned` records the table pins and metadata expansion
+    /// need.
+    fn synthesize_family(
+        &mut self,
+        entry: &SchemaModel,
+        yml_path: &str,
+        pending: &mut [Option<PendingModel>],
+        by_stem: &HashMap<String, usize>,
+        claimed: &mut HashSet<usize>,
+    ) {
+        // Declared versions in declaration order — `v:` renders the way
+        // dbt writes the uid segment (a number's str()/a string verbatim).
+        // A missing/non-scalar or repeated `v:` is a dbt error, degraded
+        // to a warning + skip (first declaration wins).
+        let mut decls: Vec<(usize, String)> = Vec::new();
+        for (i, v) in entry.versions.iter().enumerate() {
+            let Some(rendered) = scalar_to_string(&v.v) else {
+                self.warnings.push(format!(
+                    "{yml_path}: model '{}' declares a version without a valid 'v:' — ignoring the entry",
+                    entry.name
+                ));
+                continue;
+            };
+            if decls.iter().any(|(_, r)| r == &rendered) {
+                self.warnings.push(format!(
+                    "{yml_path}: model '{}' declares version '{rendered}' twice (a dbt error) — the first wins",
+                    entry.name
+                ));
+                continue;
+            }
+            decls.push((i, rendered));
+        }
+        if decls.is_empty() {
+            return;
+        }
+        // The default latest is dbt's pairwise max over the declared
+        // values. An explicit `latest_version:` must name one of them —
+        // anything else is a dbt parse error, degraded to a warning +
+        // the computed value.
+        let computed = decls
+            .iter()
+            .map(|(i, r)| (*i, r.clone()))
+            .reduce(|a, b| {
+                if version_cmp(&entry.versions[a.0].v, &entry.versions[b.0].v)
+                    == std::cmp::Ordering::Greater
+                {
+                    a
+                } else {
+                    b
+                }
+            })
+            .map(|(_, r)| r)
+            .unwrap_or_default();
+        let latest = match scalar_to_string(&entry.latest_version) {
+            Some(declared) => {
+                if decls.iter().any(|(_, r)| r == &declared) {
+                    declared
+                } else {
+                    self.warnings.push(format!(
+                        "{yml_path}: model '{}' declares latest_version '{declared}' which is not a declared version (a dbt parse error) — the computed '{computed}' wins",
+                        entry.name
+                    ));
+                    computed
+                }
+            }
+            None => computed,
+        };
+        // Each declared version → its implementation file: `defined_in:`
+        // names it (a stem — a directory path never resolves, verified),
+        // else `<name>_v<v>`; the LATEST alone may also live in
+        // `<name>.sql`/`.py`.
+        let mut members: BTreeMap<String, Option<String>> = BTreeMap::new();
+        for (i, rendered) in &decls {
+            let ver_entry = &entry.versions[*i];
+            let mut candidates: Vec<String> = Vec::new();
+            if let Some(d) = &ver_entry.defined_in {
+                // `defined_in` is a file stem — tolerate a declared
+                // extension (`x.sql` → `x`) like dbt's stem lookup.
+                candidates.push(
+                    d.strip_suffix(".sql")
+                        .or_else(|| d.strip_suffix(".py"))
+                        .unwrap_or(d.as_str())
+                        .to_string(),
+                );
+            } else {
+                candidates.push(format!("{}_v{}", entry.name, rendered));
+                if rendered == &latest {
+                    candidates.push(entry.name.clone());
+                }
+            }
+            let idx = candidates.iter().find_map(|s| by_stem.get(s));
+            members.insert(
+                rendered.clone(),
+                match idx {
+                    Some(&i) if claimed.insert(i) => {
+                        let p = pending[i].take().expect("claimed pending");
+                        self.claim_member(entry, ver_entry, rendered, &latest, p, yml_path)
+                    }
+                    Some(_) => {
+                        self.warnings.push(format!(
+                            "{yml_path}: version '{rendered}' of model '{}' resolves to a file an earlier declaration claimed — ignoring it",
+                            entry.name
+                        ));
+                        None
+                    }
+                    None => {
+                        self.warnings.push(format!(
+                            "{yml_path}: version '{rendered}' of model '{}' has no implementation file ({}); the version is skipped",
+                            entry.name,
+                            candidates.join(" or ") + ".sql/.py"
+                        ));
+                        None
+                    }
+                },
+            );
+        }
+        // `ref('fam')` lands on the latest member — the bare family name
+        // enters the index only when that member is live (a parked/
+        // missing latest never resolves; `self.versioned` still records
+        // the table for pins and metadata expansion).
+        if let Some(uid) = members.get(&latest).and_then(|u| u.as_ref()) {
+            self.name_index.insert(entry.name.clone(), uid.clone());
+        }
+        self.versioned.insert(
+            entry.name.clone(),
+            VersionedFamily {
+                latest,
+                versions: members,
+            },
+        );
+    }
+
+    /// Mint `model.<proj>.<fam>.v<rendered>` for one bound member — the
+    /// file's own path/raw/in-file config, the member-fqn tree
+    /// (`[proj, *impl-dirs, <fam>, v<v>]` — dbt's recorded fqn shape, so a
+    /// `models:` tree configures versions under the family), and the
+    /// version-aware `enabled` fold. Returns the uid (the family table's
+    /// value), or `None` when the enabled verdict parks the member (the
+    /// parked version then records under the family name).
+    fn claim_member(
+        &mut self,
+        fam: &SchemaModel,
+        ver_entry: &SchemaVersion,
+        rendered: &str,
+        latest: &str,
+        pending: PendingModel,
+        yml_path: &str,
+    ) -> Option<String> {
+        let uid = format!("model.{}.{}.v{}", self.proj, fam.name, rendered);
+        // The member fqn: the impl file's directories, the LOGICAL name,
+        // then `v<version>` — dbt's recorded fqn shape (a `models:` tree
+        // configures the whole family at `<fam>` and single versions at
+        // `<fam>: v<v>`; the impl file's stem is never a level).
+        let mut segs = tree_segments(&self.proj, &rel_path(&pending.root, &pending.file));
+        segs.pop();
+        segs.push(fam.name.clone());
+        segs.push(format!("v{rendered}"));
+        let tree = resolve_tree_config(
+            &self.project.models,
+            &segs,
+            "models".to_string(),
+            &mut self.warnings,
+            Some(&self.vars),
+        );
+        // `enabled` precedence — in-file `config(enabled=)` > the
+        // version's `config.enabled:` > the model's > the member-fqn
+        // tree's `+enabled` (verified on 1.12.6). A proven `Off` parks
+        // the member under the FAMILY name with its version, so a `v=`
+        // pin reads "disabled version 'v'" like a manifest `disabled`
+        // record gives. `Unproven` keeps the member and marks it.
+        let schema_v = Enabled::from_schema(self.vars.schema_enabled_state(
+            ver_entry.config.enabled.as_ref(),
+            &format!(
+                "{yml_path}: model '{}' version '{rendered}' config.enabled",
+                fam.name
+            ),
+            &mut self.warnings,
+        ));
+        let schema_m = Enabled::from_schema(self.vars.schema_enabled_state(
+            fam.config.enabled.as_ref(),
+            &format!("{yml_path}: model '{}' config.enabled", fam.name),
+            &mut self.warnings,
+        ));
+        let verdict = pending
+            .in_file
+            .or(schema_v)
+            .or(schema_m)
+            .or_else(|| tree.enabled_verdict());
+        if verdict == Some(Enabled::Off) {
+            self.disabled_names
+                .entry(fam.name.clone())
+                .or_default()
+                .insert((Some(rendered.to_string()), "model".to_string()));
+            return None;
+        }
+        if verdict == Some(Enabled::Unproven) {
+            self.enabled_unverifiable.insert(uid.clone());
+        }
+        // The member-fqn tree's fallback tables key by the member uid —
+        // `apply_tree_fallback` fills what schema.yml and the file leave
+        // unset, same slot as an unversioned model.
+        if !tree.meta.is_empty() {
+            self.tree_meta.insert(uid.clone(), tree.meta.clone());
+        }
+        if let Some(uk) = &tree.unique_key {
+            self.tree_uk.insert(uid.clone(), uk.clone());
+        }
+        self.tree_gov.insert(uid.clone(), tree.clone());
+        let mut node = RawNode {
+            name: fam.name.clone(),
+            resource_type: "model".to_string(),
+            // `path`/`original_file_path` name the IMPL file — dbt
+            // records `fct_orders_v2.sql` for `fct_orders.v2`, the
+            // defined_in file for a declared one.
+            path: Some(rel_path(&pending.root, &pending.file)),
+            original_file_path: Some(rel_path(&self.dir, &pending.file)),
+            version: Some(rendered.to_string()),
+            latest_version: Some(latest.to_string()),
+            raw_code: Some(pending.raw),
+            ..Default::default()
+        };
+        match pending.kind {
+            PendingKind::Sql { masked } => {
+                if let Some(m) = &tree.materialized {
+                    self.tree_mat.insert(uid.clone(), m.clone());
+                }
+                // The in-file `config(…)` spellings — the highest
+                // precedence level over the version's and model's
+                // `config:` blocks, same chain as an unversioned file.
+                let gov = config_governance(&masked);
+                node.config = RawConfig {
+                    materialized: self.pat.materialized(&masked),
+                    unique_key: config_unique_key(&masked),
+                    incremental_strategy: gov.incremental_strategy.clone(),
+                };
+                node.access = gov.access.clone();
+                node.group = gov.group.clone();
+                node.contract = gov.contract.clone();
+                node.language = Some("sql".to_string());
+                node.meta = config_meta(&masked).unwrap_or_default();
+                node.alias = config_alias(&masked);
+                self.node_sql.push((uid.clone(), masked));
+            }
+            PendingKind::Py { cfg, calls, jinja } => {
+                // A python member's `table` default outranks the tree's
+                // `+materialized` — `tree_mat` stays empty like the
+                // unversioned path.
+                node.config = RawConfig {
+                    materialized: cfg.materialized,
+                    unique_key: cfg.unique_key,
+                    incremental_strategy: cfg.incremental_strategy.clone(),
+                };
+                node.access = cfg.access;
+                node.group = cfg.group;
+                node.contract = cfg.contract;
+                node.language = Some("python".to_string());
+                node.meta = cfg.meta;
+                node.alias = cfg.alias;
+                self.node_python.push(DeferredPy {
+                    uid: uid.clone(),
+                    calls,
+                    jinja,
+                });
+            }
+        }
+        self.nodes.insert(uid.clone(), node);
+        if let Some(v) = pending.in_file {
+            self.in_file_enabled.insert(uid.clone(), v);
+        }
+        Some(uid)
+    }
+
+    /// The unversioned fate — a pending file no `versions:` family
+    /// claimed becomes `model.<proj>.<stem>` exactly the way collection
+    /// used to synthesize it (stem-fqn tree, in-file config surface,
+    /// `name_index` claim already held).
+    fn materialize_unversioned(&mut self, pending: PendingModel) {
+        let path = rel_path(&pending.root, &pending.file);
+        let ofp = rel_path(&self.dir, &pending.file);
+        let tree = resolve_tree_config(
+            &self.project.models,
+            &tree_segments(&self.proj, &path),
+            "models".to_string(),
+            &mut self.warnings,
+            Some(&self.vars),
+        );
+        let uid = format!("model.{}.{}", self.proj, pending.name);
+        let verdict = pending.in_file.or(tree.enabled_verdict());
+        if verdict == Some(Enabled::Off) {
+            self.disabled_names
+                .entry(pending.name)
+                .or_default()
+                .insert((None, "model".to_string()));
+            return;
+        }
+        if verdict == Some(Enabled::Unproven) {
+            self.enabled_unverifiable.insert(uid.clone());
+        }
+        if !tree.meta.is_empty() {
+            self.tree_meta.insert(uid.clone(), tree.meta.clone());
+        }
+        if let Some(uk) = &tree.unique_key {
+            self.tree_uk.insert(uid.clone(), uk.clone());
+        }
+        self.tree_gov.insert(uid.clone(), tree.clone());
+        let mut node = RawNode {
+            name: pending.name.clone(),
+            resource_type: "model".to_string(),
+            path: Some(path),
+            original_file_path: Some(ofp),
+            raw_code: Some(pending.raw),
+            ..Default::default()
+        };
+        match pending.kind {
+            PendingKind::Sql { masked } => {
+                if let Some(m) = &tree.materialized {
+                    self.tree_mat.insert(uid.clone(), m.clone());
+                }
+                // The in-file `config(…)` spellings of the model governance
+                // fields — each the highest level of the same precedence
+                // chain `materialized` follows.
+                let gov = config_governance(&masked);
+                node.config = RawConfig {
+                    materialized: self.pat.materialized(&masked),
+                    unique_key: config_unique_key(&masked),
+                    incremental_strategy: gov.incremental_strategy.clone(),
+                };
+                node.access = gov.access.clone();
+                node.group = gov.group.clone();
+                node.contract = gov.contract.clone();
+                node.language = Some("sql".to_string());
+                node.meta = config_meta(&masked).unwrap_or_default();
+                node.alias = config_alias(&masked);
+                self.node_sql.push((uid.clone(), masked));
+            }
+            PendingKind::Py { cfg, calls, jinja } => {
+                // The tree's other `+` keys DO reach a python model — but
+                // `+materialized` deliberately does not: dbt's python
+                // default `table` outranks the tree (verified), so
+                // `tree_mat` never gains an entry for it.
+                node.config = RawConfig {
+                    materialized: cfg.materialized,
+                    unique_key: cfg.unique_key,
+                    incremental_strategy: cfg.incremental_strategy.clone(),
+                };
+                node.access = cfg.access;
+                node.group = cfg.group;
+                node.contract = cfg.contract;
+                node.language = Some("python".to_string());
+                node.meta = cfg.meta;
+                node.alias = cfg.alias;
+                self.node_python.push(DeferredPy {
+                    uid: uid.clone(),
+                    calls,
+                    jinja,
+                });
+            }
+        }
+        self.nodes.insert(uid.clone(), node);
+        self.name_index.insert(pending.name.clone(), uid.clone());
+        if let Some(v) = pending.in_file {
+            self.in_file_enabled.insert(uid.clone(), v);
+        }
+    }
+
+    /// The `ref()` target under a [`RefPin`] — [`ref_target_of`] over
+    /// this load's tables.
+    fn ref_target(&self, name: &str, pin: &RefPin) -> Option<&String> {
+        ref_target_of(name, pin, &self.name_index, &self.versioned)
+    }
+
+    /// Every `ref()` target inside a Jinja-bearing `text` fragment —
+    /// an exposure `depends_on:` entry, a semantic model's `model:` —
+    /// resolved with the same pin semantics the .sql pass uses.
+    fn ref_targets_in(&self, text: &str) -> Vec<String> {
+        let masked = mask_jinja_comments(text);
+        self.pat
+            .call_sites_masked(&masked)
+            .iter()
+            .filter_map(|site| match &site.kind {
+                CallKind::Ref { name, .. } => self
+                    .ref_target(&masked[name.clone()], &ref_pin(&masked, site))
+                    .cloned(),
+                _ => None,
+            })
+            .collect()
     }
 
     /// YAML-defined snapshots (dbt 1.9+ `snapshots:` schema entries with a
@@ -814,9 +1305,13 @@ impl Synthesis {
                     self.disabled_names
                         .entry(entry.name.clone())
                         .or_default()
-                        .insert("snapshot".to_string());
+                        .insert((None, "snapshot".to_string()));
                     continue;
                 }
+                // `synthesize_models` has already run — `name_index` is
+                // the post-binding universe: a member stem stays free
+                // (it never was a refable name) and a live family name
+                // answers.
                 if self.name_index.contains_key(&entry.name) {
                     self.warnings.push(format!(
                         "duplicate resource name '{}': ignoring {}",
@@ -844,7 +1339,7 @@ impl Synthesis {
                     self.disabled_names
                         .entry(entry.name.clone())
                         .or_default()
-                        .insert("snapshot".to_string());
+                        .insert((None, "snapshot".to_string()));
                     continue;
                 }
                 if verdict == Some(Enabled::Unproven) {
@@ -928,8 +1423,9 @@ impl Synthesis {
             for site in self.pat.call_sites_masked(sql) {
                 match site.kind {
                     // Unresolved refs (cross-package, typo, gated) are dropped, not faked.
-                    CallKind::Ref { name, .. } => {
-                        if let Some(parent) = self.name_index.get(&sql[name]) {
+                    CallKind::Ref { ref name, .. } => {
+                        let pin = ref_pin(sql, &site);
+                        if let Some(parent) = self.ref_target(&sql[name.clone()], &pin) {
                             parents.push(parent.clone());
                         }
                     }
@@ -1028,7 +1524,22 @@ impl Synthesis {
                         Some(args) if args.is_literal() => {
                             match ref_name(args) {
                                 Some(name) => {
-                                    if let Some(parent) = self.name_index.get(name) {
+                                    // A `v=`/`version=` kwarg pins like
+                                    // the SQL spelling — a literal
+                                    // version names the member; a
+                                    // declared-but-unreadable one is the
+                                    // dynamic pin (the family's latest).
+                                    let pin = match args
+                                        .value_of("v")
+                                        .or_else(|| args.value_of("version"))
+                                    {
+                                        Some(Some(v)) => scalar_to_string(&v)
+                                            .map(RefPin::Literal)
+                                            .unwrap_or(RefPin::Dynamic),
+                                        Some(None) => RefPin::Dynamic,
+                                        None => RefPin::Absent,
+                                    };
+                                    if let Some(parent) = self.ref_target(name, &pin) {
                                         parents.push(parent.clone());
                                     }
                                 }
@@ -1111,8 +1622,8 @@ impl Synthesis {
         invoked: &mut BTreeSet<String>,
         unresolved: &mut UnresolvedCalls,
     ) {
-        for name in &res.refs {
-            if let Some(parent) = self.name_index.get(name) {
+        for (name, pin) in &res.refs {
+            if let Some(parent) = self.ref_target(name, pin) {
                 parents.push(parent.clone());
             }
         }
@@ -1143,8 +1654,10 @@ impl Synthesis {
             proj: &self.proj,
             pat: &self.pat,
             name_index: &self.name_index,
+            versioned: &self.versioned,
             vars: &self.vars,
         };
+        let mut applied_families: HashSet<String> = HashSet::new();
         for (schema, file, yml_root) in parsed {
             // dbt records a source's `path`/`original_file_path` as the declaring
             // schema file (project-root-relative) — match it so the detail modal
@@ -1327,11 +1840,7 @@ impl Synthesis {
                 let uid = format!("exposure.{}.{}", self.proj, exp.name);
                 let mut deps: Vec<String> = Vec::new();
                 for dep in &exp.depends_on {
-                    for ref_name in self.pat.refs(dep) {
-                        if let Some(parent) = self.name_index.get(&ref_name) {
-                            deps.push(parent.clone());
-                        }
-                    }
+                    deps.extend(self.ref_targets_in(dep));
                     for (src, tbl) in self.pat.sources(dep) {
                         deps.push(format!("source.{}.{src}.{tbl}", self.proj));
                     }
@@ -1426,28 +1935,51 @@ impl Synthesis {
                 let Some(model) = &sm.model else {
                     continue;
                 };
-                for ref_name in self.pat.refs(model) {
-                    if let Some(uid) = self.name_index.get(&ref_name) {
-                        if let Some(node) = self.nodes.get_mut(uid) {
-                            node.semantic_dependents.push(sm.name.clone());
-                        }
+                for uid in self.ref_targets_in(model) {
+                    if let Some(node) = self.nodes.get_mut(&uid) {
+                        node.semantic_dependents.push(sm.name.clone());
                     }
                 }
             }
 
-            apply_meta(
-                &mut self.nodes,
-                &mut test_ctx,
-                "model",
-                &schema.models,
-                &yml_path,
-                &self.docs,
-                &mut self.disabled_names,
-                &self.in_file_enabled,
-                &self.tree_gov,
-                &mut self.enabled_unverifiable,
-                &mut self.warnings,
-            );
+            for entry in &schema.models {
+                // A `versions:`-declared family expands per member — its
+                // enabled verdict already folded at the claim stage —
+                // while an ordinary entry attaches to its one node. The
+                // first declaration alone expands (a redeclaration was
+                // already warned and skipped at bind).
+                if entry.versions.is_empty() {
+                    apply_meta(
+                        &mut self.nodes,
+                        &mut test_ctx,
+                        "model",
+                        std::slice::from_ref(entry),
+                        &yml_path,
+                        &self.docs,
+                        &mut self.disabled_names,
+                        &self.in_file_enabled,
+                        &self.tree_gov,
+                        &mut self.enabled_unverifiable,
+                        &mut self.warnings,
+                    );
+                } else if let Some(family) = self.versioned.get(&entry.name) {
+                    // The first declaration alone expands (a
+                    // redeclaration was already warned and skipped at
+                    // bind).
+                    if !applied_families.insert(entry.name.clone()) {
+                        continue;
+                    }
+                    apply_versioned_meta(
+                        &mut self.nodes,
+                        &mut test_ctx,
+                        entry,
+                        family,
+                        &yml_path,
+                        &self.docs,
+                        &mut self.warnings,
+                    );
+                }
+            }
             apply_meta(
                 &mut self.nodes,
                 &mut test_ctx,
@@ -1642,23 +2174,43 @@ impl Synthesis {
         // contribute their file-stem/yml names without ever being parsed;
         // `dependencies.yml`/`packages.yml` mark the cross-project
         // (`projects:`) and still-missing (`packages:` vs installed dirs)
-        // surfaces. `versions` stays None — source mode never synthesizes
-        // versioned nodes, so a `v=`-pinned ref is never judged.
+        // surfaces. `versions` records the synthesized `.<v>` member uids
+        // — the same shape a real manifest's scope build reads — so a
+        // `v=`-pinned ref judges here exactly like manifest mode.
         let deps = DeclaredDeps::load(&self.dir, &mut self.warnings);
         let installed =
             InstalledPackages::load(&self.dir, &self.project, &self.pat, &mut self.warnings);
         let mut refs = installed.refs;
-        for name in self.name_index.keys() {
+        for (name, uid) in &self.name_index {
             // A parked (`disabled`) name stays in `name_index` — edges and
             // test `to:` still resolve to the dropped uid — but it is NOT
             // a live `ref()` target: it judges as "disabled" against
-            // `disabled_refs` below, never as resolved here.
-            if self.disabled_names.contains_key(name) {
+            // `disabled_refs` below, never as resolved here. The parked
+            // record is (version, kind)-scoped: a parked VERSION of a live
+            // family doesn't hide the bare name — `ref('fam')` still
+            // resolves to the family's live members.
+            let (kind, version) = match versioned_model_segs(uid) {
+                Some((_, vseg)) => ("model", Some(normalize_version(vseg).to_string())),
+                None => (uid.split('.').next().unwrap_or("model"), None),
+            };
+            if self.disabled_names.get(name).is_some_and(|set| {
+                set.iter()
+                    .any(|(v, k)| v.as_deref() == version.as_deref() && k == kind)
+            }) {
                 continue;
             }
             refs.entry(name.clone())
                 .or_default()
                 .insert(self.proj.clone());
+        }
+        // A versioned family keeps answering `ref('fam', v=N)` on its
+        // live members — `name_index` only names the latest.
+        for (name, family) in &self.versioned {
+            if family.versions.values().any(Option::is_some) {
+                refs.entry(name.clone())
+                    .or_default()
+                    .insert(self.proj.clone());
+            }
         }
         let mut sources = installed.sources;
         for uid in self.sources.keys() {
@@ -1675,20 +2227,25 @@ impl Synthesis {
         }
         let ref_scope = RefScope {
             refs,
-            versions: None,
+            versions: Some(
+                self.nodes
+                    .keys()
+                    .filter_map(|u| version_scope_key(u))
+                    .collect(),
+            ),
             sources,
             disabled_refs: self
                 .disabled_names
                 .iter()
-                .map(|(n, kinds)| {
+                .map(|(n, records)| {
                     (
                         n.clone(),
-                        kinds
+                        records
                             .iter()
-                            .map(|kind| DisabledRef {
+                            .map(|(version, kind)| DisabledRef {
                                 package: self.proj.clone(),
                                 kind: kind.clone(),
-                                version: None,
+                                version: version.clone(),
                             })
                             .collect(),
                     )
@@ -1749,4 +2306,65 @@ impl Synthesis {
             self.warnings,
         )
     }
+}
+
+/// The `ref()` target under a [`RefPin`] over an explicit table pair —
+/// [`Synthesis::ref_target`]'s shared core, which the schema-file test
+/// pass (`to:` deps) calls with its own view of the same tables: an
+/// absent pin asks `name_index` (which carries each family's latest
+/// under the bare name); a pin asks the family's version table — and a
+/// pinned name that isn't versioned resolves to nothing, like dbt's
+/// "unversioned model got a version arg" error.
+pub(super) fn ref_target_of<'a>(
+    name: &str,
+    pin: &RefPin,
+    name_index: &'a HashMap<String, String>,
+    versioned: &'a BTreeMap<String, VersionedFamily>,
+) -> Option<&'a String> {
+    match pin {
+        RefPin::Absent => name_index.get(name),
+        RefPin::Literal(v) => versioned
+            .get(name)?
+            .versions
+            .get(v)
+            .and_then(Option::as_ref),
+        RefPin::Dynamic => versioned
+            .get(name)
+            .and_then(|f| f.versions.get(&f.latest))
+            .and_then(Option::as_ref),
+    }
+}
+
+/// dbt's `latest_version` default — the pairwise max over the declared
+/// `v:` values: two numbers compare as floats, anything else compares
+/// as rendered text (so `'beta'` outranks `2`, and `1.5` outranks `10`
+/// only as numbers — the pairwise fold is Python's `max` with this key).
+fn version_cmp(a: &serde_json::Value, b: &serde_json::Value) -> std::cmp::Ordering {
+    match (a.as_f64(), b.as_f64()) {
+        (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+        _ => scalar_to_string(a)
+            .unwrap_or_default()
+            .cmp(&scalar_to_string(b).unwrap_or_default()),
+    }
+}
+
+/// A `ref()` call's `v=`/`version=` kwarg as a [`RefPin`] — a literal
+/// renders the way dbt writes it (a number's `str()` — `1.10` → `"1.1"`,
+/// a string verbatim); a kwarg that isn't a literal is the dynamic pin.
+pub(super) fn ref_pin(sql: &str, site: &CallSite) -> RefPin {
+    let Some(args) = &site.args else {
+        return RefPin::Absent;
+    };
+    let args = &sql[args.clone()];
+    let Some(expr) = args
+        .contains('=')
+        .then(|| kwarg(args, "v").or_else(|| kwarg(args, "version")))
+        .flatten()
+    else {
+        return RefPin::Absent;
+    };
+    lit_value(expr)
+        .and_then(|v| scalar_to_string(&v))
+        .map(RefPin::Literal)
+        .unwrap_or(RefPin::Dynamic)
 }
