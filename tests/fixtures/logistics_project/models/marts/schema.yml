@@ -3,6 +3,12 @@ version: 2
 models:
   - name: fct_shipments
     description: "Shipment facts with event rollup and order linkage"
+    # An entry's top-level `tags:` is a no-op in dbt (verified on 1.12.6)
+    # — `config.tags:` is the schema channel that lands, LAST in the
+    # `+tags` → in-file → `config.tags:` union.
+    tags: [ship_ignored]
+    config:
+      tags: [ship_yml]
     columns:
       - name: shipment_id
         tests:
@@ -79,6 +85,35 @@ models:
           - not_null
       - name: risk_band
         description: "The python model's risk band"
+groups:
+  - name: ops_dashboards
+    owner: {name: ops_team}
+
+exposures:
+  # `config.tags` declared: it replaces the `exposures:` tree's `+tags`
+  # outright — the wire tags are `config.tags ++ tags:`, sorted. And
+  # `config.group` is the ONLY group channel (a top-level `group:` is a
+  # dbt parse error, so it can't appear here).
+  - name: carrier_ops_dashboard
+    type: dashboard
+    owner: {name: ops_team, email: ops@example.com}
+    tags: [exp_prop]
+    config:
+      tags: [exp_cfg]
+      group: ops_dashboards
+    depends_on:
+      - ref('fct_shipments')
+  # No `config.tags`: the entry's `tags:` unions with the tree `+tags`
+  # (`exposures: logistics: +tags`), and `config.group` fills from the
+  # `marts:` level's `+group`.
+  - name: lane_review
+    type: analysis
+    owner: {name: ops_team, email: ops@example.com}
+    tags: [exp_review]
+    depends_on:
+      - ref('stg_lane_updates')
+      - source('carrier_feed', 'lane_updates')
+
 unit_tests:
   - name: fct_shipments_legs_join
     model: fct_shipments

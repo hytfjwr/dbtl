@@ -34,6 +34,10 @@ pub(super) struct TreeConfig {
     /// `+incremental_strategy` — `append` / `merge` / `delete+insert` /
     /// `insert_overwrite` / `microbatch`.
     pub(super) incremental_strategy: Option<String>,
+    /// `+tags` — ACCUMULATES down the tree rather than overriding (a
+    /// nested `+tags` extends the outer list — verified on 1.12.6), so
+    /// the list is ordered shallower-first.
+    pub(super) tags: Vec<String>,
 }
 
 impl TreeConfig {
@@ -88,6 +92,30 @@ pub(super) fn resolve_tree_config(
     tree_path: String,
     warnings: &mut Vec<String>,
     vars: Option<&Vars>,
+) -> TreeConfig {
+    resolve_tree_config_read(tree, segments, tree_path, warnings, vars, true)
+}
+
+/// The `sources:` variant of [`resolve_tree_config`] — dbt ignores a
+/// `+tags` rung on the `sources:` tree entirely, so neither its value
+/// nor its non-scalar warning is read there.
+pub(super) fn resolve_source_tree_config(
+    tree: &serde_json::Value,
+    segments: &[String],
+    tree_path: String,
+    warnings: &mut Vec<String>,
+    vars: Option<&Vars>,
+) -> TreeConfig {
+    resolve_tree_config_read(tree, segments, tree_path, warnings, vars, false)
+}
+
+fn resolve_tree_config_read(
+    tree: &serde_json::Value,
+    segments: &[String],
+    tree_path: String,
+    warnings: &mut Vec<String>,
+    vars: Option<&Vars>,
+    read_tags: bool,
 ) -> TreeConfig {
     let mut out = TreeConfig::default();
     if !tree.is_object() {
@@ -147,13 +175,31 @@ pub(super) fn resolve_tree_config(
     if let Some(s) = tree["+incremental_strategy"].as_str() {
         out.incremental_strategy = Some(s.to_string());
     }
+    // `+tags` — a bare scalar wraps to a one-element list, elements
+    // stringify (`7` → `"7"`, verified on 1.12.6); a non-scalar member
+    // (a dict, a nested list) warns once per level like `+meta`. The
+    // `sources:` walk skips the key wholesale — dbt ignores it there.
+    let tags_v = &tree["+tags"];
+    if read_tags && !tags_v.is_null() {
+        let bad = match tags_v {
+            serde_json::Value::Array(items) => items.iter().any(|i| scalar_to_string(i).is_none()),
+            v => scalar_to_string(v).is_none(),
+        };
+        if bad {
+            warnings.push(format!(
+                "dbt_project.yml '+tags' at '{tree_path}' has a non-string member; ignoring it"
+            ));
+        }
+        out.tags = tag_values_of(tags_v);
+    }
     let deeper = segments.split_first().map(|(seg, rest)| {
-        resolve_tree_config(
+        resolve_tree_config_read(
             &tree[seg.as_str()],
             rest,
             format!("{tree_path}.{seg}"),
             warnings,
             vars,
+            read_tags,
         )
     });
     // The deepest DECLARED `+enabled` wins — proven or unproven. An
@@ -182,6 +228,7 @@ pub(super) fn resolve_tree_config(
         out.group = deeper.group.or(out.group);
         out.contract = deeper.contract.or(out.contract);
         out.incremental_strategy = deeper.incremental_strategy.or(out.incremental_strategy);
+        out.tags.extend(deeper.tags); // shallower-first accumulation
     }
     out
 }

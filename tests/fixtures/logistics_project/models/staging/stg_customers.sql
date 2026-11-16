@@ -1,4 +1,4 @@
-{{ config(materialized='view') }}
+{{ config({'materialized': 'view', 'tags': ['cust_dict']}) }}
 
 select
     customer_id,

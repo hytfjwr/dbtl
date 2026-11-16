@@ -69,8 +69,9 @@ pub(super) struct DbtProject {
     /// The `exposures:` config tree — keyed by the exposure's fqn (`<pkg>`:
     /// `<declaring-yml dirs>`: `<name>` — the same fqn a compiled manifest
     /// records). `+enabled` parks the exposure; `+meta` merges below the
-    /// entry's `meta:` (other `+`-configs like `+tags`/`+group` are not
-    /// implemented for exposures).
+    /// entry's `meta:`; `+tags` joins the entry's top-level `tags:` (an
+    /// entry with `config.tags` suppresses it — verified on 1.12.6);
+    /// `+group` fills when `config.group` is absent.
     #[serde(default)]
     pub(super) exposures: serde_json::Value,
     /// The `vars:` block, raw — `var('name')` calls in `config(enabled=)`
@@ -132,8 +133,10 @@ pub(super) struct SchemaModel {
     pub(super) description: Option<String>,
     #[serde(default)]
     pub(super) config: SchemaConfig,
-    #[serde(default, deserialize_with = "de_string_vec")]
-    pub(super) tags: Vec<String>,
+    // A model/seed/snapshot entry's top-level `tags:` is deliberately NOT
+    // a field: real dbt parses the property but never applies it (verified
+    // on 1.12.6 — only `config.tags`, in-file `config(tags=…)`, and the
+    // project `+tags` reach the node).
     #[serde(default)]
     pub(super) columns: Vec<SchemaColumn>,
     #[serde(default)]
@@ -215,11 +218,13 @@ pub(super) struct SchemaConfig {
     /// `delete+insert` / `insert_overwrite` / `microbatch`.
     #[serde(default, deserialize_with = "de_opt_string")]
     pub(super) incremental_strategy: Option<String>,
-    /// `config: tags:` — unions with the property `tags:` and other
-    /// levels' tags rather than overriding (dbt accumulates tags across
-    /// the model/version config levels, verified on 1.12.6).
-    #[serde(default, deserialize_with = "de_string_vec")]
-    pub(super) tags: Vec<String>,
+    /// `config: tags:` — one of the three tag channels (with the project
+    /// `+tags` and in-file `config(tags=…)`). `Option` because an
+    /// exposure's `config.tags` PRESENCE suppresses its tree `+tags`
+    /// entirely (`config: {tags: []}` included — verified on 1.12.6);
+    /// for models the value unions into the node's tag list either way.
+    #[serde(default, deserialize_with = "de_opt_tags")]
+    pub(super) tags: Option<Vec<String>>,
 }
 
 /// A `versions:` entry — one declared version of a model. `columns:` /
@@ -255,9 +260,6 @@ pub(super) struct SchemaVersion {
     pub(super) alias: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub(super) group: Option<String>,
-    /// Top-level `tags:` — unions with the other tag channels.
-    #[serde(default, deserialize_with = "de_string_vec")]
-    pub(super) tags: Vec<String>,
     /// The version's `config:` block — sits ABOVE the model's `config:`
     /// and below the file's own `config()` (verified precedence:
     /// in-file > version > model > project tree).
@@ -321,6 +323,18 @@ pub(super) struct SchemaExposure {
     /// merged map, config winning, on the wire).
     #[serde(default)]
     pub(super) meta: serde_json::Value,
+    /// Top-level `tags:` — unlike on models, an exposure's property tags
+    /// DO apply (verified on 1.12.6): they follow the entry's
+    /// `config.tags` on the wire, or precede the tree's `+tags` when no
+    /// `config.tags` is declared.
+    #[serde(default, deserialize_with = "de_string_vec")]
+    pub(super) tags: Vec<String>,
+    /// Top-level `group:` — a dbt parse error ("Additional properties are
+    /// not allowed" — the group lives only in `config.group`/`+group`).
+    /// Captured so the loader can warn like every other recoverable
+    /// oddity instead of silently dropping the key.
+    #[serde(default)]
+    pub(super) group: Option<serde_json::Value>,
     #[serde(default, deserialize_with = "de_string_vec")]
     pub(super) depends_on: Vec<String>,
 }
@@ -381,7 +395,10 @@ pub(super) struct SchemaSource {
     #[serde(default, deserialize_with = "de_opt_string")]
     pub(super) loader: Option<String>,
     /// `loaded_at_field:` at the source level — inherited by every table
-    /// unless the table overrides or explicitly nulls it.
+    /// unless the table overrides or explicitly nulls it. An explicit
+    /// `null` reads as ABSENT here (verified on 1.12.6: a `null` source
+    /// property lets the source's own `config.loaded_at_field` apply) —
+    /// only the TABLE's top-level `null` clears.
     #[serde(default, deserialize_with = "de_opt_string")]
     pub(super) loaded_at_field: Option<String>,
     /// `freshness:` at the source level — per-threshold defaults for the
@@ -413,8 +430,10 @@ pub(super) struct SchemaSourceConfig {
     /// `config.meta` sits below the table's top-level `meta:` — verified).
     #[serde(default)]
     pub(super) meta: serde_json::Value,
-    /// `config.loaded_at_field` — three-state like the top-level spelling:
-    /// absent inherits, `null` clears the inherited value.
+    /// `config.loaded_at_field` — kept three-state for shape parity, but
+    /// unlike the top-level spelling an explicit `null` does NOT clear:
+    /// it is a no-op that lets the inheritance walk continue (verified on
+    /// 1.12.6 — only a table's TOP-LEVEL `loaded_at_field: null` clears).
     #[serde(default, deserialize_with = "de_opt_opt_string")]
     pub(super) loaded_at_field: Option<Option<String>>,
     /// `config.freshness` — merges per threshold at its precedence level;

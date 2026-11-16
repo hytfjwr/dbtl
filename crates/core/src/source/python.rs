@@ -100,6 +100,39 @@ impl PyArgs {
             && self.kwargs.iter().all(|(n, v)| n.is_some() && v.is_some())
     }
 
+    /// Whether `args` is a `dbt.config` argument shape real dbt accepts —
+    /// the same rule the SQL `config(…)` extractor applies (verified on
+    /// 1.12.6): all `name=value` kwargs with no name repeated, or ONE
+    /// positional dict literal as the whole list (the dict spelling of
+    /// the same kwargs). A `*`/`**` spread or a non-literal positional
+    /// lands here as a `None` marker — an `ast.literal_eval` failure in
+    /// dbt — and a dict/kwarg mix is a Python/dbt error, so those calls
+    /// contribute NOTHING. A non-literal VALUE (`v` = `None`) does not
+    /// fail the shape: `value_of` still reports the kwarg as
+    /// declared-but-unreadable (`enabled=` keeps its Unproven mark, like
+    /// the SQL side), and the literal siblings still bind — the same
+    /// partial application dbt reaches by evaluating at render.
+    pub(super) fn config_shape_ok(&self) -> bool {
+        if self.kwargs.iter().any(|(n, _)| n.is_none())
+            || self.positional.iter().any(Option::is_none)
+        {
+            return false;
+        }
+        let mut names: Vec<&str> = Vec::new();
+        for (n, _) in &self.kwargs {
+            let n = n.as_deref().unwrap_or_default();
+            if names.contains(&n) {
+                return false;
+            }
+            names.push(n);
+        }
+        match self.positional.as_slice() {
+            [] => true,
+            [Some(serde_json::Value::Object(_))] => self.kwargs.is_empty(),
+            _ => false,
+        }
+    }
+
     /// The `name=` kwarg's literal — the LAST matching kwarg, Python's
     /// kwargs order — else the `"name":` entry of a leading positional
     /// dict literal (`dbt.config({'k': v})` is dbt's dict spelling of the
@@ -168,6 +201,10 @@ pub(super) struct PyFileConfig {
     /// `enabled=` decides" rule, which can't fall back to an earlier
     /// proven value).
     pub(super) enabled: Option<Option<serde_json::Value>>,
+    /// The file's accumulated `dbt.config(tags=…)` list — the python
+    /// spelling of the in-file tag channel [`config_tags`] fills on the
+    /// SQL side.
+    pub(super) tags: Vec<String>,
 }
 
 /// Scan `text` (a `.py` model file) for the calls dbt tracks.
@@ -218,6 +255,15 @@ pub(super) fn py_file_config(scan: &PyScan, warnings: &mut Vec<String>, ctx: &st
             ));
             continue;
         };
+        // A shape dbt itself rejects (`*`/`**` spreads, a dict mixed with
+        // kwargs, a positional non-dict) applies NOTHING — dbt parse
+        // error — rather than a partial config.
+        if !args.config_shape_ok() {
+            warnings.push(format!(
+                "{ctx}: a dbt.config(...) call's arguments are not a shape dbt accepts (kwargs or a single dict); its config is ignored"
+            ));
+            continue;
+        }
         for (key, slot) in [
             ("materialized", &mut out.materialized),
             ("alias", &mut out.alias),
@@ -244,6 +290,12 @@ pub(super) fn py_file_config(scan: &PyScan, warnings: &mut Vec<String>, ctx: &st
         }
         if let Some(v) = args.value_of("enabled") {
             out.enabled = Some(v);
+        }
+        // `tags` accumulates across calls like `meta` merges — the in-file
+        // channel `apply_tree_fallback` unions between `+tags` and the
+        // schema `config.tags:`.
+        if let Some(Some(v)) = args.value_of("tags") {
+            out.tags.extend(tag_values_of(&v));
         }
     }
     out
@@ -336,8 +388,9 @@ fn kwarg_eq(masked_seg: &str) -> Option<usize> {
     None
 }
 
-/// A bare identifier — the only valid kwarg name.
-fn is_identifier(s: &str) -> bool {
+/// A bare identifier — the only valid kwarg name ([`crate::source::patterns`]
+/// shares it for `{{ config(…) }}` args).
+pub(crate) fn is_identifier(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
             .next()
@@ -1140,6 +1193,58 @@ def model(dbt, session):
             py_file_config(&scan, &mut w, "t.py").enabled,
             Some(Some(serde_json::Value::String("no".to_string())))
         );
+    }
+
+    #[test]
+    fn config_tags_accumulate_and_reject_bad_shapes() {
+        let mut w = vec![];
+        // `tags=` accumulates across calls like the SQL `config(tags=…)`
+        // channel; a scalar wraps and elements stringify (verified on
+        // 1.12.6). The dict spelling binds the same.
+        let scan = scan_python(
+            "def model(dbt, s):\n    dbt.config(tags=['a', 'b'])\n    dbt.config({'tags': 'solo'})\n    dbt.config(tags=[7, 'x'])\n",
+        );
+        let cfg = py_file_config(&scan, &mut w, "t.py");
+        assert_eq!(cfg.tags, vec!["a", "b", "solo", "7", "x"]);
+        assert!(w.is_empty(), "{w:?}");
+        // A shape dbt rejects (a dict beside kwargs) applies NOTHING —
+        // its tags don't land either, and the call is reported.
+        let mut w = vec![];
+        let scan = scan_python(
+            "def model(dbt, s):\n    dbt.config({'tags': ['lost']}, materialized='table')\n",
+        );
+        let cfg = py_file_config(&scan, &mut w, "t.py");
+        assert!(cfg.tags.is_empty());
+        assert!(cfg.materialized.is_none());
+        assert_eq!(w.len(), 1, "{w:?}");
+        // `*`/`**` spreads are NOT the python-model story the Jinja
+        // `config(**{…})` is — dbt's python extractor applies them as a
+        // literal `*args`/`**kwargs` call and the parse blows up
+        // (verified on 1.12.6: `TypeError: keywords must be strings`).
+        // The call contributes nothing and is reported.
+        let mut w = vec![];
+        let scan =
+            scan_python("def model(dbt, s):\n    dbt.config(**{'tags': ['sp'], 'alias': 'al'})\n");
+        let cfg = py_file_config(&scan, &mut w, "t.py");
+        assert!(cfg.tags.is_empty());
+        assert!(cfg.alias.is_none());
+        assert_eq!(w.len(), 1, "{w:?}");
+    }
+
+    #[test]
+    fn config_nonliteral_values_stay_declared_not_rejected() {
+        let mut w = vec![];
+        // `enabled=flag` — the NAME isn't a literal the extractor can
+        // resolve, but the call's SHAPE is still valid kwargs (dbt
+        // applies the resolvable members and validates the rest). So the
+        // other kwargs bind and `enabled` stays declared-but-unreadable
+        // — the unverifiable mark — instead of the call dropping whole.
+        let scan =
+            scan_python("def model(dbt, s):\n    dbt.config(enabled=flag, materialized='table')\n");
+        let cfg = py_file_config(&scan, &mut w, "t.py");
+        assert_eq!(cfg.materialized.as_deref(), Some("table"));
+        assert_eq!(cfg.enabled, Some(None));
+        assert!(w.is_empty(), "{w:?}");
     }
 
     #[test]

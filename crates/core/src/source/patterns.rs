@@ -488,7 +488,8 @@ pub(super) fn scan_call_args(sql: &str, start: usize) -> Option<(&str, usize)> {
 /// in call order — the input to last-wins scalar kwargs (`materialized`,
 /// `enabled`) and per-key-merged dict kwargs (`meta`). Each call's binding
 /// comes from [`config_arg`], so a positional-dict call's `"name": v`
-/// entries take part in the same ordered sequence as the `name=v` kwargs.
+/// entries and a trailing `**{…}` spread's entries take part in the same
+/// ordered sequence as the `name=v` kwargs.
 pub(super) fn config_kwarg_exprs<'a>(sql: &'a str, name: &str) -> Vec<&'a str> {
     config_call_args_list(sql)
         .into_iter()
@@ -496,28 +497,315 @@ pub(super) fn config_kwarg_exprs<'a>(sql: &'a str, name: &str) -> Vec<&'a str> {
         .collect()
 }
 
-/// The expression bound to `name` in ONE `config(…)` call's argument list:
-/// the `name=` kwarg, else the `"name":` entry of a positional dict arg —
-/// `config({…})` is dbt's dict spelling of the same kwargs (verified:
-/// `{"materialized": "table"}` materializes the model, `{"enabled": false}`
-/// disables it, and the dict joins the ordered per-key last-wins/merge
-/// sequence like a kwargs call). dbt rejects a single call mixing a dict
-/// with kwargs — a shape resolved kwargs-first here by convention.
-pub(crate) fn config_arg<'a>(args: &'a str, name: &str) -> Option<&'a str> {
-    kwarg(args, name).or_else(|| dict_arg(args, name))
+/// Every `config(tags=…)` entry in `sql`, in call order — the in-file
+/// channel of a node's tag list, which dbt places between the project
+/// `+tags` and the schema `config.tags` (the wire `config.tags` order is
+/// the same list with the two channels swapped — verified on 1.12.6).
+/// Multiple calls accumulate; each literal extends the list.
+pub(crate) fn config_tags(sql: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for expr in config_kwarg_exprs(sql, "tags") {
+        if let Some(v) = lit_value(expr) {
+            out.extend(tag_values_of(&v));
+        }
+    }
+    out
 }
 
-/// The value text bound to `"name":` in the call's positional DICT arg —
-/// only a FIRST top-level argument that is itself a `{…}` literal counts
-/// (`config({…})`); a dict in any other position is a kwarg value, not the
-/// dict spelling. Entries are read leniently: a key that isn't a string
-/// literal, or an entry whose `:` can't be read, is skipped rather than
-/// failing the dict — the same per-key stance the kwarg readers take on
-/// unresolvable expressions. A duplicate key yields its LAST entry, the
-/// Python-dict rule.
-fn dict_arg<'a>(args: &'a str, name: &str) -> Option<&'a str> {
-    let first = top_level_segments(args).first()?.trim();
-    let inner = first.strip_prefix('{')?.strip_suffix('}')?;
+/// A tag list's string form — dbt's `config.tags`/`+tags` coercion,
+/// shared by the in-file readers here and the YAML readers in
+/// [`super::yaml`]: a bare scalar wraps to a one-element list, each list
+/// element stringifies (`42` → `"42"`, `true` → `"true"` — verified on
+/// 1.12.6), and a non-scalar element is dropped.
+pub(crate) fn tag_values_of(v: &serde_json::Value) -> Vec<String> {
+    match v {
+        serde_json::Value::Array(items) => items.iter().filter_map(scalar_to_string).collect(),
+        scalar => scalar_to_string(scalar).into_iter().collect(),
+    }
+}
+
+/// The expression bound to `name` in ONE `config(…)` call's argument list.
+/// Only the shapes dbt itself accepts contribute (verified on 1.12.6 —
+/// every other argument shape is a Jinja or "Invalid inline model config"
+/// error, so the call applies NOTHING):
+///
+/// - `config(name=expr, …)` — keyword arguments, at most one trailing
+///   `**{literal}` spread appended. Jinja's call grammar allows a single
+///   `**` and only LAST (`config(**{…}, a=1)` and `config(**{…}, **{…})`
+///   are both "invalid syntax for function call expression" — verified);
+///   a repeated kwarg, a key the spread shares with an explicit kwarg, or
+///   a non-string literal key in the spread (`**{1: 'x'}` — Python's
+///   "keywords must be strings" TypeError) are likewise errors. The
+///   spread's `"name":` entries bind like a kwarg — they can never
+///   collide with an explicit `name=` in a call that survived validation.
+/// - `config({…})` — a single positional dict literal, the dict spelling
+///   of the same kwargs. `config(*[{'k': v}])`/`config(*({'k': v},))` —
+///   a `*` spread unpacking a sequence of exactly one dict — resolves to
+///   the same dict shape.
+///
+/// A `*`/`**` over a NON-literal (`**var('cfg')`) is none of these: dbt
+/// evaluates the operand at render, so the call either applies whole or
+/// errors there. What a static extractor CAN still prove is the explicit
+/// kwargs, so those still bind ([`ConfigShape::RenderSpread`]) and the
+/// caller warns once — matching what the pre-validation readers did.
+///
+/// A positional arg that isn't the sole dict (`config('x')`, `config(None)`),
+/// a dict anywhere alongside other args, `*{…}` (unpacks a dict's KEYS
+/// into positional strings) — all rejected outright. A bare `config()`
+/// binds nothing but is not an error.
+pub(crate) fn config_arg<'a>(args: &'a str, name: &str) -> Option<&'a str> {
+    match config_args(args) {
+        ConfigShape::Kwargs { spread } => {
+            kwarg(args, name).or_else(|| spread.and_then(|s| dict_key(s, name)))
+        }
+        ConfigShape::Dict(inner) => dict_key(inner, name),
+        // The non-literal operand resolves at render; the explicit
+        // kwargs — and a trailing `**{…}` literal, whose entries a `*`
+        // can never shadow — are statically provable.
+        ConfigShape::RenderSpread { spread } => {
+            kwarg(args, name).or_else(|| spread.and_then(|s| dict_key(s, name)))
+        }
+        ConfigShape::Invalid => None,
+    }
+}
+
+/// Warn once per `{{ config(…) }}` call in `sql` whose argument shape is
+/// not one dbt accepts (the call contributes no config — a parse error in
+/// dbt) or whose `*`/`**` operand isn't a literal (dbt evaluates it at
+/// render; only the call's explicit kwargs can be read statically).
+/// Scoping to `{{ }}` keeps a `config(` appearing in plain SQL text —
+/// a column or function name — from warning like a real config call.
+pub(crate) fn config_shape_warnings(sql: &str, warnings: &mut Vec<String>, ctx: &str) {
+    let b = sql.as_bytes();
+    let mut i = 0usize;
+    while i + 1 < b.len() {
+        if b[i] == b'{' && b[i + 1] == b'{' {
+            if let Some(end) = jinja_tag_close(b, i) {
+                for args in config_call_args_list(&sql[i + 2..end]) {
+                    match config_args(args) {
+                        ConfigShape::Invalid => warnings.push(format!(
+                            "{ctx}: a config(...) call's arguments are not a shape dbt accepts (kwargs or a single dict); its config is ignored"
+                        )),
+                        ConfigShape::RenderSpread { .. } => warnings.push(format!(
+                            "{ctx}: a config(...) call's * or ** operand is not a literal; only the call's keyword arguments are applied"
+                        )),
+                        _ => {}
+                    }
+                }
+                i = end + 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+}
+
+/// `args` split into the valid [`config_arg`] shapes.
+enum ConfigShape<'a> {
+    /// Keyword arguments only; `spread` is the inner text of the one
+    /// allowed trailing `**{…}` argument.
+    Kwargs { spread: Option<&'a str> },
+    /// The inner text of the sole positional dict.
+    Dict(&'a str),
+    /// A `*`/`**` over a non-literal operand — dbt evaluates it at render
+    /// (applying the whole call or erroring there); the explicit kwargs
+    /// still bind, as does a trailing `**{…}` literal's entries (`*`
+    /// operands produce only positional args — they can't collide).
+    RenderSpread { spread: Option<&'a str> },
+    /// A call shape dbt errors on — ignored entirely.
+    Invalid,
+}
+
+fn config_args<'a>(args: &'a str) -> ConfigShape<'a> {
+    // `config()` — no arguments — is a valid call that binds nothing.
+    if args.trim().is_empty() {
+        return ConfigShape::Kwargs { spread: None };
+    }
+    let segs = top_level_segments(args);
+    // Python accepts a trailing comma (`config(a=1,)`): a whitespace-only
+    // LAST segment is no argument. An empty one anywhere else is a syntax
+    // error (`config(a=1,, b=2)`, `config(,a=1)`).
+    let segs = match segs.split_last() {
+        Some((last, rest)) if last.trim().is_empty() => rest,
+        _ => &segs[..],
+    };
+    if segs.is_empty() || segs.iter().any(|s| s.trim().is_empty()) {
+        return ConfigShape::Invalid;
+    }
+    let mut spread: Option<&str> = None;
+    let mut spread_names: Vec<String> = Vec::new();
+    let mut kwarg_names: Vec<&str> = Vec::new();
+    let mut positionals: Vec<ConfigShape<'a>> = Vec::new();
+    let mut render_spread = false;
+    for (i, seg) in segs.iter().enumerate() {
+        let seg = seg.trim();
+        if let Some(rest) = seg.strip_prefix("**") {
+            // Jinja's call grammar allows a single `**` and only LAST
+            // (verified: `config(**{…}, a=1)` and a second `**` are both
+            // "invalid syntax for function call expression"), and a
+            // `{dict}` positional before it still mixes a positional with
+            // kwargs.
+            if i + 1 != segs.len() || spread.is_some() || !positionals.is_empty() {
+                return ConfigShape::Invalid;
+            }
+            match dict_inner(rest.trim()) {
+                Some(inner) => {
+                    // Its string keys are readable like a positional
+                    // dict's — a key an explicit kwarg already bound
+                    // makes the call a Python "multiple values" error;
+                    // a literal NON-string key makes it a "keywords must
+                    // be strings" TypeError (verified); a key that isn't
+                    // a literal can't be judged and is skipped the way
+                    // `dict_key` skips.
+                    for entry in top_level_segments(inner) {
+                        if let Some((k, _)) = dict_entry(entry) {
+                            match lit_value(k) {
+                                Some(serde_json::Value::String(k)) => spread_names.push(k),
+                                Some(_) => return ConfigShape::Invalid,
+                                None => {}
+                            }
+                        }
+                    }
+                    spread = Some(inner);
+                }
+                // `**var('x')` resolves at render — dbt applies the whole
+                // call or errors there; the literal kwargs still bind.
+                None => render_spread = true,
+            }
+            continue;
+        }
+        if let Some(rest) = seg.strip_prefix('*') {
+            // A `*` spread: `*[{'k': v}]`/`*({'k': v},)` unpacks a
+            // one-dict sequence into the positional dict (verified);
+            // `*{…}` unpacks a dict's keys into positional strings — a
+            // dbt error — and `*var('x')` resolves at render like `**`.
+            match seq_inner(rest.trim()) {
+                Some(inner) => positionals.extend(
+                    top_level_segments(inner)
+                        .iter()
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| {
+                            dict_inner(s)
+                                .map(ConfigShape::Dict)
+                                .unwrap_or(ConfigShape::Invalid)
+                        }),
+                ),
+                None if rest.trim().starts_with('{') => {
+                    positionals.push(ConfigShape::Invalid);
+                }
+                None => render_spread = true,
+            }
+            continue;
+        }
+        if let Some((kwname, _)) = kwarg_split(seg) {
+            // `f(k=1, k=2)` is a Python "keyword argument repeated" error.
+            if kwarg_names.contains(&kwname) {
+                return ConfigShape::Invalid;
+            }
+            kwarg_names.push(kwname);
+        } else {
+            positionals.push(
+                dict_inner(seg)
+                    .map(ConfigShape::Dict)
+                    .unwrap_or(ConfigShape::Invalid),
+            );
+        }
+    }
+    // The `**` spread's keys may not repeat an explicit kwarg name —
+    // Python's "multiple values" error (verified).
+    if spread_names
+        .iter()
+        .any(|k| kwarg_names.contains(&k.as_str()))
+    {
+        return ConfigShape::Invalid;
+    }
+    // A member that is itself invalid — a non-dict positional, a `*{…}` —
+    // is a dbt error regardless of what a render-time spread resolves to.
+    // So are ≥2 positional dicts: a `*` unpack can only ADD positional
+    // arguments at render, never remove them.
+    if positionals.len() > 1
+        || positionals
+            .iter()
+            .any(|p| matches!(p, ConfigShape::Invalid))
+    {
+        return ConfigShape::Invalid;
+    }
+    if render_spread {
+        return ConfigShape::RenderSpread { spread };
+    }
+    match positionals.as_slice() {
+        [] => ConfigShape::Kwargs { spread },
+        // One positional dict ALONE is the dict spelling — nothing else
+        // may accompany it (`config({…}, a=1)` and `config(a=1, {…})` are
+        // both "Invalid inline model config" in dbt).
+        [ConfigShape::Dict(inner)] if kwarg_names.is_empty() && spread.is_none() => {
+            ConfigShape::Dict(inner)
+        }
+        _ => ConfigShape::Invalid,
+    }
+}
+
+/// The inner text of a `{…}` literal, or `None` for any other expression.
+fn dict_inner(seg: &str) -> Option<&str> {
+    seg.strip_prefix('{')?.strip_suffix('}')
+}
+
+/// The inner text of a `[…]`/`(…)` sequence literal — a `*` spread's
+/// operand — or `None` for any other expression.
+fn seq_inner(seg: &str) -> Option<&str> {
+    if let Some(rest) = seg.strip_prefix('[') {
+        return rest.strip_suffix(']');
+    }
+    seg.strip_prefix('(')?.strip_suffix(')')
+}
+
+/// Split a `name=expr` kwarg segment at its top-level `=`, returning the
+/// bound name when it is a bare identifier (anything else — a comparison
+/// `a==1`, a walrus `x:=v`, a `*`-expression — is not a kwarg binding).
+fn kwarg_split(seg: &str) -> Option<(&str, &str)> {
+    let mut depth = 0usize;
+    let mut chars = seg.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            '\'' | '"' => {
+                let it = chars.by_ref();
+                while let Some((_, d)) = it.next() {
+                    if d == '\\' {
+                        it.next();
+                    } else if d == c {
+                        break;
+                    }
+                }
+            }
+            '=' if depth == 0 => {
+                // `==`/`!=`/`<=`/`>=`/`:=` are operators, not bindings —
+                // the identifier check rejects them along with every
+                // non-identifier left side.
+                if seg[..i].trim().ends_with(['<', '>', '!', ':']) {
+                    return None;
+                }
+                if i + 1 < seg.len() && seg[i + 1..].starts_with('=') {
+                    return None;
+                }
+                let name = seg[..i].trim();
+                return is_identifier(name).then(|| (name, seg[i + 1..].trim()));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The value text bound to `"name":` in a dict literal's INNER text —
+/// used by the positional `{…}` spelling and the `**{…}` spread alike.
+/// Entries are read leniently: a key that isn't a string literal, or an
+/// entry whose `:` can't be read, is skipped rather than failing the
+/// dict — the same per-key stance the kwarg readers take on unresolvable
+/// expressions. A duplicate key yields its LAST entry, the Python-dict rule.
+fn dict_key<'a>(inner: &'a str, name: &str) -> Option<&'a str> {
     let mut found = None;
     for seg in top_level_segments(inner) {
         let Some((key, value)) = dict_entry(seg) else {

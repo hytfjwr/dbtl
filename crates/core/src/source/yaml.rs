@@ -381,12 +381,43 @@ pub(super) fn de_string_vec<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> std::result::Result<Vec<String>, D::Error> {
     // `tags:`/`depends_on:` left empty (`key:` → null) is an empty list, not
-    // a type error.
-    let v = Option::<Vec<serde_json::Value>>::deserialize(d)?.unwrap_or_default();
-    v.iter()
-        .map(scalar_to_string)
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| serde::de::Error::custom("expected a list of string scalars"))
+    // a type error; a bare scalar wraps to a one-element list like dbt's
+    // `StringOrArrayOfStrings` coercion (`tags: "x"` → `["x"]`, verified
+    // on 1.12.6). A non-scalar ELEMENT is still a type error.
+    match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Null => Ok(Vec::new()),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(scalar_to_string)
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| serde::de::Error::custom("expected a list of string scalars")),
+        scalar => scalar_to_string(&scalar)
+            .map(|s| vec![s])
+            .ok_or_else(|| serde::de::Error::custom("expected a list of string scalars")),
+    }
+}
+
+/// The absent-aware variant of [`de_string_vec`]: absent → `None` (the key
+/// never declared — an exposure's `config.tags` PRESENCE decides whether
+/// the `exposures:` tree's `+tags` participates, so declared-and-empty
+/// must differ from undeclared). An explicit `null` reads as absent —
+/// dbt's `config.get('tags')` returns `None` either way. A bare scalar
+/// wraps like `de_string_vec`.
+pub(super) fn de_opt_tags<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<Vec<String>>, D::Error> {
+    match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(scalar_to_string)
+            .collect::<Option<Vec<_>>>()
+            .map(Some)
+            .ok_or_else(|| serde::de::Error::custom("expected a list of string scalars")),
+        scalar => scalar_to_string(&scalar)
+            .map(|s| Some(vec![s]))
+            .ok_or_else(|| serde::de::Error::custom("expected a list of string scalars")),
+    }
 }
 
 pub(super) fn de_opt_string_vec<'de, D: serde::Deserializer<'de>>(

@@ -1971,6 +1971,547 @@ fn config_dict_arg_shape_edges() {
     assert_eq!(pat.materialized("{{ config('materialized') }}"), None);
 }
 
+// ---- config(**{…}) / `*` spreads — the argument-shape rule -------------------
+
+#[test]
+fn config_spread_args_bind_like_literal_kwargs() {
+    let pat = Patterns::new();
+    // `**{…}` appended after the explicit kwargs is dbt-valid (verified
+    // on 1.12.6): its entries bind like kwargs written in place.
+    assert_eq!(
+        pat.materialized("{{ config(**{'materialized': 'table'}) }}"),
+        Some("table".to_string())
+    );
+    assert_eq!(
+        pat.materialized("{{ config(alias='a', **{'materialized': 'table'}) }}"),
+        Some("table".to_string())
+    );
+    assert_eq!(
+        config_alias("{{ config(alias='a', **{'materialized': 'table'}) }}"),
+        Some("a".to_string())
+    );
+    // `*[{…}]` / `*({…},)` unpack into the one-dict positional spelling.
+    assert_eq!(
+        pat.materialized("{{ config(*[{'materialized': 'table'}]) }}"),
+        Some("table".to_string())
+    );
+    assert_eq!(
+        pat.materialized("{{ config(*({'materialized': 'table'},)) }}"),
+        Some("table".to_string())
+    );
+    // A `**` operand that isn't a literal resolves at render — nothing a
+    // static read can bind from the operand itself (dbt reaches it
+    // through its own render; explicit kwargs beside it still bind).
+    assert_eq!(pat.materialized("{{ config(**var('cfg')) }}"), None);
+    // A trailing comma is still a valid call.
+    assert_eq!(
+        pat.materialized("{{ config(**{'materialized': 'table'},) }}"),
+        Some("table".to_string())
+    );
+}
+
+#[test]
+fn config_render_spread_binds_kwargs_and_warns() {
+    let pat = Patterns::new();
+    // `config(materialized='table', **var('cfg'))` — dbt RENDERS the
+    // operand, so a resolvable var lands the whole call (verified on
+    // 1.12.6); unresolvable fails at render. The static read keeps the
+    // explicit kwargs and warns instead of dropping the call.
+    assert_eq!(
+        pat.materialized("{{ config(materialized='table', **var('cfg')) }}"),
+        Some("table".to_string())
+    );
+    assert_eq!(
+        pat.materialized("{{ config(*var('cfg'), materialized='table') }}"),
+        Some("table".to_string())
+    );
+    let mut w = Vec::new();
+    config_shape_warnings(
+        "{{ config(materialized='table', **var('cfg')) }}",
+        &mut w,
+        "models/m.sql",
+    );
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(w[0].contains("not a literal"), "{w:?}");
+    // `**{1: 'x'}` — a non-string literal key is Python's
+    // "keywords must be strings" TypeError: the call shape dbt rejects.
+    assert_eq!(
+        pat.materialized("{{ config(**{1: 'x', 'materialized': 'table'}) }}"),
+        None
+    );
+    let mut w = Vec::new();
+    config_shape_warnings("{{ config(**{1: 'x'}) }}", &mut w, "models/m.sql");
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(w[0].contains("not a shape dbt accepts"), "{w:?}");
+    // Shape warnings only read `{{ config(…) }}` calls — `config(…)` in
+    // ordinary SQL text is not a config call; a call inside a SQL `--`
+    // comment still is (Jinja renders the whole file, comment or not).
+    let mut w = Vec::new();
+    config_shape_warnings(
+        "select config(1, 2)\n-- {{ config({'a': 1}, alias='x') }}",
+        &mut w,
+        "models/m.sql",
+    );
+    assert_eq!(w.len(), 1, "{w:?}");
+    // A bare `{{ config() }}` carries no arguments — a valid no-op call
+    // that warns on nothing.
+    let mut w = Vec::new();
+    config_shape_warnings("{{ config() }}", &mut w, "models/m.sql");
+    assert!(w.is_empty(), "{w:?}");
+}
+
+#[test]
+fn config_shape_warns_once_per_call() {
+    let mut w = Vec::new();
+    config_shape_warnings(
+        "{{ config({'a': 1}, alias='x') }}\n{{ config({'b': 2}, alias='y') }}",
+        &mut w,
+        "models/m.sql",
+    );
+    assert_eq!(w.len(), 2, "{w:?}");
+}
+
+#[test]
+fn config_arg_shapes_dbt_rejects_apply_nothing() {
+    let pat = Patterns::new();
+    for (sql, why) in [
+        // A dict mixed with kwargs — "Invalid inline model config" in dbt.
+        (
+            "{{ config({'materialized': 'table'}, alias='x') }}",
+            "dict then kwarg",
+        ),
+        (
+            "{{ config(alias='x', {'materialized': 'table'}) }}",
+            "kwarg then dict",
+        ),
+        // Two positional dicts — `config({'a': 1}, {'b': 2})` is the same
+        // invalid shape (a call can't carry two positional dicts).
+        (
+            "{{ config({'a': 1}, {'materialized': 'table'}) }}",
+            "two dicts",
+        ),
+        // `*{…}` unpacks the dict's KEYS into positional strings.
+        ("{{ config(*{'materialized': 'table'}) }}", "star dict"),
+        // `**` must be the LAST argument and appear at most once.
+        (
+            "{{ config(**{'materialized': 'table'}, alias='x') }}",
+            "spread mid-args",
+        ),
+        (
+            "{{ config(**{'materialized': 'table'}, **{'x': 1}) }}",
+            "two spreads",
+        ),
+        (
+            "{{ config({'a': 1}, **{'materialized': 'table'}) }}",
+            "dict then spread",
+        ),
+        // A `**` key colliding with an explicit kwarg is Python's
+        // "multiple values" error.
+        (
+            "{{ config(materialized='view', **{'materialized': 'table'}) }}",
+            "spread key collides",
+        ),
+        // `f(k=1, k=2)` — a repeated kwarg name — is a Python error.
+        (
+            "{{ config(materialized='view', materialized='table') }}",
+            "repeated kwarg",
+        ),
+        // Positional non-dict args — `config('x')`, `config(None)`, a
+        // positional after a kwarg.
+        ("{{ config(None) }}", "positional none"),
+        (
+            "{{ config(materialized='table', 'x') }}",
+            "kwarg then positional",
+        ),
+        (
+            "{{ config(*[{'a': 1}, {'materialized': 'table'}]) }}",
+            "star two dicts",
+        ),
+        ("{{ config(*['x']) }}", "star string"),
+        // A render-time spread mixed with a non-dict positional —
+        // `*var(…)` could only unpack positional args, and `'y'` is not
+        // a dict: invalid outright (verified on 1.12.6).
+        ("{{ config(*var('cfg'), 'y') }}", "star then non-dict"),
+    ] {
+        assert_eq!(pat.materialized(sql), None, "{why}: {sql}");
+    }
+}
+
+#[test]
+fn config_tags_accumulate_each_call_in_order() {
+    assert_eq!(
+        config_tags("{{ config(tags=['a', 'b']) }}\n{{ config(tags=['c']) }}"),
+        vec!["a", "b", "c"]
+    );
+    // A bare scalar wraps to a one-element list; numbers stringify —
+    // dbt's StringOrArrayOfStrings coercion (verified on 1.12.6).
+    assert_eq!(
+        config_tags("{{ config(tags='solo') }}\n{{ config(tags=[7, 'x']) }}"),
+        vec!["solo", "7", "x"]
+    );
+    // The dict and `**` spellings bind the same; a shape dbt rejects
+    // contributes nothing.
+    assert_eq!(
+        config_tags(
+            "{{ config({'tags': ['d']}) }}\n{{ config(**{'tags': ['s']}) }}\n{{ config(tags=['a'], {'tags': ['b']}) }}"
+        ),
+        vec!["d", "s"]
+    );
+    // A non-literal `tags` yields nothing for that call — an earlier
+    // literal still stands (the last-resolvable stance).
+    assert_eq!(
+        config_tags("{{ config(tags=['kept']) }}\n{{ config(tags=var('t')) }}"),
+        vec!["kept"]
+    );
+}
+
+#[test]
+fn tree_config_tags_accumulate_outer_first() {
+    // `+tags` is the one tree key that ACCUMULATES down the levels —
+    // shallower first (verified on 1.12.6). A bare scalar wraps and
+    // elements stringify (`7` → `"7"`); a non-scalar member warns once.
+    let mut w = Vec::new();
+    let tree = yaml_to_json("p:\n  +tags: [a]\n  staging:\n    +tags: [b, 7]\n", &mut w).unwrap();
+    let cfg = resolve_tree_config(
+        &tree,
+        &["p".to_string(), "staging".to_string()],
+        "models".to_string(),
+        &mut w,
+        Some(&no_vars()),
+    );
+    assert_eq!(cfg.tags, vec!["a", "b", "7"]);
+    assert!(w.is_empty(), "{w:?}");
+    let mut w = Vec::new();
+    let tree = yaml_to_json("p:\n  +tags: 'solo'\n", &mut w).unwrap();
+    let cfg = resolve_tree_config(
+        &tree,
+        &["p".to_string()],
+        "models".to_string(),
+        &mut w,
+        Some(&no_vars()),
+    );
+    assert_eq!(cfg.tags, vec!["solo"]);
+    let mut w = Vec::new();
+    let tree = yaml_to_json("p:\n  +tags: [{k: 1}, 'ok']\n", &mut w).unwrap();
+    let cfg = resolve_tree_config(
+        &tree,
+        &["p".to_string()],
+        "models".to_string(),
+        &mut w,
+        Some(&no_vars()),
+    );
+    assert_eq!(cfg.tags, vec!["ok"]);
+    assert_eq!(w.len(), 1, "{w:?}");
+}
+
+#[test]
+fn source_tree_ignores_tags_entirely() {
+    // dbt ignores a `+tags` rung on the `sources:` tree — so completely
+    // that even a non-scalar member there earns no warning (verified on
+    // 1.12.6: only the model/seed/snapshot/exposures trees read `+tags`).
+    let mut w = Vec::new();
+    let tree = yaml_to_json("p:\n  raw:\n    +tags: [{k: 1}]\n", &mut w).unwrap();
+    let cfg = resolve_source_tree_config(
+        &tree,
+        &["p".to_string(), "raw".to_string()],
+        "sources".to_string(),
+        &mut w,
+        Some(&no_vars()),
+    );
+    assert!(cfg.tags.is_empty(), "{:?}", cfg.tags);
+    assert!(w.is_empty(), "{w:?}");
+}
+
+// ---- node tags: tree `+tags` → in-file `config(tags=…)` → `config.tags:` ----
+
+/// A scratch project exercising every node-tag channel: two `+tags`
+/// levels, in-file `config(tags=…)`, schema `config.tags:` on ordinary
+/// and `versions:`-declared models, seeds, `{% snapshot %}` blocks, the
+/// ignored top-level `tags:` properties — plus the exposure tag/group
+/// rules and the `config.loaded_at_field: null` no-op.
+fn write_tags_project(dir: &std::path::Path) {
+    for sub in [
+        "models/nested",
+        "models/grp",
+        "models/extra",
+        "models/dup",
+        "seeds",
+        "snapshots",
+    ] {
+        std::fs::create_dir_all(dir.join(sub)).unwrap();
+    }
+    std::fs::write(
+        dir.join("dbt_project.yml"),
+        r#"name: p
+model-paths: [models]
+seed-paths: [seeds]
+snapshot-paths: [snapshots]
+models:
+  p:
+    +tags: [m_tree]
+    nested:
+      +tags: [m_nested]
+    dup:
+      +tags: [m_dup, m_tree, m_dup]
+seeds:
+  p:
+    +tags: [seed_tree]
+snapshots:
+  p:
+    +tags: [snap_tree]
+exposures:
+  p:
+    +tags: [exp_tree]
+    grp:
+      +group: exp_tree_grp
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("models/m.sql"),
+        "{{ config(tags=['m_in', 'dup']) }}\nselect 1\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("models/nested/n.sql"), "select 1\n").unwrap();
+    // The dup rung — `+tags` repeats the outer rung's tag AND its own
+    // element; node.tags still dedups the whole union (verified on
+    // 1.12.6) even though the wire's config.tags keeps every occurrence.
+    std::fs::write(dir.join("models/dup/d.sql"), "select 1\n").unwrap();
+    // A `**{…}` config call — the dict the spread carries binds like
+    // kwargs written in place (verified on 1.12.6).
+    std::fs::write(
+        dir.join("models/spread.sql"),
+        "{{ config(**{'tags': ['spread_in'], 'materialized': 'table'}) }}\nselect 1\n",
+    )
+    .unwrap();
+    // The versioned member — `yml_tags` records `ver ++ model`.
+    std::fs::write(
+        dir.join("models/ord_v1.sql"),
+        "{{ config(tags=['ord_in']) }}\nselect 1\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("seeds/orders.csv"), "id\n1\n").unwrap();
+    std::fs::write(
+        dir.join("snapshots/snap.sql"),
+        "{% snapshot s %}{{ config(tags=['snap_in']) }} select 1 {% endsnapshot %}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("models/schema.yml"),
+        r#"version: 2
+models:
+  - name: m
+    tags: [m_ignored]
+    config:
+      tags: [dup, m_yml]
+  - name: n
+    tags: [n_ignored]
+    config:
+      tags: [n_yml]
+  - name: ord
+    config: {tags: [ord_model_cfg]}
+    versions:
+      - v: 1
+        config: {tags: [ord_ver_cfg]}
+seeds:
+  - name: orders
+    tags: [seed_ignored]
+    config:
+      tags: [seed_yml]
+snapshots:
+  - name: s
+    tags: [snap_ignored]
+    config:
+      tags: [snap_yml]
+groups:
+  - name: grp
+    owner: {name: ops}
+  - name: exp_tree_grp
+    owner: {name: ops}
+sources:
+  - name: nulled_src
+    loaded_at_field: null
+    config: {loaded_at_field: nulled_cfg_ts}
+    tables:
+      - name: t1
+      - name: cfg_null
+        config: {loaded_at_field: null}
+      - name: prop_null
+        loaded_at_field: null
+"#,
+    )
+    .unwrap();
+    // Exposures under `models/grp/` — fqn `[p, grp, <name>]` picks up
+    // the `exposures: p:` `+tags` AND the `grp:` level's `+group`.
+    std::fs::write(
+        dir.join("models/grp/e.yml"),
+        r#"version: 2
+exposures:
+  - name: exp_a
+    type: dashboard
+    owner: {name: ops}
+    tags: [top_a]
+    config:
+      tags: [z_cfg, a_cfg]
+      group: grp
+    depends_on:
+      - ref('m')
+  - name: exp_b
+    type: analysis
+    owner: {name: ops}
+    tags: [z_top]
+    depends_on:
+      - ref('m')
+  - name: exp_c
+    type: notebook
+    owner: {name: ops}
+    tags: [c_top]
+    group: top_group_ignored
+    config:
+      tags: []
+    depends_on:
+      - ref('m')
+"#,
+    )
+    .unwrap();
+    // `exp_d` under `models/extra/` — inside `exposures: p:`'s `+tags`
+    // but OUTSIDE the `grp:` level's `+group`. Declared `group:` only at
+    // the top level — the property dbt ignores — so `config.group`
+    // stays absent.
+    std::fs::write(
+        dir.join("models/extra/e.yml"),
+        "version: 2\n\
+         exposures:\n  - name: exp_d\n    type: ml\n    owner: {name: ops}\n    tags: [d_top]\n    group: top_only\n    depends_on:\n      - ref('m')\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn node_tags_merge_tree_infile_yml_in_dbt_order() {
+    let dir = tempfile::tempdir().unwrap();
+    write_tags_project(dir.path());
+    let m = manifest_from_source(dir.path()).unwrap();
+    // `m` — every channel: tree `+tags` (outer then inner level when the
+    // fqn descends), the file's `config(tags=…)`, the entry's
+    // `config.tags:` — dedup'd, first occurrence keeping its slot
+    // (verified on 1.12.6). The top-level `tags:` is a no-op.
+    assert_eq!(
+        m.nodes["model.p.m"].tags,
+        vec!["m_tree", "m_in", "dup", "m_yml"]
+    );
+    // `n` — two tree levels accumulate outer-first; no in-file config.
+    assert_eq!(
+        m.nodes["model.p.n"].tags,
+        vec!["m_tree", "m_nested", "n_yml"]
+    );
+    // `d` — the union dedups ACROSS tree rungs and inside one list:
+    // `+tags: [m_dup, m_tree, m_dup]` under `+tags: [m_tree]` still yields
+    // each tag once (verified on 1.12.6 — only the wire's config.tags
+    // keeps every occurrence).
+    assert_eq!(m.nodes["model.p.d"].tags, vec!["m_tree", "m_dup"]);
+    // The `**{…}` call's tags land in the in-file channel — and its
+    // materialized binds too.
+    assert_eq!(m.nodes["model.p.spread"].tags, vec!["m_tree", "spread_in"]);
+    assert_eq!(
+        m.nodes["model.p.spread"].config.materialized.as_deref(),
+        Some("table")
+    );
+    // The versioned member: tree → in-file → (ver cfg then model cfg).
+    assert_eq!(
+        m.nodes["model.p.ord.v1"].tags,
+        vec!["m_tree", "ord_in", "ord_ver_cfg", "ord_model_cfg"]
+    );
+    // Seeds and `{% snapshot %}` blocks share the same channels.
+    assert_eq!(m.nodes["seed.p.orders"].tags, vec!["seed_tree", "seed_yml"]);
+    assert_eq!(
+        m.nodes["snapshot.p.s"].tags,
+        vec!["snap_tree", "snap_in", "snap_yml"]
+    );
+    for uid in m.nodes.keys() {
+        for ignored in ["m_ignored", "n_ignored", "seed_ignored", "snap_ignored"] {
+            assert!(
+                !m.nodes[uid].tags.contains(&ignored.to_string()),
+                "{uid} must not carry the ignored top-level property"
+            );
+        }
+    }
+}
+
+#[test]
+fn exposure_tags_and_group_follow_the_wire_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    write_tags_project(dir.path());
+    let (m, warnings) = manifest_from_source_with_warnings(dir.path(), None).unwrap();
+    // `exp_a` — `config.tags` declared: `config.tags ++ tags:` wins over
+    // the tree's `+tags` outright, the union sorted + dedup'd the way the
+    // wire keeps it (verified on 1.12.6). `config.group` lands in
+    // `config` — the wire's only group slot.
+    let a = &m.exposures["exposure.p.exp_a"];
+    assert_eq!(a.tags, vec!["a_cfg", "top_a", "z_cfg"]);
+    assert_eq!(a.config.tags, a.tags);
+    assert_eq!(a.config.group.as_deref(), Some("grp"));
+    // `exp_b` — no `config.tags`: `tags: ++ +tags`, still sorted.
+    let b = &m.exposures["exposure.p.exp_b"];
+    assert_eq!(b.tags, vec!["exp_tree", "z_top"]);
+    assert_eq!(b.config.tags, b.tags);
+    assert_eq!(b.config.group.as_deref(), Some("exp_tree_grp"));
+    // `exp_c` — `config: {tags: []}`: declared-and-empty STILL suppresses
+    // the tree's `+tags` (verified) — and the top-level `group:` property
+    // never lands.
+    let c = &m.exposures["exposure.p.exp_c"];
+    assert_eq!(c.tags, vec!["c_top"]);
+    assert_eq!(c.config.tags, c.tags);
+    assert_eq!(c.config.group.as_deref(), Some("exp_tree_grp"));
+    // `exp_d` — outside the `+group` path: `+tags` still reaches it (`p`
+    // is its first fqn level) but no `+group` level does — and the
+    // ignored `group:` property stays off the wire.
+    let d = &m.exposures["exposure.p.exp_d"];
+    assert_eq!(d.tags, vec!["d_top", "exp_tree"]);
+    assert!(d.config.group.is_none(), "top-level group: must not land");
+    // The top-level `group:` is a dbt parse error — the loader ignores it
+    // but warns, once per misdeclared exposure (exp_c and exp_d here).
+    let group_warnings = warnings
+        .iter()
+        .filter(|w| w.contains("top-level 'group:'"))
+        .count();
+    assert_eq!(group_warnings, 2, "{warnings:?}");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("exp_c") && w.contains("top-level 'group:'")),
+        "exp_c's group: warns: {warnings:?}"
+    );
+}
+
+#[test]
+fn source_loaded_at_field_null_semantics() {
+    let dir = tempfile::tempdir().unwrap();
+    write_tags_project(dir.path());
+    let m = manifest_from_source(dir.path()).unwrap();
+    // `nulled_src` — the source's own `loaded_at_field: null` reads as
+    // ABSENT (verified on 1.12.6), so its `config.loaded_at_field` fills.
+    assert_eq!(
+        m.sources["source.p.nulled_src.t1"]
+            .loaded_at_field
+            .as_deref(),
+        Some("nulled_cfg_ts")
+    );
+    // `config.loaded_at_field: null` on the TABLE is a no-op — the
+    // inherited source-config value flows through (verified).
+    assert_eq!(
+        m.sources["source.p.nulled_src.cfg_null"]
+            .loaded_at_field
+            .as_deref(),
+        Some("nulled_cfg_ts")
+    );
+    // …while the table's TOP-LEVEL `loaded_at_field: null` clears
+    // everything — the only clearing spelling (verified).
+    assert_eq!(
+        m.sources["source.p.nulled_src.prop_null"].loaded_at_field,
+        None
+    );
+}
+
 // ---- source/table `config:` blocks ------------------------------------------
 
 /// A scratch project with `config:` blocks at every level of a source —
@@ -2246,10 +2787,16 @@ fn data_paths_alias_feeds_seed_discovery() {
     )
     .unwrap();
     std::fs::write(dir.path().join("data/grains.csv"), "id\n1\n").unwrap();
-    let m = manifest_from_source(dir.path()).unwrap();
+    let (m, w) = manifest_from_source_with_warnings(dir.path(), None).unwrap();
     assert!(
         m.nodes.contains_key("seed.p.grains"),
         "the data-paths alias must locate the seed"
+    );
+    // …and dbt's rename notice lands in warnings (verified wording).
+    assert!(
+        w.iter()
+            .any(|s| s.contains("The data-paths config has been renamed to seed-paths")),
+        "{w:?}"
     );
     // The default `seeds/` dir does NOT kick in when data-paths redirects:
     // a stray csv under seeds/ is outside the configured resource paths.
