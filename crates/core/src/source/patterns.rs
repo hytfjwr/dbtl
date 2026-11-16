@@ -945,6 +945,18 @@ pub(crate) fn kwarg<'a>(args: &'a str, name: &str) -> Option<&'a str> {
     None
 }
 
+/// A `ref()` call's `v=`/`version=` pin rendered the way dbt spells the
+/// version segment — a number's `str()` (`1.10` becomes `"1.1"`), a
+/// string verbatim (`'v3'` → `"v3"`, `'1.10'` stays `"1.10"`). `None`
+/// when the pin kwarg is absent or not a literal (a dynamic pin the
+/// loader resolves to the family's latest).
+pub(crate) fn call_version(args: &str) -> Option<String> {
+    kwarg(args, "v")
+        .or_else(|| kwarg(args, "version"))
+        .and_then(lit_value)
+        .and_then(|v| scalar_to_string(&v))
+}
+
 /// Recursive-descent parser for the Python/Jinja literals a `config()` kwarg
 /// holds: `{'k': v}` dicts, `[…]`/`(…)` sequences, quoted strings, `True` /
 /// `False` / `None`, and numbers. Anything else — `var('x')`, an identifier,

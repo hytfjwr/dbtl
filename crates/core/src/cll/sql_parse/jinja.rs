@@ -11,8 +11,8 @@ use sqlparser::tokenizer::Span;
 use super::depth::{parse_statements, ParseFailure};
 use super::SqlDialect;
 use crate::source::{
-    find_subslice, jinja_branches, jinja_set_assigns, jinja_tag_close, mask_jinja_comments,
-    tag_word, ArmKind, ArmStep, JinjaBranches,
+    call_sites_masked, call_version, find_subslice, jinja_branches, jinja_set_assigns,
+    jinja_tag_close, mask_jinja_comments, tag_word, ArmKind, ArmStep, CallKind, JinjaBranches,
 };
 
 /// The name `{{ this }}` renders to — marked like every generated token,
@@ -138,6 +138,39 @@ impl RenderedSql {
                 None => r,
                 Some(prev) => prev.start.min(r.start)..prev.end.max(r.end),
             });
+        }
+        out
+    }
+
+    /// The message text of source range `src`: the written text
+    /// verbatim, except each `{{ … }}` expression tag inside it is
+    /// rewritten for the reader — `ref('x')` (also `ref('pkg','x')`
+    /// and a literal `v=`/`version=` pin, which reads `x`/`x.vN`, the
+    /// versioned-model spelling) names the model, `source('s','t')`
+    /// names `s.t`, and every other `{{ }}` collapses to `{{…}}`, the
+    /// same elision the parse-error display applies. `{% %}`/`{# #}`
+    /// tags and template-side regions the render dropped stay as
+    /// written.
+    ///
+    /// `src` must come from [`RenderedSql::source_range`]: its edges
+    /// align to whole tags, so a `{{ }}` is never half-rewritten.
+    pub(super) fn src_display(&self, raw: &str, src: &Range<usize>) -> String {
+        let mut out = String::new();
+        for seg in &self.segs {
+            let s = seg.src.start.max(src.start);
+            let e = seg.src.end.min(src.end);
+            if s >= e {
+                continue;
+            }
+            if !seg.copy
+                && s == seg.src.start
+                && e == seg.src.end
+                && raw[seg.src.clone()].starts_with("{{")
+            {
+                out.push_str(&expr_display(&raw[seg.src.clone()]));
+            } else {
+                out.push_str(&raw[s..e]);
+            }
         }
         out
     }
@@ -2216,6 +2249,44 @@ fn classify_jinja_expr(inner: &str) -> JinjaExpr {
         return JinjaExpr::This;
     }
     JinjaExpr::Other(jinja_string_literals(inner))
+}
+
+/// The message form of one `{{ … }}` tag — the relation name for a
+/// `ref(…)`/`source(…)` call, `{{…}}` for every other expression.
+fn expr_display(tag: &str) -> String {
+    call_display(jinja_inner(&tag[2..tag.len() - 2])).unwrap_or_else(|| "{{…}}".to_string())
+}
+
+/// `e` — a `{{ … }}` body stripped by [`jinja_inner`] — spelled for a
+/// finding's message: `ref('x')`/`ref('pkg','x')` → `x`, a literal
+/// `v=`/`version=` pin → `x.vN` (the versioned-model spelling),
+/// `source('s','t')` → `s.t`. `None` for anything the loader's call-site
+/// scan doesn't recognize as a leading ref/source call — `var(…)`, a
+/// macro, `{{ this }}`, a non-literal name (`ref(var('x'))`) — which the
+/// caller elides.
+fn call_display(e: &str) -> Option<String> {
+    // `sites[0]` at offset 0 is the body's own call — the same gate the
+    // render's classification applies (the expression opens with the
+    // callee). Ranges index `e`: comment masking preserves byte length.
+    let masked = mask_jinja_comments(e);
+    let site = call_sites_masked(&masked).into_iter().next()?;
+    if site.span.start != 0 {
+        return None;
+    }
+    match site.kind {
+        CallKind::Ref { name, .. } => {
+            let mut d = e[name].to_string();
+            // A literal pin displays like the versioned uid segment —
+            // `x.v2`, `x.v1.1` — while a dynamic pin (or none) resolves
+            // to the family's latest: bare `x`.
+            if let Some(v) = site.args.and_then(|a| call_version(&masked[a])) {
+                d = format!("{d}.v{v}");
+            }
+            Some(d)
+        }
+        CallKind::Source { source, table } => Some(format!("{}.{}", &e[source], &e[table])),
+        CallKind::Config => None,
+    }
 }
 
 /// The decoded `'…'`/`"…"` string literals in a `{{ }}` expression body —

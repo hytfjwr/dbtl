@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- `cartesian_join` findings now spell `ref()`/`source()` calls in the
+  quoted raw join arm as the relation they read — `{{ ref('base') }} b`
+  reads `base b`, a `v=`/`version=` pin reads `base.v2`, and
+  `{{ source('raw', 'events') }}` reads `raw.events` — while any other
+  `{{ }}` expression collapses to `{{…}}`. Finding locations and counts
+  are unchanged; when raw positions can't be paired with the judged
+  joins the message still falls back to the judged text.
+
 ### Fixed
 
 - `dbtl lint` in manifest mode now counts literal `ref()`/`source()`

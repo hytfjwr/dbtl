@@ -16,9 +16,9 @@ use std::rc::Rc;
 
 use crate::dag::{normalize_version, uid_package, versioned_model_segs, Dag, NodeInfo};
 use crate::source::{
-    arms_exclusive, call_sites_masked, config_arg, jinja_branches, kwarg, lit_value,
-    mask_jinja_comments, scalar_to_string, scan_python, ArmKind, ArmStep, CallKind, CallSite,
-    JinjaBranches, PyCallKind,
+    arms_exclusive, call_sites_masked, call_version, config_arg, jinja_branches, kwarg, lit_value,
+    mask_jinja_comments, scan_python, ArmKind, ArmStep, CallKind, CallSite, JinjaBranches,
+    PyCallKind,
 };
 
 use super::{Finding, Label};
@@ -716,7 +716,7 @@ impl<'a> CallSites<'a> {
                 match call
                     .args
                     .as_ref()
-                    .and_then(|a| rendered_version(&self.sites.masked[a.clone()]))
+                    .and_then(|a| call_version(&self.sites.masked[a.clone()]))
                 {
                     Some(pin) => {
                         let Some(vseg) = uid_vseg else { return false };
@@ -879,18 +879,6 @@ pub(crate) enum DepCallKind {
     },
 }
 
-/// A `ref()` call's `v=`/`version=` literal rendered the way dbt spells
-/// the version — a number's `str()` (`1.10` → `"1.1"`), a string
-/// verbatim (`'v3'` → `"v3"`, `'1.10'` stays `"1.10"`). `None` when the
-/// kwarg is absent or isn't a literal (the dynamic pin the loader
-/// resolves to the family's latest).
-fn rendered_version(args: &str) -> Option<String> {
-    kwarg(args, "v")
-        .or_else(|| kwarg(args, "version"))
-        .and_then(lit_value)
-        .and_then(|v| scalar_to_string(&v))
-}
-
 /// The [`DepCall`]s inside one node's [`Sites`] — the body
 /// [`CallSites::dep_calls`] memoizes. A call the extractor couldn't read a
 /// literal name for (`ref(var('x'))`) carries no `CallKind` name and never
@@ -918,7 +906,7 @@ fn extract_dep_calls(sites: &Sites) -> Vec<DepCall> {
                     package: package.as_ref().map(|p| masked[p.clone()].to_string()),
                     versioned: args
                         .is_some_and(|a| kwarg(a, "v").is_some() || kwarg(a, "version").is_some()),
-                    version: args.and_then(rendered_version),
+                    version: args.and_then(call_version),
                 }
             }
             CallKind::Source { source, table } => DepCallKind::Source {

@@ -273,7 +273,7 @@ pub use patterns::{
     JinjaBranches,
 };
 pub(crate) use patterns::{
-    config_arg, config_shape_warnings, config_tags, kwarg, lit_value, tag_values_of,
+    call_version, config_arg, config_shape_warnings, config_tags, kwarg, lit_value, tag_values_of,
 };
 pub(crate) use patterns::{find_subslice, jinja_set_assigns, jinja_tag_close, tag_word};
 pub(crate) use python::{is_identifier, scan_python, PyCallKind};
