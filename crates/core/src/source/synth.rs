@@ -81,6 +81,18 @@ pub(super) struct Synthesis {
     /// `(source, table)` pairs `config.enabled`/`+enabled` parked — the
     /// source-side half of `disabled_names`.
     disabled_sources: BTreeSet<(String, String)>,
+    /// uid -> the IN-FILE `enabled` verdict — `config(enabled=…)` or a
+    /// `.py` model's `dbt.config(enabled=…)` — recorded when the file
+    /// declares one. `apply_meta` folds it as the highest-precedence
+    /// channel over schema.yml `config.enabled:` and the tree's
+    /// `+enabled`.
+    in_file_enabled: HashMap<String, Enabled>,
+    /// uids whose `enabled` stayed [`Enabled::Unproven`] after every
+    /// declared channel folded — kept in the graph (a guess either way
+    /// could drop a live node dbt keeps… or a dead one) but recorded so
+    /// `RawManifest::enabled_unverifiable` carries them and lint rules
+    /// never build a claim on a maybe-absent node or its edges.
+    enabled_unverifiable: BTreeSet<String>,
     /// Names `ref()` may legitimately resolve to without a synthesized
     /// node: `versions:`/`defined_in:`-declared model names and the
     /// `<name>` families of `<name>_v<ver>` model files (versioned nodes
@@ -273,6 +285,8 @@ impl Synthesis {
             tree_gov: HashMap::new(),
             disabled_names: BTreeMap::new(),
             disabled_sources: BTreeSet::new(),
+            in_file_enabled: HashMap::new(),
+            enabled_unverifiable: BTreeSet::new(),
             assumed_names: BTreeSet::new(),
             warnings,
         })
@@ -312,16 +326,23 @@ impl Synthesis {
                 &mut self.warnings,
                 Some(&self.vars),
             );
-            // Disabled models never reach the manifest's `nodes` (dbt parks them
-            // under `disabled`); drop them here too, edges included — but keep
-            // the NAME, so a `ref()` to it reads as "disabled", not "missing".
-            if self.pat.disabled(
+            // The in-file `config(enabled=)` verdict outranks the tree's
+            // `+enabled` — it decides whenever it exists; the tree only
+            // fills its absence. Disabled models never reach the
+            // manifest's `nodes` (dbt parks them under `disabled`); drop
+            // them here too, edges included — but keep the NAME, so a
+            // `ref()` to it reads as "disabled", not "missing". An
+            // `Unproven` verdict keeps the node AND marks it: dbt may
+            // have dropped it, so lint claims on it or its edges are
+            // unprovable.
+            let in_file = self.pat.enabled(
                 &masked,
                 &self.vars,
                 &mut self.warnings,
                 &rel_path(&self.dir, &file),
-            ) || tree.enabled == Some(false)
-            {
+            );
+            let verdict = in_file.or(tree.enabled_verdict());
+            if verdict == Some(Enabled::Off) {
                 self.disabled_names
                     .entry(name)
                     .or_default()
@@ -337,6 +358,9 @@ impl Synthesis {
                     rel_path(&self.dir, &file)
                 ));
                 continue;
+            }
+            if verdict == Some(Enabled::Unproven) {
+                self.enabled_unverifiable.insert(uid.clone());
             }
             if let Some(m) = &tree.materialized {
                 self.tree_mat.insert(uid.clone(), m.clone());
@@ -385,6 +409,9 @@ impl Synthesis {
                 },
             );
             self.name_index.insert(name, uid.clone());
+            if let Some(v) = in_file {
+                self.in_file_enabled.insert(uid.clone(), v);
+            }
             self.node_sql.push((uid, masked));
         }
     }
@@ -430,28 +457,33 @@ impl Synthesis {
                 ));
             }
             let cfg = py_file_config(&scan, &mut self.warnings, &ofp);
-            // `enabled` parks like the SQL `disabled` path: a proven
-            // literal `False` in `dbt.config(...)`, or the tree's
-            // `+enabled: false`. A declared-but-unreadable or non-bool
-            // value warns and stays enabled — an unproven value never
-            // disables (the stance `Patterns::disabled` takes).
-            let disabled = match cfg.enabled {
-                Some(Some(serde_json::Value::Bool(b))) => !b,
+            // `enabled` parks like the SQL path: a proven literal
+            // `False` in `dbt.config(...)`, or the tree's `+enabled:
+            // false` — the in-file call outranks the tree whenever it
+            // declares `enabled`. A declared-but-unreadable or non-bool
+            // value warns, stays enabled, and marks the node
+            // `enabled`-unverifiable (the `Enabled::Unproven` stance —
+            // dbt may have dropped it, so claims on it are unprovable).
+            let in_file = match cfg.enabled {
+                Some(Some(serde_json::Value::Bool(b))) => {
+                    Some(if b { Enabled::On } else { Enabled::Off })
+                }
                 Some(Some(v)) => {
                     self.warnings.push(format!(
                         "{ofp}: config(enabled={v}) is not a boolean literal; the resource stays enabled"
                     ));
-                    false
+                    Some(Enabled::Unproven)
                 }
                 Some(None) => {
                     self.warnings.push(format!(
                         "{ofp}: config(enabled=...) could not be evaluated as a boolean; the resource stays enabled"
                     ));
-                    false
+                    Some(Enabled::Unproven)
                 }
-                None => false,
+                None => None,
             };
-            if disabled || tree.enabled == Some(false) {
+            let verdict = in_file.or(tree.enabled_verdict());
+            if verdict == Some(Enabled::Off) {
                 self.disabled_names
                     .entry(name)
                     .or_default()
@@ -462,6 +494,9 @@ impl Synthesis {
                 self.warnings
                     .push(format!("duplicate resource name '{name}': ignoring {ofp}"));
                 continue;
+            }
+            if verdict == Some(Enabled::Unproven) {
+                self.enabled_unverifiable.insert(uid.clone());
             }
             // The tree's other `+` keys DO reach a python model — but
             // `+materialized` deliberately does not: dbt's python default
@@ -502,6 +537,9 @@ impl Synthesis {
                 },
             );
             self.name_index.insert(name, uid.clone());
+            if let Some(v) = in_file {
+                self.in_file_enabled.insert(uid.clone(), v);
+            }
             self.node_python.push(DeferredPy {
                 uid,
                 // `dbt.config` calls configure the node at collection;
@@ -531,7 +569,9 @@ impl Synthesis {
                 &mut self.warnings,
                 Some(&self.vars),
             );
-            if tree.enabled == Some(false) {
+            // A seed's only `enabled` channel is the tree's.
+            let verdict = tree.enabled_verdict();
+            if verdict == Some(Enabled::Off) {
                 self.disabled_names
                     .entry(name)
                     .or_default()
@@ -544,6 +584,9 @@ impl Synthesis {
                     rel_path(&self.dir, &file)
                 ));
                 continue;
+            }
+            if verdict == Some(Enabled::Unproven) {
+                self.enabled_unverifiable.insert(uid.clone());
             }
             if !tree.meta.is_empty() {
                 self.tree_meta.insert(uid.clone(), tree.meta.clone());
@@ -582,11 +625,13 @@ impl Synthesis {
             let masked = mask_jinja_comments(&raw);
             let path = rel_path(&root, &file);
             let ofp = rel_path(&self.dir, &file);
-            // An in-file `enabled=false` applies to every block in the file (rare).
-            if self
+            // An in-file `enabled` verdict applies to every block in the
+            // file (rare) — a proven `false` parks them all like dbt's
+            // `disabled`; an unproven one marks each block it covers.
+            let in_file = self
                 .pat
-                .disabled(&masked, &self.vars, &mut self.warnings, &ofp)
-            {
+                .enabled(&masked, &self.vars, &mut self.warnings, &ofp);
+            if in_file == Some(Enabled::Off) {
                 for name in self.pat.snapshots(&masked) {
                     self.disabled_names
                         .entry(name)
@@ -613,7 +658,8 @@ impl Synthesis {
                     &mut self.warnings,
                     Some(&self.vars),
                 );
-                if tree.enabled == Some(false) {
+                let verdict = in_file.or(tree.enabled_verdict());
+                if verdict == Some(Enabled::Off) {
                     self.disabled_names
                         .entry(name.clone())
                         .or_default()
@@ -624,6 +670,9 @@ impl Synthesis {
                     self.warnings
                         .push(format!("duplicate resource name '{name}': ignoring {ofp}"));
                     continue;
+                }
+                if verdict == Some(Enabled::Unproven) {
+                    self.enabled_unverifiable.insert(uid.clone());
                 }
                 if !tree.meta.is_empty() {
                     self.tree_meta.insert(uid.clone(), tree.meta.clone());
@@ -664,6 +713,12 @@ impl Synthesis {
                     },
                 );
                 self.name_index.insert(name, uid.clone());
+                // The file's `enabled` verdict is the block's in-file
+                // channel — `apply_meta` folds a schema-level
+                // `config.enabled:` under it.
+                if let Some(v) = in_file {
+                    self.in_file_enabled.insert(uid.clone(), v);
+                }
                 self.node_sql.push((uid, masked.clone().into_owned()));
             }
         }
@@ -746,11 +801,16 @@ impl Synthesis {
                 let Some(rel) = &entry.relation else {
                     continue;
                 };
-                if self.vars.schema_disabled(
+                // The schema entry's `config.enabled` is a YAML
+                // snapshot's highest `enabled` channel (there is no
+                // in-file config to outrank it); the tree fills its
+                // absence only.
+                let schema = Enabled::from_schema(self.vars.schema_enabled_state(
                     entry.config.enabled.as_ref(),
                     &format!("{yml_path}: snapshot '{}' config.enabled", entry.name),
                     &mut self.warnings,
-                ) {
+                ));
+                if schema == Some(Enabled::Off) {
                     self.disabled_names
                         .entry(entry.name.clone())
                         .or_default()
@@ -778,12 +838,20 @@ impl Synthesis {
                     &mut self.warnings,
                     Some(&self.vars),
                 );
-                if tree.enabled == Some(false) {
+                let uid = format!("snapshot.{}.{}", self.proj, entry.name);
+                let verdict = schema.or(tree.enabled_verdict());
+                if verdict == Some(Enabled::Off) {
                     self.disabled_names
                         .entry(entry.name.clone())
                         .or_default()
                         .insert("snapshot".to_string());
                     continue;
+                }
+                if verdict == Some(Enabled::Unproven) {
+                    self.enabled_unverifiable.insert(uid.clone());
+                }
+                if let Some(v) = schema {
+                    self.in_file_enabled.insert(uid.clone(), v);
                 }
                 // dbt V2 synthesizes `select * from {relation}` (wrapping a bare
                 // ref()/source() in {{ }}) and feeds it through the normal
@@ -795,7 +863,6 @@ impl Synthesis {
                     format!("{{{{ {rel} }}}}")
                 };
                 let sql = format!("select * from {body}");
-                let uid = format!("snapshot.{}.{}", self.proj, entry.name);
                 if !tree.meta.is_empty() {
                     self.tree_meta.insert(uid.clone(), tree.meta.clone());
                 }
@@ -1092,15 +1159,17 @@ impl Synthesis {
                     // source's — `enabled: true` under a disabled source
                     // re-enables the table (verified). A `false` outcome
                     // parks the table under `disabled` like dbt, tests and
-                    // all.
-                    if self.vars.schema_disabled(
+                    // all; an unprovable one keeps it and marks it — the
+                    // table may not exist under real dbt.
+                    let schema = Enabled::from_schema(self.vars.schema_enabled_state(
                         tbl.config.enabled.as_ref().or(src.config.enabled.as_ref()),
                         &format!(
                             "{yml_path}: source table '{}.{}' config.enabled",
                             src.name, tbl.name
                         ),
                         &mut self.warnings,
-                    ) {
+                    ));
+                    if schema == Some(Enabled::Off) {
                         self.disabled_sources
                             .insert((src.name.clone(), tbl.name.clone()));
                         continue;
@@ -1124,11 +1193,19 @@ impl Synthesis {
                         Some(&self.vars),
                     );
                     // `sources:` `+enabled` parks the table like the other
-                    // resource trees (dbt disables `source.p.s.t` by fqn).
-                    if tree.enabled == Some(false) {
-                        self.disabled_sources
-                            .insert((src.name.clone(), tbl.name.clone()));
-                        continue;
+                    // resource trees (dbt disables `source.p.s.t` by fqn) —
+                    // the schema verdict above outranks it; the tree fills
+                    // its absence only.
+                    match schema.or(tree.enabled_verdict()) {
+                        Some(Enabled::Off) => {
+                            self.disabled_sources
+                                .insert((src.name.clone(), tbl.name.clone()));
+                            continue;
+                        }
+                        Some(Enabled::Unproven) => {
+                            self.enabled_unverifiable.insert(uid.clone());
+                        }
+                        _ => {}
                     }
                     self.sources.insert(
                         uid.clone(),
@@ -1237,12 +1314,14 @@ impl Synthesis {
             // like a model's. dbt records `path` resource-root-relative (like a
             // model's) and `original_file_path` project-root-relative.
             for exp in &schema.exposures {
-                // `config: enabled:` parks the exposure like dbt's `disabled`.
-                if self.vars.schema_disabled(
+                // `config: enabled:` parks the exposure like dbt's
+                // `disabled`; an unprovable one keeps it and marks it.
+                let schema = Enabled::from_schema(self.vars.schema_enabled_state(
                     exp.config.enabled.as_ref(),
                     &format!("{yml_path}: exposure '{}' config.enabled", exp.name),
                     &mut self.warnings,
-                ) {
+                ));
+                if schema == Some(Enabled::Off) {
                     continue;
                 }
                 let uid = format!("exposure.{}.{}", self.proj, exp.name);
@@ -1276,9 +1355,15 @@ impl Synthesis {
                     Some(&self.vars),
                 );
                 // `exposures:` `+enabled` parks the exposure like the other
-                // resource trees (dbt disables `exposure.p.e` by fqn).
-                if tree.enabled == Some(false) {
-                    continue;
+                // resource trees (dbt disables `exposure.p.e` by fqn) —
+                // the schema verdict outranks it; the tree fills its
+                // absence only.
+                match schema.or(tree.enabled_verdict()) {
+                    Some(Enabled::Off) => continue,
+                    Some(Enabled::Unproven) => {
+                        self.enabled_unverifiable.insert(uid.clone());
+                    }
+                    _ => {}
                 }
                 // `exposures:` tree `+meta` < `meta:` < `config: meta:` —
                 // each overrides the previous per top-level key, the same
@@ -1358,6 +1443,9 @@ impl Synthesis {
                 &yml_path,
                 &self.docs,
                 &mut self.disabled_names,
+                &self.in_file_enabled,
+                &self.tree_gov,
+                &mut self.enabled_unverifiable,
                 &mut self.warnings,
             );
             apply_meta(
@@ -1368,6 +1456,9 @@ impl Synthesis {
                 &yml_path,
                 &self.docs,
                 &mut self.disabled_names,
+                &self.in_file_enabled,
+                &self.tree_gov,
+                &mut self.enabled_unverifiable,
                 &mut self.warnings,
             );
             apply_meta(
@@ -1378,6 +1469,9 @@ impl Synthesis {
                 &yml_path,
                 &self.docs,
                 &mut self.disabled_names,
+                &self.in_file_enabled,
+                &self.tree_gov,
+                &mut self.enabled_unverifiable,
                 &mut self.warnings,
             );
 
@@ -1528,6 +1622,16 @@ impl Synthesis {
             }
         }
 
+        // The `enabled`-unverifiable marks, kept only for uids that
+        // actually reached the manifest (a disabled or duplicate-dropped
+        // resource's mark goes away with it).
+        let mut enabled_unverifiable = self.enabled_unverifiable;
+        enabled_unverifiable.retain(|uid| {
+            self.nodes.contains_key(uid)
+                || self.sources.contains_key(uid)
+                || self.exposures.contains_key(uid)
+        });
+
         let raw_macros = self.macros.raw_macros(&self.proj);
 
         // The ref()/source() name universe `unresolved_references` judges
@@ -1614,6 +1718,7 @@ impl Synthesis {
                 parent_map,
                 child_map,
                 unresolved_adjacent,
+                enabled_unverifiable,
                 // The project's own `{% macro %}` table — real manifests
                 // carry these (and the diff walks their depends_on for
                 // shared-macro impact), so the synthesized manifest fills

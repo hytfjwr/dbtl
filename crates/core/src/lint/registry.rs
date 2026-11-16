@@ -1001,9 +1001,14 @@ pub static REGISTRY: &[RuleInfo] = &[
                     reports under its own wording (the fix is re-enabling, \
                     not declaring), and calls Jinja can switch off — inside \
                     an `{% if %}`/`{% elif %}`/`{% else %}` arm — are never \
-                    judged. When declared packages aren't fully installed \
-                    a missing name may simply live in one of them, so those \
-                    collapse to one summary warning instead of findings.",
+                    judged. A node whose `enabled` source mode cannot \
+                    evaluate stays in the graph but reports nothing: real \
+                    dbt either resolved the expression or failed the whole \
+                    parse, so a finding that presumes the node exists would \
+                    assert what cannot be proven. When declared packages \
+                    aren't fully installed a missing name may simply live \
+                    in one of them, so those collapse to one summary \
+                    warning instead of findings.",
         example: "fct_orders refs stg_ordres — a typo for stg_orders — and \
                   reads source('raw', 'nonexistent'), which no schema.yml \
                   declares. Fix: correct the names, or declare the source.",

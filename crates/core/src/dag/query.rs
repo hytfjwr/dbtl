@@ -133,6 +133,17 @@ impl Dag {
         self.pruned_adjacent.get(unique_id)
     }
 
+    /// Whether `unique_id`'s presence is only provisional — source mode
+    /// kept the node because its `enabled` expression could not be
+    /// evaluated (see [`RawManifest::enabled_unverifiable`]); a real parse
+    /// would have resolved it or failed, so this is never true on a
+    /// manifest-mode Dag. Lint findings reported ON such a node assert
+    /// its existence — the runner drops them; the node's edges are
+    /// already folded into [`pruned_adjacent`](Dag::pruned_adjacent).
+    pub fn enabled_unverifiable(&self, unique_id: &str) -> bool {
+        self.enabled_unverifiable.contains(unique_id)
+    }
+
     /// The `ref()`/`source()` name universe the load captured pre-prune —
     /// `unresolved_references` resolves call-site names against it (see
     /// [`RefScope`] for what's inside and why).
@@ -347,6 +358,14 @@ impl Dag {
                 .iter()
                 .filter(|(k, _)| nodes.contains_key(*k))
                 .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            // Same carry-over rule as `pruned_adjacent`: the mark
+            // describes the load, a dropped node drops its mark.
+            enabled_unverifiable: self
+                .enabled_unverifiable
+                .iter()
+                .filter(|uid| nodes.contains_key(*uid))
+                .cloned()
                 .collect(),
             // The ref/source name universe describes the load, not the
             // kept set — carried whole like `root_project`.

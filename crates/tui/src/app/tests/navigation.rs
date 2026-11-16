@@ -393,6 +393,7 @@ fn selected_file_path_stays_under_the_project_root() {
     );
     let dag = Dag::build(&RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),

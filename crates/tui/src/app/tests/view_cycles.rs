@@ -481,6 +481,7 @@ fn longest_chain_terminates_on_a_cyclic_manifest() {
     ]);
     let dag = Dag::build(&RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),

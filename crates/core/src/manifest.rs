@@ -645,6 +645,17 @@ pub struct RawManifest {
     /// prune or an unseen macro.
     #[serde(skip)]
     pub unresolved_adjacent: HashMap<String, UnresolvedAdjacent>,
+    /// SOURCE-MODE ONLY: uids whose `enabled` declaration could not be
+    /// evaluated from source — a `config(enabled=…)`/`config.enabled:`/
+    /// `+enabled` expression only dbt's render could decide (a macro
+    /// call, an unresolvable `var()`). A real manifest never carries it:
+    /// dbt hard-errors on the expression instead of keeping the node.
+    /// `#[serde(skip)]` like `unresolved_adjacent` — source mode keeps
+    /// the node provisionally (a guess could drop a live one) but marks
+    /// it so every lint claim that assumes its existence or its edges is
+    /// suppressed. `BTreeSet` keeps the uid order deterministic.
+    #[serde(skip)]
+    pub enabled_unverifiable: BTreeSet<String>,
     /// SOURCE-MODE ONLY: the name universe `ref()`/`source()` calls
     /// resolve against — the loader's own name index widened with the
     /// installed `dbt_packages/` name tables, the versioned families it

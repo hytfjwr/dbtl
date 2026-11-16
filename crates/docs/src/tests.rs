@@ -337,6 +337,7 @@ fn meta_renders_sorted_key_value_table() {
     )]);
     let manifest = RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
@@ -424,6 +425,7 @@ fn hostile_names_and_descriptions_do_not_break_markdown_or_mermaid() {
     let child_map = HashMap::from([("model.p.up".to_string(), vec!["model.p.evil".to_string()])]);
     let manifest = RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
@@ -690,6 +692,7 @@ fn large_layered_dag(count: usize) -> Dag {
     }
     Dag::build(&RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
@@ -1070,6 +1073,7 @@ use std::collections::HashMap as StdHashMap;
 fn empty_manifest() -> RawManifest {
     RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes: StdHashMap::new(),
         sources: StdHashMap::new(),

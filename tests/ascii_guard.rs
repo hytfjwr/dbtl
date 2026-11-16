@@ -373,6 +373,7 @@ fn lint_surfaces_are_all_ascii() {
     )]);
     let dag = dbtl::Dag::build(&dbtl::RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes,
         sources: HashMap::new(),
@@ -834,6 +835,7 @@ fn search_palette_surfaces_are_all_ascii() {
     use std::collections::HashMap;
     let empty = dbtl::Dag::build(&dbtl::RawManifest {
         unresolved_adjacent: Default::default(),
+        enabled_unverifiable: Default::default(),
         metadata: Default::default(),
         nodes: HashMap::new(),
         sources: HashMap::new(),

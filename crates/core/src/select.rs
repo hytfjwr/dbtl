@@ -769,6 +769,7 @@ mod tests {
         ]);
         Dag::build(&RawManifest {
             unresolved_adjacent: Default::default(),
+            enabled_unverifiable: Default::default(),
             metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
@@ -827,6 +828,7 @@ mod tests {
         }
         Dag::build(&RawManifest {
             unresolved_adjacent: Default::default(),
+            enabled_unverifiable: Default::default(),
             metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
@@ -972,6 +974,7 @@ mod tests {
         )]);
         Dag::build(&RawManifest {
             unresolved_adjacent: Default::default(),
+            enabled_unverifiable: Default::default(),
             metadata: Default::default(),
             nodes,
             sources,
@@ -1162,6 +1165,7 @@ mod tests {
         )]);
         let d = Dag::build(&RawManifest {
             unresolved_adjacent: Default::default(),
+            enabled_unverifiable: Default::default(),
             metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
@@ -1242,6 +1246,7 @@ mod tests {
         ]);
         Dag::build(&RawManifest {
             unresolved_adjacent: Default::default(),
+            enabled_unverifiable: Default::default(),
             metadata: Default::default(),
             nodes,
             sources: HashMap::new(),
@@ -1288,6 +1293,7 @@ mod tests {
         // current: fct's SQL changed → modified.
         let mut changed = RawManifest {
             unresolved_adjacent: Default::default(),
+            enabled_unverifiable: Default::default(),
             metadata: Default::default(),
             nodes: HashMap::new(),
             sources: HashMap::new(),
