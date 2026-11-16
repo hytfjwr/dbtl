@@ -95,8 +95,8 @@ fn yank_column_lineage_copies_the_selected_columns_downstream_closure() {
         "same ColumnReport markdown as the CLI, got: {text:?}"
     );
     // v1: the parser's FOJ fans reach all four cll_demo outputs and every
-    // cll_syntax output, plus stg_branch_var's passthrough — 17 rows.
-    assert!(text.contains("## Downstream columns (17)"));
+    // cll_syntax output, plus stg_branch_var's passthrough — 18 rows.
+    assert!(text.contains("## Downstream columns (18)"));
     assert!(text.contains("`fct_orders.id`"));
     assert_eq!(a.take_notice().as_deref(), Some("Copied column lineage"));
     // One-shot close RESTORES the structure modal the yank menu stacked over

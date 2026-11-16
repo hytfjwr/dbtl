@@ -304,8 +304,8 @@ fn fold_survives_the_untested_filter_toggle() {
         .collect();
     assert_eq!(
         hidden_uids.len(),
-        7,
-        "the premise — staging holds seven untested models"
+        8,
+        "the premise — staging holds eight untested models"
     );
     // Root on a Marts untested model (survives T, outside the fold); park the
     // cursor in staging and fold it.
@@ -326,7 +326,7 @@ fn fold_survives_the_untested_filter_toggle() {
     );
     assert_eq!(
         a.active_list().len(),
-        13 - hidden_uids.len(),
+        14 - hidden_uids.len(),
         "the folded group's untested members stay hidden under T"
     );
     for uid in &hidden_uids {

@@ -203,9 +203,24 @@ impl Vars {
     ) -> Option<bool> {
         match v {
             serde_json::Value::Bool(b) => Some(*b),
-            serde_json::Value::String(s) => jinja_expr(s)
-                .and_then(|e| eval_enabled_expr(e, &lookup, false, None))
-                .and_then(|v| v.as_bool()),
+            serde_json::Value::String(s) => {
+                // The YAML render passes carry no bound-name table and
+                // no macro table — dbt leaves macro names undefined in
+                // both (a macro call there is a "… is undefined" render
+                // error, degraded here to unprovable).
+                let scope = EvalScope {
+                    lookup: &lookup,
+                    missing_none: false,
+                    bound: None,
+                    macros: None,
+                    proj: &self.proj,
+                    locals: None,
+                    depth: MAX_MACRO_DEPTH,
+                };
+                jinja_expr(s)
+                    .and_then(|e| eval_enabled_expr(e, scope))
+                    .and_then(|v| v.as_bool())
+            }
             _ => None,
         }
     }
@@ -261,9 +276,17 @@ impl Vars {
     /// template itself binds (its `{% set %}`/`{% for %}`/`{% macro %}`
     /// names) — those resolve to a value at render but can't be read
     /// from source, so they — and dbt's own parse-context names — make
-    /// the expression unprovable rather than `Undefined`.
-    pub(super) fn node_enabled(&self, expr: &str, bound: &BoundNames) -> Option<bool> {
-        eval_enabled_expr(expr, &|n| self.node_scope(n), true, Some(bound))
+    /// the expression unprovable rather than `Undefined`. `macros` is the
+    /// project's macro table — the in-file context is the one place dbt
+    /// lets a project macro call resolve.
+    pub(super) fn node_enabled(
+        &self,
+        expr: &str,
+        bound: &BoundNames,
+        macros: &Macros,
+    ) -> Option<bool> {
+        let lookup = |n: &str| self.node_scope(n);
+        eval_enabled_expr(expr, self.node_scope_ctx(bound, macros, &lookup))
             .and_then(|v| v.as_bool())
     }
 
@@ -273,8 +296,33 @@ impl Vars {
     /// produced string is enough to take an arm). `None` is unprovable —
     /// the arm can't be selected and the caller keeps the node and
     /// marks it instead of guessing.
-    pub(super) fn node_condition(&self, expr: &str, bound: &BoundNames) -> Option<bool> {
-        eval_enabled_expr(expr, &|n| self.node_scope(n), true, Some(bound)).map(|v| truthy(&v))
+    pub(super) fn node_condition(
+        &self,
+        expr: &str,
+        bound: &BoundNames,
+        macros: &Macros,
+    ) -> Option<bool> {
+        let lookup = |n: &str| self.node_scope(n);
+        eval_enabled_expr(expr, self.node_scope_ctx(bound, macros, &lookup)).map(|v| truthy(&v))
+    }
+
+    /// The node-render [`EvalScope`] — the tolerant `var()` table, the
+    /// file's bound names, the project's macro table.
+    fn node_scope_ctx<'a>(
+        &'a self,
+        bound: &'a BoundNames,
+        macros: &'a Macros,
+        lookup: &'a dyn Fn(&str) -> Option<serde_json::Value>,
+    ) -> EvalScope<'a> {
+        EvalScope {
+            lookup,
+            missing_none: true,
+            bound: Some(bound),
+            macros: Some(macros),
+            proj: &self.proj,
+            locals: None,
+            depth: MAX_MACRO_DEPTH,
+        }
     }
 
     /// `var('name')` as `dbt_project.yml`'s own render sees it — the
@@ -352,30 +400,54 @@ impl Val {
     }
 }
 
+/// The render context an `enabled`/`{% if %}` expression evaluates
+/// under — one per render pass. `lookup`/`missing_none` carry the pass's
+/// `var()` table and missing-name rule; `bound` names what the template
+/// binds (in-file passes only); `macros` is the project's macro table —
+/// `Some` only for the in-file `config()`/`{% if %}` passes (the one
+/// place dbt lets a project macro call resolve — the YAML renders leave
+/// the names undefined); `locals` is a macro body's own frame — its
+/// params and `{% set %}` names — `Some` while a body evaluates, even
+/// when empty; `depth` is the remaining project-macro call budget.
+#[derive(Clone)]
+struct EvalScope<'b> {
+    lookup: &'b dyn Fn(&str) -> Option<serde_json::Value>,
+    /// The render pass's missing-`var()` rule — see [`eval_enabled_expr`].
+    missing_none: bool,
+    /// The node render's bound-name table — `Some` for an in-file
+    /// `config()` or `{% if %}`/`{% elif %}` condition (see
+    /// [`Vars::node_enabled`]), `None` for the YAML render passes, where
+    /// every bare name stays `Undefined`.
+    bound: Option<&'b BoundNames>,
+    /// The project's macro table — `Some` for the in-file passes only.
+    macros: Option<&'b Macros>,
+    /// The root project name — `<proj>.macro(…)` resolves into `macros`.
+    proj: &'b str,
+    /// A macro body's local frame — `Some` while one evaluates.
+    locals: Option<&'b HashMap<String, Val>>,
+    /// Remaining project-macro calls the evaluator will follow —
+    /// [`MAX_MACRO_DEPTH`]-bounded like the edge pass's.
+    depth: usize,
+}
+
 /// Evaluate a Jinja `enabled` expression to the Python value it resolves
 /// to: literals, `var()` calls, `==`/`!=`/`<`/`<=`/`>`/`>=` chains, `in` /
 /// `not in` membership, `and`/`or`/`not` (Python truthiness — `and`/`or`
 /// return operand values, non-empty strings and nonzero numbers are
-/// truthy), parentheses, and the `| as_bool` filter. `missing_none` picks
-/// the render pass's missing-`var()` rule: ON for an in-file `config()`
-/// (a missing name yields `none` — dbt's require_vars=False), OFF for
-/// the `dbt_project.yml` and schema.yml renders (a missing name raises —
-/// unprovable here). `None` means the expression is unprovable from
-/// source — a syntax error, an unsupported call/filter (`target.name`,
-/// `env_var()`, a project macro), or a Python type error — which dbt
-/// would surface as a parse error; callers degrade it to enabled +
-/// warning.
-fn eval_enabled_expr(
-    expr: &str,
-    lookup: &dyn Fn(&str) -> Option<serde_json::Value>,
-    missing_none: bool,
-    bound: Option<&BoundNames>,
-) -> Option<Val> {
+/// truthy), parentheses, the `| as_bool` filter, and — when the scope
+/// carries the macro table — calls to value-shaped project macros.
+/// `missing_none` picks the render pass's missing-`var()` rule: ON for
+/// an in-file `config()` (a missing name yields `none` — dbt's
+/// require_vars=False), OFF for the `dbt_project.yml` and schema.yml
+/// renders (a missing name raises — unprovable here). `None` means the
+/// expression is unprovable from source — a syntax error, an unsupported
+/// call/filter (`target.name`, `env_var()`, a package macro or a body
+/// outside the value shape), or a Python type error — which dbt would
+/// surface as a parse error; callers degrade it to enabled + warning.
+fn eval_enabled_expr(expr: &str, scope: EvalScope) -> Option<Val> {
     let mut e = EnabledExpr {
         p: LitParser { s: expr, i: 0 },
-        lookup,
-        missing_none,
-        bound,
+        scope,
         used_var: false,
     };
     let v = e.parse_or()?;
@@ -391,14 +463,8 @@ fn eval_enabled_expr(
 /// that channel.
 struct EnabledExpr<'a, 'b> {
     p: LitParser<'a>,
-    lookup: &'b dyn Fn(&str) -> Option<serde_json::Value>,
-    /// The render pass's missing-`var()` rule — see [`eval_enabled_expr`].
-    missing_none: bool,
-    /// The node render's bound-name table — `Some` for an in-file
-    /// `config()` or `{% if %}`/`{% elif %}` condition (see
-    /// [`Vars::node_enabled`]), `None` for the YAML render passes, where
-    /// every bare name stays `Undefined`.
-    bound: Option<&'b BoundNames>,
+    /// The render context — see [`EvalScope`].
+    scope: EvalScope<'b>,
     /// `var()` was consulted in the current operand — an `is sameas`
     /// argument is provable only when it is a pure literal (a var-drawn
     /// operand could share the operand object's identity, which value
@@ -864,10 +930,11 @@ impl<'a> EnabledExpr<'a, '_> {
         }
     }
 
-    /// A keyword literal, the `var(…)` call, or a bare name — Jinja
-    /// resolves an unknown name to `Undefined` ([`Val::Undefined`] stands
-    /// in: falsy, `==` only to itself, fails `is defined` and the leaf's
-    /// bool validation).
+    /// A keyword literal, a `var(…)` call, a `name(…)`/`ns.name(…)`
+    /// project-macro call (when the pass carries the macro table), or a
+    /// bare name — Jinja resolves an unknown name to `Undefined`
+    /// ([`Val::Undefined`] stands in: falsy, `==` only to itself, fails
+    /// `is defined` and the leaf's bool validation).
     fn parse_name_or_call(&mut self) -> Option<Val> {
         let name = self.ident()?;
         match name {
@@ -875,24 +942,49 @@ impl<'a> EnabledExpr<'a, '_> {
             "false" | "False" => Some(Val::V(false.into())),
             "none" | "None" | "null" | "Null" => Some(Val::V(serde_json::Value::Null)),
             _ => {
+                // A `ns.rest` chain ending in `(` is ONE callee spelling
+                // (`demo.bool_var(…)`); a `.attr` without the call is
+                // the unprovable postfix read — rewind so it rejects.
+                let head_pos = self.p.i;
                 self.p.ws();
-                if self.p.peek() != Some('(') {
-                    return match self.bound {
-                        // The node render — `execute` is the parse-time
-                        // falsy dbt fixes (the run-time flag can't be
-                        // read from source); a name the template binds
-                        // (`{% set %}`/`{% for %}`/`{% macro %}`…) or
-                        // dbt's parse context carries is defined but
-                        // unprovable — never an `Undefined` the `is
-                        // defined` test could prove missing. Anything
-                        // else stays `Undefined`, the same as dbt.
-                        Some(_) if name == "execute" => Some(Val::V(false.into())),
-                        Some(b) if b.contains(name) || DBT_PARSE_NAMES.contains(&name) => None,
-                        _ => Some(Val::Undefined),
-                    };
+                let mut spelling = name.to_string();
+                loop {
+                    let save = self.p.i;
+                    if self.p.peek() == Some('.') {
+                        self.p.bump();
+                        self.p.ws();
+                        if let Some(part) = self.ident() {
+                            spelling.push('.');
+                            spelling.push_str(part);
+                            self.p.ws();
+                            continue;
+                        }
+                    }
+                    self.p.i = save;
+                    break;
                 }
-                if name != "var" {
-                    return None; // a macro/env_var/target call — unprovable
+                if self.p.peek() != Some('(') {
+                    self.p.i = head_pos;
+                    return self.bare_name(name);
+                }
+                if spelling != "var" {
+                    return self.macro_call(&spelling);
+                }
+                // `var` resolves like any other callee spelling: a bound
+                // name — or the project's own `var` macro — shadows the
+                // builtin (the table's classify already puts project defs
+                // ahead of the builtins — dbt's resolution). Only an
+                // unclaimed `var` reads the vars table.
+                if self.callee_shadowed(&spelling) {
+                    return None;
+                }
+                if self.scope.macros.is_some_and(|m| {
+                    matches!(
+                        m.classify_callee(&spelling, self.scope.proj),
+                        Callee::Project(_)
+                    )
+                }) {
+                    return self.macro_call(&spelling);
                 }
                 self.p.bump();
                 let mut args = Vec::new();
@@ -917,16 +1009,18 @@ impl<'a> EnabledExpr<'a, '_> {
                     // unprovable here.
                     [Val::V(serde_json::Value::String(name))] => {
                         self.used_var = true;
-                        match (self.lookup)(name) {
+                        match (self.scope.lookup)(name) {
                             Some(v) => Some(Val::V(v)),
-                            None if self.missing_none => Some(Val::V(serde_json::Value::Null)),
+                            None if self.scope.missing_none => {
+                                Some(Val::V(serde_json::Value::Null))
+                            }
                             None => None,
                         }
                     }
                     [Val::V(serde_json::Value::String(name)), default] => {
                         self.used_var = true;
                         Some(
-                            (self.lookup)(name)
+                            (self.scope.lookup)(name)
                                 .map(Val::V)
                                 .unwrap_or_else(|| default.clone()),
                         )
@@ -935,6 +1029,159 @@ impl<'a> EnabledExpr<'a, '_> {
                 }
             }
         }
+    }
+
+    /// The callee's head segment names a value the frame or file binds —
+    /// a `{% set %}`/`{% for %}`/param/local name — shadowing both the
+    /// macro table and the builtins. A value isn't callable, so the call
+    /// is unprovable.
+    fn callee_shadowed(&self, spelling: &str) -> bool {
+        let head = spelling.split('.').next().unwrap_or(spelling);
+        self.scope.locals.is_some_and(|f| f.contains_key(head))
+            || self.scope.bound.is_some_and(|b| b.contains(head))
+    }
+
+    /// A bare name at leaf position — inside a macro body the params
+    /// and `{% set %}` names resolve to their bound values first. After
+    /// them, a name the template binds (`{% set %}`/`{% for %}`/
+    /// `{% macro %}`… — the caller file's names reach a macro through
+    /// the render context) or dbt's parse context carries is defined but
+    /// unprovable — never an `Undefined` the `is defined` test could
+    /// prove missing — and a name defined nowhere stays `Undefined`,
+    /// the same as dbt.
+    fn bare_name(&self, name: &str) -> Option<Val> {
+        if self.scope.bound.is_none() && self.scope.locals.is_none() {
+            // A YAML render pass — every bare name stays `Undefined`.
+            return Some(Val::Undefined);
+        }
+        if let Some(v) = self.scope.locals.and_then(|f| f.get(name)) {
+            return Some(v.clone());
+        }
+        if self.scope.bound.is_some_and(|b| b.contains(name)) {
+            return None;
+        }
+        // `execute` is the parse-time falsy dbt fixes (the run-time flag
+        // can't be read from source) — when nothing binds it first (a
+        // `{% set %}` or macro param CAN shadow the name, like any other).
+        if name == "execute" {
+            return Some(Val::V(false.into()));
+        }
+        if DBT_PARSE_NAMES.contains(&name) {
+            return None;
+        }
+        Some(Val::Undefined)
+    }
+
+    /// A `name(…)`/`ns.name(…)` call — `(` at the cursor — resolved
+    /// through the macro table: a project macro's value-shape body
+    /// evaluates to its `return(…)`; everything else (builtins, package
+    /// namespaces, `adapter.dispatch`, the dep calls) is unprovable.
+    fn macro_call(&mut self, spelling: &str) -> Option<Val> {
+        let (args_text, end) = scan_call_args(self.p.s, self.p.i + 1)?;
+        self.p.i = end;
+        // A name the caller's frame binds shadows the macro table — a
+        // `{% set %}`/`{% for %}`/param/local name resolves to a value,
+        // and a value isn't callable.
+        if self.callee_shadowed(spelling) {
+            return None;
+        }
+        let def = match self
+            .scope
+            .macros?
+            .classify_callee(spelling, self.scope.proj)
+        {
+            Callee::Project(def) => def,
+            _ => return None,
+        };
+        let shape = def.shape.as_ref()?;
+        if self.scope.depth == 0 {
+            return None;
+        }
+        // Split the args like the edge pass's `classify_args` — a
+        // `name=` segment is a kwarg, everything else positional — each
+        // arg's expression evaluated in THIS frame (the caller's).
+        let mut pos: Vec<Val> = Vec::new();
+        let mut kw: Vec<(String, Val)> = Vec::new();
+        for seg in top_level_segments(args_text) {
+            let seg = seg.trim();
+            if seg.is_empty() {
+                continue;
+            }
+            match split_kwarg(seg) {
+                Some((name, expr)) => kw.push((
+                    name.to_string(),
+                    self.eval_in(expr, self.scope.locals, self.scope.depth)?,
+                )),
+                None => pos.push(self.eval_in(seg, self.scope.locals, self.scope.depth)?),
+            }
+        }
+        // A call shape dbt itself rejects — a positional past the
+        // arity, a keyword naming no parameter or re-naming a filled
+        // one (Python's "multiple values" TypeError) — is a parse
+        // error, not a binding.
+        if pos.len() > def.params.len() {
+            return None;
+        }
+        for (name, _) in &kw {
+            match def.params.iter().position(|p| p.name == *name) {
+                Some(i) if i >= pos.len() => {}
+                _ => return None,
+            }
+        }
+        // Bind through the shared positional/keyword/default rule —
+        // call args bind first, then defaults fill the leftovers
+        // evaluated in the callee frame against the params bound so far.
+        let slots = bind_slots(def, &pos, &kw);
+        let mut frame: HashMap<String, Val> = HashMap::new();
+        for (i, slot) in slots.iter().enumerate() {
+            let v = match slot {
+                Some(SlotSource::Arg(v)) => (**v).clone(),
+                Some(SlotSource::Default(d)) => self.eval_body(d, &frame)?,
+                // A param the call supplies nothing for — dbt errors
+                // on the missing argument.
+                None => return None,
+            };
+            frame.insert(def.params[i].name.clone(), v);
+        }
+        // The body's straight-line `{% set %}`s extend the frame in
+        // declaration order; the final `return` answers the call.
+        for (name, expr) in &shape.sets {
+            let v = self.eval_body(expr, &frame)?;
+            frame.insert(name.clone(), v);
+        }
+        self.eval_body(&shape.ret, &frame)
+    }
+
+    /// Evaluate `expr` in a fresh parser sharing this render context —
+    /// `locals`/`depth` carry the callee frame a macro call evaluates
+    /// under. A `var()` consulted inside counts toward the caller's
+    /// `is sameas` literalness check.
+    fn eval_in(
+        &mut self,
+        expr: &str,
+        locals: Option<&HashMap<String, Val>>,
+        depth: usize,
+    ) -> Option<Val> {
+        let mut e = EnabledExpr {
+            p: LitParser { s: expr, i: 0 },
+            scope: EvalScope {
+                locals,
+                depth,
+                ..self.scope.clone()
+            },
+            used_var: false,
+        };
+        let v = e.parse_or()?;
+        e.p.ws();
+        let done = e.p.i == expr.len();
+        self.used_var |= e.used_var;
+        done.then_some(v)
+    }
+
+    /// [`eval_in`] inside a project macro's body — the body's own
+    /// `frame` (params + `{% set %}` names) and one depth unit spent.
+    fn eval_body(&mut self, expr: &str, frame: &HashMap<String, Val>) -> Option<Val> {
+        self.eval_in(expr, Some(frame), self.scope.depth.saturating_sub(1))
     }
 }
 

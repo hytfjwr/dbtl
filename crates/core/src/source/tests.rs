@@ -34,20 +34,40 @@ fn no_vars() -> Vars {
     test_vars(serde_json::json!({}), serde_json::json!({}), "p")
 }
 
+/// An empty project-macro table for the extractor tests that don't
+/// exercise macro calls — `scope_of`/`enabled`'s default.
+fn no_macros() -> &'static Macros {
+    static M: OnceLock<Macros> = OnceLock::new();
+    M.get_or_init(Macros::default)
+}
+
 /// A [`JinjaScope`] over `sql` bound to `vars` — the extractor tests'
 /// one-liner scope (`no_vars()` wherever branch conditions don't matter).
 fn scope_of<'v>(sql: &str, vars: &'v Vars) -> JinjaScope<'v> {
-    JinjaScope::new(sql, vars)
+    JinjaScope::new(sql, vars, no_macros())
+}
+
+/// The same, with a project macro table the `enabled` evaluator and
+/// branch conditions resolve calls against.
+fn scope_of_macros<'v>(sql: &str, vars: &'v Vars, macros: &'v Macros) -> JinjaScope<'v> {
+    JinjaScope::new(sql, vars, macros)
 }
 
 /// `pat.enabled` verdict folded over an empty fallback — the
-/// (verdict, warnings) pair.
+/// (verdict, warnings) pair with the eval reports already merged.
 fn enabled(sql: &str, vars: &Vars) -> (Option<Enabled>, Vec<String>) {
+    enabled_macros(sql, vars, no_macros())
+}
+
+/// [`enabled`] with a project macro table.
+fn enabled_macros(sql: &str, vars: &Vars, macros: &Macros) -> (Option<Enabled>, Vec<String>) {
     let mut w = Vec::new();
-    let scope = scope_of(sql, vars);
+    let mut ev = Vec::new();
+    let scope = scope_of_macros(sql, vars, macros);
     let d = Patterns::new()
-        .enabled(sql, &scope, &mut w, "models/m.sql")
-        .resolve(None, &mut w, "models/m.sql");
+        .enabled(sql, &scope, &mut w, &mut ev, "models/m.sql")
+        .resolve(None, &mut w, &mut ev, "models/m.sql");
+    merge_eval_warnings(&mut w, &ev);
     (d, w)
 }
 
@@ -56,6 +76,7 @@ fn config_extractors_scope_to_config_calls_in_any_arg_order() {
     let pat = Patterns::new();
     let vars = no_vars();
     let mut w = Vec::new();
+    let mut ev = Vec::new();
     // The key matches even AFTER a prior argument inside the same call.
     assert_eq!(
         pat.materialized(
@@ -72,9 +93,10 @@ fn config_extractors_scope_to_config_calls_in_any_arg_order() {
             "{{ config(materialized='view', enabled=false) }}",
             &scope_of("{{ config(materialized='view', enabled=false) }}", &vars),
             &mut w,
+            &mut ev,
             "m.sql"
         )
-        .resolve(None, &mut w, "m.sql"),
+        .resolve(None, &mut w, &mut ev, "m.sql"),
         Some(Enabled::Off)
     );
     assert_eq!(
@@ -82,9 +104,10 @@ fn config_extractors_scope_to_config_calls_in_any_arg_order() {
             "{{ config(enabled=False) }}",
             &scope_of("{{ config(enabled=False) }}", &vars),
             &mut w,
+            &mut ev,
             "m.sql"
         )
-        .resolve(None, &mut w, "m.sql"),
+        .resolve(None, &mut w, &mut ev, "m.sql"),
         Some(Enabled::Off)
     );
     // Outside a config() call the keys are inert (dbt only honours them
@@ -101,9 +124,10 @@ fn config_extractors_scope_to_config_calls_in_any_arg_order() {
             "where enabled = false",
             &scope_of("where enabled = false", &vars),
             &mut w,
+            &mut ev,
             "m.sql"
         )
-        .resolve(None, &mut w, "m.sql"),
+        .resolve(None, &mut w, &mut ev, "m.sql"),
         None
     );
     assert_eq!(
@@ -111,9 +135,10 @@ fn config_extractors_scope_to_config_calls_in_any_arg_order() {
             "-- note: enabled=false someday",
             &scope_of("-- note: enabled=false someday", &vars),
             &mut w,
+            &mut ev,
             "m.sql"
         )
-        .resolve(None, &mut w, "m.sql"),
+        .resolve(None, &mut w, &mut ev, "m.sql"),
         None
     );
     assert_eq!(
@@ -121,9 +146,10 @@ fn config_extractors_scope_to_config_calls_in_any_arg_order() {
             "{% set enabled=false %}",
             &scope_of("{% set enabled=false %}", &vars),
             &mut w,
+            &mut ev,
             "m.sql"
         )
-        .resolve(None, &mut w, "m.sql"),
+        .resolve(None, &mut w, &mut ev, "m.sql"),
         None
     );
 }
@@ -389,6 +415,7 @@ fn last_config_call_wins_for_scalar_kwargs() {
     let pat = Patterns::new();
     let vars = no_vars();
     let mut w = Vec::new();
+    let mut ev = Vec::new();
     // dbt applies config() calls in order, each call's kwargs overriding
     // the earlier ones per key (verified):
     //   config(materialized='view')  then config(materialized='table')
@@ -413,9 +440,10 @@ fn last_config_call_wins_for_scalar_kwargs() {
                 &vars
             ),
             &mut w,
+            &mut ev,
             "m.sql"
         )
-        .resolve(None, &mut w, "m.sql"),
+        .resolve(None, &mut w, &mut ev, "m.sql"),
         Some(Enabled::On)
     );
     assert_eq!(
@@ -426,9 +454,10 @@ fn last_config_call_wins_for_scalar_kwargs() {
                 &vars
             ),
             &mut w,
+            &mut ev,
             "m.sql"
         )
-        .resolve(None, &mut w, "m.sql"),
+        .resolve(None, &mut w, &mut ev, "m.sql"),
         Some(Enabled::Off)
     );
     // An unresolvable later value can't override an earlier literal one.
@@ -1219,7 +1248,13 @@ fn disabled_resolves_var_forms_like_dbt() {
 /// `node_enabled` outcomes for one `config(enabled=<expr>)` — the shared
 /// evaluator's node-scope entry.
 fn enabled_expr(expr: &str, vars: &Vars) -> Option<bool> {
-    vars.node_enabled(expr, &BoundNames::default())
+    enabled_expr_macros(expr, vars, no_macros())
+}
+
+/// [`enabled_expr`] with a project macro table — the in-file context is
+/// the one place a project macro call resolves.
+fn enabled_expr_macros(expr: &str, vars: &Vars, macros: &Macros) -> Option<bool> {
+    vars.node_enabled(expr, &BoundNames::default(), macros)
 }
 
 #[test]
@@ -1705,7 +1740,7 @@ fn vars_load_warns_once_and_vars_yml_wins_when_both_declared() {
         "vars.yml wins the project-file scope"
     );
     assert_eq!(
-        vars.node_enabled("var('flag')", &BoundNames::default()),
+        vars.node_enabled("var('flag')", &BoundNames::default(), no_macros()),
         Some(false),
         "vars.yml wins the node scope"
     );
@@ -1721,7 +1756,7 @@ fn vars_load_warns_once_and_vars_yml_wins_when_both_declared() {
     );
     assert!(w.is_empty(), "{w:?}");
     assert_eq!(
-        vars.node_enabled("var('flag')", &BoundNames::default()),
+        vars.node_enabled("var('flag')", &BoundNames::default(), no_macros()),
         Some(true)
     );
 }
@@ -1743,7 +1778,7 @@ fn vars_load_warns_on_malformed_vars_sources() {
         "{w:?}"
     );
     assert_eq!(
-        vars.node_enabled("var('flag', true)", &BoundNames::default()),
+        vars.node_enabled("var('flag', true)", &BoundNames::default(), no_macros()),
         Some(true)
     );
     // An unparsable vars.yml → warning, contributes nothing.
@@ -1761,7 +1796,7 @@ fn vars_load_warns_on_malformed_vars_sources() {
         "{w:?}"
     );
     assert_eq!(
-        vars.node_enabled("var('flag')", &BoundNames::default()),
+        vars.node_enabled("var('flag')", &BoundNames::default(), no_macros()),
         Some(false),
         "vars: still backs the node scope"
     );
@@ -2295,6 +2330,7 @@ fn config_dict_arg_reads_keys_like_kwargs() {
     let pat = Patterns::new();
     let vars = no_vars();
     let mut w = Vec::new();
+    let mut ev = Vec::new();
     // The dict spelling is the same call's kwargs (verified: real dbt
     // materializes `config({"materialized": "table"})` identically to the
     // kwarg form).
@@ -2320,9 +2356,10 @@ fn config_dict_arg_reads_keys_like_kwargs() {
             r#"{{ config({"enabled": false}) }}"#,
             &scope_of(r#"{{ config({"enabled": false}) }}"#, &vars),
             &mut w,
+            &mut ev,
             "m.sql"
         )
-        .resolve(None, &mut w, "m.sql"),
+        .resolve(None, &mut w, &mut ev, "m.sql"),
         Some(Enabled::Off)
     );
     assert!(w.is_empty(), "{w:?}");
@@ -2362,6 +2399,7 @@ fn config_dict_arg_joins_the_ordered_call_sequence() {
     let pat = Patterns::new();
     let vars = no_vars();
     let mut w = Vec::new();
+    let mut ev = Vec::new();
     // The dict call is one step of the same last-wins chain the kwarg calls
     // follow (verified: real dbt applies them in order).
     assert_eq!(
@@ -2392,9 +2430,10 @@ fn config_dict_arg_joins_the_ordered_call_sequence() {
                 &vars
             ),
             &mut w,
+            &mut ev,
             "m.sql"
         )
-        .resolve(None, &mut w, "m.sql"),
+        .resolve(None, &mut w, &mut ev, "m.sql"),
         Some(Enabled::Off)
     );
     // A later LITERAL entry overrides; an unresolvable VALUE inside a dict
@@ -4162,4 +4201,405 @@ unit_tests:
         dag.tests("model.p.fct_a").iter().all(|t| t.kind != "unit"),
         "a disabled unit test never attaches"
     );
+}
+
+// ---- project macro calls in `config(enabled=…)` (Issue 90) -------------
+
+/// A `Macros` table built from in-memory bodies — one file under the
+/// dir's `macros/` per entry, run through the real loader (masking,
+/// shape analysis, the works).
+fn macros_of(dir: &std::path::Path, bodies: &[&str]) -> Macros {
+    std::fs::create_dir_all(dir.join("macros")).unwrap();
+    for (i, body) in bodies.iter().enumerate() {
+        std::fs::write(dir.join(format!("macros/m{i}.sql")), body).unwrap();
+    }
+    let mut w = Vec::new();
+    Macros::load(dir, &["macros".to_string()], &mut w)
+}
+
+/// The background shape — straight-line `set`, a guard `{% if %}` whose
+/// body only raises, one `do return`.
+const BOOL_VAR: &str = concat!(
+    "{% macro bool_var(name, default) %}",
+    "{% set value = var(name, default) %}",
+    "{% if value is not sameas true and value is not sameas false %}",
+    "{% do exceptions.raise_compiler_error('not a boolean') %}",
+    "{% endif %}",
+    "{% do return(value) %}",
+    "{% endmacro %}",
+);
+
+#[test]
+fn enabled_evaluates_value_shaped_project_macros() {
+    let dir = tempfile::tempdir().unwrap();
+    let macros = macros_of(
+        dir.path(),
+        &[
+            BOOL_VAR,
+            "{% macro ret_off() %}{% do return(false) %}{% endmacro %}",
+            "{% macro ret_on() %}{{ return(true) }}{% endmacro %}",
+            "{% macro kw(flag, other=flag) %}{% do return(other) %}{% endmacro %}",
+            "{% macro with_default(name, flag=var('inner_flag', false)) %}{% do return(flag) %}{% endmacro %}",
+            "{% macro inner(name, default) %}{% do return(var(name, default)) %}{% endmacro %}",
+            "{% macro outer(name, default) %}{% set v = p.inner(name, default) %}{% do return(v) %}{% endmacro %}",
+        ],
+    );
+    let vars = test_vars(
+        serde_json::json!({}),
+        serde_json::json!({"flag_on": true}),
+        "p",
+    );
+    // Project-qualified and bare spellings resolve alike (dbt lets both
+    // reach the root project's table).
+    assert_eq!(
+        enabled_expr_macros("p.bool_var('flag_on', false)", &vars, &macros),
+        Some(true)
+    );
+    assert_eq!(
+        enabled_expr_macros("bool_var('missing', false)", &vars, &macros),
+        Some(false)
+    );
+    // `var()` reads the NODE's table inside the body — `flag_on` is
+    // true, everything missing falls to the declared default.
+    assert_eq!(
+        enabled_expr_macros("p.bool_var('missing', true)", &vars, &macros),
+        Some(true)
+    );
+    // Return-only bodies — `{% do %}` and `{{ }}` spellings alike.
+    assert_eq!(
+        enabled_expr_macros("p.ret_off()", &vars, &macros),
+        Some(false)
+    );
+    assert_eq!(enabled_expr_macros("ret_on()", &vars, &macros), Some(true));
+    // Keyword arguments bind by name; a default sees the params bound
+    // before it (`other=flag` reads the arg `flag` took).
+    assert_eq!(
+        enabled_expr_macros("p.kw(flag=false)", &vars, &macros),
+        Some(false)
+    );
+    assert_eq!(
+        enabled_expr_macros("p.kw(flag=true)", &vars, &macros),
+        Some(true)
+    );
+    assert_eq!(
+        enabled_expr_macros("p.kw(true, other=false)", &vars, &macros),
+        Some(false)
+    );
+    // A default's own expression evaluates in the callee frame — here it
+    // calls `var()` against the caller's (node) table.
+    assert_eq!(
+        enabled_expr_macros("p.with_default('x')", &vars, &macros),
+        Some(false)
+    );
+    let vars = test_vars(
+        serde_json::json!({}),
+        serde_json::json!({"inner_flag": true}),
+        "p",
+    );
+    assert_eq!(
+        enabled_expr_macros("p.with_default('x')", &vars, &macros),
+        Some(true)
+    );
+    // A macro calling a macro — qualified inside the body — follows the
+    // same binding rules down the chain.
+    assert_eq!(
+        enabled_expr_macros("p.outer('inner_flag', false)", &vars, &macros),
+        Some(true)
+    );
+    assert_eq!(
+        enabled_expr_macros("outer('absent', false)", &vars, &macros),
+        Some(false)
+    );
+}
+
+#[test]
+fn enabled_leaves_unsupported_callees_and_shapes_unproven() {
+    let dir = tempfile::tempdir().unwrap();
+    let macros = macros_of(
+        dir.path(),
+        &[
+            // `{% for %}` — control flow outside the value shape.
+            "{% macro loopy(name, default) %}{% set out = default %}{% for k in ['a'] %}{% set out = var(name, default) %}{% endfor %}{% do return(out) %}{% endmacro %}",
+            // An `{% if %}` whose body does more than raise/log.
+            "{% macro branchy(flag) %}{% if flag %}{% do return(true) %}{% else %}{% do return(false) %}{% endif %}{% endmacro %}",
+            // A body that ends in rendered output, not `return(…)`.
+            "{% macro prints() %}true{% endmacro %}",
+            // Two returns — the shape wants exactly one final action.
+            "{% macro twice() %}{% do return(true) %}{% do return(false) %}{% endmacro %}",
+            // Recursion — the depth cap refuses it.
+            "{% macro rec() %}{% do return(rec()) %}{% endmacro %}",
+            // No default for `name` — a bare call can't bind it.
+            "{% macro needs(name, default) %}{% do return(var(name, default)) %}{% endmacro %}",
+        ],
+    );
+    let vars = no_vars();
+    for expr in [
+        // Bodies outside the value shape.
+        "p.loopy('x', false)",
+        "p.branchy(true)",
+        "p.prints()",
+        "p.twice()",
+        // Recursion past the depth cap.
+        "p.rec()",
+        // A package macro and an adapter dispatch — never read.
+        "pkg.macro_fn('x')",
+        "adapter.dispatch('needs')",
+        // A name the project table lacks — qualified or bare.
+        "p.unknown_macro()",
+        "unknown_macro()",
+        // Call shapes dbt itself rejects.
+        "p.needs()",              // missing a required argument
+        "p.needs('a','b','c')",   // a positional past the arity
+        "p.needs(name='a', 'b')", // positional after kwarg → slot collision
+        "p.needs('a', name='b')", // kwarg re-naming a filled slot
+        // A builtin — `env_var` can't be read from source.
+        "env_var('X')",
+    ] {
+        assert_eq!(
+            enabled_expr_macros(expr, &vars, &macros),
+            None,
+            "{expr} should stay unproven"
+        );
+    }
+}
+
+#[test]
+fn enabled_macro_calls_follow_the_bound_name_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let macros = macros_of(
+        dir.path(),
+        &[
+            BOOL_VAR,
+            "{% macro gate() %}{% do return(false) %}{% endmacro %}",
+        ],
+    );
+    let vars = no_vars();
+    // A name the template binds shadows the macro table — `gate` is a
+    // `{% set %}`-bound value here, not callable; the verdict stays
+    // unproven rather than guessing.
+    let (d, w) = enabled_macros(
+        "{% set gate = 1 %}{{ config(enabled=gate()) }}",
+        &vars,
+        &macros,
+    );
+    assert_eq!(d, Some(Enabled::Unproven));
+    assert_eq!(w.len(), 1, "{w:?}");
+    // A bound name as an ARGUMENT is likewise unprovable — its value
+    // can't be read from source.
+    let (d, w) = enabled_macros(
+        "{% set key = 'x' %}{{ config(enabled=bool_var(key, false)) }}",
+        &vars,
+        &macros,
+    );
+    assert_eq!(d, Some(Enabled::Unproven));
+    assert_eq!(w.len(), 1, "{w:?}");
+    // A branch condition evaluates the same calls — a proven-false
+    // macro result parks the arm's config like a literal `false`.
+    let (d, _) = enabled_macros(
+        "{% if p.gate() %}{{ config(enabled=false) }}{% endif %}",
+        &vars,
+        &macros,
+    );
+    assert_eq!(d, None);
+    // …and a proven-true one applies it.
+    let (d, _) = enabled_macros(
+        "{% if bool_var('missing', true) %}{{ config(enabled=false) }}{% endif %}",
+        &vars,
+        &macros,
+    );
+    assert_eq!(d, Some(Enabled::Off));
+    // `var` follows the same name resolution as any other callee: a name
+    // the template binds shadows the builtin — a bound `var` is a value,
+    // not provably callable.
+    let (d, w) = enabled_macros(
+        "{% set var = 'x' %}{{ config(enabled=var('missing', false)) }}",
+        &vars,
+        &macros,
+    );
+    assert_eq!(d, Some(Enabled::Unproven));
+    assert_eq!(w.len(), 1, "{w:?}");
+    // …and a project macro named `var` shadows the builtin too (the
+    // table's own order puts project defs first) — bare and qualified
+    // spellings alike.
+    let var_macros = macros_of(
+        dir.path(),
+        &["{% macro var(name, fallback) %}{% do return(fallback) %}{% endmacro %}"],
+    );
+    assert_eq!(
+        enabled_expr_macros("var('missing', true)", &vars, &var_macros),
+        Some(true)
+    );
+    assert_eq!(
+        enabled_expr_macros("p.var('missing', true)", &vars, &var_macros),
+        Some(true)
+    );
+}
+
+#[test]
+fn enabled_macro_warnings_fold_by_normalized_expression() {
+    let dir = tempfile::tempdir().unwrap();
+    let loopy =
+        "{% macro loopy(name, default) %}{% set out = default %}{% for k in ['a'] %}{% set out = var(name, default) %}{% endfor %}{% do return(out) %}{% endmacro %}";
+    macro_project(
+        dir.path(),
+        &[
+            ("u1", "{{ config(enabled=p.loopy('gate', false)) }}select 1"),
+            // The same expression spelled across two lines — the fold
+            // key normalizes the wrap away.
+            (
+                "u2",
+                "{{ config(enabled=p.loopy('gate',\n    false)) }}select 1",
+            ),
+            ("u3", "{{ config(enabled=p.loopy('gate', false)) }}select 1"),
+            // A different expression keeps its own line.
+            (
+                "u4",
+                "{{ config(enabled=p.loopy('other', false)) }}select 1",
+            ),
+            ("u5", "{{ config(enabled=p.loopy('other', true)) }}select 1"),
+        ],
+        &[("macros", loopy)],
+        None,
+    );
+    let (m, w) = manifest_from_source_with_warnings(dir.path(), None).unwrap();
+    // Every gated node stays enabled and marked — nothing is silently
+    // disabled on an unproven expression.
+    for uid in [
+        "model.p.u1",
+        "model.p.u2",
+        "model.p.u3",
+        "model.p.u4",
+        "model.p.u5",
+    ] {
+        assert!(m.nodes.contains_key(uid), "{uid} stays");
+        assert!(m.enabled_unverifiable.contains(uid), "{uid} is marked");
+    }
+    // The folded group lands where its first report appeared — before
+    // the lone warnings.
+    let eval_lines: Vec<&str> = w
+        .iter()
+        .filter(|s| s.contains("could not be evaluated"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        eval_lines,
+        vec![
+            "config(enabled=p.loopy('gate', false)) could not be evaluated as a boolean in 3 files (first: models/u1.sql); those resources stay enabled",
+            "models/u4.sql: config(enabled=p.loopy('other', false)) could not be evaluated as a boolean; the resource stays enabled",
+            "models/u5.sql: config(enabled=p.loopy('other', true)) could not be evaluated as a boolean; the resource stays enabled",
+        ],
+        "{w:?}"
+    );
+}
+
+#[test]
+fn enabled_macro_calls_drive_the_source_disabled_set() {
+    let dir = tempfile::tempdir().unwrap();
+    macro_project(
+        dir.path(),
+        &[
+            // The background shape — `inputs_enabled` absent ⇒ the
+            // declared default decides.
+            ("a", "{{ config(enabled=p.bool_var('inputs_enabled', false)) }}select 1"),
+            ("on", "{{ config(enabled=p.bool_var('inputs_enabled', true)) }}select 1"),
+            // return-only / kwargs / default / nested / bare — all provable.
+            ("ret", "{{ config(enabled=p.ret_off()) }}select 1"),
+            ("kw", "{{ config(enabled=p.kw_flag(flag=false)) }}select 1"),
+            ("def", "{{ config(enabled=p.with_default('anything')) }}select 1"),
+            ("nest", "{{ config(enabled=p.outer('deep_flag', false)) }}select 1"),
+            ("unq", "{{ config(enabled=ret_off()) }}select 1"),
+            // An arm gated on a macro call — `gate_flag` defaults true.
+            (
+                "arm",
+                "{% if p.bool_var('gate_flag', true) %}{{ config(enabled=false) }}{% endif %}select 1",
+            ),
+        ],
+        &[
+            ("macros", BOOL_VAR),
+            (
+                "more_macros",
+                concat!(
+                    "{% macro ret_off() %}{% do return(false) %}{% endmacro %}",
+                    "{% macro kw_flag(flag) %}{% do return(flag) %}{% endmacro %}",
+                    "{% macro with_default(name, flag=var('inner_flag', false)) %}{% do return(flag) %}{% endmacro %}",
+                    "{% macro inner(name, default) %}{% do return(var(name, default)) %}{% endmacro %}",
+                    "{% macro outer(name, default) %}{% set v = inner(name, default) %}{% do return(v) %}{% endmacro %}",
+                ),
+            ),
+        ],
+        None,
+    );
+    // No vars → defaults decide: `on` alone survives (its default is
+    // true; `arm`'s gate proves true and its `enabled=false` applies).
+    let (m, w) = manifest_from_source_with_warnings(dir.path(), None).unwrap();
+    assert_eq!(
+        m.nodes.keys().collect::<Vec<_>>(),
+        vec!["model.p.on"],
+        "{:?}",
+        m.nodes.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        !w.iter().any(|s| s.contains("could not be evaluated")),
+        "{w:?}"
+    );
+    // `--vars` flips the var-backed calls — the literal-false bodies
+    // (`ret`, `kw`) stay parked regardless.
+    let vars = CliVars::parse(
+        "{inputs_enabled: true, gate_flag: false, inner_flag: true, deep_flag: true}",
+    )
+    .unwrap();
+    let (m, _) = manifest_from_source_with_warnings(dir.path(), Some(&vars)).unwrap();
+    for uid in [
+        "model.p.a",
+        "model.p.on",
+        "model.p.def",
+        "model.p.nest",
+        "model.p.arm",
+    ] {
+        assert!(m.nodes.contains_key(uid), "{uid} survives the --vars flip");
+    }
+    for uid in ["model.p.ret", "model.p.kw", "model.p.unq"] {
+        assert!(!m.nodes.contains_key(uid), "{uid} stays parked");
+    }
+}
+
+#[test]
+fn enabled_project_tree_and_schema_stay_macro_blind() {
+    let dir = tempfile::tempdir().unwrap();
+    // `+enabled`/`enabled:` render in the YAML pass — dbt itself can't
+    // call a project macro there (`'ret_off' is undefined` — verified
+    // on 1.12.7, a parse error), so the expression stays unprovable:
+    // the node keeps its enabled+marked stance either way.
+    macro_project(
+        dir.path(),
+        &[("m2", "select 1")],
+        &[(
+            "macros",
+            "{% macro ret_off() %}{% do return(false) %}{% endmacro %}",
+        )],
+        Some(
+            "version: 2\nmodels:\n  - name: m2\n    config:\n      enabled: \"{{ ret_off() }}\"\n",
+        ),
+    );
+    // The tree `+enabled` for m1 only (a subdirectory's tree).
+    std::fs::create_dir_all(dir.path().join("models/sub")).unwrap();
+    std::fs::write(dir.path().join("models/sub/m1.sql"), "select 1").unwrap();
+    std::fs::write(
+        dir.path().join("dbt_project.yml"),
+        "name: p\nmodels:\n  p:\n    sub:\n      +enabled: \"{{ ret_off() }}\"\n",
+    )
+    .unwrap();
+    let (m, w) = manifest_from_source_with_warnings(dir.path(), None).unwrap();
+    // Both channels' macro calls stay unproven — each node survives,
+    // marked, with its own warning.
+    for uid in ["model.p.m1", "model.p.m2"] {
+        assert!(m.nodes.contains_key(uid), "{uid} stays");
+        assert!(m.enabled_unverifiable.contains(uid), "{uid} is marked");
+    }
+    let eval_lines: Vec<&str> = w
+        .iter()
+        .filter(|s| s.contains("could not be evaluated"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(eval_lines.len(), 2, "{w:?}");
 }

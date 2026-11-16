@@ -81,8 +81,8 @@ fn gap_next_and_prev_cycle_through_untested_models() {
         .collect();
     assert_eq!(
         gaps.len(),
-        13,
-        "sample manifest has thirteen untested models"
+        14,
+        "sample manifest has fourteen untested models"
     );
     apply_action(&mut a, Action::GapNext);
     let first = a.ui_state.selected();
@@ -149,8 +149,8 @@ fn untested_filter_narrows_the_list_and_toggles_off() {
     assert_eq!(a.list_filter, ListFilter::Untested);
     assert_eq!(
         a.active_list().len(),
-        13,
-        "only the thirteen untested models"
+        14,
+        "only the fourteen untested models"
     );
     assert!(
         a.active_list().models.iter().all(crate::coverage_gap),
@@ -158,7 +158,7 @@ fn untested_filter_narrows_the_list_and_toggles_off() {
     );
     assert_eq!(
         a.ui_state.model_count(),
-        13,
+        14,
         "selection space follows the filtered view"
     );
     assert_eq!(a.list_filter_label(), Some("untested"));

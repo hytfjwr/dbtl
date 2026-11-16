@@ -837,7 +837,7 @@ fn impact_select_narrows_the_change_set() {
         "only the selected change reports"
     );
     let pr = &v["pr"];
-    assert_eq!(pr["affected_models"], 7, "stg_orders's downstream stays");
+    assert_eq!(pr["affected_models"], 8, "stg_orders's downstream stays");
     assert_eq!(
         pr["untested_changes"].as_array().unwrap().len(),
         0,
