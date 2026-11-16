@@ -20,8 +20,8 @@ use std::rc::Rc;
 const MAX_FIX_ROUNDS: usize = 8;
 
 /// What `run_fixes` hands back to `run_lint`: the post-fix dag to re-lint
-/// for the report, the file changes (applied or proposed), and the count
-/// of findings the accepted edits resolved.
+/// for the report, the file changes (applied or proposed), the count
+/// of findings the accepted edits resolved, and the refused-edit list.
 pub(super) struct FixOutcome {
     /// The rebuilt dag the final report lints. In-memory only — for
     /// `--fix-dry-run` it describes a state that was never on disk.
@@ -36,6 +36,10 @@ pub(super) struct FixOutcome {
     /// Findings the accepted edits resolved (`--fix`) or would resolve
     /// (`--fix-dry-run`) — pre-fix minus post-fix fixable-rule findings.
     pub fixed_findings: usize,
+    /// Every edit the run refused, as `(file, rule, reason)` triples in
+    /// sorted order — the report's `summary.fix_refused` and the text
+    /// tally's per-file list both read this.
+    pub refused: Vec<FixRefusal>,
 }
 
 /// One changed model file.
@@ -162,7 +166,33 @@ fn patched_dag(
     scope.apply_with_warnings(dag).0
 }
 
-/// The file gate every fix runs once per node — `Some` only when the
+/// `node_file`'s verdict for one uid — the gated file to patch, a
+/// refusal carrying the report's `(file, reason)` pair, or silence for
+/// a node that never maps to an editable file.
+enum FileGate {
+    /// `(ofp, path)` — the file exists, matches the graph, and may be
+    /// patched.
+    Ok(String, PathBuf),
+    /// `(ofp, reason)` — the file can't carry edits: the reason is the
+    /// text the `--fix:` warning and the refusal list both quote.
+    Refused(String, String),
+    /// Nothing to say — a package-node file or a `.py` model, which the
+    /// SQL rules don't flag anyway (the belt over the rule filter).
+    Skip,
+}
+
+impl FileGate {
+    /// The gated `(ofp, path)` pair when the verdict was `Ok` — the
+    /// write set and the overlay lookup both read through it.
+    fn ok(&self) -> Option<(&String, &PathBuf)> {
+        match self {
+            FileGate::Ok(ofp, path) => Some((ofp, path)),
+            _ => None,
+        }
+    }
+}
+
+/// The file gate every fix runs once per node — `Ok` only when the
 /// node maps to a project file whose CURRENT disk bytes are exactly
 /// what the resolved graph was built from:
 ///
@@ -174,6 +204,10 @@ fn patched_dag(
 ///   says exists but the run can't open);
 /// - `disk bytes != the resolved dag's raw_code` means a stale manifest
 ///   or a file touched mid-run — never patched, warned once.
+///
+/// Every refusal pushes the matching `FileGate::Refused` — the caller
+/// turns it into both the stderr warning and a `FixRefusal` row, so
+/// the two lists can never disagree about why a file was left alone.
 fn node_file(
     dag: &dbtl::Dag,
     resolved: &ResolvedSource,
@@ -181,16 +215,17 @@ fn node_file(
     primary: Option<&str>,
     uid: &str,
     disk: &mut BTreeMap<PathBuf, Option<String>>,
-    warnings: &mut BTreeSet<String>,
-) -> Option<PathBuf> {
+) -> FileGate {
     if let (Some(node), Some(pkg)) = (dag.get(uid), primary) {
         if !dbtl::in_package(node, pkg) {
-            return None;
+            return FileGate::Skip;
         }
     }
-    let ofp = dag.detail(uid)?.original_file_path.clone()?;
+    let Some(ofp) = dag.detail(uid).and_then(|d| d.original_file_path.clone()) else {
+        return FileGate::Skip;
+    };
     if ofp.to_ascii_lowercase().ends_with(".py") {
-        return None;
+        return FileGate::Skip;
     }
     // `ofp` is manifest-carried data — only a plain relative path may
     // join the root, or a crafted manifest could point the write outside
@@ -201,34 +236,35 @@ fn node_file(
             std::path::Component::Normal(_) | std::path::Component::CurDir
         )
     }) {
-        warnings.insert(format!(
-            "--fix: {ofp}: not a project-relative path — skipped"
-        ));
-        return None;
+        return FileGate::Refused(ofp, "not a project-relative path".to_string());
     }
     let path = root.join(&ofp);
     let on_disk = disk
         .entry(path.clone())
         .or_insert_with(|| std::fs::read_to_string(&path).ok());
     let Some(on_disk) = on_disk else {
-        warnings.insert(format!(
-            "--fix: {ofp}: model source file is missing or unreadable — skipped"
-        ));
-        return None;
+        return FileGate::Refused(
+            ofp,
+            "model source file is missing or unreadable".to_string(),
+        );
     };
-    let expected = resolved.dag.raw_code(uid)?;
+    let Some(expected) = resolved.dag.raw_code(uid) else {
+        return FileGate::Skip;
+    };
     if on_disk != expected {
-        warnings.insert(format!(
-            "--fix: {ofp}: file on disk differs from {} — skipped",
-            if resolved.is_source {
-                "the loaded project (was it edited mid-run?)"
-            } else {
-                "the manifest's raw_code (a stale manifest is never patched)"
-            }
-        ));
-        return None;
+        return FileGate::Refused(
+            ofp,
+            format!(
+                "file on disk differs from {}",
+                if resolved.is_source {
+                    "the loaded project (was it edited mid-run?)"
+                } else {
+                    "the manifest's raw_code (a stale manifest is never patched)"
+                }
+            ),
+        );
     }
-    Some(path)
+    FileGate::Ok(ofp, path)
 }
 
 /// The finding identity the new-findings guard compares — `(rule, node,
@@ -250,12 +286,20 @@ pub(super) fn run_fixes(req: &FixRequest, write: bool) -> Result<FixOutcome, Cli
     let (root, manifest) = fix_plan(req.src)?;
     let primary = req.resolved.dag.primary_package();
     let mut overlay: BTreeMap<String, String> = BTreeMap::new();
-    // uid → its gated file (`None` = failed the gate; never re-asked).
-    let mut checked: BTreeMap<String, Option<(String, PathBuf)>> = BTreeMap::new();
+    // uid → its file-gate verdict (asked once per uid, never re-asked).
+    let mut checked: BTreeMap<String, FileGate> = BTreeMap::new();
     // abs path → disk bytes at first read — the drift check AND the
     // write-time TOCTOU baseline.
     let mut disk: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
     let mut warnings = BTreeSet::new();
+    // The report's refusal list — `(file, rule, reason)` per edit the
+    // run tried and didn't land, dedup'd like `warnings` so a recurring
+    // unfixable file lists once, not once a round.
+    let mut refused: BTreeSet<FixRefusal> = BTreeSet::new();
+    // ofp → the rules whose edits were accepted into `overlay` for it —
+    // the rule attribution a write-time skip needs (the file's edits
+    // can't land, so each accepted rule's finding is a refusal).
+    let mut applied_rules: BTreeMap<String, BTreeSet<dbtl::LintRule>> = BTreeMap::new();
     // Culprits already warned about — a permanently unfixable file
     // would otherwise re-warn every round the loop looks at it.
     let mut warned_culprits: BTreeSet<String> = BTreeSet::new();
@@ -319,32 +363,60 @@ pub(super) fn run_fixes(req: &FixRequest, write: bool) -> Result<FixOutcome, Cli
                     primary.as_deref(),
                     uid,
                     &mut disk,
-                    &mut warnings,
                 )
-                .map(|path| {
-                    (
-                        dag.detail(uid)
-                            .and_then(|d| d.original_file_path.clone())
-                            .unwrap_or_default(),
-                        path,
-                    )
-                })
             });
-            if gated.is_none() {
-                continue;
+            let ofp = match gated {
+                FileGate::Ok(ofp, _) => ofp.clone(),
+                // The file can't carry edits — warn and list every rule
+                // whose finding this uid held; the refusal reason is the
+                // warning's own tail so the lists can't disagree.
+                FileGate::Refused(ofp, reason) => {
+                    warnings.insert(format!("--fix: {ofp}: {reason} — skipped"));
+                    for rule in rules {
+                        refused.insert(FixRefusal {
+                            file: ofp.clone(),
+                            rule: *rule,
+                            reason: reason.clone(),
+                        });
+                    }
+                    continue;
+                }
+                FileGate::Skip => continue,
+            };
+            let plan = dbtl::plan_node_edits(&dag, &resolver, uid, rules);
+            // A finding the planner refused lists its own reason —
+            // the `;` inside Jinja, the CTE no scan could pin — even
+            // while a sibling rule's edit still lands.
+            for (rule, reason) in &plan.refused {
+                refused.insert(FixRefusal {
+                    file: ofp.clone(),
+                    rule: *rule,
+                    reason: reason.clone(),
+                });
             }
-            let edits = dbtl::plan_node_edits(&dag, &resolver, uid, rules);
-            if edits.is_empty() {
+            if plan.edits.is_empty() {
                 warnings.insert(format!(
                     "--fix: {uid}: no safe edit for the finding(s) — left unchanged"
                 ));
                 continue;
             }
-            let Some(text) = dbtl::apply_fixes(raw, &edits, req.dialect) else {
-                warnings.insert(format!(
-                    "--fix: {uid}: planned edits overlap or fail the re-parse — left unchanged"
-                ));
-                continue;
+            let text = match dbtl::apply_fixes(raw, &plan.edits, req.dialect) {
+                Ok(text) => text,
+                Err(kind) => {
+                    warnings.insert(format!(
+                        "--fix: {uid}: planned edits overlap or fail the re-parse — left unchanged"
+                    ));
+                    // Every rule whose edit was in the set loses it —
+                    // the refusal names the apply step's own reason.
+                    for rule in plan.edits.iter().map(|e| e.rule).collect::<BTreeSet<_>>() {
+                        refused.insert(FixRefusal {
+                            file: ofp.clone(),
+                            rule,
+                            reason: kind.reason().to_string(),
+                        });
+                    }
+                    continue;
+                }
             };
             if text != raw {
                 cands.push(Cand {
@@ -442,6 +514,15 @@ pub(super) fn run_fixes(req: &FixRequest, write: bool) -> Result<FixOutcome, Cli
                 .collect::<Vec<_>>()
                 .join("/")
         };
+        // The ofp a uid's edits were gated to — every accepted uid
+        // passed `node_file`, so this never misses; it exists because
+        // the refusal list is keyed by file, not uid.
+        let ofp_of = |uid: &str| -> Option<&String> {
+            match checked.get(uid) {
+                Some(FileGate::Ok(ofp, _)) => Some(ofp),
+                _ => None,
+            }
+        };
         let mut changed = false;
         for c in cands {
             if unattributed || culprits.contains(&c.uid) {
@@ -459,12 +540,18 @@ pub(super) fn run_fixes(req: &FixRequest, write: bool) -> Result<FixOutcome, Cli
                 let mut kept_other = false;
                 if !reduced.is_empty() {
                     if let Some(raw) = dag.raw_code(&c.uid) {
-                        let edits = dbtl::plan_node_edits(&dag, &resolver, &c.uid, &reduced);
+                        let edits = dbtl::plan_node_edits(&dag, &resolver, &c.uid, &reduced).edits;
                         if !edits.is_empty() {
-                            if let Some(text) = dbtl::apply_fixes(raw, &edits, req.dialect) {
+                            if let Ok(text) = dbtl::apply_fixes(raw, &edits, req.dialect) {
                                 if text != raw {
                                     kept_other = true;
                                     overlay.insert(c.uid.clone(), text);
+                                    if let Some(ofp) = ofp_of(&c.uid) {
+                                        applied_rules
+                                            .entry(ofp.clone())
+                                            .or_default()
+                                            .extend(reduced.iter().copied());
+                                    }
                                 }
                             }
                         }
@@ -482,9 +569,25 @@ pub(super) fn run_fixes(req: &FixRequest, write: bool) -> Result<FixOutcome, Cli
                         rule_names(&introduced),
                         if kept_other { " (other fixes kept)" } else { "" }
                     ));
+                    if let Some(ofp) = ofp_of(&c.uid) {
+                        refused.insert(FixRefusal {
+                            file: ofp.clone(),
+                            rule: dbtl::LintRule::UnusedCte,
+                            reason: format!(
+                                "the edit would introduce a new {} finding",
+                                rule_names(&introduced)
+                            ),
+                        });
+                    }
                 }
                 changed |= kept_other;
                 continue;
+            }
+            if let Some(ofp) = ofp_of(&c.uid) {
+                applied_rules
+                    .entry(ofp.clone())
+                    .or_default()
+                    .extend(c.rules.iter().copied());
             }
             overlay.insert(c.uid, c.text);
             changed = true;
@@ -503,7 +606,7 @@ pub(super) fn run_fixes(req: &FixRequest, write: bool) -> Result<FixOutcome, Cli
         for uid in overlay.keys() {
             // Every accepted uid passed `node_file` — a `(ofp, path)`
             // pair and its disk bytes both exist by construction.
-            let Some((ofp, path)) = checked.get(uid).and_then(|g| g.as_ref()) else {
+            let Some((ofp, path)) = checked.get(uid).and_then(FileGate::ok) else {
                 continue;
             };
             let Some(before) = disk.get(path).cloned().flatten() else {
@@ -519,7 +622,20 @@ pub(super) fn run_fixes(req: &FixRequest, write: bool) -> Result<FixOutcome, Cli
         files.sort_by(|a, b| a.ofp.cmp(&b.ofp));
         if write {
             let (written, skipped) = write_fixed(&files)?;
-            warnings.extend(skipped);
+            for (ofp, reason) in skipped {
+                warnings.insert(format!("--fix: {ofp}: {reason} — left unchanged"));
+                // Every rule whose edit was destined for the skipped
+                // file keeps its finding — list each as refused.
+                if let Some(rules) = applied_rules.get(&ofp) {
+                    for rule in rules {
+                        refused.insert(FixRefusal {
+                            file: ofp.clone(),
+                            rule: *rule,
+                            reason: reason.clone(),
+                        });
+                    }
+                }
+            }
             if written.len() < files.len() {
                 // A file that drifted mid-run kept its old bytes — its
                 // edits leave the overlay so the report dag (and the
@@ -529,7 +645,7 @@ pub(super) fn run_fixes(req: &FixRequest, write: bool) -> Result<FixOutcome, Cli
                 overlay.retain(|uid, _| {
                     checked
                         .get(uid)
-                        .and_then(|g| g.as_ref())
+                        .and_then(FileGate::ok)
                         .is_some_and(|(_, p)| keep.contains(p))
                 });
                 dag = patched_dag(&manifest, &overlay, req.resolved, req.src.scope);
@@ -565,24 +681,30 @@ pub(super) fn run_fixes(req: &FixRequest, write: bool) -> Result<FixOutcome, Cli
         warnings: warnings.into_iter().collect(),
         files,
         fixed_findings,
+        refused: refused.into_iter().collect(),
     })
 }
+
+/// `(ofp, refusal reason)` per file [`write_fixed`] left alone — the
+/// caller formats the warning and the refusal row from the pair.
+type WriteSkip = (String, String);
 
 /// `--fix`'s write: a sibling temp file + `rename`, so a crash mid-write
 /// can never leave a half-written `.sql`. The `before` bytes are
 /// re-checked first — a file that drifted between the read and the write
 /// is skipped with a warning, never stomped (the compare→rename gap
 /// can't close fully on POSIX; the re-read narrows it to microseconds).
-/// Returns the written paths plus the skip warnings.
-fn write_fixed(files: &[FixFile]) -> Result<(Vec<PathBuf>, Vec<String>), CliError> {
+/// Returns the written paths plus `(ofp, reason)` for each skipped file —
+/// the caller formats the warning and the refusal row from the pair.
+fn write_fixed(files: &[FixFile]) -> Result<(Vec<PathBuf>, Vec<WriteSkip>), CliError> {
     let mut written = Vec::new();
     let mut skipped = Vec::new();
     for f in files {
         let current = std::fs::read_to_string(&f.path).ok();
         if current.as_deref() != Some(f.before.as_str()) {
-            skipped.push(format!(
-                "--fix: {}: file changed on disk during the run — left unchanged",
-                f.ofp
+            skipped.push((
+                f.ofp.clone(),
+                "file changed on disk during the run".to_string(),
             ));
             continue;
         }
@@ -605,9 +727,9 @@ fn write_fixed(files: &[FixFile]) -> Result<(Vec<PathBuf>, Vec<String>), CliErro
         if let Ok(meta) = std::fs::metadata(&f.path) {
             if std::fs::set_permissions(&tmp, meta.permissions()).is_err() {
                 let _ = std::fs::remove_file(&tmp);
-                skipped.push(format!(
-                    "--fix: {}: could not carry the file's permissions to the replacement — left unchanged",
-                    f.ofp
+                skipped.push((
+                    f.ofp.clone(),
+                    "could not carry the file's permissions to the replacement".to_string(),
                 ));
                 continue;
             }

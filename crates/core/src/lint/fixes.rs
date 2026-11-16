@@ -22,29 +22,48 @@ pub struct FixEdit {
     pub rule: LintRule,
 }
 
-/// The deletions `--fix` may make on `uid`'s raw SQL — `rules` are the
-/// fixable `Finding.rule`s seen on the node this round (the caller
-/// groups findings; only fixable rules ever produce edits). `[]` when
-/// nothing is safely fixable: a `;` inside Jinja, an unread `WITH` item
-/// whose def carries a marker or sits in a conditional block, a file
-/// the position pass can't pin — those findings simply remain.
+/// What [`plan_node_edits`] decided on one node: the safe edits plus,
+/// per flagged finding that produced none, why — the refusal rows the
+/// report lists.
+pub struct NodeFixPlan {
+    /// The deletions `--fix` may make — same contract the bare
+    /// `Vec<FixEdit>` return had.
+    pub edits: Vec<FixEdit>,
+    /// `(rule, reason)` per finding that produced no edit — a `;`
+    /// inside Jinja, an unread `WITH` item whose def carries a marker
+    /// or sits in a conditional block, a name the position pass can't
+    /// pin. Populated even when `edits` isn't empty: one rule's finding
+    /// can refuse while a sibling's lands.
+    pub refused: Vec<(LintRule, String)>,
+}
+
+/// The deletions `--fix` may make on `uid`'s raw SQL plus the findings
+/// it refuses — `rules` are the fixable `Finding.rule`s seen on the
+/// node this round (the caller groups findings; only fixable rules
+/// ever produce edits).
 pub fn plan_node_edits(
     dag: &Dag,
     sql: &SqlParseResolver,
     uid: &str,
     rules: &BTreeSet<LintRule>,
-) -> Vec<FixEdit> {
-    let mut edits = Vec::new();
+) -> NodeFixPlan {
+    let mut plan = NodeFixPlan {
+        edits: Vec::new(),
+        refused: Vec::new(),
+    };
     let Some(raw) = dag.raw_code(uid) else {
-        return edits;
+        return plan;
     };
     let dialect = sql.dialect();
     if rules.contains(&LintRule::TrailingSemicolon) {
-        if let Some(range) = semicolon_delete(raw, dialect) {
-            edits.push(FixEdit {
+        match semicolon_delete(raw, dialect) {
+            Ok(range) => plan.edits.push(FixEdit {
                 range,
                 rule: LintRule::TrailingSemicolon,
-            });
+            }),
+            Err(reason) => plan
+                .refused
+                .push((LintRule::TrailingSemicolon, reason.to_string())),
         }
     }
     if rules.contains(&LintRule::UnusedCte) {
@@ -73,19 +92,59 @@ pub fn plan_node_edits(
                 } else if hits.len() == 1 {
                     &hits[..1]
                 } else {
+                    plan.refused.push((
+                        LintRule::UnusedCte,
+                        format!("CTE `{name}`: could not be pinned to raw declaration bytes"),
+                    ));
                     continue;
                 };
                 ranges.extend(paired.iter().map(|r| (*r).clone()));
             }
-            for range in unread_cte_deletes(raw, &ranges, dialect) {
-                edits.push(FixEdit {
+            let ctes = unread_cte_deletes(raw, &ranges, dialect);
+            for range in ctes.kills {
+                plan.edits.push(FixEdit {
                     range,
                     rule: LintRule::UnusedCte,
                 });
             }
+            for (name_span, reason) in ctes.refused {
+                plan.refused.push((
+                    LintRule::UnusedCte,
+                    format!("CTE `{}`: {reason}", &raw[name_span]),
+                ));
+            }
+        } else {
+            plan.refused.push((
+                LintRule::UnusedCte,
+                "the node's raw SQL did not parse for edit planning".to_string(),
+            ));
         }
     }
-    edits
+    plan
+}
+
+/// Why [`apply_fixes`] refused a file's edit set — the reason the
+/// report's refusal list carries per planned edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyRefusal {
+    /// Two planned ranges overlap.
+    Overlap,
+    /// A range edge isn't on a UTF-8 boundary — defensive; it could
+    /// never have come from the scans.
+    Boundary,
+    /// The post-edit text fails the re-render+parse guard.
+    Reparse,
+}
+
+impl ApplyRefusal {
+    /// The refusal-list reason for this failure.
+    pub fn reason(self) -> &'static str {
+        match self {
+            ApplyRefusal::Overlap => "the planned edits overlap",
+            ApplyRefusal::Boundary => "a planned edit is not on a text boundary",
+            ApplyRefusal::Reparse => "the result does not re-parse",
+        }
+    }
 }
 
 /// Apply `edits` to `text` and re-check the result — the caller's whole
@@ -93,38 +152,43 @@ pub fn plan_node_edits(
 ///
 /// - edits apply end-to-start so a later range never shifts an earlier
 ///   one;
-/// - two edits that overlap refuse the file (`None` — the caller warns
-///   and leaves it alone, per the "overlapping edits" rule);
+/// - two edits that overlap refuse the file (`Err` — the caller warns,
+///   lists the refusal, and leaves it alone, per the "overlapping
+///   edits" rule);
 /// - a range not on UTF-8 boundaries refuses the file (it could never
 ///   have come from the scans — defensive);
 /// - when an `unused_cte` edit landed, the new text must still render
 ///   and parse — the rule's own precondition for the delete.
 ///
-/// `Some(new)` is the file's post-fix content; `new == text` never
+/// `Ok(new)` is the file's post-fix content; `new == text` never
 /// happens on a non-empty edit list (the ranges are non-empty by
 /// construction) but costs the caller nothing to compare anyway.
-pub fn apply_fixes(text: &str, edits: &[FixEdit], dialect: SqlDialect) -> Option<String> {
+pub fn apply_fixes(
+    text: &str,
+    edits: &[FixEdit],
+    dialect: SqlDialect,
+) -> Result<String, ApplyRefusal> {
     let mut ranges: Vec<Range<usize>> = Vec::with_capacity(edits.len());
     let mut reparses = false;
     for e in edits {
         if !text.is_char_boundary(e.range.start) || !text.is_char_boundary(e.range.end) {
-            return None;
+            return Err(ApplyRefusal::Boundary);
         }
         reparses |= e.rule == LintRule::UnusedCte;
         ranges.push(e.range.clone());
     }
     ranges.sort_by_key(|r| (r.start, r.end));
     if ranges.windows(2).any(|w| w[1].start < w[0].end) {
-        return None;
+        return Err(ApplyRefusal::Overlap);
     }
     let mut out = text.to_string();
     for r in ranges.iter().rev() {
         out.replace_range(r.clone(), "");
     }
     if reparses && !sql_still_parses(&out, dialect) {
-        return None;
+        return Err(ApplyRefusal::Reparse);
     }
-    Some(out)
+    Ok(out)
 }
 
 /// `manifest` with each `uid → new raw_code` patch applied — the
@@ -290,11 +354,11 @@ mod tests {
                 text,
                 &[
                     kill(LintRule::UnusedCte, 0, 5),
-                    kill(LintRule::UnusedCte, 4, 9)
+                    kill(LintRule::UnusedCte, 3, 7)
                 ],
                 SqlDialect::Generic
             ),
-            None
+            Err(ApplyRefusal::Overlap)
         );
         // A range inside the `é` is not a char boundary — refused.
         let mid = text.find('é').unwrap() + 1;
@@ -304,7 +368,7 @@ mod tests {
                 &[kill(LintRule::UnusedCte, mid, mid + 1)],
                 SqlDialect::Generic
             ),
-            None
+            Err(ApplyRefusal::Boundary)
         );
     }
 
@@ -319,7 +383,7 @@ mod tests {
                 &[kill(LintRule::TrailingSemicolon, 8, 9)],
                 SqlDialect::Generic
             ),
-            Some("select 1".to_string())
+            Ok("select 1".to_string())
         );
         // Cutting `(` unbalances — the re-parse guard refuses the file.
         assert_eq!(
@@ -328,7 +392,7 @@ mod tests {
                 &[kill(LintRule::UnusedCte, 10, 11)],
                 SqlDialect::Generic
             ),
-            None
+            Err(ApplyRefusal::Reparse)
         );
     }
 

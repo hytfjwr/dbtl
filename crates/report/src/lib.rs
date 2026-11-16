@@ -39,7 +39,7 @@ pub use lint::{
     LintRun, LintRunInputs,
 };
 
-use dbtl_core::{Dag, DiffReport, Finding, Severity, SkippedRule};
+use dbtl_core::{Dag, DiffReport, Finding, LintRule, Severity, SkippedRule};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -211,6 +211,11 @@ pub struct ReportSummary {
     /// only when a fix run rewrote at least one byte.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fixed: Option<FixedSummary>,
+    /// Edits `--fix`/`--fix-dry-run` refused — `{file, rule, reason}` per
+    /// attempted fix, in (file, rule, reason) order. Present only when a
+    /// fix run refused at least one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fix_refused: Vec<FixRefusal>,
 }
 
 /// The `--fix`/`--fix-dry-run` rollup `summary.fixed` carries — findings
@@ -227,6 +232,22 @@ pub struct FixedSummary {
     /// text summary words them "fixable" instead of "fixed".
     #[serde(skip)]
     pub dry_run: bool,
+}
+
+/// One edit a `--fix`/`--fix-dry-run` run refused — the file it
+/// targeted, the rule whose finding it would have resolved, and why it
+/// didn't land. The text summary lists the same triples the JSON
+/// `summary.fix_refused` carries.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct FixRefusal {
+    /// The project-relative file (`original_file_path`) the edit
+    /// targeted.
+    pub file: String,
+    /// The rule whose finding the refused edit would have resolved.
+    pub rule: LintRule,
+    /// Why the edit was refused — the same reason the `--fix:` stderr
+    /// warning carries.
+    pub reason: String,
 }
 
 /// The suppressed-findings rollup `summary.suppressed` carries — the total
@@ -294,6 +315,10 @@ pub struct LintTally {
     /// (report assembly can't see file edits); lifted into
     /// `summary.fixed` by [`Report::lift_lint_summary`].
     pub fixed: Option<FixedSummary>,
+    /// The `--fix`/`--fix-dry-run` refusal list — same provenance as
+    /// `fixed`: the CLI's fix loop fills it, the text summary lists it
+    /// per entry and `summary.fix_refused` serializes it.
+    pub fix_refused: Vec<FixRefusal>,
 }
 
 /// The shared report the `check`/`lint` gates serialize into — the
@@ -401,6 +426,9 @@ impl Report {
         }
         if lint.fixed.is_some() {
             self.summary.fixed = lint.fixed.clone();
+        }
+        if !lint.fix_refused.is_empty() {
+            self.summary.fix_refused = lint.fix_refused.clone();
         }
     }
 }

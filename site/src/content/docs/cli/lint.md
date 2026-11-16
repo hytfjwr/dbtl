@@ -28,6 +28,7 @@ A closing tally summarizes the run. Each line appears only when it applies:
 | `N rules reported findings; M skipped (need --catalog)` | Always. The `skipped` part appears when rules lacked an input. |
 | `N findings suppressed (K meta.dbtl.ignore, M exclude; J without a reason)` | [Suppression](#suppressed-findings) dropped at least one finding. |
 | `N findings auto-fixed in M files` | A fix pass changed files. A dry run reads `auto-fixable … (dry run — no files written)`. |
+| `N fix edits refused:` | A fix pass refused edits — one `file: rule — reason` line follows per refusal. |
 | `N models skipped SQL rules (unparsable SQL): <names>` | A model carried SQL the parser could not read. It lists up to ten names, then `+K more`. |
 
 ```text
@@ -124,7 +125,7 @@ dbtl lint --fix                 # apply every safe fix, then re-report
 dbtl lint --fix-dry-run         # print a unified diff per file, write nothing
 ```
 
-Two rules are auto-fixable today. `trailing_semicolon` removes the statement's final `;`, and `unused_cte` removes the unread CTE definition plus its separating comma. The `FIX` column of `--list-rules` and the `auto-fix:` line of `--explain <ID>` mark the fixable rules.
+Two rules are auto-fixable today. `trailing_semicolon` removes the statement's final `;`, and `unused_cte` removes the unread CTE definition plus its separating comma — comments around the deleted definition (`--`, `/* */`, `{# #}`) stay, since they document the surviving neighbours. The `FIX` column of `--list-rules` and the `auto-fix:` line of `--explain <ID>` mark the fixable rules.
 
 A fix is only ever applied when it is provably safe — the edit is refused, and the finding simply stays, when:
 
@@ -138,6 +139,7 @@ How a fix run behaves:
 - `--fix` repeats until nothing more changes, so a delete that makes another CTE unread is cleaned up in the same run. A second `--fix` is always a no-op.
 - Every write goes through a temporary sibling file and an atomic rename. It preserves the file's LF or CRLF style and whether it ends with a newline.
 - `--fix-dry-run` previews the same patch as a unified diff per file, then prints the post-fix report `--fix` would produce. The diff goes to stdout for the human formats and to stderr for the machine ones, so `--format json` stays parseable.
+- Every refused edit is listed — `N fix edits refused:` followed by one `file: rule — reason` line per refusal in the text summary, and the same rows under `summary.fix_refused` in JSON — on `--fix` and `--fix-dry-run` alike.
 
 Limits:
 
@@ -239,7 +241,8 @@ The `json` report's `summary` always carries `errors`, `warnings`, `baselined`, 
 | --- | ------------ |
 | `suppressed` | A finding was suppressed. It holds the total, the `exclude`/`meta` split, and how many recorded no reason. |
 | `unparsed_models` | Models carried SQL the parser could not read. It is `{count, names}`. |
-| `fixed` | The run used `--fix` or `--fix-dry-run`. |
+| `fixed` | The run used `--fix` or `--fix-dry-run` and at least one file changed (or would have). |
+| `fix_refused` | A fix pass refused at least one edit — `[{file, rule, reason}]` per refusal, in file order. |
 
 ## Exit codes
 

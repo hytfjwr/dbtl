@@ -77,6 +77,7 @@ mod tests {
             unparsed_models: Vec::new(),
             suppressed: SuppressedSummary::default(),
             fixed: None,
+            fix_refused: Vec::new(),
         });
         for (rule, uid, msg, sev, file, line, col) in [
             (

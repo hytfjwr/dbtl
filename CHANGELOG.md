@@ -6,8 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `dbtl lint --fix` / `--fix-dry-run` now list every edit the run
+  refused, not just warn on stderr. The text summary ends with a
+  `N fix edits refused:` line followed by one `file: rule — reason`
+  line per refusal — file drift, overlapping ranges, edits that would
+  introduce a finding under another rule, findings the planner can't
+  pin to literal bytes — and JSON carries the same rows under
+  `summary.fix_refused` as `[{file, rule, reason}]` in file order.
+
 ### Fixed
 
+- `dbtl lint --fix` no longer eats the comment following a deleted
+  unread CTE — a `--`, `/* */`, or `{# #}` comment in a separator seam
+  or beside the `with` keyword stays whole (with its whitespace) while
+  the dead definition and its commas go. Comments inside a deleted
+  definition still go with it: they documented the dead CTE, not its
+  neighbours.
 - `duplicate_output_columns` no longer reports a duplicate when
   same-named columns written in mutually exclusive `{% if %}`/`{% else %}`
   arms inside a CTE or derived table reach the outer query through

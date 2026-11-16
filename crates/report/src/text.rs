@@ -259,6 +259,18 @@ pub(crate) fn summary_lines(report: &Report, lint: &LintTally, styled: bool) -> 
             ));
         }
     }
+    if !lint.fix_refused.is_empty() {
+        // One line per refused edit — `file: rule — reason` — under a
+        // count header, so a fix run's leftovers are enumerable rather
+        // than stderr-only.
+        lines.push(format!(
+            "{} refused:",
+            counted(lint.fix_refused.len(), "fix edit", "fix edits")
+        ));
+        for r in &lint.fix_refused {
+            lines.push(format!("  {}: {} — {}", r.file, r.rule.name(), r.reason));
+        }
+    }
     lines.join("\n")
 }
 
@@ -588,6 +600,7 @@ mod tests {
             unparsed_models: Vec::new(),
             suppressed: SuppressedSummary::default(),
             fixed: None,
+            fix_refused: Vec::new(),
         });
         let yml = "- name: fct_orders\n  columns:\n    - name: order_id\n";
         let sql = "select a,\n       b.*\nfrom t\n";
@@ -716,6 +729,53 @@ mod tests {
              m00, m01, m02, m03, m04, m05, m06, m07, m08, m09 +3 more"
         );
         // None — no line at all.
+        assert_eq!(
+            summary_lines(&report, &LintTally::default(), false),
+            "No findings\n0 rules reported findings"
+        );
+    }
+
+    /// The `--fix` tally lists every refused edit as `file: rule —
+    /// reason` under a count header — the same triples the JSON
+    /// `summary.fix_refused` carries — and stays absent when nothing
+    /// was refused.
+    #[test]
+    fn summary_lists_each_refused_fix_edit() {
+        let report = Report::new("p", "source (x)");
+        let lint = LintTally {
+            fix_refused: vec![
+                crate::FixRefusal {
+                    file: "models/j.sql".to_string(),
+                    rule: dbtl_core::LintRule::TrailingSemicolon,
+                    reason: "the `;` sits inside a Jinja tag or block".to_string(),
+                },
+                crate::FixRefusal {
+                    file: "models/m.sql".to_string(),
+                    rule: dbtl_core::LintRule::UnusedCte,
+                    reason: "the edit would introduce a new root_models finding".to_string(),
+                },
+            ],
+            ..LintTally::default()
+        };
+        assert_eq!(
+            summary_lines(&report, &lint, false),
+            "No findings\n\
+             0 rules reported findings\n\
+             2 fix edits refused:\n\
+             \x20 models/j.sql: trailing_semicolon — the `;` sits inside a Jinja tag or block\n\
+             \x20 models/m.sql: unused_cte — the edit would introduce a new root_models finding"
+        );
+        // One refusal — the singular header.
+        let lint = LintTally {
+            fix_refused: vec![crate::FixRefusal {
+                file: "models/m.sql".to_string(),
+                rule: dbtl_core::LintRule::UnusedCte,
+                reason: "r".to_string(),
+            }],
+            ..LintTally::default()
+        };
+        assert!(summary_lines(&report, &lint, false).contains("1 fix edit refused:"));
+        // Nothing refused — no lines, no header.
         assert_eq!(
             summary_lines(&report, &LintTally::default(), false),
             "No findings\n0 rules reported findings"

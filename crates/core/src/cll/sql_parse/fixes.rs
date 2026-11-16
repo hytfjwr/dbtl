@@ -80,6 +80,21 @@ fn skip_insignificant(b: &[u8], mut i: usize, lex: &Lex) -> usize {
     i
 }
 
+/// Does `b[i]` open a comment — a SQL comment (`--`, `//`, `/*`, `#`
+/// per the dialect) or a `{# #}` Jinja comment? Comments survive the
+/// deletions [`unread_cte_deletes`] plans: they were written for the
+/// reader, not the linter, and dropping a neighbour's note with the
+/// dead CTE would eat documentation the fix was never asked to judge.
+fn comment_at(b: &[u8], i: usize, lex: &Lex) -> bool {
+    match b[i] {
+        b'-' => lex.dash_comment_at(b, i),
+        b'/' => lex.slash_comment_at(b, i) || b.get(i + 1) == Some(&b'*'),
+        b'#' => lex.hash_comment_at(b, i),
+        b'{' => b.get(i + 1) == Some(&b'#'),
+        _ => false,
+    }
+}
+
 /// May the bytes of `kill` be deleted? A kill that removes a WHOLE Jinja
 /// construct is safe — a `{{ ref() }}` inside a deleted `WITH` item
 /// renders away with it; what must never happen is a cut that splits a
@@ -248,16 +263,22 @@ fn inside_jinja(sql: &str, at: usize, lex: &Lex) -> bool {
 }
 
 /// The `;` `--fix` may delete: [`trailing_semicolon`]'s raw byte range,
-/// refused when the byte sits inside Jinja — a tag, an `{% if %}`/
-/// `{% for %}` arm, or any paired-block body (a `;` inside `{% raw %}`
-/// renders literally, but deleting it edits the template, not the
-/// finding). `None` leaves the finding for the report.
-pub(crate) fn semicolon_delete(sql: &str, dialect: SqlDialect) -> Option<Range<usize>> {
-    let range = trailing_semicolon(sql, dialect)?;
+/// refused when the byte can't be pinned or sits inside Jinja — a tag,
+/// an `{% if %}`/`{% for %}` arm, or any paired-block body (a `;`
+/// inside `{% raw %}` renders literally, but deleting it edits the
+/// template, not the finding). `Err` carries the reason — the finding
+/// stays for the report and the run lists the refusal.
+pub(crate) fn semicolon_delete(
+    sql: &str,
+    dialect: SqlDialect,
+) -> Result<Range<usize>, &'static str> {
+    let Some(range) = trailing_semicolon(sql, dialect) else {
+        return Err("the `;` could not be located in the raw SQL");
+    };
     if inside_jinja(sql, range.start, &Lex::new(dialect)) {
-        return None;
+        return Err("the `;` sits inside a Jinja tag or block");
     }
-    Some(range)
+    Ok(range)
 }
 
 /// The raw extents of one `WITH` item — `name` is the alias-name byte
@@ -442,6 +463,105 @@ fn with_clauses(sql: &str, lex: &Lex) -> Vec<WithClause> {
     out
 }
 
+/// [`unread_cte_deletes`]'s full verdict for the flagged names: the
+/// byte ranges to delete plus, per name no delete was emitted for,
+/// the reason.
+pub(crate) struct CteDeletes {
+    /// The delete ranges — non-overlapping, in scan order. One doomed
+    /// run can emit several: the comments it preserves split its kill
+    /// into the gaps between them.
+    pub kills: Vec<Range<usize>>,
+    /// Flagged name spans that produced no kill, each paired with why —
+    /// the findings they belong to stay for the report.
+    pub refused: Vec<(Range<usize>, &'static str)>,
+}
+
+/// Is `a`'s span the same bytes as `b`'s — exact or contained either
+/// way (quoting differences)? The flagged-name matching predicate.
+fn spans_match(a: &Range<usize>, b: &Range<usize>) -> bool {
+    (a.start >= b.start && a.end <= b.end) || (b.start >= a.start && b.end <= a.end)
+}
+
+/// The `kill` span minus the comments worth keeping — the ranges that
+/// actually delete. A maximal run of insignificant bytes (whitespace,
+/// SQL comments, Jinja markers) inside `kill` survives WHOLE when it
+/// carries a comment AND does not sit inside a `guarded` span — the
+/// deleted items' own `name … as (…)` extents, whose comments go with
+/// the definition they annotated. A comment in a separator seam
+/// (`u as (…), /* note */` before the next item) or beside the `with`
+/// keyword was written for the reader, not the linter: it stays, its
+/// whitespace intact, so the surviving neighbours keep their spacing.
+/// Everything else in `kill` — the doomed defs, the separator `,`s,
+/// the `with` keyword, comment-free runs — deletes.
+///
+/// The caller runs [`jinja_safe_cut`] first, so no kept run can hide
+/// a construct the delete would split.
+fn cuts_preserving_comments(
+    sql: &str,
+    kill: &Range<usize>,
+    guarded: &[Range<usize>],
+    lex: &Lex,
+) -> Vec<Range<usize>> {
+    let b = sql.as_bytes();
+    let mut cuts = Vec::new();
+    // `from` — the first byte not yet emitted; `run` — the open
+    // insignificant run `(start, saw_a_comment)`. A significant step
+    // (or the kill's end) closes the run: kept runs punch a hole in
+    // the delete; comment-free ones delete with their span.
+    let mut from = kill.start;
+    let mut run: Option<(usize, bool)> = None;
+    let mut i = kill.start;
+    while i < kill.end {
+        match step(b, i, lex) {
+            Step::Skip(n) | Step::Jinja(n) => {
+                let run = run.get_or_insert((i, false));
+                run.1 |= comment_at(b, i, lex);
+                i = n;
+            }
+            Step::Literal(n) => {
+                close_run(&mut cuts, &mut from, &mut run, i, guarded);
+                i = n;
+            }
+            Step::Byte => {
+                close_run(&mut cuts, &mut from, &mut run, i, guarded);
+                i += 1;
+            }
+            // Unreachable — `jinja_safe_cut` refused the kill first —
+            // but the verbatim tail can't be scoped, so the scan stops
+            // and the rest deletes with the tail segment.
+            Step::Verbatim => break,
+        }
+    }
+    close_run(&mut cuts, &mut from, &mut run, kill.end, guarded);
+    if from < kill.end {
+        cuts.push(from..kill.end);
+    }
+    cuts
+}
+
+/// Close the insignificant run `run` at `end`: a comment-carrying run
+/// outside every `guarded` span survives — the delete before it emits
+/// and the next one starts at `end` — while a comment-free or guarded
+/// run just joins the pending delete.
+fn close_run(
+    cuts: &mut Vec<Range<usize>>,
+    from: &mut usize,
+    run: &mut Option<(usize, bool)>,
+    end: usize,
+    guarded: &[Range<usize>],
+) {
+    let Some((start, saw_comment)) = run.take() else {
+        return;
+    };
+    let guarded_hit = guarded.iter().any(|g| start < g.end && g.start < end);
+    if saw_comment && !guarded_hit {
+        if *from < start {
+            cuts.push(*from..start);
+        }
+        *from = end;
+    }
+}
+
 /// The byte ranges to delete for the unread `WITH` items `names`
 /// identifies — each `Range` is an alias-name span, the same anchors
 /// `SqlPositions::unused_ctes` carries. Runs of flagged items compute
@@ -454,40 +574,61 @@ fn with_clauses(sql: &str, lex: &Lex) -> Vec<WithClause> {
 ///   the last item (the separator goes with the deleted tail),
 /// - every item gone → the whole `with`/`with recursive` clause.
 ///
+/// Comments ride along differently: a comment inside a deleted item's
+/// own span goes with the item, but a comment in a separator seam or
+/// beside the `with` keyword is kept whole — [`cuts_preserving_comments`]
+/// splits each kill around them.
+///
 /// An item inside a Jinja block stays — it's treated as kept so its
 /// neighbours' kills still compute around it — and a kill spanning a
 /// Jinja marker is refused: the finding then stands for the report
-/// rather than cutting template the render owns.
+/// rather than cutting template the render owns. Both kinds name their
+/// spans on `CteDeletes::refused`.
 pub(crate) fn unread_cte_deletes(
     sql: &str,
     names: &[Range<usize>],
     dialect: SqlDialect,
-) -> Vec<Range<usize>> {
+) -> CteDeletes {
     let lex = Lex::new(dialect);
     let b = sql.as_bytes();
-    let mut kills = Vec::new();
+    let mut out = CteDeletes {
+        kills: Vec::new(),
+        refused: Vec::new(),
+    };
+    // Every clause item's name span (for the "unpinned" check) and the
+    // refused ones with their reasons — filled while kills compute.
+    let mut item_spans: Vec<Range<usize>> = Vec::new();
+    let mut refused_items: Vec<(Range<usize>, &'static str)> = Vec::new();
     for clause in with_clauses(sql, &lex) {
+        for it in &clause.items {
+            item_spans.push(it.name.clone());
+        }
         // Match flagged name spans to this clause's items — the span
         // and the item's name range describe the same bytes, exact or
         // contained either way (quoting differences).
         let flagged: Vec<bool> = clause
             .items
             .iter()
-            .map(|it| {
-                names.iter().any(|n| {
-                    (n.start >= it.name.start && n.end <= it.name.end)
-                        || (it.name.start >= n.start && it.name.end <= n.end)
-                })
-            })
+            .map(|it| names.iter().any(|n| spans_match(n, &it.name)))
             .collect();
         if !flagged.iter().any(|f| *f) {
             continue;
         }
+        // A flagged item that stays gets its refusal reason; a doomed
+        // one's stays `None` unless its kill is refused below.
+        let mut verdict: Vec<Option<&'static str>> = vec![None; clause.items.len()];
         let doomed: Vec<bool> = clause
             .items
             .iter()
             .zip(&flagged)
-            .map(|(it, f)| *f && !inside_jinja(sql, it.name.start, &lex))
+            .enumerate()
+            .map(|(i, (it, f))| {
+                let inside = *f && inside_jinja(sql, it.name.start, &lex);
+                if *f && inside {
+                    verdict[i] = Some("its definition sits inside a Jinja tag or block");
+                }
+                *f && !inside
+            })
             .collect();
         let mut i = 0usize;
         while i < clause.items.len() {
@@ -528,12 +669,41 @@ pub(crate) fn unread_cte_deletes(
                 s..e
             };
             if jinja_safe_cut(sql, kill.clone(), &lex) {
-                kills.push(kill);
+                // Comments inside a doomed item's own `name … as (…)`
+                // go with the item; seam and `with`-keyword comments
+                // survive whole.
+                let defs: Vec<Range<usize>> = (i..=j)
+                    .map(|k| clause.items[k].name.start..clause.items[k].end)
+                    .collect();
+                out.kills
+                    .extend(cuts_preserving_comments(sql, &kill, &defs, &lex));
+            } else {
+                for v in &mut verdict[i..=j] {
+                    *v = Some("deleting it would split a Jinja tag or a paired block");
+                }
             }
             i = j + 1;
         }
+        for (it, reason) in clause.items.iter().zip(verdict) {
+            if let Some(reason) = reason {
+                refused_items.push((it.name.clone(), reason));
+            }
+        }
     }
-    kills
+    // Hand each input span its verdict: a refused item's reason, the
+    // "unpinned" refusal when no clause item claimed it at all — a
+    // matched-and-killed span is simply not refused.
+    for n in names {
+        if let Some((_, reason)) = refused_items.iter().find(|(s, _)| spans_match(n, s)) {
+            out.refused.push((n.clone(), *reason));
+        } else if !item_spans.iter().any(|s| spans_match(n, s)) {
+            out.refused.push((
+                n.clone(),
+                "its definition could not be pinned to a WITH item",
+            ));
+        }
+    }
+    out
 }
 
 /// The post-edit guard `unused_cte`'s fix requires: the new raw text
@@ -553,19 +723,25 @@ mod tests {
         s..e
     }
 
+    /// `sql` after every kill `unread_cte_deletes` emits is deleted.
+    fn killed(sql: &str, names: &[Range<usize>]) -> (String, CteDeletes) {
+        let plan = unread_cte_deletes(sql, names, SqlDialect::Generic);
+        let mut t = sql.to_string();
+        let mut ranges: Vec<Range<usize>> = plan.kills.clone();
+        ranges.sort_by_key(|r| (r.start, r.end));
+        for r in ranges.iter().rev() {
+            t.replace_range(r.clone(), "");
+        }
+        (t, plan)
+    }
+
     #[test]
     fn semicolon_delete_plain_tail() {
-        assert_eq!(
-            semicolon_delete("select 1;", SqlDialect::Generic),
-            Some(8..9)
-        );
-        assert_eq!(semicolon_delete("select 1", SqlDialect::Generic), None);
+        assert_eq!(semicolon_delete("select 1;", SqlDialect::Generic), Ok(8..9));
+        assert!(semicolon_delete("select 1", SqlDialect::Generic).is_err());
         // A `;` inside a string/comment is never the tail.
-        assert_eq!(semicolon_delete("select 'a;'", SqlDialect::Generic), None);
-        assert_eq!(
-            semicolon_delete("select 1 -- ;\n", SqlDialect::Generic),
-            None
-        );
+        assert!(semicolon_delete("select 'a;'", SqlDialect::Generic).is_err());
+        assert!(semicolon_delete("select 1 -- ;\n", SqlDialect::Generic).is_err());
     }
 
     #[test]
@@ -573,12 +749,12 @@ mod tests {
         // `;` inside an `{% if %}` arm — conditional, not a tail.
         assert_eq!(
             semicolon_delete("select 1\n{% if x %};{% endif %}", SqlDialect::Generic),
-            None
+            Err("the `;` sits inside a Jinja tag or block")
         );
         // `;` inside `{% raw %}` — template text, not a tail.
         assert_eq!(
             semicolon_delete("select 1\n{% raw %};{% endraw %}", SqlDialect::Generic),
-            None
+            Err("the `;` sits inside a Jinja tag or block")
         );
         // `;` after a closed block is plain text — the fix is real.
         assert_eq!(
@@ -586,65 +762,48 @@ mod tests {
                 "select 1 {% if x %}and 1=1{% endif %};",
                 SqlDialect::Generic
             ),
-            Some(37..38)
+            Ok(37..38)
         );
         // `{% set %}` bodies never reach the tail either.
-        assert_eq!(
-            semicolon_delete("select 1\n{% set s %};{% endset %}", SqlDialect::Generic),
-            None
+        assert!(
+            semicolon_delete("select 1\n{% set s %};{% endset %}", SqlDialect::Generic).is_err()
         );
         // A mismatched end (`{% if %}{% for %}{% endif %}`) pops only
         // the `if` — the `for` body stays open, so its `;` is refused.
-        assert_eq!(
-            semicolon_delete(
-                "select 1\n{% if x %}{% for y in z %}{% endif %};{% endfor %}",
-                SqlDialect::Generic
-            ),
-            None
-        );
+        assert!(semicolon_delete(
+            "select 1\n{% if x %}{% for y in z %}{% endif %};{% endfor %}",
+            SqlDialect::Generic
+        )
+        .is_err());
     }
 
     #[test]
     fn unread_cte_deletes_single_and_tail() {
         let sql = "with a as (select 1), b as (select 2)\nselect * from b";
         // `a` unread → keep `b`, delete `a as (…), `.
-        let kills = unread_cte_deletes(sql, &[r(5, 6)], SqlDialect::Generic);
-        assert_eq!(kills.len(), 1);
-        let mut t = sql.to_string();
-        t.replace_range(kills[0].clone(), "");
+        let (t, plan) = killed(sql, &[r(5, 6)]);
+        assert_eq!(plan.kills.len(), 1);
         assert_eq!(t, "with b as (select 2)\nselect * from b");
         // `b` unread → tail delete keeps `a`'s item and its own `,`.
-        let kills = unread_cte_deletes(sql, &[r(22, 23)], SqlDialect::Generic);
-        assert_eq!(kills.len(), 1);
-        let mut t = sql.to_string();
-        t.replace_range(kills[0].clone(), "");
+        let (t, _) = killed(sql, &[r(22, 23)]);
         assert_eq!(t, "with a as (select 1)\nselect * from b");
     }
 
     #[test]
     fn unread_cte_deletes_whole_clause() {
-        let sql = "with a as (select 1)\nselect * from a";
-        let kills = unread_cte_deletes(sql, &[r(5, 6)], SqlDialect::Generic);
-        assert_eq!(kills.len(), 1);
-        let mut t = sql.to_string();
-        t.replace_range(kills[0].clone(), "");
+        let (t, _) = killed("with a as (select 1)\nselect * from a", &[r(5, 6)]);
         assert_eq!(t, "select * from a", "no blank line is left behind");
         // …and CRLF — the whole pair goes, not half of it.
-        let sql = "with a as (select 1)\r\nselect * from a";
-        let kills = unread_cte_deletes(sql, &[r(5, 6)], SqlDialect::Generic);
-        assert_eq!(kills.len(), 1);
-        let mut t = sql.to_string();
-        t.replace_range(kills[0].clone(), "");
+        let (t, _) = killed("with a as (select 1)\r\nselect * from a", &[r(5, 6)]);
         assert_eq!(t, "select * from a");
     }
 
     #[test]
     fn unread_cte_deletes_middle_of_three() {
-        let sql = "with a as (select 1), b as (select 2), c as (select 3)\nselect * from a join c on true";
-        let kills = unread_cte_deletes(sql, &[r(22, 23)], SqlDialect::Generic);
-        assert_eq!(kills.len(), 1);
-        let mut t = sql.to_string();
-        t.replace_range(kills[0].clone(), "");
+        let (t, _) = killed(
+            "with a as (select 1), b as (select 2), c as (select 3)\nselect * from a join c on true",
+            &[r(22, 23)],
+        );
         assert_eq!(
             t,
             "with a as (select 1), c as (select 3)\nselect * from a join c on true"
@@ -653,39 +812,94 @@ mod tests {
 
     #[test]
     fn unread_cte_two_of_three_deleted() {
-        let sql = "with a as (select 1), b as (select 2), c as (select 3)\nselect * from c";
         // `a` and `b` unread → one kill covering both, `with c` stays.
-        let kills = unread_cte_deletes(sql, &[r(5, 6), r(22, 23)], SqlDialect::Generic);
-        assert_eq!(kills.len(), 1);
-        let mut t = sql.to_string();
-        t.replace_range(kills[0].clone(), "");
+        let (t, _) = killed(
+            "with a as (select 1), b as (select 2), c as (select 3)\nselect * from c",
+            &[r(5, 6), r(22, 23)],
+        );
         assert_eq!(t, "with c as (select 3)\nselect * from c");
     }
 
     #[test]
     fn unread_cte_jinja_refusals() {
-        // A def inside `{% if %}` stays.
+        // A def inside `{% if %}` stays — and says why.
         let sql = "with {% if x %}a as (select 1), {% endif %}b as (select 2)\nselect * from b";
-        assert!(unread_cte_deletes(sql, &[r(15, 16)], SqlDialect::Generic).is_empty());
+        let plan = unread_cte_deletes(sql, &[r(15, 16)], SqlDialect::Generic);
+        assert!(plan.kills.is_empty());
+        assert_eq!(plan.refused.len(), 1);
         // A `{% if %}` inside `a`'s def whose `{% endif %}` lives in
         // `b`'s — the kill would split the block edge: refused.
         let sql = "with a as (select 1 {% if x %}), b as (select 2 {% endif %})\nselect * from b";
-        assert!(unread_cte_deletes(sql, &[r(5, 6)], SqlDialect::Generic).is_empty());
+        let plan = unread_cte_deletes(sql, &[r(5, 6)], SqlDialect::Generic);
+        assert!(plan.kills.is_empty());
+        assert_eq!(plan.refused.len(), 1);
         // An unterminated `{%` inside the clause — extent unprovable.
         let sql = "with a as (select 1 {% if x), b as (select 2)\nselect * from b";
-        assert!(unread_cte_deletes(sql, &[r(5, 6)], SqlDialect::Generic).is_empty());
+        let plan = unread_cte_deletes(sql, &[r(5, 6)], SqlDialect::Generic);
+        assert!(plan.kills.is_empty());
+        assert_eq!(plan.refused.len(), 1);
     }
 
     #[test]
     fn unread_cte_jinja_inside_def_is_cut() {
         // A `{{ }}` wholly inside the deleted def renders away with it —
         // the common `ref()`-in-CTE-body case must fix.
-        let sql = "with a as (select * from {{ ref('x') }}), b as (select 2)\nselect * from b";
-        let kills = unread_cte_deletes(sql, &[r(5, 6)], SqlDialect::Generic);
-        assert_eq!(kills.len(), 1);
-        let mut t = sql.to_string();
-        t.replace_range(kills[0].clone(), "");
+        let (t, _) = killed(
+            "with a as (select * from {{ ref('x') }}), b as (select 2)\nselect * from b",
+            &[r(5, 6)],
+        );
         assert_eq!(t, "with b as (select 2)\nselect * from b");
+    }
+
+    #[test]
+    fn unread_cte_keeps_the_following_comment() {
+        // The seam comment between the deleted middle item and the
+        // survivor is not part of `unused_mid`'s def — it stays whole.
+        let sql = "with x as (select 1 as id), -- keep\nunused_mid as (select id from x), /* c */\ny as (select id from x)\nselect id from y";
+        let (t, _) = killed(sql, &[r(36, 46)]);
+        assert_eq!(
+            t,
+            "with x as (select 1 as id), -- keep\n /* c */\ny as (select id from x)\nselect id from y"
+        );
+        // A `--` line comment in the same spot survives too.
+        let sql = "with x as (select 1 as id), -- keep\nunused_mid as (select id from x), -- c\ny as (select id from x)\nselect id from y";
+        let (t, _) = killed(sql, &[r(36, 46)]);
+        assert_eq!(
+            t,
+            "with x as (select 1 as id), -- keep\n -- c\ny as (select id from x)\nselect id from y"
+        );
+        // Same placement on a TAIL delete — the `,` still goes, the
+        // comment stays behind the surviving item.
+        let sql = "with x as (select 1 as id), -- note\ny as (select id from x)\nselect id from y";
+        let (t, _) = killed(sql, &[r(36, 37)]);
+        assert_eq!(t, "with x as (select 1 as id) -- note\n\nselect id from y");
+    }
+
+    #[test]
+    fn unread_cte_comment_placement() {
+        // A comment between `)` and `,` — the comma still goes, the
+        // comment keeps its spot after the surviving item's `,`.
+        let (t, _) = killed(
+            "with x as (select 1), u as (select id from x) /* c */, y as (select 2)\nselect * from x",
+            &[r(22, 23)],
+        );
+        assert_eq!(
+            t,
+            "with x as (select 1),  /* c */y as (select 2)\nselect * from x"
+        );
+        // A comment INSIDE a deleted def goes with it — it documented
+        // the dead CTE, not its neighbours.
+        let (t, _) = killed(
+            "with x as (select 1), u /* gone */ as (select id from x), y as (select 2)\nselect * from x",
+            &[r(22, 23)],
+        );
+        assert_eq!(t, "with x as (select 1), y as (select 2)\nselect * from x");
+        // A comment beside `with` survives a whole-clause delete.
+        let (t, _) = killed(
+            "with /* note */ a as (select 1)\nselect * from a",
+            &[r(16, 17)],
+        );
+        assert_eq!(t, " /* note */ select * from a");
     }
 
     #[test]
