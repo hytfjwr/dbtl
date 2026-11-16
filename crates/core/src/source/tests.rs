@@ -3865,6 +3865,52 @@ fn model_local_definitions_do_not_edge_or_configure() {
 }
 
 #[test]
+fn call_bodies_configure_and_edge_like_dbt() {
+    let dir = tempfile::tempdir().unwrap();
+    macro_project(
+        dir.path(),
+        &[
+            // `{% call f() %}…{% endcall %}` is NOT a deferred definition:
+            // dbt's static extractor treats the body as toplevel — its
+            // `config()` applies (an `enabled=false` parks the node) and
+            // its `ref` edges, even though the body only RENDERS when the
+            // callee invokes `caller()`. Verified against the generated
+            // manifest; deferring it would diverge from dbt.
+            (
+                "cfg",
+                "{% call wrap() %}{{ config(materialized='table') }}{{ ref('other') }}{% endcall %}select 1",
+            ),
+            (
+                "off",
+                "{% call wrap() %}{{ config(enabled=false) }}{% endcall %}select 1",
+            ),
+            ("other", "select 1"),
+        ],
+        &[(
+            "macros",
+            "{% macro wrap() %}select {{ caller() }}{% endmacro %}",
+        )],
+        Some(SHOP_SCHEMA),
+    );
+    let (m, _w) = manifest_from_source_with_warnings(dir.path(), None).unwrap();
+    assert!(m.nodes.contains_key("model.p.cfg"));
+    assert_eq!(
+        m.nodes["model.p.cfg"].config.materialized.as_deref(),
+        Some("table"),
+        "the call body's config applies unconditionally, like dbt"
+    );
+    assert_eq!(
+        m.parent_map.get("model.p.cfg").cloned().unwrap_or_default(),
+        vec!["model.p.other"],
+        "the call body's ref edges, like dbt"
+    );
+    assert!(
+        !m.nodes.contains_key("model.p.off") && !m.enabled_unverifiable.contains("model.p.off"),
+        "the call body's enabled=false parks the node, like dbt"
+    );
+}
+
+#[test]
 fn branch_arms_edge_only_when_they_can_run() {
     let dir = tempfile::tempdir().unwrap();
     macro_project(

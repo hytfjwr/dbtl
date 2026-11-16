@@ -10,7 +10,7 @@ snapshot-paths: ["snapshots"]
 vars:
   # `stg_branch_var` gates its `config(enabled=false)` on this — provably
   # false in every render.
-  m88_off: false
+  branch_flag_off: false
 
 # Directory-hierarchical configs: dbt resolves `+materialized` by path, with
 # more specific directories winning. The source loader must honour this tree

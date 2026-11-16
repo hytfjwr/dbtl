@@ -1842,6 +1842,13 @@ pub fn jinja_branches(text: &str) -> JinjaBranches {
                     stack.push(Frame::Block("endwith", None));
                 }
                 "call" => {
+                    // A `{% call f() %}…{% endcall %}` body is NOT a
+                    // deferred definition: dbt's static extractor reads
+                    // it as toplevel — a `config()` inside applies (an
+                    // `enabled=false` parks the node) and a `ref` edges,
+                    // even though the body only renders when the callee
+                    // invokes `caller()`. Verified against the real
+                    // manifest — keep the body unconditional (`None`).
                     bound.extend(call_bind_names(rest));
                     stack.push(Frame::Block("endcall", None));
                 }
