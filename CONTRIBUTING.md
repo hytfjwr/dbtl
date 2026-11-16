@@ -117,21 +117,26 @@ If you add a job that must gate merges, add it to the aggregate's `needs` —
 `tests/ci_scripts.rs` fails when a job sits outside every aggregate's
 `needs` without being declared report-only.
 
-`security.yml` runs the small static checks as one `Security checks` job: it
-installs the tools, runs the shell-script lint, `pinact`, and `cargo deny` as
-one `parallel:` group of `run:` steps, then runs the jactionlint action
-(workflows and composite actions, with the profile pinned in
-`.github/jactionlint.yaml`). Keep `uses:` steps out of `parallel:` groups and
-`background: true` steps — `tests/ci_scripts.rs` fails on them, because the
-runner races them. zizmor and the advisory scan stay separate jobs.
+`security.yml` runs the small static checks as one `Security checks` job:
+the shell-script lint, the jactionlint action (workflows and composite
+actions, with the profile pinned in `.github/jactionlint.yaml`), the pinact
+action, and the cargo-deny action (bans, licenses, sources), in that order.
+Each step runs even when an earlier one failed, so one run reports
+everything. The tools come from actions pinned by SHA, so Dependabot updates
+a tool's version together with its pin. Keep `uses:` steps out of
+`parallel:` groups and `background: true` steps — `tests/ci_scripts.rs`
+fails on them, because the runner races them. zizmor and the advisory scan
+stay separate jobs.
 
-Shell scripts are linted by the shell-script step of that job, pinned to
-shellcheck v0.11.0. The step also checks every one-line `run:` value in the
-composite action file, so a multi-line `run:` block must move into a script.
-`bash .github/scripts/run-shellcheck.sh` reproduces it locally (needs
+Shell scripts are linted by the shell-script step of that job, with the
+shellcheck release that the `taiki-e/install-action` pin installs (no version
+is written in the workflow). The step also checks every one-line `run:` value
+in the composite action file, so a multi-line `run:` block must move into a
+script. `bash .github/scripts/run-shellcheck.sh` reproduces it locally (needs
 `shellcheck` on PATH). To lint the workflows locally, install jactionlint
 (`go install github.com/jdx/jactionlint/v2/cmd/jactionlint@v2.6.0`) and run
 `jactionlint` from the repository root.
+
 
 
 ## Testing notes
