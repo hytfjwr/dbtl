@@ -59,11 +59,17 @@ test("a <pre> is a tab stop only while it scrolls", async ({ page }) => {
   }
 
   // Layout changes re-measure: at 320px more blocks scroll, so at least one
-  // gains a tab stop and the rule still holds for all of them.
+  // gains a tab stop and the rule still holds for all of them. The wait has
+  // to poll the rule itself — counting tab stops is already true at 1280px
+  // (the static markup ships tabindex="0"), so it can return before the
+  // re-measure lands and let the check below read a stale tabIndex.
   await page.setViewportSize({ width: 320, height: 568 });
   await expect
-    .poll(async () => (await check()).filter((p) => p.tab === 0).length)
-    .toBeGreaterThan(0);
+    .poll(async () => {
+      const ps = await check();
+      return ps.some((p) => p.scrolls) && ps.every((p) => (p.tab === 0) === p.scrolls);
+    })
+    .toBe(true);
   for (const p of await check()) {
     expect(p.tab === 0, `tabindex ${p.tab} but scrolls=${p.scrolls}`).toBe(p.scrolls);
   }
@@ -94,8 +100,13 @@ test("the 404 lineage scroller is a tab stop only while it scrolls", async ({ pa
   await page.setViewportSize({ width: 320, height: 568 });
   await page.goto(`/dbtl/${"missing/".repeat(6)}`);
   await page.waitForLoadState("networkidle");
+  // Same wait as above: the overflow alone can flip before the tab stop is
+  // re-measured, so poll until both have landed.
   await expect
-    .poll(async () => (await check()).scrolls, "lineage pane overflows at 320px")
+    .poll(async () => {
+      const s = await check();
+      return s.scrolls && s.tab === 0;
+    }, "lineage pane overflows and its tab stop lands at 320px")
     .toBe(true);
   const narrow = await check();
   expect(narrow.tab === 0, `tabindex ${narrow.tab} but scrolls=${narrow.scrolls}`).toBe(
